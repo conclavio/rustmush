@@ -488,37 +488,37 @@ fn actual_origin_issuance_is_atomic_and_replays_exact_inventory_and_certificate(
     let before = r.w.engine().action_state().revision();
     let allocator = r.w.world().next_id();
     let p = r.prepare(1, actor, 2, json!({"class":"i"}))?;
-    assert_eq!(r.issued(), 0);
-    assert_eq!(r.w.engine().action_state().revision(), before);
-    assert!(p.0.authoritative_replay_writes().iter().all(|w|matches!(w,ReplayWrite::ModuleJsonSet{namespace,..} if ["industry","inventory"].contains(&namespace.as_str()))));
+    check_eq!(r.issued(), 0);
+    check_eq!(r.w.engine().action_state().revision(), before);
+    check!(p.0.authoritative_replay_writes().iter().all(|w|matches!(w,ReplayWrite::ModuleJsonSet{namespace,..} if ["industry","inventory"].contains(&namespace.as_str()))));
     r.ack(1, actor, 2, json!({"class":"i"}), p)?;
     let c = r.cert(2)?;
-    assert_eq!(c.lot, lot_id(token(2))?);
-    assert_eq!(c.source, source(token(2)));
-    assert_eq!(c.origin_endpoint.0, r.policy.agents[1].stock);
+    check_eq!(c.lot, lot_id(token(2))?);
+    check_eq!(c.source, source(token(2)));
+    check_eq!(c.origin_endpoint.0, r.policy.agents[1].stock);
     let lot =
         r.w.engine()
             .action_state()
             .get(&r.runtime.families.inventory.lots, &c.lot)?
             .ok_or("lot")?;
     c.matches_lot(lot)?;
-    assert!(matches!(lot.lineage(), Lineage::Origin { .. }));
-    assert_eq!(lot.quantity(), 1);
-    assert_eq!(r.w.world().next_id(), allocator);
-    assert_eq!(r.issued(), 1);
+    check!(matches!(lot.lineage(), Lineage::Origin { .. }));
+    check_eq!(lot.quantity(), 1);
+    check_eq!(r.w.world().next_id(), allocator);
+    check_eq!(r.issued(), 1);
     let cold = r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
     let h = &cold
         .world()
         .module_state::<TestHandles>()
         .ok_or("handles")?
         .0;
-    assert_eq!(
+    check_eq!(
         cold.engine()
             .action_state()
             .get(&h.families.certificates, &token(2).to_hex())?,
         Some(c)
     );
-    assert!(r.cold(r.boot.clone(), None).is_err());
+    check!(r.cold(r.boot.clone(), None).is_err());
     Ok(())
 }
 #[test]
@@ -527,25 +527,25 @@ fn monthly_quota_is_shared_by_agents_and_survives_rate_changes_rewinds_and_resta
     let second = r.policy.agents[1].actor;
     r.issue(GOD, 2, DieClass::I)?;
     r.issue(second, 3, DieClass::I)?;
-    assert!(r.prepare(1, GOD, 4, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, GOD, 4, json!({"class":"i"})).is_err());
     let epoch = r.w.world().next_world_timeline_epoch(2)?;
     r.w.world_mut().append_world_timeline_epoch(epoch)?;
-    assert!(r.prepare(1, second, 5, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, second, 5, json!({"class":"i"})).is_err());
     r.w.world_mut().set_now(900);
-    assert!(r.prepare(1, GOD, 6, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, GOD, 6, json!({"class":"i"})).is_err());
     r.activate()?;
-    assert!(r.prepare(1, GOD, 7, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, GOD, 7, json!({"class":"i"})).is_err());
     r.w.world_mut().set_now(40 * 86400);
     let next = r.issue(GOD, 8, DieClass::I)?;
-    assert_eq!(next.ordinal, 1);
-    assert_eq!(r.issued(), 3);
+    check_eq!(next.ordinal, 1);
+    check_eq!(r.issued(), 3);
     r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
     Ok(())
 }
 #[test]
 fn explicit_scoped_policy_is_required_even_for_staff_and_deny_precedes_allow() -> Result {
     let mut r = Rig::new(false)?;
-    assert!(r.prepare(1, GOD, 2, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, GOD, 2, json!({"class":"i"})).is_err());
     command(
         &mut r.w,
         &format!("@origin-policy {} {} allow", GOD.0, r.policy.scope.0),
@@ -553,8 +553,8 @@ fn explicit_scoped_policy_is_required_even_for_staff_and_deny_precedes_allow() -
     r.flush();
     r.issue(GOD, 3, DieClass::I)?;
     r.deny(GOD)?;
-    assert!(r.prepare(1, GOD, 4, json!({"class":"ii"})).is_err());
-    assert_eq!(r.issued(), 1);
+    check!(r.prepare(1, GOD, 4, json!({"class":"ii"})).is_err());
+    check_eq!(r.issued(), 1);
     r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
     Ok(())
 }
@@ -587,12 +587,12 @@ fn authority_vault_month_and_clock_changes_refuse_before_stage_and_take() -> Res
                 }
             }
             if let Some(p) = p {
-                assert!(r.stage(1, GOD, 2, json!({"class":"i"}), p).is_err());
+                check!(r.stage(1, GOD, 2, json!({"class":"i"}), p).is_err());
             } else {
-                assert!(r.w.engine_mut().take_staged_action().is_err());
+                check!(r.w.engine_mut().take_staged_action().is_err());
             }
-            assert_eq!(r.issued(), 0);
-            assert_eq!(r.w.engine().action_state().revision(), before);
+            check_eq!(r.issued(), 0);
+            check_eq!(r.w.engine().action_state().revision(), before);
         }
     }
     Ok(())
@@ -623,8 +623,8 @@ fn cold_reverse_audit_rejects_missing_and_crossed_halves_including_all_typed_los
                     != Some(missing)
             }
         });
-        assert!(data.kv.len() < before, "exact corruption target exists");
-        assert!(
+        check!(data.kv.len() < before, "exact corruption target exists");
+        check!(
             r.cold(boot, Some(CoreOriginMode::Active)).is_err(),
             "incomplete retained Origin evidence refused"
         );
@@ -654,7 +654,7 @@ fn cold_reverse_audit_rejects_missing_and_crossed_halves_including_all_typed_los
             .as_object_mut()
             .ok_or("certificate object")?
             .insert(field.into(), replacement);
-        assert!(
+        check!(
             r.cold(boot, Some(CoreOriginMode::Active)).is_err(),
             "crossed issuance evidence refused"
         );
@@ -673,11 +673,11 @@ fn issue_request_is_closed_and_cannot_select_agent_vault_quantity_grade_or_sourc
         json!({"class":"i","grade":10}),
         json!({"class":"i","source":null}),
     ] {
-        assert!(r.prepare(1, GOD, 2, value).is_err());
+        check!(r.prepare(1, GOD, 2, value).is_err());
     }
     let stranger = r.w.spawn_player("Unconfigured requester");
-    assert!(r.prepare(1, stranger, 3, json!({"class":"i"})).is_err());
-    assert_eq!(r.issued(), 0);
+    check!(r.prepare(1, stranger, 3, json!({"class":"i"})).is_err());
+    check_eq!(r.issued(), 0);
     Ok(())
 }
 #[test]
@@ -694,13 +694,13 @@ fn actual_historical_origin_can_retire_but_neither_pool_nor_new_lot_inherits_cer
     let (writes, install) = prepared.into_parts();
     r.w.engine_mut().install_prepared_action(install)?;
     fold_module_ops_into(&mut r.boot, writes);
-    assert!(
+    check!(
         r.w.engine()
             .action_state()
             .get(&f.inventory.lots, &c.lot)?
             .is_none()
     );
-    assert!(r.cert(2).is_ok());
+    check!(r.cert(2).is_ok());
     r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
     Ok(())
 }
@@ -725,11 +725,11 @@ fn dependency_mechanics_freeze_refuses_each_actual_owner_before_custody() -> Res
                 },
             )?;
             if let Some(p) = p {
-                assert!(r.stage(1, GOD, 2, json!({"class":"i"}), p).is_err());
+                check!(r.stage(1, GOD, 2, json!({"class":"i"}), p).is_err());
             } else {
-                assert!(r.w.engine_mut().take_staged_action().is_err());
+                check!(r.w.engine_mut().take_staged_action().is_err());
             }
-            assert_eq!(r.issued(), 0);
+            check_eq!(r.issued(), 0);
         }
     }
     Ok(())
@@ -748,8 +748,8 @@ fn acknowledged_issuance_keeps_its_original_month_when_the_next_month_arrives() 
     let (bundle, install) = held.into_parts();
     r.w.engine_mut().install_composed_action(install)?;
     fold_writes(&mut r.boot, bundle.writes().to_vec());
-    assert_eq!(r.cert(2)?.observed_ic, old);
-    assert_ne!(
+    check_eq!(r.cert(2)?.observed_ic, old);
+    check_ne!(
         ImportMonth::from_stamp(&old)?,
         ImportMonth::from_stamp(&r.w.world().world_ic_now())?
     );
@@ -777,8 +777,8 @@ fn actual_inventory_origin_claim_without_matching_certificate_is_a_cold_refusal(
     let (writes, install) = prepared.into_parts();
     r.w.engine_mut().install_prepared_action(install)?;
     fold_module_ops_into(&mut r.boot, writes);
-    assert_eq!(r.issued(), 0);
-    assert!(
+    check_eq!(r.issued(), 0);
+    check!(
         r.cold(r.boot.clone(), Some(CoreOriginMode::Active))
             .is_err()
     );
@@ -791,10 +791,10 @@ fn a_higher_current_configuration_does_not_expand_an_existing_months_cap() -> Re
     r.issue(GOD, 3, DieClass::I)?;
     r.policy.monthly_quotas = [1024; 3];
     r.activate()?;
-    assert!(r.prepare(1, GOD, 4, json!({"class":"i"})).is_err());
+    check!(r.prepare(1, GOD, 4, json!({"class":"i"})).is_err());
     r.w.world_mut().set_now(40 * 86400);
     let c = r.issue(GOD, 5, DieClass::I)?;
-    assert_eq!(c.quota_maximum, 1024);
+    check_eq!(c.quota_maximum, 1024);
     r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
     Ok(())
 }
@@ -802,17 +802,17 @@ fn a_higher_current_configuration_does_not_expand_an_existing_months_cap() -> Re
 #[test]
 fn acknowledged_initialization_cannot_issue_until_actual_active_cold_boot() -> Result {
     let mut r = Rig::initialized(true)?;
-    assert_eq!(r.runtime.config.mode, CoreOriginMode::Initialize);
+    check_eq!(r.runtime.config.mode, CoreOriginMode::Initialize);
     for actor in [GOD, r.policy.agents[1].actor] {
-        assert!(r.prepare(1, actor, 2, json!({"class":"i"})).is_err());
+        check!(r.prepare(1, actor, 2, json!({"class":"i"})).is_err());
     }
-    assert_eq!(r.issued(), 0);
-    assert!(r.prepare(0, GOD, 3, json!({})).is_err());
+    check_eq!(r.issued(), 0);
+    check!(r.prepare(0, GOD, 3, json!({})).is_err());
     r.activate()?;
-    assert_eq!(r.runtime.config.mode, CoreOriginMode::Active);
-    assert!(r.prepare(0, GOD, 4, json!({})).is_err());
+    check_eq!(r.runtime.config.mode, CoreOriginMode::Active);
+    check!(r.prepare(0, GOD, 4, json!({})).is_err());
     r.issue(r.policy.agents[1].actor, 5, DieClass::I)?;
-    assert_eq!(r.issued(), 1);
+    check_eq!(r.issued(), 1);
     Ok(())
 }
 

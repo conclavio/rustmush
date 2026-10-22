@@ -32,10 +32,15 @@ pub(crate) fn register(
     )?;
     let reader = PaidResaleReader::request(reg)?;
     for (index, action) in actions.iter().enumerate() {
-        if reg.definition(definitions[index].clone())? != *action {
+        let (Some(definition), Some(outcome)) =
+            (definitions.get(index), definitions.get(index + 5))
+        else {
+            return Err(error("paid resale action differs"));
+        };
+        if reg.definition(definition.clone())? != *action {
             return Err(error("paid resale action differs"));
         }
-        let outcome = reg.definition(definitions[index + 5].clone())?;
+        let outcome = reg.definition(outcome.clone())?;
         let writer = config.writer.for_action(reg, action, reader.clone())?;
         let refusal = ActionError::new(
             ActionErrorCode::ProviderRejected,
@@ -44,6 +49,9 @@ pub(crate) fn register(
         )
         .map_err(error)?;
         if index < 3 {
+            let Some(kind) = [Kind::Offer, Kind::Accept, Kind::Fund].get(index).copied() else {
+                return Err(error("paid resale action differs"));
+            };
             let economy = if index == 0 {
                 None
             } else {
@@ -54,7 +62,7 @@ pub(crate) fn register(
                 super::provider::Provider {
                     action: action.clone(),
                     outcome,
-                    kind: [Kind::Offer, Kind::Accept, Kind::Fund][index],
+                    kind,
                     config: config.clone(),
                     families: families.clone(),
                     legacy: legacy.clone(),

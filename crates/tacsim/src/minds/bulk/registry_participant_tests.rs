@@ -126,13 +126,13 @@ fn dropped_bound_artifacts_keep_ticket_and_bytes_and_exact_reentry_consumes_once
     // A durable Unknown/drop before core's receipt-authorized apply is not an
     // owner acknowledgement. The unchanged exact ticket can be rebound later.
     drop(Arc::clone(&participant).bind(&mut artifacts, patch()?)?);
-    assert!(artifacts.get(key).is_err());
+    check!(artifacts.get(key).is_err());
     artifacts.registry.check(id, &ticket)?;
     let bound = Arc::clone(&participant).bind(&mut artifacts, patch()?)?;
     bound.apply();
-    assert_eq!(serde_json::to_value(artifacts.get(key)?)?, expected);
-    assert!(artifacts.registry.get(id).is_err());
-    assert!(
+    check_eq!(serde_json::to_value(artifacts.get(key)?)?, expected);
+    check!(artifacts.registry.get(id).is_err());
+    check!(
         Arc::clone(&participant)
             .bind(&mut artifacts, patch()?)
             .is_err()
@@ -141,14 +141,14 @@ fn dropped_bound_artifacts_keep_ticket_and_bytes_and_exact_reentry_consumes_once
         .registry
         .take_acknowledged()
         .ok_or("acknowledgement")?;
-    assert_eq!(
+    check_eq!(
         (ack.ticket, ack.operation, ack.job, ack.transition),
         (id, job, job, Transition::Admit)
     );
-    assert!(artifacts.registry.take_acknowledged().is_none());
+    check!(artifacts.registry.take_acknowledged().is_none());
     quota.check_registry(&admitted, job)?;
     quota.apply_registry_checked(admitted, job);
-    assert!(quota.take_registry_lease(job).is_none());
+    check!(quota.take_registry_lease(job).is_none());
     Ok(())
 }
 
@@ -208,7 +208,7 @@ fn progress_rechecks_the_exact_start_manifest_and_keeps_failed_ticket_ownership(
     let mut altered = original.clone();
     altered.artifact.bytes += 1;
     artifacts.install(altered);
-    assert!(check_artifacts(&artifacts, &patch).is_err());
+    check!(check_artifacts(&artifacts, &patch).is_err());
     artifacts.registry.check(id, &ticket)?;
     artifacts.install(original);
     check_artifacts(&artifacts, &patch)?;
@@ -219,9 +219,9 @@ fn progress_rechecks_the_exact_start_manifest_and_keeps_failed_ticket_ownership(
     let lease = quota
         .take_registry_lease(operation)
         .ok_or("acknowledged exact lease")?;
-    assert_eq!(lease.run(), run);
-    assert_eq!(lease.maximum_sim_ms(), 2000);
-    assert!(quota.take_registry_lease(operation).is_none());
+    check_eq!(lease.run(), run);
+    check_eq!(lease.maximum_sim_ms(), 2000);
+    check!(quota.take_registry_lease(operation).is_none());
     Ok(())
 }
 
@@ -236,7 +236,7 @@ fn physical_write_admission_rejects_alias_keys_wrong_accounts_and_unknown_fields
     let blob = PreparedBlob::prepare(key, &mut data.start, vec![])?;
     for write in &blob.writes {
         let exact = replay_write(write)?;
-        assert!(super::super::artifacts::accepts_registry_write(&exact));
+        check!(super::super::artifacts::accepts_registry_write(&exact));
         if let ReplayWrite::ModuleJsonSet {
             namespace,
             key: actual,
@@ -244,7 +244,7 @@ fn physical_write_admission_rejects_alias_keys_wrong_accounts_and_unknown_fields
         } = exact
         {
             let aliased = actual.as_str().replace(":1:start", ":01:start");
-            assert!(!super::super::artifacts::accepts_registry_write(
+            check!(!super::super::artifacts::accepts_registry_write(
                 &ReplayWrite::ModuleJsonSet {
                     namespace: namespace.clone(),
                     key: AuthoritativeKey::parse_canonical(aliased)?,
@@ -254,7 +254,7 @@ fn physical_write_admission_rejects_alias_keys_wrong_accounts_and_unknown_fields
             if actual.as_str() == key.document().as_str() {
                 let mut other = blob.manifest.clone();
                 other.key.account = AccountId::mint("other-owner-image", 1)?;
-                assert!(!super::super::artifacts::accepts_registry_write(
+                check!(!super::super::artifacts::accepts_registry_write(
                     &ReplayWrite::ModuleJsonSet {
                         namespace: namespace.clone(),
                         key: actual.clone(),
@@ -266,7 +266,7 @@ fn physical_write_admission_rejects_alias_keys_wrong_accounts_and_unknown_fields
                     .as_object_mut()
                     .ok_or("manifest object")?
                     .insert("authority".into(), json!(true));
-                assert!(!super::super::artifacts::accepts_registry_write(
+                check!(!super::super::artifacts::accepts_registry_write(
                     &ReplayWrite::ModuleJsonSet {
                         namespace,
                         key: actual,

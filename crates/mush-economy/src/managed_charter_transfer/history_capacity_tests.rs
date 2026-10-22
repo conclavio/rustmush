@@ -40,13 +40,13 @@ fn sized_intent() -> Result<FundingIntent> {
         format: 1,
         intent: Box::new(i.clone()),
     };
-    assert_eq!(
+    check_eq!(
         plans::encode(&proof)?.len(),
         super::super::MAX_PENDING_CORRELATION_BYTES
     );
     let mut too_big = i.clone();
     too_big.catalog.code = "c".repeat(low + 1).into();
-    assert!(too_big.validate().is_err());
+    check!(too_big.validate().is_err());
     Ok(i)
 }
 fn funded(i: FundingIntent) -> Result<CharterPendingHistory> {
@@ -180,15 +180,15 @@ fn exact_correlation_boundary_preserves_complete_terminal_history_contract_and_r
         }));
         row.validate()?;
         let raw = bounded(&row, super::super::MAX_PENDING_HISTORY_BYTES)?;
-        assert!(CharterPendingHistory::decode(&raw)? == row);
+        check!(CharterPendingHistory::decode(&raw)? == row);
         let contract = row.contract()?;
         let write =
             crate::registry_filing::json_write(crate::api::contract_key(contract.id), &contract)?;
         // The ReplayWrite wrapper and maximum decimal key are measured as
         // well as the document; a document-only fit is not this assertion.
-        assert!(serde_json::to_vec(&write)?.len() <= super::super::MAX_PENDING_CONTRACT_BYTES);
-        assert!(bounded(&d, 2048)?.len() <= 2048);
-        assert!(
+        check!(serde_json::to_vec(&write)?.len() <= super::super::MAX_PENDING_CONTRACT_BYTES);
+        check!(bounded(&d, 2048)?.len() <= 2048);
+        check!(
             plans::encode(&Proof::Terminal {
                 format: 1,
                 funding: consent.operation,

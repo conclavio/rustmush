@@ -22,8 +22,8 @@ pub(super) fn exercise(base: &PurchaseFixture, filed: &Durable) -> TestResult {
         let list = f.config.quotes.listing_action()?;
         let quote = f.config.quotes.quote_action()?;
         let [fund, grant, refund] = f.config.purchases.actions()?;
-        assert_eq!(list.version(), 2);
-        assert!(
+        check_eq!(list.version(), 2);
+        check!(
             f.config
                 .purchases
                 .actions()?
@@ -36,57 +36,60 @@ pub(super) fn exercise(base: &PurchaseFixture, filed: &Durable) -> TestResult {
             json!({"owner_licence":"1","form":"Open"}),
             json!({"owner_licence":"1","form":"open","holder":BUYER}),
         ] {
-            assert!(f.prepare(&list, GOD, start, request).is_err());
-            assert_eq!(
-                f.disk, before.disk,
+            check!(crate::test_checks::refused(
+                f.prepare(&list, GOD, start, request)
+            )?);
+            check_eq!(
+                f.disk,
+                before.disk,
                 "missing/foreign consent cannot publish"
             );
         }
         f.perform(&list, GOD, start, json!({"owner_licence":"1","form":name}))?;
         let listing = one(f.rows("market", "market_mind_original_listing"))?;
-        assert_eq!(listing.pointer("/product/form"), Some(&json!(form)));
-        assert_eq!(listing.get("format"), Some(&json!(2)));
+        check_eq!(listing.pointer("/product/form"), Some(&json!(form)));
+        check_eq!(listing.get("format"), Some(&json!(2)));
         f.perform(&quote, BUYER, start + 1, json!({"listing":token(start)}))?;
         let actual_quote = one(f.rows("market", "market_mind_original_quote"))?;
-        assert_eq!(actual_quote.pointer("/product/form"), Some(&json!(form)));
+        check_eq!(actual_quote.pointer("/product/form"), Some(&json!(form)));
         let quoted = f.snapshot();
         eprintln!("M7_STORY phase=form_fund event=begin form={index}");
         let prepared = f.prepare(&fund, BUYER, start + 2, json!({"quote":token(start + 1)}))?;
-        assert_eq!(f.disk, quoted.disk);
-        assert!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
+        check_eq!(f.disk, quoted.disk);
+        check!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
         f.install(prepared)?;
         let operation = token(start + 2);
         let funded = f.snapshot();
         let allocation = one(f.rows("roll", "roll_mind_paid_purchase"))?;
-        assert_eq!(allocation.get("format"), Some(&json!(2)));
-        assert_eq!(allocation.pointer("/terms/form"), Some(&json!(form)));
+        check_eq!(allocation.get("format"), Some(&json!(2)));
+        check_eq!(allocation.pointer("/terms/form"), Some(&json!(form)));
         eprintln!("M7_STORY phase=form_fund event=complete form={index}");
         let mut refunded = f.reboot(&funded)?;
         refunded.perform(&refund, GOD, start + 4, json!({"operation":operation}))?;
-        assert!(refunded.rows("roll", "roll_mind_paid_term").is_empty());
+        check!(refunded.rows("roll", "roll_mind_paid_term").is_empty());
         refunded.reboot(&refunded.snapshot())?;
         f.engine.world.set_now(1017);
         eprintln!("M7_STORY phase=form_grant event=begin form={index}");
         let prepared = f.prepare(&grant, BUYER, start + 3, json!({"operation":operation}))?;
-        assert!(
+        check!(
             f.rows("roll", "roll_mind_paid_term").is_empty(),
             "no pre-ACK grant"
         );
         f.install(prepared)?;
         let term: PaidTermRecord =
             serde_json::from_value(one(f.rows("roll", "roll_mind_paid_term"))?)?;
-        assert_eq!(term.terms().form(), form);
-        assert_eq!(term.window().issued_at().get(), 1017);
+        check_eq!(term.terms().form(), form);
+        check_eq!(term.window().issued_at().get(), 1017);
         let history = f.economy()?.purchase_receipt_audit().get(operation)?;
-        assert_eq!(history.effect(), &fund);
-        assert!(history.terminal().ok_or("actual terminal")?.granted());
+        check_eq!(history.effect(), &fund);
+        check!(history.terminal().ok_or("actual terminal")?.granted());
         let granted = f.snapshot();
         let restarted = f.reboot(&granted)?;
-        assert_eq!(
+        check_eq!(
             restarted.rows("roll", "roll_mind_paid_term"),
             f.rows("roll", "roll_mind_paid_term")
         );
-        assert_eq!(restarted.balances()?, f.balances()?);
+        check_eq!(restarted.balances()?, f.balances()?);
         eprintln!("M7_STORY phase=form_grant event=complete form={index}");
         // The actual configured player module consumes the owner service. An
         // Open flag in a fixture is never itself a source authorization.
@@ -128,7 +131,7 @@ pub(super) fn historical_v1(
         ("market", "market_mind_purchase"),
         ("market", "market_mind_purchase_receipt"),
     ] {
-        assert_eq!(migrated.rows(owner, family), base.rows(owner, family));
+        check_eq!(migrated.rows(owner, family), base.rows(owner, family));
     }
     paid_checkout::exercise_source(&migrated, &migrated.snapshot(), false)?;
     let mut pending = PurchaseFixture::boot_protocol(
@@ -141,14 +144,17 @@ pub(super) fn historical_v1(
     let operation: CommitToken =
         serde_json::from_value(old.get("operation").ok_or("operation")?.clone())?;
     let [_, grant, refund] = pending.config.purchases.actions()?;
-    assert!(
-        pending
-            .prepare(&grant, BUYER, 3_000_000, json!({"operation":operation}))
-            .is_err(),
+    check!(
+        crate::test_checks::refused(pending.prepare(
+            &grant,
+            BUYER,
+            3_000_000,
+            json!({"operation":operation})
+        ))?,
         "v2 cannot grant changed consent over v1 funding"
     );
     pending.perform(&refund, GOD, 3_000_001, json!({"operation":operation}))?;
-    assert!(pending.rows("roll", "roll_mind_paid_term").is_empty());
+    check!(pending.rows("roll", "roll_mind_paid_term").is_empty());
     pending.reboot(&pending.snapshot())?;
     Ok(())
 }
@@ -209,8 +215,8 @@ fn coherent_form_tampering(
         *row.pointer_mut("/terms/form").ok_or("term form")? = form;
         Ok(())
     })?;
-    assert!(
-        f.reboot(&corrupt).is_err(),
+    check!(
+        crate::test_checks::refused(f.reboot(&corrupt))?,
         "coherent typed form rewrite cannot replace actual E4 consent"
     );
     Ok(())

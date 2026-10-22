@@ -21,17 +21,17 @@ fn modules(c: &MindCommerce) -> Result<Vec<Box<dyn GameModule>>, ModError> {
 #[test]
 fn paid_resale_is_explicit_active_and_registers_the_exact_five_actions_in_both_orders() -> TestResult
 {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_paid_mind_resales(mush_core::GOD, 60)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_paid_mind_resales(mush_core::GOD, 60)
             .is_err()
     );
-    assert!(
+    check!(
         configured()?
             .with_paid_mind_resales(mush_core::GOD, 60)
             .is_err()
@@ -54,7 +54,7 @@ fn paid_resale_is_explicit_active_and_registers_the_exact_five_actions_in_both_o
     let plain = prepare(CommerceMode::Active)?.with_original_purchases(quotes()?)?;
     let actual = compose_boxed(World::new_minimal(), Registry::new(), modules(&plain)?)?;
     for action in mush_roll::commerce::paid_resale::protocol::actions()? {
-        assert!(
+        check!(
             actual
                 .registry
                 .definitions()
@@ -98,7 +98,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
                     Box::new(selected.configure_tacsim(layer())?),
                 ],
             );
-        assert!(actual.is_err(), "missing paid resale owner was accepted");
+        check!(actual.is_err(), "missing paid resale owner was accepted");
     }
     let c = configured()?;
     let original = c.state.paid_resales.as_ref().ok_or("optional resale")?;
@@ -128,7 +128,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
             Box::new(c.configure_tacsim(layer())?),
         ],
     );
-    assert!(actual.is_err(), "different service binding accepted");
+    check!(actual.is_err(), "different service binding accepted");
     Ok(())
 }
 #[test]

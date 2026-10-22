@@ -140,7 +140,7 @@ fn complete_registry(f: &mut Fixture) -> TestResult<RatingRef> {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        assert!(done.receipt.actual_unit_ms <= allowance);
+        check!(done.receipt.actual_unit_ms <= allowance);
         total_actual = total_actual
             .checked_add(done.receipt.actual_unit_ms)
             .ok_or("usage overflow")?;
@@ -169,7 +169,7 @@ fn complete_registry(f: &mut Fixture) -> TestResult<RatingRef> {
             &invocation,
             settle,
         )?;
-        assert_eq!(
+        check_eq!(
             f.run(binding)?,
             before,
             "worker result does not publish before acknowledgement"
@@ -177,15 +177,15 @@ fn complete_registry(f: &mut Fixture) -> TestResult<RatingRef> {
         registry_ack(f, prepared, ticket, binding, settle, Transition::Settle)?;
         quanta += 1;
         let run = f.run(binding)?;
-        assert_eq!(run.charged_unit_ms, total_actual);
-        assert!(run.flight.is_none());
+        check_eq!(run.charged_unit_ms, total_actual);
+        check!(run.flight.is_none());
         if run.status == Status::Complete {
             // Registry retains its actual Machine through the acknowledged
             // terminal settlement, just as the production Settle phase does.
             let retained = continuation.ok_or("terminal Registry machine")?;
-            assert_eq!(retained.account(), binding.account);
-            assert_eq!(retained.run(), binding.run);
-            assert!(run.result.is_some());
+            check_eq!(retained.account(), binding.account);
+            check_eq!(retained.run(), binding.run);
+            check!(run.result.is_some());
             drop(retained); // Only after registry_ack installed the terminal image.
             break;
         }
@@ -205,10 +205,10 @@ fn complete_registry(f: &mut Fixture) -> TestResult<RatingRef> {
     }
     let receipt: RatingReceipt = f.retained("rating_receipts")?;
     let reference = receipt.reference()?;
-    assert_eq!(reference.job(), binding.job);
+    check_eq!(reference.job(), binding.job);
     let job: RatingJob = f.retained("rating_jobs")?;
-    assert!(matches!(job.state(), RatingJobState::Completed { .. }));
-    assert!(
+    check!(matches!(job.state(), RatingJobState::Completed { .. }));
+    check!(
         f.disk
             .keys()
             .all(|(_, k)| !k.starts_with("action-state/capacity/v1/"))
@@ -234,11 +234,11 @@ fn registry_ack(
         .registry
         .take_acknowledged()
         .ok_or("actual owner Ack")?;
-    assert_eq!(
+    check_eq!(
         (ack.ticket, ack.job, ack.operation, ack.transition),
         (ticket, binding.job, operation, transition)
     );
-    assert!(f.artifacts()?.registry.get(ticket).is_err());
+    check!(f.artifacts()?.registry.get(ticket).is_err());
     Ok(())
 }
 
@@ -1029,7 +1029,7 @@ impl PurchaseFixture {
             .ok_or("actual purchase funding account")?
             .id;
         self.setup_command(conn, &format!("@econ/mint {faucet}=2 1000"))?;
-        assert_eq!(
+        check_eq!(
             self.economy()?
                 .snapshot()
                 .account(faucet)
@@ -1037,13 +1037,13 @@ impl PurchaseFixture {
                 .posted_balance,
             Amount::from_minor(-1000)
         );
-        assert_eq!(
+        check_eq!(
             self.balances()?[2],
             (Amount::from_minor(1000), Amount::ZERO)
         );
         // Cold boot must replay/audit the actual balanced grant before filing.
         let saved = self.snapshot();
-        assert_eq!(self.reboot(&saved)?.balances()?, self.balances()?);
+        check_eq!(self.reboot(&saved)?.balances()?, self.balances()?);
         Ok(())
     }
     fn setup_command(&mut self, conn: u64, line: &str) -> TestResult {
@@ -1121,7 +1121,7 @@ impl PurchaseFixture {
                 .disk
                 .get(&("roll".into(), disk_key))
                 .ok_or("persisted root")?;
-            assert_eq!(value.get("key"), Some(&json!(key)));
+            check_eq!(value.get("key"), Some(&json!(key)));
             values.insert(key.record, value.clone());
         }
         Ok(values)
@@ -1240,7 +1240,7 @@ fn change_one_family(
                 == Some(family)
     });
     let (_, value) = rows.next().ok_or("corruption target")?;
-    assert!(rows.next().is_none());
+    check!(rows.next().is_none());
     edit(value.get_mut("value").ok_or("typed value")?)
 }
 
@@ -1253,7 +1253,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     house_filing::exercise(&registry, &rating)?;
     eprintln!("M7_STORY phase=house event=complete");
     let mut world = World::new_minimal();
-    assert_eq!(
+    check_eq!(
         world.create(ObjKind::Player, "Actual buyer", GOD, Some(ROOM))?,
         BUYER
     );
@@ -1286,7 +1286,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     )?;
     let shell = ObjId(f.engine.world.next_id());
     f.perform(&reserve, GOD, 1_000_000, json!({}))?;
-    assert_eq!(
+    check_eq!(
         f.engine
             .world
             .get(shell)
@@ -1303,12 +1303,12 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         "rating_job":rating.job(),"rating_id":rating.id(),"rating_digest":rating.receipt_digest(),
         "payer":0,"charter_name":"Measured original",
     }))?;
-    assert!(
+    check!(
         writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
     );
-    assert_eq!(
+    check_eq!(
         f.economy()?
             .snapshot()
             .asset(shell)
@@ -1316,7 +1316,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
             .title_owner,
         EconomicOwner::Object(GOD)
     );
-    assert_eq!(
+    check_eq!(
         f.balances()?,
         vec![
             (Amount::from_minor(-100), Amount::ZERO),
@@ -1356,16 +1356,16 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     let before_money = stale.balances()?;
     let before_roots = stale.roots()?;
     let before_revision = stale.engine.action_state().revision();
-    assert!(
+    check!(
         stale
             .prepare(&fund, BUYER, 1_000_004, json!({"quote":token(1_000_003)}))
             .is_err()
     );
-    assert_eq!(stale.engine.action_state().revision(), before_revision);
-    assert_eq!(stale.balances()?, before_money);
-    assert_eq!(stale.roots()?, before_roots);
-    assert_eq!(stale.disk, quoted.disk);
-    assert!(stale.rows("market", "market_mind_purchase").is_empty());
+    check_eq!(stale.engine.action_state().revision(), before_revision);
+    check_eq!(stale.balances()?, before_money);
+    check_eq!(stale.roots()?, before_roots);
+    check_eq!(stale.disk, quoted.disk);
+    check!(stale.rows("market", "market_mind_purchase").is_empty());
 
     let before_money = f.balances()?;
     let before_roots = f.roots()?;
@@ -1373,16 +1373,16 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     let operation = token(1_000_004);
     eprintln!("M7_STORY phase=v1_fund event=begin");
     let prepared = f.prepare(&fund, BUYER, 1_000_004, json!({"quote":token(1_000_003)}))?;
-    assert_eq!(f.balances()?, before_money);
-    assert_eq!(f.roots()?, before_roots);
-    assert_eq!(f.engine.action_state().revision(), before_revision);
+    check_eq!(f.balances()?, before_money);
+    check_eq!(f.roots()?, before_roots);
+    check_eq!(f.engine.action_state().revision(), before_revision);
     let funding_writes = f.install(prepared)?;
-    assert!(
+    check!(
         funding_writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
     );
-    assert_eq!(
+    check_eq!(
         f.balances()?,
         vec![
             (Amount::from_minor(-100), Amount::ZERO),
@@ -1390,14 +1390,14 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
             (Amount::from_minor(1000), Amount::from_minor(100))
         ]
     );
-    assert!(f.rows("market", "market_mind_original_quote").is_empty());
-    assert!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
-    assert!(f.rows("roll", "roll_mind_paid_term").is_empty());
-    assert!(f.rows("market", "market_mind_purchase_receipt").is_empty());
+    check!(f.rows("market", "market_mind_original_quote").is_empty());
+    check!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
+    check!(f.rows("roll", "roll_mind_paid_term").is_empty());
+    check!(f.rows("market", "market_mind_purchase_receipt").is_empty());
     let purchase = one(f.rows("market", "market_mind_purchase"))?;
     let allocation = one(f.rows("roll", "roll_mind_paid_purchase"))?;
-    assert_eq!(purchase.get("operation"), Some(&json!(operation)));
-    assert_eq!(
+    check_eq!(purchase.get("operation"), Some(&json!(operation)));
+    check_eq!(
         purchase.get("licence"),
         Some(&json!("2")),
         "shared allocator follows owner licence 1"
@@ -1411,13 +1411,13 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         "phase",
         "updated_by",
     ] {
-        assert_eq!(purchase.get(field), allocation.get(field), "paired {field}");
+        check_eq!(purchase.get(field), allocation.get(field), "paired {field}");
     }
     let roots = f.roots()?;
-    assert_eq!(roots.len(), before_roots.len() + 2);
-    assert!(roots.contains_key(&format!("v1/paid_operation/{operation}")));
-    assert!(roots.contains_key("v1/licence/0000000000000002/term/0000000000000001"));
-    assert_eq!(
+    check_eq!(roots.len(), before_roots.len() + 2);
+    check!(roots.contains_key(&format!("v1/paid_operation/{operation}")));
+    check!(roots.contains_key("v1/licence/0000000000000002/term/0000000000000001"));
+    check_eq!(
         f.disk
             .keys()
             .filter(|(_, k)| k.starts_with("action-state/capacity/v1/"))
@@ -1431,11 +1431,11 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     eprintln!("M7_STORY phase=driver event=complete");
     let mut funding_crash = quoted.clone();
     retain_writes(&mut funding_crash.disk, &funding_writes)?;
-    assert_eq!(funding_crash.disk, funded.disk);
+    check_eq!(funding_crash.disk, funded.disk);
     let funded_reboot = f.reboot(&funded)?;
-    assert_eq!(funded_reboot.balances()?, f.balances()?);
-    assert_eq!(funded_reboot.roots()?, roots);
-    assert!(
+    check_eq!(funded_reboot.balances()?, f.balances()?);
+    check_eq!(funded_reboot.roots()?, roots);
+    check!(
         funded_reboot
             .economy()?
             .purchase_receipt_audit()
@@ -1444,20 +1444,20 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
             .is_none()
     );
     let funding_recovered = f.reboot(&funding_crash)?;
-    assert_eq!(funding_recovered.balances()?, f.balances()?);
-    assert_eq!(funding_recovered.roots()?, roots);
+    check_eq!(funding_recovered.balances()?, f.balances()?);
+    check_eq!(funding_recovered.roots()?, roots);
     let funded_money = f.balances()?;
-    assert!(
+    check!(
         f.prepare(&fund, BUYER, 1_000_011, json!({"quote":token(1_000_003)}))
             .is_err()
     );
-    assert!(
+    check!(
         f.prepare(&grant, GOD, 1_000_012, json!({"operation":operation}))
             .is_err(),
         "staff cannot grant another buyer's funded operation"
     );
-    assert_eq!(f.balances()?, funded_money);
-    assert_eq!(f.disk, funded.disk);
+    check_eq!(f.balances()?, funded_money);
+    check_eq!(f.disk, funded.disk);
 
     // The receipt may be durable before its RAM images are installed. Replay
     // reconstructs exactly that durable union without a live prepare callback.
@@ -1465,14 +1465,14 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     granted.engine.world.set_now(1017);
     eprintln!("M7_STORY phase=v1_grant event=begin");
     let prepared = granted.prepare(&grant, BUYER, 1_000_005, json!({"operation":operation}))?;
-    assert_eq!(granted.balances()?, f.balances()?);
-    assert!(
+    check_eq!(granted.balances()?, f.balances()?);
+    check!(
         granted
             .rows("roll", "roll_mind_personal_paid_licence")
             .is_empty()
     );
     let terminal_writes = granted.install(prepared)?;
-    assert_eq!(
+    check_eq!(
         granted.balances()?,
         vec![
             (Amount::from_minor(-10), Amount::ZERO),
@@ -1480,12 +1480,12 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
             (Amount::from_minor(900), Amount::ZERO)
         ]
     );
-    assert_eq!(
+    check_eq!(
         granted.roots()?,
         roots,
         "terminal republish retains the exact funded source roots"
     );
-    assert!(
+    check!(
         granted
             .disk
             .keys()
@@ -1496,33 +1496,33 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     let term: PaidTermRecord =
         serde_json::from_value(one(granted.rows("roll", "roll_mind_paid_term"))?)?;
     term.matches_current(&licence)?;
-    assert_eq!(licence.id().get(), 2);
-    assert_eq!(licence.holder(), BUYER);
-    assert_eq!(licence.charter().object(), shell);
-    assert_eq!(licence.operation(), operation);
-    assert_eq!(term.operation(), operation);
-    assert_eq!(term.window().issued_at().get(), 1017);
-    assert_eq!(term.window().eligibility_start().get(), 1017);
-    assert_eq!(term.window().term_end().get(), 1017 + TERM_SECONDS);
-    assert_eq!(
+    check_eq!(licence.id().get(), 2);
+    check_eq!(licence.holder(), BUYER);
+    check_eq!(licence.charter().object(), shell);
+    check_eq!(licence.operation(), operation);
+    check_eq!(term.operation(), operation);
+    check_eq!(term.window().issued_at().get(), 1017);
+    check_eq!(term.window().eligibility_start().get(), 1017);
+    check_eq!(term.window().term_end().get(), 1017 + TERM_SECONDS);
+    check_eq!(
         term.window().grace_end().get(),
         1017 + TERM_SECONDS + GRACE_SECONDS
     );
     let receipt = one(granted.rows("market", "market_mind_purchase_receipt"))?;
-    assert_eq!(receipt.get("outcome"), Some(&json!({"kind":"granted"})));
-    assert_eq!(receipt.get("commit"), Some(&json!(token(1_000_005))));
+    check_eq!(receipt.get("outcome"), Some(&json!({"kind":"granted"})));
+    check_eq!(receipt.get("commit"), Some(&json!(token(1_000_005))));
     let history = granted.economy()?.purchase_receipt_audit().get(operation)?;
     let terminal = history.terminal().ok_or("real paid terminal history")?;
-    assert!(terminal.granted());
-    assert_eq!(
+    check!(terminal.granted());
+    check_eq!(
         receipt.get("transaction"),
         Some(&json!(terminal.transaction()))
     );
-    assert_eq!(
+    check_eq!(
         receipt.get("journal_seq"),
         Some(&json!(terminal.journal_seq()))
     );
-    assert_eq!(
+    check_eq!(
         receipt.get("issued_at_ic"),
         Some(&json!(terminal.issued_at_ic()))
     );
@@ -1535,38 +1535,38 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     lost.engine.world.set_now(1017);
     let prepared = lost.prepare(&grant, BUYER, 1_000_005, json!({"operation":operation}))?;
     let (durable_writes, uninstalled) = prepared.into_parts();
-    assert_eq!(durable_writes, terminal_writes);
+    check_eq!(durable_writes, terminal_writes);
     let mut crash_before_install = funded.clone();
     crash_before_install.now = 1017;
     retain_writes(&mut crash_before_install.disk, &durable_writes)?;
-    assert_eq!(lost.balances()?, f.balances()?);
-    assert!(
+    check_eq!(lost.balances()?, f.balances()?);
+    check!(
         lost.rows("roll", "roll_mind_personal_paid_licence")
             .is_empty()
     );
     drop(uninstalled); // The acknowledged images never reached these RAM owners.
-    assert_eq!(crash_before_install.disk, committed.disk);
+    check_eq!(crash_before_install.disk, committed.disk);
     let recovered = granted.reboot(&crash_before_install)?;
-    assert_eq!(recovered.balances()?, granted.balances()?);
-    assert_eq!(recovered.roots()?, roots);
-    assert_eq!(
+    check_eq!(recovered.balances()?, granted.balances()?);
+    check_eq!(recovered.roots()?, roots);
+    check_eq!(
         recovered.rows("roll", "roll_mind_paid_term"),
         granted.rows("roll", "roll_mind_paid_term")
     );
     let money = granted.balances()?;
     let disk = granted.disk.clone();
-    assert!(
+    check!(
         granted
             .prepare(&grant, BUYER, 1_000_006, json!({"operation":operation}))
             .is_err()
     );
-    assert!(
+    check!(
         granted
             .prepare(&refund, GOD, 1_000_007, json!({"operation":operation}))
             .is_err()
     );
-    assert_eq!(granted.balances()?, money);
-    assert_eq!(granted.disk, disk);
+    check_eq!(granted.balances()?, money);
+    check_eq!(granted.disk, disk);
 
     // An existing funded escrow remains refundable after both the quote and
     // seller's owner term expire and after the buyer leaves the venue. It
@@ -1581,32 +1581,32 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         .world
         .create(ObjKind::Room, "Refund away", GOD, None)?;
     refunded.engine.world.move_to(BUYER, outside)?;
-    assert!(
+    check!(
         refunded
             .prepare(&grant, BUYER, 1_000_008, json!({"operation":operation}))
             .is_err()
     );
     refunded.perform(&refund, GOD, 1_000_009, json!({"operation":operation}))?;
-    assert_eq!(refunded.balances()?, before_money);
-    assert_eq!(refunded.roots()?, roots);
-    assert!(
+    check_eq!(refunded.balances()?, before_money);
+    check_eq!(refunded.roots()?, roots);
+    check!(
         refunded
             .rows("roll", "roll_mind_personal_paid_licence")
             .is_empty()
     );
-    assert!(refunded.rows("roll", "roll_mind_paid_term").is_empty());
-    assert!(
+    check!(refunded.rows("roll", "roll_mind_paid_term").is_empty());
+    check!(
         refunded
             .disk
             .keys()
             .all(|(_, k)| !k.starts_with("action-state/capacity/v1/"))
     );
     let refund_receipt = one(refunded.rows("market", "market_mind_purchase_receipt"))?;
-    assert_eq!(
+    check_eq!(
         refund_receipt.get("outcome"),
         Some(&json!({"kind":"refunded"}))
     );
-    assert_eq!(refund_receipt.get("issued_at_ic"), Some(&Value::Null));
+    check_eq!(refund_receipt.get("issued_at_ic"), Some(&Value::Null));
     paid_holdings::exercise(&granted, &funded, &committed, &refunded.snapshot())?;
     eprintln!("M7_STORY phase=paid_checkout event=begin");
     paid_checkout::exercise(&granted, &committed)?;
@@ -1617,9 +1617,9 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     paid_checkout::exercise_reconformance(&granted, &committed)?;
     eprintln!("M7_STORY phase=compatible_update event=complete");
     let refund_boot = refunded.reboot(&refunded.snapshot())?;
-    assert_eq!(refund_boot.balances()?, before_money);
-    assert_eq!(refund_boot.roots()?, roots);
-    assert!(
+    check_eq!(refund_boot.balances()?, before_money);
+    check_eq!(refund_boot.roots()?, roots);
+    check!(
         refunded
             .prepare(&refund, GOD, 1_000_010, json!({"operation":operation}))
             .is_err()
@@ -1636,8 +1636,8 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         ("roll", "roll_mind_paid_term"),
     ] {
         let mut corrupt = committed.clone();
-        assert_eq!(remove_family(&mut corrupt, owner, family), 1);
-        assert!(
+        check_eq!(remove_family(&mut corrupt, owner, family), 1);
+        check!(
             granted.reboot(&corrupt).is_err(),
             "missing {owner}:{family} was admitted"
         );
@@ -1647,8 +1647,8 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     roots_missing.disk.retain(|(owner, key), _| {
         !(owner == "roll" && key.starts_with("reference:roll:commercial:"))
     });
-    assert_eq!(before - roots_missing.disk.len(), roots.len());
-    assert!(
+    check_eq!(before - roots_missing.disk.len(), roots.len());
+    check!(
         granted.reboot(&roots_missing).is_err(),
         "all commercial roots absent was admitted"
     );
@@ -1668,11 +1668,11 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         "roll",
         "roll_mind_paid_term",
     ))?)?;
-    assert_eq!(
+    check_eq!(
         changed_term.window().term_end().get(),
         term.window().term_end().get() - 1
     );
-    assert!(
+    check!(
         granted.reboot(&term_changed).is_err(),
         "locally valid shortened paid term escaped frozen duration join"
     );

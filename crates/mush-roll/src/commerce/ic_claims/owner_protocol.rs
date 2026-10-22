@@ -121,13 +121,13 @@ mod close_data_tests {
                 json!({"kind":"recovered_to_base","base":7}),
             ),
         ] {
-            assert_eq!(serde_json::to_value(data)?, wire);
-            assert_eq!(serde_json::from_value::<IcCloseKind>(wire.clone())?, data);
+            check_eq!(serde_json::to_value(data)?, wire);
+            check_eq!(serde_json::from_value::<IcCloseKind>(wire.clone())?, data);
             let mut extra = wire;
             extra["authority"] = json!(true);
-            assert!(serde_json::from_value::<IcCloseKind>(extra).is_err());
+            check!(serde_json::from_value::<IcCloseKind>(extra).is_err());
         }
-        assert!(serde_json::from_value::<IcCloseKind>(json!({"kind":"expired"})).is_err());
+        check!(serde_json::from_value::<IcCloseKind>(json!({"kind":"expired"})).is_err());
         Ok(())
     }
 }

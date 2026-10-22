@@ -501,7 +501,7 @@ mod tests {
             .unwrap()
             .epochs
             .current(ObjId(4), Channel::Helm);
-        assert!(branch.command("STARTUP").is_err());
+        assert!(crate::test_checks::is_refusal(branch.command("STARTUP")));
         branch.possess(true).unwrap();
         let arena = branch.arena.as_mut().unwrap();
         assert_eq!(arena.unit(ObjId(4)).unwrap().controller, Controller::Pilot);
@@ -523,7 +523,7 @@ mod tests {
             Controller::Mind
         );
         assert!(!branch.possessed());
-        assert!(branch.command("HEADING 90").is_err());
+        assert!(crate::test_checks::is_refusal(branch.command("HEADING 90")));
     }
     #[test]
     fn station_parser_uses_only_own_carried_weapons_and_visible_contacts() {
@@ -552,7 +552,9 @@ mod tests {
             branch.command("HEADING 90").unwrap();
         }
         let hash = crate::arena::state_hash(branch.arena().unwrap());
-        assert!(branch.command("HEADING 180").is_err());
+        assert!(crate::test_checks::is_refusal(
+            branch.command("HEADING 180")
+        ));
         assert_eq!(branch.inputs.len(), INPUT_COUNT);
         assert_eq!(crate::arena::state_hash(branch.arena().unwrap()), hash);
     }

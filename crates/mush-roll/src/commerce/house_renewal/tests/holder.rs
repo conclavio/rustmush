@@ -42,8 +42,8 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     let b = birth()?;
     let old = draft(&b, 90, 20, RenewalAttemptV1::Automatic {})?;
     let old_wire = serde_json::to_value(&old.binding)?;
-    assert!(old_wire.get("holder_basis").is_none());
-    assert_eq!(
+    check!(old_wire.get("holder_basis").is_none());
+    check_eq!(
         serde_json::to_value(serde_json::from_value::<RenewalBindingV1>(
             old_wire.clone()
         )?)?,
@@ -51,7 +51,7 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     );
     let row = holder_draft(&b, 10, 40, 2, None)?;
     let wire = serde_json::to_value(&row.binding)?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<RenewalBindingV1>(wire.clone())?,
         row.binding
     );
@@ -61,23 +61,23 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     ] {
         let mut value = wire.clone();
         value["holder_basis"] = bad;
-        assert!(serde_json::from_value::<RenewalBindingV1>(value).is_err());
+        check!(serde_json::from_value::<RenewalBindingV1>(value).is_err());
     }
     let mut missing = wire.clone();
     missing
         .as_object_mut()
         .ok_or("binding")?
         .remove("holder_basis");
-    assert!(serde_json::from_value::<RenewalBindingV1>(missing).is_err());
+    check!(serde_json::from_value::<RenewalBindingV1>(missing).is_err());
     let mut old_null = old_wire.clone();
     old_null["holder_basis"] = serde_json::Value::Null;
-    assert!(serde_json::from_value::<RenewalBindingV1>(old_null).is_err());
+    check!(serde_json::from_value::<RenewalBindingV1>(old_null).is_err());
     let mut old_extra = old_wire;
     old_extra["holder_basis"] = serde_json::to_value(basis(2))?;
-    assert!(serde_json::from_value::<RenewalBindingV1>(old_extra).is_err());
+    check!(serde_json::from_value::<RenewalBindingV1>(old_extra).is_err());
     let mut crossed = row;
     crossed.attempt = RenewalAttemptV1::HolderAutomatic { basis: basis(3) };
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     Ok(())
 }
 
@@ -108,9 +108,9 @@ fn granted_holder_cases() -> TestResult<Box<GrantedHolderCases>> {
     )?;
     let grant = terminal(&funded(&retry)?, true)?;
     let next = granted_birth(&grant)?;
-    assert_eq!(next.licence.ownership(), pointer.ownership());
-    assert_eq!(next.licence.holder(), pointer.holder());
-    assert_eq!(next.licence.operation(), b.licence.operation());
+    check_eq!(next.licence.ownership(), pointer.ownership());
+    check_eq!(next.licence.holder(), pointer.holder());
+    check_eq!(next.licence.operation(), b.licence.operation());
     let terms = BTreeMap::from([
         (b.term.generation(), &b.term),
         (next.term.generation(), &next.term),
@@ -161,7 +161,7 @@ fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> 
             previous_operation: old.operation,
         },
     )?;
-    assert!(
+    check!(
         chain::check_draft(
             &pointer,
             &seller_retry,
@@ -170,7 +170,7 @@ fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> 
         )
         .is_err()
     );
-    assert!(
+    check!(
         chain::check_draft(
             &pointer,
             &automatic,
@@ -180,7 +180,7 @@ fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> 
         .is_err()
     );
     let bad_retry = holder_draft(&b, 12, 60, 2, Some(old.operation))?;
-    assert!(
+    check!(
         chain::check_draft(
             &pointer,
             &bad_retry,
@@ -198,7 +198,7 @@ fn repeated_transfer_gets_new_automatic_but_cannot_replace_pending_renewal() -> 
     let first = holder_draft(&b, 90, 20, 2, None)?;
     let second = holder_draft(&b, 10, 40, 3, None)?;
     let pointer = second.binding.accepted_pointer(b.licence.term())?;
-    assert!(
+    check!(
         chain::check_draft(
             &pointer,
             &second,
@@ -224,7 +224,7 @@ fn repeated_transfer_gets_new_automatic_but_cannot_replace_pending_renewal() -> 
         &terms,
         &economics,
     )?;
-    assert!(
+    check!(
         chain::verify(
             &pointer,
             HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,

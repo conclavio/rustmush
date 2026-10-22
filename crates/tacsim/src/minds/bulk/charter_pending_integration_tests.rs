@@ -91,7 +91,7 @@ fn prepare(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, action);
+    check_eq!(actual, action);
     let invocation = resolved.invocation().clone();
     let (p, output) = w
         .engine
@@ -242,7 +242,7 @@ fn fund(w: &mut IcWorld, serial: u128) -> TestResult<(WalletId, WalletId)> {
     let charter = charter(w)?;
     let (seller, payout, payer) =
         charter_transfer_fixture::consideration(&w.engine, charter, BUYER)?;
-    assert_eq!(seller, GOD);
+    check_eq!(seller, GOD);
     let before = w.snapshot();
     let p = prepare(
         w,
@@ -253,51 +253,61 @@ fn fund(w: &mut IcWorld, serial: u128) -> TestResult<(WalletId, WalletId)> {
         charter_transfer_fixture::offer_params(charter, BUYER, payout.id),
         None,
     )?;
-    assert!(w.disk == before.disk, "offer preparation published");
+    check!(w.disk == before.disk, "offer preparation published");
     land(w, p)?;
     let params = json!({"offer":token(serial),"payer":payer.id.0.to_string()});
-    assert!(prepare(w, FUND, 1, GOD, serial + 1, params.clone(), None).is_err());
+    check!(crate::test_checks::refused(prepare(
+        w,
+        FUND,
+        1,
+        GOD,
+        serial + 1,
+        params.clone(),
+        None
+    ))?);
     let money = balance(w, payer.id)?;
     let p = prepare(w, FUND, 1, BUYER, serial + 1, params, None)?;
-    assert_eq!(balance(w, payer.id)?, money);
-    assert_eq!(title(w)?, EconomicOwner::Object(GOD));
+    check_eq!(balance(w, payer.id)?, money);
+    check_eq!(title(w)?, EconomicOwner::Object(GOD));
     stage(w, p)?;
-    assert_eq!(balance(w, payer.id)?, money);
+    check_eq!(balance(w, payer.id)?, money);
     take_install(w)?;
     let native = history(w, serial + 1)?;
-    assert!(native.terminal().is_none());
-    assert_eq!(balance(w, payer.id)?.0, money.0);
-    assert_eq!(
+    check!(native.terminal().is_none());
+    check_eq!(balance(w, payer.id)?.0, money.0);
+    check_eq!(
         balance(w, payer.id)?.1,
         money.1.checked_add(Amount::from_minor(1)).ok_or("held")?
     );
-    assert_eq!(title(w)?, EconomicOwner::Object(GOD));
+    check_eq!(title(w)?, EconomicOwner::Object(GOD));
     // Staff and ordinary callers cannot turn a terminal action into service authority.
-    assert!(prepare(w, REFUND, 1, GOD, serial + 2, json!({}), None).is_err());
-    assert!(
-        prepare(
-            w,
-            FUND,
-            1,
-            BUYER,
-            serial + 2,
-            json!({"offer":token(serial),"payer":payer.id.0.to_string()}),
-            None
-        )
-        .is_err()
-    );
-    assert!(
-        prepare(
-            w,
-            OFFER,
-            2,
-            GOD,
-            serial + 2,
-            charter_transfer_fixture::offer_params(charter, BUYER, payout.id),
-            None
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        w,
+        REFUND,
+        1,
+        GOD,
+        serial + 2,
+        json!({}),
+        None
+    ))?);
+    check!(crate::test_checks::refused(prepare(
+        w,
+        FUND,
+        1,
+        BUYER,
+        serial + 2,
+        json!({"offer":token(serial),"payer":payer.id.0.to_string()}),
+        None
+    ))?);
+    check!(crate::test_checks::refused(prepare(
+        w,
+        OFFER,
+        2,
+        GOD,
+        serial + 2,
+        charter_transfer_fixture::offer_params(charter, BUYER, payout.id),
+        None
+    ))?);
     Ok((payout.id, payer.id))
 }
 fn pulse(w: &mut IcWorld) -> TestResult {
@@ -322,9 +332,9 @@ fn next(w: &mut IcWorld, id: &str) -> TestResult<(Box<AuthoritativeSubmit>, Arc<
         value = w.engine.take_observed_authoritative_submit();
     }
     let (request, proof) = value.ok_or("actual pending service selector")?.into_parts();
-    assert_eq!(request.actor, GOD);
-    assert_eq!(request.action.key().id.as_str(), id);
-    assert_eq!(request.parameters, json!({}));
+    check_eq!(request.actor, GOD);
+    check_eq!(request.action.key().id.as_str(), id);
+    check_eq!(request.parameters, json!({}));
     let proof = *proof
         .ok_or("actual observation")?
         .downcast::<Arc<AtomicBool>>()
@@ -363,7 +373,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable
     Ok(())
 }
 fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestResult {
-    assert!(
+    check!(
         exact(template, OFFER, 2).is_err(),
         "default exposed pending offers"
     );
@@ -384,9 +394,9 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
     for _ in 0..3 {
         pulse(&mut w)?;
     }
-    assert!(rows(&w.disk, "roll", PENDING).is_empty());
-    assert_eq!(balance(&w, payer.id)?, money);
-    assert!(
+    check!(rows(&w.disk, "roll", PENDING).is_empty());
+    check_eq!(balance(&w, payer.id)?, money);
+    check!(
         w.engine.take_observed_authoritative_submit().is_none(),
         "seller offer automatically accepted"
     );
@@ -400,14 +410,21 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
         None,
     )?;
     land(&mut w, funded)?;
-    assert!(
-        IcWorld::boot(f, &w.snapshot(), w.base, w.field, w.hulls, true).is_err(),
+    check!(
+        crate::test_checks::refused(IcWorld::boot(
+            f,
+            &w.snapshot(),
+            w.base,
+            w.field,
+            w.hulls,
+            true
+        ))?,
         "disabled composition accepted retained pending escrow"
     );
     let (request, _) = next(&mut w, SETTLE)?;
     let settled = terminal(&mut w, &request, START + 502)?;
     land(&mut w, settled)?;
-    assert_eq!(title(&w)?, EconomicOwner::Object(BUYER));
+    check_eq!(title(&w)?, EconomicOwner::Object(BUYER));
     w.reboot(f, &w.snapshot())?;
 
     // A real owned claim closing races Fund. Core admits one pending commit,
@@ -441,8 +458,16 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
                 .take_staged_action()?
                 .ok_or("actual close custody")?
                 .into_parts();
-            assert!(
-                prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params, None).is_err(),
+            check!(
+                crate::test_checks::refused(prepare(
+                    &mut w,
+                    FUND,
+                    1,
+                    BUYER,
+                    START + 512,
+                    fund_params,
+                    None
+                ))?,
                 "Fund prepared under a staged claim close"
             );
             // This is an actual prepared four-owner close image, not a patched
@@ -451,14 +476,14 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
             w.engine.install_composed_action(installation)?;
         } else {
             let p = prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params, None)?;
-            assert!(
-                close(&mut w, START + 510, START + 513).is_err(),
+            check!(
+                crate::test_checks::refused(close(&mut w, START + 510, START + 513))?,
                 "claim close landed under a prepared Fund"
             );
             drop(p);
         }
-        assert!(rows(&w.disk, "roll", PENDING).is_empty());
-        assert_eq!(balance(&w, payer.id)?.1, Amount::from_minor(0));
+        check!(rows(&w.disk, "roll", PENDING).is_empty());
+        check_eq!(balance(&w, payer.id)?.1, Amount::from_minor(0));
     }
     Ok(())
 }
@@ -471,31 +496,33 @@ fn claims_and_unknown(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable)
     let accepted = w.snapshot();
     let mut cold = w.reboot(f, &accepted)?;
     cold.engine.set_submission_runtime(Arc::new(Runtime))?;
-    assert!(cold.held(cold.hulls[0])?);
-    assert!(cold.host.resume(&cold.engine.world, token(START)).is_ok());
+    check!(cold.held(cold.hulls[0])?);
+    check!(cold.host.resume(&cold.engine.world, token(START)).is_ok());
     // A new owner sortie on a second correctly titled hull is refused by pending state.
     cold.command(&format!("@asset/transfer #{}=#{}", cold.hulls[1].0, GOD.0))?;
     let forbidden = cold.ticket(GOD, cold.hulls[1], 1)?;
-    assert!(cold.prepare(&forbidden, START + 12).is_err());
+    check!(crate::test_checks::refused(
+        cold.prepare(&forbidden, START + 12)
+    )?);
     for _ in 0..3 {
         pulse(&mut cold)?;
     }
-    assert!(cold.engine.take_observed_authoritative_submit().is_none());
+    check!(cold.engine.take_observed_authoritative_submit().is_none());
     close(&mut cold, START, START + 13)?;
     let (request, proof) = next(&mut cold, SETTLE)?;
     for _ in 0..3 {
         pulse(&mut cold)?;
     }
-    assert!(
+    check!(
         cold.engine.take_observed_authoritative_submit().is_none(),
         "Unknown replaced the exact intent"
     );
     proof.store(true, Ordering::Release); // consumer observation fixture, not server proof
     let (retry, _) = next(&mut cold, SETTLE)?;
-    assert_eq!(request.key, retry.key);
+    check_eq!(request.key, retry.key);
     let prepared = terminal(&mut cold, &retry, START + 14)?;
     let disk = cold.disk.clone();
-    assert_eq!(title(&cold)?, EconomicOwner::Object(GOD));
+    check_eq!(title(&cold)?, EconomicOwner::Object(GOD));
     stage(&mut cold, prepared)?;
     let taken = cold
         .engine
@@ -505,20 +532,20 @@ fn claims_and_unknown(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable)
     let mut crash = cold.snapshot();
     retain_writes(&mut crash.disk, bundle.writes())?;
     let recovered = cold.reboot(f, &crash)?;
-    assert_eq!(title(&recovered)?, EconomicOwner::Object(BUYER));
-    assert!(cold.disk == disk, "pre-install mutated persistence fixture");
+    check_eq!(title(&recovered)?, EconomicOwner::Object(BUYER));
+    check!(cold.disk == disk, "pre-install mutated persistence fixture");
     retain_writes(&mut cold.disk, bundle.writes())?;
     cold.engine.install_composed_action(installation)?;
-    assert_eq!(title(&cold)?, EconomicOwner::Object(BUYER));
-    assert_eq!(
+    check_eq!(title(&cold)?, EconomicOwner::Object(BUYER));
+    check_eq!(
         balance(&cold, payer)?.0,
         before
             .0
             .checked_sub(Amount::from_minor(1))
             .ok_or("payment")?
     );
-    assert_eq!(balance(&cold, payer)?.1, before.1);
-    assert!(
+    check_eq!(balance(&cold, payer)?.1, before.1);
+    check!(
         paid_rows(&cold) == paid,
         "charter transfer rewrote paid entitlement"
     );
@@ -537,8 +564,8 @@ fn claims_and_unknown(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable)
             .map(|(k, _)| k.clone())
             .ok_or("actual paired row")?;
         image.disk.remove(&key);
-        assert!(
-            cold.reboot(f, &image).is_err(),
+        check!(
+            crate::test_checks::refused(cold.reboot(f, &image))?,
             "cold pending history lost a paired row"
         );
     }
@@ -554,11 +581,11 @@ fn deadline(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRe
     let (request, _) = next(&mut w, SETTLE)?;
     let p = terminal(&mut w, &request, START + 114)?;
     land(&mut w, p)?;
-    assert_eq!(title(&w)?, EconomicOwner::Object(BUYER));
-    assert!(w.held(w.hulls[0])?);
-    assert!(w.host.resume(&w.engine.world, token(START + 100)).is_ok());
+    check_eq!(title(&w)?, EconomicOwner::Object(BUYER));
+    check!(w.held(w.hulls[0])?);
+    check!(w.host.resume(&w.engine.world, token(START + 100)).is_ok());
     let mut cold = w.reboot(f, &w.snapshot())?;
-    assert!(
+    check!(
         cold.host
             .resume(&cold.engine.world, token(START + 100))
             .is_ok()
@@ -570,7 +597,7 @@ fn deadline(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRe
         .into_iter()
         .find(|v| v.pointer("/open/operation") == Some(&json!(token(START + 116))))
         .ok_or("new owner claim")?;
-    assert_eq!(
+    check_eq!(
         actual.pointer("/open/charter_ownership/generation"),
         Some(&json!(2))
     );
@@ -598,12 +625,12 @@ fn refunds(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRes
         let (request, _) = next(&mut w, REFUND)?;
         let p = terminal(&mut w, &request, serial + 14)?;
         land(&mut w, p)?;
-        assert_eq!(title(&w)?, EconomicOwner::Object(GOD));
-        assert_eq!(balance(&w, payer)?, money);
-        assert!(w.held(w.hulls[0])?);
+        check_eq!(title(&w)?, EconomicOwner::Object(GOD));
+        check_eq!(balance(&w, payer)?, money);
+        check!(w.held(w.hulls[0])?);
         let image = w.snapshot();
         let cold = w.reboot(f, &image)?;
-        assert!(history(&cold, serial + 11)?.terminal().is_some());
+        check!(history(&cold, serial + 11)?.terminal().is_some());
         if !clock {
             w.engine
                 .world
@@ -612,8 +639,8 @@ fn refunds(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRes
                 .flags
                 .remove(mush_core::Flags::GOING);
             let _ = w.engine.world.take_dirty();
-            assert!(
-                prepare(
+            check!(
+                crate::test_checks::refused(prepare(
                     &mut w,
                     FUND,
                     1,
@@ -621,8 +648,7 @@ fn refunds(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRes
                     serial + 15,
                     json!({"offer":token(serial+10),"payer":payer.0.to_string()}),
                     None
-                )
-                .is_err(),
+                ))?,
                 "refunded offer was reused"
             );
             fund(&mut w, serial + 20)?; // explicit fresh offer and named buyer, never automatic acceptance
@@ -678,29 +704,29 @@ fn compound(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRe
         json!({"licence":"1"}),
         None,
     )?;
-    assert!(rows(&w.disk, "roll", CAUSE).is_empty());
-    assert!(history(&w, START + 411)?.terminal().is_none());
+    check!(rows(&w.disk, "roll", CAUSE).is_empty());
+    check!(history(&w, START + 411)?.terminal().is_none());
     stage(&mut w, p)?;
     take_install(&mut w)?;
-    assert_eq!(rows(&w.disk, "roll", CAUSE).len(), 1);
-    assert_eq!(rows(&w.disk, "roll", SANCTION).len(), 1);
+    check_eq!(rows(&w.disk, "roll", CAUSE).len(), 1);
+    check_eq!(rows(&w.disk, "roll", SANCTION).len(), 1);
     let h = history(&w, START + 411)?;
-    assert_eq!(
+    check_eq!(
         h.terminal().ok_or("real refund")?.decision().operation,
         token(START + 414)
     );
-    assert_eq!(balance(&w, payer)?, money);
-    assert_eq!(title(&w)?, EconomicOwner::Object(GOD));
-    assert!(w.held(w.hulls[0])?);
-    assert!(w.host.resume(&w.engine.world, token(START + 400)).is_ok());
+    check_eq!(balance(&w, payer)?, money);
+    check_eq!(title(&w)?, EconomicOwner::Object(GOD));
+    check!(w.held(w.hulls[0])?);
+    check!(w.host.resume(&w.engine.world, token(START + 400)).is_ok());
     let cold = w.reboot(f, &w.snapshot())?;
-    assert!(history(&cold, START + 411)?.terminal().is_some());
+    check!(history(&cold, START + 411)?.terminal().is_some());
     let mut corrupt = w.snapshot();
     corrupt
         .disk
         .retain(|_, v| v.pointer("/family/id") != Some(&json!(SANCTION)));
-    assert!(
-        w.reboot(f, &corrupt).is_err(),
+    check!(
+        crate::test_checks::refused(w.reboot(f, &corrupt))?,
         "refund lost its actual Registry sanction"
     );
     // The same compound preparation cannot cross a real authorization revocation.
@@ -717,14 +743,14 @@ fn compound(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) -> TestRe
         )?;
         if phase == 0 {
             branch.command("@org/status PendingRegistry=suspended")?;
-            assert!(stage(&mut branch, p).is_err());
+            check!(stage(&mut branch, p).is_err());
         } else {
             stage(&mut branch, p)?;
             branch.command("@org/status PendingRegistry=suspended")?;
-            assert!(branch.engine.take_staged_action().is_err());
+            check!(branch.engine.take_staged_action().is_err());
         }
-        assert!(history(&branch, START + 411)?.terminal().is_none());
-        assert!(rows(&branch.disk, "roll", CAUSE).is_empty());
+        check!(history(&branch, START + 411)?.terminal().is_none());
+        check!(rows(&branch.disk, "roll", CAUSE).is_empty());
     }
     Ok(())
 }

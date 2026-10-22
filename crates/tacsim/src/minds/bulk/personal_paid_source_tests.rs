@@ -39,7 +39,7 @@ fn assert_source(events: &Events, conn: u64, permitted: bool) -> TestResult {
         } = event
         {
             answers += 1;
-            assert_eq!(*audience, Audience::Conn(conn));
+            check_eq!(*audience, Audience::Conn(conn));
             match response {
                 MindResponse::FiledSource {
                     licence,
@@ -47,26 +47,26 @@ fn assert_source(events: &Events, conn: u64, permitted: bool) -> TestResult {
                     first,
                     lines,
                 } => {
-                    assert!(permitted, "source escaped a refused current read");
-                    assert_eq!(licence, "2");
-                    assert_eq!(*first, 1);
-                    assert_eq!(lines, &expected);
-                    assert_eq!(source_sha256, &mush_roll::source_digest(SOURCE).to_hex());
+                    check!(permitted, "source escaped a refused current read");
+                    check_eq!(licence, "2");
+                    check_eq!(*first, 1);
+                    check_eq!(lines, &expected);
+                    check_eq!(source_sha256, &mush_roll::source_digest(SOURCE).to_hex());
                 }
-                MindResponse::Error { .. } => assert!(!permitted, "lawful source read refused"),
+                MindResponse::Error { .. } => check!(!permitted, "lawful source read refused"),
                 _ => return Err("unexpected source response".into()),
             }
         }
         if serde_json::to_string(event)?.contains("this.landed") {
-            assert!(permitted);
-            assert_eq!(
+            check!(permitted);
+            check_eq!(
                 *audience,
                 Audience::Conn(conn),
                 "source is never actor/resume/broadcast output"
             );
         }
     }
-    assert_eq!(answers, 1);
+    check_eq!(answers, 1);
     Ok(())
 }
 async fn exercise_async(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResult {
@@ -141,7 +141,7 @@ async fn exercise_async(f: &PurchaseFixture, saved: &Durable, permitted: bool) -
             Ok(())
         })?;
         assert!(
-            PlayerWorld::boot(f, &changed).is_err(),
+            crate::test_checks::refused(PlayerWorld::boot(f, &changed))?,
             "a status field alone cannot supply a missing cause receipt"
         );
     }

@@ -111,36 +111,36 @@ fn boundary(protocol: HouseProtocol) -> TestResult {
     let birth = row(width, 1, protocol)?;
     // The real old body codec accepts this row. That does not prove future
     // complete-envelope capacity, and admission must reject it now.
-    assert_eq!(
+    check_eq!(
         HouseTermEconomicsV1::decode(&serde_json::to_vec(&birth)?)?,
         birth
     );
-    assert_eq!(
+    check_eq!(
         canonical_json_bytes_with_limit(&document(&handle, &birth), 8192)?.len(),
         8192
     );
-    assert!(check(&handle, &birth).is_err());
+    check!(check(&handle, &birth).is_err());
     let mut txn = engine.action_transaction(&handle)?;
     txn.insert(&handle, &birth.key(), birth.clone())?;
     // Insertion uses the real registered complete-envelope encoder. Publishing
     // this isolated economics row is deliberately not paid authority.
-    assert!(matches!(
+    check!(matches!(
         txn.prepare(),
         Err(ActionStateError::TerminalCapacity(
             "house writes require registered protocol"
         ))
     ));
     let future = row(width, u64::MAX, protocol)?;
-    assert_eq!(future.key().len(), birth.key().len());
+    check_eq!(future.key().len(), birth.key().len());
     let mut txn = engine.action_transaction(&handle)?;
-    assert!(txn.insert(&handle, &future.key(), future).is_err());
+    check!(txn.insert(&handle, &future.key(), future).is_err());
     drop(txn);
     let safe_width = width.checked_sub(19).ok_or("digit reserve")?;
     let safe = row(safe_width, 1, protocol)?;
     check(&handle, &safe)?;
     for generation in [1, 9, 10, u64::MAX] {
         let future = row(safe_width, generation, protocol)?;
-        assert!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
+        check!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
         let mut independent = registered(&shared)?;
         let independent_handle = shared
             .lock()
@@ -151,7 +151,7 @@ fn boundary(protocol: HouseProtocol) -> TestResult {
         txn.insert(&independent_handle, &future.key(), future)?;
         // Capacity acceptance is tested at the actual typed insertion boundary;
         // the paid protocol must still refuse an isolated protected row.
-        assert!(matches!(
+        check!(matches!(
             txn.prepare(),
             Err(ActionStateError::TerminalCapacity(
                 "house writes require registered protocol"

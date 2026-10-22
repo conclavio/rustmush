@@ -42,7 +42,7 @@ fn refuses(config: CommerceConfig, definition: DefinitionDescriptor) -> Result<(
     let refusal = result
         .err()
         .ok_or_else(|| ModError::msg("tampered definition admitted"))?;
-    assert!(
+    check!(
         refusal
             .to_string()
             .contains("definition differs from the closed owner configuration"),
@@ -194,7 +194,7 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
     let config = config(CommerceMode::Active)?;
     let registry = RegistryDefinitions::new(config.manifest.clone())?;
     let definitions: Vec<_> = registry.definitions().collect();
-    assert_eq!(
+    check_eq!(
         definitions
             .iter()
             .filter(|d| d.kind().as_str() == "action")
@@ -203,7 +203,7 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
     );
     // The production descriptors put the manifest first; core sorts the four
     // dependencies before exposing them to this exact semantic validator.
-    assert!(definitions.iter().any(|d| {
+    check!(definitions.iter().any(|d| {
         let mut sorted = d.references().to_vec();
         sorted.sort();
         sorted != d.references()
@@ -231,7 +231,7 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
         if expected.kind().as_str() != "action" {
             continue;
         }
-        assert_eq!(expected.references().len(), 4);
+        check_eq!(expected.references().len(), 4);
         for omitted in expected.references() {
             let mut changed = definitions.clone();
             let replacement = expected.clone().with_references(
@@ -249,7 +249,7 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
             let refusal = result
                 .err()
                 .ok_or_else(|| ModError::msg("missing Registry dependency admitted"))?;
-            assert!(
+            check!(
                 refusal
                     .to_string()
                     .contains("definition differs from the closed owner configuration")
@@ -269,7 +269,7 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
         let refusal = freeze_registry_declarations(config.clone(), registry.clone(), changed)
             .err()
             .ok_or_else(|| ModError::msg("crossed Registry dependency admitted"))?;
-        assert!(
+        check!(
             refusal
                 .to_string()
                 .contains("definition differs from the closed owner configuration")
@@ -282,18 +282,18 @@ fn every_registry_action_accepts_only_its_exact_canonical_reference_set() -> Res
 fn house_filing_opt_in_preserves_personal_identity_and_refuses_unconfigured_schema()
 -> Result<(), ModError> {
     let personal = config(CommerceMode::Active)?;
-    assert!(personal.house_filing_action().is_err());
-    assert!(
+    check!(personal.house_filing_action().is_err());
+    check!(
         config(CommerceMode::Initialize)?
             .with_house_filings()
             .is_err()
     );
     let house = personal.clone().with_house_filings()?;
-    assert_eq!(
+    check_eq!(
         house.initial_filing_action()?,
         personal.initial_filing_action()?
     );
-    assert!(house.clone().with_house_filings().is_err());
+    check!(house.clone().with_house_filings().is_err());
     refuses(personal, house.house_action_descriptor()?)?;
     let expected = house.house_action_descriptor()?;
     refuses(

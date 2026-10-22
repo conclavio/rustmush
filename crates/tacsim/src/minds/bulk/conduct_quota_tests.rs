@@ -79,30 +79,30 @@ fn settle(store: &mut BulkStore, lease: Lease, elapsed: u64, ending: ConductEndi
 #[test]
 fn conduct_admission_is_distinct_and_reserves_the_actual_complete_owner_document() -> TestResult {
     let (store, id, actor) = store()?;
-    assert!(store.prepare_admit(id, actor, 1, plan()?, 0).is_err());
-    assert!(
+    check!(store.prepare_admit(id, actor, 1, plan()?, 0).is_err());
+    check!(
         store
             .prepare_registry_admit(id, actor, 1, plan()?, CommitToken::from_bytes([1; 16]), 0)
             .is_err()
     );
     let (run, change) =
         store.prepare_conduct_admit(id, actor, 1, plan()?, CommitToken::from_bytes([2; 16]), 0)?;
-    assert!(change.changes_conduct());
-    assert!(!change.changes_registry());
-    assert!(
+    check!(change.changes_conduct());
+    check!(!change.changes_registry());
+    check!(
         store
             .check_registry(&change, CommitToken::from_bytes([2; 16]))
             .is_err()
     );
-    assert_eq!(change.resulting_run(run).ok_or("run")?.registry_job, None);
+    check_eq!(change.resulting_run(run).ok_or("run")?.registry_job, None);
     let ceiling = change
         .account
         .registry_document_ceiling()?
         .ok_or("ceiling")?;
-    assert!(change.bytes().len() < ceiling && ceiling <= MAX_ACCOUNT_DOCUMENT);
+    check!(change.bytes().len() < ceiling && ceiling <= MAX_ACCOUNT_DOCUMENT);
     let row = change.resulting_run(run).ok_or("run")?;
-    assert_eq!(row.charge()?, (3, 250, 120250));
-    assert_eq!(row.plan.maximum_unit_ms(), 120250 * (2 * 3 + 58 * 4));
+    check_eq!(row.charge()?, (3, 250, 120250));
+    check_eq!(row.plan.maximum_unit_ms(), 120250 * (2 * 3 + 58 * 4));
     Ok(())
 }
 #[test]
@@ -113,7 +113,7 @@ fn actual_quota_yields_at_both_repetitions_then_charges_the_new_roster() -> Test
         for step in 0..60 {
             let change = store.prepare_grant(id, run, 0, 2000)?;
             let lease = apply(&mut store, change)?.ok_or("lease")?;
-            assert_eq!(lease.units(), 3);
+            check_eq!(lease.units(), 3);
             settle(
                 &mut store,
                 lease,
@@ -125,7 +125,7 @@ fn actual_quota_yields_at_both_repetitions_then_charges_the_new_roster() -> Test
                 },
             )?;
         }
-        assert_eq!(
+        check_eq!(
             store.account_run(id, run)?.conduct,
             Some(ConductCursor {
                 index: trial + 1,
@@ -133,11 +133,11 @@ fn actual_quota_yields_at_both_repetitions_then_charges_the_new_roster() -> Test
             })
         );
     }
-    assert_eq!(store.account_run(id, run)?.charged_unit_ms, 720000);
+    check_eq!(store.account_run(id, run)?.charged_unit_ms, 720000);
     let change = store.prepare_grant(id, run, 0, 2000)?;
     let lease = apply(&mut store, change)?.ok_or("new rate")?;
-    assert_eq!((lease.units(), lease.allowance), (4, 8000));
-    assert_eq!(store.account_run(id, run)?.charged_unit_ms, 728000);
+    check_eq!((lease.units(), lease.allowance), (4, 8000));
+    check_eq!(store.account_run(id, run)?.charged_unit_ms, 728000);
     Ok(())
 }
 #[test]
@@ -161,7 +161,7 @@ fn skipped_case_partial_completion_and_unknown_refunds_do_not_mutate_the_owner()
         result: None,
         terminal: None,
     };
-    assert!(store.prepare_finish(receipt.clone(), 1).is_err());
+    check!(store.prepare_finish(receipt.clone(), 1).is_err());
     receipt.conduct = Some(ConductProgress {
         cursor: ConductCursor {
             index: 0,
@@ -174,18 +174,18 @@ fn skipped_case_partial_completion_and_unknown_refunds_do_not_mutate_the_owner()
         bytes: 1,
     });
     receipt.terminal = Some(Status::Complete);
-    assert!(store.prepare_finish(receipt.clone(), 1).is_err());
+    check!(store.prepare_finish(receipt.clone(), 1).is_err());
     receipt.conduct = None;
     receipt.result = None;
     receipt.terminal = Some(Status::Failed);
-    assert!(store.prepare_finish(receipt.clone(), 1).is_err());
-    assert_eq!(store.account(id)?, &before);
+    check!(store.prepare_finish(receipt.clone(), 1).is_err());
+    check_eq!(store.account(id)?, &before);
     receipt.actual_unit_ms = lease.allowance;
     let change = store.prepare_finish(receipt, 1)?;
     apply(&mut store, change)?;
     let row = store.account_run(id, run)?;
-    assert_eq!((row.status, row.charged_unit_ms), (Status::Failed, 6000));
-    assert!(row.result.is_none());
+    check_eq!((row.status, row.charged_unit_ms), (Status::Failed, 6000));
+    check!(row.result.is_none());
     Ok(())
 }
 #[test]
@@ -195,12 +195,12 @@ fn quota_day_handoff_and_stale_capsules_keep_exact_paid_flight() -> TestResult {
     let change = store.prepare_grant(id, run, 0, 2000)?;
     let stale = store.prepare_cancel(id, actor, run, 0)?;
     let lease = apply(&mut store, change)?.ok_or("lease")?;
-    assert!(
+    check!(
         store
             .check_conduct(&stale, CommitToken::from_bytes([9; 16]))
             .is_err()
     );
-    assert!(store.prepare_grant(id, run, DAY_MS, 2000).is_err());
+    check!(store.prepare_grant(id, run, DAY_MS, 2000).is_err());
     let receipt = Receipt {
         registry: None,
         conduct: lease.unchanged_conduct(),
@@ -211,10 +211,10 @@ fn quota_day_handoff_and_stale_capsules_keep_exact_paid_flight() -> TestResult {
     };
     let change = store.prepare_finish(receipt, DAY_MS)?;
     apply(&mut store, change)?;
-    assert_eq!(store.account(id)?.spent_unit_ms, 0);
+    check_eq!(store.account(id)?.spent_unit_ms, 0);
     let change = store.prepare_grant(id, run, DAY_MS, 2000)?;
     let lease = apply(&mut store, change)?.ok_or("new day")?;
-    assert_eq!(lease.utc_day(), 1);
+    check_eq!(lease.utc_day(), 1);
     Ok(())
 }
 #[test]
@@ -223,17 +223,17 @@ fn completed_or_interrupted_conduct_history_cannot_be_trimmed_or_forgotten() -> 
     let run = admit(&mut store, id, actor)?;
     let change = store.prepare_cancel(id, actor, run, 1)?;
     apply(&mut store, change)?;
-    assert!(store.prepare_forget(id, actor, run).is_err());
+    check!(store.prepare_forget(id, actor, run).is_err());
     let legacy = store.prepare_legacy_recover(id, 2)?;
-    assert!(!legacy.changes_conduct());
-    assert_eq!(legacy.resulting_run(run), Some(store.account_run(id, run)?));
+    check!(!legacy.changes_conduct());
+    check_eq!(legacy.resulting_run(run), Some(store.account_run(id, run)?));
     store.cfg.completed_per_character = 1;
-    assert!(
+    check!(
         store
             .prepare_conduct_admit(id, actor, 2, plan()?, CommitToken::from_bytes([8; 16]), 2)
             .is_err()
     );
-    assert!(store.account_run(id, run).is_ok());
+    check!(store.account_run(id, run).is_ok());
     Ok(())
 }
 #[test]
@@ -267,14 +267,14 @@ fn actual_cold_quota_rejects_missing_identity_partial_complete_and_mismatched_pr
             }
         }
         let mut cold = BulkStore::new(BulkConfig::default())?;
-        assert_eq!(
+        check_eq!(
             cold.load(id, &serde_json::to_vec(&wire)?),
             Err(BulkError::Quarantined)
         );
     }
     let mut cold = BulkStore::new(BulkConfig::default())?;
     cold.load(id, &serde_json::to_vec(&actual)?)?;
-    assert_eq!(cold.account_run(id, run)?, store.account_run(id, run)?);
+    check_eq!(cold.account_run(id, run)?, store.account_run(id, run)?);
     Ok(())
 }
 #[test]
@@ -290,12 +290,12 @@ fn old_plan_bytes_omit_every_conduct_field() -> TestResult {
     p.native_substep_ms = 250;
     p.validate()?;
     let actual = serde_json::to_value(&p)?;
-    assert!(actual.get("conduct").is_none());
+    check!(actual.get("conduct").is_none());
     let decoded: Plan = serde_json::from_value(actual.clone())?;
-    assert_eq!(serde_json::to_value(decoded)?, actual);
+    check_eq!(serde_json::to_value(decoded)?, actual);
     let (store, id, actor) = store()?;
     let (_, change) = store.prepare_admit(id, actor, 1, p, 0)?;
     let text = std::str::from_utf8(change.bytes())?;
-    assert!(!text.contains("conduct"));
+    check!(!text.contains("conduct"));
     Ok(())
 }

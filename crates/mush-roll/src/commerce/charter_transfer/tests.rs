@@ -94,17 +94,17 @@ fn exact_offer_transfer_and_head_are_closed_and_generation_bounded() -> TestResu
         serde_json::to_value(&row)?,
         serde_json::to_value(&head)?,
     ] {
-        assert!(value.is_object());
+        check!(value.is_object());
     }
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<CharterOffer>(serde_json::to_value(&offer)?)?,
         offer
     );
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<CharterTransfer>(serde_json::to_value(&row)?)?,
         row
     );
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<CharterOwnershipHead>(serde_json::to_value(&head)?)?,
         head
     );
@@ -114,21 +114,21 @@ fn exact_offer_transfer_and_head_are_closed_and_generation_bounded() -> TestResu
             .as_object_mut()
             .ok_or("offer")?
             .insert(field.into(), json!(true));
-        assert!(serde_json::from_value::<CharterOffer>(value).is_err());
+        check!(serde_json::from_value::<CharterOffer>(value).is_err());
     }
     for generation in [0, 65538] {
         let mut bad = row.clone();
         bad.generation = generation;
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
     for generation in [0, 1, 65538] {
         let mut bad = head.clone();
         bad.current.generation = generation;
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
     let mut bad = offer.clone();
     bad.ownership.generation = 65537;
-    assert!(
+    check!(
         bad.validate().is_err(),
         "last allowed transfer cannot issue another offer"
     );
@@ -140,7 +140,7 @@ fn exact_offer_transfer_and_head_are_closed_and_generation_bounded() -> TestResu
     ] {
         let mut bad = serde_json::to_value(&offer)?;
         bad.as_object_mut().ok_or("offer")?.remove(field);
-        assert!(serde_json::from_value::<CharterOffer>(bad).is_err());
+        check!(serde_json::from_value::<CharterOffer>(bad).is_err());
     }
     Ok(())
 }
@@ -162,7 +162,7 @@ fn native_and_seller_terms_must_match_without_netting_or_substitution() -> TestR
             8 => bad.line = crate::commerce::LineId::new(1)?,
             _ => bad.offered_at_ic.clock = mush_core::ClockRef::WorldIc { generation: 1 },
         }
-        assert!(row.matches_offer(&bad).is_err());
+        check!(row.matches_offer(&bad).is_err());
     }
     for mode in 0..4 {
         let mut bad = row.clone();
@@ -179,7 +179,7 @@ fn native_and_seller_terms_must_match_without_netting_or_substitution() -> TestR
         if let Some(acquisition) = &mut native.title.acquisition {
             acquisition.at = native.posted_at_utc;
         }
-        assert!(bad.matches_offer(&offer).is_err());
+        check!(bad.matches_offer(&offer).is_err());
     }
     Ok(())
 }
@@ -250,7 +250,7 @@ fn wide_scalar_complete_documents_fit_actual_families_and_keys_are_exact() -> Te
         ),
     ] {
         let document = json!({"family":{"owner":owner,"id":id},"key":key,"schema":{"id":schema,"version":1},"value":value});
-        assert!(mush_core::canonical_json_bytes_with_limit(&document, max)?.len() < max);
+        check!(mush_core::canonical_json_bytes_with_limit(&document, max)?.len() < max);
     }
     let mut txn = engine.action_transaction(&offers)?;
     txn.insert(&offers, &offer.key(), offer.clone())?;
@@ -259,7 +259,7 @@ fn wide_scalar_complete_documents_fit_actual_families_and_keys_are_exact() -> Te
     let (_, install) = txn.prepare()?.into_parts();
     engine.install_prepared_action(install)?;
     let mut txn = engine.action_transaction(&offers)?;
-    assert!(txn.insert(&offers, &"not-a-commit".into(), offer).is_err());
+    check!(txn.insert(&offers, &"not-a-commit".into(), offer).is_err());
     Ok(())
 }
 #[test]
@@ -279,22 +279,22 @@ fn transfer_configuration_is_optional_active_once_and_manifest_independent() -> 
             RatingCompatibility::combat_v1(manifest.digest()),
         )
     };
-    assert!(
+    check!(
         config(CommerceMode::Initialize)?
             .with_charter_transfers(CharterTransferConfig::new())
             .is_err()
     );
     let active =
         config(CommerceMode::Active)?.with_charter_transfers(CharterTransferConfig::new())?;
-    assert!(
+    check!(
         active
             .with_charter_transfers(CharterTransferConfig::new())
             .is_err()
     );
     let [offer, accept] = CharterTransferConfig::new().actions()?;
-    assert_ne!(offer, accept);
+    check_ne!(offer, accept);
     for descriptor in protocol::definitions()? {
-        assert!(
+        check!(
             !descriptor
                 .references()
                 .iter()
@@ -355,13 +355,13 @@ fn actual_registration_requires_matching_native_owner_and_preserves_default_abse
             }
             let result = Engine::with_modules(World::new_minimal(), Registry::new(), modules);
             if enabled && !native {
-                assert!(result.is_err());
+                check!(result.is_err());
                 continue;
             }
             let engine = result?;
             let definitions = engine.registry.definitions().ok_or("actual definitions")?;
             for action in [&offer, &accept] {
-                assert_eq!(
+                check_eq!(
                     definitions
                         .iter()
                         .filter(|entry| entry.reference() == action)
@@ -381,7 +381,7 @@ fn immediate_native_wire_and_v1_ownership_digest_remain_exact() -> TestResult {
     let economic::TransferEconomic::Immediate(native) = &row.economic else {
         return Err("actual immediate fixture variant".into());
     };
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&row.economic)?,
         serde_json::to_vec(native)?
     );
@@ -389,11 +389,11 @@ fn immediate_native_wire_and_v1_ownership_digest_remain_exact() -> TestResult {
         "charter":row.charter,"generation":row.generation,"birth":row.birth,
         "predecessor":row.predecessor,"offer":row.offer,"offer_digest":row.offer_digest,
         "accepted_at_ic":row.accepted_at_ic,"economic":native});
-    assert_eq!(serde_json::to_value(&row)?, legacy);
-    assert_eq!(
+    check_eq!(serde_json::to_value(&row)?, legacy);
+    check_eq!(
         row.ownership()?.digest,
         DefinitionDigest::for_canonical_value("roll.charter_ownership.transfer.v1", &legacy)?
     );
-    assert_eq!(serde_json::from_value::<CharterTransfer>(legacy)?, row);
+    check_eq!(serde_json::from_value::<CharterTransfer>(legacy)?, row);
     Ok(())
 }

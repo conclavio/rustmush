@@ -28,11 +28,11 @@ fn config(row: &MindRenewalOperationV1) -> TestResult<RenewalConfig> {
 }
 #[test]
 fn renewal_requests_accept_only_one_self_selector_and_no_money_or_authority_fields() -> TestResult {
-    assert!(matches!(
+    check!(matches!(
         provider::decode(Transition::Draft, &json!({"licence":7}))?,
         Request::Draft(_)
     ));
-    assert!(matches!(
+    check!(matches!(
         provider::decode(Transition::Draft, &json!({"previous_operation":token(1)}))?,
         Request::Retry(_)
     ));
@@ -51,24 +51,24 @@ fn renewal_requests_accept_only_one_self_selector_and_no_money_or_authority_fiel
         json!({"licence":7,"previous_operation":null}),
         json!({"licence":null,"previous_operation":token(1)}),
     ] {
-        assert!(
+        check!(
             provider::decode(Transition::Draft, &v).is_err(),
             "invalid Draft selector accepted"
         );
     }
     for t in [Transition::Fund, Transition::Grant, Transition::Refund] {
-        assert!(provider::decode(t, &json!({"operation":token(1)})).is_ok());
-        assert!(provider::decode(t, &json!({"operation":token(1),"contract":9})).is_err());
-        assert!(provider::decode(t, &json!({"operation":token(1),"outcome":"granted"})).is_err());
+        check!(provider::decode(t, &json!({"operation":token(1)})).is_ok());
+        check!(provider::decode(t, &json!({"operation":token(1),"contract":9})).is_err());
+        check!(provider::decode(t, &json!({"operation":token(1),"outcome":"granted"})).is_err());
     }
-    assert!(
+    check!(
         provider::decode(
             Transition::Close,
             &json!({"operation":token(1),"reason":"declined"})
         )
         .is_ok()
     );
-    assert!(
+    check!(
         provider::decode(
             Transition::Close,
             &json!({"operation":token(1),"reason":"expired"})
@@ -80,7 +80,7 @@ fn renewal_requests_accept_only_one_self_selector_and_no_money_or_authority_fiel
         json!({"operation":token(1),"reason":"refunded"}),
         json!({"operation":token(1),"reason":"expired","at":0}),
     ] {
-        assert!(provider::decode(Transition::Close, &v).is_err());
+        check!(provider::decode(Transition::Close, &v).is_err());
     }
     Ok(())
 }
@@ -90,24 +90,24 @@ fn renewal_projection_has_only_bounded_selectors_and_no_implicit_acceptance() ->
     for t in Transition::ALL {
         let parameters = crate::mind_renewal::actions::parameters(t)?;
         mush_core::ProjectedParameterSchema::new(parameters.clone())?;
-        assert!(parameters.iter().all(|p| matches!(
+        check!(parameters.iter().all(|p| matches!(
             p.id.as_str(),
             "licence" | "previous_operation" | "operation" | "reason"
         )));
         if t == Transition::Draft {
-            assert_eq!(parameters.len(), 2);
-            assert!(parameters.iter().all(|p| !p.required));
+            check_eq!(parameters.len(), 2);
+            check!(parameters.iter().all(|p| !p.required));
         } else {
-            assert!(parameters.iter().all(|p| p.required));
+            check!(parameters.iter().all(|p| p.required));
         }
         for p in parameters {
             match p.kind {
-                ProjectedParameterKind::Text { maximum_bytes } => assert_eq!(maximum_bytes, 32),
+                ProjectedParameterKind::Text { maximum_bytes } => check_eq!(maximum_bytes, 32),
                 ProjectedParameterKind::Integer { minimum, maximum } => {
-                    assert_eq!((minimum, maximum), (1, i64::MAX))
+                    check_eq!((minimum, maximum), (1, i64::MAX))
                 }
                 ProjectedParameterKind::Choice { choices } => {
-                    assert_eq!(choices, vec!["declined", "expired"])
+                    check_eq!(choices, vec!["declined", "expired"])
                 }
                 _ => return Err("unexpected renewal input kind".into()),
             }
@@ -121,7 +121,7 @@ fn renewal_host_policy_bounds_fees_and_deadline_without_repricing_the_template()
     let c = config(&row)?;
     let refs = c.actions()?;
     for (t, r) in Transition::ALL.into_iter().zip(refs.iter()) {
-        assert_eq!(*r, row.expected_action(t)?);
+        check_eq!(*r, row.expected_action(t)?);
     }
     let mut later = c.clone();
     later.policy.offer_ic_seconds = 259200;
@@ -133,27 +133,27 @@ fn renewal_host_policy_bounds_fees_and_deadline_without_repricing_the_template()
         }),
     };
     later.policy.validate()?;
-    assert_eq!(
+    check_eq!(
         later.actions()?,
         refs,
         "fee policy must not reinterpret retained action identity"
     );
-    assert_ne!(later.policy_ref()?, c.policy_ref()?);
+    check_ne!(later.policy_ref()?, c.policy_ref()?);
     for seconds in [0, -1, 259201] {
         let mut p = c.policy.clone();
         p.offer_ic_seconds = seconds;
-        assert!(p.validate().is_err());
+        check!(p.validate().is_err());
     }
     let mut p = c.policy.clone();
     p.registry.permille = 1;
-    assert!(p.validate().is_err());
+    check!(p.validate().is_err());
     let mut p = later.policy.clone();
     p.venue = Some(GrossRecipientCut {
         permille: 1,
         recipient: p.registry.recipient.clone(),
     });
-    assert!(p.validate().is_err());
-    assert_eq!(row.offer().terms.price, Amount::from_minor(500));
+    check!(p.validate().is_err());
+    check_eq!(row.offer().terms.price, Amount::from_minor(500));
     Ok(())
 }
 #[inline(never)]
@@ -162,19 +162,19 @@ fn publication_cases() -> TestResult<Box<(MindRenewalOperationV1, MindRenewalOpe
     let c = config(&row)?;
     let roll = row.roll_projection()?;
     let captured = MindRenewalOperationV1::captured(&c, row.offer().clone(), &roll)?;
-    assert_eq!(captured, row);
+    check_eq!(captured, row);
     let fund = funded(&row)?;
     let next = row.progressed(&fund.roll_projection()?)?;
-    assert_eq!(next, fund);
+    check_eq!(next, fund);
     let mut wrong = serde_json::to_value(fund.roll_projection()?)?;
     put(&mut wrong, &["contract"], json!(999))?;
     put(&mut wrong, &["state", "funding", "contract"], json!(999))?;
     let wrong: RenewalOperationV1 = serde_json::from_value(wrong)?;
-    assert!(row.progressed(&wrong).is_err());
+    check!(row.progressed(&wrong).is_err());
     let mut offer = row.offer().clone();
     offer.terms.expires_at.at += 1;
-    assert!(MindRenewalOperationV1::captured(&c, offer, &roll).is_err());
-    assert!(row.receipt().is_err());
+    check!(MindRenewalOperationV1::captured(&c, offer, &roll).is_err());
+    check!(row.receipt().is_err());
     Ok(Box::new((row, fund)))
 }
 
@@ -194,7 +194,7 @@ fn renewal_publication_keeps_exact_offer_and_rejects_crossed_closed_writer_data(
         let end = make(&row, &fund)?;
         let receipt = end.receipt()?;
         receipt.matches_operation(&end)?;
-        assert!(receipt.matches_operation(&fund).is_err());
+        check!(receipt.matches_operation(&fund).is_err());
     }
     Ok(())
 }
@@ -244,9 +244,9 @@ fn complete<R: serde::Serialize + 'static>(
 fn renewal_admission_reserves_complete_registered_operation_and_receipt_envelopes() -> TestResult {
     let (engine, f) = registered()?;
     let row = fixture()?;
-    assert_eq!(f.operations.owner().as_str(), "market");
-    assert_eq!(f.operations.descriptor().max_record_bytes(), 32768);
-    assert_eq!(f.receipts.descriptor().max_record_bytes(), 8192);
+    check_eq!(f.operations.owner().as_str(), "market");
+    check_eq!(f.operations.descriptor().max_record_bytes(), 32768);
+    check_eq!(f.receipts.descriptor().max_record_bytes(), 8192);
     capacity::check(&f, &row)?;
     let fund = funded(&row)?;
     let states: [fn(
@@ -262,14 +262,14 @@ fn renewal_admission_reserves_complete_registered_operation_and_receipt_envelope
     ];
     for make in states {
         let state = make(&row, &fund)?;
-        assert!(complete(&f.operations, state.operation(), &state)? <= 32768);
+        check!(complete(&f.operations, state.operation(), &state)? <= 32768);
         if !state.state().pending() {
-            assert!(complete(&f.receipts, state.operation(), &state.receipt()?)? <= 8192);
+            check!(complete(&f.receipts, state.operation(), &state.receipt()?)? <= 8192);
         }
     }
-    assert!(engine.action_state().is_empty());
-    assert!(!engine.action_state().has_prepared());
-    assert!(!engine.action_state().reservation_lost());
+    check!(engine.action_state().is_empty());
+    check!(!engine.action_state().has_prepared());
+    check!(!engine.action_state().reservation_lost());
     Ok(())
 }
 #[test]
@@ -280,7 +280,7 @@ fn renewal_config_does_not_allow_missing_existing_purchase_composition() -> Test
     let refusal = composed(vec![Box::new(module)])
         .err()
         .ok_or("missing renewal prerequisites were accepted")?;
-    assert!(
+    check!(
         refusal
             .to_string()
             .contains("renewals require entitlement composition")
@@ -291,10 +291,10 @@ fn renewal_config_does_not_allow_missing_existing_purchase_composition() -> Test
 #[test]
 fn renewal_fresh_preparation_starts_only_at_exact_predecessor_end() -> TestResult {
     let end = WorldIcSeconds::from_stamp(&stamp(100))?;
-    assert!(provider::require_due(&stamp(99), end).is_err());
+    check!(provider::require_due(&stamp(99), end).is_err());
     provider::require_due(&stamp(100), end)?;
     provider::require_due(&stamp(101), end)?;
-    assert!(
+    check!(
         provider::require_due(
             &ClockStamp {
                 clock: ClockRef::WorldIc { generation: 0 },
@@ -328,14 +328,14 @@ fn renewal_personal_account_requires_one_actual_matching_snapshot_row() -> TestR
         last_hold_seq: 0,
     };
     let mut snapshot = EconomySnapshot::new();
-    assert!(crate::mind_renewal::offer::personal(&snapshot, &instrument, actor).is_err());
+    check!(crate::mind_renewal::offer::personal(&snapshot, &instrument, actor).is_err());
     snapshot.put_account(account(1));
-    assert_eq!(
+    check_eq!(
         crate::mind_renewal::offer::personal(&snapshot, &instrument, actor)?.id,
         AccountId(1)
     );
     snapshot.put_account(account(2));
-    assert!(
+    check!(
         crate::mind_renewal::offer::personal(&snapshot, &instrument, actor).is_err(),
         "two eligible real rows must not select the first account"
     );
@@ -348,7 +348,7 @@ fn renewal_personal_account_requires_one_actual_matching_snapshot_row() -> TestR
             status,
             ..account(2)
         });
-        assert_eq!(
+        check_eq!(
             crate::mind_renewal::offer::personal(&snapshot, &instrument, actor)?.id,
             AccountId(1)
         );
@@ -357,7 +357,7 @@ fn renewal_personal_account_requires_one_actual_matching_snapshot_row() -> TestR
         scope: Some(mush_org::OrgScopeId(3)),
         ..account(2)
     });
-    assert_eq!(
+    check_eq!(
         crate::mind_renewal::offer::personal(&snapshot, &instrument, actor)?.id,
         AccountId(1)
     );
@@ -365,7 +365,7 @@ fn renewal_personal_account_requires_one_actual_matching_snapshot_row() -> TestR
         instrument: InstrumentId::new("other.test").ok_or("instrument")?,
         ..account(2)
     });
-    assert_eq!(
+    check_eq!(
         crate::mind_renewal::offer::personal(&snapshot, &instrument, actor)?.id,
         AccountId(1)
     );
@@ -373,15 +373,15 @@ fn renewal_personal_account_requires_one_actual_matching_snapshot_row() -> TestR
         owner: mush_org::PrincipalId::Object(ObjId(21)),
         ..account(2)
     });
-    assert_eq!(
+    check_eq!(
         crate::mind_renewal::offer::personal(&snapshot, &instrument, actor)?.id,
         AccountId(1)
     );
     // Reindexing that actual second row back to the buyer restores ambiguity.
     snapshot.put_account(account(2));
-    assert!(crate::mind_renewal::offer::personal(&snapshot, &instrument, actor).is_err());
-    assert_eq!(snapshot.accounts().count(), 2);
-    assert_eq!(
+    check!(crate::mind_renewal::offer::personal(&snapshot, &instrument, actor).is_err());
+    check_eq!(snapshot.accounts().count(), 2);
+    check_eq!(
         snapshot
             .accounts_of(&mush_org::PrincipalId::Object(actor))
             .count(),

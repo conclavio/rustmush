@@ -54,40 +54,40 @@ fn old_owner_term_wire_remains_exact_and_new_evidence_is_closed() -> TestResult 
         "revision":{"kind":"follow","line":"1"},"operation":CommitToken::from_bytes([1;16])});
     let row: OwnerTerm = serde_json::from_value(old.clone())?;
     row.validate()?;
-    assert_eq!(serde_json::to_value(&row)?, old);
+    check_eq!(serde_json::to_value(&row)?, old);
     let old_licence = json!({"format":1,"id":"1","charter":"1","line":"1","term":"1","operation":CommitToken::from_bytes([1;16])});
     let licence: OwnerLicence = serde_json::from_value(old_licence.clone())?;
     licence.validate()?;
-    assert_eq!(serde_json::to_value(&licence)?, old_licence);
+    check_eq!(serde_json::to_value(&licence)?, old_licence);
     for (format, term) in [(1, 2), (2, 1), (3, 2)] {
         let mut bad = licence.clone();
         bad.format = format;
         bad.term = crate::commerce::TermGeneration::new(term)?;
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
     let mut null = old.clone();
     null.as_object_mut()
         .ok_or("old")?
         .insert("attestation".into(), Value::Null);
-    assert!(serde_json::from_value::<OwnerTerm>(null).is_err());
+    check!(serde_json::from_value::<OwnerTerm>(null).is_err());
     let row = operation()?;
     for field in ["attestation", "generation", "operation"] {
         let mut v = serde_json::to_value(&row.next)?;
         v.as_object_mut().ok_or("term")?.remove(field);
-        assert!(serde_json::from_value::<OwnerTerm>(v).is_err());
+        check!(serde_json::from_value::<OwnerTerm>(v).is_err());
     }
     let mut v = serde_json::to_value(&row.next)?;
     v.get_mut("attestation")
         .and_then(Value::as_object_mut)
         .ok_or("evidence")?
         .remove("parent");
-    assert!(serde_json::from_value::<OwnerTerm>(v).is_err());
+    check!(serde_json::from_value::<OwnerTerm>(v).is_err());
     for field in ["permission", "source", "validated", "title"] {
         let mut v = serde_json::to_value(&row)?;
         v.as_object_mut()
             .ok_or("row")?
             .insert(field.into(), json!(true));
-        assert!(serde_json::from_value::<AttestationOperation>(v).is_err());
+        check!(serde_json::from_value::<AttestationOperation>(v).is_err());
     }
     Ok(())
 }
@@ -102,22 +102,22 @@ fn attestation_window_preserves_parent_grace_and_never_extends_on_restoration() 
         WorldIcSeconds(115),
     )?;
     let active = e.window(WorldIcSeconds(50))?;
-    assert_eq!(
+    check_eq!(
         (active.term_end().get(), active.grace_end().get()),
         (100, 115)
     );
     let grace = e.window(WorldIcSeconds(105))?;
-    assert_eq!(grace.phase_at(WorldIcSeconds(105)), TermPhase::Grace);
-    assert_eq!(grace.issued_at(), WorldIcSeconds(105));
-    assert_eq!(grace.eligibility_start(), WorldIcSeconds(0));
-    assert!(e.window(WorldIcSeconds(115)).is_err());
+    check_eq!(grace.phase_at(WorldIcSeconds(105)), TermPhase::Grace);
+    check_eq!(grace.issued_at(), WorldIcSeconds(105));
+    check_eq!(grace.eligibility_start(), WorldIcSeconds(0));
+    check!(e.window(WorldIcSeconds(115)).is_err());
     let original = evidence(None).window(WorldIcSeconds(105))?;
-    assert_eq!(
+    check_eq!(
         (original.term_end().get(), original.grace_end().get()),
         (205, 225)
     );
-    assert_eq!(grace.grace_end(), WorldIcSeconds(115));
-    assert!(evidence(None).window(WorldIcSeconds(i64::MAX)).is_err());
+    check_eq!(grace.grace_end(), WorldIcSeconds(115));
+    check!(evidence(None).window(WorldIcSeconds(i64::MAX)).is_err());
     Ok(())
 }
 #[test]
@@ -134,15 +134,15 @@ fn cause_identity_predecessor_and_config_are_not_caller_substitutable() -> TestR
             5 => bad.action = protocol::action(&manifest(), 99, 20)?,
             _ => bad.observed_ic.at -= 1,
         }
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
-    assert_ne!(term_digest(&row.next)?, row.predecessor_digest);
+    check_ne!(term_digest(&row.next)?, row.predecessor_digest);
     let roots = row.roots()?;
-    assert_eq!(roots.len(), 2);
+    check_eq!(roots.len(), 2);
     for root in &roots {
-        assert_eq!(RootAnchor::parse(&root.anchor.record())?, root.anchor);
+        check_eq!(RootAnchor::parse(&root.anchor.record())?, root.anchor);
     }
-    assert_ne!(
+    check_ne!(
         roots.first().ok_or("root")?.anchor,
         roots.get(1).ok_or("parent root")?.anchor
     );
@@ -197,7 +197,7 @@ fn maximum_complete_operation_and_term_fit_actual_registered_family_envelopes() 
         ),
     ] {
         let document = json!({"family":{"owner":owner,"id":id},"key":key,"schema":{"id":schema,"version":1},"value":value});
-        assert!(mush_core::canonical_json_bytes_with_limit(&document, max)?.len() < max);
+        check!(mush_core::canonical_json_bytes_with_limit(&document, max)?.len() < max);
     }
     let mut txn = engine.action_transaction(&operations)?;
     txn.insert(&operations, &op.key(), op.clone())?;
@@ -205,7 +205,7 @@ fn maximum_complete_operation_and_term_fit_actual_registered_family_envelopes() 
     let (_, install) = txn.prepare()?.into_parts();
     engine.install_prepared_action(install)?;
     let mut txn = engine.action_transaction(&operations)?;
-    assert!(txn.insert(&operations, &"not-a-commit".into(), op).is_err());
+    check!(txn.insert(&operations, &"not-a-commit".into(), op).is_err());
     Ok(())
 }
 #[test]
@@ -218,27 +218,27 @@ fn optional_attestation_requires_active_composition_and_binds_frozen_durations()
             RatingCompatibility::combat_v1(manifest().digest()),
         )
     };
-    assert!(
+    check!(
         make(CommerceMode::Initialize)?
             .with_owner_attestations()
             .is_err()
     );
-    assert!(
+    check!(
         make(CommerceMode::Active)?
             .with_owner_attestations()
             .is_ok()
     );
-    assert!(
+    check!(
         make(CommerceMode::Active)?
             .with_owner_attestations()?
             .with_owner_attestations()
             .is_err()
     );
-    assert_ne!(
+    check_ne!(
         protocol::action(&manifest(), 100, 20)?,
         protocol::action(&manifest(), 101, 20)?
     );
-    assert!(protocol::definitions(&manifest(), 0, 20).is_err());
+    check!(protocol::definitions(&manifest(), 0, 20).is_err());
     Ok(())
 }
 
@@ -274,12 +274,12 @@ fn invocation(parameters: Value) -> TestResult<ActionInvocation> {
 
 #[test]
 fn request_is_numeric_self_only_without_terms_or_parent_authority() -> TestResult {
-    assert_eq!(
+    check_eq!(
         provider::Request::parse(&invocation(json!({"owner_licence":3}))?)?.licence()?,
         LicenceId::new(3)?
     );
     for value in [json!("3"), json!(0), json!(-1), json!(3.5), json!(null)] {
-        assert!(provider::Request::parse(&invocation(json!({"owner_licence":value}))?).is_err());
+        check!(provider::Request::parse(&invocation(json!({"owner_licence":value}))?).is_err());
     }
     for key in [
         "actor",
@@ -293,7 +293,7 @@ fn request_is_numeric_self_only_without_terms_or_parent_authority() -> TestResul
         p.as_object_mut()
             .ok_or("params")?
             .insert(key.into(), json!(1));
-        assert!(provider::Request::parse(&invocation(p)?).is_err());
+        check!(provider::Request::parse(&invocation(p)?).is_err());
     }
     Ok(())
 }
@@ -305,14 +305,14 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     let old = operation()?;
     let bytes = serde_json::to_vec(&old)?;
     let restored: AttestationOperation = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    check_eq!(serde_json::to_vec(&restored)?, bytes);
     let legacy = serde_json::to_value(&old)?;
-    assert!(legacy.get("charter_ownership").is_none());
+    check!(legacy.get("charter_ownership").is_none());
     let proof = serde_json::json!({"generation":65537,"operation":mush_core::CommitToken::from_bytes([249;16]),"digest":mush_core::DefinitionDigest::from_bytes([255;32])});
     let mut value = legacy.clone();
     let fields = value.as_object_mut().ok_or("operation")?;
     fields.insert("charter_ownership".into(), proof.clone());
-    assert!(
+    check!(
         serde_json::from_value::<AttestationOperation>(value.clone()).is_err(),
         "old format cannot carry new authority attribution"
     );
@@ -326,7 +326,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
         .insert("owner".into(), serde_json::json!(1));
     let new: AttestationOperation = serde_json::from_value(value.clone())?;
     new.validate()?;
-    assert_eq!(serde_json::to_value(&new)?, value);
+    check_eq!(serde_json::to_value(&new)?, value);
     let shared = Arc::new(Mutex::new(None));
     let mut engine = boxed_test_engine(
         World::new_minimal(),
@@ -353,21 +353,21 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
         bad.as_object_mut()
             .ok_or("operation")?
             .insert("charter_ownership".into(), corrupt);
-        assert!(serde_json::from_value::<AttestationOperation>(bad).is_err());
+        check!(serde_json::from_value::<AttestationOperation>(bad).is_err());
     }
     let mut missing = value.clone();
     missing
         .as_object_mut()
         .ok_or("operation")?
         .remove("charter_ownership");
-    assert!(serde_json::from_value::<AttestationOperation>(missing).is_err());
+    check!(serde_json::from_value::<AttestationOperation>(missing).is_err());
     let mut extra = value.clone();
     extra
         .get_mut("charter_ownership")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("ownership")?
         .insert("validated".into(), serde_json::json!(true));
-    assert!(serde_json::from_value::<AttestationOperation>(extra).is_err());
+    check!(serde_json::from_value::<AttestationOperation>(extra).is_err());
     Ok(())
 }
 
@@ -376,16 +376,16 @@ fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> Test
     let old = operation()?;
     let bytes = serde_json::to_vec(&old)?;
     let restored: AttestationOperation = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    check_eq!(serde_json::to_vec(&restored)?, bytes);
     let mut wire = serde_json::to_value(&old)?;
     let selected = "/next/attestation/parent/selected";
-    assert!(wire.pointer(&format!("{selected}/holder_basis")).is_none());
+    check!(wire.pointer(&format!("{selected}/holder_basis")).is_none());
     wire.pointer_mut(selected).and_then(Value::as_object_mut).ok_or("selected")?.insert(
         "holder_basis".into(), json!({"format":1,"acceptance":CommitToken::from_bytes([249;16]),
         "ownership":{"generation":65537,"operation":CommitToken::from_bytes([248;16]),"digest":DefinitionDigest::from_bytes([255;32])}}));
     let captured: AttestationOperation = serde_json::from_value(wire.clone())?;
-    assert_ne!(term_digest(&old.next)?, term_digest(&captured.next)?);
-    assert_eq!(serde_json::to_value(&captured)?, wire);
+    check_ne!(term_digest(&old.next)?, term_digest(&captured.next)?);
+    check_eq!(serde_json::to_value(&captured)?, wire);
     let shared = Arc::new(Mutex::new(None));
     let mut engine = boxed_test_engine(
         World::new_minimal(),
@@ -424,7 +424,7 @@ fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> Test
     *wire
         .pointer_mut(&format!("{selected}/holder_basis"))
         .ok_or("basis")? = Value::Null;
-    assert!(serde_json::from_value::<AttestationOperation>(wire).is_err());
+    check!(serde_json::from_value::<AttestationOperation>(wire).is_err());
     Ok(())
 }
 

@@ -15,12 +15,13 @@ fn refused_boot(f: &Fixture, disk: &Disk) -> TestResult {
     let failure = load(&mut reboot, disk)
         .err()
         .ok_or("inconsistent boot must refuse")?;
-    assert!(!failure.to_string().is_empty());
-    assert_eq!(
-        disk, &before,
+    check!(!failure.to_string().is_empty());
+    check_eq!(
+        disk,
+        &before,
         "failed audit cannot repair/drop durable evidence"
     );
-    assert!(
+    check!(
         reboot
             .world
             .module_state::<RollStore>()
@@ -31,7 +32,7 @@ fn refused_boot(f: &Fixture, disk: &Disk) -> TestResult {
     );
     command(&mut reboot, "@recovery-pulse");
     command(&mut reboot, "@registry/continue 1");
-    assert!(
+    check!(
         reboot
             .world
             .module_state::<Artifacts>()
@@ -39,7 +40,7 @@ fn refused_boot(f: &Fixture, disk: &Disk) -> TestResult {
             .registry
             .pristine()
     );
-    assert!(reboot.take_observed_authoritative_submit().is_none());
+    check!(reboot.take_observed_authoritative_submit().is_none());
     Ok(())
 }
 
@@ -110,8 +111,8 @@ fn final_audit_joins_both_original_accounts_and_refuses_one_missing_private_row(
     drop(ready);
     let first_execution: RatingExecution = f.retained("rating_executions")?;
     let second = second_admission(&mut f)?;
-    assert_ne!(first.account, second.account);
-    assert!(
+    check_ne!(first.account, second.account);
+    check!(
         f.quota()?
             .audit_registry_boot(&[first_execution.clone(), first_execution])
             .is_err(),
@@ -120,7 +121,7 @@ fn final_audit_joins_both_original_accounts_and_refuses_one_missing_private_row(
     let mut complete = real_engine(&f)?;
     load(&mut complete, &f.disk)?;
     let quota = complete.world.module_state::<BulkStore>().ok_or("quota")?;
-    assert_eq!(quota.stopped_registry_bindings().count(), 2);
+    check_eq!(quota.stopped_registry_bindings().count(), 2);
     let mut missing = f.disk.clone();
     missing
         .remove(&account_key(first))
@@ -171,8 +172,8 @@ fn private_boot_join_rejects_duplicate_private_ids_and_typed_inventory_overflow(
     let execution: RatingExecution = f.retained("rating_executions")?;
     f.quota()?
         .audit_registry_boot(std::slice::from_ref(&execution))?;
-    assert!(f.quota()?.audit_registry_boot(&[]).is_err());
-    assert!(
+    check!(f.quota()?.audit_registry_boot(&[]).is_err());
+    check!(
         f.quota()?
             .audit_registry_boot(&vec![execution.clone(); MAX_STOPPED_REGISTRY_JOBS + 1])
             .is_err()
@@ -186,7 +187,7 @@ fn private_boot_join_rejects_duplicate_private_ids_and_typed_inventory_overflow(
         account.id = AccountId::mint("registry-duplicate-inventory", n)?;
         owner.load(account.id, &serde_json::to_vec(&account)?)?;
     }
-    assert!(
+    check!(
         owner
             .audit_registry_boot(&[execution.clone(), execution])
             .is_err()

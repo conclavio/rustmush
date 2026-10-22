@@ -401,7 +401,7 @@ impl FactoryRig {
         f.commit(0, GOD, 10, json!({}))
             .map_err(|e| format!("factory fixture initialization action: {e}"))?;
         // Initialize only publishes the two actual empty deployment images.
-        assert!(f.prepare(1, operator, 11, f.offer_parameters()).is_err());
+        check!(f.prepare(1, operator, 11, f.offer_parameters()).is_err());
         if refits {
             f.initialize_refit()
                 .map_err(|e| format!("factory fixture refit initialization action: {e}"))?;
@@ -773,7 +773,7 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
             "certificate": accepted.intent.certificate,
             "lot": accepted.intent.lot,
         });
-        assert_eq!(serde_json::to_value(&offer.input)?, input_wire);
+        check_eq!(serde_json::to_value(&offer.input)?, input_wire);
         fn decode_like<T: serde::de::DeserializeOwned>(
             value: Value,
             _: &T,
@@ -781,24 +781,24 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
             serde_json::from_value(value)
         }
         let decoded = decode_like(input_wire.clone(), &offer.input)?;
-        assert_eq!(decoded, offer.input);
+        check_eq!(decoded, offer.input);
         let mut unknown = input_wire;
         unknown
             .as_object_mut()
             .ok_or("supplier input wire")?
             .insert("unregistered".into(), json!(true));
-        assert!(decode_like(unknown, &offer.input).is_err());
+        check!(decode_like(unknown, &offer.input).is_err());
         let requester = decode_like(json!({"kind":"requester_supplied"}), &offer.input)?;
-        assert_eq!(
+        check_eq!(
             serde_json::to_value(requester)?,
             json!({"kind":"requester_supplied"})
         );
-        assert_eq!(
+        check_eq!(
             accepted.intent.expires_at.at - accepted.intent.accepted_at.at,
             7 * 86400
         );
-        assert_eq!(f.balance(f.payer)?, (before.0, Amount::from_minor(300_000)));
-        assert!(
+        check_eq!(f.balance(f.payer)?, (before.0, Amount::from_minor(300_000)));
+        check!(
             f.r.w
                 .engine()
                 .action_state()
@@ -806,21 +806,21 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
                 .is_some()
         );
         let birth = f.commit(3, f.buyer, 22, FactoryRig::order_parameters(id))?;
-        assert_eq!(
+        check_eq!(
             birth
                 .iter()
                 .filter(|w| matches!(w, ReplayWrite::ObjectAllocatorSet { .. }))
                 .count(),
             1
         );
-        assert!(
+        check!(
             f.prepare(5, f.buyer, 23, FactoryRig::order_parameters(id))
                 .is_err()
         );
         f.advance(id, 24)?;
         f.advance(id, 25)?;
         let rows = f.commit(5, f.buyer, 26, FactoryRig::order_parameters(id))?;
-        assert!(
+        check!(
             rows.iter()
                 .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
         );
@@ -829,8 +829,8 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
         let CoreTerminalResult::Completed { title, .. } = terminal.result() else {
             return Err("completed title".into());
         };
-        assert_eq!(title.title_owner, PrincipalId::Object(f.buyer));
-        assert_eq!(
+        check_eq!(title.title_owner, PrincipalId::Object(f.buyer));
+        check_eq!(
             f.balance(f.payer)?,
             (
                 before
@@ -840,32 +840,32 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
                 Amount::from_minor(0)
             )
         );
-        assert_eq!(
+        check_eq!(
             f.balance(f.composition.factory.payment.supplier.account)?.0,
             Amount::from_minor(270_000)
         );
-        assert_eq!(
+        check_eq!(
             f.balance(f.composition.factory.payment.integrator.account)?
                 .0,
             Amount::from_minor(30_000)
         );
-        assert!(
+        check!(
             f.r.w
                 .engine()
                 .action_state()
                 .get(&f.r.runtime.families.inventory.lots, &f.certificate.lot)?
                 .is_none()
         );
-        assert_eq!(
+        check_eq!(
             f.r.w.world().get(title.object).ok_or("output")?.location,
             Some(f.composition.factory.payment.output_container)
         );
-        assert!(
+        check!(
             f.prepare(5, f.buyer, 27, FactoryRig::order_parameters(id))
                 .is_err()
         );
         f.restart(CoreOriginMode::Active)?;
-        assert_eq!(f.order(id)?, complete);
+        check_eq!(f.order(id)?, complete);
     }
     Ok(())
 }
@@ -880,12 +880,12 @@ fn accepted_input_and_cash_release_before_or_after_output_then_remain_cold_prove
         }
         let slot = f.order(id)?.capacity;
         f.commit(6, f.buyer, 23, FactoryRig::order_parameters(id))?;
-        assert_eq!(f.balance(f.payer)?, balance);
-        assert!(matches!(
+        check_eq!(f.balance(f.payer)?, balance);
+        check!(matches!(
             f.order(id)?.terminal.as_ref().map(|r| r.result()),
             Some(CoreTerminalResult::Cancelled {})
         ));
-        assert!(
+        check!(
             f.r.w
                 .engine()
                 .action_state()
@@ -900,13 +900,13 @@ fn accepted_input_and_cash_release_before_or_after_output_then_remain_cold_prove
                 .action_state()
                 .get(&runtime.industry.facility_books, &key)?
                 .ok_or("book")?;
-        assert!(
+        check!(
             book.records()
                 .iter()
                 .any(|r| r.id() == slot && r.state() == mush_core::ReservationState::Released)
         );
         f.restart(CoreOriginMode::Active)?;
-        assert!(
+        check!(
             f.prepare(6, f.buyer, 24, FactoryRig::order_parameters(id))
                 .is_err()
         );
@@ -924,7 +924,7 @@ fn supplier_authority_is_live_until_accept_custody_and_does_not_replace_buyer() 
         let params = f.accept_parameters(20);
         let before = f.balance(f.payer)?;
         let revision = f.r.w.engine().action_state().revision();
-        assert!(
+        check!(
             f.prepare(2, f.r.policy.agents[1].actor, 21, params.clone())
                 .is_err()
         );
@@ -945,8 +945,8 @@ fn supplier_authority_is_live_until_accept_custody_and_does_not_replace_buyer() 
         f.r.deny(f.r.policy.agents[1].actor)?;
         f.r.w.world_mut().take_dirty();
         match phase {
-            0 => assert!(f.prepare(2, f.buyer, 22, params).is_err()),
-            1 => assert!(
+            0 => check!(f.prepare(2, f.buyer, 22, params).is_err()),
+            1 => check!(
                 f.stage_inv(
                     2,
                     &invocation(f.buyer, 22, params),
@@ -955,10 +955,10 @@ fn supplier_authority_is_live_until_accept_custody_and_does_not_replace_buyer() 
                 )
                 .is_err()
             ),
-            _ => assert!(f.r.w.engine_mut().take_staged_action().is_err()),
+            _ => check!(f.r.w.engine_mut().take_staged_action().is_err()),
         }
-        assert_eq!(f.balance(f.payer)?, before);
-        assert_eq!(f.r.w.engine().action_state().revision(), revision);
+        check_eq!(f.balance(f.payer)?, before);
+        check_eq!(f.r.w.engine().action_state().revision(), revision);
     }
     Ok(())
 }
@@ -972,7 +972,7 @@ fn supplier_departure_after_accept_does_not_reprice_or_cancel_captured_work() ->
     f.advance(id, 25)?;
     f.commit(5, f.buyer, 26, FactoryRig::order_parameters(id))?;
     f.restart(CoreOriginMode::Active)?;
-    assert!(matches!(
+    check!(matches!(
         f.order(id)?.terminal.as_ref().map(|r| r.result()),
         Some(CoreTerminalResult::Completed { .. })
     ));
@@ -988,19 +988,19 @@ fn original_seven_day_expiry_and_changed_recipe_only_allow_stable_cancel() -> Re
     f.advance(id, 25)?;
     let row = f.order(id)?;
     f.r.w.world_mut().set_now(row.intent.expires_at.at);
-    assert!(
+    check!(
         f.prepare(5, f.buyer, 26, FactoryRig::order_parameters(id))
             .is_err()
     );
     f.composition = f.composition.changed_recipe()?;
     f.restart(CoreOriginMode::Active)?;
-    assert_eq!(f.order(id)?.intent, row.intent);
-    assert!(
+    check_eq!(f.order(id)?.intent, row.intent);
+    check!(
         f.prepare(5, f.buyer, 27, FactoryRig::order_parameters(id))
             .is_err()
     );
     f.commit(6, f.buyer, 28, FactoryRig::order_parameters(id))?;
-    assert_eq!(f.balance(f.payer)?, before);
+    check_eq!(f.balance(f.payer)?, before);
     f.restart(CoreOriginMode::Active)?;
     Ok(())
 }
@@ -1030,8 +1030,8 @@ fn exact_owner_and_economy_cold_inverse_refuse_lost_or_crossed_factory_evidence(
                 !matches
             });
         }
-        assert!(removed > 0, "fixture must remove an actual exact family");
-        assert!(
+        check!(removed > 0, "fixture must remove an actual exact family");
+        check!(
             f.cold(boot, &f.composition, CoreOriginMode::Active, true)
                 .is_err()
         );
@@ -1041,12 +1041,12 @@ fn exact_owner_and_economy_cold_inverse_refuse_lost_or_crossed_factory_evidence(
     let before = data.kv.len();
     data.kv
         .retain(|(k, _)| k.as_str() != factory::records::INDEX_KEY);
-    assert_eq!(before - data.kv.len(), 1);
-    assert!(
+    check_eq!(before - data.kv.len(), 1);
+    check!(
         f.cold(boot, &f.composition, CoreOriginMode::Active, true)
             .is_err()
     );
-    assert!(
+    check!(
         f.cold(
             f.r.boot.clone(),
             &f.composition,
@@ -1073,8 +1073,8 @@ fn exact_owner_and_economy_cold_inverse_refuse_lost_or_crossed_factory_evidence(
             }
         }
     }
-    assert_eq!(changed, 1);
-    assert!(
+    check_eq!(changed, 1);
+    check!(
         f.cold(boot, &f.composition, CoreOriginMode::Active, true)
             .is_err()
     );
@@ -1090,14 +1090,14 @@ fn source_free_selectors_reject_alternates_and_unfunded_completion() -> Result {
         json!({"offer":token(20),"payer":f.payer.0.to_string(),"input_lot":null}),
         json!({"offer":token(20),"payer":f.payer.0.to_string(),"price":1}),
     ] {
-        assert!(f.prepare(2, f.buyer, 21, value).is_err());
+        check!(f.prepare(2, f.buyer, 21, value).is_err());
     }
     let id = crate::workorder::WorkOrderId(0);
-    assert!(
+    check!(
         f.prepare(5, f.buyer, 22, FactoryRig::order_parameters(id))
             .is_err()
     );
-    assert!(
+    check!(
         f.prepare(
             4,
             f.buyer,
@@ -1190,7 +1190,7 @@ fn completed_core_birth_blocks_generic_title_mutations_before_and_after_cold_boo
                 vec![],
             );
             plan.asset_ops.push(op);
-            assert!(
+            check!(
                 matches!(
                     mush_economy::validate(&plan, snapshot, &env),
                     PlanResult::Refused(EconomyError::Unauthorized)
@@ -1198,7 +1198,7 @@ fn completed_core_birth_blocks_generic_title_mutations_before_and_after_cold_boo
                 "actual Core birth must remain governed"
             );
         }
-        assert!(snapshot == &before, "generic refusal changed the snapshot");
+        check!(snapshot == &before, "generic refusal changed the snapshot");
     }
     Ok(())
 }
@@ -1215,10 +1215,10 @@ fn class_three_stock_cannot_charge_a_buyer_without_actual_personal_entitlement()
     )?;
     let before = f.balance(f.payer)?;
     let revision = f.r.w.engine().action_state().revision();
-    assert!(f.prepare(2, f.buyer, 42, f.accept_parameters(41)).is_err());
-    assert_eq!(f.balance(f.payer)?, before);
-    assert_eq!(f.r.w.engine().action_state().revision(), revision);
-    assert!(
+    check!(f.prepare(2, f.buyer, 42, f.accept_parameters(41)).is_err());
+    check_eq!(f.balance(f.payer)?, before);
+    check_eq!(f.r.w.engine().action_state().revision(), revision);
+    check!(
         f.r.w
             .engine()
             .action_state()
@@ -1265,14 +1265,14 @@ fn projected_class_values_enter_actual_origin_and_factory_providers() -> Result 
     };
     let origin = choices(&f.r.runtime.actions[1])?;
     let factory = choices(&f.runtime()?.actions[1])?;
-    assert_eq!(origin, factory);
-    assert_eq!(origin.len(), 3);
+    check_eq!(origin, factory);
+    check_eq!(origin.len(), 3);
     for (i, value) in origin.iter().enumerate() {
         let n = 50 + u8::try_from(i)?;
         let p = f.r.prepare(1, actor, n, json!({"class":value}))?;
         f.r.ack(1, actor, n, json!({"class":value}), p)?;
         let cert = f.r.cert(n)?;
-        assert_eq!(serde_json::to_value(cert.class)?, json!(value));
+        check_eq!(serde_json::to_value(cert.class)?, json!(value));
         f.commit(
             1,
             actor,
@@ -1317,30 +1317,30 @@ fn scheduler_ingress_case(wrong_request: bool) -> Result {
     } else {
         invocation(f.buyer, 24, actual.parameters().clone())
     };
-    assert!(
+    check!(
         f.prepare_inv(4, &forged, 24).is_err(),
         "wrong scheduler ingress accepted"
     );
-    assert!(
+    check!(
         f.order(id)? == before,
         "refused scheduler changed the order"
     );
-    assert_eq!(f.balance(f.payer)?, balance);
-    assert_eq!(f.r.w.engine().action_state().revision(), revision);
+    check_eq!(f.balance(f.payer)?, balance);
+    check_eq!(f.r.w.engine().action_state().revision(), revision);
     // Exact K-shaped ingress alone is insufficient: only the scheduler
     // entry point seeds the authoritative cursor into this transaction.
     let action = f.phase_action(4)?;
-    assert!(
+    check!(
         f.r.w
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&action, &actual, token(24))
             .is_err()
     );
-    assert_eq!(f.r.w.engine().action_state().revision(), revision);
-    assert!(f.order(id)? == before);
+    check_eq!(f.r.w.engine().action_state().revision(), revision);
+    check!(f.order(id)? == before);
     // The identical actual K ingress remains admissible after refusal.
     apply_scheduler_ingress(&mut f, &actual)?;
-    assert_ne!(f.order(id)?.progress, before.progress);
+    check_ne!(f.order(id)?.progress, before.progress);
     Ok(())
 }
 
@@ -1372,29 +1372,29 @@ fn scheduler_fence_case(dependency: &str, phase: i32) -> Result {
         },
     )?;
     match phase {
-        0 => assert!(
+        0 => check!(
             f.prepare_inv(4, &inv, 24).is_err(),
             "frozen dependency prepared"
         ),
-        1 => assert!(
+        1 => check!(
             f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)
                 .is_err(),
             "frozen dependency staged"
         ),
-        _ => assert!(
+        _ => check!(
             f.r.w.engine_mut().take_staged_action().is_err(),
             "frozen dependency reached custody"
         ),
     }
-    assert_eq!(f.r.w.engine().action_state().revision(), revision);
-    assert_eq!(f.balance(f.payer)?, balance);
+    check_eq!(f.r.w.engine().action_state().revision(), revision);
+    check_eq!(f.balance(f.payer)?, balance);
     // Owner reads correctly refuse a frozen owner; the durable image is
     // compared directly without granting a post-freeze read capability.
-    assert!(
+    check!(
         factory_boot_image(&f.r.boot) == factory_boot_image(&disk),
         "refusal changed persistence"
     );
-    assert!(
+    check!(
         before.terminal.is_none(),
         "fixture must retain unfinished work"
     );

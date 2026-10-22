@@ -336,7 +336,9 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // different character, must fail final completeness even with valid JSON.
         let mut absent = restart.clone();
         remove_family(&mut absent, "roll", "roll_mind_draft_parent");
-        assert!(PlayerWorld::boot_forks(f, &absent, true).is_err());
+        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(
+            f, &absent, true
+        )));
         let mut crossed = restart.clone();
         let mut moved = row.clone();
         *moved.get_mut("character").ok_or("mind character")? = json!(GOD);
@@ -367,7 +369,9 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // Repair the canonical typed key too; rejection must be the actual
         // historical paid holder join, not an uncorrected key/body mismatch.
         move_selector(&mut crossed, GOD, 2)?;
-        assert!(PlayerWorld::boot_forks(f, &crossed, true).is_err());
+        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(
+            f, &crossed, true
+        )));
         Ok(())
     }
     .await;

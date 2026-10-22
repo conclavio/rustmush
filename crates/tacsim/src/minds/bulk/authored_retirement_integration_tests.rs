@@ -164,16 +164,16 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         restart.tasks.shutdown(Duration::from_secs(5)).await;
         for family in ["roll_mind_draft_parent","roll_mind_retired_draft_parent","roll_mind_authored_retirement"] {
             let mut corrupt=cold_saved.clone();remove_family(&mut corrupt,"roll",family);
-            assert!(PlayerWorld::boot_forks(f,&corrupt,true).is_err(),"missing paired retirement family refuses {family}");
+            assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&corrupt,true)),"missing paired retirement family refuses {family}");
         }
         for prefix in ["reference:roll:commercial:v1/draft_retirement/","reference:roll:unnamed_history:","reference:roll:named_version:"] {
             let mut corrupt=cold_saved.clone();let removed=corrupt.disk.keys().filter(|(ns,k)|ns=="roll" && k.starts_with(prefix)).cloned().collect::<Vec<_>>();
             assert!(!removed.is_empty(),"actual retention fixture exists");for key in removed {corrupt.disk.remove(&key);}
-            assert!(PlayerWorld::boot_forks(f,&corrupt,true).is_err(),"missing actual retirement retention refuses");
+            assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&corrupt,true)),"missing actual retirement retention refuses");
         }
         let mut both=cold_saved.clone();
         for ((ns,key),value) in &before {if ns=="roll" && (key==&format!("mind:{}:{}",BUYER.0,child.id()) || key==&format!("library:{}",BUYER.0)) {both.disk.insert((ns.clone(),key.clone()),value.clone());}}
-        assert!(PlayerWorld::boot_forks(f,&both,true).is_err(),"live and retired identity cannot coexist");
+        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&both,true)),"live and retired identity cannot coexist");
         Ok(())
     }.await;
     tasks.shutdown(Duration::from_secs(5)).await;

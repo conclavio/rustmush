@@ -115,9 +115,9 @@ fn current_paid_seats_count_prior_term_and_holder_claims_while_owned_has_no_seat
     let first = row(1, 11, one_seat()?)?;
     let empty = ClaimInventory::reconstruct(Vec::new())?;
     let held = empty.opening(first.clone())?;
-    assert_eq!(held.paid_open(first.open.licence), 1);
+    check_eq!(held.paid_open(first.open.licence), 1);
     let rebooted = ClaimInventory::reconstruct(vec![first.clone()])?;
-    assert_eq!(
+    check_eq!(
         (rebooted.generation(), rebooted.next_transition()),
         (held.generation(), held.next_transition()),
         "a reboot reproduces the live generation and transition head"
@@ -125,22 +125,22 @@ fn current_paid_seats_count_prior_term_and_holder_claims_while_owned_has_no_seat
     let mut later = row(2, 11, one_seat()?)?;
     later.open.dispatcher = ObjId(2);
     later.open.term = TermGeneration::new(2)?;
-    assert!(matches!(
+    check!(matches!(
         held.opening(later.clone()),
         Err(PublicationError::Capacity)
     ));
-    assert_eq!(held.open_len(), 1);
-    assert_eq!(held.claim(first.open.operation), Some(&first));
+    check_eq!(held.open_len(), 1);
+    check_eq!(held.claim(first.open.operation), Some(&first));
     let drained = held.closing(close(&first, 10001)?)?.ok_or("close")?;
     later.open.sortie = SortieNumber::try_from(drained.next_transition())?;
     let admitted = drained.opening(later)?;
-    assert_eq!(admitted.open_len(), 1);
-    assert_eq!(admitted.history_len(), 2);
+    check_eq!(admitted.open_len(), 1);
+    check_eq!(admitted.history_len(), 2);
     let owner = empty
         .opening(row(1, 21, Capacity::OwnedDispatch {})?)?
         .opening(row(2, 21, Capacity::OwnedDispatch {})?)?;
-    assert_eq!(owner.open_len(), 2);
-    assert_eq!(owner.paid_open(LicenceId::new(21)?), 0);
+    check_eq!(owner.open_len(), 2);
+    check_eq!(owner.paid_open(LicenceId::new(21)?), 0);
     Ok(())
 }
 
@@ -181,15 +181,15 @@ fn exact_close_is_idempotent_and_crossed_identity_cannot_release_capacity() -> T
     ];
     for make in crossed {
         let crossed = make(&a, &b, &cause);
-        assert!(held.closing(crossed).is_err());
+        check!(held.closing(crossed).is_err());
     }
-    assert_eq!(held.open_len(), 2);
+    check_eq!(held.open_len(), 2);
     let drained = held.closing(cause.clone())?.ok_or("close")?;
-    assert_eq!(drained.open_len(), 1);
-    assert_eq!(drained.paid_open(a.open.licence), 0);
-    assert_eq!(drained.paid_open(b.open.licence), 1);
+    check_eq!(drained.open_len(), 1);
+    check_eq!(drained.paid_open(a.open.licence), 0);
+    check_eq!(drained.paid_open(b.open.licence), 1);
     let generation = drained.generation();
-    assert!(drained.closing(cause.clone())?.is_none());
+    check!(drained.closing(cause.clone())?.is_none());
     // A retransmission with the same authentic event cannot rewrite its first
     // durable receipt even if a new submission has a different commit/stamp.
     let retry = CloseCause {
@@ -197,14 +197,14 @@ fn exact_close_is_idempotent_and_crossed_identity_cannot_release_capacity() -> T
         at_ic: stamp(900),
         ..cause.clone()
     };
-    assert!(drained.closing(retry)?.is_none());
-    assert_eq!(drained.generation(), generation);
+    check!(drained.closing(retry)?.is_none());
+    check_eq!(drained.generation(), generation);
     let changed = CloseCause {
         event_sequence: 2,
         ..cause.clone()
     };
-    assert!(drained.closing(changed).is_err());
-    assert_eq!(
+    check!(drained.closing(changed).is_err());
+    check_eq!(
         drained
             .claim(a.open.operation)
             .and_then(|v| v.closed.as_ref()),
@@ -225,16 +225,16 @@ fn reconstruction_keeps_expired_claims_and_rejects_duplicate_unit_sortie_commit(
     };
     closed.closed = Some(cause);
     let reboot = ClaimInventory::reconstruct(vec![closed, a.clone()])?;
-    assert_eq!(reboot.open_len(), 1);
-    assert_eq!(reboot.history_len(), 2);
-    assert_eq!(reboot.paid_open(a.open.licence), 1);
+    check_eq!(reboot.open_len(), 1);
+    check_eq!(reboot.history_len(), 2);
+    check_eq!(reboot.paid_open(a.open.licence), 1);
     let mut crossed = b.clone();
     crossed.open.unit = a.open.unit;
-    assert!(ClaimInventory::reconstruct(vec![a.clone(), crossed]).is_err());
+    check!(ClaimInventory::reconstruct(vec![a.clone(), crossed]).is_err());
     let mut crossed = b.clone();
     crossed.open.sortie = a.open.sortie;
-    assert!(ClaimInventory::reconstruct(vec![a.clone(), crossed]).is_err());
-    assert!(ClaimInventory::reconstruct(vec![a.clone(), a]).is_err());
+    check!(ClaimInventory::reconstruct(vec![a.clone(), crossed]).is_err());
+    check!(ClaimInventory::reconstruct(vec![a.clone(), a]).is_err());
     Ok(())
 }
 
@@ -250,21 +250,21 @@ fn global_open_bound_refuses_before_history_changes_and_real_close_frees_one_slo
         1,
         Capacity::OwnedDispatch {},
     )?;
-    assert!(matches!(
+    check!(matches!(
         held.opening(extra.clone()),
         Err(PublicationError::Capacity)
     ));
-    assert_eq!(held.history_len(), MAX_OPEN_IC_CLAIMS);
+    check_eq!(held.history_len(), MAX_OPEN_IC_CLAIMS);
     let cause = CloseCause {
         transition: held.next_transition(),
         ..close(&first, 100000)?
     };
     let drained = held.closing(cause)?.ok_or("close")?;
-    assert_eq!(drained.open_len(), MAX_OPEN_IC_CLAIMS - 1);
+    check_eq!(drained.open_len(), MAX_OPEN_IC_CLAIMS - 1);
     extra.open.sortie = SortieNumber::try_from(drained.next_transition())?;
     let reopened = drained.opening(extra)?;
-    assert_eq!(reopened.open_len(), MAX_OPEN_IC_CLAIMS);
-    assert_eq!(reopened.history_len(), MAX_OPEN_IC_CLAIMS + 1);
+    check_eq!(reopened.open_len(), MAX_OPEN_IC_CLAIMS);
+    check_eq!(reopened.history_len(), MAX_OPEN_IC_CLAIMS + 1);
     Ok(())
 }
 
@@ -280,7 +280,7 @@ fn cold_replay_refuses_historical_over_admission_even_when_both_claims_are_close
         transition: 4,
         ..close(&second, 10002)?
     });
-    assert!(matches!(
+    check!(matches!(
         ClaimInventory::reconstruct(vec![first.clone(), second.clone()]),
         Err(PublicationError::Capacity)
     ));
@@ -291,10 +291,10 @@ fn cold_replay_refuses_historical_over_admission_even_when_both_claims_are_close
     second.open.sortie = SortieNumber::try_from(3)?;
     second.closed = Some(close(&second, 10002)?);
     let book = ClaimInventory::reconstruct(vec![second.clone(), first.clone()])?;
-    assert_eq!(book.open_len(), 0);
-    assert_eq!(book.next_transition(), 5);
+    check_eq!(book.open_len(), 0);
+    check_eq!(book.next_transition(), 5);
     second.closed.as_mut().ok_or("close")?.transition = 5;
-    assert!(ClaimInventory::reconstruct(vec![first, second]).is_err());
+    check!(ClaimInventory::reconstruct(vec![first, second]).is_err());
     Ok(())
 }
 
@@ -302,27 +302,27 @@ fn cold_replay_refuses_historical_over_admission_even_when_both_claims_are_close
 fn historical_admission_and_nested_codecs_keep_the_closed_vocabulary() -> TestResult {
     let row = row(1, 1, one_seat()?)?;
     let raw = serde_json::to_vec(&row)?;
-    assert_eq!(serde_json::from_slice::<ClaimRecord>(&raw)?, row);
+    check_eq!(serde_json::from_slice::<ClaimRecord>(&raw)?, row);
     let mut omitted = serde_json::to_value(&row)?;
     omitted.as_object_mut().ok_or("object")?.remove("closed");
-    assert!(serde_json::from_value::<ClaimRecord>(omitted).is_err());
+    check!(serde_json::from_value::<ClaimRecord>(omitted).is_err());
     let mut unknown = serde_json::to_value(&row)?;
     unknown
         .as_object_mut()
         .ok_or("object")?
         .insert("allowed".into(), json!(true));
-    assert!(serde_json::from_value::<ClaimRecord>(unknown).is_err());
+    check!(serde_json::from_value::<ClaimRecord>(unknown).is_err());
     for value in [
         json!({"kind":"match_end"}),
         json!({"kind":"field_powerdown"}),
         json!({"kind":"destroyed","base":3}),
     ] {
-        assert!(serde_json::from_value::<CloseKind>(value).is_err());
+        check!(serde_json::from_value::<CloseKind>(value).is_err());
     }
     for at in [-1, 120, 121] {
         let mut stale = row.clone();
         stale.open.at_ic = stamp(at);
-        assert!(stale.validate().is_err());
+        check!(stale.validate().is_err());
     }
     let mut grace = row.clone();
     grace.open.at_ic = stamp(119);
@@ -330,10 +330,10 @@ fn historical_admission_and_nested_codecs_keep_the_closed_vocabulary() -> TestRe
     let mut crossed = row.clone();
     crossed.open.protocol.participants.exclusion =
         crossed.open.protocol.participants.custody.clone();
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut foreign = row.clone();
     foreign.open.action = foreign.open.protocol.action(Transition::Close)?;
-    assert!(foreign.validate().is_err());
+    check!(foreign.validate().is_err());
     Ok(())
 }
 
@@ -356,19 +356,19 @@ fn full_retained_history_refuses_new_open_but_preserves_the_last_genuine_close()
     }
     let last = rows.last().ok_or("last")?.clone();
     let held = ClaimInventory::reconstruct(rows)?;
-    assert_eq!(held.history_len(), MAX_IC_CLAIM_HISTORY);
-    assert_eq!(held.open_len(), 1);
+    check_eq!(held.history_len(), MAX_IC_CLAIM_HISTORY);
+    check_eq!(held.open_len(), 1);
     let drained = held.closing(close(&last, 200000)?)?.ok_or("last close")?;
-    assert_eq!(drained.open_len(), 0);
-    assert_eq!(drained.history_len(), MAX_IC_CLAIM_HISTORY);
+    check_eq!(drained.open_len(), 0);
+    check_eq!(drained.history_len(), MAX_IC_CLAIM_HISTORY);
     let mut extra = row(300000, 1, one_seat()?)?;
     extra.open.sortie = SortieNumber::try_from(drained.next_transition())?;
-    assert!(matches!(
+    check!(matches!(
         drained.opening(extra),
         Err(PublicationError::Capacity)
     ));
-    assert_eq!(drained.history_len(), MAX_IC_CLAIM_HISTORY);
-    assert!(drained.closing(close(&last, 200000)?)?.is_none());
+    check_eq!(drained.history_len(), MAX_IC_CLAIM_HISTORY);
+    check!(drained.closing(close(&last, 200000)?)?.is_none());
     Ok(())
 }
 
@@ -380,14 +380,14 @@ fn close_rejects_same_clock_rollback_but_allows_actual_new_generation() -> TestR
         at_ic: stamp(open.open.at_ic.at - 1),
         ..close(&open, 10001)?
     };
-    assert!(held.closing(before).is_err());
-    assert_eq!(held.open_len(), 1);
-    assert_eq!(held.claim(open.open.operation), Some(&open));
+    check!(held.closing(before).is_err());
+    check_eq!(held.open_len(), 1);
+    check_eq!(held.claim(open.open.operation), Some(&open));
     let same = CloseCause {
         at_ic: open.open.at_ic.clone(),
         ..close(&open, 10001)?
     };
-    assert_eq!(
+    check_eq!(
         held.closing(same)?.ok_or("same instant close")?.open_len(),
         0
     );
@@ -398,7 +398,7 @@ fn close_rejects_same_clock_rollback_but_allows_actual_new_generation() -> TestR
         },
         ..close(&open, 10001)?
     };
-    assert_eq!(
+    check_eq!(
         held.closing(changed)?
             .ok_or("changed clock close")?
             .open_len(),
@@ -412,8 +412,8 @@ fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests(
     let old = row(1, 21, Capacity::OwnedDispatch {})?;
     let bytes = serde_json::to_vec(&old)?;
     let legacy: ClaimRecord = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&legacy)?, bytes);
-    assert!(
+    check_eq!(serde_json::to_vec(&legacy)?, bytes);
+    check!(
         serde_json::to_value(&old.open)?
             .get("charter_ownership")
             .is_none()
@@ -428,15 +428,15 @@ fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests(
         },
     );
     new.validate()?;
-    assert_ne!(new.open.digest()?, old.open.digest()?);
-    assert_ne!(new.open.admission_digest()?, old.open.admission_digest()?);
+    check_ne!(new.open.digest()?, old.open.digest()?);
+    check_ne!(new.open.admission_digest()?, old.open.admission_digest()?);
     let held = ClaimInventory::reconstruct(vec![new.clone()])?;
     let closed = held
         .closing(close(&new, 10001)?)?
         .ok_or("real close projection")?;
     let retained = closed.claim(new.open.operation).ok_or("retained")?;
-    assert_eq!(retained.format, 2);
-    assert_eq!(retained.open, new.open);
+    check_eq!(retained.format, 2);
+    check_eq!(retained.open, new.open);
     ClaimInventory::reconstruct(vec![retained.clone()])?;
     for mode in 0..6 {
         let mut bad = new.clone();
@@ -460,7 +460,7 @@ fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests(
             }
             _ => bad.format = 3,
         }
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
     for corrupt in [
         serde_json::Value::Null,
@@ -471,7 +471,7 @@ fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests(
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("open")?
             .insert("charter_ownership".into(), corrupt);
-        assert!(serde_json::from_value::<ClaimRecord>(bad).is_err());
+        check!(serde_json::from_value::<ClaimRecord>(bad).is_err());
     }
     Ok(())
 }
@@ -481,7 +481,7 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
 {
     let old = row(1, 11, one_seat()?)?;
     let old_bytes = serde_json::to_value(&old)?;
-    assert!(old_bytes["open"].get("paid_ownership").is_none());
+    check!(old_bytes["open"].get("paid_ownership").is_none());
     let mut current = old.clone();
     current.format = 3;
     current.open.paid_ownership = Some(mush_economy::managed_paid_resale::PaidHolderRefV1 {
@@ -492,22 +492,22 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
     current.validate()?;
     ClaimInventory::reconstruct(vec![current.clone()])?;
     let value = serde_json::to_value(&current)?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<ClaimRecord>(value.clone())?,
         current
     );
-    assert_ne!(
+    check_ne!(
         current.open.admission_digest()?,
         old.open.admission_digest()?
     );
-    assert_eq!(serde_json::to_value(&old)?, old_bytes);
+    check_eq!(serde_json::to_value(&old)?, old_bytes);
     for format in [1, 2] {
         let mut x = value.clone();
         x["format"] = json!(format);
         // The registered family decoder validates after structural decoding.
         let crossed: ClaimRecord = serde_json::from_value(x)?;
-        assert!(crossed.validate().is_err());
-        assert!(ClaimInventory::reconstruct(vec![crossed]).is_err());
+        check!(crossed.validate().is_err());
+        check!(ClaimInventory::reconstruct(vec![crossed]).is_err());
     }
     for ownership in [
         serde_json::Value::Null,
@@ -516,7 +516,7 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
     ] {
         let mut x = value.clone();
         x["open"]["paid_ownership"] = ownership;
-        assert!(serde_json::from_value::<ClaimRecord>(x).is_err());
+        check!(serde_json::from_value::<ClaimRecord>(x).is_err());
     }
     let mut absent = value.clone();
     absent["open"]
@@ -524,9 +524,9 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
         .ok_or("object")?
         .remove("paid_ownership");
     let absent: ClaimRecord = serde_json::from_value(absent)?;
-    assert!(absent.validate().is_err());
-    assert!(ClaimInventory::reconstruct(vec![absent]).is_err());
+    check!(absent.validate().is_err());
+    check!(ClaimInventory::reconstruct(vec![absent]).is_err());
     current.open.capacity = Capacity::OwnedDispatch {};
-    assert!(current.validate().is_err());
+    check!(current.validate().is_err());
     Ok(())
 }

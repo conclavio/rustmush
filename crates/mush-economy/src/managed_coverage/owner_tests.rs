@@ -425,7 +425,7 @@ impl Fixture {
             .world_mut()
             .set_game_clock(mush_core::GameClock::default());
         let actor = world.spawn_player("Coverage service");
-        assert_eq!(actor, SERVICE);
+        check_eq!(actor, SERVICE);
         let buyer = world.spawn_player("Coverage buyer");
         let shell = world
             .world_mut()
@@ -509,7 +509,7 @@ impl Fixture {
             .state();
         let org = orgs.org(OrgId(0)).ok_or("actual insurer")?;
         let scope = orgs.scope(OrgScopeId(0)).ok_or("actual scope")?;
-        assert_eq!(scope.org, org.id);
+        check_eq!(scope.org, org.id);
         Ok(CoverageQuoteTermsV1 {
             format: 1,
             buyer: self.buyer,
@@ -597,7 +597,7 @@ impl Fixture {
     }
     fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Box<Self>> {
         let mut f = Self::empty_enabled(enabled)?;
-        assert_eq!(
+        check_eq!(
             (f.shell, f.actor, f.buyer),
             (self.shell, self.actor, self.buyer)
         );
@@ -775,14 +775,14 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
     let mut f = Fixture::new()?;
     let now = f.world.world().world_ic_now();
     let pending = f.bind(2)?;
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
-    assert_eq!(f.state().coverage_histories()?.len(), 0);
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
+    check_eq!(f.state().coverage_histories()?.len(), 0);
     f.publish(f.rules.actions[0].clone(), 2, pending)?;
     let h = history(&f)?;
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10100));
-    assert_eq!(h.consent().terms.starts_at, now);
-    assert_eq!(h.consent().terms.ends_at.at, now.at + 100);
-    assert_eq!(
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10100));
+    check_eq!(h.consent().terms.starts_at, now);
+    check_eq!(h.consent().terms.ends_at.at, now.at + 100);
+    check_eq!(
         f.state()
             .snapshot
             .hold(h.binding().hold())
@@ -790,7 +790,7 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
             .status,
         HoldStatus::Held
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(3))
@@ -800,7 +800,7 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
             .minor(),
         2100
     );
-    assert!(
+    check!(
         h.binding()
             .title()
             .encumbrances
@@ -808,8 +808,8 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
                 contract: h.contract_id()
             })
     );
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
-    assert!(f.bind(4).is_err());
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+    check!(crate::test_checks::refused(f.bind(4))?);
     Ok(())
 }
 
@@ -817,18 +817,18 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
 fn delayed_native_claim_moves_exact_wreck_title_and_pays_without_new_spend() -> Result {
     let mut f = bound()?;
     let h = history(&f)?;
-    assert!(f.terminal(3, loss(&f)?).is_err());
+    check!(f.terminal(3, loss(&f)?).is_err());
     f.world.world_mut().set_now(120);
     let p = f.terminal(3, loss(&f)?)?;
     f.publish(f.rules.actions[1].clone(), 3, p)?;
     let actual = history(&f)?;
-    assert_eq!(actual.consent(), h.consent());
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (17900, 2100));
+    check_eq!(actual.consent(), h.consent());
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (17900, 2100));
     let title = f.state().snapshot.asset(f.shell).ok_or("actual title")?;
-    assert_eq!(title.title_owner, PrincipalId::Organization(OrgId(0)));
-    assert_eq!(title.scope, Some(OrgScopeId(0)));
-    assert!(title.encumbrances.is_empty());
-    assert!(matches!(
+    check_eq!(title.title_owner, PrincipalId::Organization(OrgId(0)));
+    check_eq!(title.scope, Some(OrgScopeId(0)));
+    check!(title.encumbrances.is_empty());
+    check!(matches!(
         f.state()
             .snapshot
             .hold(h.binding().hold())
@@ -836,8 +836,8 @@ fn delayed_native_claim_moves_exact_wreck_title_and_pays_without_new_spend() -> 
             .status,
         HoldStatus::Consumed { .. }
     ));
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
-    assert!(f.terminal(4, loss(&f)?).is_err());
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
+    check!(f.terminal(4, loss(&f)?).is_err());
     Ok(())
 }
 
@@ -857,8 +857,8 @@ fn clean_close_and_buyer_cancellation_release_liability_but_keep_premium() -> Re
         let p = f.terminal(3, reason)?;
         f.publish(f.rules.actions[2].clone(), 3, p)?;
         let h = history(&f)?;
-        assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10100));
-        assert_eq!(
+        check_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10100));
+        check_eq!(
             f.state()
                 .snapshot
                 .hold(h.binding().hold())
@@ -867,9 +867,9 @@ fn clean_close_and_buyer_cancellation_release_liability_but_keep_premium() -> Re
             HoldStatus::Released
         );
         let title = f.state().snapshot.asset(f.shell).ok_or("title")?;
-        assert_eq!(title.title_owner, PrincipalId::Object(f.buyer));
-        assert!(title.encumbrances.is_empty());
-        assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+        check_eq!(title.title_owner, PrincipalId::Object(f.buyer));
+        check!(title.encumbrances.is_empty());
+        check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     }
     Ok(())
 }
@@ -882,7 +882,7 @@ fn expiry_clock_loss_interval_and_claim_delay_refuse_false_terminal_windows() ->
         close_digest: DefinitionDigest::from_bytes([50; 32]),
         transition: 2,
     };
-    assert!(f.terminal(3, expired.clone()).is_err());
+    check!(f.terminal(3, expired.clone()).is_err());
     f.world.world_mut().set_now(120);
     let original = loss(&f)?;
     for which in 0..4 {
@@ -898,12 +898,12 @@ fn expiry_clock_loss_interval_and_claim_delay_refuse_false_terminal_windows() ->
                 _ => *zone = f.rules.wrong.clone(),
             }
         }
-        assert!(f.terminal(3, bad).is_err());
+        check!(f.terminal(3, bad).is_err());
     }
     f.world.world_mut().set_now(200);
     let p = f.terminal(3, expired)?;
     f.publish(f.rules.actions[2].clone(), 3, p)?;
-    assert_eq!(posted(&f, 1)?, 9900);
+    check_eq!(posted(&f, 1)?, 9900);
     Ok(())
 }
 
@@ -913,8 +913,8 @@ fn native_cleanup_selector_can_cross_clock_but_claim_and_expiry_cannot() -> Resu
     let reason = loss(&f)?;
     let epoch = f.world.world().next_world_timeline_epoch(2)?;
     f.world.world_mut().append_world_timeline_epoch(epoch)?;
-    assert!(f.terminal(3, reason).is_err());
-    assert!(
+    check!(f.terminal(3, reason).is_err());
+    check!(
         f.terminal(
             3,
             CoverageDecisionKindV1::ExpiredClean {
@@ -927,7 +927,7 @@ fn native_cleanup_selector_can_cross_clock_but_claim_and_expiry_cannot() -> Resu
     );
     let p = f.terminal(3, clean())?;
     f.publish(f.rules.actions[2].clone(), 3, p)?;
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == history(&f)?);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == history(&f)?);
     Ok(())
 }
 
@@ -947,7 +947,7 @@ fn registered_action_actor_and_native_title_scope_are_all_required() -> Result {
             4 => terms.payer = AccountId(3),
             _ => terms.adjudicator = f.buyer,
         }
-        assert!(
+        check!(
             f.prepare(
                 &action,
                 actor,
@@ -959,8 +959,8 @@ fn registered_action_actor_and_native_title_scope_are_all_required() -> Result {
             )
             .is_err()
         );
-        assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
-        assert_eq!(f.state().coverage_histories()?.len(), 0);
+        check_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
+        check_eq!(f.state().coverage_histories()?.len(), 0);
     }
     let mut f = bound()?;
     let p = f.prepare(
@@ -972,7 +972,7 @@ fn registered_action_actor_and_native_title_scope_are_all_required() -> Result {
             reason: clean(),
         },
     );
-    assert!(p.is_err());
+    check!(p.is_err());
     Ok(())
 }
 
@@ -982,7 +982,7 @@ fn liability_must_be_prefunded_and_approval_rules_never_become_implicit_consent(
         let mut f = Fixture::new()?;
         if which == 0 {
             let _ = f.world.run(GOD, "@econ/pay 3=2 2100");
-            assert_eq!(posted(&f, 3)?, 7900);
+            check_eq!(posted(&f, 3)?, 7900);
         } else {
             let id = AccountId(if which < 3 { 1 } else { 3 });
             let mut a = f
@@ -1002,9 +1002,9 @@ fn liability_must_be_prefunded_and_approval_rules_never_become_implicit_consent(
             });
             f.state_mut().snapshot.put_account(a);
         }
-        assert!(f.bind(2).is_err());
-        assert_eq!(posted(&f, 1)?, 10000);
-        assert_eq!(f.state().coverage_histories()?.len(), 0);
+        check!(crate::test_checks::refused(f.bind(2))?);
+        check_eq!(posted(&f, 1)?, 10000);
+        check_eq!(f.state().coverage_histories()?.len(), 0);
     }
     Ok(())
 }
@@ -1019,7 +1019,7 @@ fn preimages_repeat_at_stage_take_and_consuming_bind_without_partial_money() -> 
             let mut title = f.state().snapshot.asset(f.shell).ok_or("title")?.clone();
             title.revision += 1;
             f.state_mut().snapshot.put_asset(title);
-            assert!(f.stage(action, 2, pending).is_err());
+            check!(f.stage(action, 2, pending).is_err());
         } else {
             f.stage(action, 2, pending)?;
             let held = if boundary == 2 {
@@ -1030,18 +1030,18 @@ fn preimages_repeat_at_stage_take_and_consuming_bind_without_partial_money() -> 
             f.state_mut().next_transaction += 1;
             if let Some(held) = held {
                 let (_, install) = held.into_parts();
-                assert!(
+                check!(
                     f.world
                         .engine_mut()
                         .install_composed_action(install)
                         .is_err()
                 );
             } else {
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             }
         }
-        assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
-        assert_eq!(f.state().coverage_histories()?.len(), 0);
+        check_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
+        check_eq!(f.state().coverage_histories()?.len(), 0);
     }
     Ok(())
 }
@@ -1072,9 +1072,9 @@ fn raw_native_inventory_refuses_missing_or_crossed_contract_hold_and_title() -> 
                 _ => v["revision"] = json!(999),
             }
         }
-        assert!(f.cold(boot).is_err());
+        check!(crate::test_checks::refused(f.cold(boot))?);
     }
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -1083,9 +1083,9 @@ fn disabled_owner_cannot_recover_retained_coverage_even_without_fixture_rows() -
     let f = bound()?;
     let mut boot = f.boot.clone();
     boot.remove("tacsim");
-    assert!(f.cold_enabled(boot, false).is_err());
+    check!(crate::test_checks::refused(f.cold_enabled(boot, false))?);
     let empty = Fixture::new()?;
-    assert!(empty.cold_enabled(empty.boot.clone(), false).is_ok());
+    check!(empty.cold_enabled(empty.boot.clone(), false).is_ok());
     Ok(())
 }
 
@@ -1112,7 +1112,7 @@ fn sparse_bind_and_terminal_match_journal_fold_and_checkpoint_exact_inventory() 
         };
         let tx = f.state().transactions.get(&id).ok_or("actual journal")?;
         full.fold_entry(tx.journal_seq, tx);
-        assert!(serde_json::to_value(&full)? == serde_json::to_value(&f.state().fold)?);
+        check!(serde_json::to_value(&full)? == serde_json::to_value(&f.state().fold)?);
         let index: Vec<_> = f
             .state()
             .transactions
@@ -1126,10 +1126,10 @@ fn sparse_bind_and_terminal_match_journal_fold_and_checkpoint_exact_inventory() 
                 plan_hash: t.plan_hash.iter().map(|b| format!("{b:02x}")).collect(),
             })
             .collect();
-        assert!(f.state().fold.coverage_receipts.checkpoint_complete(&index));
+        check!(f.state().fold.coverage_receipts.checkpoint_complete(&index));
         let mut missing = index.clone();
         missing.retain(|r| r.tx != id);
-        assert!(
+        check!(
             !f.state()
                 .fold
                 .coverage_receipts
@@ -1137,7 +1137,7 @@ fn sparse_bind_and_terminal_match_journal_fold_and_checkpoint_exact_inventory() 
         );
         let mut duplicate = index;
         duplicate.push(duplicate.iter().find(|r| r.tx == id).ok_or("row")?.clone());
-        assert!(
+        check!(
             !f.state()
                 .fold
                 .coverage_receipts
@@ -1174,7 +1174,7 @@ fn legacy_engine_cannot_release_managed_collateral_or_hold_and_sweep_retains_ter
         spent: Default::default(),
         keys: &gate,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&plan, &f.state().snapshot, &env),
         crate::PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
@@ -1185,7 +1185,7 @@ fn legacy_engine_cannot_release_managed_collateral_or_hold_and_sweep_retains_ter
             contract: h.contract_id(),
         },
     });
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&plan, &f.state().snapshot, &env),
         crate::PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
@@ -1196,8 +1196,8 @@ fn legacy_engine_cannot_release_managed_collateral_or_hold_and_sweep_retains_ter
     f.world.set_now(at);
     let _ = f.world.fire_due(at * 1000);
     fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
-    assert!(f.state().snapshot.hold(h.binding().hold()).is_some());
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == terminal);
+    check!(f.state().snapshot.hold(h.binding().hold()).is_some());
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == terminal);
     Ok(())
 }
 
@@ -1208,7 +1208,7 @@ fn persisted_consent_requires_explicit_null_and_refuses_unknown_duplicate_and_in
     let h = history(&f)?;
     let consent = h.consent();
     let raw = serde_json::to_vec(consent)?;
-    assert!(CoverageConsentV1::decode(&raw)? == *consent);
+    check!(CoverageConsentV1::decode(&raw)? == *consent);
     for which in 0..8 {
         let mut value = serde_json::to_value(consent)?;
         match which {
@@ -1240,14 +1240,14 @@ fn persisted_consent_requires_explicit_null_and_refuses_unknown_duplicate_and_in
                 value["basis"]["quote"] = value["basis"]["product"].clone();
             }
         }
-        assert!(CoverageConsentV1::decode(&serde_json::to_vec(&value)?).is_err());
+        check!(CoverageConsentV1::decode(&serde_json::to_vec(&value)?).is_err());
     }
     let duplicate =
         String::from_utf8(raw)?.replacen("\"format\":1", "\"format\":1,\"format\":1", 1);
-    assert!(CoverageConsentV1::decode(duplicate.as_bytes()).is_err());
-    assert!(CoverageConsentV1::decode(&vec![b' '; MAX_SUBJECT_BYTES + 1]).is_err());
-    assert_eq!(consent.terms.insurer, OrgId(0));
-    assert_eq!(consent.terms.scope, OrgScopeId(0));
+    check!(CoverageConsentV1::decode(duplicate.as_bytes()).is_err());
+    check!(CoverageConsentV1::decode(&vec![b' '; MAX_SUBJECT_BYTES + 1]).is_err());
+    check_eq!(consent.terms.insurer, OrgId(0));
+    check_eq!(consent.terms.scope, OrgScopeId(0));
     Ok(())
 }
 
@@ -1258,8 +1258,8 @@ fn history_decode_is_bounded_canonical_and_does_not_accept_missing_terminal_or_c
     let h = history(&f)?;
     let value = serde_json::to_value(&h)?;
     let raw = mush_core::canonical_json_bytes_with_limit(&value, MAX_HISTORY_BYTES)?;
-    assert!(CoverageHistory::decode(&raw)? == h);
-    assert!(CoverageHistory::decode(&serde_json::to_vec_pretty(&value)?).is_err());
+    check!(CoverageHistory::decode(&raw)? == h);
+    check!(CoverageHistory::decode(&serde_json::to_vec_pretty(&value)?).is_err());
     for which in 0..4 {
         let mut bad = value.clone();
         match which {
@@ -1277,9 +1277,9 @@ fn history_decode_is_bounded_canonical_and_does_not_accept_missing_terminal_or_c
             }
         }
         let bytes = mush_core::canonical_json_bytes_with_limit(&bad, MAX_HISTORY_BYTES)?;
-        assert!(CoverageHistory::decode(&bytes).is_err());
+        check!(CoverageHistory::decode(&bytes).is_err());
     }
-    assert!(CoverageHistory::decode(&vec![b' '; MAX_HISTORY_BYTES + 1]).is_err());
+    check!(CoverageHistory::decode(&vec![b' '; MAX_HISTORY_BYTES + 1]).is_err());
     Ok(())
 }
 
@@ -1291,8 +1291,8 @@ fn checkpoint_complete_flag_never_supplies_verified_health_and_duplicate_history
     let h = history(&f)?;
     let encoded = serde_json::to_value(&f.state().fold.coverage_receipts)?;
     let mut decoded: CoverageBook = serde_json::from_value(encoded.clone())?;
-    assert!(decoded.histories().is_err());
-    assert!(
+    check!(decoded.histories().is_err());
+    check!(
         decoded
             .finish_replay(
                 &Default::default(),
@@ -1301,25 +1301,25 @@ fn checkpoint_complete_flag_never_supplies_verified_health_and_duplicate_history
             )
             .is_err()
     );
-    assert!(decoded.histories().is_err());
+    check!(decoded.histories().is_err());
     let mut forged = encoded;
     forged["verified"] = json!(true);
-    assert!(serde_json::from_value::<CoverageBook>(forged).is_err());
+    check!(serde_json::from_value::<CoverageBook>(forged).is_err());
     let key = serde_json::to_string(&h.consent().operation)?;
     let row = serde_json::to_string(&h)?;
     let duplicate = format!(
         "{{\"histories\":{{{key}:{row},{key}:{row}}},\"complete\":true,\"invalid\":false}}"
     );
-    assert!(serde_json::from_str::<CoverageBook>(&duplicate).is_err());
+    check!(serde_json::from_str::<CoverageBook>(&duplicate).is_err());
     let mut empty: CoverageBook =
         serde_json::from_value(json!({"histories":{},"complete":true,"invalid":false}))?;
-    assert!(empty.histories().is_err());
+    check!(empty.histories().is_err());
     empty.finish_replay(
         &Default::default(),
         &Default::default(),
         &Default::default(),
     )?;
-    assert_eq!(empty.histories()?.len(), 0);
+    check_eq!(empty.histories()?.len(), 0);
     Ok(())
 }
 
@@ -1338,7 +1338,7 @@ fn bind_reserves_future_title_width_before_charging_at_the_admitted_size_boundar
     )?
     .len();
     title.catalog.as_mut().ok_or("catalog")?.code = "x".repeat(MAX_TITLE_BYTES - fixed).into();
-    assert_eq!(
+    check_eq!(
         mush_core::canonical_json_bytes_with_limit(
             &serde_json::to_value(&title)?,
             MAX_TITLE_BYTES
@@ -1352,8 +1352,8 @@ fn bind_reserves_future_title_width_before_charging_at_the_admitted_size_boundar
         .journal_assets
         .insert(hull, title.clone());
     f.state_mut().snapshot.put_asset(title);
-    assert!(f.bind(2).is_err());
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
-    assert_eq!(f.state().coverage_histories()?.len(), 0);
+    check!(crate::test_checks::refused(f.bind(2))?);
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
+    check_eq!(f.state().coverage_histories()?.len(), 0);
     Ok(())
 }

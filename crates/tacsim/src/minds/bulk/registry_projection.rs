@@ -201,8 +201,8 @@ mod tests {
         let initial = change.resulting_run(run).ok_or("prepared run")?;
         let admitted = admission(account, job, initial)?;
         let queued = observation(initial)?;
-        assert_eq!((admitted.cases, admitted.maximum_pages), (2, 1));
-        assert_eq!(
+        check_eq!((admitted.cases, admitted.maximum_pages), (2, 1));
+        check_eq!(
             (queued.phase, queued.charged_unit_ms),
             (ExecutionPhase::Queued, 0)
         );
@@ -214,7 +214,7 @@ mod tests {
             &admitted,
             &queued,
         )?;
-        assert!(
+        check!(
             require_before(
                 account,
                 CommitToken::from_bytes([6; 16]),
@@ -227,7 +227,7 @@ mod tests {
         let change = store.prepare_grant(account, run, 0, 2000)?;
         let granted = observation(change.resulting_run(run).ok_or("grant")?)?;
         let paid = granted.flight.as_ref().ok_or("paid flight")?;
-        assert_eq!(
+        check_eq!(
             (paid.units, paid.allowance_unit_ms, granted.charged_unit_ms),
             (2, 4000, 4000)
         );
@@ -250,9 +250,9 @@ mod tests {
             1,
         )?;
         let settled = observation(change.resulting_run(run).ok_or("settled run")?)?;
-        assert_eq!((settled.cursor.index, settled.charged_unit_ms), (1, 500));
-        assert!(settled.flight.is_none());
-        assert_eq!(
+        check_eq!((settled.cursor.index, settled.charged_unit_ms), (1, 500));
+        check!(settled.flight.is_none());
+        check_eq!(
             admission(account, job, change.resulting_run(run).ok_or("run")?)?,
             admitted
         );
@@ -260,7 +260,7 @@ mod tests {
         let change = store.prepare_grant(account, run, 1, 2000)?;
         let second = observation(change.resulting_run(run).ok_or("second grant")?)?;
         let paid = second.flight.as_ref().ok_or("second flight")?;
-        assert_eq!(
+        check_eq!(
             (paid.units, paid.allowance_unit_ms, second.charged_unit_ms),
             (33, 66_000, 66_500)
         );
@@ -286,19 +286,19 @@ mod tests {
             result: None,
             terminal: Some(Status::Failed),
         };
-        assert!(store.prepare_finish(failed.clone(), 1).is_err());
-        assert_eq!(observation(store.run(account, actor, run)?)?, before);
+        check!(store.prepare_finish(failed.clone(), 1).is_err());
+        check_eq!(observation(store.run(account, actor, run)?)?, before);
         failed.actual_unit_ms = 4000;
         let change = store.prepare_finish(failed, 1)?;
         let after = observation(change.resulting_run(run).ok_or("failed run")?)?;
-        assert_eq!(
+        check_eq!(
             (after.phase, after.charged_unit_ms),
             (ExecutionPhase::Failed, 4000)
         );
-        assert!(after.flight.is_none());
-        assert!(after.result.is_none());
+        check!(after.flight.is_none());
+        check!(after.result.is_none());
         apply(&mut store, change)?;
-        assert_eq!(
+        check_eq!(
             observation(store.run(account, actor, RunId(run.0))?)?,
             after
         );

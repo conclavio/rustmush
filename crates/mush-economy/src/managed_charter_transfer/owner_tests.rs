@@ -655,7 +655,7 @@ impl Fixture {
     }
     fn cold(&self, mut boot: Boot) -> Result<Box<Self>> {
         let mut f = Self::empty()?;
-        assert_eq!(
+        check_eq!(
             (f.shell, f.actor, f.buyer),
             (self.shell, self.actor, self.buyer)
         );
@@ -826,10 +826,10 @@ fn pending_fund_installs_one_real_buyer_acceptance_and_hold_without_title_or_deb
     let mut f = Fixture::new()?;
     let before = f.state().snapshot.clone();
     let p = f.fund(2)?;
-    assert!(f.state().snapshot == before, "preparation must not publish");
+    check!(f.state().snapshot == before, "preparation must not publish");
     let writes = f.stage(f.rules.fund.clone(), 2, p)?;
-    assert!(f.state().snapshot == before, "staging must not publish");
-    assert!(
+    check!(f.state().snapshot == before, "staging must not publish");
+    check!(
         writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
@@ -847,18 +847,18 @@ fn pending_fund_installs_one_real_buyer_acceptance_and_hold_without_title_or_deb
         .hold(h.funding().hold())
         .ok_or("actual hold")?;
     h.verify_documents(c, held)?;
-    assert_eq!(c.consent.parties, vec![PrincipalId::Object(f.buyer)]);
-    assert_eq!(c.acceptances.len(), 1);
-    assert_eq!(
+    check_eq!(c.consent.parties, vec![PrincipalId::Object(f.buyer)]);
+    check_eq!(c.acceptances.len(), 1);
+    check_eq!(
         c.acceptances.first().ok_or("acceptance")?.party,
         PrincipalId::Object(f.buyer)
     );
-    assert!(c.consent.deadline.is_none());
-    assert_eq!(held.status, HoldStatus::Held);
-    assert!(held.expires.is_none());
-    assert!(f.state().snapshot.asset(f.shell) == before.asset(f.shell));
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10000));
-    assert_eq!(
+    check!(c.consent.deadline.is_none());
+    check_eq!(held.status, HoldStatus::Held);
+    check!(held.expires.is_none());
+    check!(f.state().snapshot.asset(f.shell) == before.asset(f.shell));
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10000));
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(3))
@@ -866,7 +866,7 @@ fn pending_fund_installs_one_real_buyer_acceptance_and_hold_without_title_or_deb
             .available(),
         Some(Amount::from_minor(9500))
     );
-    assert!(h.terminal().is_none());
+    check!(h.terminal().is_none());
     // No service, claim or seller-consent authority is inferred from this
     // fixture's inert typed witness. Production Roll must prove those joins.
     Ok(())
@@ -874,7 +874,7 @@ fn pending_fund_installs_one_real_buyer_acceptance_and_hold_without_title_or_deb
 #[test]
 fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once() -> Result {
     let mut f = funded()?;
-    assert!(
+    check!(
         f.terminal(
             3,
             CharterPendingDecisionKindV1::DeadlineReached {
@@ -897,8 +897,8 @@ fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once()
     f.publish(f.rules.settle.clone(), 3, p)?;
     let h = history(&f)?;
     let t = h.terminal().ok_or("actual terminal")?;
-    assert!(t.decision().reason.settles());
-    assert_eq!(
+    check!(t.decision().reason.settles());
+    check_eq!(
         f.state()
             .snapshot
             .asset(f.shell)
@@ -906,8 +906,8 @@ fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once()
             .title_owner,
         PrincipalId::Object(f.buyer)
     );
-    assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10400, 9500));
-    assert_eq!(
+    check_eq!((posted(&f, 1)?, posted(&f, 3)?), (10400, 9500));
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(3))
@@ -915,7 +915,7 @@ fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once()
             .held_amount,
         Amount::ZERO
     );
-    assert!(matches!(
+    check!(matches!(
         f.state()
             .snapshot
             .hold(h.funding().hold())
@@ -923,7 +923,7 @@ fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once()
             .status,
         HoldStatus::Consumed { .. }
     ));
-    assert!(
+    check!(
         f.terminal(
             4,
             CharterPendingDecisionKindV1::LastClaimClosed { next_transition: 2 }
@@ -931,9 +931,9 @@ fn pending_deadline_is_positive_and_real_settlement_moves_title_and_money_once()
         .is_err()
     );
     let cold = f.cold(f.boot.clone())?;
-    assert!(history(&cold)? == h);
-    assert!(cold.state().snapshot.asset(f.shell) == f.state().snapshot.asset(f.shell));
-    assert_eq!(
+    check!(history(&cold)? == h);
+    check!(cold.state().snapshot.asset(f.shell) == f.state().snapshot.asset(f.shell));
+    check_eq!(
         cold.state()
             .charter_transfer_receipt_audit()
             .receipts()?
@@ -951,7 +951,7 @@ fn pending_last_claim_close_and_already_due_term_cap_settle_without_waiting_more
         CharterPendingDecisionKindV1::LastClaimClosed { next_transition: 8 },
     )?;
     f.publish(f.rules.settle.clone(), 3, p)?;
-    assert_eq!(posted(&f, 3)?, 9500);
+    check_eq!(posted(&f, 3)?, 9500);
     let mut f = Fixture::new()?;
     let mut terms = f.terms()?;
     terms.owner_term.term_end = terms.offered_at_ic.at - 1;
@@ -966,7 +966,7 @@ fn pending_last_claim_close_and_already_due_term_cap_settle_without_waiting_more
         },
     )?;
     f.publish(f.rules.fund.clone(), 2, p)?;
-    assert!(
+    check!(
         history(&f)?
             .consent()
             .deadline_reached(&f.world.world().world_ic_now())?
@@ -979,7 +979,7 @@ fn pending_last_claim_close_and_already_due_term_cap_settle_without_waiting_more
         },
     )?;
     f.publish(f.rules.settle.clone(), 3, p)?;
-    assert_eq!(posted(&f, 3)?, 9500);
+    check_eq!(posted(&f, 3)?, 9500);
     Ok(())
 }
 #[test]
@@ -1004,7 +1004,7 @@ fn pending_clock_and_recipient_refunds_release_real_hold_without_transfer() -> R
             let _ = f.world.world_mut().take_dirty();
             CharterPendingDecisionKindV1::RecipientUnavailable
         };
-        assert!(
+        check!(
             f.terminal(
                 3,
                 CharterPendingDecisionKindV1::LastClaimClosed { next_transition: 2 }
@@ -1013,10 +1013,10 @@ fn pending_clock_and_recipient_refunds_release_real_hold_without_transfer() -> R
         );
         let p = f.terminal(3, reason)?;
         f.publish(f.rules.refund.clone(), 3, p)?;
-        assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10000));
-        assert!(f.state().snapshot.asset(f.shell) == Some(&title));
+        check_eq!((posted(&f, 1)?, posted(&f, 3)?), (9900, 10000));
+        check!(f.state().snapshot.asset(f.shell) == Some(&title));
         let h = history(&f)?;
-        assert_eq!(
+        check_eq!(
             f.state()
                 .snapshot
                 .hold(h.funding().hold())
@@ -1025,7 +1025,7 @@ fn pending_clock_and_recipient_refunds_release_real_hold_without_transfer() -> R
             HoldStatus::Released
         );
         let cold = f.cold(f.boot.clone())?;
-        assert!(history(&cold)? == h);
+        check!(history(&cold)? == h);
     }
     Ok(())
 }
@@ -1050,9 +1050,9 @@ fn pending_exact_registry_term_refund_is_in_same_actual_owner_commit() -> Result
     )?;
     f.publish(f.rules.revoke.clone(), 3, p)?;
     let terminal = history(&f)?.terminal().ok_or("terminal")?.clone();
-    assert_eq!(terminal.decision().operation, token(3));
-    assert_eq!(terminal.decision().action, f.rules.revoke);
-    assert_eq!(posted(&f, 3)?, 10000);
+    check_eq!(terminal.decision().operation, token(3));
+    check_eq!(terminal.decision().action, f.rules.revoke);
+    check_eq!(posted(&f, 3)?, 10000);
     // This is the real configured E4 owner leg. The fixture does not fabricate
     // a Registry sanction: production Roll's separate same-union proof is owed.
     Ok(())
@@ -1094,15 +1094,15 @@ fn pending_funding_rechecks_actual_payer_title_and_clock_at_stage_and_take() -> 
             }
             let _ = f.world.world_mut().take_dirty();
             if at_take {
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             } else {
-                assert!(
+                check!(
                     f.stage(f.rules.fund.clone(), 2, prepared.take().ok_or("prepared")?)
                         .is_err()
                 );
             }
-            assert!(f.state().pending_charter_histories()?.next().is_none());
-            assert_eq!(
+            check!(f.state().pending_charter_histories()?.next().is_none());
+            check_eq!(
                 f.state()
                     .snapshot
                     .account(AccountId(3))
@@ -1131,17 +1131,17 @@ fn pending_post_ack_native_drift_cannot_publish_any_prepared_money_or_title() ->
         .ok_or("title")?
         .revision += 1;
     let before = f.state().snapshot.clone();
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .install_composed_action(install)
             .is_err()
     );
-    assert!(
+    check!(
         f.state().snapshot == before,
         "failed consuming bind must not apply any owner image"
     );
-    assert!(history(&f)?.terminal().is_none());
+    check!(history(&f)?.terminal().is_none());
     Ok(())
 }
 #[test]
@@ -1149,7 +1149,7 @@ fn pending_cold_recovery_refuses_missing_crossed_extra_and_disabled_native_histo
     let f = funded()?;
     let h = history(&f)?;
     let good = f.cold(f.boot.clone())?;
-    assert!(history(&good)? == h);
+    check!(history(&good)? == h);
     for change in 0..4 {
         let mut boot = f.boot.clone();
         let data = boot.get_mut("economy").ok_or("economic boot")?;
@@ -1181,15 +1181,15 @@ fn pending_cold_recovery_refuses_missing_crossed_extra_and_disabled_native_histo
                     .push((crate::api::hold_key(hold.id), serde_json::to_value(hold)?));
             }
         }
-        assert!(f.cold(boot).is_err());
+        check!(crate::test_checks::refused(f.cold(boot))?);
     }
     let mut disabled = TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(crate::EconomyModule::new()),
     ]);
     let _ = disabled.take_module_ops();
-    assert!(disabled.try_modules_loaded(f.boot.clone()).is_err());
-    assert!(disabled.take_module_ops().is_empty());
+    check!(disabled.try_modules_loaded(f.boot.clone()).is_err());
+    check!(disabled.take_module_ops().is_empty());
     Ok(())
 }
 #[test]
@@ -1203,19 +1203,19 @@ fn pending_actual_journal_and_checkpoint_inverse_keep_replay_latch_and_full_enve
     let actual = history(&f)?;
     let audit = &f.state().fold.charter_pending_receipts;
     let rows = journal_rows(&f);
-    assert!(audit.checkpoint_complete(&rows));
+    check!(audit.checkpoint_complete(&rows));
     let retained = serde_json::to_value(audit)?;
     let mut parsed: history::CharterPendingAudit = serde_json::from_value(retained)?;
-    assert!(
+    check!(
         parsed.get(token(2)).is_err(),
         "serialized health never grants a live latch"
     );
     parsed.finish_replay()?;
-    assert!(parsed.get(token(2))? == &actual);
-    assert!(!audit.checkpoint_complete(&[]));
+    check!(parsed.get(token(2))? == &actual);
+    check!(!audit.checkpoint_complete(&[]));
     let mut missing = rows.clone();
     missing.retain(|r| r.ns.as_str() != NAMESPACE);
-    assert!(!audit.checkpoint_complete(&missing));
+    check!(!audit.checkpoint_complete(&missing));
     let fund = rows
         .iter()
         .find(|r| r.ns.as_str() == NAMESPACE)
@@ -1223,7 +1223,7 @@ fn pending_actual_journal_and_checkpoint_inverse_keep_replay_latch_and_full_enve
         .clone();
     let mut duplicate = rows.clone();
     duplicate.push(fund);
-    assert!(!audit.checkpoint_complete(&duplicate));
+    check!(!audit.checkpoint_complete(&duplicate));
     let mut txs: Vec<_> = f.state().transactions.values().cloned().collect();
     txs.sort_by_key(|t| t.journal_seq);
     let mut replay = history::CharterPendingAudit::default();
@@ -1231,13 +1231,13 @@ fn pending_actual_journal_and_checkpoint_inverse_keep_replay_latch_and_full_enve
         replay.observe(tx);
     }
     replay.finish_replay()?;
-    assert!(replay.get(token(2))? == &actual);
+    check!(replay.get(token(2))? == &actual);
     let raw = mush_core::canonical_json_bytes_with_limit(
         &serde_json::to_value(&actual)?,
         MAX_PENDING_HISTORY_BYTES,
     )?;
-    assert!(CharterPendingHistory::decode(&raw)? == actual);
-    assert!(serde_json::to_vec(&actual.contract()?)?.len() <= MAX_PENDING_CONTRACT_BYTES);
+    check!(CharterPendingHistory::decode(&raw)? == actual);
+    check!(serde_json::to_vec(&actual.contract()?)?.len() <= MAX_PENDING_CONTRACT_BYTES);
     for tx in txs
         .iter()
         .filter(|t| t.idempotency.namespace.as_str() == NAMESPACE)
@@ -1245,7 +1245,7 @@ fn pending_actual_journal_and_checkpoint_inverse_keep_replay_latch_and_full_enve
         let EconomicCause::Ruleset { correlation, .. } = &tx.cause else {
             return Err("native cause".into());
         };
-        assert!(correlation.len() <= MAX_PENDING_CORRELATION_BYTES);
+        check!(correlation.len() <= MAX_PENDING_CORRELATION_BYTES);
     }
     Ok(())
 }
@@ -1269,7 +1269,7 @@ fn pending_funding_requires_the_actual_charter_birth_and_exact_configured_action
             1 => action = f.rules.wrong.clone(),
             _ => actor = f.actor,
         }
-        assert!(
+        check!(
             f.prepare(
                 &action,
                 actor,
@@ -1281,11 +1281,11 @@ fn pending_funding_requires_the_actual_charter_birth_and_exact_configured_action
             )
             .is_err()
         );
-        assert!(
+        check!(
             f.state().snapshot == before_state,
             "refusal changed native state"
         );
-        assert!(
+        check!(
             f.world.take_module_ops().is_empty(),
             "refusal published native documents"
         );
@@ -1293,8 +1293,8 @@ fn pending_funding_requires_the_actual_charter_birth_and_exact_configured_action
     let actual = f.fund(2)?;
     f.publish(f.rules.fund.clone(), 2, actual)?;
     let h = history(&f)?;
-    assert_eq!(h.consent().terms.birth, token(1));
-    assert!(f.cold(f.boot.clone()).is_ok());
+    check_eq!(h.consent().terms.birth, token(1));
+    check!(f.cold(f.boot.clone()).is_ok());
     Ok(())
 }
 
@@ -1316,7 +1316,7 @@ fn pending_namespace_refuses_legacy_replay_and_terminal_hold_survives_real_sweep
         spent: Default::default(),
         keys: &gate,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&plan, &f.state().snapshot, &env),
         PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
@@ -1337,14 +1337,14 @@ fn pending_namespace_refuses_legacy_replay_and_terminal_hold_survives_real_sweep
         .world
         .fire_due(at.checked_mul(1000).ok_or("gc milliseconds")?);
     fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
-    assert!(f.state().snapshot.hold(actual.funding().hold()).is_some());
-    assert!(
+    check!(f.state().snapshot.hold(actual.funding().hold()).is_some());
+    check!(
         f.state()
             .fold
             .journal_holds
             .contains_key(&actual.funding().hold())
     );
-    assert!(history(&f)? == actual);
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
+    check!(history(&f)? == actual);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
     Ok(())
 }

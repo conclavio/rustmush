@@ -49,8 +49,8 @@ fn invoke(
             _ => None,
         });
     let (audience, response) = responses.next().ok_or("actual workshop response")?;
-    assert_eq!(audience, Audience::Conn(conn));
-    assert!(responses.next().is_none());
+    check_eq!(audience, Audience::Conn(conn));
+    check!(responses.next().is_none());
     Ok(response)
 }
 fn read(world: &mut PlayerWorld) -> TestResult<(MindDraft, MindEditBase)> {
@@ -83,7 +83,7 @@ fn refused(response: MindResponse) {
 fn probe(world: &mut PlayerWorld, verb: &str, accepted: bool) -> TestResult {
     let events = line(world, &format!("@authored-probe {verb}"))?;
     let text = PlayerWorld::private_text(&events, BUYER);
-    assert!(
+    check!(
         text.contains(if accepted {
             "probe accepted"
         } else {
@@ -92,7 +92,7 @@ fn probe(world: &mut PlayerWorld, verb: &str, accepted: bool) -> TestResult {
         "{text}"
     );
     if !accepted {
-        assert!(
+        check!(
             events
                 .iter()
                 .all(|(_, e)| !mush_testkit::text_of(e).contains("this.landed"))
@@ -109,14 +109,14 @@ fn private_source(events: &Events, expected: &str) -> TestResult {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(actual.len(), expected.len());
+    check_eq!(actual.len(), expected.len());
     for ((audience, line), expected) in actual.into_iter().zip(expected) {
-        assert_eq!(
+        check_eq!(
             *audience,
             Audience::Conn(BUYER_CONN),
             "no same-character actor/resume output"
         );
-        assert_eq!(line, expected);
+        check_eq!(line, expected);
     }
     Ok(())
 }
@@ -394,7 +394,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
             Ok(())
         })?;
         assert!(
-            PlayerWorld::boot_forks(f, &changed, true).is_err(),
+            crate::test_checks::refused(PlayerWorld::boot_forks(f, &changed, true))?,
             "a forged {field} cause loaded"
         );
     }

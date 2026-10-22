@@ -2855,7 +2855,7 @@ mod tests {
                 source: &str,
                 envelope: &mush_roll::Envelope,
             ) -> Result<(), mush_roll::RollError> {
-                assert_eq!(envelope.mind_abi, OLD_ABI);
+                check_eq!(envelope.mind_abi, OLD_ABI);
                 crate::minds::authoring::validate_retained_registry(source, envelope)
             }
         }

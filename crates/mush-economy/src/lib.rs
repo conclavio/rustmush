@@ -80,6 +80,14 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 // E2a — the pure library.
 mod amount;
 pub mod core_integration;

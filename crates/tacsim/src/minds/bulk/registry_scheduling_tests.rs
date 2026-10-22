@@ -61,7 +61,7 @@ impl ScheduledRegistry {
     }
     fn callbacks(&self) -> TestResult<Vec<i64>> {
         let pending = self.world.engine().sched.pending_entries();
-        assert_eq!(pending.omitted(), 0, "bounded actual scheduler inspection");
+        check_eq!(pending.omitted(), 0, "bounded actual scheduler inspection");
         Ok(pending
             .entries()
             .iter()
@@ -82,9 +82,9 @@ impl ScheduledRegistry {
             self.pulse()?;
             self.fire_callbacks()?;
             if let Some(submitted) = self.world.engine_mut().take_observed_authoritative_submit() {
-                assert!(submitted.is_observed());
-                assert_eq!(submitted.request().actor, GOD);
-                assert!(submitted.request().action == self.fixture.action(transition)?);
+                check!(submitted.is_observed());
+                check_eq!(submitted.request().actor, GOD);
+                check!(submitted.request().action == self.fixture.action(transition)?);
                 return Ok(submitted);
             }
             if Instant::now() >= deadline {
@@ -121,10 +121,10 @@ impl ScheduledRegistry {
             parameters,
             key,
         } = *request;
-        assert_eq!(actor, GOD);
-        assert!(targets.is_empty());
-        assert_eq!(subject, PerceivedRef::SelfActor);
-        assert!(parameters == json!({}), "private service selector only");
+        check_eq!(actor, GOD);
+        check!(targets.is_empty());
+        check_eq!(subject, PerceivedRef::SelfActor);
+        check!(parameters == json!({}), "private service selector only");
         self.serial += 1;
         let request = RequestUid::from_bytes(self.serial.to_be_bytes());
         let commit = CommitToken::from_bytes(self.serial.to_be_bytes());
@@ -161,7 +161,7 @@ impl ScheduledRegistry {
             },
         )?;
         let (actual, resolved, guards) = resolved.into_authoritative_parts();
-        assert!(actual == action);
+        check!(actual == action);
         let invocation = resolved.invocation().clone();
         let ticket_id = TicketId::new(
             invocation
@@ -277,17 +277,17 @@ impl ScheduledRegistry {
             .registry
             .peek_acknowledged()
             .ok_or("actual owner ACK")?;
-        assert!(ack.operation == commit && ack.ticket == ticket_id);
-        assert!(artifacts.registry.get(ticket_id).is_err());
+        check!(ack.operation == commit && ack.ticket == ticket_id);
+        check!(artifacts.registry.get(ticket_id).is_err());
         Ok(commit)
     }
     fn queue_unresolved_retry(&mut self, plan: &Planned, id: RunId) -> TestResult {
         let before = self.run(id)?;
-        assert!(self.callbacks()?.is_empty());
+        check!(self.callbacks()?.is_empty());
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             self.pulse()?;
-            assert!(
+            check!(
                 self.world
                     .engine_mut()
                     .take_observed_authoritative_submit()
@@ -302,7 +302,7 @@ impl ScheduledRegistry {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert_eq!(
+        check_eq!(
             self.callbacks()?.len(),
             1,
             "one normally scheduled older callback"
@@ -313,7 +313,7 @@ impl ScheduledRegistry {
             .ok_or("artifacts")?
             .registry
             .check(plan.ticket_id, &plan.ticket)?;
-        assert!(
+        check!(
             self.run(id)? == before,
             "queued retry cannot alter quota or flight"
         );
@@ -323,7 +323,7 @@ impl ScheduledRegistry {
         let before = self.run(id)?;
         self.pulse()?;
         let callbacks = self.callbacks()?;
-        assert_eq!(
+        check_eq!(
             callbacks.len(),
             2,
             "old callback plus one progress-earned wake"
@@ -333,24 +333,24 @@ impl ScheduledRegistry {
             let mut kinds = pending.entries().iter().filter_map(|(_, kind)| {
                 matches!(kind, ScheduledKind::CommandContinuation(_)).then_some(*kind)
             });
-            assert!(
+            check!(
                 kinds.next() == kinds.next(),
                 "same actual opaque actor continuation"
             );
         }
         self.fire_callbacks()?;
-        assert!(
+        check!(
             self.callbacks()?.is_empty(),
             "both actual callbacks drain without self-rescheduling"
         );
-        assert!(
+        check!(
             self.world
                 .engine_mut()
                 .take_observed_authoritative_submit()
                 .is_none(),
             "stale callback cannot duplicate the acknowledged operation"
         );
-        assert!(
+        check!(
             self.run(id)? == before,
             "ACK readback/callback cannot charge or settle twice"
         );
@@ -366,16 +366,16 @@ fn new_progress_wakes_registered_continuations_without_duplicate_paid_work() -> 
     let job = h.install(plan)?;
     let run = h.active()?;
     let admitted = h.run(run)?;
-    assert_eq!(admitted.charged_unit_ms, 0);
-    assert!(admitted.flight.is_none());
+    check_eq!(admitted.charged_unit_ms, 0);
+    check!(admitted.flight.is_none());
     let request = h.next(Transition::Grant)?;
     let plan = h.prepare(request)?;
     h.queue_unresolved_retry(&plan, run)?;
     h.install(plan)?;
     let granted = h.run(run)?;
     let flight = granted.flight.as_ref().ok_or("one actual paid flight")?;
-    assert_eq!(granted.next_sequence, admitted.next_sequence + 1);
-    assert_eq!(granted.charged_unit_ms, flight.allowance_unit_ms);
+    check_eq!(granted.next_sequence, admitted.next_sequence + 1);
+    check_eq!(granted.charged_unit_ms, flight.allowance_unit_ms);
     h.consume_ack_with_older_callback(run)?;
 
     // The real worker consumes that one retained lease. No measurement, result
@@ -386,17 +386,17 @@ fn new_progress_wakes_registered_continuations_without_duplicate_paid_work() -> 
         return Err("actual worker settlement ticket".into());
     };
     let actual_unit_ms = receipt.actual_unit_ms;
-    assert!(actual_unit_ms > 0 && actual_unit_ms <= flight.allowance_unit_ms);
-    assert!(
+    check!(actual_unit_ms > 0 && actual_unit_ms <= flight.allowance_unit_ms);
+    check!(
         receipt.terminal.is_none(),
         "one quantum is not certification"
     );
     h.queue_unresolved_retry(&plan, run)?;
     h.install(plan)?;
     let settled = h.run(run)?;
-    assert!(settled.flight.is_none());
-    assert_eq!(settled.next_sequence, granted.next_sequence);
-    assert_eq!(settled.charged_unit_ms, actual_unit_ms);
+    check!(settled.flight.is_none());
+    check_eq!(settled.next_sequence, granted.next_sequence);
+    check_eq!(settled.charged_unit_ms, actual_unit_ms);
     // Cancellation is a real player request; it waits for the same fair turn.
     h.world.run(GOD, "@registry/cancel");
     h.consume_ack_with_older_callback(run)?;
@@ -407,12 +407,12 @@ fn new_progress_wakes_registered_continuations_without_duplicate_paid_work() -> 
     h.fire_callbacks()?;
     h.pulse()?;
     let cancelled = h.run(run)?;
-    assert_eq!(cancelled.status, Status::Cancelled);
-    assert_eq!(cancelled.charged_unit_ms, actual_unit_ms);
-    assert_eq!(cancelled.next_sequence, granted.next_sequence);
-    assert!(cancelled.flight.is_none());
-    assert!(h.callbacks()?.is_empty());
-    assert!(
+    check_eq!(cancelled.status, Status::Cancelled);
+    check_eq!(cancelled.charged_unit_ms, actual_unit_ms);
+    check_eq!(cancelled.next_sequence, granted.next_sequence);
+    check!(cancelled.flight.is_none());
+    check!(h.callbacks()?.is_empty());
+    check!(
         h.world
             .engine_mut()
             .take_observed_authoritative_submit()
@@ -429,10 +429,10 @@ fn new_progress_wakes_registered_continuations_without_duplicate_paid_work() -> 
         .module_state::<BulkStore>()
         .ok_or("cold quota")?
         .run(h.fixture.account, GOD, run)?;
-    assert!(
+    check!(
         cold_run == &cancelled,
         "actual complete paid history survives cold audit"
     );
-    assert!(cancelled.registry_job == Some(job));
+    check!(cancelled.registry_job == Some(job));
     Ok(())
 }

@@ -116,16 +116,16 @@ impl Harness {
             },
         });
         let measured = self.runner.take_stats().pop().ok_or("actual measurement")?;
-        assert!(
+        check!(
             result.fault.is_none(),
             "source fault {:?}; operations={} fees={}",
             result.fault,
             measured.ops,
             measured.fee
         );
-        assert!(measured.ops + measured.fee <= 3000);
-        assert!(result.intents.len() <= 16);
-        assert!(
+        check!(measured.ops + measured.fee <= 3000);
+        check!(result.intents.len() <= 16);
+        check!(
             mush_mind::memory::decode(&result.memory)
                 .ok_or("canonical flat memory")?
                 .len()
@@ -216,20 +216,20 @@ fn meridiani_source_and_profiles_have_exact_unfiled_content_identity() -> TestRe
         ("source_sha256", SOURCE.as_bytes()),
         ("envelope_sha256", ENVELOPE.as_bytes()),
     ] {
-        assert_eq!(
+        check_eq!(
             manifest.get(key).and_then(|v| v.as_str()),
             Some(crate::arena::digest_text(&Sha256::digest(bytes).into()).as_str())
         );
     }
-    assert_eq!(
+    check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
         Some(2)
     );
-    assert_eq!(
+    check_eq!(
         manifest.get("status").and_then(|v| v.as_str()),
         Some("unfiled_combat_content")
     );
-    assert_eq!(
+    check_eq!(
         manifest
             .get("intended_legal_class")
             .and_then(|v| v.as_str()),
@@ -237,10 +237,10 @@ fn meridiani_source_and_profiles_have_exact_unfiled_content_identity() -> TestRe
     );
     let envelope: Envelope = serde_json::from_str(ENVELOPE)?;
     super::authoring::RevisionRules.validate(SOURCE, &envelope)?;
-    assert_eq!(envelope.declared_class, "II");
-    assert_eq!(envelope.mind_abi, super::MIND_ABI);
-    assert_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
-    assert_eq!(envelope.presets, envelope.profiles);
+    check_eq!(envelope.declared_class, "II");
+    check_eq!(envelope.mind_abi, super::MIND_ABI);
+    check_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
+    check_eq!(envelope.presets, envelope.profiles);
     for forbidden in [
         "stock::think",
         "stock::hunt",
@@ -250,16 +250,16 @@ fn meridiani_source_and_profiles_have_exact_unfiled_content_identity() -> TestRe
         "World",
         "ObjId",
     ] {
-        assert!(
+        check!(
             !SOURCE.contains(forbidden),
             "unexpected content surface {forbidden}"
         );
     }
-    assert_ne!(
+    check_ne!(
         Sha256::digest(SOURCE.as_bytes()),
         Sha256::digest(super::STANDARD_RHAI.as_bytes())
     );
-    assert_ne!(
+    check_ne!(
         Sha256::digest(SOURCE.as_bytes()),
         Sha256::digest(include_bytes!(
             "../../content/minds/house/safe_conduct.rhai"
@@ -277,23 +277,23 @@ fn field_and_reserve_emit_distinct_real_condition_terms_and_obey_actual_floor() 
         let harness = Harness::new(name)?;
         let result = harness.think(engaged(), &[], 0)?;
         let rules = conditions(&result);
-        assert!(!rules.is_empty());
+        check!(!rules.is_empty());
         for arm in rules {
-            assert_eq!(
+            check_eq!(
                 arm.target,
                 SlotTarget::Contact {
                     id: fixture::HOSTILE
                 }
             );
-            assert_eq!(arm.min_permille, odds);
-            assert_eq!(arm.min_rounds_left, kept);
-            assert!(arm.max_range_m > 0);
+            check_eq!(arm.min_permille, odds);
+            check_eq!(arm.min_rounds_left, kept);
+            check!(arm.max_range_m > 0);
         }
         let mut lawful = engaged();
         lawful.odds_floor_permille = 700;
         let result = harness.think(lawful, &[], 1)?;
-        assert!(!conditions(&result).is_empty());
-        assert!(
+        check!(!conditions(&result).is_empty());
+        check!(
             conditions(&result)
                 .iter()
                 .all(|rule| rule.min_permille == 700)
@@ -302,7 +302,7 @@ fn field_and_reserve_emit_distinct_real_condition_terms_and_obey_actual_floor() 
         for weapon in &mut conserving.weapons {
             weapon.rounds = kept;
         }
-        assert!(!arms(&harness.think(conserving, &[], 2)?));
+        check!(!arms(&harness.think(conserving, &[], 2)?));
     }
     Ok(())
 }
@@ -341,9 +341,9 @@ fn engage_requires_its_exact_fresh_earned_hostile_without_substitution() -> Test
             }
         }
         let result = harness.think(view, &[], mode)?;
-        assert!(has_goal(&result, MotorGoal::Hold));
-        assert!(!arms(&result), "ordered target refusal {mode}");
-        assert!(
+        check!(has_goal(&result, MotorGoal::Hold));
+        check!(!arms(&result), "ordered target refusal {mode}");
+        check!(
             !result
                 .intents
                 .iter()
@@ -371,13 +371,13 @@ fn no_order_expiry_or_hold_fire_cannot_reuse_previous_arming() -> TestResult {
                 _ => view.order.as_mut().ok_or("order")?.hold_fire = true,
             }
             let result = harness.think(view, &[], mode)?;
-            assert!(!arms(&result));
-            assert!(
+            check!(!arms(&result));
+            check!(
                 result
                     .intents
                     .contains(&IntentKind::Condition(Arming::Disarm { weapon: None }))
             );
-            assert!(has_goal(&result, MotorGoal::Hold));
+            check!(has_goal(&result, MotorGoal::Hold));
         }
     }
     Ok(())
@@ -387,14 +387,14 @@ fn no_order_expiry_or_hold_fire_cannot_reuse_previous_arming() -> TestResult {
 fn advance_hold_screen_and_support_use_only_their_current_public_objective() -> TestResult {
     let harness = Harness::new("Field")?;
     let moving = harness.think(healthy(MindObjective::Advance { to: (6, 4) }), &[], 0)?;
-    assert!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
-    assert!(
+    check!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
+    check!(
         arms(&moving),
         "combat Advance keeps its destination while defending"
     );
     let held = harness.think(healthy(MindObjective::Hold), &[], 1)?;
-    assert!(has_goal(&held, MotorGoal::Hold));
-    assert!(!arms(&held));
+    check!(has_goal(&held, MotorGoal::Hold));
+    check!(!arms(&held));
     for (bearing, expected) in [(90, true), (181, false)] {
         let mut screen = healthy(MindObjective::Screen { facing_mdeg: 0 });
         screen
@@ -404,9 +404,9 @@ fn advance_hold_screen_and_support_use_only_their_current_public_objective() -> 
             .ok_or("hostile")?
             .bearing_deg = bearing;
         let result = harness.think(screen, &[], 2)?;
-        assert!(has_goal(&result, MotorGoal::Hold));
-        assert!(result.intents.contains(&IntentKind::Heading { mdeg: 0 }));
-        assert_eq!(arms(&result), expected);
+        check!(has_goal(&result, MotorGoal::Hold));
+        check!(result.intents.contains(&IntentKind::Heading { mdeg: 0 }));
+        check_eq!(arms(&result), expected);
     }
     let supported = harness.think(
         healthy(MindObjective::Support {
@@ -415,8 +415,8 @@ fn advance_hold_screen_and_support_use_only_their_current_public_objective() -> 
         &[],
         3,
     )?;
-    assert!(has_goal(&supported, MotorGoal::Hold));
-    assert!(arms(&supported));
+    check!(has_goal(&supported, MotorGoal::Hold));
+    check!(arms(&supported));
     let mut lost = healthy(MindObjective::Support {
         of: Some(fixture::FRIEND),
     });
@@ -426,8 +426,8 @@ fn advance_hold_screen_and_support_use_only_their_current_public_objective() -> 
         .ok_or("charge")?
         .age_ms = 3001;
     let result = harness.think(lost, &[], 4)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!arms(&result));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!arms(&result));
     Ok(())
 }
 
@@ -457,14 +457,14 @@ fn support_leash_returns_to_actual_earned_charge_without_hostile_pursuit() -> Te
     )
     .ok_or("public station")?;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(
+    check!(has_goal(
         &result,
         MotorGoal::Cell {
             x: expected.0,
             y: expected.1
         }
     ));
-    assert!(!arms(&result));
+    check!(!arms(&result));
     Ok(())
 }
 
@@ -481,12 +481,12 @@ fn reserve_withdraws_earlier_and_unarmed_hulls_never_emit_fire_channel_verbs() -
             facet.armor = facet.armor_max * 2 / 5;
         }
     }
-    assert!((350..500).contains(&crate::arena::stock_mind::health_permille(&hurt)));
+    check!((350..500).contains(&crate::arena::stock_mind::health_permille(&hurt)));
     let field = Harness::new("Field")?.think(hurt.clone(), &[], 0)?;
-    assert!(arms(&field));
+    check!(arms(&field));
     let reserve = Harness::new("Reserve")?.think(hurt, &[], 0)?;
-    assert!(has_goal(&reserve, MotorGoal::Cell { x: 1, y: 4 }));
-    assert!(!arms(&reserve));
+    check!(has_goal(&reserve, MotorGoal::Cell { x: 1, y: 4 }));
+    check!(!arms(&reserve));
     for objective in [
         MindObjective::Advance { to: (6, 4) },
         MindObjective::Engage {
@@ -497,7 +497,7 @@ fn reserve_withdraws_earlier_and_unarmed_hulls_never_emit_fire_channel_verbs() -
         let mut view = healthy(objective);
         view.weapons.clear();
         let result = Harness::new("Field")?.think(view, &[], 0)?;
-        assert!(
+        check!(
             result
                 .intents
                 .iter()
@@ -527,8 +527,8 @@ fn full_public_contact_rows_keep_actual_class_and_memory_bounds() -> TestResult 
         for sequence in 0..8 {
             view.t_ms += 500;
             let result = harness.think(view.clone(), &memory, sequence)?;
-            assert!(!conditions(&result).is_empty());
-            assert!(conditions(&result).iter().all(|rule| rule.target
+            check!(!conditions(&result).is_empty());
+            check!(conditions(&result).iter().all(|rule| rule.target
                 == SlotTarget::Contact {
                     id: fixture::HOSTILE
                 }));
@@ -567,14 +567,14 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
         kind: IntentKind::Goal(goal),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     let mut counters = MotorCounters::default();
     arena.motor_step(fixture::UNIT, 5000, &mut counters);
     let mut actual = arena.mind_view(fixture::UNIT).ok_or("actual public view")?;
-    assert_eq!(
+    check_eq!(
         actual.motor.ok_or("actual motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
@@ -582,13 +582,13 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
     let mut harness = Harness::new("Field")?;
     harness.map = Arc::clone(&arena.definition);
     let stopped = harness.think(actual.clone(), &[], 0)?;
-    assert!(has_goal(&stopped, MotorGoal::Hold));
+    check!(has_goal(&stopped, MotorGoal::Hold));
     let hold = Intent {
         kind: IntentKind::Goal(MotorGoal::Hold),
         seq: 1,
         ..input
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -596,34 +596,34 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
     let mut after_hold = arena.mind_view(fixture::UNIT).ok_or("after hold")?;
     after_hold.order = actual.order.clone();
     let waiting = harness.think(after_hold.clone(), &stopped.memory, 1)?;
-    assert!(
+    check!(
         has_goal(&waiting, MotorGoal::Hold),
         "HOLD removing a motor row must not erase retry delay"
     );
     after_hold.t_ms = 7000;
     let retry = harness.think(after_hold, &waiting.memory, 2)?;
-    assert!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry));
+    check!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry));
 
     // Land that retry through the unchanged native route solver. The same
     // enclosed destination really fails again; it must earn a new delay.
     arena.now_ms = 7000;
     let second_attempt = Intent { seq: 2, ..input };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_attempt, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     arena.motor_step(fixture::UNIT, 7000, &mut counters);
     let mut second_failure = arena.mind_view(fixture::UNIT).ok_or("second failure")?;
-    assert_eq!(
+    check_eq!(
         second_failure.motor.ok_or("second native motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
     second_failure.order = actual.order.clone();
     let second_stop = harness.think(second_failure, &retry.memory, 3)?;
-    assert!(has_goal(&second_stop, MotorGoal::Hold));
+    check!(has_goal(&second_stop, MotorGoal::Hold));
     let second_hold = Intent { seq: 3, ..hold };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -631,11 +631,11 @@ fn field_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult {
     let mut second_wait = arena.mind_view(fixture::UNIT).ok_or("second hold")?;
     second_wait.order = actual.order;
     let waiting_again = harness.think(second_wait.clone(), &second_stop.memory, 4)?;
-    assert!(has_goal(&waiting_again, MotorGoal::Hold));
+    check!(has_goal(&waiting_again, MotorGoal::Hold));
     second_wait.t_ms = 9000;
     let retry_again = harness.think(second_wait, &waiting_again.memory, 5)?;
-    assert!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry_again));
+    check!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry_again));
     Ok(())
 }
 
@@ -654,7 +654,7 @@ fn actual_native_arrival_holds_without_new_combat_authority() -> TestResult {
         kind: IntentKind::Goal(MotorGoal::Cell { x: 3, y: 3 }),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -662,15 +662,15 @@ fn actual_native_arrival_holds_without_new_combat_authority() -> TestResult {
     let mut view = arena
         .mind_view(fixture::UNIT)
         .ok_or("actual public arrival")?;
-    assert_eq!(
+    check_eq!(
         view.motor.ok_or("motor")?.outcome,
         Some(DriveOutcome::Arrived)
     );
     view.order = Some(order(MindObjective::Advance { to: (3, 3) }));
     let harness = Harness::new("Field")?;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!arms(&result));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!arms(&result));
     Ok(())
 }
 
@@ -688,7 +688,7 @@ fn ordered_pursuit_and_firing_keep_the_actual_commanders_range_cap() -> TestResu
     target.range_m = 350;
     target.cell = Some((36, 4));
     let ranges = crate::arena::stock_mind::view_ranges(&view, 750, view.order.as_ref());
-    assert!(35000 > ranges.engage_cm && 35000 <= ranges.release_cm);
+    check!(35000 > ranges.engage_cm && 35000 <= ranges.release_cm);
     let expected = crate::arena::stock_mind::stand_off_of(
         &harness.map,
         &view,
@@ -700,20 +700,20 @@ fn ordered_pursuit_and_firing_keep_the_actual_commanders_range_cap() -> TestResu
     )
     .ok_or("public stand-off")?;
     let pursuing = harness.think(view.clone(), &[], 0)?;
-    assert!(has_goal(
+    check!(has_goal(
         &pursuing,
         MotorGoal::Cell {
             x: expected.0,
             y: expected.1
         }
     ));
-    assert!(!conditions(&pursuing).is_empty());
+    check!(!conditions(&pursuing).is_empty());
     view.order.as_mut().ok_or("order")?.max_range_band =
         Some(crate::deliberation::order::RangeBand::Close);
     let limited = crate::arena::stock_mind::view_ranges(&view, 750, view.order.as_ref());
-    assert!(limited.release_cm < 35000);
+    check!(limited.release_cm < 35000);
     let constrained = harness.think(view, &[], 1)?;
-    assert!(!arms(&constrained));
+    check!(!arms(&constrained));
     let mut beyond = engaged();
     beyond
         .contacts
@@ -722,8 +722,8 @@ fn ordered_pursuit_and_firing_keep_the_actual_commanders_range_cap() -> TestResu
         .ok_or("hostile")?
         .range_m = 501;
     let refused = harness.think(beyond, &[], 2)?;
-    assert!(has_goal(&refused, MotorGoal::Hold));
-    assert!(!arms(&refused));
+    check!(has_goal(&refused, MotorGoal::Hold));
+    check!(!arms(&refused));
     Ok(())
 }
 
@@ -735,18 +735,18 @@ fn explicit_withdraw_and_ordered_startup_never_create_a_combat_fallback() -> Tes
         withdrawing.cell = Some((3, 4));
         withdrawing.x_cm = 3500;
         let result = harness.think(withdrawing, &[], 0)?;
-        assert!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
-        assert!(!arms(&result));
+        check!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
+        check!(!arms(&result));
         let mut cold = engaged();
         cold.power = Power::Off;
         let result = harness.think(cold.clone(), &[], 1)?;
-        assert!(result.intents.contains(&IntentKind::Startup));
-        assert!(!arms(&result));
+        check!(result.intents.contains(&IntentKind::Startup));
+        check!(!arms(&result));
         cold.order = None;
         let result = harness.think(cold, &[], 2)?;
-        assert!(has_goal(&result, MotorGoal::Hold));
-        assert!(!result.intents.contains(&IntentKind::Startup));
-        assert!(!arms(&result));
+        check!(has_goal(&result, MotorGoal::Hold));
+        check!(!result.intents.contains(&IntentKind::Startup));
+        check!(!arms(&result));
     }
     Ok(())
 }

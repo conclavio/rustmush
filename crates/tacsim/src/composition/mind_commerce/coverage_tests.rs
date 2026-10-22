@@ -42,21 +42,21 @@ fn actual_on(
 #[test]
 fn coverage_requires_explicit_active_ic_and_cannot_enable_twice() -> TestResult {
     for mode in [CommerceMode::Initialize, CommerceMode::Active] {
-        assert!(
+        check!(
             prepare(mode)?
                 .with_hull_coverage(mush_core::GOD, vec![])
                 .is_err()
         );
     }
-    assert!(
+    check!(
         configured()?
             .with_hull_coverage(mush_core::GOD, vec![])
             .is_err()
     );
-    assert!(layer().coverage_host().is_none());
+    check!(layer().coverage_host().is_none());
     let c = prepare(CommerceMode::Active)?.with_ic_minds(vec![base()?])?;
     let e = actual(&c, None)?;
-    assert!(!has(&e, "tacsim", "action", "bind_hull_coverage"));
+    check!(!has(&e, "tacsim", "action", "bind_hull_coverage"));
     Ok(())
 }
 #[test]
@@ -70,20 +70,20 @@ fn coverage_registers_publication_metadata_and_exact_two_monetary_owners() -> Te
         "claim_hull_coverage",
         "release_hull_coverage",
     ] {
-        assert!(has(&e, "tacsim", "action", id));
+        check!(has(&e, "tacsim", "action", id));
     }
-    assert!(has(&e, "tacsim", "owner_participant", "coverage_metadata"));
-    assert!(has(&e, "roll", "owner_read", "hull_coverage_open"));
+    check!(has(&e, "tacsim", "owner_participant", "coverage_metadata"));
+    check!(has(&e, "roll", "owner_read", "hull_coverage_open"));
     let config = c.state.coverage.as_ref().ok_or("configured coverage")?;
     let actual = config.actions()?;
     let defs = e.registry.definitions().ok_or("definitions")?;
     for r in actual {
-        assert!(defs.get_exact(&r).is_ok());
+        check!(defs.get_exact(&r).is_ok());
     }
-    assert!(c.configure_tacsim(layer())?.coverage_host().is_some());
+    check!(c.configure_tacsim(layer())?.coverage_host().is_some());
     // Real boot still needs acknowledged Roll initialization; no configuration
     // or empty native inventory can fake it.
-    assert!(
+    check!(
         e.modules_loaded(
             Default::default(),
             &mut mush_core::Outbox::new(),
@@ -96,7 +96,7 @@ fn coverage_registers_publication_metadata_and_exact_two_monetary_owners() -> Te
 #[test]
 fn coverage_missing_actual_owner_refuses_registration() -> TestResult {
     for missing in ["tactics", "sim", "economy", "tacsim", "roll"] {
-        assert!(
+        check!(
             actual(&configured()?, Some(missing)).is_err(),
             "missing exact owner"
         );
@@ -176,7 +176,7 @@ fn qualified_coverage_requires_the_actual_conduct_owner_not_declared_approvals()
         product.digest()?,
         vec![CommitToken::from_hex(&format!("{:032x}", 1))?],
     )]);
-    assert!(
+    check!(
         conduct_commerce(&layer)?
             .with_ic_minds(vec![base()?])?
             .with_hull_coverage(mush_core::GOD, vec![product.clone()])
@@ -191,14 +191,14 @@ fn qualified_coverage_requires_the_actual_conduct_owner_not_declared_approvals()
             manifest.clone(),
             selections.clone(),
         )?;
-    assert!(actual_on(&absent, None, absent_layer).is_err());
+    check!(actual_on(&absent, None, absent_layer).is_err());
 
     let present = configured
         .with_ic_minds(vec![selected_base])?
         .with_qualified_hull_coverage(mush_core::GOD, vec![product], manifest, selections)?;
     let mut engine = actual_on(&present, None, layer)?;
-    assert!(has(&engine, "roll", "owner_read", "conduct_trial"));
-    assert!(has(
+    check!(has(&engine, "roll", "owner_read", "conduct_trial"));
+    check!(has(
         &engine,
         "tacsim",
         "coverage_composition",
@@ -206,7 +206,7 @@ fn qualified_coverage_requires_the_actual_conduct_owner_not_declared_approvals()
     ));
     // Actual owner registration still gives no acknowledged initialization,
     // historical receipt, current qualification, or monetary authority.
-    assert!(
+    check!(
         engine
             .modules_loaded(
                 Default::default(),

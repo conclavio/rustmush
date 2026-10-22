@@ -59,17 +59,17 @@ fn identities_keep_all_bits_and_distinct_key_domains() -> TestResult {
     let licence = LicenceId::new(raw)?;
     let term = TermGeneration::new(raw)?;
     let encoded = "\"18446744073709551615\"";
-    assert_eq!(serde_json::to_string(&charter)?, "\"4294967295\"");
-    assert_eq!(
+    check_eq!(serde_json::to_string(&charter)?, "\"4294967295\"");
+    check_eq!(
         serde_json::from_str::<CharterId>("\"4294967295\"")?,
         charter
     );
-    assert_eq!(charter.object(), ObjId(u32::MAX));
-    assert!(serde_json::from_str::<CharterId>("\"4294967296\"").is_err());
-    assert_eq!(serde_json::from_str::<LineId>(encoded)?, line);
-    assert_eq!(serde_json::from_str::<FiledRevisionId>(encoded)?, filed);
-    assert_eq!(serde_json::from_str::<LicenceId>(encoded)?, licence);
-    assert_eq!(serde_json::from_str::<TermGeneration>(encoded)?, term);
+    check_eq!(charter.object(), ObjId(u32::MAX));
+    check!(serde_json::from_str::<CharterId>("\"4294967296\"").is_err());
+    check_eq!(serde_json::from_str::<LineId>(encoded)?, line);
+    check_eq!(serde_json::from_str::<FiledRevisionId>(encoded)?, filed);
+    check_eq!(serde_json::from_str::<LicenceId>(encoded)?, licence);
+    check_eq!(serde_json::from_str::<TermGeneration>(encoded)?, term);
     let keys = [
         CharterId::new(1)?.key(),
         LineId::new(1)?.key(),
@@ -77,13 +77,13 @@ fn identities_keep_all_bits_and_distinct_key_domains() -> TestResult {
         LicenceId::new(1)?.key(),
         TermGeneration::new(1)?.key(),
     ];
-    assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), 5);
-    assert!(keys.iter().all(|key| key.len() <= 24));
-    assert_eq!(CharterId::new(1)?.key(), "charter/0000000000000001");
-    assert_eq!(line.get(), raw);
-    assert_eq!(filed.get(), raw);
-    assert_eq!(licence.get(), raw);
-    assert_eq!(term.get(), raw);
+    check_eq!(keys.iter().collect::<BTreeSet<_>>().len(), 5);
+    check!(keys.iter().all(|key| key.len() <= 24));
+    check_eq!(CharterId::new(1)?.key(), "charter/0000000000000001");
+    check_eq!(line.get(), raw);
+    check_eq!(filed.get(), raw);
+    check_eq!(licence.get(), raw);
+    check_eq!(term.get(), raw);
     Ok(())
 }
 
@@ -143,7 +143,7 @@ fn revision_identity_has_no_source_envelope_annotations_or_holder() -> TestResul
     let original = revision()?;
     let identity = RevisionIdentity::capture(&original)?;
     let text = serde_json::to_string(&identity)?;
-    assert_eq!(serde_json::from_str::<RevisionIdentity>(&text)?, identity);
+    check_eq!(serde_json::from_str::<RevisionIdentity>(&text)?, identity);
     for forbidden in [
         "private-source-marker",
         "private-annotation-marker",
@@ -151,22 +151,22 @@ fn revision_identity_has_no_source_envelope_annotations_or_holder() -> TestResul
         "profiles",
         "holder",
     ] {
-        assert!(!text.contains(forbidden), "{forbidden}");
+        check!(!text.contains(forbidden), "{forbidden}");
     }
-    assert_eq!(identity.revision(), original.reference());
-    assert_eq!(identity.source(), original.source());
+    check_eq!(identity.revision(), original.reference());
+    check_eq!(identity.source(), original.source());
     let mut annotations = original.clone();
     annotations.notes = "different private notes".into();
-    assert!(identity.matches(&annotations)?);
+    check!(identity.matches(&annotations)?);
     let mut different_record = original.clone();
     different_record.reference.key.number += 1;
-    assert!(!identity.matches(&different_record)?);
+    check!(!identity.matches(&different_record)?);
     let mut different_bytes = original.clone();
     different_bytes.source = crate::source_digest("other bytes");
-    assert!(!identity.matches(&different_bytes)?);
+    check!(!identity.matches(&different_bytes)?);
     let mut different_envelope = original;
     different_envelope.reference.digest = crate::source_digest("other revision identity");
-    assert!(!identity.matches(&different_envelope)?);
+    check!(!identity.matches(&different_envelope)?);
     Ok(())
 }
 
@@ -181,52 +181,52 @@ fn revision_decode_refuses_bad_versions_zero_keys_and_unknown_fields() -> TestRe
     ] {
         let mut wire = serde_json::to_value(identity)?;
         replace(&mut wire, key, value)?;
-        assert!(serde_json::from_value::<RevisionIdentity>(wire).is_err());
+        check!(serde_json::from_value::<RevisionIdentity>(wire).is_err());
     }
     for (mind, number) in [(0, 1), (1, 0)] {
         let mut invalid = original.clone();
         invalid.reference.key.mind = mind;
         invalid.reference.key.number = number;
-        assert_eq!(
+        check_eq!(
             RevisionIdentity::capture(&invalid),
             Err(ValueError::Revision)
         );
         let wire = json!({"format":1,"revision":invalid.reference(),"source":invalid.source()});
-        assert!(serde_json::from_value::<RevisionIdentity>(wire).is_err());
+        check!(serde_json::from_value::<RevisionIdentity>(wire).is_err());
     }
     let text = serde_json::to_string(&identity)?;
     let duplicate = text.replacen("\"format\":1", "\"format\":1,\"format\":1", 1);
-    assert!(serde_json::from_str::<RevisionIdentity>(&duplicate).is_err());
+    check!(serde_json::from_str::<RevisionIdentity>(&duplicate).is_err());
     let mut absent = serde_json::to_value(identity)?;
     absent
         .as_object_mut()
         .ok_or("expected object")?
         .remove("source");
-    assert!(serde_json::from_value::<RevisionIdentity>(absent).is_err());
+    check!(serde_json::from_value::<RevisionIdentity>(absent).is_err());
     Ok(())
 }
 
 #[test]
 fn paid_capacity_is_bounded_but_owned_dispatch_has_no_count() -> TestResult {
-    assert_eq!(PaidSeats::new(0), Err(ValueError::Seats));
-    assert_eq!(PaidSeats::new(MAX_PAID_SEATS + 1), Err(ValueError::Seats));
+    check_eq!(PaidSeats::new(0), Err(ValueError::Seats));
+    check_eq!(PaidSeats::new(MAX_PAID_SEATS + 1), Err(ValueError::Seats));
     let seats = PaidSeats::new(MAX_PAID_SEATS)?;
-    assert_eq!(seats.get(), MAX_PAID_SEATS);
+    check_eq!(seats.get(), MAX_PAID_SEATS);
     let paid = Capacity::PaidSeats { seats };
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(paid)?,
         json!({"kind":"paid_seats","seats":1024})
     );
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<Capacity>(serde_json::to_value(paid)?)?,
         paid
     );
     let owned = Capacity::OwnedDispatch {};
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(owned)?,
         json!({"kind":"owned_dispatch"})
     );
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<Capacity>(serde_json::to_value(owned)?)?,
         owned
     );
@@ -264,8 +264,8 @@ fn clock_kind_is_checked_without_persisting_rate_generation_as_a_term() -> TestR
         clock: ClockRef::WorldIc { generation: 2 },
         at: 500,
     })?;
-    assert_eq!(first, next_generation);
-    assert_eq!(first.get(), 500);
+    check_eq!(first, next_generation);
+    check_eq!(first.get(), 500);
     for clock in [
         ClockRef::Utc,
         ClockRef::WorldIc { generation: 0 },
@@ -274,7 +274,7 @@ fn clock_kind_is_checked_without_persisting_rate_generation_as_a_term() -> TestR
             generation: 1,
         },
     ] {
-        assert_eq!(
+        check_eq!(
             WorldIcSeconds::from_stamp(&ClockStamp { clock, at: 500 }),
             Err(ValueError::Clock)
         );
@@ -294,25 +294,25 @@ fn temporal_edges_are_exact_and_never_extend_an_interval() -> TestResult {
         (13, TermPhase::Lapsed),
         (14, TermPhase::Lapsed),
     ] {
-        assert_eq!(term.phase_at(at(now)?), expected, "{now}");
+        check_eq!(term.phase_at(at(now)?), expected, "{now}");
     }
     let no_grace = TermWindow::new(at(0)?, at(0)?, at(10)?, at(10)?)?;
-    assert_eq!(no_grace.phase_at(at(10)?), TermPhase::Lapsed);
+    check_eq!(no_grace.phase_at(at(10)?), TermPhase::Lapsed);
     Ok(())
 }
 
 #[test]
 fn grace_issue_preserves_actual_issue_and_original_eligibility_origin() -> TestResult {
     let term = TermWindow::new(at(0)?, at(11)?, at(10)?, at(13)?)?;
-    assert_eq!(term.eligibility_start().get(), 0);
-    assert_eq!(term.issued_at().get(), 11);
-    assert_eq!(term.term_end().get(), 10);
-    assert_eq!(term.grace_end().get(), 13);
-    assert_eq!(term.phase_at(at(9)?), TermPhase::NotEffective);
-    assert_eq!(term.phase_at(at(10)?), TermPhase::NotEffective);
-    assert_eq!(term.phase_at(at(11)?), TermPhase::Grace);
+    check_eq!(term.eligibility_start().get(), 0);
+    check_eq!(term.issued_at().get(), 11);
+    check_eq!(term.term_end().get(), 10);
+    check_eq!(term.grace_end().get(), 13);
+    check_eq!(term.phase_at(at(9)?), TermPhase::NotEffective);
+    check_eq!(term.phase_at(at(10)?), TermPhase::NotEffective);
+    check_eq!(term.phase_at(at(11)?), TermPhase::Grace);
     // Late issue must not hide an original term exceeding the audit limit.
-    assert!(
+    check!(
         TermWindow::new(
             at(0)?,
             at(MAX_TERM_SECONDS + 2)?,
@@ -327,11 +327,11 @@ fn grace_issue_preserves_actual_issue_and_original_eligibility_origin() -> TestR
 #[test]
 fn a_future_interval_and_an_unissued_interval_are_both_ineffective() -> TestResult {
     let issued_early = TermWindow::new(at(10)?, at(5)?, at(20)?, at(23)?)?;
-    assert_eq!(issued_early.phase_at(at(9)?), TermPhase::NotEffective);
-    assert_eq!(issued_early.phase_at(at(10)?), TermPhase::Active);
+    check_eq!(issued_early.phase_at(at(9)?), TermPhase::NotEffective);
+    check_eq!(issued_early.phase_at(at(10)?), TermPhase::Active);
     let issued_late = TermWindow::new(at(0)?, at(5)?, at(20)?, at(23)?)?;
-    assert_eq!(issued_late.phase_at(at(4)?), TermPhase::NotEffective);
-    assert_eq!(issued_late.phase_at(at(5)?), TermPhase::Active);
+    check_eq!(issued_late.phase_at(at(4)?), TermPhase::NotEffective);
+    check_eq!(issued_late.phase_at(at(5)?), TermPhase::Active);
     Ok(())
 }
 
@@ -339,7 +339,7 @@ fn a_future_interval_and_an_unissued_interval_are_both_ineffective() -> TestResu
 fn term_and_grace_limits_have_no_extra_second_or_empty_eligible_tail() -> TestResult {
     let end = MAX_TERM_SECONDS;
     let grace = end + MAX_GRACE_SECONDS;
-    assert!(TermWindow::new(at(0)?, at(0)?, at(end)?, at(grace)?).is_ok());
+    check!(TermWindow::new(at(0)?, at(0)?, at(end)?, at(grace)?).is_ok());
     for (start, issue, end, grace) in [
         (0, 0, MAX_TERM_SECONDS + 1, MAX_TERM_SECONDS + 1),
         (0, 0, 1, 1 + MAX_GRACE_SECONDS + 1),
@@ -349,7 +349,7 @@ fn term_and_grace_limits_have_no_extra_second_or_empty_eligible_tail() -> TestRe
         (0, 3, 2, 3),
         (0, 4, 2, 3),
     ] {
-        assert_eq!(
+        check_eq!(
             TermWindow::new(at(start)?, at(issue)?, at(end)?, at(grace)?),
             Err(ValueError::Term)
         );
@@ -365,19 +365,19 @@ fn timestamp_extremes_use_checked_arithmetic_and_allow_valid_negative_dates() ->
         at(i64::MIN + 1)?,
         at(i64::MIN + 1)?,
     )?;
-    assert_eq!(lower.phase_at(at(i64::MIN)?), TermPhase::Active);
+    check_eq!(lower.phase_at(at(i64::MIN)?), TermPhase::Active);
     let upper = TermWindow::new(
         at(i64::MAX - 1)?,
         at(i64::MAX - 1)?,
         at(i64::MAX)?,
         at(i64::MAX)?,
     )?;
-    assert_eq!(upper.phase_at(at(i64::MAX)?), TermPhase::Lapsed);
-    assert_eq!(
+    check_eq!(upper.phase_at(at(i64::MAX)?), TermPhase::Lapsed);
+    check_eq!(
         TermWindow::new(at(i64::MIN)?, at(0)?, at(i64::MAX)?, at(i64::MAX)?),
         Err(ValueError::Term)
     );
-    assert_eq!(
+    check_eq!(
         TermWindow::new(
             at(i64::MIN)?,
             at(i64::MIN)?,
@@ -393,7 +393,7 @@ fn timestamp_extremes_use_checked_arithmetic_and_allow_valid_negative_dates() ->
 fn term_codec_rechecks_invariants_and_rejects_unknown_missing_duplicate_fields() -> TestResult {
     let term = TermWindow::new(at(0)?, at(11)?, at(10)?, at(13)?)?;
     let text = serde_json::to_string(&term)?;
-    assert_eq!(serde_json::from_str::<TermWindow>(&text)?, term);
+    check_eq!(serde_json::from_str::<TermWindow>(&text)?, term);
     for (key, value) in [
         ("format", json!(0)),
         ("format", json!(2)),
@@ -405,15 +405,15 @@ fn term_codec_rechecks_invariants_and_rejects_unknown_missing_duplicate_fields()
     ] {
         let mut wire = serde_json::to_value(term)?;
         replace(&mut wire, key, value)?;
-        assert!(serde_json::from_value::<TermWindow>(wire).is_err(), "{key}");
+        check!(serde_json::from_value::<TermWindow>(wire).is_err(), "{key}");
     }
     let duplicate = text.replacen("\"format\":1", "\"format\":1,\"format\":1", 1);
-    assert!(serde_json::from_str::<TermWindow>(&duplicate).is_err());
+    check!(serde_json::from_str::<TermWindow>(&duplicate).is_err());
     let mut absent = serde_json::to_value(term)?;
     absent
         .as_object_mut()
         .ok_or("expected object")?
         .remove("eligibility_start");
-    assert!(serde_json::from_value::<TermWindow>(absent).is_err());
+    check!(serde_json::from_value::<TermWindow>(absent).is_err());
     Ok(())
 }

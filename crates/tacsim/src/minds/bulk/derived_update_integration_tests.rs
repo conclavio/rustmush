@@ -79,7 +79,7 @@ fn signed(w: &mut PlayerWorld, n: u128, p: Value) -> TestResult<PreparedComposed
         .iter()
         .filter(|o| o.presentation().verb == "roll-update-derived-mind");
     let offer = matches.next().ok_or("actual derived update offer")?;
-    assert!(matches.next().is_none());
+    check!(matches.next().is_none());
     let inv = invocation(n, BUYER, "roll", p.clone())?;
     let resolved = w.engine.resolve_legal_action(
         &offers,
@@ -99,7 +99,7 @@ fn signed(w: &mut PlayerWorld, n: u128, p: Value) -> TestResult<PreparedComposed
         },
     )?;
     let (actual, inv, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &inv, token(n))?
         .0)
@@ -177,12 +177,28 @@ pub(super) async fn exercise(
         let params = parameters(line, &revision, &rating);
         let before = cash(&w)?;
         let prior = disk(&w);
-        assert!(prepare(&mut w, "roll", ACTION, 1, GOD, START + 1, params.clone()).is_err());
+        assert!(crate::test_checks::is_refusal(prepare(
+            &mut w,
+            "roll",
+            ACTION,
+            1,
+            GOD,
+            START + 1,
+            params.clone()
+        )));
         let mut old = params.clone();
         *old.get_mut("rating_job").ok_or("rating")? = json!(initial.rating().job());
         *old.get_mut("rating_id").ok_or("rating")? = json!(initial.rating().id());
         *old.get_mut("rating_digest").ok_or("rating")? = json!(initial.rating().receipt_digest());
-        assert!(prepare(&mut w, "roll", ACTION, 1, BUYER, START + 1, old).is_err());
+        assert!(crate::test_checks::is_refusal(prepare(
+            &mut w,
+            "roll",
+            ACTION,
+            1,
+            BUYER,
+            START + 1,
+            old
+        )));
         assert_eq!(disk(&w), prior);
         let p = signed(&mut w, START + 1, params.clone())?;
         assert_eq!(cash(&w)?, before);
@@ -266,7 +282,7 @@ pub(super) async fn exercise(
         )?;
         let after = capture(&w, &disk(&w));
         assert!(
-            PlayerWorld::boot_entitlements(f, &after).is_err(),
+            crate::test_checks::is_refusal(PlayerWorld::boot_entitlements(f, &after)),
             "missing derived protocol must refuse history"
         );
         let mut cold = boot(f, &after)?;
@@ -283,7 +299,7 @@ pub(super) async fn exercise(
             lost.disk.retain(|(ns, _), v| {
                 !(ns == "roll" && v.pointer("/family/id") == Some(&json!(family)))
             });
-            assert!(boot(f, &lost).is_err());
+            assert!(crate::test_checks::is_refusal(boot(f, &lost)));
         }
         let mut crossed = after.clone();
         let value = crossed
@@ -294,7 +310,7 @@ pub(super) async fn exercise(
         *value
             .pointer_mut("/value/parent/selected/terminal")
             .ok_or("actual parent terminal")? = json!(token(START + 99));
-        assert!(boot(f, &crossed).is_err());
+        assert!(crate::test_checks::is_refusal(boot(f, &crossed)));
         // Exact parent window and owner readiness remain live at both custody fences.
         for change in ["parent_lapse", "clock", "economy"] {
             for take in [false, true] {

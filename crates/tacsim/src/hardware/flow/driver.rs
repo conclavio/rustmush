@@ -102,7 +102,7 @@ impl Rig {
             },
         )?;
         let (action, resolved, guards) = resolved.into_authoritative_parts();
-        assert_eq!(action, exact);
+        check_eq!(action, exact);
         let invocation = resolved.invocation().clone();
         let prepared = e.prepare_registered_composed_resolved_authoritative_action(
             &action,
@@ -244,7 +244,7 @@ impl Rig {
                 .filter(|c| c.action().key().id.as_str() == name)
                 .cloned()
                 .collect();
-            assert_eq!(candidates.len(), 1, "one real due production schedule");
+            check_eq!(candidates.len(), 1, "one real due production schedule");
             let candidate = &candidates[0];
             let ingress =
                 mush_core::scheduled_action_ingress(candidate.action(), candidate.advance(), 1)?;

@@ -74,15 +74,15 @@ fn dependent_formats_require_parent_and_original_bytes_stay_omitted() -> TestRes
         serde_json::to_value(&term)?,
         serde_json::to_value(&operation)?,
     ] {
-        assert!(value.get("parent").is_none());
+        check!(value.get("parent").is_none());
     }
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&term)?,
         serde_json::to_vec(&serde_json::from_slice::<OwnerTerm>(&serde_json::to_vec(
             &term
         )?)?)?
     );
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&operation)?,
         serde_json::to_vec(&serde_json::from_slice::<InitialFilingOperation>(
             &serde_json::to_vec(&operation)?
@@ -115,13 +115,13 @@ fn dependent_formats_require_parent_and_original_bytes_stay_omitted() -> TestRes
                 serde_json::from_value::<InitialFilingOperation>(v).is_ok()
             }
         };
-        assert!(decode(original.clone()) && decode(dependent.clone()));
+        check!(decode(original.clone()) && decode(dependent.clone()));
         let mut missing = original.clone();
         *missing.get_mut("format").ok_or("format")? = json!(required_format);
-        assert!(!decode(missing), "new format cannot default away ancestry");
+        check!(!decode(missing), "new format cannot default away ancestry");
         let mut old_format = dependent.clone();
         *old_format.get_mut("format").ok_or("format")? = json!(1);
-        assert!(
+        check!(
             !decode(old_format),
             "old format cannot carry dependent authority"
         );
@@ -130,17 +130,17 @@ fn dependent_formats_require_parent_and_original_bytes_stay_omitted() -> TestRes
             null.as_object_mut()
                 .ok_or("row")?
                 .insert("parent".into(), Value::Null);
-            assert!(!decode(null), "present null is not omitted legacy bytes");
+            check!(!decode(null), "present null is not omitted legacy bytes");
             let mut null = dependent.clone();
             *null.get_mut("parent").ok_or("parent")? = Value::Null;
-            assert!(!decode(null));
+            check!(!decode(null));
             let mut unknown = dependent;
             unknown
                 .get_mut("parent")
                 .and_then(Value::as_object_mut)
                 .ok_or("parent")?
                 .insert("authority".into(), json!(true));
-            assert!(!decode(unknown));
+            check!(!decode(unknown));
         }
     }
     Ok(())
@@ -194,14 +194,14 @@ fn dependent_operation_refuses_house_and_crossed_qualification() -> TestResult {
                     .ok_or("duration")? = json!(super::super::MAX_GRACE_SECONDS + 1)
             }
         }
-        assert!(
+        check!(
             serde_json::from_value::<InitialFilingOperation>(crossed).is_err(),
             "mode {mode}"
         );
     }
     let encoded = serde_json::to_string(&operation)?;
     let repeated = encoded.replacen("\"parent\":", "\"parent\":null,\"parent\":", 1);
-    assert!(serde_json::from_str::<InitialFilingOperation>(&repeated).is_err());
+    check!(serde_json::from_str::<InitialFilingOperation>(&repeated).is_err());
     Ok(())
 }
 
@@ -225,7 +225,7 @@ fn owner_binding_refuses_crossed_child_term_operation_and_owner() -> TestResult 
             6 => f.operation = token(3),
             _ => t.parent.as_mut().ok_or("parent")?.line = LineId::new(8)?,
         }
-        assert!(b.check_rows(&f, &t, &o).is_err(), "mode {mode}");
+        check!(b.check_rows(&f, &t, &o).is_err(), "mode {mode}");
     }
     Ok(())
 }
@@ -240,14 +240,14 @@ fn parent_root_belongs_to_exact_owner_licence_and_retains_parent_identity() -> T
         .iter()
         .find(|root| root.anchor == expected)
         .ok_or("parent root")?;
-    assert_eq!(actual.identity, binding.parent.parent.revision);
-    assert_ne!(actual.identity, operation.revision);
-    assert_eq!(RootAnchor::parse(&expected.record())?, expected);
-    assert_ne!(
+    check_eq!(actual.identity, binding.parent.parent.revision);
+    check_ne!(actual.identity, operation.revision);
+    check_eq!(RootAnchor::parse(&expected.record())?, expected);
+    check_ne!(
         expected.record(),
         RootAnchor::OwnerParent(operation.licence, ObjId(ACTOR.0 + 1)).record()
     );
-    assert_ne!(
+    check_ne!(
         expected.record(),
         RootAnchor::OwnerParent(LicenceId::new(2)?, ACTOR).record()
     );
@@ -256,19 +256,19 @@ fn parent_root_belongs_to_exact_owner_licence_and_retains_parent_identity() -> T
         "v1/owner_parent/0000000000000001/0000000A",
         "v1/owner_parent/0000000000000001/0000000a/extra",
     ] {
-        assert!(RootAnchor::parse(bad).is_err());
+        check!(RootAnchor::parse(bad).is_err());
     }
-    assert!(super::super::families::valid_key(
+    check!(super::super::families::valid_key(
         OwnerParentBinding::FAMILY,
         &binding.key()
     ));
-    assert!(!super::super::families::valid_key(
+    check!(!super::super::families::valid_key(
         OwnerParentBinding::FAMILY,
         &format!("{}/extra", binding.key())
     ));
     let mut crossed = term;
     crossed.parent.as_mut().ok_or("parent")?.licence = LicenceId::new(8)?;
-    assert!(InitialRoots::from_records(&filed, &crossed, &operation).is_err());
+    check!(InitialRoots::from_records(&filed, &crossed, &operation).is_err());
     Ok(())
 }
 
@@ -277,25 +277,25 @@ fn captured_parent_window_caps_child_and_never_restarts_parent_grace() -> TestRe
     let (_, _, _, binding) = dependent()?;
     let parent = binding.parent;
     let active = parent.child_window(now(100))?;
-    assert_eq!(
+    check_eq!(
         (active.term_end(), active.grace_end()),
         (now(180), now(195))
     );
     let grace = parent.child_window(now(185))?;
-    assert_eq!(
+    check_eq!(
         (grace.issued_at(), grace.term_end(), grace.grace_end()),
         (now(185), now(180), now(195))
     );
-    assert_eq!(grace.phase_at(now(185)), super::super::TermPhase::Grace);
-    assert!(parent.child_window(now(195)).is_err());
+    check_eq!(grace.phase_at(now(185)), super::super::TermPhase::Grace);
+    check!(parent.child_window(now(195)).is_err());
     // A later current grant can reopen a separate eligibility fence, but it
     // cannot change this immutable child's encoded historical issue/window.
     let old = serde_json::to_vec(&parent)?;
     let mut current = parent.clone();
     current.window = TermWindow::new(now(200), now(200), now(400), now(420))?;
-    assert_ne!(current.child_window(now(201))?, grace);
-    assert_eq!(serde_json::to_vec(&parent)?, old);
-    assert_eq!(grace.phase_at(now(201)), super::super::TermPhase::Lapsed);
+    check_ne!(current.child_window(now(201))?, grace);
+    check_eq!(serde_json::to_vec(&parent)?, old);
+    check_eq!(grace.phase_at(now(201)), super::super::TermPhase::Lapsed);
     Ok(())
 }
 
@@ -310,11 +310,11 @@ fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact
     use crate::commerce::parent_selector::DraftParentSelection;
     let (_, _, _, binding) = dependent()?;
     let old_parent = serde_json::to_vec(&binding.parent)?;
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&serde_json::from_slice::<DependentParent>(&old_parent)?)?,
         old_parent
     );
-    assert!(
+    check!(
         serde_json::to_value(&binding.parent)?
             .get("holder_capture")
             .is_none()
@@ -324,13 +324,13 @@ fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact
         "created_parent_term":binding.parent.term,"generation":1,"created":token(250),"operation":token(250)});
     let legacy: DraftParentSelection = serde_json::from_value(old.clone())?;
     legacy.validate()?;
-    assert_eq!(serde_json::to_value(&legacy)?, old);
+    check_eq!(serde_json::to_value(&legacy)?, old);
     let mut current = old.clone();
     current["format"] = json!(2);
     current["holder_capture"] = source_holder_capture(i64::MAX);
     let captured: DraftParentSelection = serde_json::from_value(current.clone())?;
     captured.validate()?;
-    assert_eq!(serde_json::to_value(&captured)?, current);
+    check_eq!(serde_json::to_value(&captured)?, current);
     let (mut engine, f) = engine();
     let document = json!({"family":{"owner":f.draft_parents.owner(),"id":f.draft_parents.descriptor().id()},
         "key":captured.key(),"schema":{"id":f.draft_parents.descriptor().value_schema(),"version":1},"value":captured});
@@ -348,7 +348,7 @@ fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact
                 .remove("holder_capture");
         }
         let bad: DraftParentSelection = serde_json::from_value(bad)?;
-        assert!(bad.validate().is_err());
+        check!(bad.validate().is_err());
     }
     for (path, value) in [
         ("/holder_capture", Value::Null),
@@ -358,7 +358,7 @@ fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact
     ] {
         let mut bad = current.clone();
         *bad.pointer_mut(path).ok_or("capture field")? = value;
-        assert!(serde_json::from_value::<DraftParentSelection>(bad).is_err());
+        check!(serde_json::from_value::<DraftParentSelection>(bad).is_err());
     }
     let mut extra = current;
     extra
@@ -366,7 +366,7 @@ fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact
         .and_then(Value::as_object_mut)
         .ok_or("capture")?
         .insert("authority".into(), json!(true));
-    assert!(serde_json::from_value::<DraftParentSelection>(extra).is_err());
+    check!(serde_json::from_value::<DraftParentSelection>(extra).is_err());
     Ok(())
 }
 
@@ -422,8 +422,8 @@ fn accepted_initial_parent_capture_is_paired_with_actual_issue_boundary_and_enve
         .ok_or("capture")?
         .observed_ic
         .at += 1;
-    assert!(binding.check_rows(&filed, &term, &operation).is_err());
+    check!(binding.check_rows(&filed, &term, &operation).is_err());
     wire["holder_capture"] = Value::Null;
-    assert!(serde_json::from_value::<DependentParent>(wire).is_err());
+    check!(serde_json::from_value::<DependentParent>(wire).is_err());
     Ok(())
 }

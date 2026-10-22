@@ -149,21 +149,21 @@ fn renewal_service_keeps_sixty_four_independent_unknown_observations_at_saturati
     let (_, observation, close_proof) = capture(&mut engine, &capture_slot)?;
     runtime.close = Some(intent()?);
     runtime.close_observation = Some(observation);
-    assert_eq!(
+    check_eq!(
         runtime.entries.len() + usize::from(runtime.close.is_some()),
         64
     );
     let before = runtime.close.as_ref().ok_or("intent")?.guard()?;
-    assert!(admit(&mut runtime, Selection::Pending(token(64)), GOD).is_err());
-    assert!(admit(&mut runtime, Selection::Pending(token(1)), ObjId(9)).is_err());
-    assert!(admit(&mut runtime, Selection::Pending(token(1)), GOD).is_ok());
+    check!(admit(&mut runtime, Selection::Pending(token(64)), GOD).is_err());
+    check!(admit(&mut runtime, Selection::Pending(token(1)), ObjId(9)).is_err());
+    check!(admit(&mut runtime, Selection::Pending(token(1)), GOD).is_ok());
     for entry in runtime.entries.values_mut() {
-        assert_eq!(
+        check_eq!(
             entry.attempt.as_mut().ok_or("retained")?.1.take_terminal(),
             None
         );
     }
-    assert_eq!(
+    check_eq!(
         runtime
             .close_observation
             .as_mut()
@@ -171,7 +171,7 @@ fn renewal_service_keeps_sixty_four_independent_unknown_observations_at_saturati
             .take_terminal(),
         None
     );
-    assert_eq!(runtime.close.as_ref().ok_or("intent")?.guard()?, before);
+    check_eq!(runtime.close.as_ref().ok_or("intent")?.guard()?, before);
     let selected = key(Selection::Pending(token(31)));
     proofs
         .get(&selected)
@@ -179,7 +179,7 @@ fn renewal_service_keeps_sixty_four_independent_unknown_observations_at_saturati
         .store(true, Ordering::Release);
     for (id, entry) in &mut runtime.entries {
         let observed = &mut entry.attempt.as_mut().ok_or("retained")?.1;
-        assert_eq!(
+        check_eq!(
             observed.take_terminal(),
             if id == &selected {
                 Some(SubmissionDisposition::NoIntent)
@@ -187,10 +187,10 @@ fn renewal_service_keeps_sixty_four_independent_unknown_observations_at_saturati
                 None
             }
         );
-        assert_eq!(observed.take_terminal(), None);
+        check_eq!(observed.take_terminal(), None);
     }
-    assert!(!close_proof.load(Ordering::Acquire));
-    assert_eq!(
+    check!(!close_proof.load(Ordering::Acquire));
+    check_eq!(
         runtime
             .close_observation
             .as_mut()
@@ -198,7 +198,7 @@ fn renewal_service_keeps_sixty_four_independent_unknown_observations_at_saturati
             .take_terminal(),
         None
     );
-    assert_eq!(
+    check_eq!(
         runtime.entries.len(),
         MAX_ENTRIES,
         "absence observation alone does not evict custody"
@@ -210,21 +210,21 @@ fn renewal_service_opt_in_preserves_five_actions_and_private_intent_is_exact() -
     let old = config()?;
     let refs = old.actions()?;
     let descriptors = old.declarations()?;
-    assert!(old.service_action()?.is_none());
+    check!(old.service_action()?.is_none());
     let service = old.with_service()?;
-    assert_eq!(service.actions()?, refs);
+    check_eq!(service.actions()?, refs);
     let all = service.declarations()?;
-    assert_eq!(all.len(), descriptors.len() + 1);
+    check_eq!(all.len(), descriptors.len() + 1);
     for (a, b) in descriptors.iter().zip(all.iter()) {
-        assert_eq!(a, b);
+        check_eq!(a, b);
     }
-    assert!(service.with_service().is_err());
+    check!(service.with_service().is_err());
     let original = intent()?;
     let guard = original.guard()?;
     let AuthorityGuard::Capability { capability, .. } = &guard else {
         return Err("expected exact service capability".into());
     };
-    assert_eq!(
+    check_eq!(
         capability.as_str().len(),
         mush_core::mechanics::CANONICAL_ID_MAX_BYTES
     );
@@ -241,7 +241,7 @@ fn renewal_service_opt_in_preserves_five_actions_and_private_intent_is_exact() -
                 next.before = serde_json::from_value(v)?;
             }
         }
-        assert_ne!(next.guard()?, guard);
+        check_ne!(next.guard()?, guard);
     }
     Ok(())
 }
@@ -263,20 +263,20 @@ fn renewal_service_state_closes_only_exact_reason_clock_and_receipt_shapes() -> 
         );
         let row: MindRenewalOperationV1 = serde_json::from_value(value.clone())?;
         row.receipt()?.matches_operation(&row)?;
-        assert!(row.state().retryable());
-        assert!(row.state().funding().is_none());
+        check!(row.state().retryable());
+        check!(row.state().funding().is_none());
         let mut bad = value.clone();
         bad.pointer_mut("/state/closure")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("proof")?
             .insert("actor".into(), serde_json::json!(2));
-        assert!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
+        check!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
         let mut bad = value.clone();
         bad.pointer_mut("/state/closure")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("proof")?
             .insert("authority".into(), serde_json::json!(true));
-        assert!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
+        check!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
         let mut bad = value.clone();
         bad.pointer_mut("/state/closure")
             .and_then(serde_json::Value::as_object_mut)
@@ -289,20 +289,20 @@ fn renewal_service_state_closes_only_exact_reason_clock_and_receipt_shapes() -> 
                     "clock_invalidated"
                 }),
             );
-        assert!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
+        check!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
         let mut bad = value.clone();
         bad.pointer_mut("/state/closure")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("proof")?
             .insert("posted_at_utc".into(), serde_json::json!(999));
-        assert!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
+        check!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
         let mut bad = value.clone();
         bad.pointer_mut("/state")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("state")?
             .insert("funding".into(), serde_json::json!({}));
-        assert!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
-        assert!(serde_json::to_vec(&row)?.len() < MindRenewalOperationV1::MAX_BYTES);
+        check!(serde_json::from_value::<MindRenewalOperationV1>(bad).is_err());
+        check!(serde_json::to_vec(&row)?.len() < MindRenewalOperationV1::MAX_BYTES);
     }
     Ok(())
 }
@@ -324,19 +324,19 @@ fn renewal_rotation_visits_each_same_buyer_selection_and_preserves_generation_id
     for selection in selections {
         admit(&mut runtime, selection, GOD)?;
     }
-    assert_eq!(runtime.entries.len(), 5);
+    check_eq!(runtime.entries.len(), 5);
     let mut starts = BTreeSet::new();
     for _ in 0..5 {
         let order = rotation_order(&mut runtime);
-        assert_eq!(order.len(), 5);
+        check_eq!(order.len(), 5);
         starts.insert(order.first().ok_or("rotation")?.clone());
     }
-    assert_eq!(
+    check_eq!(
         starts,
         runtime.entries.keys().cloned().collect(),
         "an earlier unresolved selection cannot consume every same-buyer turn"
     );
-    assert_eq!(
+    check_eq!(
         runtime.entries.len(),
         5,
         "rotation never discards an unresolved entry"

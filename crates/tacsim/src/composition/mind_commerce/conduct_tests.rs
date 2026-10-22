@@ -40,28 +40,28 @@ fn modules(c: &MindCommerce, layer: TacsimRuleset) -> TestResult<Vec<Box<dyn Gam
 #[test]
 fn conduct_requires_actual_carrier_active_mode_and_exact_captured_catalogue() -> TestResult {
     let ordinary = layer();
-    assert!(
+    check!(
         config(&ordinary, CommerceMode::Active)?
             .with_conduct_trials(&ordinary)
             .is_err()
     );
     let with = layer().with_conduct_carrier()?;
-    assert!(
+    check!(
         config(&with, CommerceMode::Initialize)?
             .with_conduct_trials(&with)
             .is_err()
     );
     let configured = config(&with, CommerceMode::Active)?.with_conduct_trials(&with)?;
-    assert!(configured.conduct_manifest().is_some());
-    assert!(configured.configure_tacsim(layer()).is_err());
+    check!(configured.conduct_manifest().is_some());
+    check!(configured.configure_tacsim(layer()).is_err());
     // Host timing drift still refuses even though the fixed proving manifest
     // normalizes these values to its own trial policy.
     let mut changed = with.config().clone();
     changed.match_.startup_ms += 1;
     let changed = TacsimRuleset::with_config(changed).with_conduct_carrier()?;
-    assert!(configured.configure_tacsim(changed).is_err());
-    assert!(configured.configure_tacsim(with).is_ok());
-    assert!(
+    check!(configured.configure_tacsim(changed).is_err());
+    check!(configured.configure_tacsim(with).is_ok());
+    check!(
         layer()
             .with_conduct_carrier()?
             .with_conduct_carrier()
@@ -87,7 +87,7 @@ fn actual_conduct_three_owners_register_in_both_orders_without_opening_commerce(
             "conduct_trial_cancel",
             "conduct_trial_recover",
         ] {
-            assert!(
+            check!(
                 definitions
                     .iter()
                     .any(|d| d.reference().key().owner.as_str() == "roll"
@@ -95,12 +95,12 @@ fn actual_conduct_three_owners_register_in_both_orders_without_opening_commerce(
                         && d.reference().key().id.as_str() == id)
             );
         }
-        assert!(
+        check!(
             definitions
                 .iter()
                 .any(|d| Some(d.reference()) == config.conduct_manifest())
         );
-        assert!(
+        check!(
             engine
                 .modules_loaded(
                     Default::default(),
@@ -119,14 +119,14 @@ fn optional_carrier_preserves_actual_registry_ref_and_default_composition() -> T
     let carrier = layer().with_conduct_carrier()?;
     let old = config(&ordinary, CommerceMode::Active)?;
     let new = config(&carrier, CommerceMode::Active)?;
-    assert_eq!(old.manifest(), new.manifest());
-    assert!(old.conduct_manifest().is_none());
+    check_eq!(old.manifest(), new.manifest());
+    check!(old.conduct_manifest().is_none());
     let engine = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         modules(&old, ordinary)?,
     )?;
-    assert!(
+    check!(
         engine
             .registry
             .definitions()

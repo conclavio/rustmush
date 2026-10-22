@@ -451,10 +451,10 @@ mod tests {
                 }
             }
             let result = result.ok_or("ford completed")?;
-            assert!(matches!(result.outcome(), CaseOutcome::Conformant {}));
-            assert!(result.coverage().complete());
-            assert!(result.meter().thinks() >= 2);
-            assert_eq!(used, u64::try_from(ford.arena.now_ms)?);
+            check!(matches!(result.outcome(), CaseOutcome::Conformant {}));
+            check!(result.coverage().complete());
+            check!(result.meter().thinks() >= 2);
+            check_eq!(used, u64::try_from(ford.arena.now_ms)?);
             let [
                 (_, true, first_seq, first_memory),
                 (_, false, last_seq, last_memory),
@@ -462,25 +462,27 @@ mod tests {
             else {
                 return Err("two real transfers".into());
             };
-            assert_eq!(
-                first_seq, last_seq,
+            check_eq!(
+                first_seq,
+                last_seq,
                 "pilot interval contains no candidate invocation"
             );
-            assert_eq!(
-                first_memory, last_memory,
+            check_eq!(
+                first_memory,
+                last_memory,
                 "no memory copy/reset at handback"
             );
-            assert!(ford.route.iter().any(|(_, cell)| cell.0 >= 64));
+            check!(ford.route.iter().any(|(_, cell)| cell.0 >= 64));
             let before: serde_json::Value =
                 serde_json::from_slice(ford.saved_memory.as_deref().ok_or("saved memory")?)?;
             let after: serde_json::Value =
                 serde_json::from_slice(&ford.arena.minds.get(&OWN).ok_or("mind")?.memory)?;
-            assert!(
+            check!(
                 after["visits"].as_u64().ok_or("count")?
                     > before["visits"].as_u64().ok_or("prior count")?
             );
-            assert!(ford.terminal_landed);
-            assert!(ford.advance(u64::from(case.physics.native_ms)).is_err());
+            check!(ford.terminal_landed);
+            check!(ford.advance(u64::from(case.physics.native_ms)).is_err());
         }
         Ok(())
     }

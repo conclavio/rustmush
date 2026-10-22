@@ -63,21 +63,21 @@ fn underwriting_product_prices_use_registered_credit_minor_units() -> TestResult
     // CREDIT scale is two: 10,000cr of agreed value costs 100cr normally,
     // conditionally 90cr with qualified Safe Conduct, and reserves 8,000cr.
     let example = product.illustrate(Amount::from_minor(1_000_000))?;
-    assert_eq!(product.terms().instrument().as_str(), "tacsim.credit");
-    assert_eq!(example.ordinary().premium(), Amount::from_minor(10_000));
-    assert_eq!(
+    check_eq!(product.terms().instrument().as_str(), "tacsim.credit");
+    check_eq!(example.ordinary().premium(), Amount::from_minor(10_000));
+    check_eq!(
         example.with_qualified_safe_conduct().premium(),
         Amount::from_minor(9_000)
     );
-    assert_eq!(
+    check_eq!(
         example.with_qualified_safe_conduct().maximum_payout(),
         Amount::from_minor(800_000)
     );
-    assert_eq!(
+    check_eq!(
         product.loss_rule(),
         LossRule::RecordedIcDestructionWithWreckTitle
     );
-    assert_eq!(product.quote_seconds(), 600);
+    check_eq!(product.quote_seconds(), 600);
     Ok(())
 }
 
@@ -85,7 +85,7 @@ fn underwriting_product_prices_use_registered_credit_minor_units() -> TestResult
 fn underwriting_product_digest_pins_every_issuer_term_and_approval_field() -> TestResult {
     let original = product()?;
     let value = serde_json::to_value(&original)?;
-    assert_eq!(
+    check_eq!(
         CoverageProductV1::decode(&serde_json::to_vec(&original)?)?,
         original
     );
@@ -116,7 +116,7 @@ fn underwriting_product_digest_pins_every_issuer_term_and_approval_field() -> Te
         let mut altered = value.clone();
         *altered.pointer_mut(pointer).ok_or("fixture path")? = replacement;
         let altered: CoverageProductV1 = serde_json::from_value(altered)?;
-        assert_ne!(altered.digest()?, original.digest()?);
+        check_ne!(altered.digest()?, original.digest()?);
     }
     Ok(())
 }
@@ -144,25 +144,25 @@ fn underwriting_product_rejects_unbounded_ambiguous_and_unknown_declarations() -
     ] {
         let mut altered = value.clone();
         *altered.pointer_mut(pointer).ok_or("fixture path")? = replacement;
-        assert!(serde_json::from_value::<CoverageProductV1>(altered).is_err());
+        check!(serde_json::from_value::<CoverageProductV1>(altered).is_err());
     }
     for field in ["hulls", "zones", "approvals"] {
         let mut altered = value.clone();
         let item = altered[field][0].clone();
         altered[field] = Value::Array(vec![item; 33]);
-        assert!(serde_json::from_value::<CoverageProductV1>(altered).is_err());
+        check!(serde_json::from_value::<CoverageProductV1>(altered).is_err());
     }
     let mut unknown = value.clone();
     unknown["eligible"] = json!(true);
-    assert!(serde_json::from_value::<CoverageProductV1>(unknown).is_err());
+    check!(serde_json::from_value::<CoverageProductV1>(unknown).is_err());
     let mut unknown = value;
     unknown["approvals"][0]["eligible"] = json!(true);
-    assert!(serde_json::from_value::<CoverageProductV1>(unknown).is_err());
-    assert_eq!(
+    check!(serde_json::from_value::<CoverageProductV1>(unknown).is_err());
+    check_eq!(
         CoverageProductV1::decode(&vec![b' '; CoverageProductV1::MAX_BYTES + 1]),
         Err(CoverageError::Bound)
     );
-    assert_eq!(CoverageProductV1::decode(&[]), Err(CoverageError::Bound));
+    check_eq!(CoverageProductV1::decode(&[]), Err(CoverageError::Bound));
     Ok(())
 }
 
@@ -175,19 +175,19 @@ fn underwriting_product_refuses_duplicate_conflicting_profile_approvals() -> Tes
         .as_array_mut()
         .ok_or("approval list")?
         .push(first);
-    assert!(serde_json::from_value::<CoverageProductV1>(duplicate.clone()).is_err());
+    check!(serde_json::from_value::<CoverageProductV1>(duplicate.clone()).is_err());
     duplicate["approvals"][1]["role"] = json!("transit");
     duplicate["approvals"][1]["role_trial"] = json!(digest(12));
-    assert!(serde_json::from_value::<CoverageProductV1>(duplicate.clone()).is_err());
+    check!(serde_json::from_value::<CoverageProductV1>(duplicate.clone()).is_err());
     duplicate["approvals"][1]["profile"] = json!("Transit");
-    assert!(serde_json::from_value::<CoverageProductV1>(duplicate).is_ok());
+    check!(serde_json::from_value::<CoverageProductV1>(duplicate).is_ok());
     let mut hulls = original;
     let first = hulls["hulls"][0].clone();
     hulls["hulls"]
         .as_array_mut()
         .ok_or("hull list")?
         .push(first);
-    assert!(serde_json::from_value::<CoverageProductV1>(hulls).is_err());
+    check!(serde_json::from_value::<CoverageProductV1>(hulls).is_err());
     Ok(())
 }
 
@@ -198,10 +198,10 @@ fn underwriting_product_accepts_real_zero_based_org_scope_and_account_ids() -> T
         wire[field] = json!(0);
     }
     let product: CoverageProductV1 = serde_json::from_value(wire)?;
-    assert_eq!(product.insurer(), OrgId(0));
-    assert_eq!(product.scope(), OrgScopeId(0));
-    assert_eq!(product.treasury(), AccountId(0));
-    assert_eq!(
+    check_eq!(product.insurer(), OrgId(0));
+    check_eq!(product.scope(), OrgScopeId(0));
+    check_eq!(product.treasury(), AccountId(0));
+    check_eq!(
         CoverageProductV1::decode(&serde_json::to_vec(&product)?)?,
         product
     );
@@ -214,9 +214,9 @@ fn underwriting_ordinary_product_accepts_empty_approvals_without_qualification()
     let mut value = serde_json::to_value(&original)?;
     value["approvals"] = json!([]);
     let ordinary = CoverageProductV1::decode(&serde_json::to_vec(&value)?)?;
-    assert!(ordinary.approvals().is_empty());
-    assert_ne!(ordinary.digest()?, original.digest()?);
-    assert_eq!(
+    check!(ordinary.approvals().is_empty());
+    check_ne!(ordinary.digest()?, original.digest()?);
+    check_eq!(
         ordinary
             .illustrate(Amount::from_minor(1_000_000))?
             .ordinary()
@@ -225,8 +225,8 @@ fn underwriting_ordinary_product_accepts_empty_approvals_without_qualification()
     );
     // The conditional illustration is arithmetic only. No actual approved
     // selection exists, and the ordinary producer never accepts one.
-    assert_eq!(serde_json::to_value(&ordinary)?, value);
-    assert_eq!(
+    check_eq!(serde_json::to_value(&ordinary)?, value);
+    check_eq!(
         CoverageProductV1::decode(&serde_json::to_vec(&original)?)?,
         original
     );

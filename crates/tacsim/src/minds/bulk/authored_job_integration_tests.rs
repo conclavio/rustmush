@@ -55,8 +55,8 @@ fn invoke(
             _ => None,
         });
     let (audience, response) = found.next().ok_or("actual ingress response")?;
-    assert_eq!(audience, Audience::Conn(conn));
-    assert!(found.next().is_none());
+    check_eq!(audience, Audience::Conn(conn));
+    check!(found.next().is_none());
     Ok(response)
 }
 fn request(world: &PlayerWorld, save: bool) -> TestResult<MindRequest> {
@@ -102,8 +102,8 @@ fn submit(world: &mut PlayerWorld, save: bool, web: bool) -> TestResult<u64> {
             .map(|s| (audience, s.parse::<u64>()))
     });
     let (audience, number) = jobs.next().ok_or("actual line queued response")?;
-    assert_eq!(*audience, Audience::Conn(BUYER_CONN));
-    assert!(jobs.next().is_none());
+    check_eq!(*audience, Audience::Conn(BUYER_CONN));
+    check!(jobs.next().is_none());
     Ok(number?)
 }
 async fn ready(world: &PlayerWorld, job: u64) -> TestResult {
@@ -183,7 +183,7 @@ fn terminal(events: &Events) -> TestResult<MindResponse> {
     let response = found
         .next()
         .ok_or("automatic original-request terminal response")?;
-    assert!(found.next().is_none());
+    check!(found.next().is_none());
     Ok(response)
 }
 fn no_private_result(events: &Events) {

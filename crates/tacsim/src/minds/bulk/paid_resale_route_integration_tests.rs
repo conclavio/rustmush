@@ -54,7 +54,7 @@ fn wallet(w: &PlayerWorld, actor: EconomicOwner) -> TestResult<WalletId> {
             && a.status == AccountStatus::Active
     });
     let id = all.next().ok_or("actual unique route wallet")?.id;
-    assert!(all.next().is_none(), "route wallet is unambiguous");
+    check!(all.next().is_none(), "route wallet is unambiguous");
     Ok(id)
 }
 fn balance(w: &PlayerWorld, id: WalletId) -> TestResult<(Amount, Amount)> {
@@ -73,7 +73,7 @@ fn row(
         .into_iter()
         .filter(|v| v.get(field) == Some(&expected));
     let value = all.next().ok_or("actual route row")?;
-    assert!(all.next().is_none(), "route key is unique");
+    check!(all.next().is_none(), "route key is unique");
     Ok(value)
 }
 fn pointer(w: &PlayerWorld, id: LicenceId) -> TestResult<PersonalPaidLicence> {
@@ -90,12 +90,12 @@ fn term(w: &PlayerWorld, id: LicenceId, generation: TermGeneration) -> TestResul
         v.get("licence") == Some(&json!(id)) && v.get("generation") == Some(&json!(generation))
     });
     let value = all.next().ok_or("actual term")?;
-    assert!(all.next().is_none(), "term key is unique");
+    check!(all.next().is_none(), "term key is unique");
     Ok(serde_json::from_value(value)?)
 }
 fn command(w: &mut PlayerWorld, line: &str) -> TestResult {
     let events = w.say(GOD, line)?;
-    assert!(
+    check!(
         !events
             .iter()
             .any(|(_, event)| matches!(event, OutputEvent::Sys(text)
@@ -118,7 +118,7 @@ fn connect(w: &mut PlayerWorld, buyer: ObjId) -> TestResult {
 /// holder's listing is a separate, not-yet-built feature), so it is no test of
 /// a buyer's holding.
 fn holds(w: &PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult {
-    assert_eq!(
+    check_eq!(
         pointer(w, id)?.holder(),
         actor,
         "actual current paid holder"
@@ -145,7 +145,7 @@ fn visible(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, expected: bool) -> 
         || matches!(a, Audience::Conn(c) if *c == BUYER_CONN && actor == BUYER)
         || matches!(a, Audience::Conn(c) if *c == OBSERVER_CONN && actor == GOD))
         .map(|(_, e)| mush_testkit::text_of(e)).collect::<Vec<_>>().join("\n");
-    assert_eq!(
+    check_eq!(
         text.contains(&format!("filed:{}:", id.get())),
         expected,
         "actual current paid-holder projection"
@@ -188,30 +188,30 @@ fn source(w: &mut PlayerWorld, actor: ObjId, paid: &PaidTermRecord, allowed: boo
         } = event
         {
             count += 1;
-            assert_eq!(audience, Audience::Conn(conn));
+            check_eq!(audience, Audience::Conn(conn));
             match answer {
                 MindResponse::FiledSource {
                     source_sha256,
                     lines,
                     ..
                 } => {
-                    assert!(allowed, "former/sealed holder received source");
+                    check!(allowed, "former/sealed holder received source");
                     let mush_roll::commerce::records::RevisionPolicy::Pin { revision, .. } =
                         paid.policy()
                     else {
                         return Err("actual Pin".into());
                     };
-                    assert_eq!(source_sha256, revision.source().to_hex());
-                    assert!(!lines.is_empty());
+                    check_eq!(source_sha256, revision.source().to_hex());
+                    check!(!lines.is_empty());
                 }
                 MindResponse::Error { .. } => {
-                    assert!(!allowed, "actual current Open source refused")
+                    check!(!allowed, "actual current Open source refused")
                 }
                 _ => return Err("unexpected source response".into()),
             }
         }
     }
-    assert_eq!(count, 1);
+    check_eq!(count, 1);
     Ok(())
 }
 
@@ -275,7 +275,7 @@ fn prepare(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, action);
+    check_eq!(actual, action);
     let invocation = resolved.invocation().clone();
     let (prepared, output) = w
         .engine
@@ -465,8 +465,8 @@ fn due(w: &mut PlayerWorld, at: i64) -> TestResult {
             .checked_add(at.checked_sub(before.at).ok_or("IC delta")?)
             .ok_or("UTC")?,
     );
-    assert_eq!(w.engine.world.world_ic_now().at, at);
-    assert_eq!(w.engine.world.world_ic_now().clock, before.clock);
+    check_eq!(w.engine.world.world_ic_now().at, at);
+    check_eq!(w.engine.world.world_ic_now().clock, before.clock);
     Ok(())
 }
 struct Login<'a> {
@@ -533,8 +533,8 @@ pub(super) fn exercise(
     command(&mut w, &format!("@econ/mint {faucet}={payer} 2000"))?;
     let old = pointer(&w, id)?;
     let predecessor = term(&w, id, old.term())?;
-    assert_eq!(old.holder(), seller);
-    assert_eq!(predecessor.terms().seats().get(), 1);
+    check_eq!(old.holder(), seller);
+    check_eq!(predecessor.terms().seats().get(), 1);
     let birth_family = if house {
         "roll_mind_house_purchase"
     } else {
@@ -574,7 +574,7 @@ pub(super) fn exercise(
         json!({"licence":id.get()}),
     )?;
     let seller_offer = renewal(&w, house, start + 30)?;
-    assert_eq!(
+    check_eq!(
         seller_offer.pointer("/attempt/kind"),
         Some(&json!("automatic"))
     );
@@ -585,7 +585,7 @@ pub(super) fn exercise(
         start + 31,
         json!({"operation":token(start+30),"reason":"declined"}),
     )?;
-    assert_eq!(pointer(&w, id)?, old);
+    check_eq!(pointer(&w, id)?, old);
     perform(
         &mut w,
         OFFER,
@@ -593,7 +593,7 @@ pub(super) fn exercise(
         start,
         json!({"licence":id.get(),"buyer":buyer.0,"price":100,"seller_account":seller_account.0}),
     )?;
-    assert_eq!(pointer(&w, id)?, old);
+    check_eq!(pointer(&w, id)?, old);
     let accepted = start + 1;
     perform(
         &mut w,
@@ -603,25 +603,25 @@ pub(super) fn exercise(
         json!({"offer":token(start),"payer":payer.0}),
     )?;
     let actual = paired(&w, accepted)?;
-    assert_eq!(actual.binding().term(), &predecessor);
+    check_eq!(actual.binding().term(), &predecessor);
     let transferred = pointer(&w, id)?;
-    assert_eq!(transferred.holder(), buyer);
-    assert_eq!(transferred.term(), old.term());
-    assert_eq!(transferred.operation(), old.operation());
-    assert_eq!(
+    check_eq!(transferred.holder(), buyer);
+    check_eq!(transferred.term(), old.term());
+    check_eq!(transferred.operation(), old.operation());
+    check_eq!(
         transferred.ownership().ok_or("holder capture")?.generation,
         2
     );
-    assert_eq!(term(&w, id, old.term())?, predecessor);
-    assert!(
+    check_eq!(term(&w, id, old.term())?, predecessor);
+    check!(
         rows(&disk(&w), "roll", birth_family) == birth,
         "resale changed immutable birth"
     );
-    assert!(
+    check!(
         rows(&disk(&w), "roll", economics_family) == old_economics,
         "resale changed immutable economics"
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, payer)?,
         (
             payer_before
@@ -642,52 +642,50 @@ pub(super) fn exercise(
     connect(&mut w, buyer)?;
     paired(&w, accepted)?;
     renewal(&w, house, start + 30)?;
-    assert_eq!(pointer(&w, id)?, transferred);
+    check_eq!(pointer(&w, id)?, transferred);
     holds(&w, buyer, id)?;
     source(&mut w, buyer, &predecessor, open)?;
     let mut missing = transferred_image.clone();
-    assert!(remove_family(&mut missing, "roll", HOLDER) > 0);
-    assert!(
-        boot(&missing).is_err(),
+    check!(remove_family(&mut missing, "roll", HOLDER) > 0);
+    check!(
+        crate::test_checks::refused(boot(&missing))?,
         "transferred current holder lost its actual cause"
     );
     due(&mut w, predecessor.window().term_end().get())?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             draft,
             seller,
             start + 10,
             json!({"licence":id.get()})
-        )
-        .is_err(),
+        ))?,
         "former holder cannot renew"
     );
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             draft,
             buyer,
             start + 10,
             json!({"previous_operation":token(start+30)})
-        )
-        .is_err(),
+        ))?,
         "new holder cannot relabel the seller's closed attempt as its retry"
     );
     let automatic = start + 11;
     perform(&mut w, draft, buyer, automatic, json!({"licence":id.get()}))?;
     let offered = renewal(&w, house, automatic)?;
-    assert_eq!(offered.pointer("/binding/holder"), Some(&json!(buyer)));
-    assert_eq!(offered.pointer("/binding/format"), Some(&json!(2)));
-    assert_eq!(
+    check_eq!(offered.pointer("/binding/holder"), Some(&json!(buyer)));
+    check_eq!(offered.pointer("/binding/format"), Some(&json!(2)));
+    check_eq!(
         offered.pointer("/binding/holder_basis/acceptance"),
         Some(&json!(token(accepted)))
     );
-    assert_eq!(
+    check_eq!(
         offered.pointer("/attempt/kind"),
         Some(&json!("holder_automatic"))
     );
-    assert_eq!(
+    check_eq!(
         pointer(&w, id)?,
         transferred,
         "Draft did not publish a new term"
@@ -699,15 +697,14 @@ pub(super) fn exercise(
         start + 12,
         json!({"operation":token(automatic),"reason":"declined"}),
     )?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             draft,
             buyer,
             start + 13,
             json!({"licence":id.get()})
-        )
-        .is_err(),
+        ))?,
         "one automatic offer per holder/term"
     );
     let retry = start + 14;
@@ -719,15 +716,15 @@ pub(super) fn exercise(
         json!({"previous_operation":token(automatic)}),
     )?;
     let retried = renewal(&w, house, retry)?;
-    assert_eq!(
+    check_eq!(
         retried.pointer("/attempt/kind"),
         Some(&json!("holder_retry"))
     );
-    assert_eq!(
+    check_eq!(
         retried.pointer("/binding/holder_basis"),
         offered.pointer("/binding/holder_basis")
     );
-    assert_ne!(retried.get("contract"), offered.get("contract"));
+    check_ne!(retried.get("contract"), offered.get("contract"));
     perform(
         &mut w,
         fund,
@@ -735,7 +732,7 @@ pub(super) fn exercise(
         start + 15,
         json!({"operation":token(retry)}),
     )?;
-    assert_eq!(
+    check_eq!(
         pointer(&w, id)?,
         transferred,
         "Fund did not publish a new term"
@@ -754,18 +751,18 @@ pub(super) fn exercise(
     )?;
     renewal(&w, house, retry)?;
     let renewed = pointer(&w, id)?;
-    assert_eq!(renewed.holder(), buyer);
-    assert_eq!(renewed.ownership(), transferred.ownership());
-    assert_eq!(renewed.term().get(), old.term().get() + 1);
-    assert_eq!(renewed.operation(), old.operation());
-    assert_eq!(term(&w, id, old.term())?, predecessor);
-    assert!(
+    check_eq!(renewed.holder(), buyer);
+    check_eq!(renewed.ownership(), transferred.ownership());
+    check_eq!(renewed.term().get(), old.term().get() + 1);
+    check_eq!(renewed.operation(), old.operation());
+    check_eq!(term(&w, id, old.term())?, predecessor);
+    check!(
         rows(&disk(&w), "roll", birth_family) == birth,
         "renewal changed immutable birth"
     );
     let current = term(&w, id, renewed.term())?;
-    assert_eq!(current.operation(), token(retry));
-    assert_eq!(current.terms(), predecessor.terms());
+    check_eq!(current.operation(), token(retry));
+    check_eq!(current.terms(), predecessor.terms());
     visible(&mut w, seller, id, false)?;
     holds(&w, buyer, id)?;
     let complete = saved(&w);
@@ -776,7 +773,7 @@ pub(super) fn exercise(
     renewal(&cold, house, start + 30)?;
     renewal(&cold, house, automatic)?;
     renewal(&cold, house, retry)?;
-    assert_eq!(pointer(&cold, id)?, renewed);
+    check_eq!(pointer(&cold, id)?, renewed);
     holds(&cold, buyer, id)?;
     source(&mut cold, buyer, &current, open)?;
     eprintln!("M7_STORY phase=paidresale.route event=complete house={house}");

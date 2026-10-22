@@ -630,7 +630,7 @@ impl PlayerWorld {
         let mut engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
         engine.set_account_identity(f.accounts.clone());
         load(&mut engine, &saved.disk)?;
-        assert_eq!(
+        check_eq!(
             shared.lock().map_err(module_error)?.manifest,
             Some(manifest)
         );
@@ -684,7 +684,7 @@ impl PlayerWorld {
                 from_linkdead: false,
             })?;
         }
-        assert_eq!(this.state()?, MatchState::Idle);
+        check_eq!(this.state()?, MatchState::Idle);
         Ok(this)
     }
     fn transfer_charter(&mut self, charter: ObjId, buyer: ObjId, n: u128) -> TestResult {
@@ -716,11 +716,11 @@ impl PlayerWorld {
         // Inspect actual output variants, not a renderer which could omit source.
         for (_, event) in &events {
             let wire = serde_json::to_string(event)?;
-            assert!(
+            check!(
                 !wire.contains("this.landed"),
                 "sealed source reached player output"
             );
-            assert!(
+            check!(
                 !wire.contains(SOURCE),
                 "sealed source reached player output"
             );
@@ -778,16 +778,16 @@ impl PlayerWorld {
                 "
 ",
             );
-        assert!(heard.contains("red slot 1"), "SIM TEAM red: {heard}");
+        check!(heard.contains("red slot 1"), "SIM TEAM red: {heard}");
         self.say(BUYER, "SIM AI 1")?;
         self.say(BUYER, "SIM UNIT heavy_mk1")?;
         let selected = self.say(BUYER, "SIM MIND filed:2 PROFILE Default")?;
-        assert!(Self::private_text(&selected, BUYER).contains("Your slot will carry"));
-        assert!(Self::private_text(&selected, BUYER).contains("filed:2"));
+        check!(Self::private_text(&selected, BUYER).contains("Your slot will carry"));
+        check!(Self::private_text(&selected, BUYER).contains("filed:2"));
         // The choice itself is never broadcast, even to the author in the lobby.
         for (audience, event) in &selected {
             if mush_testkit::text_of(event).contains("Your slot will carry") {
-                assert!(
+                check!(
                     matches!(audience, Audience::Actor(who) if *who == BUYER)
                         || matches!(audience, Audience::Conn(id) if *id == BUYER_CONN)
                 );
@@ -799,26 +799,26 @@ impl PlayerWorld {
             .iter()
             .find(|slot| slot.pilot == BUYER)
             .ok_or("claimed buyer slot")?;
-        assert_eq!(
+        check_eq!(
             own.mind
                 .as_ref()
                 .and_then(|mind| mind.filed)
                 .map(|id| id.get()),
             Some(2)
         );
-        assert_eq!(self.state()?, MatchState::Selection);
+        check_eq!(self.state()?, MatchState::Selection);
         Ok(())
     }
     fn start(&mut self) -> TestResult {
         let said = self.say(BUYER, "SIM START")?;
-        assert_eq!(
+        check_eq!(
             self.state()?,
             MatchState::Boarding,
             "{}",
             Self::private_text(&said, BUYER)
         );
         // The lead character is read during Boarding (`lead_character_of`).
-        assert_eq!(
+        check_eq!(
             match_::lobby::lead_character_of(&self.engine.world, crate::arena::Team::Red),
             Some(BUYER)
         );
@@ -850,7 +850,7 @@ impl PlayerWorld {
             if let ArenaOut::Snapshot { match_id, snapshot } = &message {
                 self.snapshots.insert(*match_id, snapshot.clone());
             }
-            assert!(self.tasks.stage(message), "bounded actual egress stage");
+            check!(self.tasks.stage(message), "bounded actual egress stage");
             count += 1;
         }
         if count > 0 {
@@ -944,13 +944,13 @@ fn assert_captured(
         .iter()
         .find(|row| row.id == unit)
         .ok_or("actual checked-out unit")?;
-    assert_eq!(actual.seal, seal.seal_ref());
-    assert_eq!(actual.controller, Controller::Mind);
+    check_eq!(actual.seal, seal.seal_ref());
+    check_eq!(actual.controller, Controller::Mind);
     let runtime = arena.minds.get(&unit).ok_or("actual running paid mind")?;
-    assert_eq!(runtime.strikes, 0);
-    assert!(runtime.dropped.is_none());
-    assert!(runtime.think_seq > 0);
-    assert_eq!(
+    check_eq!(runtime.strikes, 0);
+    check!(runtime.dropped.is_none());
+    check!(runtime.think_seq > 0);
+    check_eq!(
         &world
             .record(id)?
             .minds
@@ -1142,8 +1142,8 @@ async fn fresh_refused(
 
 pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let term: PaidTermRecord = serde_json::from_value(one(f.rows("roll", "roll_mind_paid_term"))?)?;
-    assert_eq!(term.licence().get(), 2);
-    assert_eq!(
+    check_eq!(term.licence().get(), 2);
+    check_eq!(
         term.terms().form(),
         mush_roll::commerce::paid::PaidForm::Sealed {}
     );
@@ -1164,7 +1164,7 @@ pub(super) fn exercise_source(f: &PurchaseFixture, saved: &Durable, permitted: b
     if permitted {
         let term: PaidTermRecord =
             serde_json::from_value(one(f.rows("roll", "roll_mind_paid_term"))?)?;
-        assert!(matches!(
+        check!(matches!(
             term.terms().form(),
             mush_roll::commerce::paid::PaidForm::Open {}
                 | mush_roll::commerce::paid::PaidForm::OpenResale {}

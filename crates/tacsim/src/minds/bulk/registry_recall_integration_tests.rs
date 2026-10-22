@@ -55,7 +55,7 @@ fn setup(f: &PurchaseFixture, granted: &Durable) -> TestResult<(Durable, Registr
         PerceivedRef::SelfActor,
     )?;
     let offers = configured.engine.project_legal_actions(&query)?;
-    assert!(
+    check!(
         offers.projected_for_action(&policy.action()?).is_some(),
         "actual Org grant admits configured operator"
     );
@@ -101,7 +101,7 @@ fn signed(
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(exact, action);
+    check_eq!(exact, action);
     Ok(world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
@@ -166,7 +166,7 @@ fn stage_recall(
 }
 fn suspend(world: &mut PlayerWorld) -> TestResult {
     world.say(GOD, &format!("@org/status {ORG}=suspended"))?;
-    assert_eq!(
+    check_eq!(
         world
             .engine
             .world
@@ -188,12 +188,28 @@ fn fences(
     a: &EntitlementAllocationV1,
 ) -> TestResult {
     let mut disabled = PlayerWorld::boot_entitlements(f, saved)?;
-    assert!(action(&disabled, "roll", ACTION, 1).is_err());
-    assert!(prepare(&mut disabled, "roll", ACTION, 1, BUYER, START, params(a)).is_err());
+    check!(action(&disabled, "roll", ACTION, 1).is_err());
+    check!(crate::test_checks::refused(prepare(
+        &mut disabled,
+        "roll",
+        ACTION,
+        1,
+        BUYER,
+        START,
+        params(a)
+    ))?);
     for after_stage in [false, true] {
         let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
-        assert!(
-            prepare(&mut world, "roll", ACTION, 1, GOD, START, params(a)).is_err(),
+        check!(
+            crate::test_checks::refused(prepare(
+                &mut world,
+                "roll",
+                ACTION,
+                1,
+                GOD,
+                START,
+                params(a)
+            ))?,
             "unconfigured staff is not Registry authority"
         );
         let (prepared, output) =
@@ -201,13 +217,13 @@ fn fences(
         if after_stage {
             stage_recall(&mut world, START + 1, a, prepared, output)?;
             suspend(&mut world)?;
-            assert!(world.engine.take_staged_action().is_err());
+            check!(world.engine.take_staged_action().is_err());
         } else {
             suspend(&mut world)?;
-            assert!(stage_recall(&mut world, START + 1, a, prepared, output).is_err());
+            check!(stage_recall(&mut world, START + 1, a, prepared, output).is_err());
         }
-        assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
-        assert_eq!(status(&world, a)?.get("recalled_by"), Some(&Value::Null));
+        check!(rows(&disk(&world), "roll", CAUSES).is_empty());
+        check_eq!(status(&world, a)?.get("recalled_by"), Some(&Value::Null));
     }
     // Readiness is a live composed latch, not the mere continued existence of
     // an Org slot or an old generic AuthWitness.
@@ -228,12 +244,12 @@ fn fences(
         if after_stage {
             stage_recall(&mut world, START + 2, a, prepared, output)?;
             freeze(&world)?;
-            assert!(world.engine.take_staged_action().is_err());
+            check!(world.engine.take_staged_action().is_err());
         } else {
             freeze(&world)?;
-            assert!(stage_recall(&mut world, START + 2, a, prepared, output).is_err());
+            check!(stage_recall(&mut world, START + 2, a, prepared, output).is_err());
         }
-        assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
+        check!(rows(&disk(&world), "roll", CAUSES).is_empty());
     }
     Ok(())
 }
@@ -245,7 +261,7 @@ fn private_status(
 ) -> TestResult {
     let events = world.say(actor, &format!("@mindrecall/status {}", licence.get()))?;
     let text = PlayerWorld::private_text(&events, actor);
-    assert!(
+    check!(
         text.contains(if recalled {
             "Registry recall: your mind licence"
         } else {
@@ -260,7 +276,7 @@ fn private_status(
     };
     for (a, e) in events {
         if mush_testkit::text_of(&e).contains("Registry recall") {
-            assert!(
+            check!(
                 matches!(a,mush_core::Audience::Actor(who)if who==actor)
                     || matches!(a,mush_core::Audience::Conn(id)if id==conn),
                 "recall readback remains private"
@@ -292,12 +308,12 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, a: &EntitlementAllocationV
     private_status(world, GOD, a.licence(), true)?;
     let foreign = world.say(BUYER, &format!("@mindrecall/status {}", a.licence().get()))?;
     let missing = world.say(BUYER, "@mindrecall/status 18446744073709551615")?;
-    assert_eq!(
+    check_eq!(
         PlayerWorld::private_text(&foreign, BUYER),
         PlayerWorld::private_text(&missing, BUYER),
         "foreign and missing private holdings share refusal"
     );
-    assert!(!PlayerWorld::private_text(&foreign, BUYER).contains(&token(START + 10).to_hex()));
+    check!(!PlayerWorld::private_text(&foreign, BUYER).contains(&token(START + 10).to_hex()));
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..4 {
         for (audience, event) in tick(world)? {
@@ -307,12 +323,12 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, a: &EntitlementAllocationV
                     mush_core::Audience::Actor(actor) => actor,
                     _ => return Err("private notice audience".into()),
                 };
-                assert!(actor == BUYER || actor == GOD);
-                assert!(seen.insert(actor), "no same-session repeated notice");
+                check!(actor == BUYER || actor == GOD);
+                check!(seen.insert(actor), "no same-session repeated notice");
             }
         }
     }
-    assert_eq!(seen, std::collections::BTreeSet::from([BUYER, GOD]));
+    check_eq!(seen, std::collections::BTreeSet::from([BUYER, GOD]));
     Ok(())
 }
 fn unchanged(before: &Disk, after: &Disk, a: &EntitlementAllocationV1) -> TestResult {
@@ -322,7 +338,7 @@ fn unchanged(before: &Disk, after: &Disk, a: &EntitlementAllocationV1) -> TestRe
         {
             continue;
         }
-        assert!(
+        check!(
             after.get(k) == Some(v),
             "recall changed unrelated historical evidence"
         );
@@ -353,9 +369,9 @@ fn cold_corruptions(
                 _ => cause || root,
             }
         });
-        assert!(lost.disk.len() < len);
-        assert!(
-            PlayerWorld::boot_recall(f, &lost, policy.clone()).is_err(),
+        check!(lost.disk.len() < len);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_recall(f, &lost, policy.clone()))?,
             "missing exact recall obligation"
         );
     }
@@ -381,9 +397,9 @@ fn cold_corruptions(
                 changed = true;
             }
         }
-        assert!(changed);
-        assert!(
-            PlayerWorld::boot_recall(f, &crossed, policy.clone()).is_err(),
+        check!(changed);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_recall(f, &crossed, policy.clone()))?,
             "crossed cause cannot authenticate actual status/root"
         );
     }
@@ -404,22 +420,30 @@ fn publication(
     let before = disk(&world);
     let money = balances(&world)?;
     let prepared = signed(&mut world, START + 10, a)?;
-    assert!(disk(&world) == before);
+    check!(disk(&world) == before);
     private_status(&mut world, GOD, a.licence(), false)?;
     install(&mut world, prepared)?;
     let after = disk(&world);
     unchanged(&before, &after, a)?;
-    assert_eq!(balances(&world)?, money);
+    check_eq!(balances(&world)?, money);
     let cause = one(rows(&after, "roll", CAUSES))?;
-    assert_eq!(cause.get("filed"), Some(&json!(a.filed())));
-    assert_eq!(cause.get("rating"), Some(&json!(a.rating())));
-    assert_eq!(
+    check_eq!(cause.get("filed"), Some(&json!(a.filed())));
+    check_eq!(cause.get("rating"), Some(&json!(a.rating())));
+    check_eq!(
         status(&world, a)?.get("recalled_by"),
         Some(&json!(token(START + 10)))
     );
-    assert_eq!(status(&world, a)?.get("withdrawn_by"), Some(&Value::Null));
-    assert!(
-        prepare(&mut world, "roll", ACTION, 1, BUYER, START + 11, params(a)).is_err(),
+    check_eq!(status(&world, a)?.get("withdrawn_by"), Some(&Value::Null));
+    check!(
+        crate::test_checks::refused(prepare(
+            &mut world,
+            "roll",
+            ACTION,
+            1,
+            BUYER,
+            START + 11,
+            params(a)
+        ))?,
         "no duplicate recall cause"
     );
     source_answer(&mut world, BUYER, owner, None)?;
@@ -427,18 +451,15 @@ fn publication(
     // BUYER lists from the market venue; GOD stays in the lobby for SIM below.
     world.engine.world.move_to(BUYER, ROOM)?;
     world.commit()?;
-    assert!(
-        prepare(
-            &mut world,
-            "market",
-            "list_derived_mind",
-            1,
-            BUYER,
-            START + 12,
-            listing_params(owner, "open_resale", 100)
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        &mut world,
+        "market",
+        "list_derived_mind",
+        1,
+        BUYER,
+        START + 12,
+        listing_params(owner, "open_resale", 100)
+    ))?);
     let parent: PaidTermRecord = serde_json::from_value(
         rows(&before, "roll", "roll_mind_paid_term")
             .into_iter()
@@ -457,7 +478,7 @@ fn publication(
         GOD,
         &format!("SIM MIND filed:{} PROFILE Default", a.licence().get()),
     )?;
-    assert!(
+    check!(
         !PlayerWorld::private_text(&refused, GOD).contains("Your slot will carry"),
         "recalled paid revision has no new admission"
     );
@@ -471,7 +492,7 @@ fn publication(
     let revoked = capture(&cold, &disk(&cold));
     let mut disabled = PlayerWorld::boot_entitlements(f, &revoked)?;
     private_status(&mut disabled, GOD, a.licence(), true)?;
-    assert!(action(&disabled, "roll", ACTION, 1).is_err());
+    check!(action(&disabled, "roll", ACTION, 1).is_err());
     cold_corruptions(f, &retained, policy, a)?;
     Ok(())
 }
@@ -497,8 +518,8 @@ fn withdrawn_then_recalled(
     install(&mut world, prepared)?;
     unchanged(&before, &disk(&world), a)?;
     let row = status(&world, a)?;
-    assert_eq!(row.get("withdrawn_by"), Some(&json!(token(START + 60))));
-    assert_eq!(row.get("recalled_by"), Some(&json!(token(START + 61))));
+    check_eq!(row.get("withdrawn_by"), Some(&json!(token(START + 60))));
+    check_eq!(row.get("recalled_by"), Some(&json!(token(START + 61))));
     source_answer(&mut world, GOD, a.licence(), None)?;
     let saved = capture(&world, &disk(&world));
     let mut cold = PlayerWorld::boot_entitlements(f, &saved)?;
@@ -528,7 +549,7 @@ fn bounded_notice_drain(
         fund(&mut world, at, at + 1)?;
         grant(&mut world, at + 1, at + 2)?;
         let allocation = allocation(&world, at + 1)?;
-        assert!(expected.insert((GOD, allocation.licence().get())));
+        check!(expected.insert((GOD, allocation.licence().get())));
     }
     let prepared = signed(&mut world, START + 200, a)?;
     install(&mut world, prepared)?;
@@ -548,27 +569,27 @@ fn bounded_notice_drain(
                     mush_core::Audience::Actor(actor) => actor,
                     _ => return Err("notice audience".into()),
                 };
-                assert!(
+                check!(
                     expected.contains(&(actor, licence)),
                     "notice has exact actual holder"
                 );
-                assert!(
+                check!(
                     seen.insert((actor, licence)),
                     "same session deduplicates actual holdings"
                 );
                 count += 1;
             }
         }
-        assert!(count <= 16, "real periodic drain emission bound");
+        check!(count <= 16, "real periodic drain emission bound");
         if round == 0 {
             first = count;
         }
     }
-    assert!(
+    check!(
         first > 0 && first < expected.len(),
         "twenty real holdings require more than one bounded drain"
     );
-    assert!(
+    check!(
         seen == expected,
         "both inventories make bounded progress without starvation"
     );

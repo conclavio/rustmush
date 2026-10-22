@@ -134,7 +134,7 @@ impl EntitlementFixture {
             self.old.world.world_ic_now().clock,
             prepared,
         )?;
-        assert_eq!(self.old.state.snapshot, before);
+        check_eq!(self.old.state.snapshot, before);
         patch.bind(&mut self.old.state)?.apply();
         Ok(output)
     }
@@ -176,17 +176,17 @@ impl EntitlementFixture {
 fn actual_six_payee_capture_and_refund_install_the_exact_independent_fold() -> TestResult {
     for outcome in [PurchaseOutcome::Granted, PurchaseOutcome::Refunded] {
         let mut f = EntitlementFixture::new()?;
-        assert_eq!(f.purchase.payouts()?.len(), 6);
+        check_eq!(f.purchase.payouts()?.len(), 6);
         let funding = f.fund()?;
-        assert_eq!(
+        check_eq!(
             funding.marker().entitlement_protocol(),
             Some(EntitlementProtocol::DerivedV1)
         );
-        assert_eq!(
+        check_eq!(
             funding.marker().economic_digest(),
             Some(f.purchase.economic_digest()?)
         );
-        assert_eq!(
+        check_eq!(
             f.old
                 .state
                 .snapshot
@@ -196,7 +196,7 @@ fn actual_six_payee_capture_and_refund_install_the_exact_independent_fold() -> T
             f.purchase.price
         );
         let prepared = f.terminal(&funding, outcome)?;
-        assert_eq!(
+        check_eq!(
             prepared.transaction.lines.len(),
             if outcome == PurchaseOutcome::Granted {
                 7
@@ -213,15 +213,15 @@ fn actual_six_payee_capture_and_refund_install_the_exact_independent_fold() -> T
             prepared,
         )?;
         patch.bind(&mut f.old.state)?.apply();
-        assert_eq!(f.old.state.fold, expected);
+        check_eq!(f.old.state.fold, expected);
         let payer = f
             .old
             .state
             .snapshot
             .account(f.purchase.payer)
             .ok_or("payer")?;
-        assert_eq!(payer.held_amount, crate::Amount::ZERO);
-        assert_eq!(
+        check_eq!(payer.held_amount, crate::Amount::ZERO);
+        check_eq!(
             payer.posted_balance.minor(),
             if outcome == PurchaseOutcome::Granted {
                 900
@@ -230,7 +230,7 @@ fn actual_six_payee_capture_and_refund_install_the_exact_independent_fold() -> T
             }
         );
         for payout in f.purchase.payouts()? {
-            assert_eq!(
+            check_eq!(
                 f.old
                     .state
                     .snapshot
@@ -247,11 +247,11 @@ fn actual_six_payee_capture_and_refund_install_the_exact_independent_fold() -> T
         }
         let audit = &f.old.state.fold.purchase_receipts;
         let history = audit.get(funding.operation())?;
-        assert!(history.matches_entitlement(&f.purchase, funding.receipt()));
-        assert!(!history.matches_purchase(&f.old.request, funding.receipt()));
-        assert!(history.terminal().is_some());
-        assert!(audit.prepare(&tx).is_err());
-        assert!(f.terminal(&funding, outcome).is_err());
+        check!(history.matches_entitlement(&f.purchase, funding.receipt()));
+        check!(!history.matches_purchase(&f.old.request, funding.receipt()));
+        check!(history.terminal().is_some());
+        check!(audit.prepare(&tx).is_err());
+        check!(f.terminal(&funding, outcome).is_err());
     }
     Ok(())
 }
@@ -283,8 +283,8 @@ fn payer_royalty_is_a_real_credit_beside_full_gross_escrow_debit() -> TestResult
         .map(|l| l.delta.minor())
         .collect::<Vec<_>>();
     payer_lines.sort();
-    assert_eq!(payer_lines, vec![-100, 10]);
-    assert_eq!(
+    check_eq!(payer_lines, vec![-100, 10]);
+    check_eq!(
         prepared
             .transaction
             .hold_effects
@@ -306,11 +306,11 @@ fn payer_royalty_is_a_real_credit_beside_full_gross_escrow_debit() -> TestResult
         .find(|l| l.account == f.purchase.payer)
         .ok_or("debit")?
         .delta = crate::Amount::from_minor(-90);
-    assert!(f.old.state.fold.purchase_receipts.prepare(&netted).is_err());
+    check!(f.old.state.fold.purchase_receipts.prepare(&netted).is_err());
     let (_, patch, _) =
         install::finish_terminal_images(&f.old.state, f.old.world.world_ic_now().clock, prepared)?;
     patch.bind(&mut f.old.state)?.apply();
-    assert_eq!(
+    check_eq!(
         f.old
             .state
             .snapshot
@@ -325,7 +325,7 @@ fn payer_royalty_is_a_real_credit_beside_full_gross_escrow_debit() -> TestResult
         replay.observe(tx);
     }
     replay.finish_replay()?;
-    assert_eq!(replay, f.old.state.fold.purchase_receipts);
+    check_eq!(replay, f.old.state.fold.purchase_receipts);
     Ok(())
 }
 
@@ -337,7 +337,7 @@ fn role_floors_precede_merge_and_zero_royalties_remain_explicit() -> TestResult 
         recipient: f.purchase.registry.recipient.clone(),
     });
     f.purchase.price = crate::Amount::from_minor(9);
-    assert_eq!(
+    check_eq!(
         f.purchase.payouts()?,
         vec![PurchasePayout {
             account: AccountId(1),
@@ -347,8 +347,8 @@ fn role_floors_precede_merge_and_zero_royalties_remain_explicit() -> TestResult 
     );
     f.purchase.price = crate::Amount::from_minor(101);
     let payouts = f.purchase.payouts()?;
-    assert_eq!(payouts.len(), 5);
-    assert_eq!(
+    check_eq!(payouts.len(), 5);
+    check_eq!(
         payouts
             .iter()
             .find(|p| p.account == AccountId(2))
@@ -357,7 +357,7 @@ fn role_floors_precede_merge_and_zero_royalties_remain_explicit() -> TestResult 
             .minor(),
         20
     );
-    assert_eq!(
+    check_eq!(
         payouts
             .iter()
             .find(|p| p.account == AccountId(1))
@@ -367,7 +367,7 @@ fn role_floors_precede_merge_and_zero_royalties_remain_explicit() -> TestResult 
         51
     );
     let funding = f.fund()?;
-    assert_eq!(
+    check_eq!(
         f.terminal(&funding, PurchaseOutcome::Granted)?
             .transaction
             .lines
@@ -379,8 +379,8 @@ fn role_floors_precede_merge_and_zero_royalties_remain_explicit() -> TestResult 
         parent.permille = 0;
         parent.title = None;
     }
-    assert!(zero.payouts().is_ok());
-    assert_ne!(zero.economic_digest()?, f.purchase.economic_digest()?);
+    check!(zero.payouts().is_ok());
+    check_ne!(zero.economic_digest()?, f.purchase.economic_digest()?);
     Ok(())
 }
 
@@ -399,11 +399,11 @@ fn parent_rates_total_rates_depth_identity_and_legacy_three_payee_ceiling_refuse
             5 => p.protocol = EntitlementProtocol::OriginalV3,
             _ => p.parents.first_mut().ok_or("parent")?.title = None,
         }
-        assert!(p.payouts().is_err(), "mode {mode}");
+        check!(p.payouts().is_err(), "mode {mode}");
     }
     let mut old = f.old.request.clone();
     old.payouts = f.purchase.payouts()?;
-    assert!(
+    check!(
         old.validate_shape().is_err(),
         "new recipe cannot widen original maximum"
     );
@@ -429,16 +429,16 @@ fn actual_parent_title_drift_blocks_grant_and_bind_but_not_frozen_refund() -> Te
     title.frozen = true;
     f.old.state.snapshot.put_asset(title);
     let before = f.old.state.snapshot.clone();
-    assert!(patch.bind(&mut f.old.state).is_err());
-    assert_eq!(f.old.state.snapshot, before);
-    assert!(f.terminal(&funding, PurchaseOutcome::Granted).is_err());
+    check!(patch.bind(&mut f.old.state).is_err());
+    check_eq!(f.old.state.snapshot, before);
+    check!(f.terminal(&funding, PurchaseOutcome::Granted).is_err());
     f.old.world.set_now(f.purchase.expires_at_utc + 1);
     let refund = f.terminal(&funding, PurchaseOutcome::Refunded)?;
-    assert!(refund.transaction.lines.is_empty());
+    check!(refund.transaction.lines.is_empty());
     let (_, patch, _) =
         install::finish_terminal_images(&f.old.state, f.old.world.world_ic_now().clock, refund)?;
     patch.bind(&mut f.old.state)?.apply();
-    assert_eq!(
+    check_eq!(
         f.old
             .state
             .snapshot
@@ -454,7 +454,7 @@ fn actual_parent_title_drift_blocks_grant_and_bind_but_not_frozen_refund() -> Te
 fn rounded_zero_roles_still_require_and_capture_exact_recipient_accounts() -> TestResult {
     let mut f = EntitlementFixture::new()?;
     f.purchase.price = crate::Amount::from_minor(1);
-    assert_eq!(f.purchase.payouts()?.len(), 1);
+    check_eq!(f.purchase.payouts()?.len(), 1);
     let prepared = f.prepare()?;
     let (_, patch, _) =
         install::finish_images(&f.old.state, f.old.world.world_ic_now().clock, prepared)?;
@@ -476,8 +476,8 @@ fn rounded_zero_roles_still_require_and_capture_exact_recipient_accounts() -> Te
     account.revision += 1;
     account.owner = PrincipalId::Object(f.purchase.seller);
     f.old.state.snapshot.put_account(account);
-    assert!(patch.bind(&mut f.old.state).is_err());
-    assert!(f.prepare().is_err());
+    check!(patch.bind(&mut f.old.state).is_err());
+    check!(f.prepare().is_err());
     let mut crossed = f.purchase.clone();
     crossed.venue.as_mut().ok_or("venue")?.recipient = Some(Recipient {
         account: crossed
@@ -488,7 +488,7 @@ fn rounded_zero_roles_still_require_and_capture_exact_recipient_accounts() -> Te
             .account,
         owner: PrincipalId::Object(crossed.seller),
     });
-    assert!(
+    check!(
         crossed.payouts().is_err(),
         "rounding cannot hide crossed ownership"
     );
@@ -535,10 +535,10 @@ fn exact_new_protocol_markers_refuse_legacy_authority_and_crossed_subjects() -> 
         }
         let prepared = f.prepare()?;
         let wire = serde_json::to_value(prepared.output.marker())?;
-        assert_eq!(wire.get("kind"), Some(&json!("mind_entitlement")));
+        check_eq!(wire.get("kind"), Some(&json!("mind_entitlement")));
         let decoded: ManagedConsent = serde_json::from_value(wire.clone())?;
-        assert_eq!(&decoded, prepared.output.marker());
-        assert!(
+        check_eq!(&decoded, prepared.output.marker());
+        check!(
             crate::contract::managed::require_legacy_plan(&prepared.plan, &f.old.state.snapshot)
                 .is_err()
         );
@@ -547,19 +547,19 @@ fn exact_new_protocol_markers_refuse_legacy_authority_and_crossed_subjects() -> 
             .as_object_mut()
             .ok_or("marker object")?
             .insert("authority".into(), json!(true));
-        assert!(serde_json::from_value::<ManagedConsent>(unknown).is_err());
+        check!(serde_json::from_value::<ManagedConsent>(unknown).is_err());
         let mut foreign = wire.clone();
         *foreign
             .pointer_mut("/effect/version")
             .ok_or("effect version")? = json!(99);
-        assert!(serde_json::from_value::<ManagedConsent>(foreign).is_err());
+        check!(serde_json::from_value::<ManagedConsent>(foreign).is_err());
         let encoded = serde_json::to_string(&wire)?;
         let duplicate = encoded.replacen("{", "{\"kind\":\"mind_entitlement\",", 1);
-        assert!(serde_json::from_str::<ManagedConsent>(&duplicate).is_err());
+        check!(serde_json::from_str::<ManagedConsent>(&duplicate).is_err());
         let funding = f.fund()?;
         f.purchase.grant_economics_digest = DefinitionDigest::from_bytes([99; 32]);
-        assert!(f.terminal(&funding, PurchaseOutcome::Granted).is_err());
-        assert!(
+        check!(f.terminal(&funding, PurchaseOutcome::Granted).is_err());
+        check!(
             f.terminal(&funding, PurchaseOutcome::Refunded).is_err(),
             "refund still requires the frozen subject"
         );

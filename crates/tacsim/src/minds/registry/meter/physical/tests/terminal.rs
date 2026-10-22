@@ -22,13 +22,13 @@ fn terminal_uncalled() -> Result<Fixture, Box<dyn std::error::Error>> {
     for step in 1..=32_i64 {
         let output = arena.step_settled(step * native, &[], &[]);
         if let Some(end) = output.ended {
-            assert_eq!(end.reason, EndReason::Timeout);
-            assert_eq!(end.t_ms, deadline);
-            assert!(
+            check_eq!(end.reason, EndReason::Timeout);
+            check_eq!(end.t_ms, deadline);
+            check!(
                 output.thinks.is_empty(),
                 "actual terminal worker batch is suppressed"
             );
-            assert_eq!(
+            check_eq!(
                 arena
                     .thinks_outstanding()
                     .iter()
@@ -53,24 +53,24 @@ fn real_terminal_uncalled_source_has_no_call_cost_or_coverage_credit() -> TestRe
     meter.require_complete()?;
     meter.require_complete()?;
     let after = meter.measurement()?;
-    assert_eq!(after.summary, before.summary);
-    assert_eq!(after.seen, before.seen);
-    assert_eq!(after.witness, before.witness);
-    assert_eq!(after.summary.thinks(), 0);
+    check_eq!(after.summary, before.summary);
+    check_eq!(after.seen, before.seen);
+    check_eq!(after.witness, before.witness);
+    check_eq!(after.summary.thinks(), 0);
     let physical = after.physical.ok_or("physical")?;
-    assert_eq!(physical.total_thinks, 0);
-    assert_eq!(physical.cancelled_uncalled, 1);
-    assert_eq!(physical.cancelled_pending, 0);
-    assert_eq!(physical.rom_thinks, 0);
-    assert_eq!(physical.degraded_thinks, 0);
-    assert_eq!(physical.refusals, 0);
-    assert_ne!(
+    check_eq!(physical.total_thinks, 0);
+    check_eq!(physical.cancelled_uncalled, 1);
+    check_eq!(physical.cancelled_pending, 0);
+    check_eq!(physical.rom_thinks, 0);
+    check_eq!(physical.degraded_thinks, 0);
+    check_eq!(physical.refusals, 0);
+    check_ne!(
         physical.witness,
         before.physical.ok_or("before physical")?.witness
     );
-    assert_eq!(crate::arena::state_hash(&arena), hash);
-    assert_eq!(arena.ledger.digest(), ledger);
-    assert!(
+    check_eq!(crate::arena::state_hash(&arena), hash);
+    check_eq!(arena.ledger.digest(), ledger);
+    check!(
         !arena
             .traces
             .recent(OWN, Some(THINKS))
@@ -162,7 +162,7 @@ fn terminal_suffix_refuses_missing_extra_reordered_or_forged_evidence() -> TestR
             }
             10 => arena.traces = Default::default(),
             11 => {
-                assert!(arena.traces.complete(
+                check!(arena.traces.complete(
                     OWN,
                     original.think_seq,
                     Some(ThinkDiagnostics::measured(1, 1)),
@@ -172,7 +172,7 @@ fn terminal_suffix_refuses_missing_extra_reordered_or_forged_evidence() -> TestR
                 ));
             }
             12 => {
-                assert!(
+                check!(
                     arena
                         .traces
                         .begin(OWN, original.think_seq + 1, original.t_ms, false)
@@ -198,11 +198,11 @@ fn terminal_suffix_refuses_missing_extra_reordered_or_forged_evidence() -> TestR
                     .digest = DefinitionDigest::from_bytes([0xff; 32]);
             }
         }
-        assert!(
+        check!(
             meter.reconcile(&arena).is_err(),
             "forged terminal evidence mode {mode}"
         );
-        assert!(meter.measurement().is_err(), "refusal is sticky");
+        check!(meter.measurement().is_err(), "refusal is sticky");
     }
     Ok(())
 }
@@ -213,8 +213,8 @@ fn ordinary_running_collected_suffix_still_refuses() -> TestResult {
     let think = collect(&mut arena, 1000)?;
     arena.collected.push(think);
     arena.stamp_collected(crate::arena::state_hash(&arena));
-    assert!(arena.ended.is_none());
-    assert!(meter.reconcile(&arena).is_err());
+    check!(arena.ended.is_none());
+    check!(meter.reconcile(&arena).is_err());
     Ok(())
 }
 
@@ -223,14 +223,14 @@ fn real_stopping_pulse_retains_called_pending_cost_without_landing_credit() -> T
     let (mut arena, meter) = fixture(8)?;
     let think = collect(&mut arena, 1000)?;
     let answer = think.think().result;
-    assert!(answer.fault.is_none());
-    assert_eq!(arena.settle_collected(&think, answer).faults, 0);
+    check!(answer.fault.is_none());
+    check_eq!(arena.settle_collected(&think, answer).faults, 0);
     meter.reconcile(&arena)?;
     let before = meter.measurement()?;
-    assert!(meter.require_complete().is_err());
+    check!(meter.require_complete().is_err());
     arena.stop(StopReason::Timeout);
     let output = arena.step(1000, &[], &[]);
-    assert_eq!(
+    check_eq!(
         output.ended.ok_or("actual stopped end")?.reason,
         EndReason::Timeout
     );
@@ -239,23 +239,23 @@ fn real_stopping_pulse_retains_called_pending_cost_without_landing_credit() -> T
     meter.reconcile(&arena)?;
     meter.require_complete()?;
     let after = meter.measurement()?;
-    assert_eq!(after.summary, before.summary);
-    assert_eq!(after.seen, before.seen);
-    assert_eq!(after.witness, before.witness);
+    check_eq!(after.summary, before.summary);
+    check_eq!(after.seen, before.seen);
+    check_eq!(after.witness, before.witness);
     let physical = after.physical.ok_or("physical")?;
-    assert_eq!(physical.cancelled_pending, 1);
-    assert_eq!(physical.cancelled_uncalled, 0);
-    assert_eq!(physical.total_thinks, 1);
-    assert_eq!(physical.refusals, 0);
+    check_eq!(physical.cancelled_pending, 1);
+    check_eq!(physical.cancelled_uncalled, 0);
+    check_eq!(physical.total_thinks, 1);
+    check_eq!(physical.refusals, 0);
     let row = arena
         .traces
         .recent(OWN, Some(THINKS))
         .pop()
         .ok_or("trace")?;
-    assert!(row.settled && matches!(row.outcome, Outcome::Pending));
-    assert!(row.landed_ms.is_none());
-    assert_eq!(crate::arena::state_hash(&arena), hash);
-    assert_eq!(arena.ledger.digest(), ledger);
+    check!(row.settled && matches!(row.outcome, Outcome::Pending));
+    check!(row.landed_ms.is_none());
+    check_eq!(crate::arena::state_hash(&arena), hash);
+    check_eq!(arena.ledger.digest(), ledger);
     Ok(())
 }
 
@@ -268,23 +268,23 @@ fn terminal_does_not_erase_actual_operations_or_interpreter_faults() -> TestResu
         let (mut arena, meter) = fixture_source(8, source)?;
         let think = collect(&mut arena, 1000)?;
         let answer = think.think().result;
-        assert!(answer.fault.is_some());
-        assert_eq!(arena.settle_collected(&think, answer).faults, 1);
+        check!(answer.fault.is_some());
+        check_eq!(arena.settle_collected(&think, answer).faults, 1);
         arena.stop(StopReason::Timeout);
         let output = arena.step(1000, &[], &[]);
-        assert!(output.ended.is_some());
+        check!(output.ended.is_some());
         let joined = meter.reconcile(&arena);
         if ops {
             joined?;
             meter.require_complete()?;
             let measured = meter.measurement()?;
-            assert!(measured.summary.only_budget_faults());
-            assert_eq!(measured.summary.ops_faults(), 1);
-            assert_eq!(measured.summary.thinks(), 1);
-            assert_eq!(measured.physical.ok_or("physical")?.cancelled_uncalled, 0);
+            check!(measured.summary.only_budget_faults());
+            check_eq!(measured.summary.ops_faults(), 1);
+            check_eq!(measured.summary.thinks(), 1);
+            check_eq!(measured.physical.ok_or("physical")?.cancelled_uncalled, 0);
         } else {
-            assert!(joined.is_err());
-            assert!(meter.measurement().is_err());
+            check!(joined.is_err());
+            check!(meter.measurement().is_err());
         }
     }
     Ok(())
@@ -304,16 +304,16 @@ fn terminal_seal_rejects_reconciliation_or_calls_after_completion() -> TestResul
                 .find(|think| think.unit == OWN)
                 .ok_or("job")?;
             let actual = think.think().result;
-            assert_eq!(actual, meter.runner.think(&think.job()));
+            check_eq!(actual, meter.runner.think(&think.job()));
         } else {
-            assert!(
+            check!(
                 meter.reconcile(&arena).is_err(),
                 "terminal reconciliation is explicitly single-use"
             );
         }
-        assert!(meter.measurement().is_err());
+        check!(meter.measurement().is_err());
         let state = meter.state.lock().map_err(|_| "poison")?;
-        assert_eq!(state.physical.as_ref().ok_or("physical")?.summary, before);
+        check_eq!(state.physical.as_ref().ok_or("physical")?.summary, before);
     }
     Ok(())
 }

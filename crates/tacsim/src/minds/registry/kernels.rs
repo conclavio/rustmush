@@ -295,23 +295,23 @@ mod tests {
                     maximum_thinks: 1,
                 };
                 let mut probe = Boundary::open(&policy, &subject, &case)?;
-                assert_ne!(probe.binding().source(), revision.source());
+                check_ne!(probe.binding().source(), revision.source());
                 let row = probe
                     .advance(u64::from(case.physics.native_ms))?
                     .result
                     .ok_or("boundary")?;
-                assert_eq!(row.meter().thinks(), 1);
-                assert!(
+                check_eq!(row.meter().thinks(), 1);
+                check!(
                     row.meter().max_ops() > 0
                         && row.meter().max_fees() >= crate::minds::fees::FEE_THINK
                 );
-                assert!(
+                check!(
                     matches!(row.outcome(),CaseOutcome::Kernel{expected,actual} if expected==actual)
                 );
                 if name == KernelName::MeterFinalFee {
-                    assert!(row.meter().max_fees() > policy.cfg.minds.classes.row(core).ops);
+                    check!(row.meter().max_fees() > policy.cfg.minds.classes.row(core).ops);
                 }
-                assert!(probe.advance(u64::from(case.physics.native_ms)).is_err());
+                check!(probe.advance(u64::from(case.physics.native_ms)).is_err());
             }
         }
         Ok(())

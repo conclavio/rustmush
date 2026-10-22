@@ -35,22 +35,22 @@ fn invocation(
 fn captured_retirement_request_requires_exact_stable_mind_and_preserves_v1() -> TestResult {
     let old = action_reference()?;
     let new = captured_action_reference()?;
-    assert_eq!(old.version(), 1);
-    assert_eq!(new.version(), 2);
-    assert_ne!(old, new);
+    check_eq!(old.version(), 1);
+    check_eq!(new.version(), 2);
+    check_ne!(old, new);
     let legacy = json!({"name":"mine","edit":"1","revision":"1"});
     let captured = json!({"mind":"7","name":"mine","edit":"1","revision":"1"});
-    assert!(
+    check!(
         Request::parse(&invocation(legacy.clone())?, &old)?
             .mind
             .is_none()
     );
-    assert_eq!(
+    check_eq!(
         Request::parse(&invocation(captured.clone())?, &new)?.mind,
         Some(7)
     );
-    assert!(Request::parse(&invocation(legacy)?, &new).is_err());
-    assert!(Request::parse(&invocation(captured.clone())?, &old).is_err());
+    check!(Request::parse(&invocation(legacy)?, &new).is_err());
+    check!(Request::parse(&invocation(captured.clone())?, &old).is_err());
     for mind in [
         json!("0"),
         json!("07"),
@@ -61,7 +61,7 @@ fn captured_retirement_request_requires_exact_stable_mind_and_preserves_v1() -> 
     ] {
         let mut invalid = captured.clone();
         *invalid.get_mut("mind").ok_or("mind")? = mind;
-        assert!(Request::parse(&invocation(invalid)?, &new).is_err());
+        check!(Request::parse(&invocation(invalid)?, &new).is_err());
     }
     for field in ["actor", "account", "source", "validated"] {
         let mut invalid = captured.clone();
@@ -69,7 +69,7 @@ fn captured_retirement_request_requires_exact_stable_mind_and_preserves_v1() -> 
             .as_object_mut()
             .ok_or("object")?
             .insert(field.into(), json!(1));
-        assert!(Request::parse(&invocation(invalid)?, &new).is_err());
+        check!(Request::parse(&invocation(invalid)?, &new).is_err());
     }
     let old_definition = captured_definition()?;
     let definition = DefinitionDescriptor::new(
@@ -81,7 +81,7 @@ fn captured_retirement_request_requires_exact_stable_mind_and_preserves_v1() -> 
     .with_references(old_definition.references().to_vec());
     let foreign =
         DefinitionRegistryBuilder::new().register(OwnerId::new(crate::NS)?, definition)?;
-    assert!(!known_action(&foreign)?);
-    assert!(Request::parse(&invocation(captured)?, &foreign).is_err());
+    check!(!known_action(&foreign)?);
+    check!(Request::parse(&invocation(captured)?, &foreign).is_err());
     Ok(())
 }

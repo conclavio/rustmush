@@ -60,7 +60,7 @@ fn retirement_maximum_inventory_complete_envelopes_fit_declared_limits() -> Test
         &envelope(&op)?,
         RetirementOperation::MAX_BYTES,
     )?;
-    assert!(
+    check!(
         bytes.len() > 40_000 && bytes.len() < 65_536,
         "complete maximum-width operation has bounded headroom"
     );
@@ -69,10 +69,10 @@ fn retirement_maximum_inventory_complete_envelopes_fit_declared_limits() -> Test
         &envelope(&tombstone)?,
         RetiredDraftParent::MAX_BYTES,
     )?;
-    assert!(bytes.len() < 4096);
+    check!(bytes.len() < 4096);
     let decoded: RetirementOperation = serde_json::from_slice(&serde_json::to_vec(&op)?)?;
     decoded.validate()?;
-    assert!(decoded == op);
+    check!(decoded == op);
     Ok(())
 }
 #[test]
@@ -88,8 +88,8 @@ fn retirement_decode_bounds_inventory_before_constructing_excess_entries() -> Te
         }
     }
     let mut decoder = serde_json::Deserializer::from_str("[1,2,3,4,5]");
-    assert!(inventory::<_, Entry, 2>(&mut decoder).is_err());
-    assert_eq!(
+    check!(inventory::<_, Entry, 2>(&mut decoder).is_err());
+    check_eq!(
         DECODED.load(Ordering::SeqCst),
         2,
         "third retained item was not allocated/decoded"
@@ -101,14 +101,14 @@ fn retirement_decode_bounds_inventory_before_constructing_excess_entries() -> Te
         .and_then(serde_json::Value::as_array_mut)
         .ok_or("unnamed")?;
     rows.push(serde_json::to_value(op.unnamed.first().ok_or("first")?)?);
-    assert!(serde_json::from_value::<RetirementOperation>(value).is_err());
+    check!(serde_json::from_value::<RetirementOperation>(value).is_err());
     let mut value = serde_json::to_value(&op)?;
     let rows = value
         .get_mut("named")
         .and_then(serde_json::Value::as_array_mut)
         .ok_or("named")?;
     rows.push(serde_json::to_value(op.named.first().ok_or("first")?)?);
-    assert!(serde_json::from_value::<RetirementOperation>(value).is_err());
+    check!(serde_json::from_value::<RetirementOperation>(value).is_err());
     Ok(())
 }
 #[test]
@@ -142,40 +142,40 @@ fn retirement_inventory_action_and_pair_are_exact_metadata() -> TestResult {
             }
             _ => return Err("mode".into()),
         }
-        assert!(
+        check!(
             altered.validate().is_err(),
             "invalid bounded metadata case {mode}"
         );
     }
     let mut changed = op.clone();
     changed.operation = CommitToken::from_bytes([254; 16]);
-    assert!(changed.digest()? != op.digest()? && changed.tombstone()? != op.tombstone()?);
+    check!(changed.digest()? != op.digest()? && changed.tombstone()? != op.tombstone()?);
     let mut value = serde_json::to_value(&op)?;
     value
         .as_object_mut()
         .ok_or("object")?
         .insert("source".into(), json!("forbidden"));
-    assert!(serde_json::from_value::<RetirementOperation>(value).is_err());
+    check!(serde_json::from_value::<RetirementOperation>(value).is_err());
     let raw = serde_json::to_string(&op)?;
     let duplicate = raw.replacen("{", "{\"format\":1,", 1);
-    assert!(serde_json::from_str::<RetirementOperation>(&duplicate).is_err());
+    check!(serde_json::from_str::<RetirementOperation>(&duplicate).is_err());
     Ok(())
 }
 #[test]
 fn retirement_action_is_stable_without_manifest_or_paid_qualification() -> TestResult {
     let [action, _, reader] = super::super::definitions()?;
-    assert_eq!(action.references(), [super::super::retention_reference()?]);
-    assert_eq!(reader.references(), action.references());
+    check_eq!(action.references(), [super::super::retention_reference()?]);
+    check_eq!(reader.references(), action.references());
     let op = maximum()?;
     let anchor = crate::commerce::roots::RootAnchor::DraftRetirement(op.operation, op.digest()?);
-    assert_eq!(
+    check_eq!(
         crate::commerce::roots::RootAnchor::parse(&anchor.record())?,
         anchor
     );
-    assert!(
+    check!(
         crate::commerce::roots::RootAnchor::parse(&format!("{}/extra", anchor.record())).is_err()
     );
-    assert!(
+    check!(
         action
             .references()
             .iter()
@@ -189,7 +189,7 @@ fn retirement_action_is_stable_without_manifest_or_paid_qualification() -> TestR
         ("2", "3", false),
         ("+2", "1", false),
     ] {
-        assert_eq!(
+        check_eq!(
             super::super::Request {
                 mind: None,
                 name: "child".into(),
@@ -210,7 +210,7 @@ fn captured_retirement_keeps_old_envelope_and_reconstructs_only_known_action_ver
     let old = maximum()?;
     let old_bytes = serde_json::to_vec(&old)?;
     let old_decoded: RetirementOperation = serde_json::from_slice(&old_bytes)?;
-    assert_eq!(serde_json::to_vec(&old_decoded)?, old_bytes);
+    check_eq!(serde_json::to_vec(&old_decoded)?, old_bytes);
     old_decoded.validate()?;
     let mut captured = old.clone();
     captured.action = super::super::captured_action_reference()?;
@@ -218,12 +218,12 @@ fn captured_retirement_keeps_old_envelope_and_reconstructs_only_known_action_ver
     captured.tombstone()?.validate()?;
     let mut expected = serde_json::to_value(&old)?;
     *expected.get_mut("action").ok_or("action")? = serde_json::to_value(&captured.action)?;
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(&captured)?,
         expected,
         "only exact action identity differs in retained format1"
     );
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(
             &envelope(&captured)?,
             RetirementOperation::MAX_BYTES

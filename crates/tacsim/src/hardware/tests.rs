@@ -25,18 +25,18 @@ fn sign(mut value: Value) -> Result<String> {
 #[test]
 fn shipped_hardware_pins_prices_quotas_and_bounded_hourly_schedules() -> Result {
     let hardware = PublishedHardware::shipped()?;
-    assert_eq!(
+    check_eq!(
         hardware.pack().manifest().digest().to_hex(),
         "cf2312086dfd7a3b5c93000c97ac292ab6522f966d0d3bcc8bec1e7ee71aa7cc"
     );
-    assert_eq!(hardware.catalogue().monthly_dies(), [64, 16, 4]);
-    assert_eq!(hardware.catalogue().fitting_minor(), 10_000);
+    check_eq!(hardware.catalogue().monthly_dies(), [64, 16, 4]);
+    check_eq!(hardware.catalogue().fitting_minor(), 10_000);
     for (index, class) in CLASSES.into_iter().enumerate() {
-        assert_eq!(
+        check_eq!(
             hardware.catalogue().finished_minor(class),
             [300_000, 800_000, 2_500_000][index]
         );
-        assert_eq!(
+        check_eq!(
             hardware.catalogue().die_minor(class)?
                 + hardware.catalogue().integration_minor(class)?,
             hardware.catalogue().finished_minor(class)
@@ -51,8 +51,8 @@ fn shipped_hardware_pins_prices_quotas_and_bounded_hourly_schedules() -> Result 
             else {
                 return Err("recipe missing".into());
             };
-            assert_eq!(recipe.work_units(class), units[index]);
-            assert_eq!(recipe.process(), process);
+            check_eq!(recipe.work_units(class), units[index]);
+            check_eq!(recipe.process(), process);
         }
     }
     Ok(())
@@ -72,7 +72,7 @@ fn hardware_catalogue_refuses_a_price_display_that_differs_from_money() -> Resul
     ] {
         let mut value = body()?["entries"][CATALOGUE]["def"].clone();
         value[field] = wrong;
-        assert!(
+        check!(
             serde_json::from_value::<HardwareCatalogueDef>(value).is_err(),
             "{field}"
         );
@@ -91,14 +91,14 @@ fn hardware_recipes_refuse_unbounded_work_commodity_fields_and_seed_placement() 
     ] {
         let mut value = body()?["entries"]["core_integrate"]["def"].clone();
         value[field] = wrong;
-        assert!(
+        check!(
             serde_json::from_value::<HardwareRecipeDef>(value).is_err(),
             "{field}"
         );
     }
     let mut seed = body()?;
     seed["manifest"]["kind"] = json!("campaign_seed");
-    assert!(crate::load_pack(&sign(seed)?).is_err());
+    check!(crate::load_pack(&sign(seed)?).is_err());
     Ok(())
 }
 
@@ -125,8 +125,8 @@ fn actual_pack_owner_publication_and_loaded_bytes_are_both_required() -> Result 
         .ok_or("actual owner did not publish")?;
     // The actual boot loaded this pack. Removing the publication must still
     // refuse it: decoding or registration never substitutes for publication.
-    assert!(CoreRecipeAuthority::resolve(&hardware, tw.world(), DieClass::II).is_none());
-    assert!(RefitRecipeAuthority::resolve(&hardware, tw.world(), DieClass::II).is_none());
+    check!(CoreRecipeAuthority::resolve(&hardware, tw.world(), DieClass::II).is_none());
+    check!(RefitRecipeAuthority::resolve(&hardware, tw.world(), DieClass::II).is_none());
     tw.world_mut()
         .module_state_mut::<TacsimStore>()
         .ok_or("store missing")?
@@ -137,19 +137,19 @@ fn actual_pack_owner_publication_and_loaded_bytes_are_both_required() -> Result 
             .ok_or("integration unavailable")?;
         let refit = RefitRecipeAuthority::resolve(&hardware, tw.world(), class)
             .ok_or("refit unavailable")?;
-        assert_eq!(
+        check_eq!(
             integration.definition(),
             hardware.definition(HardwareProcess::Integrate)
         );
-        assert_eq!(
+        check_eq!(
             refit.definition(),
             hardware.definition(HardwareProcess::Refit)
         );
-        assert_eq!(
+        check_eq!(
             CoreRecipeAuthority::published_digest(&hardware, tw.world(), integration.pack()),
             Some(integration.pack().digest())
         );
-        assert!(
+        check!(
             CoreRecipeAuthority::published_digest(&hardware, tw.world(), refit.pack()).is_none()
         );
         let crossed = RecipeRef::new(
@@ -158,10 +158,10 @@ fn actual_pack_owner_publication_and_loaded_bytes_are_both_required() -> Result 
             CanonicalId::new("core_integrate")?,
             integration.pack().digest(),
         )?;
-        assert!(CoreRecipeAuthority::published_digest(&hardware, tw.world(), &crossed).is_none());
+        check!(CoreRecipeAuthority::published_digest(&hardware, tw.world(), &crossed).is_none());
     }
     // Ordinary commodity manufacture has no view of these certified recipes.
-    assert!(
+    check!(
         crate::composition::industry_recipes::TacsimRecipeAuthority
             .catalog(tw.world())
             .is_empty()
@@ -171,7 +171,7 @@ fn actual_pack_owner_publication_and_loaded_bytes_are_both_required() -> Result 
         .ok_or("store missing")?
         .loaded
         .remove(&key);
-    assert!(CoreRecipeAuthority::resolve(&hardware, tw.world(), DieClass::I).is_none());
-    assert!(RefitRecipeAuthority::resolve(&hardware, tw.world(), DieClass::III).is_none());
+    check!(CoreRecipeAuthority::resolve(&hardware, tw.world(), DieClass::I).is_none());
+    check!(RefitRecipeAuthority::resolve(&hardware, tw.world(), DieClass::III).is_none());
     Ok(())
 }

@@ -224,7 +224,7 @@ impl Fixture {
             .ok_or("economy owner")?
             .clone();
         // Replay the complete actual setup history, not a public health setter.
-        assert_eq!(
+        check_eq!(
             state.journal.next_seq(crate::JOURNAL_LOG),
             u64::try_from(state.transactions.len())?
         );
@@ -285,10 +285,10 @@ fn house_requires_each_real_scoped_right_even_for_staff_and_foreign_scope() -> T
     let mut f = Fixture::new()?;
     let state = f.state()?;
     let before = state.snapshot.clone();
-    assert!(f.prepare(&state, GOD).is_err());
-    assert!(f.prepare(&state, f.actor).is_err());
+    check!(f.prepare(&state, GOD).is_err());
+    check!(f.prepare(&state, f.actor).is_err());
     f.allow(f.actor, f.other_scope)?;
-    assert!(f.prepare(&state, f.actor).is_err());
+    check!(f.prepare(&state, f.actor).is_err());
     for (n, capability) in CAPS.into_iter().enumerate() {
         command(
             &mut f.world,
@@ -297,9 +297,9 @@ fn house_requires_each_real_scoped_right_even_for_staff_and_foreign_scope() -> T
                 f.actor.0, f.scope.0
             ),
         )?;
-        assert_eq!(f.prepare(&state, f.actor).is_ok(), n == 2);
+        check_eq!(f.prepare(&state, f.actor).is_ok(), n == 2);
     }
-    assert_eq!(state.snapshot, before);
+    check_eq!(state.snapshot, before);
     Ok(())
 }
 
@@ -316,7 +316,7 @@ fn policy_allow_is_real_authority_and_deny_revokes_before_custody_without_charge
         &mut f.world,
         &format!("@house-policy {} {} deny", f.actor.0, f.scope.0),
     )?;
-    assert!(
+    check!(
         f.adapter
             .validate_for(
                 &state,
@@ -328,9 +328,9 @@ fn policy_allow_is_real_authority_and_deny_revokes_before_custody_without_charge
             )
             .is_err()
     );
-    assert!(f.prepare(&state, f.actor).is_err());
-    assert!(state.snapshot.asset(f.shell).is_none());
-    assert_eq!(
+    check!(f.prepare(&state, f.actor).is_err());
+    check!(state.snapshot.asset(f.shell).is_none());
+    check_eq!(
         state
             .snapshot
             .account(f.payer)
@@ -351,9 +351,9 @@ fn scoped_approval_refuses_without_title_charge_or_approval_side_effect() -> Tes
     )?;
     let state = f.state()?;
     let before = state.snapshot.clone();
-    assert!(f.prepare(&state, f.actor).is_err());
-    assert_eq!(state.snapshot, before);
-    assert!(state.snapshot.approvals().next().is_none());
+    check!(f.prepare(&state, f.actor).is_err());
+    check_eq!(state.snapshot, before);
+    check!(state.snapshot.approvals().next().is_none());
     Ok(())
 }
 
@@ -377,7 +377,7 @@ fn exact_fee_limit_and_actual_scoped_payer_are_required() -> TestResult {
         ),
     )?;
     let state = f.state()?;
-    assert!(f.prepare(&state, f.actor).is_err(), "the actual fee is 100");
+    check!(f.prepare(&state, f.actor).is_err(), "the actual fee is 100");
     command(
         &mut f.world,
         &format!(
@@ -385,10 +385,10 @@ fn exact_fee_limit_and_actual_scoped_payer_are_required() -> TestResult {
             f.actor.0, f.scope.0
         ),
     )?;
-    assert!(f.prepare(&state, f.actor).is_ok());
+    check!(f.prepare(&state, f.actor).is_ok());
     let (mut request, house) = f.input(f.actor)?;
     request.payer = f.sink;
-    assert!(
+    check!(
         super::check(
             f.world.world(),
             &state,
@@ -401,7 +401,7 @@ fn exact_fee_limit_and_actual_scoped_payer_are_required() -> TestResult {
     );
     let (mut request, house) = f.input(f.actor)?;
     request.scope = Some(f.other_scope);
-    assert!(
+    check!(
         super::check(
             f.world.world(),
             &state,
@@ -412,8 +412,8 @@ fn exact_fee_limit_and_actual_scoped_payer_are_required() -> TestResult {
         )
         .is_err()
     );
-    assert!(state.snapshot.asset(f.shell).is_none());
-    assert_eq!(
+    check!(state.snapshot.asset(f.shell).is_none());
+    check_eq!(
         state
             .snapshot
             .account(f.payer)
@@ -431,18 +431,18 @@ fn actual_house_fee_title_and_history_install_as_one_owner_image() -> TestResult
     let mut state = f.state()?;
     let before = state.snapshot.clone();
     let (output, patch, writes) = f.prepare(&state, f.actor)?;
-    assert_eq!(state.snapshot, before);
-    assert_eq!(
+    check_eq!(state.snapshot, before);
+    check_eq!(
         output.title().title_owner,
         PrincipalId::Organization(f.organization)
     );
-    assert_eq!(output.title().scope, Some(f.scope));
-    assert_eq!(output.house().ok_or("attribution")?.curator(), f.actor);
-    assert!(writes.iter().all(|w| f.adapter.accepts_write(w)));
+    check_eq!(output.title().scope, Some(f.scope));
+    check_eq!(output.house().ok_or("attribution")?.curator(), f.actor);
+    check!(writes.iter().all(|w| f.adapter.accepts_write(w)));
     Arc::new(f.adapter.clone())
         .bind(&mut state, patch.into())?
         .apply();
-    assert_eq!(
+    check_eq!(
         state
             .snapshot
             .account(f.payer)
@@ -450,7 +450,7 @@ fn actual_house_fee_title_and_history_install_as_one_owner_image() -> TestResult
             .posted_balance,
         Amount::from_minor(900)
     );
-    assert_eq!(
+    check_eq!(
         state.snapshot.account(f.sink).ok_or("sink")?.posted_balance,
         Amount::from_minor(100)
     );
@@ -486,11 +486,11 @@ fn actual_house_fee_title_and_history_install_as_one_owner_image() -> TestResult
         }
         let mut audit = ReceiptAudit::default();
         audit.observe(&forged);
-        assert!(audit.finish_replay().is_err());
+        check!(audit.finish_replay().is_err());
     }
     let mut checkpoint: ReceiptAudit = serde_json::from_value(serde_json::to_value(&replay)?)?;
-    assert!(checkpoint.require_complete().is_err());
-    assert!(checkpoint.checkpoint_complete());
+    check!(checkpoint.require_complete().is_err());
+    check!(checkpoint.checkpoint_complete());
     checkpoint.finish_replay()?;
     checkpoint.verify(&subject)?;
     Ok(())

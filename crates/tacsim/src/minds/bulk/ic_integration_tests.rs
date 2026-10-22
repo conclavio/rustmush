@@ -545,7 +545,7 @@ impl IcWorld {
                 r.key().kind.as_str() == "registry_manifest" && r.key().id.as_str() == "combat"
             })
             .ok_or("genuine measured manifest")?;
-        assert_eq!(composition.manifest(), old_manifest);
+        check_eq!(composition.manifest(), old_manifest);
         let composition = if enabled {
             composition.with_ic_minds(vec![selected_base(base, field)?])?
         } else {
@@ -624,7 +624,7 @@ impl IcWorld {
         )?);
         let loaded = load(&mut engine, &saved.disk);
         if !enabled {
-            assert!(
+            check!(
                 loaded.is_err(),
                 "disabled production roster silently accepted IC history"
             );
@@ -746,8 +746,8 @@ impl IcWorld {
             actual.command(&format!("@unit/create #{}=tacsim.unit.heavy_mk1", hull.0))?;
             actual.command(&format!("@asset/title #{}=#{}", hull.0, BUYER.0))?;
             actual.command(&format!("@spatial/place/interior #{}=#{}", hull.0, base.0))?;
-            assert!(mush_tactics::module::unit_of(&actual.engine.world, hull).is_some());
-            assert_eq!(
+            check!(mush_tactics::module::unit_of(&actual.engine.world, hull).is_some());
+            check_eq!(
                 actual
                     .engine
                     .world
@@ -782,7 +782,7 @@ impl IcWorld {
         );
         for (_, event) in out.events() {
             let text = serde_json::to_string(event)?;
-            assert!(!text.contains(SOURCE), "private source in setup response");
+            check!(!text.contains(SOURCE), "private source in setup response");
             if matches!(event,mush_proto::OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))
             {
                 return Err("actual IC fixture setup refused".into());
@@ -973,12 +973,12 @@ impl IcWorld {
             .ok_or("Tactics")?
             .is_ic_custodied(hull);
         let s = mush_sim::ic_exclusion::identity_of(&self.engine.world, hull).is_some();
-        assert_eq!(t, s, "physical owner agreement");
-        assert_eq!(
+        check_eq!(t, s, "physical owner agreement");
+        check_eq!(
             s,
             mush_sim::deployed::is_custodied(&self.engine.world, hull)
         );
-        assert!(
+        check!(
             mush_sim::deployed::mark_of(&self.engine.world, hull).is_none(),
             "no OOC marker"
         );
@@ -1017,34 +1017,34 @@ impl IcWorld {
             .ok_or("unit")?
             .clone();
         let (p, o, inv) = self.prepare_key(ticket, serial, key)?;
-        assert!(
+        check!(
             self.disk == before.disk,
             "prepare wrote private persistent state"
         );
-        assert_eq!(self.held(hull)?, was_held);
-        assert!(self.host.acknowledge(&self.engine.world, ticket)?.is_none());
+        check_eq!(self.held(hull)?, was_held);
+        check!(self.host.acknowledge(&self.engine.world, ticket)?.is_none());
         self.stage(ticket, serial, p, o, &inv)?;
-        assert_eq!(self.held(hull)?, was_held);
+        check_eq!(self.held(hull)?, was_held);
         let staged = self
             .engine
             .take_staged_action()?
             .ok_or("actual four-owner custody")?;
-        assert_eq!(self.held(hull)?, was_held);
-        assert_eq!(
+        check_eq!(self.held(hull)?, was_held);
+        check_eq!(
             mush_tactics::module::unit_of(&self.engine.world, hull),
             Some(&physical)
         );
         let (bundle, installation) = staged.into_parts();
         retain_writes(&mut self.disk, bundle.writes())?;
-        assert!(self.host.acknowledge(&self.engine.world, ticket)?.is_none());
+        check!(self.host.acknowledge(&self.engine.world, ticket)?.is_none());
         self.engine.install_composed_action(installation)?;
         before_ack(self, ticket)?;
         let ack = self
             .host
             .acknowledge(&self.engine.world, ticket)?
             .ok_or("actual installed readback")?;
-        assert_eq!(ack.closed().is_some(), was_held);
-        assert_ne!(self.held(hull)?, was_held);
+        check_eq!(ack.closed().is_some(), was_held);
+        check_ne!(self.held(hull)?, was_held);
         Ok(())
     }
 }
@@ -1071,9 +1071,9 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     full.install(&actual.engine.world, &mut running)?;
     running.resume_at(0);
     for wall in [250, 500, 750, 1000] {
-        assert_eq!(running.step_settled(wall, &[], &[]).motor.mind_faults, 0);
+        check_eq!(running.step_settled(wall, &[], &[]).motor.mind_faults, 0);
     }
-    assert!(
+    check!(
         running
             .minds
             .get(&first)
@@ -1081,23 +1081,23 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
             .think_seq
             > 0
     );
-    assert_eq!(seal.unit, first);
-    assert!(seal.requested.origin.certificate().is_some());
-    assert!(mush_sim::deployed::excluded(
+    check_eq!(seal.unit, first);
+    check!(seal.requested.origin.certificate().is_some());
+    check!(mush_sim::deployed::excluded(
         &actual.engine.world,
         mush_sim::deployed::Shown::Unit(first)
     ));
-    assert!(!mush_sim::deployed::excluded(
+    check!(!mush_sim::deployed::excluded(
         &actual.engine.world,
         mush_sim::deployed::Shown::Unit(actual.base)
     ));
     // Same paid licence cannot claim another physical hull while its seat is held.
     let overflow = actual.ticket(BUYER, second, 2)?;
-    assert!(actual.prepare(&overflow, 12_000_002).is_err());
-    assert!(!actual.held(second)?);
+    check!(actual.prepare(&overflow, 12_000_002).is_err());
+    check!(!actual.held(second)?);
     // Restart retains the actual seal and exclusion; no current rights query is used.
     let mut cold = actual.reboot(f, &opened)?;
-    assert_eq!(
+    check_eq!(
         cold.host
             .resume(&cold.engine.world, token(12_000_001))?
             .seal(),
@@ -1106,7 +1106,7 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let term: PaidTermRecord =
         serde_json::from_value(one(rows(&cold.disk, "roll", "roll_mind_paid_term"))?)?;
     cold.engine.world.set_now(term.window().grace_end().get());
-    assert_eq!(
+    check_eq!(
         cold.host
             .resume(&cold.engine.world, token(12_000_001))?
             .seal(),
@@ -1117,9 +1117,9 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     resumed.install(&cold.engine.world, &mut restarted)?;
     restarted.resume_at(0);
     for wall in [250, 500, 750, 1000] {
-        assert_eq!(restarted.step_settled(wall, &[], &[]).motor.mind_faults, 0);
+        check_eq!(restarted.step_settled(wall, &[], &[]).motor.mind_faults, 0);
     }
-    assert!(
+    check!(
         restarted
             .minds
             .get(&first)
@@ -1127,25 +1127,25 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
             .think_seq
             > 0
     );
-    assert_eq!(
+    check_eq!(
         restarted.unit(first).ok_or("runtime hull")?.seal,
         seal.seal_ref()
     );
     let expired = cold.ticket(BUYER, second, 2)?;
-    assert!(cold.prepare(&expired, 12_000_003).is_err());
+    check!(cold.prepare(&expired, 12_000_003).is_err());
     // Genuine host provenance is deliberately not claimed: this private fixture
     // event drives the real condition codec, four prepared owners and close receipt.
     let event = ic_sortie::fixture_close(&cold.engine.world, BUYER, token(12_000_001), cold.base)?;
     let closing = cold.host.enqueue_close(&event)?;
     cold.land(&closing, 12_000_004, first, true)?;
-    assert!(
-        full.install(&cold.engine.world, arena_for(&cold, &seal)?.as_mut())
-            .is_err()
-    );
+    check!(crate::test_checks::refused(full.install(
+        &cold.engine.world,
+        arena_for(&cold, &seal)?.as_mut()
+    ))?);
     let closed = cold.snapshot();
     let rebooted = cold.reboot(f, &closed)?;
-    assert!(!rebooted.held(first)?);
-    assert!(
+    check!(!rebooted.held(first)?);
+    check!(
         rebooted
             .host
             .resume(&rebooted.engine.world, token(12_000_001))
@@ -1160,7 +1160,7 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let owner = owned.ticket(GOD, first, 1)?;
     owned.land(&owner, 12_000_011, first, false)?;
     let claim = one(rows(&owned.disk, "roll", "roll_mind_ic_claim"))?;
-    assert_eq!(
+    check_eq!(
         claim.get("open").and_then(|o| o.get("capacity")),
         Some(&json!({"kind":"owned_dispatch"}))
     );
@@ -1175,13 +1175,15 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
     let charter: mush_roll::commerce::CharterId =
         serde_json::from_value(birth.get("charter").cloned().ok_or("actual charter")?)?;
     // Actual staff command cannot bypass the permanent managed title history.
-    assert!(
-        owned
-            .command(&format!("@asset/transfer #{}=#{}", charter.get(), BUYER.0))
-            .is_err(),
+    check!(
+        crate::test_checks::refused(owned.command(&format!(
+            "@asset/transfer #{}=#{}",
+            charter.get(),
+            BUYER.0
+        )))?,
         "staff transfer bypassed the managed title"
     );
-    assert_eq!(
+    check_eq!(
         owned
             .engine
             .world
@@ -1203,14 +1205,14 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
         .ok_or("seller wallet")?
         .posted_balance;
     let (engine, disk) = (&mut owned.engine, &mut owned.disk);
-    assert!(
+    check!(
         charter_transfer_fixture::sale(engine, charter.object(), BUYER, SALE, |writes| {
             retain_writes(disk, writes)
         })
         .is_err(),
         "open OwnedDispatch admitted immediate transfer"
     );
-    assert_eq!(
+    check_eq!(
         owned
             .engine
             .world
@@ -1222,13 +1224,13 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
             .posted_balance,
         money
     );
-    assert!(owned.held(hull)?);
+    check!(owned.held(hull)?);
     let event = ic_sortie::fixture_close(&owned.engine.world, GOD, token(12_000_011), owned.base)?;
     let close = owned.host.enqueue_close(&event)?;
     owned.land(&close, SALE + 2, hull, true)?;
     let old_claim = one(rows(&owned.disk, "roll", "roll_mind_ic_claim"))?;
-    assert_eq!(old_claim.get("format"), Some(&json!(1)));
-    assert!(old_claim.pointer("/open/charter_ownership").is_none());
+    check_eq!(old_claim.get("format"), Some(&json!(1)));
+    check!(old_claim.pointer("/open/charter_ownership").is_none());
     let (engine, disk) = (&mut owned.engine, &mut owned.disk);
     charter_transfer_fixture::sale(engine, charter.object(), BUYER, SALE + 3, |writes| {
         retain_writes(disk, writes)
@@ -1240,9 +1242,9 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
         .into_iter()
         .find(|v| v.pointer("/open/operation") == Some(&json!(token(SALE + 5))))
         .ok_or("actual transferred-owner claim")?;
-    assert_eq!(captured.get("format"), Some(&json!(2)));
-    assert_eq!(captured.pointer("/open/dispatcher"), Some(&json!(BUYER)));
-    assert_eq!(
+    check_eq!(captured.get("format"), Some(&json!(2)));
+    check_eq!(captured.pointer("/open/dispatcher"), Some(&json!(BUYER)));
+    check_eq!(
         captured.pointer("/open/charter_ownership/generation"),
         Some(&json!(2))
     );
@@ -1253,7 +1255,7 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
     let term: mush_roll::commerce::records::OwnerTerm =
         serde_json::from_value(one(rows(&cold.disk, "roll", "roll_mind_owner_term"))?)?;
     cold.engine.world.set_now(term.window().grace_end().get());
-    assert_eq!(
+    check_eq!(
         cold.host
             .resume(&cold.engine.world, token(SALE + 5))?
             .seal(),
@@ -1267,15 +1269,15 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
         retain_writes(disk, writes)
     })?;
     let final_world = cold.reboot(f, &cold.snapshot())?;
-    assert!(!final_world.held(hull)?);
+    check!(!final_world.held(hull)?);
     let claims = rows(&final_world.disk, "roll", "roll_mind_ic_claim");
-    assert!(claims.contains(&old_claim));
+    check!(claims.contains(&old_claim));
     let final_claim = claims
         .iter()
         .find(|v| v.pointer("/open/operation") == Some(&json!(token(SALE + 5))))
         .ok_or("retained actual transferred claim")?;
-    assert_eq!(final_claim.get("open"), captured.get("open"));
-    assert_eq!(final_claim.get("format"), Some(&json!(2)));
+    check_eq!(final_claim.get("open"), captured.get("open"));
+    check_eq!(final_claim.get("format"), Some(&json!(2)));
     Ok(())
 }
 
@@ -1348,12 +1350,19 @@ fn cold_corruption(
                         .and_then(Value::as_str)
                         == Some("roll_mind_ic_claim")))
         });
-        assert!(
-            actual.reboot(f, &missing).is_err(),
+        check!(
+            crate::test_checks::refused(actual.reboot(f, &missing))?,
             "missing actual owner inventory must refuse"
         );
     }
-    assert!(IcWorld::boot(f, opened, actual.base, actual.field, actual.hulls, false).is_err());
+    check!(crate::test_checks::refused(IcWorld::boot(
+        f,
+        opened,
+        actual.base,
+        actual.field,
+        actual.hulls,
+        false
+    ))?);
     let mut crossed = closed.clone();
     let row = crossed
         .disk
@@ -1369,8 +1378,8 @@ fn cold_corruption(
         .get_mut("unit_digest")
         .ok_or("actual terminal unit digest")? =
         json!(mush_core::DefinitionDigest::from_bytes([8; 32]));
-    assert!(
-        actual.reboot(f, &crossed).is_err(),
+    check!(
+        crate::test_checks::refused(actual.reboot(f, &crossed))?,
         "one-owner final unit digest corruption must refuse"
     );
     Ok(())
@@ -1388,23 +1397,23 @@ fn expiry_fences(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) -> Tes
         if after_stage {
             branch.stage(&ticket, 12_000_020, p, o, &inv)?;
             branch.engine.world.set_now(term.window().grace_end().get());
-            assert!(
+            check!(
                 branch.engine.take_staged_action().is_err(),
                 "actual pre-custody expiry fence"
             );
         } else {
             branch.engine.world.set_now(term.window().grace_end().get());
-            assert!(
+            check!(
                 branch.stage(&ticket, 12_000_020, p, o, &inv).is_err(),
                 "actual prepare-to-stage expiry fence"
             );
         }
-        assert!(!branch.held(hull)?);
-        assert!(
+        check!(!branch.held(hull)?);
+        check!(
             branch.disk == before,
             "expiry refusal changed private durable state"
         );
-        assert!(
+        check!(
             branch
                 .host
                 .acknowledge(&branch.engine.world, &ticket)?
@@ -1438,11 +1447,11 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
     );
     *absent.selected.lock().map_err(module_error)? = Some(ticket.clone());
     submit_pulse(&mut absent, GOD);
-    assert_eq!(
+    check_eq!(
         absent.host.submission_state(&ticket)?,
         IcSubmissionState::Unsubmitted
     );
-    assert!(
+    check!(
         absent
             .host
             .discard_unadmitted_open(&absent.engine.world, &ticket)
@@ -1458,31 +1467,31 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
         .take_observed_authoritative_submit()
         .ok_or("actual host selector")?;
     let (request, driver) = driven.into_parts();
-    assert_eq!(request.actor, BUYER);
-    assert_eq!(&request.action, ticket.action());
-    assert_eq!(request.parameters, ticket.parameters());
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
+    check_eq!(request.actor, BUYER);
+    check_eq!(&request.action, ticket.action());
+    check_eq!(request.parameters, ticket.parameters());
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
     let proof = *driver
         .ok_or("runtime observation")?
         .downcast::<Arc<std::sync::atomic::AtomicBool>>()
         .map_err(|_| "proof type")?;
     for _ in 0..3 {
         submit_pulse(&mut absent, BUYER);
-        assert!(absent.engine.take_observed_authoritative_submit().is_none());
+        check!(absent.engine.take_observed_authoritative_submit().is_none());
     }
-    assert_eq!(
+    check_eq!(
         absent.host.submission_state(&ticket)?,
         IcSubmissionState::AwaitingAcknowledgement
     );
-    assert!(
+    check!(
         absent
             .host
             .acknowledge(&absent.engine.world, &ticket)?
             .is_none()
     );
-    assert!(!absent.held(hull)?);
-    assert!(
+    check!(!absent.held(hull)?);
+    check!(
         absent
             .host
             .discard_unadmitted_open(&absent.engine.world, &ticket)
@@ -1491,13 +1500,13 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
     // Consumer-only disposition fixture. The server's actual absence proof is
     // tested separately; this cell cannot create any IC owner history.
     proof.store(true, std::sync::atomic::Ordering::Release);
-    assert_eq!(
+    check_eq!(
         absent.host.submission_state(&ticket)?,
         IcSubmissionState::Retryable
     );
     // Missing actual boot/audit never proves a row absent or releases a permit.
     let unaudited = World::new_minimal();
-    assert!(
+    check!(
         absent
             .host
             .discard_unadmitted_open(&unaudited, &ticket)
@@ -1506,17 +1515,17 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
     let mut released = absent
         .host
         .discard_unadmitted_open(&absent.engine.world, &ticket)?;
-    assert!(Arc::ptr_eq(released.permit(), &permit));
-    assert_eq!(released.ticket().parameters(), ticket.parameters());
-    assert!(absent.host.submission_state(&ticket).is_err());
-    assert!(
+    check!(Arc::ptr_eq(released.permit(), &permit));
+    check_eq!(released.ticket().parameters(), ticket.parameters());
+    check!(absent.host.submission_state(&ticket).is_err());
+    check!(
         absent
             .host
             .restore_unadmitted_open(&unaudited, &mut released)
             .is_err()
     );
     let foreign = actual.reboot(f, seeded)?;
-    assert!(
+    check!(
         foreign
             .host
             .restore_unadmitted_open(&foreign.engine.world, &mut released)
@@ -1525,10 +1534,10 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
     let restored = absent
         .host
         .restore_unadmitted_open(&absent.engine.world, &mut released)?;
-    assert_eq!(restored.actor(), ticket.actor());
-    assert_eq!(restored.action(), ticket.action());
-    assert_eq!(restored.parameters(), request.parameters);
-    assert!(
+    check_eq!(restored.actor(), ticket.actor());
+    check_eq!(restored.action(), ticket.action());
+    check_eq!(restored.parameters(), request.parameters);
+    check!(
         absent
             .host
             .restore_unadmitted_open(&absent.engine.world, &mut released)
@@ -1540,15 +1549,15 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
         .take_observed_authoritative_submit()
         .ok_or("same exact host retry")?;
     let (retry, driver) = next.into_parts();
-    assert_eq!(retry.actor, request.actor);
-    assert_eq!(retry.action, request.action);
-    assert_eq!(retry.parameters, request.parameters);
-    assert_eq!(retry.key, request.key);
+    check_eq!(retry.actor, request.actor);
+    check_eq!(retry.action, request.action);
+    check_eq!(retry.parameters, request.parameters);
+    check_eq!(retry.key, request.key);
     let unknown = *driver
         .ok_or("retry observation")?
         .downcast::<Arc<std::sync::atomic::AtomicBool>>()
         .map_err(|_| "retry proof type")?;
-    assert!(!unknown.load(std::sync::atomic::Ordering::Acquire));
+    check!(!unknown.load(std::sync::atomic::Ordering::Acquire));
     // Real signed offer, full paired prepare/stage/take/install, then readback.
     // No runtime success bit is minted to complete this retained intent.
     absent.land_check(
@@ -1561,24 +1570,24 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
             // Deliberately contradictory consumer proof cannot defeat actual
             // installed readback; the original capability remains for normal ACK.
             unknown.store(true, std::sync::atomic::Ordering::Release);
-            assert_eq!(
+            check_eq!(
                 branch.host.submission_state(ticket)?,
                 IcSubmissionState::Retryable
             );
-            assert!(
+            check!(
                 branch
                     .host
                     .discard_unadmitted_open(&branch.engine.world, ticket)
                     .is_err()
             );
-            assert_eq!(
+            check_eq!(
                 branch.host.submission_state(ticket)?,
                 IcSubmissionState::Retryable
             );
             Ok(())
         },
     )?;
-    assert!(absent.host.submission_state(&ticket).is_err());
+    check!(absent.host.submission_state(&ticket).is_err());
     // Even definitive non-dispatch never discards an actual Close obligation.
     let event =
         ic_sortie::fixture_close(&absent.engine.world, BUYER, token(12_000_030), absent.base)?;
@@ -1595,17 +1604,17 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
         .downcast::<Arc<std::sync::atomic::AtomicBool>>()
         .map_err(|_| "Close proof type")?;
     close_proof.store(true, std::sync::atomic::Ordering::Release);
-    assert_eq!(
+    check_eq!(
         absent.host.submission_state(&close)?,
         IcSubmissionState::Retryable
     );
-    assert!(
+    check!(
         absent
             .host
             .discard_unadmitted_open(&absent.engine.world, &close)
             .is_err()
     );
-    assert!(absent.held(hull)?);
+    check!(absent.held(hull)?);
     absent.land_key(&close, 12_000_031, hull, true, Some(close_request.key))?;
     Ok(())
 }

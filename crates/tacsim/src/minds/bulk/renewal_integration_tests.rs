@@ -33,7 +33,7 @@ fn row<T: serde::de::DeserializeOwned>(
         .into_iter()
         .filter(|value| value.get(field) == Some(&exact));
     let value = matched.next().ok_or("missing actual renewal row")?;
-    assert!(matched.next().is_none(), "renewal key is unique");
+    check!(matched.next().is_none(), "renewal key is unique");
     Ok(serde_json::from_value(value)?)
 }
 fn licence(world: &PlayerWorld, id: LicenceId) -> TestResult<PersonalPaidLicence> {
@@ -56,7 +56,7 @@ fn term(
             v.get("licence") == Some(&json!(id)) && v.get("generation") == Some(&json!(generation))
         });
     let actual = found.next().ok_or("actual retained generation")?;
-    assert!(found.next().is_none(), "term generation is unique");
+    check!(found.next().is_none(), "term generation is unique");
     Ok(serde_json::from_value(actual)?)
 }
 fn economics(
@@ -70,7 +70,7 @@ fn economics(
             v.get("licence") == Some(&json!(id)) && v.get("generation") == Some(&json!(generation))
         });
     let actual = found.next().ok_or("actual retained economics")?;
-    assert!(found.next().is_none(), "economics generation is unique");
+    check!(found.next().is_none(), "economics generation is unique");
     Ok(serde_json::from_value(actual)?)
 }
 fn operation(world: &PlayerWorld, id: CommitToken) -> TestResult<RenewalOperationV1> {
@@ -107,9 +107,9 @@ fn paired(world: &PlayerWorld, id: CommitToken) -> TestResult<RenewalOperationV1
         .filter(|v| v.get("operation") == Some(&json!(id)))
         .collect();
     if actual.state().pending() {
-        assert!(receipts.is_empty(), "pending offer has no terminal receipt");
+        check!(receipts.is_empty(), "pending offer has no terminal receipt");
     } else {
-        assert_eq!(receipts.len(), 1);
+        check_eq!(receipts.len(), 1);
         let receipt: MindRenewalReceiptV1 =
             serde_json::from_value((*receipts.first().ok_or("receipt")?).clone())?;
         receipt.verify_history(&market, &proof)?;
@@ -160,9 +160,9 @@ fn assert_current_unchanged(
     saved_term: &PaidTermRecord,
     saved_economics: &PaidTermEconomicsV1,
 ) -> TestResult {
-    assert_eq!(licence(world, old.id())?, *old);
-    assert_eq!(term(world, old.id(), old.term())?, *saved_term);
-    assert_eq!(economics(world, old.id(), old.term())?, *saved_economics);
+    check_eq!(licence(world, old.id())?, *old);
+    check_eq!(term(world, old.id(), old.term())?, *saved_term);
+    check_eq!(economics(world, old.id(), old.term())?, *saved_economics);
     Ok(())
 }
 fn due_world(
@@ -187,8 +187,8 @@ fn check_early_renewal(
     old_term: &PaidTermRecord,
 ) -> TestResult {
     let before = disk(world);
-    assert!(world.engine.world.now() < old_term.window().term_end().get());
-    assert!(
+    check!(world.engine.world.now() < old_term.window().term_end().get());
+    check!(
         prepare_step(
             world,
             DRAFT,
@@ -207,7 +207,7 @@ fn check_early_renewal(
             .checked_sub(1)
             .ok_or("due boundary")?,
     );
-    assert!(
+    check!(
         prepare_step(
             world,
             DRAFT,
@@ -248,22 +248,22 @@ fn grant_chain(
             json!({"licence":birth.licence().get(),"previous_operation":token(START)}),
         ),
     ] {
-        assert!(prepare_step(&mut world, DRAFT, actor, START + 90, bad).is_err());
+        check!(prepare_step(&mut world, DRAFT, actor, START + 90, bad).is_err());
         assert_disk(&world, &before);
     }
     let (prepared, _) = prepare_step(&mut world, DRAFT, GOD, START, params)?;
     assert_disk(&world, &before);
-    assert_eq!(balances(&world)?, old_balances);
+    check_eq!(balances(&world)?, old_balances);
     assert_current_unchanged(&world, &old, &old_term, &old_economics)?;
     let (writes, install) = prepared.into_parts();
     apply(&mut world, &writes, install)?;
     let draft = paired(&world, token(START))?;
-    assert!(matches!(draft.state(), RenewalStateV1::Drafted {}));
-    assert_eq!(draft.attempt(), RenewalAttemptV1::Automatic {});
-    assert_eq!(draft.binding().birth_operation(), birth.operation());
-    assert_eq!(draft.binding().predecessor(), old.term());
-    assert_eq!(head(&world, old.id())?.pending(), Some(token(START)));
-    assert_eq!(balances(&world)?, old_balances);
+    check!(matches!(draft.state(), RenewalStateV1::Drafted {}));
+    check_eq!(draft.attempt(), RenewalAttemptV1::Automatic {});
+    check_eq!(draft.binding().birth_operation(), birth.operation());
+    check_eq!(draft.binding().predecessor(), old.term());
+    check_eq!(head(&world, old.id())?.pending(), Some(token(START)));
+    check_eq!(balances(&world)?, old_balances);
     assert_current_unchanged(&world, &old, &old_term, &old_economics)?;
     source_answer(&mut world, GOD, old.id(), Some(birth.revision().source()))?;
     let drafted = capture(&world, &disk(&world));
@@ -273,7 +273,7 @@ fn grant_chain(
         json!({"previous_operation":token(START)}),
     ] {
         let before = disk(&world);
-        assert!(prepare_step(&mut world, DRAFT, GOD, START + 91, params).is_err());
+        check!(prepare_step(&mut world, DRAFT, GOD, START + 91, params).is_err());
         assert_disk(&world, &before);
     }
     let before = disk(&world);
@@ -285,9 +285,9 @@ fn grant_chain(
         json!({"operation":token(START)}),
     )?;
     assert_disk(&world, &before);
-    assert_eq!(balances(&world)?, old_balances);
+    check_eq!(balances(&world)?, old_balances);
     let (writes, install) = prepared.into_parts();
-    assert_eq!(
+    check_eq!(
         typed_families(&writes),
         vec![
             MindRenewalOperationV1::FAMILY.to_owned(),
@@ -296,14 +296,14 @@ fn grant_chain(
     );
     apply(&mut world, &writes, install)?;
     let funded = paired(&world, token(START))?;
-    assert!(matches!(funded.state(), RenewalStateV1::Funded { .. }));
+    check!(matches!(funded.state(), RenewalStateV1::Funded { .. }));
     assert_current_unchanged(&world, &old, &old_term, &old_economics)?;
     source_answer(&mut world, GOD, old.id(), Some(birth.revision().source()))?;
     for (id, posted, held) in &old_balances {
         let all = balances(&world)?;
         let actual = all.iter().find(|v| v.0 == *id).ok_or("wallet")?;
-        assert_eq!(actual.1, *posted);
-        assert_eq!(
+        check_eq!(actual.1, *posted);
+        check_eq!(
             actual.2,
             held.checked_add(Amount::from_minor(if id.0 == 0 { 73 } else { 0 }))
                 .ok_or("held")?
@@ -327,28 +327,28 @@ fn grant_chain(
         json!({"operation":token(START)}),
     )?;
     assert_disk(&cold, &before);
-    assert_eq!(balances(&cold)?, held);
+    check_eq!(balances(&cold)?, held);
     let (writes, install) = prepared.into_parts();
     apply(&mut cold, &writes, install)?;
     let renewed = paired(&cold, token(START))?;
-    assert!(renewed.state().granted());
+    check!(renewed.state().granted());
     let current = licence(&cold, old.id())?;
-    assert_eq!(current.operation(), birth.operation());
-    assert_eq!(current.term().get(), old.term().get() + 1);
+    check_eq!(current.operation(), birth.operation());
+    check_eq!(current.term().get(), old.term().get() + 1);
     let new_term = term(&cold, current.id(), current.term())?;
     let new_economics = economics(&cold, current.id(), current.term())?;
-    assert_eq!(new_term.operation(), token(START));
-    assert_eq!(new_economics.operation(), token(START));
-    assert_eq!(new_economics.grant(), old_economics.grant());
-    assert_eq!(
+    check_eq!(new_term.operation(), token(START));
+    check_eq!(new_economics.operation(), token(START));
+    check_eq!(new_economics.grant(), old_economics.grant());
+    check_eq!(
         new_economics.product_digest(),
         old_economics.product_digest()
     );
-    assert_eq!(term(&cold, old.id(), old.term())?, old_term);
-    assert_eq!(economics(&cold, old.id(), old.term())?, old_economics);
-    assert_eq!(new_term.window().issued_at().get(), cold.engine.world.now());
-    assert_eq!(head(&cold, old.id())?.current(), current.term());
-    assert_eq!(head(&cold, old.id())?.pending(), None);
+    check_eq!(term(&cold, old.id(), old.term())?, old_term);
+    check_eq!(economics(&cold, old.id(), old.term())?, old_economics);
+    check_eq!(new_term.window().issued_at().get(), cold.engine.world.now());
+    check_eq!(head(&cold, old.id())?.current(), current.term());
+    check_eq!(head(&cold, old.id())?.pending(), None);
     for (id, posted, held) in &old_balances {
         let all = balances(&cold)?;
         let actual = all.iter().find(|v| v.0 == *id).ok_or("wallet")?;
@@ -358,21 +358,21 @@ fn grant_chain(
             2 => 66,
             _ => 0,
         };
-        assert_eq!(
+        check_eq!(
             actual.1,
             posted
                 .checked_add(Amount::from_minor(delta))
                 .ok_or("payout")?
         );
-        assert_eq!(actual.2, *held);
+        check_eq!(actual.2, *held);
     }
     let snapshot = capture(&cold, &disk(&cold));
     let replay = PlayerWorld::boot_renewals(f, &snapshot)?;
     paired(&replay, token(START))?;
-    assert_eq!(licence(&replay, old.id())?, current);
-    assert_eq!(balances(&replay)?, balances(&cold)?);
-    assert!(
-        PlayerWorld::boot_entitlements(f, &snapshot).is_err(),
+    check_eq!(licence(&replay, old.id())?, current);
+    check_eq!(balances(&replay)?, balances(&cold)?);
+    check!(
+        crate::test_checks::refused(PlayerWorld::boot_entitlements(f, &snapshot))?,
         "disabled renewal composition rejects retained history"
     );
     Ok((snapshot, drafted))
@@ -397,7 +397,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
                     .terms
                     .expires_at
                     .at;
-                assert!(
+                check!(
                     prepare_step(
                         &mut world,
                         CLOSE,
@@ -417,18 +417,26 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
             )?;
         }
         let closed = paired(&world, token(number))?;
-        assert!(closed.state().retryable());
-        assert_eq!(balances(&world)?, initial);
+        check!(closed.state().retryable());
+        check_eq!(balances(&world)?, initial);
         assert_current_unchanged(&world, &old, &old_term, &old_economics)?;
-        assert!(term(&world, old.id(), closed.binding().next()).is_err());
-        assert!(economics(&world, old.id(), closed.binding().next()).is_err());
-        assert_eq!(head(&world, old.id())?.pending(), None);
+        check!(crate::test_checks::refused(term(
+            &world,
+            old.id(),
+            closed.binding().next()
+        ))?);
+        check!(crate::test_checks::refused(economics(
+            &world,
+            old.id(),
+            closed.binding().next()
+        ))?);
+        check_eq!(head(&world, old.id())?.pending(), None);
         // Terminal history is durable before any retry and grants no extension.
         let closed_snapshot = capture(&world, &disk(&world));
         let mut world = PlayerWorld::boot_renewals(f, &closed_snapshot)?;
         paired(&world, token(number))?;
         let before = disk(&world);
-        assert!(
+        check!(
             prepare_step(
                 &mut world,
                 DRAFT,
@@ -439,7 +447,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
             .is_err(),
             "same predecessor requires explicit new consent/retry link"
         );
-        assert!(
+        check!(
             prepare_step(
                 &mut world,
                 DRAFT,
@@ -457,36 +465,36 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
             json!({"previous_operation":token(number)}),
         )?;
         let retry = paired(&world, token(number + 3))?;
-        assert_eq!(
+        check_eq!(
             retry.attempt(),
             RenewalAttemptV1::BuyerRetry {
                 previous_operation: token(number)
             }
         );
-        assert_ne!(retry.contract(), closed.contract());
-        assert_eq!(retry.binding(), closed.binding());
-        assert_ne!(retry.consent_hash(), closed.consent_hash());
+        check_ne!(retry.contract(), closed.contract());
+        check_eq!(retry.binding(), closed.binding());
+        check_ne!(retry.consent_hash(), closed.consent_hash());
         step_for(&mut world, FUND, number + 4, token(number + 3))?;
         step_for(&mut world, GRANT, number + 5, token(number + 3))?;
         paired(&world, token(number))?;
         paired(&world, token(number + 3))?;
-        assert_eq!(
+        check_eq!(
             term(&world, old.id(), retry.binding().next())?.operation(),
             token(number + 3)
         );
-        assert_eq!(
+        check_eq!(
             economics(&world, old.id(), retry.binding().next())?.operation(),
             token(number + 3)
         );
-        assert_eq!(licence(&world, old.id())?.operation(), birth.operation());
+        check_eq!(licence(&world, old.id())?.operation(), birth.operation());
         // Old Closed/Refunded rows coexist lawfully with the linked retry's
         // successful next generation. No row is attributed to the old attempt.
         let complete = capture(&world, &disk(&world));
         let cold = PlayerWorld::boot_renewals(f, &complete)?;
         paired(&cold, token(number))?;
         paired(&cold, token(number + 3))?;
-        assert_eq!(balances(&cold)?, balances(&world)?);
-        assert_eq!(head(&cold, old.id())?.last_operation(), token(number + 3));
+        check_eq!(balances(&cold)?, balances(&world)?);
+        check_eq!(head(&cold, old.id())?.last_operation(), token(number + 3));
     }
     Ok(())
 }
@@ -545,14 +553,14 @@ fn title_fences(
                     prepared,
                     output,
                 )?;
-                assert!(
+                check!(
                     world
                         .transfer_charter(birth.charter().object(), GOD, 49_000_130)
                         .is_err(),
                     "title moved under a staged renewal step"
                 );
             } else {
-                assert!(
+                check!(
                     world
                         .transfer_charter(birth.charter().object(), GOD, 49_000_140)
                         .is_err(),
@@ -560,7 +568,7 @@ fn title_fences(
                 );
                 drop((definition, params, prepared, output));
             }
-            assert_eq!(
+            check_eq!(
                 world
                     .engine
                     .world
@@ -572,13 +580,13 @@ fn title_fences(
                     .title_owner,
                 held
             );
-            assert_eq!(licence(&world, birth.licence())?, old);
-            assert_eq!(balances(&world)?, before);
-            assert!(rows(&disk(&world), "market", MindRenewalReceiptV1::FAMILY).is_empty());
+            check_eq!(licence(&world, birth.licence())?, old);
+            check_eq!(balances(&world)?, before);
+            check!(rows(&disk(&world), "market", MindRenewalReceiptV1::FAMILY).is_empty());
             if id == DRAFT {
-                assert!(rows(&disk(&world), "roll", ROLL_OP).is_empty());
+                check!(rows(&disk(&world), "roll", ROLL_OP).is_empty());
             } else {
-                assert!(paired(&world, token(number))?.state().pending());
+                check!(paired(&world, token(number))?.state().pending());
             }
         }
     }
@@ -614,12 +622,12 @@ fn accounts_and_expiry(
             .engine
             .world
             .set_now(due.checked_sub(1).ok_or("due boundary")?);
-        assert!(
+        check!(
             world.engine.take_staged_action().is_err(),
             "captured due eligibility cannot publish before predecessor term_end"
         );
         assert_disk(&world, &before);
-        assert_eq!(balances(&world)?, money);
+        check_eq!(balances(&world)?, money);
     }
     for (offset, id) in [(0, DRAFT), (10, FUND), (20, GRANT)] {
         let number = START + 250 + offset;
@@ -656,12 +664,12 @@ fn accounts_and_expiry(
         )
         .is_err();
         restore_login_account(f, seller)?;
-        assert!(
+        check!(
             refusal,
             "retained actual login account pair must be rechecked"
         );
         assert_disk(&world, &before);
-        assert_eq!(balances(&world)?, money);
+        check_eq!(balances(&world)?, money);
     }
     for (offset, id) in [(0, FUND), (10, GRANT)] {
         let number = START + 300 + offset;
@@ -695,12 +703,12 @@ fn accounts_and_expiry(
             output,
         )?;
         world.engine.world.set_now(expires);
-        assert!(
+        check!(
             world.engine.take_staged_action().is_err(),
             "exact offer expiry at custody refuses fresh money/grant"
         );
         assert_disk(&world, &before);
-        assert_eq!(balances(&world)?, money);
+        check_eq!(balances(&world)?, money);
     }
     Ok(())
 }
@@ -735,7 +743,7 @@ fn cleanup_after_parent_lapse(
             .engine
             .world
             .set_now(parent.window().grace_end().get());
-        assert_eq!(
+        check_eq!(
             own.window()
                 .phase_at(mush_roll::commerce::WorldIcSeconds::from_stamp(
                     &world.engine.world.world_ic_now()
@@ -752,7 +760,7 @@ fn cleanup_after_parent_lapse(
         let mut cold = PlayerWorld::boot_renewals(f, &lapsed)?;
         // Fresh work is unavailable, while captured custody can still close.
         // Both offer expiry and issuer lapse are present in this long-gap case.
-        assert!(
+        check!(
             prepare_step(
                 &mut cold,
                 DRAFT,
@@ -762,7 +770,7 @@ fn cleanup_after_parent_lapse(
             )
             .is_err()
         );
-        assert!(
+        check!(
             prepare_step(
                 &mut cold,
                 if funded { GRANT } else { FUND },
@@ -783,9 +791,9 @@ fn cleanup_after_parent_lapse(
             )?;
         }
         paired(&cold, token(number))?;
-        assert_eq!(balances(&cold)?, money);
-        assert_eq!(licence(&cold, old.id())?, old);
-        assert!(
+        check_eq!(balances(&cold)?, money);
+        check_eq!(licence(&cold, old.id())?, old);
+        check!(
             prepare_step(
                 &mut cold,
                 DRAFT,
@@ -819,9 +827,9 @@ fn corruptions(
         let count = lost.disk.len();
         lost.disk
             .retain(|(ns, _), v| !(ns == owner && v.pointer("/family/id") == Some(&json!(family))));
-        assert!(lost.disk.len() < count, "removed actual persisted family");
-        assert!(
-            PlayerWorld::boot_renewals(f, &lost).is_err(),
+        check!(lost.disk.len() < count, "removed actual persisted family");
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &lost))?,
             "missing or all-missing {family} must refuse"
         );
     }
@@ -838,19 +846,21 @@ fn corruptions(
         .iter()
         .any(|name| v.pointer("/family/id") == Some(&json!(name)))
     });
-    assert!(lost.disk.len() < count);
-    assert!(PlayerWorld::boot_renewals(f, &lost).is_err());
+    check!(lost.disk.len() < count);
+    check!(crate::test_checks::refused(PlayerWorld::boot_renewals(
+        f, &lost
+    ))?);
     let mut missing_economy = snapshot.clone();
     let before = missing_economy.disk.len();
     missing_economy
         .disk
         .retain(|(ns, key), _| !(ns == "economy" && key.starts_with("renewal-offer:")));
-    assert!(
+    check!(
         missing_economy.disk.len() < before,
         "removed the actual E4 offer history"
     );
-    assert!(
-        PlayerWorld::boot_renewals(f, &missing_economy).is_err(),
+    check!(
+        crate::test_checks::refused(PlayerWorld::boot_renewals(f, &missing_economy))?,
         "receipt/contract alone cannot replace missing E4 origins"
     );
     let mut missing_current_term = snapshot.clone();
@@ -861,9 +871,9 @@ fn corruptions(
             && value.pointer("/value/licence") == Some(&json!(birth.licence()))
             && value.pointer("/value/generation") == Some(&json!("2")))
     });
-    assert!(missing_current_term.disk.len() < before);
-    assert!(
-        PlayerWorld::boot_renewals(f, &missing_current_term).is_err(),
+    check!(missing_current_term.disk.len() < before);
+    check!(
+        crate::test_checks::refused(PlayerWorld::boot_renewals(f, &missing_current_term))?,
         "current pointer cannot substitute for its term"
     );
     // Exact current pointer and retained immutable birth are independently joined.
@@ -888,9 +898,9 @@ fn corruptions(
                 changed = true;
             }
         }
-        assert!(changed);
-        assert!(
-            PlayerWorld::boot_renewals(f, &crossed).is_err(),
+        check!(changed);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &crossed))?,
             "crossed {field}"
         );
     }

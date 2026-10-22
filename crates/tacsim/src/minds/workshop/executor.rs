@@ -776,14 +776,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         };
         completion.check_current(principal, &roll)?;
-        assert!(completion.diagnostic.is_none());
+        check!(completion.diagnostic.is_none());
         let marked = super::super::lineage_tests::marked_store(roll.mind(actor, "mine")?)?;
-        assert_eq!(
+        check_eq!(
             completion.check_current(principal, &marked),
             Err(RollError::Missing)
         );
         let validated = completion.validated.ok_or("validated receipt")?;
-        assert!(matches!(
+        check!(matches!(
             validated.prepare_save(
                 principal,
                 &marked,
@@ -793,7 +793,7 @@ mod tests {
             ),
             Err(RollError::Missing)
         ));
-        assert!(marked.mind(actor, "mine")?.latest().is_none());
+        check!(marked.mind(actor, "mine")?.latest().is_none());
         Ok(())
     }
 

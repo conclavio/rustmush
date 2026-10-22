@@ -35,7 +35,7 @@ fn no_content(events: &Events) {
 }
 fn start(world: &mut PlayerWorld) -> TestResult {
     no_content(&feed(world, BUYER_CONN, "@mind/paste child")?);
-    assert_eq!(
+    check_eq!(
         world.engine.world.input_depth(BUYER),
         1,
         "actual paste context"

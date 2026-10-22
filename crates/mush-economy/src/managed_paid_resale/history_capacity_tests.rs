@@ -30,13 +30,13 @@ fn maximum_intent() -> Result<Intent> {
     }
     c.terms.instrument = InstrumentId::new("i".repeat(low)).ok_or("instrument")?;
     c.validate()?;
-    assert_eq!(
+    check_eq!(
         subject::bounded(&c, MAX_SUBJECT_BYTES)?.len(),
         MAX_SUBJECT_BYTES
     );
     let mut larger = c.clone();
     larger.terms.instrument = InstrumentId::new("i".repeat(low + 1)).ok_or("instrument")?;
-    assert!(larger.validate().is_err());
+    check!(larger.validate().is_err());
     let mut i = Intent {
         consent: c,
         issuer: SystemPrincipalId::new("issuer").ok_or("issuer")?,
@@ -57,7 +57,7 @@ fn maximum_intent() -> Result<Intent> {
     }
     i.issuer = SystemPrincipalId::new("s".repeat(low)).ok_or("issuer")?;
     i.validate()?;
-    assert_eq!(
+    check_eq!(
         plans::encode(&plans::Proof::Fund {
             format: 1,
             intent: i.clone()
@@ -67,7 +67,7 @@ fn maximum_intent() -> Result<Intent> {
     );
     let mut larger = i.clone();
     larger.issuer = SystemPrincipalId::new("s".repeat(low + 1)).ok_or("issuer")?;
-    assert!(larger.validate().is_err());
+    check!(larger.validate().is_err());
     Ok(i)
 }
 fn before(i: Intent) -> Result<PaidResaleHistoryV1> {
@@ -205,12 +205,12 @@ fn resale_exact_subject_and_correlation_bounds_leave_complete_terminal_replay_ro
         };
         let after = with_terminal(&row, &tx, d)?;
         let encoded = subject::bounded(&after, MAX_HISTORY_BYTES)?;
-        assert!(PaidResaleHistoryV1::decode(&encoded)? == after);
+        check!(PaidResaleHistoryV1::decode(&encoded)? == after);
         let contract = after.contract()?;
         let write =
             crate::registry_filing::json_write(crate::api::contract_key(contract.id), &contract)?;
-        assert!(subject::bounded(&write, MAX_CONTRACT_BYTES)?.len() <= MAX_CONTRACT_BYTES);
-        assert!(
+        check!(subject::bounded(&write, MAX_CONTRACT_BYTES)?.len() <= MAX_CONTRACT_BYTES);
+        check!(
             subject::bounded(&tx, crate::engine::MAX_ENTRY_BYTES)?.len()
                 <= crate::engine::MAX_ENTRY_BYTES
         );
@@ -219,7 +219,7 @@ fn resale_exact_subject_and_correlation_bounds_leave_complete_terminal_replay_ro
             ledger.prepare_append(crate::module::JOURNAL_LOG, serde_json::to_value(&tx)?)?;
         let replay =
             append.authoritative_replay_write(mush_core::mechanics::OwnerId::new("economy")?)?;
-        assert!(
+        check!(
             subject::bounded(&replay, crate::engine::MAX_ENTRY_BYTES)?.len()
                 <= crate::engine::MAX_ENTRY_BYTES
         );

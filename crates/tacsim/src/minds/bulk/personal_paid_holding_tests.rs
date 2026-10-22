@@ -125,10 +125,10 @@ pub(super) fn observe(
         .map_err(module_error)?
         .take()
         .ok_or("actual query answer")?;
-    assert_eq!(f.disk, before_disk);
-    assert_eq!(f.balances()?, before_money);
-    assert_eq!(f.engine.action_state().revision(), before_rows);
-    assert_eq!(f.engine.world.world_ic_now(), before_time);
+    check_eq!(f.disk, before_disk);
+    check_eq!(f.balances()?, before_money);
+    check_eq!(f.engine.action_state().revision(), before_rows);
+    check_eq!(f.engine.world.world_ic_now(), before_time);
     Ok(answer)
 }
 
@@ -195,53 +195,53 @@ fn sealed_arena(
     arena.resume_at(0);
     for wall in [250, 500, 750, 1000] {
         let out = arena.step_settled(wall, &[], &[]);
-        assert_eq!(out.motor.mind_faults, 0);
+        check_eq!(out.motor.mind_faults, 0);
     }
-    assert!(arena.minds.get(&unit_id).ok_or("actual mind")?.think_seq > 0);
+    check!(arena.minds.get(&unit_id).ok_or("actual mind")?.think_seq > 0);
     Ok((arena, full_seal, source))
 }
 
 #[inline(never)]
 fn inspect_paid_access(paid: &mut PurchaseFixture) -> TestResult<PersonalFiledHolding> {
     let holding = own(paid, BUYER, 2)?;
-    assert_eq!(holding.actor(), BUYER);
-    assert_eq!(holding.licence().get(), 2);
-    assert_eq!(
+    check_eq!(holding.actor(), BUYER);
+    check_eq!(holding.licence().get(), 2);
+    check_eq!(
         holding.paid_terms().ok_or("paid terms")?.form(),
         PaidForm::Sealed {}
     );
-    assert_eq!(
+    check_eq!(
         holding.rating(),
         serde_json::from_value::<RatingReceipt>(one(paid.rows("roll", "rating_receipts"))?)?
             .reference()?
     );
     let wire = serde_json::to_string(&holding)?;
-    assert!(!wire.contains(SOURCE));
-    assert!(!wire.contains("\"memory\""));
-    assert!(!wire.contains("\"account\""));
-    assert!(wire.len() < mush_core::read_service::MAX_OWNER_READ_RESULT_BYTES);
-    assert!(
+    check!(!wire.contains(SOURCE));
+    check!(!wire.contains("\"memory\""));
+    check!(!wire.contains("\"account\""));
+    check!(wire.len() < mush_core::read_service::MAX_OWNER_READ_RESULT_BYTES);
+    check!(
         own(paid, GOD, 1)?.paid_terms().is_none(),
         "original route still resolves"
     );
-    assert!(matches!(
+    check!(matches!(
         observe(paid, GOD, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert!(matches!(
+    check!(matches!(
         observe(paid, BUYER, 1, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert!(matches!(
+    check!(matches!(
         observe(paid, BUYER, u64::MAX, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert_eq!(
+    check_eq!(
         observe(paid, GOD, 2, Some(BUYER))??,
         holding,
         "admission uses the real separate roster subject, not caller title"
     );
-    assert!(matches!(
+    check!(matches!(
         observe(paid, BUYER, 2, Some(GOD))?,
         Err(OwnerReadError::Refused)
     ));
@@ -256,7 +256,7 @@ fn inspect_paid_access(paid: &mut PurchaseFixture) -> TestResult<PersonalFiledHo
         paid.accounts.epoch.invalidate();
         accounts.insert(alt, buyer_account);
     }
-    assert!(matches!(
+    check!(matches!(
         observe(paid, alt, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
@@ -275,7 +275,7 @@ fn inspect_frozen_execution(
     let paid_term = one(live.rows("roll", "roll_mind_paid_term"))?;
     let dates = holding.window();
     live.engine.world.set_now(dates.issued_at().get() - 1);
-    assert!(matches!(
+    check!(matches!(
         observe(live, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
@@ -285,25 +285,25 @@ fn inspect_frozen_execution(
         dates.grace_end().get() - 1,
     ] {
         live.engine.world.set_now(now);
-        assert_eq!(own(live, BUYER, 2)?, *holding);
-        assert_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
+        check_eq!(own(live, BUYER, 2)?, *holding);
+        check_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
     }
     // Seller's original owner term starts 17 seconds before the buyer term.
     // Use that genuine gap: no synthetic term or derivative is invented.
     live.engine
         .world
         .set_now(1000 + TERM_SECONDS + GRACE_SECONDS);
-    assert!(matches!(
+    check!(matches!(
         observe(live, GOD, 1, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert_eq!(own(live, BUYER, 2)?, *holding);
+    check_eq!(own(live, BUYER, 2)?, *holding);
     live.engine.world.set_now(dates.grace_end().get());
-    assert!(matches!(
+    check!(matches!(
         observe(live, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
+    check_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
 
     // World rights are absent from Arena/resume. The captured real paid seal
     // and actual scripted runner continue with exactly the same state/hash.
@@ -315,22 +315,22 @@ fn inspect_frozen_execution(
     crate::minds::install_sealed_runners(&mut restored, &cfg, &|digest| {
         (*digest == full_seal.digest()).then(|| source.to_string())
     })?;
-    assert_eq!(
+    check_eq!(
         restored.units.first().ok_or("restored unit")?.seal,
         captured_ref
     );
-    assert_eq!(crate::arena::state_hash(&restored), captured.state_hash);
+    check_eq!(crate::arena::state_hash(&restored), captured.state_hash);
     arena.resume_at(2_000);
     restored.resume_at(2_000);
     for wall in [2_250, 2_500, 2_750, 3_000] {
-        assert_eq!(arena.step_settled(wall, &[], &[]).motor.mind_faults, 0);
-        assert_eq!(restored.step_settled(wall, &[], &[]).motor.mind_faults, 0);
-        assert_eq!(
+        check_eq!(arena.step_settled(wall, &[], &[]).motor.mind_faults, 0);
+        check_eq!(restored.step_settled(wall, &[], &[]).motor.mind_faults, 0);
+        check_eq!(
             crate::arena::state_hash(&arena),
             crate::arena::state_hash(&restored)
         );
     }
-    assert_eq!(
+    check_eq!(
         restored.units.first().ok_or("restored unit")?.seal,
         captured_ref
     );
@@ -347,12 +347,12 @@ pub(super) fn exercise(
     refunded: &Durable,
 ) -> TestResult {
     let mut before = f.reboot(funded)?;
-    assert!(matches!(
+    check!(matches!(
         observe(&mut before, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
     let mut refund = f.reboot(refunded)?;
-    assert!(matches!(
+    check!(matches!(
         observe(&mut refund, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
@@ -371,8 +371,8 @@ pub(super) fn exercise(
             *value.get_mut(field).ok_or("status field")? = json!(token(1_200_000));
             Ok(())
         })?;
-        assert!(
-            f.reboot(&status).is_err(),
+        check!(
+            crate::test_checks::refused(f.reboot(&status))?,
             "a status field alone cannot supply a missing cause receipt"
         );
     }
@@ -382,7 +382,7 @@ pub(super) fn exercise(
     let mut transferred = f.reboot(granted)?;
     let shell = holding.charter().object();
     transferred.transfer_charter(shell, BUYER, 49_001_000)?;
-    assert_eq!(
+    check_eq!(
         transferred
             .economy()?
             .snapshot()
@@ -391,11 +391,11 @@ pub(super) fn exercise(
             .title_owner,
         EconomicOwner::Object(BUYER)
     );
-    assert!(matches!(
+    check!(matches!(
         observe(&mut transferred, GOD, 1, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert_eq!(own(&mut transferred, BUYER, 2)?, holding);
+    check_eq!(own(&mut transferred, BUYER, 2)?, holding);
     eprintln!(
         "M7_REAL_PAID_HOLDING own_term_issuer_independence_exact_rating_and_frozen_execution"
     );

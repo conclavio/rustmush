@@ -61,17 +61,17 @@ fn invocation(parameters: Value) -> TestResult<ActionInvocation> {
 fn qualification_request_is_exact_numeric_self_selection_without_authority_fields() -> TestResult {
     let request =
         provider::Request::parse(&invocation(json!({"owner_licence":3,"parent_licence":2}))?)?;
-    assert_eq!(request.owner()?, LicenceId::new(3)?);
-    assert_eq!(request.parent()?, LicenceId::new(2)?);
+    check_eq!(request.owner()?, LicenceId::new(3)?);
+    check_eq!(request.parent()?, LicenceId::new(2)?);
     for value in [json!("2"), json!(0), json!(-1), json!(2.5), json!(null)] {
-        assert!(
+        check!(
             provider::Request::parse(&invocation(
                 json!({"owner_licence":3,"parent_licence":value})
             )?)
             .is_err()
         );
     }
-    assert!(
+    check!(
         provider::Request::parse(&invocation(json!({"owner_licence":3,"parent_licence":3}))?)
             .is_err()
     );
@@ -88,7 +88,7 @@ fn qualification_request_is_exact_numeric_self_selection_without_authority_field
             .as_object_mut()
             .ok_or("params")?
             .insert(key.into(), json!(true));
-        assert!(provider::Request::parse(&invocation(value)?).is_err());
+        check!(provider::Request::parse(&invocation(value)?).is_err());
     }
     Ok(())
 }
@@ -103,11 +103,11 @@ fn qualification_records_reject_missing_links_unknown_authority_and_crossed_iden
             .as_object_mut()
             .ok_or("row")?
             .insert(key.into(), json!(true));
-        assert!(serde_json::from_value::<QualificationOperation>(value).is_err());
+        check!(serde_json::from_value::<QualificationOperation>(value).is_err());
     }
     let mut value = serde_json::to_value(&original)?;
     value.as_object_mut().ok_or("row")?.remove("previous");
-    assert!(serde_json::from_value::<QualificationOperation>(value).is_err());
+    check!(serde_json::from_value::<QualificationOperation>(value).is_err());
     for (key, value) in [
         ("format", json!(2)),
         ("owner", json!(1)),
@@ -117,23 +117,23 @@ fn qualification_records_reject_missing_links_unknown_authority_and_crossed_iden
     ] {
         let mut wire = serde_json::to_value(&original)?;
         *wire.get_mut(key).ok_or("field")? = value;
-        assert!(serde_json::from_value::<QualificationOperation>(wire).is_err());
+        check!(serde_json::from_value::<QualificationOperation>(wire).is_err());
     }
     let mut wire = serde_json::to_value(&original)?;
     wire.get_mut("selected_parent")
         .and_then(Value::as_object_mut)
         .ok_or("parent")?
         .insert("authority".into(), json!(true));
-    assert!(serde_json::from_value::<QualificationOperation>(wire).is_err());
+    check!(serde_json::from_value::<QualificationOperation>(wire).is_err());
     let mut bad = original.clone();
     bad.selected_parent.form = crate::commerce::paid::PaidForm::Sealed {};
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = original.clone();
     bad.selected_parent.terminal = bad.selected_parent.operation;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut head = serde_json::to_value(original.head())?;
     *head.get_mut("ordinal").ok_or("ordinal")? = json!(0);
-    assert!(serde_json::from_value::<QualificationHead>(head).is_err());
+    check!(serde_json::from_value::<QualificationHead>(head).is_err());
     Ok(())
 }
 #[test]
@@ -147,7 +147,7 @@ fn qualification_chain_is_ordered_by_cause_and_preserves_immutable_child_and_clo
     next.ordinal = 2;
     next.selected_parent.form = crate::commerce::paid::PaidForm::Open {};
     next.follows(Some(&old))?;
-    assert!(next.follows(None).is_err());
+    check!(next.follows(None).is_err());
     for mode in 0..7 {
         let mut bad = next.clone();
         match mode {
@@ -159,14 +159,14 @@ fn qualification_chain_is_ordered_by_cause_and_preserves_immutable_child_and_clo
             5 => bad.source_parent.filed = crate::commerce::FiledRevisionId::new(3)?,
             _ => bad.observed_ic.at -= 1,
         };
-        assert!(bad.follows(Some(&old)).is_err());
+        check!(bad.follows(Some(&old)).is_err());
     }
     // Distinct clock generations are explicit; no numeric cross-clock order is invented.
     next.observed_ic.clock = mush_core::ClockRef::WorldIc { generation: 2 };
     next.follows(Some(&old))?;
     let mut crossed = next.head();
     crossed.operation = old.operation;
-    assert!(crossed.matches(&next).is_err());
+    check!(crossed.matches(&next).is_err());
     Ok(())
 }
 #[test]
@@ -174,15 +174,15 @@ fn qualification_cause_retains_selected_parent_without_rewriting_child_ancestry(
     let old = row()?;
     let mut replacement = old.clone();
     replacement.selected_parent.form = crate::commerce::paid::PaidForm::Open {};
-    assert_ne!(replacement.digest()?, old.digest()?);
-    assert_eq!(replacement.child_revision, old.child_revision);
-    assert_eq!(replacement.source_parent, old.source_parent);
+    check_ne!(replacement.digest()?, old.digest()?);
+    check_eq!(replacement.child_revision, old.child_revision);
+    check_eq!(replacement.source_parent, old.source_parent);
     let root = replacement.root()?;
-    assert_eq!(root.identity, replacement.selected_parent.revision);
-    assert_ne!(root.identity, replacement.child_revision);
-    assert_eq!(RootAnchor::parse(&root.anchor.record())?, root.anchor);
-    assert!(RootAnchor::parse(&(root.anchor.record() + "/extra")).is_err());
-    assert!(RootAnchor::parse(&root.anchor.record().to_uppercase()).is_err());
+    check_eq!(root.identity, replacement.selected_parent.revision);
+    check_ne!(root.identity, replacement.child_revision);
+    check_eq!(RootAnchor::parse(&root.anchor.record())?, root.anchor);
+    check!(RootAnchor::parse(&(root.anchor.record() + "/extra")).is_err());
+    check!(RootAnchor::parse(&root.anchor.record().to_uppercase()).is_err());
     Ok(())
 }
 type Handles = (
@@ -240,12 +240,12 @@ fn qualification_complete_max_width_envelopes_fit_real_registered_family_limits(
         head.key(),
         serde_json::to_value(&head)?,
     );
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(&op_doc, QualificationOperation::MAX_BYTES)?
             .len()
             < QualificationOperation::MAX_BYTES
     );
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(&head_doc, QualificationHead::MAX_BYTES)?.len()
             < QualificationHead::MAX_BYTES
     );
@@ -255,7 +255,7 @@ fn qualification_complete_max_width_envelopes_fit_real_registered_family_limits(
     let (_, install) = txn.prepare()?.into_parts();
     engine.install_prepared_action(install)?;
     let mut txn = engine.action_transaction(&operations)?;
-    assert!(
+    check!(
         txn.insert(&operations, &"not-a-commit".into(), operation)
             .is_err()
     );
@@ -277,18 +277,18 @@ fn qualification_requires_explicit_active_dependent_composition() -> TestResult 
             RatingCompatibility::combat_v1(manifest().digest()),
         )
     };
-    assert!(
+    check!(
         make(CommerceMode::Initialize)?
             .with_owner_parent_qualification()
             .is_err()
     );
-    assert!(
+    check!(
         make(CommerceMode::Active)?
             .with_owner_parent_qualification()
             .is_err()
     );
     let [a, _] = protocol::definitions(&manifest())?;
-    assert_eq!(a.version(), 1);
+    check_eq!(a.version(), 1);
     Ok(())
 }
 
@@ -299,14 +299,14 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     let old = row()?;
     let bytes = serde_json::to_vec(&old)?;
     let restored: QualificationOperation = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    check_eq!(serde_json::to_vec(&restored)?, bytes);
     let legacy = serde_json::to_value(&old)?;
-    assert!(legacy.get("charter_ownership").is_none());
+    check!(legacy.get("charter_ownership").is_none());
     let proof = serde_json::json!({"generation":65537,"operation":mush_core::CommitToken::from_bytes([249;16]),"digest":mush_core::DefinitionDigest::from_bytes([255;32])});
     let mut value = legacy.clone();
     let fields = value.as_object_mut().ok_or("operation")?;
     fields.insert("charter_ownership".into(), proof.clone());
-    assert!(
+    check!(
         serde_json::from_value::<QualificationOperation>(value.clone()).is_err(),
         "old format cannot carry new authority attribution"
     );
@@ -320,7 +320,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
         .insert("owner".into(), serde_json::json!(1));
     let new: QualificationOperation = serde_json::from_value(value.clone())?;
     new.validate()?;
-    assert_eq!(serde_json::to_value(&new)?, value);
+    check_eq!(serde_json::to_value(&new)?, value);
     let shared = Arc::new(Mutex::new(None));
     let mut engine = Engine::with_modules(
         World::new_minimal(),
@@ -347,21 +347,21 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
         bad.as_object_mut()
             .ok_or("operation")?
             .insert("charter_ownership".into(), corrupt);
-        assert!(serde_json::from_value::<QualificationOperation>(bad).is_err());
+        check!(serde_json::from_value::<QualificationOperation>(bad).is_err());
     }
     let mut missing = value.clone();
     missing
         .as_object_mut()
         .ok_or("operation")?
         .remove("charter_ownership");
-    assert!(serde_json::from_value::<QualificationOperation>(missing).is_err());
+    check!(serde_json::from_value::<QualificationOperation>(missing).is_err());
     let mut extra = value.clone();
     extra
         .get_mut("charter_ownership")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("ownership")?
         .insert("validated".into(), serde_json::json!(true));
-    assert!(serde_json::from_value::<QualificationOperation>(extra).is_err());
+    check!(serde_json::from_value::<QualificationOperation>(extra).is_err());
     Ok(())
 }
 
@@ -370,9 +370,9 @@ fn parent_holder_capture_is_closed_and_legacy_qualification_bytes_stay_exact() -
     let old = row()?;
     let bytes = serde_json::to_vec(&old)?;
     let restored: QualificationOperation = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    check_eq!(serde_json::to_vec(&restored)?, bytes);
     let mut wire = serde_json::to_value(&old)?;
-    assert!(wire.pointer("/selected_parent/holder_basis").is_none());
+    check!(wire.pointer("/selected_parent/holder_basis").is_none());
     let proof = json!({"format":1,"acceptance":CommitToken::from_bytes([249;16]),
         "ownership":{"generation":65537,"operation":CommitToken::from_bytes([248;16]),"digest":DefinitionDigest::from_bytes([255;32])}});
     wire.get_mut("selected_parent")
@@ -380,8 +380,8 @@ fn parent_holder_capture_is_closed_and_legacy_qualification_bytes_stay_exact() -
         .ok_or("parent")?
         .insert("holder_basis".into(), proof.clone());
     let captured: QualificationOperation = serde_json::from_value(wire.clone())?;
-    assert_eq!(serde_json::to_value(&captured)?, wire);
-    assert_ne!(
+    check_eq!(serde_json::to_value(&captured)?, wire);
+    check_ne!(
         old.digest()?,
         captured.digest()?,
         "the actual cause covers ownership attribution"
@@ -428,7 +428,7 @@ fn parent_holder_capture_is_closed_and_legacy_qualification_bytes_stay_exact() -
         let mut bad = wire.clone();
         *bad.pointer_mut("/selected_parent/holder_basis")
             .ok_or("basis")? = proof;
-        assert!(serde_json::from_value::<QualificationOperation>(bad).is_err());
+        check!(serde_json::from_value::<QualificationOperation>(bad).is_err());
     }
     Ok(())
 }

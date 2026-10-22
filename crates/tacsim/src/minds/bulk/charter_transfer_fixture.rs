@@ -59,7 +59,7 @@ pub(super) fn signed(
         },
     )?;
     let (action, invocation, _) = resolved.into_authoritative_parts();
-    assert_eq!(action, exact);
+    check_eq!(action, exact);
     Ok(engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &invocation, token(n))?
         .0)
@@ -155,8 +155,8 @@ pub(super) fn sale(
         .snapshot()
         .asset(charter)
         .ok_or("actual transferred charter")?;
-    assert_eq!(title.title_owner, EconomicOwner::Object(buyer));
-    assert_eq!(
+    check_eq!(title.title_owner, EconomicOwner::Object(buyer));
+    check_eq!(
         title.revision,
         before_title
             .revision
@@ -168,16 +168,16 @@ pub(super) fn sale(
         .snapshot()
         .account(payout.id)
         .ok_or("actual payout")?;
-    assert_eq!(
+    check_eq!(
         after_payer.posted_balance.minor(),
         payer.posted_balance.minor() - 1
     );
-    assert_eq!(
+    check_eq!(
         after_payout.posted_balance.minor(),
         payout.posted_balance.minor() + 1
     );
-    assert_eq!(after_payer.held_amount, payer.held_amount);
-    assert_eq!(after_payout.held_amount, payout.held_amount);
+    check_eq!(after_payer.held_amount, payer.held_amount);
+    check_eq!(after_payout.held_amount, payout.held_amount);
     Ok(())
 }
 

@@ -321,9 +321,9 @@ fn tick(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), PublicationError> {
     let mut proofs = 0;
     let mut cursors = [runtime.owner_after.clone(), runtime.paid_after.clone()];
     for (which, p) in order {
-        let at = match which {
-            Inventory::Owners => 0,
-            Inventory::Paid => 1,
+        let cursor = match which {
+            Inventory::Owners => &mut cursors[0],
+            Inventory::Paid => &mut cursors[1],
         };
         let mut exhausted = true;
         for (key, licence, actor) in p.rows {
@@ -341,10 +341,10 @@ fn tick(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), PublicationError> {
                     Err(e) => return Err(e),
                 }
             }
-            cursors[at] = Some(key);
+            *cursor = Some(key);
         }
         if exhausted && !p.more {
-            cursors[at] = None;
+            *cursor = None;
         }
     }
     runtime.owner_after = cursors[0].take();

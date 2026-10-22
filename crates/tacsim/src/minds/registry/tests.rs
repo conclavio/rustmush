@@ -53,17 +53,17 @@ pub(super) fn revision(source: &str) -> Result<Revision, Box<dyn std::error::Err
 fn real_source_expansion_retains_every_saved_program_for_every_preset() -> TestResult {
     let revision = revision(SOURCE)?;
     let prepared = PreparedSubject::prepare(&revision, SOURCE, &ArenaConfig::default())?;
-    assert_eq!(prepared.variants().len(), 10);
-    assert_eq!(prepared.pairs().len(), 18);
-    assert_eq!(prepared.aliases().len(), 10);
+    check_eq!(prepared.variants().len(), 10);
+    check_eq!(prepared.pairs().len(), 18);
+    check_eq!(prepared.aliases().len(), 10);
     for variant in prepared.variants() {
         let [alpha, beta] = variant.definition.profiles.as_slice() else {
             return Err("two exact programs".into());
         };
-        assert_eq!(alpha.rules.len(), 1);
-        assert!(beta.rules.is_empty());
+        check_eq!(alpha.rules.len(), 1);
+        check!(beta.rules.is_empty());
         if variant.cycle {
-            assert_eq!(alpha.values, beta.values);
+            check_eq!(alpha.values, beta.values);
         }
     }
     for pair in prepared.pairs() {
@@ -71,7 +71,7 @@ fn real_source_expansion_retains_every_saved_program_for_every_preset() -> TestR
             .variants()
             .get(usize::from(pair.variant))
             .ok_or("variant")?;
-        assert!(
+        check!(
             variant
                 .definition
                 .profiles
@@ -79,10 +79,10 @@ fn real_source_expansion_retains_every_saved_program_for_every_preset() -> TestR
                 .is_some()
         );
     }
-    assert!(
+    check!(
         PreparedSubject::prepare(&revision, "fn think(v,c) {}", &ArenaConfig::default()).is_err()
     );
-    assert_eq!(prepared.subject().revision().source(), revision.source());
+    check_eq!(prepared.subject().revision().source(), revision.source());
     Ok(())
 }
 
@@ -97,12 +97,12 @@ fn subject_never_runs_top_level_and_exact_envelope_changes_identity() -> TestRes
     value["reference"]["digest"] = serde_json::to_value(envelope.digest(source)?)?;
     let changed: Revision = serde_json::from_value(value)?;
     let b = PreparedSubject::prepare(&changed, source, &ArenaConfig::default())?;
-    assert_eq!(
+    check_eq!(
         a.subject().revision().source(),
         b.subject().revision().source()
     );
-    assert_ne!(a.subject().expanded(), b.subject().expanded());
-    assert_ne!(a.subject().envelope(), b.subject().envelope());
+    check_ne!(a.subject().expanded(), b.subject().expanded());
+    check_ne!(a.subject().envelope(), b.subject().envelope());
     Ok(())
 }
 
@@ -148,8 +148,8 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
         .map(|class| physics(class, &classes))
         .collect::<Result<Vec<_>, _>>()?;
     let schedule = Schedule::prepare(&prepared, &classes, &physical)?;
-    assert_eq!(schedule.cases().len(), 3 * (10 * 12 + 18 * 12 + 1 + 8));
-    assert_eq!(
+    check_eq!(schedule.cases().len(), 3 * (10 * 12 + 18 * 12 + 1 + 8));
+    check_eq!(
         schedule
             .cases()
             .iter()
@@ -163,8 +163,8 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
         .filter(|case| !matches!(case.key.kind(), CaseKind::Trial { .. }))
         .map(|case| case.maximum_thinks)
         .sum::<u64>();
-    assert_eq!(direct, 3 * (18 * 678 + 256 + 8));
-    assert!(
+    check_eq!(direct, 3 * (18 * 678 + 256 + 8));
+    check!(
         schedule
             .cases()
             .windows(2)
@@ -177,9 +177,9 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .sum::<u64>();
-    assert_eq!(schedule.maximum_unit_ms(), sum);
-    assert!(schedule.cases().iter().any(|case| case.physics.units == 25));
-    assert!(schedule.cases().iter().any(|case| case.physics.units == 1));
+    check_eq!(schedule.maximum_unit_ms(), sum);
+    check!(schedule.cases().iter().any(|case| case.physics.units == 25));
+    check!(schedule.cases().iter().any(|case| case.physics.units == 1));
     let mut wrong = physical.clone();
     wrong
         .first_mut()
@@ -188,7 +188,7 @@ fn finite_schedule_covers_all_pairs_and_charges_actual_case_rosters() -> TestRes
         .get_mut(8)
         .ok_or("density")?
         .units = 1;
-    assert!(Schedule::prepare(&prepared, &classes, &wrong).is_err());
+    check!(Schedule::prepare(&prepared, &classes, &wrong).is_err());
     Ok(())
 }
 
@@ -227,10 +227,10 @@ fn actual_runner_meter_preserves_answers_and_counts_host_fees_at_real_landing() 
         let think = arena.collected.pop().ok_or("real collected job")?;
         let actual = think.think().result;
         let plain = prepared.runner().think(&think.job());
-        assert_eq!(actual, plain, "measurement does not alter execution");
-        assert!(actual.fault.is_none());
+        check_eq!(actual, plain, "measurement does not alter execution");
+        check!(actual.fault.is_none());
         let settled = arena.settle_collected(&think, actual);
-        assert_eq!(settled.faults, 0);
+        check_eq!(settled.faults, 0);
         arena.now_ms = think.lands_ms;
         arena.mind_land(
             own,
@@ -240,14 +240,14 @@ fn actual_runner_meter_preserves_answers_and_counts_host_fees_at_real_landing() 
         );
     }
     let evidence = meter.measurement()?;
-    assert_eq!(evidence.summary.thinks(), 3);
-    assert!(evidence.summary.max_ops() > 0);
-    assert!(evidence.summary.max_fees() >= crate::minds::fees::FEE_THINK);
-    assert!(evidence.summary.clean());
-    assert_eq!(evidence.seen, vec![vec![3]]);
+    check_eq!(evidence.summary.thinks(), 3);
+    check!(evidence.summary.max_ops() > 0);
+    check!(evidence.summary.max_fees() >= crate::minds::fees::FEE_THINK);
+    check!(evidence.summary.clean());
+    check_eq!(evidence.seen, vec![vec![3]]);
     let mind = arena.minds.get(&own).ok_or("mind")?;
-    assert_eq!(mind.strikes, 0);
-    assert!(!mind.dropped());
+    check_eq!(mind.strikes, 0);
+    check!(!mind.dropped());
     Ok(())
 }
 
@@ -289,14 +289,14 @@ fn duplicate_or_foreign_jobs_cannot_become_valid_measurement() -> TestResult {
         },
     };
     let first = meter.think(&job);
-    assert!(first.fault.is_none());
-    assert_eq!(meter.measurement()?.summary.thinks(), 1);
-    assert_eq!(
+    check!(first.fault.is_none());
+    check_eq!(meter.measurement()?.summary.thinks(), 1);
+    check_eq!(
         meter.think(&job),
         first,
         "the real duplicate answer is still unchanged"
     );
-    assert!(
+    check!(
         meter.measurement().is_err(),
         "duplicate sequence invalidates the evidence instead of double-counting it"
     );
@@ -337,7 +337,7 @@ pub(super) fn frozen_policy_with_config(
 #[test]
 fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox() -> TestResult {
     const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
-    assert_ne!(
+    check_ne!(
         crate::minds::MIND_ABI,
         OLD_ABI,
         "paired API5 stabilization prerequisite"
@@ -354,13 +354,13 @@ fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox()
     let retained = build(source, OLD_ABI)?;
     let bytes = serde_json::to_vec(&retained)?;
     let cfg = ArenaConfig::default();
-    assert!(PreparedSubject::prepare(&retained, source, &cfg).is_err());
+    check!(PreparedSubject::prepare(&retained, source, &cfg).is_err());
     let measured = PreparedSubject::prepare_reconformance(&retained, source, &cfg)?;
-    assert_eq!(
+    check_eq!(
         measured.subject().revision(),
         mush_roll::commerce::RevisionIdentity::capture(&retained)?
     );
-    assert_eq!(serde_json::to_vec(&retained)?, bytes);
+    check_eq!(serde_json::to_vec(&retained)?, bytes);
     // The unchanged historical source actually executes through the newly
     // compiled current runner; no old engine or metadata-generated authority.
     use crate::arena::{
@@ -382,16 +382,16 @@ fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox()
     arena.collect_think(own, 0, 1001, &mut MotorCounters::default());
     let think = arena.collected.pop().ok_or("current runner think")?;
     let answer = measured.runner().think(&think.job());
-    assert!(answer.fault.is_none());
-    assert_eq!(
+    check!(answer.fault.is_none());
+    check_eq!(
         crate::arena::mind::decode_memory(&answer.memory).get("marker"),
         Some(&crate::arena::mind::MemValue::Int(73))
     );
     // Fresh source and metadata must move together to the current API.
     let new_source = source.replace("api: 4", &format!("api: {}", crate::minds::API_VERSION));
     let current = build(&new_source, crate::minds::MIND_ABI)?;
-    assert!(PreparedSubject::prepare(&current, &new_source, &cfg).is_ok());
-    assert!(PreparedSubject::prepare_reconformance(&retained, &new_source, &cfg).is_err());
+    check!(PreparedSubject::prepare(&current, &new_source, &cfg).is_ok());
+    check!(PreparedSubject::prepare_reconformance(&retained, &new_source, &cfg).is_err());
     for (source, abi) in [
         (new_source.as_str(), OLD_ABI),
         (source, crate::minds::MIND_ABI),
@@ -402,7 +402,7 @@ fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox()
         ("fn think(v,c) { eval(\"42\"); }", OLD_ABI),
     ] {
         let wrong = build(source, abi)?;
-        assert!(PreparedSubject::prepare_reconformance(&wrong, source, &cfg).is_err());
+        check!(PreparedSubject::prepare_reconformance(&wrong, source, &cfg).is_err());
     }
     Ok(())
 }

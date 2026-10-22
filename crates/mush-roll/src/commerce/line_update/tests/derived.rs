@@ -38,8 +38,8 @@ fn derived() -> TestResult<UpdateOperation> {
 fn dependent_update_requires_versioned_native_and_parent_evidence() -> TestResult {
     let original = operation()?;
     let old = serde_json::to_vec(&original)?;
-    assert!(serde_json::to_value(&original)?.get("parent").is_none());
-    assert_eq!(
+    check!(serde_json::to_value(&original)?.get("parent").is_none());
+    check_eq!(
         serde_json::to_vec(&serde_json::from_slice::<UpdateOperation>(&old)?)?,
         old
     );
@@ -89,11 +89,11 @@ fn dependent_update_requires_versioned_native_and_parent_evidence() -> TestResul
                     json!({"kind":"sealed"});
             }
         }
-        assert!(serde_json::from_value::<UpdateOperation>(value).is_err());
+        check!(serde_json::from_value::<UpdateOperation>(value).is_err());
     }
     let mut crossed = original.clone();
     crossed.parent = row.parent.clone();
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     Ok(())
 }
 #[test]
@@ -112,7 +112,7 @@ fn derived_update_complete_envelope_keeps_existing_family_limit() -> TestResult 
         .ok_or("handle")?;
     let document = json!({"family":{"owner":handle.owner(),"id":handle.descriptor().id()},"key":row.key(),"schema":{"id":handle.descriptor().value_schema(),"version":1},"value":row});
     let bytes = mush_core::canonical_json_bytes_with_limit(&document, UpdateOperation::MAX_BYTES)?;
-    assert!(bytes.len() < UpdateOperation::MAX_BYTES);
+    check!(bytes.len() < UpdateOperation::MAX_BYTES);
     let mut txn = engine.action_transaction(&handle)?;
     txn.insert(&handle, &row.key(), row.clone())?;
     let (_, install) = txn.prepare()?.into_parts();
@@ -126,12 +126,12 @@ fn derived_action_history_reconstructs_full_retained_manifest() -> TestResult {
     let old = registration::historical_derived_action(&rating::RatingCompatibility::combat_v1(
         manifest.digest(),
     ))?;
-    assert_eq!(old, derived_action()?);
+    check_eq!(old, derived_action()?);
     let changed = registration::historical_derived_action(
         &rating::RatingCompatibility::combat_v1(DefinitionDigest::from_bytes([1; 32])),
     )?;
-    assert_eq!(old.locator(), changed.locator());
-    assert_ne!(old, changed);
-    assert_ne!(old.locator(), action()?.locator());
+    check_eq!(old.locator(), changed.locator());
+    check_ne!(old, changed);
+    check_ne!(old.locator(), action()?.locator());
     Ok(())
 }

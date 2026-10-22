@@ -181,9 +181,9 @@ mod tests {
         let r = row()?;
         r.validate()?;
         let value = serde_json::to_value(&r)?;
-        assert_eq!(serde_json::from_value::<LapseOccurrence>(value.clone())?, r);
+        check_eq!(serde_json::from_value::<LapseOccurrence>(value.clone())?, r);
         let envelope = serde_json::json!({"family":{"owner":"roll","id":LapseOccurrence::FAMILY},"schema":{"id":format!("{}.value.v1",LapseOccurrence::FAMILY),"version":1},"key":r.key(),"value":value});
-        assert!(
+        check!(
             mush_core::canonical_json_bytes_with_limit(&envelope, LapseOccurrence::MAX_BYTES)
                 .is_ok()
         );
@@ -197,7 +197,7 @@ mod tests {
         ] {
             let mut bad = value.clone();
             bad.as_object_mut().ok_or("object")?.remove(field);
-            assert!(
+            check!(
                 serde_json::from_value::<LapseOccurrence>(bad).is_err(),
                 "required {field}"
             );
@@ -208,27 +208,27 @@ mod tests {
                 .and_then(serde_json::Value::as_object_mut)
                 .ok_or("nested object")?
                 .insert("permission".into(), serde_json::json!(true));
-            assert!(
+            check!(
                 serde_json::from_value::<LapseOccurrence>(bad).is_err(),
                 "closed {pointer}"
             );
         }
         let mut early = r.clone();
         early.at_ic.at -= 1;
-        assert!(early.validate().is_err());
+        check!(early.validate().is_err());
         let mut actor = r.clone();
         actor.actor = ObjId(u32::MAX);
-        assert!(actor.validate().is_err());
+        check!(actor.validate().is_err());
         let mut clock = r.clone();
         clock.at_ic.clock = mush_core::ClockRef::WorldIc { generation: 0 };
-        assert!(clock.validate().is_err());
+        check!(clock.validate().is_err());
         let mut crossed = r.clone();
         crossed.term.term_digest = DefinitionDigest::from_bytes([1; 32]);
-        assert!(crossed.matches(&r.term).is_err());
-        assert_ne!(crossed.root()?.anchor, r.root()?.anchor);
-        assert_eq!(crossed.root()?.identity, r.root()?.identity);
+        check!(crossed.matches(&r.term).is_err());
+        check_ne!(crossed.root()?.anchor, r.root()?.anchor);
+        check_eq!(crossed.root()?.identity, r.root()?.identity);
         let wire = serde_json::to_string(&r)?;
-        assert!(
+        check!(
             serde_json::from_str::<LapseOccurrence>(&wire.replacen(
                 "\"format\":1",
                 "\"format\":1,\"format\":1",

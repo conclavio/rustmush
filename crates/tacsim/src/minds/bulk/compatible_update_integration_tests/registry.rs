@@ -40,11 +40,11 @@ fn ack(
         .registry
         .take_acknowledged()
         .ok_or("actual Registry acknowledgment")?;
-    assert_eq!(
+    check_eq!(
         (a.ticket, a.job, a.operation, a.transition),
         (ticket, job, token(n), t)
     );
-    assert!(artifacts(f)?.registry.get(ticket).is_err());
+    check!(artifacts(f)?.registry.get(ticket).is_err());
     Ok(())
 }
 fn typed<T: serde::de::DeserializeOwned>(
@@ -81,7 +81,7 @@ pub(super) fn certify(f: &mut PurchaseFixture, revision: &Revision) -> TestResul
     let job = token(n);
     let r = revision.reference();
     let p=f.prepare(&action(f,Transition::Admit)?,GOD,n,json!({"ticket":ticket.get(),"mind":r.key.mind,"revision":r.key.number,"revision_digest":r.digest}))?;
-    assert!(quota(f)?.active(account).is_none());
+    check!(quota(f)?.active(account).is_none());
     ack(f, p, ticket, job, n, Transition::Admit)?;
     n += 1;
     let binding = Binding {
@@ -91,7 +91,7 @@ pub(super) fn certify(f: &mut PurchaseFixture, revision: &Revision) -> TestResul
         job,
     };
     let subject: RatingJob = typed(f, "rating_jobs", job)?;
-    assert_eq!(subject.subject().revision().revision(), r);
+    check_eq!(subject.subject().revision().revision(), r);
     let mut ready = Ready::registry(binding, start, prepared.machine);
     let executor = Executor::with_wake(&BulkConfig::default(), None)?;
     let deadline = Instant::now() + Duration::from_secs(7200);
@@ -153,12 +153,12 @@ pub(super) fn certify(f: &mut PurchaseFixture, revision: &Revision) -> TestResul
             n,
             json!({"ticket":ticket.get(),"job":job}),
         )?;
-        assert_eq!(quota(f)?.run(account, GOD, binding.run)?, &before);
+        check_eq!(quota(f)?.run(account, GOD, binding.run)?, &before);
         ack(f, p, ticket, job, n, Transition::Settle)?;
         n += 1;
         quanta += 1;
         let run = quota(f)?.run(account, GOD, binding.run)?;
-        assert_eq!(run.charged_unit_ms, measured);
+        check_eq!(run.charged_unit_ms, measured);
         if run.status == Status::Complete {
             drop(next);
             break;
@@ -169,12 +169,12 @@ pub(super) fn certify(f: &mut PurchaseFixture, revision: &Revision) -> TestResul
         ready = next;
     }
     let receipt: RatingReceipt = typed(f, "rating_receipts", job)?;
-    assert_eq!(receipt.subject(), subject.subject());
-    assert_eq!(
+    check_eq!(receipt.subject(), subject.subject());
+    check_eq!(
         receipt.subject().revision().revision(),
         revision.reference()
     );
-    assert!(matches!(
+    check!(matches!(
         typed::<RatingJob>(f, "rating_jobs", job)?.state(),
         RatingJobState::Completed { .. }
     ));

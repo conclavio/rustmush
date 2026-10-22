@@ -15,19 +15,19 @@ fn sanction() -> Result<RegistryRevocationPolicy, Box<dyn std::error::Error>> {
 }
 #[test]
 fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> TestResult {
-    assert!(PendingCharterTransferConfig::new(mush_core::ObjId(0), 60).is_err());
+    check!(PendingCharterTransferConfig::new(mush_core::ObjId(0), 60).is_err());
     for seconds in [0, 259201] {
-        assert!(PendingCharterTransferConfig::new(mush_core::GOD, seconds).is_err());
+        check!(PendingCharterTransferConfig::new(mush_core::GOD, seconds).is_err());
     }
     for seconds in [1, 259200] {
         PendingCharterTransferConfig::new(mush_core::GOD, seconds)?;
     }
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_pending_charter_transfers(config()?)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_pending_charter_transfers(config()?)
             .is_err()
@@ -37,7 +37,7 @@ fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> T
     let selected = plain.with_pending_charter_transfers(config()?)?;
     let actual = engine(&selected)?;
     for old in mush_roll::commerce::charter_transfer::CharterTransferConfig::new().actions()? {
-        assert!(
+        check!(
             before
                 .registry
                 .definitions()
@@ -45,7 +45,7 @@ fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> T
                 .get_exact(&old)
                 .is_ok()
         );
-        assert!(
+        check!(
             actual
                 .registry
                 .definitions()
@@ -55,7 +55,7 @@ fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> T
         );
     }
     for action in config()?.actions()? {
-        assert!(
+        check!(
             before
                 .registry
                 .definitions()
@@ -63,7 +63,7 @@ fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> T
                 .get_exact(&action)
                 .is_err()
         );
-        assert!(
+        check!(
             actual
                 .registry
                 .definitions()
@@ -72,7 +72,7 @@ fn pending_charters_are_explicit_active_and_preserve_immediate_references() -> T
                 .is_ok()
         );
     }
-    assert!(selected.with_pending_charter_transfers(config()?).is_err());
+    check!(selected.with_pending_charter_transfers(config()?).is_err());
     Ok(())
 }
 #[test]
@@ -89,9 +89,9 @@ fn pending_compound_revocation_resolves_both_explicit_configuration_orders() -> 
     for cfg in [first, second] {
         let actual = engine(&cfg)?;
         let definitions = actual.registry.definitions().ok_or("definitions")?;
-        assert!(definitions.get_exact(&policy.action()?).is_ok());
+        check!(definitions.get_exact(&policy.action()?).is_ok());
         for a in config()?.actions()? {
-            assert!(definitions.get_exact(&a).is_ok());
+            check!(definitions.get_exact(&a).is_ok());
         }
     }
     Ok(())
@@ -117,7 +117,7 @@ fn pending_requires_matching_real_economy_and_roll_owner_configuration() -> Test
                     Box::new(selected.configure_tacsim(layer())?),
                 ],
             );
-        assert!(result.is_err(), "mismatched owner composition accepted");
+        check!(result.is_err(), "mismatched owner composition accepted");
     }
     Ok(())
 }
@@ -135,10 +135,10 @@ fn pending_facts_and_measured_recall_share_one_exact_roll_guard_slot() -> TestRe
             selected
         };
         let actual = engine(&selected)?;
-        assert!(has(&actual, "roll", "action", "record_mind_term_lapse"));
-        assert!(has(&actual, "roll", "action", "recall_nonconforming_mind"));
+        check!(has(&actual, "roll", "action", "record_mind_term_lapse"));
+        check!(has(&actual, "roll", "action", "recall_nonconforming_mind"));
         for action in config()?.actions()? {
-            assert_eq!(
+            check_eq!(
                 actual
                     .registry
                     .definitions()

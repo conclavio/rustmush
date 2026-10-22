@@ -130,7 +130,7 @@ fn signed(f: &mut PurchaseFixture, n: u128, params: Value) -> TestResult<Prepare
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(exact, action);
+    check_eq!(exact, action);
     Ok(f.engine
         .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?
         .0)
@@ -197,14 +197,24 @@ fn refusals(
         let mut before = w.balances()?;
         let mut p = params.clone();
         if mode == "foreign" {
-            assert!(w.prepare(&action, BUYER, START + 1, p).is_err());
+            check!(crate::test_checks::refused(w.prepare(
+                &action,
+                BUYER,
+                START + 1,
+                p
+            ))?);
         } else if mode == "old_rating" {
             let old: FiledRecord = serde_json::from_value(one(w.rows("roll", "roll_mind_filed"))?)?;
             *p.get_mut("rating_job").ok_or("rating job")? = json!(old.rating().job());
             *p.get_mut("rating_id").ok_or("rating id")? = json!(old.rating().id());
             *p.get_mut("rating_digest").ok_or("rating digest")? =
                 json!(old.rating().receipt_digest());
-            assert!(w.prepare(&action, GOD, START + 1, p).is_err());
+            check!(crate::test_checks::refused(w.prepare(
+                &action,
+                GOD,
+                START + 1,
+                p
+            ))?);
         } else if mode == "title" {
             w.engine.step(
                 Inbound::ConnUp {
@@ -225,7 +235,7 @@ fn refusals(
             // Native sale payment is asserted by the helper; the refused
             // compatible update must add no Registry fee or other debit.
             before = w.balances()?;
-            assert_eq!(
+            check_eq!(
                 w.economy()?
                     .snapshot()
                     .asset(charter.object())
@@ -233,7 +243,12 @@ fn refusals(
                     .title_owner,
                 EconomicOwner::Object(BUYER)
             );
-            assert!(w.prepare(&action, GOD, START + 1, p).is_err());
+            check!(crate::test_checks::refused(w.prepare(
+                &action,
+                GOD,
+                START + 1,
+                p
+            ))?);
         } else {
             let (prepared, out) = w.engine.prepare_registered_composed_authoritative_action(
                 &action,
@@ -243,14 +258,14 @@ fn refusals(
             if mode == "before_take" {
                 stage(&mut w, START + 1, p.clone(), prepared, out)?;
                 w.engine.world.set_now(owner.window().grace_end().get());
-                assert!(w.engine.take_staged_action().is_err());
+                check!(w.engine.take_staged_action().is_err());
             } else {
                 w.engine.world.set_now(owner.window().grace_end().get());
-                assert!(stage(&mut w, START + 1, p, prepared, out).is_err());
+                check!(stage(&mut w, START + 1, p, prepared, out).is_err());
             }
         }
-        assert_eq!(w.balances()?, before);
-        assert!(w.rows("roll", "roll_mind_line_update").is_empty());
+        check_eq!(w.balances()?, before);
+        check!(w.rows("roll", "roll_mind_line_update").is_empty());
     }
     // Once custody is taken, lapse cannot cancel the already-owned union.
     let mut w = boot(f, saved)?;
@@ -269,19 +284,19 @@ fn refusals(
     w.engine.world.set_now(owner.window().grace_end().get());
     retain_writes(&mut w.disk, bundle.writes())?;
     w.engine.install_composed_action(installation)?;
-    assert_eq!(w.rows("roll", "roll_mind_line_update").len(), 1);
-    assert!(boot(f, &w.snapshot()).is_ok());
+    check_eq!(w.rows("roll", "roll_mind_line_update").len(), 1);
+    check!(boot(f, &w.snapshot()).is_ok());
     Ok(())
 }
 fn corrupted(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    assert!(
-        f.reboot(saved).is_err(),
+    check!(
+        crate::test_checks::refused(f.reboot(saved))?,
         "default boot cannot drop retained update obligations"
     );
     for family in ["roll_mind_line_update", "roll_mind_line_update_position"] {
         let mut lost = saved.clone();
-        assert_eq!(remove_family(&mut lost, "roll", family), 1);
-        assert!(boot(f, &lost).is_err(), "missing update family");
+        check_eq!(remove_family(&mut lost, "roll", family), 1);
+        check!(boot(f, &lost).is_err(), "missing update family");
     }
     for field in ["head", "next_sequence"] {
         let mut crossed = saved.clone();
@@ -298,7 +313,7 @@ fn corrupted(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         } else {
             json!(4)
         };
-        assert!(boot(f, &crossed).is_err(), "unproven head/sequence");
+        check!(boot(f, &crossed).is_err(), "unproven head/sequence");
     }
     let mut crossed_action = saved.clone();
     let operation = crossed_action
@@ -312,7 +327,7 @@ fn corrupted(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         .and_then(|v| v.get_mut("digest"))
         .ok_or("actual update action digest")? =
         json!(mush_core::DefinitionDigest::from_bytes([17; 32]));
-    assert!(
+    check!(
         boot(f, &crossed_action).is_err(),
         "same-locator crossed update action cannot replace actual historical proof"
     );
@@ -320,7 +335,7 @@ fn corrupted(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     missing
         .disk
         .retain(|(_, key), _| !key.starts_with("reference:roll:commercial:v1/line_update/"));
-    assert!(boot(f, &missing).is_err(), "missing permanent update root");
+    check!(boot(f, &missing).is_err(), "missing permanent update root");
     Ok(())
 }
 pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
@@ -357,15 +372,15 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
         .cloned()
         .collect::<Vec<_>>();
     let p = signed(&mut w, START + 3, parameters(&revision, rating))?;
-    assert_eq!(w.balances()?, before_money);
-    assert_eq!(w.roots()?, before_roots);
+    check_eq!(w.balances()?, before_money);
+    check_eq!(w.roots()?, before_roots);
     let writes = w.install(p)?;
-    assert!(
+    check!(
         writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
     );
-    assert_eq!(
+    check_eq!(
         w.balances()?.first().ok_or("payer balance")?.0,
         before_money
             .first()
@@ -374,7 +389,7 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
             .checked_sub(Amount::from_minor(100))
             .ok_or("fee")?
     );
-    assert_eq!(
+    check_eq!(
         w.balances()?.get(1).ok_or("sink balance")?.0,
         before_money
             .get(1)
@@ -383,25 +398,25 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
             .checked_add(Amount::from_minor(100))
             .ok_or("fee")?
     );
-    assert!(
+    check!(
         w.economy()?.snapshot().assets().eq(title.iter()),
         "update changed title"
     );
-    assert_eq!(one(w.rows("roll", "roll_mind_owner_term"))?, owner);
-    assert_eq!(one(w.rows("roll", "roll_mind_paid_term"))?, paid);
-    assert!(w.rows("roll", "roll_mind_filed").contains(&old_file));
+    check_eq!(one(w.rows("roll", "roll_mind_owner_term"))?, owner);
+    check_eq!(one(w.rows("roll", "roll_mind_paid_term"))?, paid);
+    check!(w.rows("roll", "roll_mind_filed").contains(&old_file));
     let new: FiledRecord = serde_json::from_value(
         w.rows("roll", "roll_mind_filed")
             .into_iter()
             .find(|v| v.get("format") == Some(&json!(3)))
             .ok_or("actual update file")?,
     )?;
-    assert_eq!(new.content().revision().revision(), revision.reference());
-    assert_eq!(new.rating(), &rating);
-    assert_eq!(new.content().position().sequence.get(), 2);
-    assert_eq!(w.roots()?.len(), before_roots.len() + 2);
+    check_eq!(new.content().revision().revision(), revision.reference());
+    check_eq!(new.rating(), &rating);
+    check_eq!(new.content().position().sequence.get(), 2);
+    check_eq!(w.roots()?.len(), before_roots.len() + 2);
     let updated = w.snapshot();
-    assert!(boot(f, &updated).is_ok());
+    check!(boot(f, &updated).is_ok());
     corrupted(f, &updated)?;
     // New commerce resolves the actual head; the old paid Pin remains byte-exact.
     w.perform(
@@ -424,17 +439,17 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
         START + 7,
         json!({"operation":token(START+6)}),
     )?;
-    assert!(w.rows("roll", "roll_mind_paid_term").contains(&paid));
+    check!(w.rows("roll", "roll_mind_paid_term").contains(&paid));
     let newest: PaidTermRecord = serde_json::from_value(
         w.rows("roll", "roll_mind_paid_term")
             .into_iter()
             .find(|v| v.get("operation") == Some(&json!(token(START + 6))))
             .ok_or("new actual paid Pin")?,
     )?;
-    assert!(
+    check!(
         matches!(newest.policy(),mush_roll::commerce::records::RevisionPolicy::Pin{filed,revision:identity} if filed==new.content().id()&&identity.revision()==revision.reference())
     );
-    assert!(boot(f, &w.snapshot()).is_ok());
+    check!(boot(f, &w.snapshot()).is_ok());
     // The separate captured branch began its old paid sortie before the
     // same actual update; its public EXIT proves the immutable seal continues.
     Ok(())

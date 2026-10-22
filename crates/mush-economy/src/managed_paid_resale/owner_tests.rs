@@ -629,7 +629,7 @@ impl Fixture {
     }
     fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Box<Self>> {
         let mut f = Self::empty_enabled(enabled)?;
-        assert_eq!(
+        check_eq!(
             (f.shell, f.actor, f.buyer),
             (self.shell, self.actor, self.buyer)
         );
@@ -786,33 +786,33 @@ fn history(f: &Fixture) -> Result<PaidResaleHistoryV1> {
 fn resale_immediate_debits_gross_and_credits_exact_split_without_title_or_hold() -> Result {
     let mut f = Fixture::new()?;
     let p = f.accept(2, PaidResaleModeV1::Immediate)?;
-    assert_eq!(
+    check_eq!(
         (posted(&f, 1)?, posted(&f, 2)?, posted(&f, 3)?),
         (10000, 0, 10000)
     );
     let writes = f.publish(f.rules.actions[1].clone(), 2, p)?;
-    assert!(
+    check!(
         writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
     );
-    assert_eq!(
+    check_eq!(
         (posted(&f, 1)?, posted(&f, 2)?, posted(&f, 3)?),
         (10478, 25, 9497)
     );
     let h = history(&f)?;
-    assert_eq!(h.outcome(), PaidResaleOutcome::Settled);
-    assert!(h.acceptance().hold().is_none() && h.terminal().is_none());
-    assert!(f.state().snapshot.asset(f.shell).is_none());
+    check_eq!(h.outcome(), PaidResaleOutcome::Settled);
+    check!(h.acceptance().hold().is_none() && h.terminal().is_none());
+    check!(f.state().snapshot.asset(f.shell).is_none());
     let tx = f
         .state()
         .transactions
         .get(&h.acceptance().transaction())
         .ok_or("actual transaction")?;
-    assert!(
+    check!(
         tx.asset_effects.is_empty() && tx.hold_effects.is_empty() && tx.custody_effects.is_empty()
     );
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -821,11 +821,11 @@ fn resale_pending_holds_gross_then_native_last_close_pays_and_replays() -> Resul
     let mut f = funded()?;
     let before = history(&f)?;
     let hold = before.acceptance().hold().ok_or("held id")?;
-    assert_eq!(
+    check_eq!(
         (posted(&f, 1)?, posted(&f, 2)?, posted(&f, 3)?),
         (10000, 0, 10000)
     );
-    assert_eq!(
+    check_eq!(
         f.state().snapshot.hold(hold).ok_or("held")?.status,
         HoldStatus::Held
     );
@@ -835,17 +835,17 @@ fn resale_pending_holds_gross_then_native_last_close_pays_and_replays() -> Resul
     )?;
     f.publish(f.rules.actions[3].clone(), 3, p)?;
     let after = history(&f)?;
-    assert_eq!(after.consent(), before.consent());
-    assert_eq!(
+    check_eq!(after.consent(), before.consent());
+    check_eq!(
         (posted(&f, 1)?, posted(&f, 2)?, posted(&f, 3)?),
         (10478, 25, 9497)
     );
-    assert!(matches!(
+    check!(matches!(
         f.state().snapshot.hold(hold).ok_or("terminal hold")?.status,
         HoldStatus::Consumed { .. }
     ));
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == after);
-    assert!(
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == after);
+    check!(
         f.terminal(
             4,
             PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 6 }
@@ -874,7 +874,7 @@ fn resale_refund_uses_retained_money_when_buyer_unavailable_or_clock_changed() -
             let _ = f.world.world_mut().take_dirty();
             PaidResaleDecisionKindV1::RecipientUnavailable {}
         };
-        assert!(
+        check!(
             f.terminal(
                 3,
                 PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 }
@@ -884,12 +884,12 @@ fn resale_refund_uses_retained_money_when_buyer_unavailable_or_clock_changed() -
         let p = f.terminal(3, reason)?;
         f.publish(f.rules.actions[4].clone(), 3, p)?;
         let h = history(&f)?;
-        assert_eq!(h.outcome(), PaidResaleOutcome::Refunded);
-        assert_eq!(
+        check_eq!(h.outcome(), PaidResaleOutcome::Refunded);
+        check_eq!(
             (posted(&f, 1)?, posted(&f, 2)?, posted(&f, 3)?),
             (10000, 0, 10000)
         );
-        assert_eq!(
+        check_eq!(
             f.state()
                 .snapshot
                 .hold(h.acceptance().hold().ok_or("id")?)
@@ -897,7 +897,7 @@ fn resale_refund_uses_retained_money_when_buyer_unavailable_or_clock_changed() -
                 .status,
             HoldStatus::Released
         );
-        assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+        check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     }
     Ok(())
 }
@@ -909,11 +909,11 @@ fn resale_deadline_is_actual_and_lapsed_property_keeps_immutable_dates() -> Resu
         next_transition: 4,
         open_paid: 1,
     };
-    assert!(f.terminal(3, reason.clone()).is_err());
+    check!(f.terminal(3, reason.clone()).is_err());
     f.world.world_mut().set_now(1000);
     let p = f.terminal(3, reason)?;
     f.publish(f.rules.actions[3].clone(), 3, p)?;
-    assert_eq!(history(&f)?.outcome(), PaidResaleOutcome::Settled);
+    check_eq!(history(&f)?.outcome(), PaidResaleOutcome::Settled);
     let mut f = Fixture::new()?;
     f.world.world_mut().set_now(1200);
     let terms = f.terms()?;
@@ -935,9 +935,9 @@ fn resale_deadline_is_actual_and_lapsed_property_keeps_immutable_dates() -> Resu
     )?;
     f.publish(action, 2, p)?;
     let h = history(&f)?;
-    assert_eq!(h.consent().terms.basis.term, original);
-    assert!(h.consent().accepted_at_ic.at >= original.window.grace_end);
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+    check_eq!(h.consent().terms.basis.term, original);
+    check!(h.consent().accepted_at_ic.at >= original.window.grace_end);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -955,11 +955,11 @@ fn resale_actor_action_offer_reuse_and_false_refund_reasons_refuse() -> Result {
     };
     let wrong_actor = input();
     let wrong_action = input();
-    assert!(
+    check!(
         f.prepare(&f.rules.actions[2].clone(), f.actor, 2, wrong_actor)
             .is_err()
     );
-    assert!(
+    check!(
         f.prepare(&f.rules.wrong.clone(), f.buyer, 2, wrong_action)
             .is_err()
     );
@@ -970,14 +970,14 @@ fn resale_actor_action_offer_reuse_and_false_refund_reasons_refuse() -> Result {
         PaidResaleDecisionKindV1::RecipientUnavailable {},
         PaidResaleDecisionKindV1::MonetaryBindingChanged {},
     ] {
-        assert!(f.terminal(3, reason).is_err());
+        check!(f.terminal(3, reason).is_err());
     }
     let p = f.terminal(
         3,
         PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 },
     )?;
     f.publish(f.rules.actions[3].clone(), 3, p)?;
-    assert!(
+    check!(
         f.accept(4, PaidResaleModeV1::Immediate).is_err(),
         "used offer remains consumed"
     );
@@ -1017,8 +1017,8 @@ fn resale_money_preimages_and_live_actor_repeat_at_stage_take_and_bind() -> Resu
                             .insert(mush_core::Flags::GOING);
                         let _ = f.world.world_mut().take_dirty();
                     }
-                    assert!(f.stage(action, 2, p).is_err());
-                    assert_eq!(posted(&f, 3)?, 10000);
+                    check!(f.stage(action, 2, p).is_err());
+                    check_eq!(posted(&f, 3)?, 10000);
                     continue;
                 }
                 None
@@ -1048,17 +1048,17 @@ fn resale_money_preimages_and_live_actor_repeat_at_stage_take_and_bind() -> Resu
             }
             if let Some(held) = held {
                 let (_, installation) = held.into_parts();
-                assert!(
+                check!(
                     f.world
                         .engine_mut()
                         .install_composed_action(installation)
                         .is_err()
                 );
             } else {
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             }
-            assert_eq!(posted(&f, 3)?, 10000);
-            assert_eq!(f.state().paid_resale_histories()?.len(), 0);
+            check_eq!(posted(&f, 3)?, 10000);
+            check_eq!(f.state().paid_resale_histories()?.len(), 0);
         }
     }
     Ok(())
@@ -1101,12 +1101,12 @@ fn resale_cold_inventory_refuses_missing_or_crossed_native_documents() -> Result
                 v["holder"]["namespace"] = json!("foreign.owner");
             }
         }
-        assert!(
-            f.cold(boot).is_err(),
+        check!(
+            crate::test_checks::refused(f.cold(boot))?,
             "native inverse audit must refuse corrupted document"
         );
     }
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -1125,7 +1125,7 @@ fn resale_sparse_install_matches_full_fold_and_checkpoint_requires_exact_history
         .clone();
     let mut full = before;
     full.fold_entry(tx.journal_seq, &tx);
-    assert!(
+    check!(
         serde_json::to_value(&full)? == serde_json::to_value(&f.state().fold)?,
         "sparse and replay folds differ"
     );
@@ -1142,7 +1142,7 @@ fn resale_sparse_install_matches_full_fold_and_checkpoint_requires_exact_history
             plan_hash: tx.plan_hash.iter().map(|b| format!("{b:02x}")).collect(),
         })
         .collect();
-    assert!(
+    check!(
         f.state()
             .fold
             .paid_resale_receipts
@@ -1150,7 +1150,7 @@ fn resale_sparse_install_matches_full_fold_and_checkpoint_requires_exact_history
     );
     let mut missing = index.clone();
     missing.retain(|r| r.ns.as_str() != NAMESPACE);
-    assert!(
+    check!(
         !f.state()
             .fold
             .paid_resale_receipts
@@ -1163,7 +1163,7 @@ fn resale_sparse_install_matches_full_fold_and_checkpoint_requires_exact_history
         .ok_or("row")?
         .clone();
     duplicate.push(row);
-    assert!(
+    check!(
         !f.state()
             .fold
             .paid_resale_receipts
@@ -1191,7 +1191,7 @@ fn resale_namespace_blocks_legacy_posts_and_real_sweep_retains_terminal_hold() -
             spent: Default::default(),
             keys: &gate,
         };
-        assert!(matches!(
+        check!(matches!(
             crate::engine::validate(&plan, &f.state().snapshot, &env),
             PlanResult::Refused(crate::EconomyError::ManagedContract)
         ));
@@ -1212,9 +1212,9 @@ fn resale_namespace_blocks_legacy_posts_and_real_sweep_retains_terminal_hold() -
     f.world.set_now(at);
     let _ = f.world.fire_due(at.checked_mul(1000).ok_or("gc millis")?);
     fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
-    assert!(f.state().snapshot.hold(hold).is_some());
-    assert!(f.state().fold.journal_holds.contains_key(&hold));
-    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
+    check!(f.state().snapshot.hold(hold).is_some());
+    check!(f.state().fold.journal_holds.contains_key(&hold));
+    check!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
     Ok(())
 }
 
@@ -1225,9 +1225,9 @@ fn resale_disabled_boot_refuses_retained_native_history_without_fixture_rows() -
     // Remove the inert fixture family's namespace so refusal must come from
     // native retained history, not an unavailable typed fixture registration.
     boot.remove("market");
-    assert!(f.cold_enabled(boot, false).is_err());
+    check!(crate::test_checks::refused(f.cold_enabled(boot, false))?);
     let empty = Fixture::new()?;
-    assert!(empty.cold_enabled(empty.boot.clone(), false).is_ok());
+    check!(empty.cold_enabled(empty.boot.clone(), false).is_ok());
     Ok(())
 }
 
@@ -1302,7 +1302,7 @@ fn resale_six_real_payees_include_separate_gross_buyer_royalty_and_parent_title_
         )?;
         f.publish(f.rules.actions[2].clone(), 2, p)?;
         let h = history(&f)?;
-        assert_eq!(
+        check_eq!(
             f.state()
                 .snapshot
                 .hold(h.acceptance().hold().ok_or("id")?)
@@ -1316,7 +1316,7 @@ fn resale_six_real_payees_include_separate_gross_buyer_royalty_and_parent_title_
             let mut title = f.state().snapshot.asset(title_id).ok_or("title")?.clone();
             title.revision += 1;
             f.state_mut().snapshot.put_asset(title);
-            assert!(
+            check!(
                 f.terminal(
                     3,
                     PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 }
@@ -1325,14 +1325,14 @@ fn resale_six_real_payees_include_separate_gross_buyer_royalty_and_parent_title_
             );
             let p = f.terminal(3, PaidResaleDecisionKindV1::MonetaryBindingChanged {})?;
             f.publish(f.rules.actions[4].clone(), 3, p)?;
-            assert_eq!(posted(&f, 3)?, 10000);
+            check_eq!(posted(&f, 3)?, 10000);
         } else {
             let p = f.terminal(
                 3,
                 PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 },
             )?;
             f.publish(f.rules.actions[3].clone(), 3, p)?;
-            assert_eq!(
+            check_eq!(
                 (
                     posted(&f, 1)?,
                     posted(&f, 2)?,
@@ -1349,15 +1349,15 @@ fn resale_six_real_payees_include_separate_gross_buyer_royalty_and_parent_title_
                 .transactions
                 .get(&after.terminal().ok_or("terminal")?.transaction())
                 .ok_or("transaction")?;
-            assert_eq!(tx.lines.len(), 7);
+            check_eq!(tx.lines.len(), 7);
             let buyer_lines: Vec<_> = tx
                 .lines
                 .iter()
                 .filter(|l| l.account == AccountId(3))
                 .map(|l| l.delta.minor())
                 .collect();
-            assert_eq!(buyer_lines.len(), 2);
-            assert!(buyer_lines.contains(&-503) && buyer_lines.contains(&20));
+            check_eq!(buyer_lines.len(), 2);
+            check!(buyer_lines.contains(&-503) && buyer_lines.contains(&20));
         }
     }
     Ok(())

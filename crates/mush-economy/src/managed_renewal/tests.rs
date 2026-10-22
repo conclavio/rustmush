@@ -250,7 +250,7 @@ fn documents(writes: &[ReplayWrite]) -> TestResult<Vec<(String, Vec<u8>)>> {
             value,
         } = write
         {
-            assert_eq!(namespace.as_str(), "economy");
+            check_eq!(namespace.as_str(), "economy");
             if key.as_str().starts_with(history::PREFIX) {
                 result.push((key.as_str().to_owned(), serde_json::to_vec(value)?));
             }
@@ -280,47 +280,47 @@ fn real_unaccepted_offer_and_both_closures_leave_all_money_untouched() -> TestRe
     for reason in [UnfundedCloseReason::Declined, UnfundedCloseReason::Expired] {
         let mut f = Rig::new()?;
         f.six_roles()?;
-        assert_eq!(f.offer.terms.payouts()?.len(), 6);
+        check_eq!(f.offer.terms.payouts()?.len(), 6);
         let before = f.state.clone();
         let (out, writes) = f.publish()?;
         same_money(&before, &f.state);
-        assert_eq!(f.state.next_contract, before.next_contract + 1);
+        check_eq!(f.state.next_contract, before.next_contract + 1);
         let offered = f
             .state
             .snapshot
             .contract(out.contract())
             .ok_or("contract")?;
-        assert_eq!(offered.state, ContractState::Offered);
-        assert!(
+        check_eq!(offered.state, ContractState::Offered);
+        check!(
             offered.acceptances.is_empty()
                 && offered.escrow.is_empty()
                 && offered.pending.is_none()
         );
-        assert_eq!(offered.consent.terms.split.len(), 6);
-        assert_eq!(out.closed(), None);
+        check_eq!(offered.consent.terms.split.len(), 6);
+        check_eq!(out.closed(), None);
         let rebuilt = OfferBook::from_documents(&f.state.snapshot, &documents(&writes)?)?;
-        assert_eq!(
+        check_eq!(
             rebuilt.get(out.operation()),
             f.state.renewal_offers.get(out.operation())
         );
         if reason == UnfundedCloseReason::Expired {
-            assert!(f.close(reason).is_err());
+            check!(f.close(reason).is_err());
             f.world.set_now(1100);
         }
         let (closed, patch, closed_writes) = f.close(reason)?;
         patch.recheck_in(&f.state, &f.context(true, token(4)))?;
         patch.bind(&mut f.state)?.apply();
         same_money(&before, &f.state);
-        assert_eq!(f.state.next_contract, before.next_contract + 1);
-        assert_eq!(closed.closed(), Some(reason));
+        check_eq!(f.state.next_contract, before.next_contract + 1);
+        check_eq!(closed.closed(), Some(reason));
         let record = f.state.renewal_offers.get(token(3)).ok_or("record")?;
-        assert_eq!(record.contract, out.contract());
-        assert_eq!(record.consent_hash, out.consent_hash());
+        check_eq!(record.contract, out.contract());
+        check_eq!(record.consent_hash, out.consent_hash());
         OfferBook::from_documents(&f.state.snapshot, &documents(&closed_writes)?)?;
-        assert!(f.close(reason).is_err());
+        check!(f.close(reason).is_err());
         let mut another = f.offer.clone();
         another.basis.prior_quote = token(20);
-        assert!(
+        check!(
             install::offer(&f.state, &f.context(false, token(21)), another).is_err(),
             "closed predecessor remains claimed"
         );
@@ -362,10 +362,10 @@ fn unfunded_close_survives_issuer_and_account_loss_but_never_crossed_buyer_or_cl
     let mut context = f.context(true, token(4));
     context.actor = f.offer.terms.seller;
     context.principal = &wrong;
-    assert!(patch.recheck_in(&f.state, &context).is_err());
+    check!(patch.recheck_in(&f.state, &context).is_err());
     patch.recheck_in(&f.state, &f.context(true, token(4)))?;
     patch.bind(&mut f.state)?.apply();
-    assert_eq!(out.closed(), Some(UnfundedCloseReason::Declined));
+    check_eq!(out.closed(), Some(UnfundedCloseReason::Declined));
     Ok(())
 }
 
@@ -438,31 +438,31 @@ fn actual_before_images_and_identity_refuse_stale_bind_without_partial_install()
         let before = f.state.snapshot.clone();
         let meta = f.state.meta_doc();
         let generation = f.state.renewal_offers.generation();
-        assert!(patch.bind(&mut f.state).is_err(), "{mode}");
-        assert_eq!(f.state.snapshot, before);
-        assert_eq!(f.state.meta_doc(), meta);
-        assert_eq!(f.state.renewal_offers.generation(), generation);
+        check!(patch.bind(&mut f.state).is_err(), "{mode}");
+        check_eq!(f.state.snapshot, before);
+        check_eq!(f.state.meta_doc(), meta);
+        check_eq!(f.state.renewal_offers.generation(), generation);
     }
     let mut f = Rig::new()?;
     let (_, patch, _) = f.prepare()?;
-    assert!(
+    check!(
         patch
             .recheck_in(&f.state, &f.context(false, token(99)))
             .is_err()
     );
-    assert!(
+    check!(
         patch
             .recheck_in(&f.state, &f.context(true, token(3)))
             .is_err()
     );
     f.world.set_now(999);
-    assert!(
+    check!(
         patch
             .recheck_in(&f.state, &f.context(false, token(3)))
             .is_err()
     );
     f.world.set_now(1100);
-    assert!(
+    check!(
         patch
             .recheck_in(&f.state, &f.context(false, token(3)))
             .is_err()
@@ -470,13 +470,13 @@ fn actual_before_images_and_identity_refuse_stale_bind_without_partial_install()
     f.world.set_now(1000);
     let before = f.state.snapshot.clone();
     drop(patch);
-    assert_eq!(f.state.snapshot, before);
-    assert!(f.state.renewal_offers.get(token(3)).is_none());
+    check_eq!(f.state.snapshot, before);
+    check!(f.state.renewal_offers.get(token(3)).is_none());
     let (_, patch, _) = f.prepare()?;
     let mut timeline = f.world.world_timeline().clone();
     timeline.append(timeline.next_rate_epoch(f.world.now(), 2)?)?;
     f.world.set_world_timeline(timeline);
-    assert!(
+    check!(
         patch
             .recheck_in(&f.state, &f.context(false, token(3)))
             .is_err()
@@ -490,17 +490,17 @@ fn strict_deadline_generation_authority_and_real_contract_caps_are_preserved() -
     for lifetime in [0, MAX_RENEWAL_OFFER_IC_SECONDS + 1] {
         let mut request = f.offer.clone();
         request.terms.expires_at.at = request.terms.not_before.at + lifetime;
-        assert!(install::offer(&f.state, &f.context(false, token(3)), request).is_err());
+        check!(install::offer(&f.state, &f.context(false, token(3)), request).is_err());
     }
     let mut request = f.offer.clone();
     request.terms.expires_at.clock = mush_core::ClockRef::WorldIc { generation: 2 };
-    assert!(install::offer(&f.state, &f.context(false, token(3)), request).is_err());
+    check!(install::offer(&f.state, &f.context(false, token(3)), request).is_err());
     let wrong = mush_core::PrincipalId::Object {
         id: f.offer.terms.seller,
     };
     let mut context = f.context(false, token(3));
     context.principal = &wrong;
-    assert!(install::offer(&f.state, &context, f.offer.clone()).is_err());
+    check!(install::offer(&f.state, &context, f.offer.clone()).is_err());
     let mut full = Rig::new()?;
     for n in 0..crate::contract::MAX_OPEN_CONTRACTS_PER_ISSUER {
         let mut request = full.offer.clone();
@@ -512,8 +512,8 @@ fn strict_deadline_generation_authority_and_real_contract_caps_are_preserved() -
         )?;
         patch.bind(&mut full.state)?.apply();
     }
-    assert!(full.prepare().is_err());
-    assert_eq!(
+    check!(full.prepare().is_err());
+    check_eq!(
         full.state.snapshot.contracts().count(),
         crate::contract::MAX_OPEN_CONTRACTS_PER_ISSUER
     );
@@ -526,8 +526,8 @@ fn actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funde
     let mut f = Rig::new()?;
     let (out, writes) = f.publish()?;
     let docs = documents(&writes)?;
-    assert!(OfferBook::from_documents(&f.state.snapshot, &[]).is_err());
-    assert!(OfferBook::from_documents(&EconomySnapshot::new(), &docs).is_err());
+    check!(OfferBook::from_documents(&f.state.snapshot, &[]).is_err());
+    check!(OfferBook::from_documents(&EconomySnapshot::new(), &docs).is_err());
     let offered = f
         .state
         .snapshot
@@ -557,14 +557,14 @@ fn actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funde
             _ => return Err("case".into()),
         }
         snapshot.put_contract(changed);
-        assert!(
+        check!(
             OfferBook::from_documents(&snapshot, &docs).is_err(),
             "{mode}"
         );
     }
     let mut wrong = docs.clone();
     wrong.first_mut().ok_or("doc")?.0 = history::key(token(99));
-    assert!(OfferBook::from_documents(&f.state.snapshot, &wrong).is_err());
+    check!(OfferBook::from_documents(&f.state.snapshot, &wrong).is_err());
     let mut snapshot = f.state.snapshot.clone();
     snapshot.put_hold(crate::record::Hold {
         id: crate::HoldId(1),
@@ -581,7 +581,7 @@ fn actual_proof_and_contract_reconstruction_reject_each_missing_crossed_or_funde
         last_journal_seq: 1,
         revision: 1,
     });
-    assert!(
+    check!(
         OfferBook::from_documents(&snapshot, &docs).is_err(),
         "even a released hold disproves never-funded F0"
     );
@@ -597,7 +597,7 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
         .and_then(|v| v.as_object_mut())
         .ok_or("terms")?
         .remove("venue");
-    assert!(serde_json::from_value::<RenewalOffer>(missing).is_err());
+    check!(serde_json::from_value::<RenewalOffer>(missing).is_err());
     let mut zero = f.offer.clone();
     zero.terms.registry = GrossRecipientCut {
         permille: 0,
@@ -610,7 +610,7 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
         .and_then(|v| v.as_object_mut())
         .ok_or("registry")?
         .remove("recipient");
-    assert!(serde_json::from_value::<RenewalOffer>(missing).is_err());
+    check!(serde_json::from_value::<RenewalOffer>(missing).is_err());
     let mut marked = zero.clone();
     marked.terms.lineage = RenewalLineageV1::Derived;
     marked.terms.parents.push(RoyaltyRecipientCut {
@@ -627,12 +627,12 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
         .and_then(|v| v.as_object_mut())
         .ok_or("parent")?
         .remove("title");
-    assert!(serde_json::from_value::<RenewalOffer>(missing).is_err());
-    assert_eq!(
+    check!(serde_json::from_value::<RenewalOffer>(missing).is_err());
+    check_eq!(
         RenewalOffer::decode(&serde_json::to_vec(&f.offer)?)?,
         f.offer
     );
-    assert!(RenewalOffer::decode(&vec![b' '; MAX_RENEWAL_OFFER_BYTES + 1]).is_err());
+    check!(RenewalOffer::decode(&vec![b' '; MAX_RENEWAL_OFFER_BYTES + 1]).is_err());
     let mut too_many = serde_json::to_value(&marked)?;
     let rows = too_many
         .get_mut("terms")
@@ -641,9 +641,9 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
         .ok_or("parents")?;
     let first = rows.first().cloned().ok_or("parent")?;
     rows.resize(4, first);
-    assert!(RenewalOffer::decode(&serde_json::to_vec(&too_many)?).is_err());
+    check!(RenewalOffer::decode(&serde_json::to_vec(&too_many)?).is_err());
     let raw = serde_json::to_string(&f.offer)?;
-    assert!(
+    check!(
         serde_json::from_str::<RenewalOffer>(&raw.replacen(
             "\"format\":1",
             "\"format\":1,\"format\":1",
@@ -656,7 +656,7 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
         .as_object_mut()
         .ok_or("offer")?
         .insert("actor".into(), json!(9));
-    assert!(serde_json::from_value::<RenewalOffer>(unknown).is_err());
+    check!(serde_json::from_value::<RenewalOffer>(unknown).is_err());
     #[derive(Serialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     enum OldWire {
@@ -693,7 +693,7 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
             f.offer.basis.prior_quote_digest,
             f.offer.basis.product_digest,
         )?;
-        assert_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&actual)?);
+        check_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&actual)?);
     }
     for protocol in [
         crate::managed_entitlement::EntitlementProtocol::OriginalV3,
@@ -718,14 +718,14 @@ fn new_wire_is_strict_and_old_managed_consent_bytes_remain_identical() -> TestRe
             protocol,
             f.offer.basis.grant_economics_digest,
         )?;
-        assert_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&actual)?);
+        check_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&actual)?);
     }
     let marker =
         ManagedConsent::renewal_offer(RenewalMarkerV1::new(token(3), f.draft.clone(), &f.offer)?)?;
-    assert!(marker.renewal_offer_marker().is_some());
-    assert_eq!(marker.entitlement_protocol(), None);
-    assert_eq!(marker.economic_digest(), None);
-    assert_eq!(
+    check!(marker.renewal_offer_marker().is_some());
+    check_eq!(marker.entitlement_protocol(), None);
+    check_eq!(marker.economic_digest(), None);
+    check_eq!(
         serde_json::from_slice::<ManagedConsent>(&serde_json::to_vec(&marker)?)?,
         marker
     );
@@ -805,10 +805,10 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
     row.consent_hash = contract(&row)?.consent_hash;
     row.validate()?;
     let admitted_bytes = serde_json::to_vec(&row)?.len();
-    assert!(admitted_bytes + history::FUTURE_RESERVE_BYTES <= history::MAX_RECORD_BYTES);
-    assert!(admitted_bytes + history::FUTURE_RESERVE_BYTES + 256 >= history::MAX_RECORD_BYTES);
+    check!(admitted_bytes + history::FUTURE_RESERVE_BYTES <= history::MAX_RECORD_BYTES);
+    check!(admitted_bytes + history::FUTURE_RESERVE_BYTES + 256 >= history::MAX_RECORD_BYTES);
     let open_contract = contract(&row)?;
-    assert!(
+    check!(
         serde_json::to_vec(&open_contract)?.len() + history::FUTURE_RESERVE_BYTES
             <= history::MAX_CONTRACT_BYTES
     );
@@ -818,8 +818,8 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
         crate::registry_filing::json_write(crate::api::META_KEY.into(), &f.state.meta_doc())?,
     ];
     let envelope = serde_json::to_vec(&offered_writes)?;
-    assert!(envelope.len() <= 32768);
-    assert_eq!(
+    check!(envelope.len() <= 32768);
+    check_eq!(
         serde_json::from_slice::<Vec<ReplayWrite>>(&envelope)?,
         offered_writes
     );
@@ -828,7 +828,7 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
         InstrumentId::new(format!("{}{}", row.offer.terms.instrument, "a".repeat(512)))
             .ok_or("instrument")?;
     too_large.consent_hash = contract(&too_large)?.consent_hash;
-    assert!(too_large.validate().is_err());
+    check!(too_large.validate().is_err());
     for reason in [UnfundedCloseReason::Declined, UnfundedCloseReason::Expired] {
         let mut closed = row.clone();
         closed.closure = Some(history::Closure {
@@ -841,9 +841,9 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
         closed.validate()?;
         let final_contract = contract(&closed)?;
         let closed_bytes = serde_json::to_vec(&closed)?.len();
-        assert!(closed_bytes <= history::MAX_RECORD_BYTES);
-        assert!(closed_bytes.saturating_sub(admitted_bytes) <= history::FUTURE_RESERVE_BYTES);
-        assert!(serde_json::to_vec(&final_contract)?.len() <= history::MAX_CONTRACT_BYTES);
+        check!(closed_bytes <= history::MAX_RECORD_BYTES);
+        check!(closed_bytes.saturating_sub(admitted_bytes) <= history::FUTURE_RESERVE_BYTES);
+        check!(serde_json::to_vec(&final_contract)?.len() <= history::MAX_CONTRACT_BYTES);
         let writes = vec![
             crate::registry_filing::json_write(history::key(closed.operation).into(), &closed)?,
             crate::registry_filing::json_write(
@@ -851,8 +851,8 @@ fn complete_near_limit_record_and_contract_reserve_both_closures_before_custody(
                 &final_contract,
             )?,
         ];
-        assert!(serde_json::to_vec(&writes)?.len() <= 32768);
-        assert_eq!(final_contract.consent, open_contract.consent);
+        check!(serde_json::to_vec(&writes)?.len() <= 32768);
+        check_eq!(final_contract.consent, open_contract.consent);
     }
     // The reserve is a bound, not proof that the future F1 funded schema exists.
     Ok(())
@@ -868,7 +868,7 @@ fn permanent_offer_table_counts_closed_predecessors_at_the_actual_limit() -> Tes
         .get(token(3))
         .ok_or("record")?
         .clone();
-    assert_eq!(documents(&writes)?.len(), 1);
+    check_eq!(documents(&writes)?.len(), 1);
     let mut book = OfferBook::default();
     for n in 0..history::MAX_RECORDS {
         let serial = 1000 + u64::try_from(n)?;
@@ -888,14 +888,14 @@ fn permanent_offer_table_counts_closed_predecessors_at_the_actual_limit() -> Tes
         let generation = book.next_generation()?;
         book.install(row, generation);
     }
-    assert_eq!(book.generation(), u64::try_from(history::MAX_RECORDS)?);
+    check_eq!(book.generation(), u64::try_from(history::MAX_RECORDS)?);
     let mut next = original;
     next.operation = token(900_000);
     next.contract = ContractId(900_000);
     next.offer.basis.licence = 900_000;
     next.consent_hash = contract(&next)?.consent_hash;
-    assert!(book.admits(&next).is_err());
-    assert!(book.get(next.operation).is_none());
+    check!(book.admits(&next).is_err());
+    check!(book.get(next.operation).is_none());
     Ok(())
 }
 
@@ -911,7 +911,7 @@ fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind() -> TestR
         .clone();
     let mut stripped = contract.clone();
     stripped.consent.managed = None;
-    assert!(!crate::contract::managed::legacy_contract(
+    check!(!crate::contract::managed::legacy_contract(
         &stripped,
         &f.state.snapshot
     ));
@@ -930,7 +930,7 @@ fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind() -> TestR
         },
         expires: None,
     });
-    assert!(matches!(
+    check!(matches!(
         crate::contract::managed::require_legacy_plan(&plan, &f.state.snapshot),
         Err(crate::EconomyError::ManagedContract)
     ));
@@ -955,7 +955,7 @@ fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind() -> TestR
                 error.to_string().chars().take(240).collect::<String>()
             )
         })?;
-    assert!(
+    check!(
         decoded == contract,
         "renewal boot fixture contract Value roundtrip"
     );
@@ -971,12 +971,12 @@ fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind() -> TestR
         .err()
         .ok_or("new managed contract unexpectedly booted")?;
     let message = error.to_string();
-    assert!(
+    check!(
         message.contains("complete entitlement recovery"),
         "unexpected renewal boot layer: {}",
         message.chars().take(240).collect::<String>()
     );
-    assert!(world.take_module_ops().is_empty());
+    check!(world.take_module_ops().is_empty());
     Ok(())
 }
 

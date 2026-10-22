@@ -34,7 +34,7 @@ fn current_generation(f: &PurchaseFixture) -> TestResult<u64> {
         .ok_or("actual current ownership generation")?)
 }
 fn assert_title(f: &PurchaseFixture, charter: ObjId, owner: ObjId) -> TestResult {
-    assert_eq!(
+    check_eq!(
         f.economy()?
             .snapshot()
             .asset(charter)
@@ -53,7 +53,7 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
     let roots_before = f.roots()?;
     let money_before = f.balances()?;
     let (seller, payout, payer) = consideration(&f.engine, charter, BUYER)?;
-    assert_eq!(seller, GOD);
+    check_eq!(seller, GOD);
     let parameters = offer_params(charter, BUYER, payout.id);
     for (field, value) in [
         ("source", json!("not authority")),
@@ -63,31 +63,49 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
         let mut bad = parameters.clone();
         let object = bad.as_object_mut().ok_or("offer params")?;
         object.insert(field.into(), value);
-        assert!(signed(&mut f.engine, OFFER, GOD, START, bad).is_err());
+        check!(crate::test_checks::refused(signed(
+            &mut f.engine,
+            OFFER,
+            GOD,
+            START,
+            bad
+        ))?);
     }
     let prepared = signed(&mut f.engine, OFFER, GOD, START, parameters.clone())?;
-    assert!(f.rows("roll", OFFERS).is_empty());
-    assert_eq!(f.balances()?, money_before);
+    check!(f.rows("roll", OFFERS).is_empty());
+    check_eq!(f.balances()?, money_before);
     assert_title(&f, charter, GOD)?;
     f.install(prepared)?;
-    assert_eq!(f.rows("roll", OFFERS).len(), 1);
-    assert!(f.rows("roll", TRANSFERS).is_empty());
-    assert_eq!(f.balances()?, money_before);
+    check_eq!(f.rows("roll", OFFERS).len(), 1);
+    check!(f.rows("roll", TRANSFERS).is_empty());
+    check_eq!(f.balances()?, money_before);
     let offered = f.snapshot();
     let accept = json!({"offer":token(START),"payer":payer.id.0.to_string()});
-    assert!(signed(&mut f.engine, ACCEPT, GOD, START + 1, accept.clone()).is_err());
+    check!(crate::test_checks::refused(signed(
+        &mut f.engine,
+        ACCEPT,
+        GOD,
+        START + 1,
+        accept.clone()
+    ))?);
     for (field, value) in [
         ("payer", json!(payer.id.0)),
         ("offer", json!(token(START + 999))),
     ] {
         let mut bad = accept.clone();
         *bad.get_mut(field).ok_or("accept field")? = value;
-        assert!(signed(&mut f.engine, ACCEPT, BUYER, START + 1, bad).is_err());
+        check!(crate::test_checks::refused(signed(
+            &mut f.engine,
+            ACCEPT,
+            BUYER,
+            START + 1,
+            bad
+        ))?);
     }
     let prepared = signed(&mut f.engine, ACCEPT, BUYER, START + 1, accept.clone())?;
     assert_title(&f, charter, GOD)?;
-    assert!(f.rows("roll", TRANSFERS).is_empty());
-    assert_eq!(f.balances()?, money_before);
+    check!(f.rows("roll", TRANSFERS).is_empty());
+    check_eq!(f.balances()?, money_before);
     let (writes, install) = prepared.into_parts();
     let mut acknowledged = offered.clone();
     retain_writes(&mut acknowledged.disk, &writes)?;
@@ -95,18 +113,18 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
     // receive installation; no synthetic native receipt is added to the image.
     let mut cold = f.reboot(&acknowledged)?;
     assert_title(&cold, charter, BUYER)?;
-    assert_eq!(current_generation(&cold)?, 2);
-    assert!(paid_holdings::observe(&mut cold, GOD, 1, None)?.is_err());
+    check_eq!(current_generation(&cold)?, 2);
+    check!(paid_holdings::observe(&mut cold, GOD, 1, None)?.is_err());
     let acquired = paid_holdings::own(&mut cold, BUYER, 1)?;
-    assert_eq!(acquired.charter(), original.charter());
-    assert_eq!(paid_holdings::own(&mut cold, BUYER, 2)?, paid);
-    assert!(
+    check_eq!(acquired.charter(), original.charter());
+    check_eq!(paid_holdings::own(&mut cold, BUYER, 2)?, paid);
+    check!(
         immutable(&cold) == immutable_before,
         "title sale changed immutable mind history"
     );
     retain_writes(&mut f.disk, &writes)?;
     f.engine.install_composed_action(install)?;
-    assert_eq!(f.balances()?, cold.balances()?);
+    check_eq!(f.balances()?, cold.balances()?);
     assert_title(&f, charter, BUYER)?;
     let actual = one(f.rows("roll", TRANSFERS))?;
     let native = actual
@@ -118,18 +136,24 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
     f.economy()?
         .charter_transfer_receipt_audit()
         .verify(&native)?;
-    assert_eq!(native.offer, token(START));
-    assert_eq!(native.commit, token(START + 1));
-    assert_eq!(native.price, Amount::from_minor(1));
-    assert_eq!(
+    check_eq!(native.offer, token(START));
+    check_eq!(native.commit, token(START + 1));
+    check_eq!(native.price, Amount::from_minor(1));
+    check_eq!(
         f.balances()?.first().ok_or("seller balance")?.0.minor(),
         money_before.first().ok_or("seller balance")?.0.minor() + 1
     );
-    assert_eq!(
+    check_eq!(
         f.balances()?.get(2).ok_or("buyer balance")?.0.minor(),
         money_before.get(2).ok_or("buyer balance")?.0.minor() - 1
     );
-    assert!(signed(&mut f.engine, ACCEPT, BUYER, START + 2, accept).is_err());
+    check!(crate::test_checks::refused(signed(
+        &mut f.engine,
+        ACCEPT,
+        BUYER,
+        START + 2,
+        accept
+    ))?);
     let after_sale = f.snapshot();
     let now = f.engine.world.now();
     f.engine.world.set_now(
@@ -139,33 +163,32 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
             .ok_or("UTC lower bound")?,
     );
     let (_, next_payout, _) = consideration(&f.engine, charter, GOD)?;
-    assert!(
-        signed(
+    check!(
+        crate::test_checks::refused(signed(
             &mut f.engine,
             OFFER,
             BUYER,
             START + 3,
             offer_params(charter, GOD, next_payout.id)
-        )
-        .is_err(),
+        ))?,
         "backward UTC published an offer before the actual acquisition receipt"
     );
-    assert!(f.disk == after_sale.disk);
+    check!(f.disk == after_sale.disk);
     f.engine.world.set_now(now);
     f.transfer_charter(charter, GOD, START + 4)?;
-    assert_eq!(current_generation(&f)?, 3);
+    check_eq!(current_generation(&f)?, 3);
     assert_title(&f, charter, GOD)?;
     let mut cold = f.reboot(&f.snapshot())?;
-    assert_eq!(current_generation(&cold)?, 3);
-    assert_eq!(
+    check_eq!(current_generation(&cold)?, 3);
+    check_eq!(
         paid_holdings::own(&mut cold, GOD, 1)?.charter(),
         original.charter()
     );
-    assert_eq!(paid_holdings::own(&mut cold, BUYER, 2)?, paid);
-    assert!(immutable(&cold) == immutable_before);
+    check_eq!(paid_holdings::own(&mut cold, BUYER, 2)?, paid);
+    check!(immutable(&cold) == immutable_before);
     let roots_after = cold.roots()?;
     for (key, value) in roots_before {
-        assert_eq!(roots_after.get(&key), Some(&value));
+        check_eq!(roots_after.get(&key), Some(&value));
     }
     for mode in 0..5 {
         let mut corrupt = cold.snapshot();
@@ -208,10 +231,10 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
                 .find(|(_, v)| v.pointer("/family/id") == Some(&json!(TRANSFERS)))
                 .map(|(k, _)| k.clone())
                 .ok_or("actual transfer")?;
-            assert!(corrupt.disk.remove(&key).is_some());
+            check!(corrupt.disk.remove(&key).is_some());
         }
-        assert!(
-            base.reboot(&corrupt).is_err(),
+        check!(
+            crate::test_checks::refused(base.reboot(&corrupt))?,
             "cold charter ownership lost its paired actual cause"
         );
     }

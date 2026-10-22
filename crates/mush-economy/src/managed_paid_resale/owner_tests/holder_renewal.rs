@@ -69,14 +69,14 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
         require(&cold, &basis, route)?;
         let mut bad = basis;
         bad.acceptance = token(99);
-        assert!(require(&f, &bad, route).is_err());
+        check!(require(&f, &bad, route).is_err());
         bad = basis;
         bad.ownership.generation += 1;
-        assert!(require(&f, &bad, route).is_err());
+        check!(require(&f, &bad, route).is_err());
         bad = basis;
         bad.ownership.operation = token(98);
-        assert!(require(&f, &bad, route).is_err());
-        assert!(require(&f, &basis, PaidBirthRouteV1::Legacy).is_err());
+        check!(require(&f, &bad, route).is_err());
+        check!(require(&f, &basis, PaidBirthRouteV1::Legacy).is_err());
         let book = &f.state().fold.paid_resale_receipts;
         let at = f.world.world().world_ic_now();
         for (licence, buyer, charter, predecessor, operation) in [
@@ -85,7 +85,7 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
             (1, f.buyer, GOD, 1, token(1)),
             (1, f.buyer, f.shell, 1, token(3)),
         ] {
-            assert!(
+            check!(
                 basis
                     .require_origin(
                         book,
@@ -103,7 +103,7 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
         }
         let mut earlier = at.clone();
         earlier.at -= 1;
-        assert!(
+        check!(
             basis
                 .require_origin(
                     book,
@@ -118,7 +118,7 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
                 )
                 .is_err()
         );
-        assert!(
+        check!(
             basis
                 .require_origin(
                     book,
@@ -133,7 +133,7 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
                 )
                 .is_err()
         );
-        assert!(
+        check!(
             basis
                 .require_origin(
                     &book::PaidResaleBook::default(),
@@ -156,7 +156,7 @@ fn holder_renewal_origin_requires_actual_settlement_and_exact_buyer_and_generati
 fn holder_renewal_origin_distinguishes_actual_pending_refund_and_settlement() -> Result {
     for settle in [false, true] {
         let mut f = accepted(PaidResaleModeV1::Pending, PaidBirthRouteV1::Entitlement)?;
-        assert!(require(&f, &holder_basis(&f)?, PaidBirthRouteV1::Entitlement).is_err());
+        check!(require(&f, &holder_basis(&f)?, PaidBirthRouteV1::Entitlement).is_err());
         let reason = if settle {
             PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 }
         } else {
@@ -175,12 +175,12 @@ fn holder_renewal_origin_distinguishes_actual_pending_refund_and_settlement() ->
         let prepared = f.terminal(3, reason)?;
         f.publish(action, 3, prepared)?;
         let basis = holder_basis(&f)?;
-        assert_eq!(
+        check_eq!(
             require(&f, &basis, PaidBirthRouteV1::Entitlement).is_ok(),
             settle
         );
         let cold = f.cold(f.boot.clone())?;
-        assert_eq!(
+        check_eq!(
             require(&cold, &basis, PaidBirthRouteV1::Entitlement).is_ok(),
             settle
         );

@@ -24,7 +24,7 @@ fn wallet(w: &PlayerWorld, actor: ObjId) -> TestResult<WalletId> {
             && a.status == AccountStatus::Active
     });
     let id = rows.next().ok_or("actual wallet")?.id;
-    assert!(rows.next().is_none(), "actual wallet is unique");
+    check!(rows.next().is_none(), "actual wallet is unique");
     Ok(id)
 }
 fn signed_action(
@@ -67,7 +67,7 @@ fn signed_action(
         },
     )?;
     let (actual, request, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     let (prepared, _) = w
         .engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &request, token(n))?;
@@ -310,12 +310,24 @@ pub(super) async fn exercise(
                     out,
                 )?;
                 assert!(
-                    resale(&mut probe, parent.licence(), BUYER, GOD, N + 21).is_err(),
+                    crate::test_checks::is_refusal(resale(
+                        &mut probe,
+                        parent.licence(),
+                        BUYER,
+                        GOD,
+                        N + 21
+                    )),
                     "parent resold under a staged qualification"
                 );
             } else {
                 assert!(
-                    resale(&mut probe, parent.licence(), BUYER, GOD, N + 21).is_err(),
+                    crate::test_checks::is_refusal(resale(
+                        &mut probe,
+                        parent.licence(),
+                        BUYER,
+                        GOD,
+                        N + 21
+                    )),
                     "parent resold under a prepared qualification"
                 );
                 drop((prepared, out));
@@ -352,7 +364,7 @@ pub(super) async fn exercise(
                 }
             }
             assert!(
-                boot_all(f, &bad).is_err(),
+                crate::test_checks::is_refusal(boot_all(f, &bad)),
                 "missing/crossed captured holder must refuse cold reconstruction"
             );
         }
@@ -420,17 +432,14 @@ async fn source_fork_history(
             &before
         );
         assert!(rows(&disk(&restored), "roll", "roll_mind_draft_parent").contains(&selector));
-        assert!(
-            signed_action(
-                &mut restored,
-                "roll",
-                "fork_paid_mind",
-                BUYER,
-                N + 104,
-                json!({"parent_licence":parent,"name":"lost-parent-acquisition"})
-            )
-            .is_err()
-        );
+        assert!(crate::test_checks::is_refusal(signed_action(
+            &mut restored,
+            "roll",
+            "fork_paid_mind",
+            BUYER,
+            N + 104,
+            json!({"parent_licence":parent,"name":"lost-parent-acquisition"})
+        )));
         for mode in ["missing", "crossed", "earlier"] {
             let mut bad = forked.clone();
             let row = bad
@@ -459,7 +468,7 @@ async fn source_fork_history(
                 }
             }
             assert!(
-                boot_all(f, &bad).is_err(),
+                crate::test_checks::is_refusal(boot_all(f, &bad)),
                 "source capture must retain exact accepted ownership"
             );
         }

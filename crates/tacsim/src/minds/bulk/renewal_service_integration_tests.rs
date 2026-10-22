@@ -60,18 +60,18 @@ fn next(
         selected = world.engine.take_observed_authoritative_submit();
     }
     let driven = selected.ok_or("actual renewal selector")?;
-    assert!(driven.is_observed());
+    check!(driven.is_observed());
     let (request, proof) = driven.into_parts();
-    assert_eq!(request.actor, actor);
-    assert_eq!(request.action.key().owner.as_str(), "market");
-    assert_eq!(request.action.key().id.as_str(), expected);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
+    check_eq!(request.actor, actor);
+    check_eq!(request.action.key().owner.as_str(), "market");
+    check_eq!(request.action.key().id.as_str(), expected);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
     let proof = *proof
         .ok_or("runtime proof")?
         .downcast::<Arc<AtomicBool>>()
         .map_err(|_| "proof type")?;
-    assert!(!proof.load(Ordering::Acquire));
+    check!(!proof.load(Ordering::Acquire));
     Ok((request, proof))
 }
 fn none(world: &mut PlayerWorld) {
@@ -117,7 +117,7 @@ fn land(world: &mut PlayerWorld, request: &AuthoritativeSubmit, number: u128) ->
         },
     )?;
     let (action, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(action, request.action);
+    check_eq!(action, request.action);
     let before = balances(world)?;
     let (prepared, _) = world
         .engine
@@ -126,7 +126,7 @@ fn land(world: &mut PlayerWorld, request: &AuthoritativeSubmit, number: u128) ->
             &resolved,
             token(number),
         )?;
-    assert_eq!(balances(world)?, before, "prepare is inert");
+    check_eq!(balances(world)?, before, "prepare is inert");
     let (writes, install) = prepared.into_parts();
     apply(world, &writes, install)
 }
@@ -148,7 +148,7 @@ fn tick_later(world: &mut PlayerWorld) -> TestResult {
 fn status(world: &mut PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult<String> {
     let answer = world.say(actor, &format!("@mindrenewal/status {}", id.get()))?;
     let text = PlayerWorld::private_text(&answer, actor);
-    assert!(
+    check!(
         !text.contains(SOURCE) && !text.contains("this.landed"),
         "status is source-free"
     );
@@ -163,9 +163,9 @@ fn closed(
     let RenewalStateV1::UnfundedServiceClosed { closure } = row.state() else {
         return Err("actual service closure absent".into());
     };
-    assert_eq!(closure.reason(), reason);
-    assert_eq!(closure.actor(), GOD);
-    assert_eq!(closure.action().key().id.as_str(), SERVICE_CLOSE);
+    check_eq!(closure.reason(), reason);
+    check_eq!(closure.actor(), GOD);
+    check_eq!(closure.action().key().id.as_str(), SERVICE_CLOSE);
     Ok(())
 }
 
@@ -180,10 +180,10 @@ pub(super) fn exercise(
     let initial = licence(&world, birth.licence())?;
     let old_term = term(&world, initial.id(), initial.term())?;
     let old_economics = economics(&world, initial.id(), initial.term())?;
-    assert!(status(&mut world, holder, birth.licence())?.contains("No renewal offer"));
+    check!(status(&mut world, holder, birth.licence())?.contains("No renewal offer"));
     let foreign = if holder == GOD { BUYER } else { GOD };
-    assert!(!status(&mut world, foreign, birth.licence())?.contains("Price:"));
-    assert!(
+    check!(!status(&mut world, foreign, birth.licence())?.contains("Price:"));
+    check!(
         super::super::prepare(
             &mut world,
             "market",
@@ -200,25 +200,25 @@ pub(super) fn exercise(
     none(&mut world);
     due(&mut world, birth)?;
     let (draft, unknown) = next(&mut world, holder, DRAFT)?;
-    assert_eq!(draft.parameters, json!({"licence":birth.licence().get()}));
+    check_eq!(draft.parameters, json!({"licence":birth.licence().get()}));
     tick_later(&mut world)?;
     none(&mut world);
-    assert_eq!(balances(&world)?, old_money);
+    check_eq!(balances(&world)?, old_money);
     land(&mut world, &draft, SERVICE_START)?;
-    assert!(!unknown.load(Ordering::Acquire));
+    check!(!unknown.load(Ordering::Acquire));
     tick_later(&mut world)?;
     none(&mut world);
-    assert!(matches!(
+    check!(matches!(
         paired(&world, token(SERVICE_START))?.state(),
         RenewalStateV1::Drafted {}
     ));
     let text = status(&mut world, holder, birth.licence())?;
-    assert!(
+    check!(
         text.contains("explicit acceptance")
             && text.contains("Price:")
             && text.contains("parent royalties:")
     );
-    assert_eq!(
+    check_eq!(
         balances(&world)?,
         old_money,
         "automatic offer did not debit"
@@ -232,8 +232,8 @@ pub(super) fn exercise(
     tick_later(&mut world)?;
     none(&mut world);
     land(&mut world, &fund, SERVICE_START + 1)?;
-    assert!(!fund_unknown.load(Ordering::Acquire));
-    assert!(matches!(
+    check!(!fund_unknown.load(Ordering::Acquire));
+    check!(matches!(
         paired(&world, token(SERVICE_START))?.state(),
         RenewalStateV1::Funded { .. }
     ));
@@ -247,7 +247,7 @@ pub(super) fn exercise(
         .at;
     advance(&mut world, expiry)?;
     none(&mut world);
-    assert_eq!(
+    check_eq!(
         balances(&world)?,
         held,
         "Unknown Grant does not authorize Refund or a second debit"
@@ -255,11 +255,11 @@ pub(super) fn exercise(
     grant_unknown.store(true, Ordering::Release);
     tick_later(&mut world)?;
     let (refund, _) = next(&mut world, holder, REFUND)?;
-    assert_ne!(grant.action, refund.action);
+    check_ne!(grant.action, refund.action);
     land(&mut world, &refund, SERVICE_START + 2)?;
     tick_later(&mut world)?;
     none(&mut world);
-    assert_eq!(balances(&world)?, old_money);
+    check_eq!(balances(&world)?, old_money);
     assert_current_unchanged(&world, &initial, &old_term, &old_economics)?;
     let end = capture(&world, &disk(&world));
     let _ = PlayerWorld::boot_renewal_service(f, &end)?;
@@ -278,7 +278,7 @@ pub(super) fn exercise(
     land(&mut healthy, &grant, SERVICE_START + 12)?;
     tick_later(&mut healthy)?;
     none(&mut healthy);
-    assert!(matches!(
+    check!(matches!(
         paired(&healthy, token(SERVICE_START))?.state(),
         RenewalStateV1::Granted { .. }
     ));
@@ -294,16 +294,16 @@ pub(super) fn exercise(
     land(&mut declined, &decline, SERVICE_START + 13)?;
     tick_later(&mut declined)?;
     none(&mut declined);
-    assert!(matches!(
+    check!(matches!(
         paired(&declined, token(SERVICE_START))?.state(),
         RenewalStateV1::UnfundedClosed { .. }
     ));
-    assert_eq!(balances(&declined)?, old_money);
+    check_eq!(balances(&declined)?, old_money);
 
     // Ordinary five-action retained offer upgrades to optional service cleanup
     // without changing the original offer or inferring money consent.
     let mut old = due_world(f, saved, birth)?;
-    assert!(
+    check!(
         super::super::action(&old, "market", SERVICE_CLOSE, 1).is_err(),
         "ordinary five-action composition has no service authority"
     );
@@ -327,7 +327,7 @@ pub(super) fn exercise(
         }
         fire(&mut close)?;
         let (request, proof) = next(&mut close, GOD, SERVICE_CLOSE)?;
-        assert_eq!(
+        check_eq!(
             request.parameters,
             json!({}),
             "service offer has no public parameters"
@@ -347,11 +347,15 @@ pub(super) fn exercise(
                 }
                 _ => wrong.actor = BUYER,
             }
-            assert!(
-                land(&mut close, &wrong, SERVICE_START + 80 + corrupt).is_err(),
+            check!(
+                crate::test_checks::refused(land(
+                    &mut close,
+                    &wrong,
+                    SERVICE_START + 80 + corrupt
+                ))?,
                 "only the actual private intent can publish cleanup"
             );
-            assert_eq!(balances(&close)?, unchanged);
+            check_eq!(balances(&close)?, unchanged);
         }
         tick_later(&mut close)?;
         none(&mut close);
@@ -364,9 +368,9 @@ pub(super) fn exercise(
             proof.store(true, Ordering::Release);
             tick_later(&mut close)?;
             let (retry, _) = next(&mut close, GOD, SERVICE_CLOSE)?;
-            assert_eq!(retry.key, request.key);
-            assert_eq!(retry.action, request.action);
-            assert_eq!(retry.parameters, request.parameters);
+            check_eq!(retry.key, request.key);
+            check_eq!(retry.action, request.action);
+            check_eq!(retry.parameters, request.parameters);
             retry
         } else {
             request
@@ -377,18 +381,18 @@ pub(super) fn exercise(
             SERVICE_START + 21 + u128::from(invalidated),
         )?;
         closed(&close, token(SERVICE_START + 20), reason)?;
-        assert_eq!(proof.load(Ordering::Acquire), invalidated);
-        assert_eq!(
+        check_eq!(proof.load(Ordering::Acquire), invalidated);
+        check_eq!(
             market_operation(&close, token(SERVICE_START + 20))?.offer(),
             &original
         );
-        assert_eq!(balances(&close)?, old_money);
+        check_eq!(balances(&close)?, old_money);
         tick_later(&mut close)?;
         none(&mut close);
         let ended = capture(&close, &disk(&close));
         let _ = PlayerWorld::boot_renewal_service(f, &ended)?;
-        assert!(
-            PlayerWorld::boot_renewals(f, &ended).is_err(),
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &ended))?,
             "five-action composition cannot erase service proof"
         );
         if !invalidated {
@@ -397,18 +401,18 @@ pub(super) fn exercise(
                 &format!("@mindrenewal/retry {}", birth.licence().get()),
             )?;
             let (retry, _) = next(&mut close, holder, DRAFT)?;
-            assert_eq!(
+            check_eq!(
                 retry.parameters,
                 json!({"previous_operation":token(SERVICE_START+20)})
             );
             land(&mut close, &retry, SERVICE_START + 24)?;
             tick_later(&mut close)?;
             none(&mut close);
-            assert!(matches!(
+            check!(matches!(
                 paired(&close, token(SERVICE_START + 24))?.state(),
                 RenewalStateV1::Drafted {}
             ));
-            assert_eq!(
+            check_eq!(
                 balances(&close)?,
                 old_money,
                 "retry is an unfunded offer only"
@@ -425,7 +429,7 @@ pub(in super::super) fn unavailable_buyer(
     saved: &Durable,
     birth: &EntitlementAllocationV1,
 ) -> TestResult {
-    assert_eq!(birth.holder(), BUYER);
+    check_eq!(birth.holder(), BUYER);
     let mut world = branch(f, saved)?;
     due(&mut world, birth)?;
     let (draft, _) = next(&mut world, BUYER, DRAFT)?;
@@ -454,7 +458,7 @@ pub(in super::super) fn unavailable_buyer(
         token(SERVICE_START + 40),
         RenewalServiceCloseReason::DeadlineReached,
     )?;
-    assert_eq!(balances(&world)?, money);
+    check_eq!(balances(&world)?, money);
     let _ = PlayerWorld::boot_renewal_service(f, &capture(&world, &disk(&world)))?;
 
     let mut held = branch(f, &drafted)?;
@@ -473,8 +477,8 @@ pub(in super::super) fn unavailable_buyer(
         .insert(mush_core::Flags::GOING);
     advance(&mut held, expires)?;
     none(&mut held);
-    assert_eq!(balances(&held)?, funded);
-    assert!(matches!(
+    check_eq!(balances(&held)?, funded);
+    check!(matches!(
         paired(&held, token(SERVICE_START + 40))?.state(),
         RenewalStateV1::Funded { .. }
     ));
@@ -487,6 +491,6 @@ pub(in super::super) fn unavailable_buyer(
     tick_later(&mut held)?;
     let (refund, _) = next(&mut held, BUYER, REFUND)?;
     land(&mut held, &refund, SERVICE_START + 43)?;
-    assert_eq!(balances(&held)?, money);
+    check_eq!(balances(&held)?, money);
     Ok(())
 }

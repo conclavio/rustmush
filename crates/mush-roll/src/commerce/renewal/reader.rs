@@ -542,7 +542,7 @@ mod service_tests {
     #[test]
     fn service_reader_keeps_old_descriptor_and_own_wire_but_versions_inventory() -> TestResult {
         let manifest = manifest()?;
-        assert_eq!(
+        check_eq!(
             configured_descriptor(&manifest, false)?,
             descriptor(&manifest)?
         );
@@ -552,20 +552,20 @@ mod service_tests {
             OwnerId::new("roll")?,
             configured_descriptor(&manifest, true)?,
         )?;
-        assert_eq!(old.key(), service.key());
-        assert_eq!(old.version(), 1);
-        assert_eq!(service.version(), 2);
-        assert_ne!(old.digest(), service.digest());
+        check_eq!(old.key(), service.key());
+        check_eq!(old.version(), 1);
+        check_eq!(service.version(), 2);
+        check_ne!(old.digest(), service.digest());
         let licence = LicenceId::new(7)?;
-        assert_eq!(
+        check_eq!(
             serde_json::to_value(RenewalRequest::own(licence))?,
             serde_json::json!({"licence":licence})
         );
-        assert_eq!(
+        check_eq!(
             serde_json::to_value(RenewalRequest::inventory(None))?,
             serde_json::json!({"inventory_after":null})
         );
-        assert_eq!(
+        check_eq!(
             serde_json::to_value(RenewalRequest::status(licence))?,
             serde_json::json!({"status_licence":licence})
         );

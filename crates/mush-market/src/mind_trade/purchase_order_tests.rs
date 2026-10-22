@@ -155,7 +155,7 @@ fn actual_paid_writer_composes_in_both_owner_orders_without_business_state() -> 
         } else {
             vec!["tacsim", "economy", "roll", "market"]
         };
-        assert_eq!(*calls.lock().map_err(|_| "trace poisoned")?, expected);
+        check_eq!(*calls.lock().map_err(|_| "trace poisoned")?, expected);
         let definitions = engine.registry.definitions().ok_or("definitions")?;
         for action in purchase.actions()? {
             definitions.get_exact(&action)?;
@@ -166,12 +166,12 @@ fn actual_paid_writer_composes_in_both_owner_orders_without_business_state() -> 
                 .get_exact(&action)?;
         }
         if let Some(prior) = fingerprint {
-            assert_eq!(definitions.fingerprint(), prior);
+            check_eq!(definitions.fingerprint(), prior);
         } else {
             fingerprint = Some(definitions.fingerprint());
         }
-        assert!(engine.action_state().is_empty());
-        assert!(!engine.action_state().has_prepared());
+        check!(engine.action_state().is_empty());
+        check!(!engine.action_state().has_prepared());
         // Composition is not commercial boot, payment, or licence authority.
         // Every actual registered phase still refuses against untouched state.
         for (n, action) in purchase.actions()?.iter().enumerate() {
@@ -180,7 +180,7 @@ fn actual_paid_writer_composes_in_both_owner_orders_without_business_state() -> 
             } else {
                 json!({"operation":token(40)})
             };
-            assert!(
+            check!(
                 engine
                     .prepare_registered_composed_authoritative_action(
                         action,
@@ -189,9 +189,9 @@ fn actual_paid_writer_composes_in_both_owner_orders_without_business_state() -> 
                     )
                     .is_err()
             );
-            assert!(engine.action_state().is_empty());
-            assert!(!engine.action_state().has_prepared());
-            assert!(!engine.action_state().reservation_lost());
+            check!(engine.action_state().is_empty());
+            check!(!engine.action_state().has_prepared());
+            check!(!engine.action_state().reservation_lost());
         }
     }
     Ok(())
@@ -203,9 +203,9 @@ fn refused_after_all_registration(wiring: Wiring, expected: &str) -> TestResult 
         let error = result
             .err()
             .ok_or("invalid composition unexpectedly succeeded")?;
-        assert!(error.to_string().contains("definition registry"), "{error}");
-        assert!(error.to_string().contains(expected), "{error}");
-        assert_eq!(calls.lock().map_err(|_| "trace poisoned")?.len(), 4);
+        check!(error.to_string().contains("definition registry"), "{error}");
+        check!(error.to_string().contains(expected), "{error}");
+        check_eq!(calls.lock().map_err(|_| "trace poisoned")?.len(), 4);
     }
     Ok(())
 }
@@ -227,7 +227,7 @@ fn actual_paid_writer_crossed_participants_refuse_before_hydration_in_both_order
         let error = result
             .err()
             .ok_or("crossed composition unexpectedly succeeded")?;
-        assert!(
+        check!(
             error
                 .to_string()
                 .contains("paid writer composition differs"),
@@ -235,14 +235,14 @@ fn actual_paid_writer_crossed_participants_refuse_before_hydration_in_both_order
         );
         let names = calls.lock().map_err(|_| "trace poisoned")?;
         if market_first {
-            assert!(error.to_string().contains("definition registry"), "{error}");
-            assert_eq!(
+            check!(error.to_string().contains("definition registry"), "{error}");
+            check_eq!(
                 names.len(),
                 4,
                 "deferred cell checked after all registrations"
             );
         } else {
-            assert_eq!(*names, vec!["tacsim", "economy", "roll"]);
+            check_eq!(*names, vec!["tacsim", "economy", "roll"]);
         }
     }
     Ok(())

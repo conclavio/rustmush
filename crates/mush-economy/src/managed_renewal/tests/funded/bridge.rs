@@ -43,7 +43,7 @@ fn ordinary() -> mush_testkit::TestWorld {
 }
 #[test]
 fn actual_default_boot_proves_absence_without_new_serialized_history() -> TestResult {
-    assert!(
+    check!(
         EconomyStore::default()
             .require_no_renewal_history()
             .is_err()
@@ -54,18 +54,18 @@ fn actual_default_boot_proves_absence_without_new_serialized_history() -> TestRe
         .module_state::<EconomyStore>()
         .ok_or("store")?;
     state.require_no_renewal_history()?;
-    assert!(
+    check!(
         state.renewal_audit().is_err(),
         "disabled empty boot is not combined renewal activation"
     );
-    assert!(
+    check!(
         serde_json::to_value(&state.fold)?
             .get("renewal_receipts")
             .is_none()
     );
     let mut frozen = state.clone();
     frozen.frozen = true;
-    assert!(frozen.require_no_renewal_history().is_err());
+    check!(frozen.require_no_renewal_history().is_err());
     Ok(())
 }
 #[test]
@@ -88,8 +88,8 @@ fn disabled_actual_boot_refuses_retained_offer_before_any_healing_write() -> Tes
         )]))
         .err()
         .ok_or("retained renewal unexpectedly booted")?;
-    assert!(error.to_string().contains("complete recovery refused"));
-    assert!(world.take_module_ops().is_empty());
+    check!(error.to_string().contains("complete recovery refused"));
+    check!(world.take_module_ops().is_empty());
     Ok(())
 }
 #[test]
@@ -143,17 +143,17 @@ fn complete_boot_helper_joins_all_five_actual_owner_states() -> TestResult {
             &docs,
             true,
         )?;
-        assert!(
+        check!(
             contracts.is_empty(),
             "renewals must bypass legacy contract healing"
         );
-        assert!(snapshot.contract(req.contract) == Some(&expected));
-        assert_eq!(book.operations().len(), 1);
-        assert_eq!(
+        check!(snapshot.contract(req.contract) == Some(&expected));
+        check_eq!(book.operations().len(), 1);
+        check_eq!(
             fold.renewal_receipts.receipts()?.count(),
             usize::from((1..4).contains(&phase))
         );
-        assert!(book.combined_verified());
+        check!(book.combined_verified());
     }
     Ok(())
 }
@@ -216,7 +216,7 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
             _ => unreachable!(),
         }
         let mut snapshot = EconomySnapshot::new();
-        assert!(
+        check!(
             bridge::recover(
                 &mut fold,
                 &mut snapshot,
@@ -228,7 +228,7 @@ fn boot_helper_rejects_independent_missing_crossed_and_extra_images() -> TestRes
             .is_err(),
             "independent recovery corruption {case}"
         );
-        assert_eq!(snapshot.contracts().count(), 0);
+        check_eq!(snapshot.contracts().count(), 0);
     }
     Ok(())
 }
@@ -254,7 +254,7 @@ fn disabled_inventory_refuses_every_actual_evidence_source() -> TestResult {
         if case != 4 {
             fold.journal_holds.clear();
         }
-        assert!(
+        check!(
             bridge::recover(
                 &mut fold,
                 &mut EconomySnapshot::new(),
@@ -287,12 +287,12 @@ fn renewal_checkpoint_coverage_cannot_disappear_in_disabled_mode() -> TestResult
             plan_hash: tx.plan_hash.iter().map(|b| format!("{b:02x}")).collect(),
         })
         .collect::<Vec<_>>();
-    assert!(bridge::checkpoint_complete(&fold, &rows, true));
-    assert!(!bridge::checkpoint_complete(&fold, &rows, false));
-    assert!(!bridge::checkpoint_complete(&fold, &[], true));
+    check!(bridge::checkpoint_complete(&fold, &rows, true));
+    check!(!bridge::checkpoint_complete(&fold, &rows, false));
+    check!(!bridge::checkpoint_complete(&fold, &[], true));
     let empty = crate::fold::FoldState::default();
-    assert!(!bridge::checkpoint_complete(&empty, &rows, false));
-    assert!(bridge::checkpoint_complete(&empty, &[], false));
-    assert!(!bridge::checkpoint_complete(&empty, &[], true));
+    check!(!bridge::checkpoint_complete(&empty, &rows, false));
+    check!(bridge::checkpoint_complete(&empty, &[], false));
+    check!(!bridge::checkpoint_complete(&empty, &[], true));
     Ok(())
 }

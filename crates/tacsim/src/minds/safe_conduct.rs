@@ -116,16 +116,16 @@ impl Harness {
             },
         });
         let measured = self.runner.take_stats().pop().ok_or("actual measurement")?;
-        assert!(
+        check!(
             result.fault.is_none(),
             "source fault {:?}; operations={} fees={}",
             result.fault,
             measured.ops,
             measured.fee
         );
-        assert!(measured.ops + measured.fee <= 3000);
-        assert!(result.intents.len() <= 16);
-        assert!(
+        check!(measured.ops + measured.fee <= 3000);
+        check!(result.intents.len() <= 16);
+        check!(
             mush_mind::memory::decode(&result.memory)
                 .ok_or("canonical flat memory")?
                 .len()
@@ -206,27 +206,27 @@ fn arms(result: &ThinkResult) -> bool {
 #[test]
 fn exact_safe_conduct_content_is_distinct_and_validated_without_certification() -> TestResult {
     let manifest: serde_json::Value = serde_json::from_str(MANIFEST)?;
-    assert_eq!(
+    check_eq!(
         manifest.get("source_sha256").and_then(|v| v.as_str()),
         Some(crate::arena::digest_text(&Sha256::digest(SOURCE.as_bytes()).into()).as_str())
     );
-    assert_eq!(
+    check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
         Some(2)
     );
-    assert_eq!(
+    check_eq!(
         manifest.get("envelope_sha256").and_then(|v| v.as_str()),
         Some(crate::arena::digest_text(&Sha256::digest(ENVELOPE.as_bytes()).into()).as_str())
     );
-    assert_eq!(
+    check_eq!(
         manifest.get("status").and_then(|v| v.as_str()),
         Some("unfiled_role_content")
     );
     let envelope: Envelope = serde_json::from_str(ENVELOPE)?;
     super::authoring::RevisionRules.validate(SOURCE, &envelope)?;
-    assert_eq!(envelope.declared_class, "II");
-    assert_eq!(envelope.mind_abi, super::MIND_ABI);
-    assert_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
+    check_eq!(envelope.declared_class, "II");
+    check_eq!(envelope.mind_abi, super::MIND_ABI);
+    check_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
     for forbidden in [
         "stock::think",
         "stock::hunt",
@@ -236,12 +236,12 @@ fn exact_safe_conduct_content_is_distinct_and_validated_without_certification() 
         "cargo",
         "World",
     ] {
-        assert!(
+        check!(
             !SOURCE.contains(forbidden),
             "unexpected source surface {forbidden}"
         );
     }
-    assert!(
+    check!(
         SOURCE != super::STANDARD_RHAI,
         "independent authored source"
     );
@@ -256,26 +256,26 @@ fn escort_and_transit_apply_different_current_public_orders() -> TestResult {
     let escort = Harness::new("Escort")?;
     let carrier = Harness::new("Transit")?;
     let defended = escort.think(support(), &[], 0)?;
-    assert!(has_goal(&defended, MotorGoal::Hold));
-    assert!(defended.intents.iter().any(|kind| matches!(kind,
+    check!(has_goal(&defended, MotorGoal::Hold));
+    check!(defended.intents.iter().any(|kind| matches!(kind,
         IntentKind::Condition(Arming::Arm(rule)) if rule.target == SlotTarget::Contact { id: fixture::HOSTILE })));
-    assert!(defended.intents.contains(&IntentKind::Lock {
+    check!(defended.intents.contains(&IntentKind::Lock {
         contact: fixture::HOSTILE
     }));
     let waiting = carrier.think(support(), &[], 0)?;
-    assert!(has_goal(&waiting, MotorGoal::Hold));
-    assert!(!arms(&waiting));
+    check!(has_goal(&waiting, MotorGoal::Hold));
+    check!(!arms(&waiting));
     let moving = carrier.think(transit(), &[], 1)?;
-    assert!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
-    assert!(
+    check!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
+    check!(
         moving
             .intents
             .iter()
             .all(|kind| kind.channel_required() != Channel::Fire)
     );
     let waiting = escort.think(transit(), &[], 1)?;
-    assert!(has_goal(&waiting, MotorGoal::Hold));
-    assert!(!arms(&waiting));
+    check!(has_goal(&waiting, MotorGoal::Hold));
+    check!(!arms(&waiting));
     Ok(())
 }
 
@@ -328,8 +328,8 @@ fn escort_refuses_missing_stale_foreign_or_unidentified_charge_plots() -> TestRe
             }
         }
         let result = harness.think(view, &[], mode)?;
-        assert!(has_goal(&result, MotorGoal::Hold), "charge mode {mode}");
-        assert!(!arms(&result), "charge mode {mode}");
+        check!(has_goal(&result, MotorGoal::Hold), "charge mode {mode}");
+        check!(!arms(&result), "charge mode {mode}");
     }
     Ok(())
 }
@@ -359,15 +359,15 @@ fn escort_leash_precedes_engagement_and_never_chases_the_hostile() -> TestResult
     )
     .ok_or("public station")?;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(
+    check!(has_goal(
         &result,
         MotorGoal::Cell {
             x: expected.0,
             y: expected.1
         }
     ));
-    assert!(!arms(&result));
-    assert!(
+    check!(!arms(&result));
+    check!(
         !result
             .intents
             .iter()
@@ -382,8 +382,8 @@ fn escort_leash_precedes_engagement_and_never_chases_the_hostile() -> TestResult
     hostile.cell = Some((7, 0));
     hostile.range_m = 72;
     let result = harness.think(view, &[], 1)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!has_goal(&result, MotorGoal::Cell { x: 7, y: 0 }));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!has_goal(&result, MotorGoal::Cell { x: 7, y: 0 }));
     Ok(())
 }
 
@@ -393,8 +393,8 @@ fn transit_stops_only_for_current_visible_threat_and_resumes_order() -> TestResu
     let mut view = healthy(MindObjective::Advance { to: (6, 4) });
     view.weapons.clear();
     let paused = harness.think(view.clone(), &[], 0)?;
-    assert!(has_goal(&paused, MotorGoal::Hold));
-    assert!(!arms(&paused));
+    check!(has_goal(&paused, MotorGoal::Hold));
+    check!(!arms(&paused));
     for mode in 0..4 {
         let mut gone = view.clone();
         let hostile = gone
@@ -409,8 +409,8 @@ fn transit_stops_only_for_current_visible_threat_and_resumes_order() -> TestResu
             _ => hostile.range_m = 301,
         }
         let result = harness.think(gone, &paused.memory, mode + 1)?;
-        assert!(has_goal(&result, MotorGoal::Cell { x: 6, y: 4 }));
-        assert!(
+        check!(has_goal(&result, MotorGoal::Cell { x: 6, y: 4 }));
+        check!(
             result
                 .intents
                 .iter()
@@ -436,16 +436,16 @@ fn absent_expired_orders_and_hold_fire_never_authorize_engagement() -> TestResul
                 view.order.as_mut().ok_or("order")?.expires_ms = view.t_ms;
             }
             let result = harness.think(view, &[], 0)?;
-            assert!(has_goal(&result, MotorGoal::Hold));
-            assert!(!arms(&result));
+            check!(has_goal(&result, MotorGoal::Hold));
+            check!(!arms(&result));
         }
     }
     let harness = Harness::new("Escort")?;
     let mut view = support();
     view.order.as_mut().ok_or("order")?.hold_fire = true;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!arms(&result));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!arms(&result));
     Ok(())
 }
 
@@ -478,14 +478,14 @@ fn transit_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult
         kind: IntentKind::Goal(goal),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     let mut counters = MotorCounters::default();
     arena.motor_step(fixture::UNIT, 5000, &mut counters);
     let mut actual = arena.mind_view(fixture::UNIT).ok_or("actual public view")?;
-    assert_eq!(
+    check_eq!(
         actual.motor.ok_or("actual motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
@@ -493,13 +493,13 @@ fn transit_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult
     let mut harness = Harness::new("Transit")?;
     harness.map = Arc::clone(&arena.definition);
     let stopped = harness.think(actual.clone(), &[], 0)?;
-    assert!(has_goal(&stopped, MotorGoal::Hold));
+    check!(has_goal(&stopped, MotorGoal::Hold));
     let hold = Intent {
         kind: IntentKind::Goal(MotorGoal::Hold),
         seq: 1,
         ..input
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -507,34 +507,34 @@ fn transit_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult
     let mut after_hold = arena.mind_view(fixture::UNIT).ok_or("after hold")?;
     after_hold.order = actual.order.clone();
     let waiting = harness.think(after_hold.clone(), &stopped.memory, 1)?;
-    assert!(
+    check!(
         has_goal(&waiting, MotorGoal::Hold),
         "HOLD removing a motor row must not erase retry delay"
     );
     after_hold.t_ms = 7000;
     let retry = harness.think(after_hold, &waiting.memory, 2)?;
-    assert!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry));
+    check!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry));
 
     // Land that retry through the unchanged native route solver. The same
     // enclosed destination really fails again; it must earn a new delay.
     arena.now_ms = 7000;
     let second_attempt = Intent { seq: 2, ..input };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_attempt, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     arena.motor_step(fixture::UNIT, 7000, &mut counters);
     let mut second_failure = arena.mind_view(fixture::UNIT).ok_or("second failure")?;
-    assert_eq!(
+    check_eq!(
         second_failure.motor.ok_or("second native motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
     second_failure.order = actual.order.clone();
     let second_stop = harness.think(second_failure, &retry.memory, 3)?;
-    assert!(has_goal(&second_stop, MotorGoal::Hold));
+    check!(has_goal(&second_stop, MotorGoal::Hold));
     let second_hold = Intent { seq: 3, ..hold };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -542,11 +542,11 @@ fn transit_actual_native_no_route_waits_then_reissues_exact_goal() -> TestResult
     let mut second_wait = arena.mind_view(fixture::UNIT).ok_or("second hold")?;
     second_wait.order = actual.order;
     let waiting_again = harness.think(second_wait.clone(), &second_stop.memory, 4)?;
-    assert!(has_goal(&waiting_again, MotorGoal::Hold));
+    check!(has_goal(&waiting_again, MotorGoal::Hold));
     second_wait.t_ms = 9000;
     let retry_again = harness.think(second_wait, &waiting_again.memory, 5)?;
-    assert!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry_again));
+    check!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry_again));
     Ok(())
 }
 
@@ -590,7 +590,7 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
         kind: IntentKind::Goal(MotorGoal::Cell { x: 3, y: 3 }),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -598,15 +598,15 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
     let mut view = arena
         .mind_view(fixture::UNIT)
         .ok_or("actual public arrival")?;
-    assert_eq!(
+    check_eq!(
         view.motor.ok_or("motor")?.outcome,
         Some(DriveOutcome::Arrived)
     );
     view.order = Some(order(MindObjective::Advance { to: (3, 3) }));
     let harness = Harness::new("Transit")?;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!arms(&result));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!arms(&result));
     for role in ["Escort", "Transit"] {
         let harness = Harness::new(role)?;
         let mut hurt = support();
@@ -623,8 +623,8 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
         // The original two-cell fixture zone cannot contain the motor's
         // complete arrival square. No boundary goal or firing is permitted.
         let narrow = harness.think(hurt.clone(), &[], 0)?;
-        assert!(has_goal(&narrow, MotorGoal::Hold));
-        assert!(!arms(&narrow));
+        check!(has_goal(&narrow, MotorGoal::Hold));
+        check!(!arms(&narrow));
         // Keep the positive own-hurt response on the minimum three-cell zone.
         // Actual Conduct scenario terrain and physical-entry acceptance stay
         // unchanged; this is only the small source unit probe's own map.
@@ -636,8 +636,8 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
             .ok_or("own zone")?
             .x1 = 2;
         let result = harness.think(hurt, &[], 0)?;
-        assert!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
-        assert!(!arms(&result));
+        check!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
+        check!(!arms(&result));
     }
     Ok(())
 }

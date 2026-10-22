@@ -44,9 +44,9 @@ pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
         json!({"operation":token(START+2)}),
     )?;
     let a = allocation(&w, START + 2)?;
-    assert!(matches!(a.phase(), PurchasePhase::Granted { .. }));
+    check!(matches!(a.phase(), PurchasePhase::Granted { .. }));
     let actual = term(&w, a.licence())?;
-    assert!(actual.terms().transferable());
+    check!(actual.terms().transferable());
     // Curator departure does not turn the House into a personal seller.
     command(
         &mut w,

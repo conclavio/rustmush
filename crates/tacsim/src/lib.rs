@@ -68,6 +68,14 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption for `panic_in_result_fn`, so a test or
+// fixture helper that returns `Result` checks with `check!`/`check_eq!`/
+// `check_ne!` — its asserts as early `Err` returns. Declared before every other
+// module because `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 /// 16b cut A: **the combat arena's core library** (doc 16 §3.1–§3.4, §4, §8).
 ///
 /// A library with no input and no output: `arena::Arena` holds a match's state

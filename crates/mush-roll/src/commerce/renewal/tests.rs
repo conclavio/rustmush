@@ -204,28 +204,28 @@ fn granted_birth(row: &RenewalOperationV1) -> TestResult<Birth> {
 fn strict_rows_reject_missing_null_duplicate_and_nested_unknown_fields() -> TestResult {
     let row = draft(&birth()?, 10, 20, RenewalAttemptV1::Automatic {})?;
     let raw = serde_json::to_vec(&row)?;
-    assert_eq!(RenewalOperationV1::decode(&raw)?, row);
+    check_eq!(RenewalOperationV1::decode(&raw)?, row);
     let repeated = String::from_utf8(raw)?.replacen("{", "{\"format\":1,", 1);
-    assert!(RenewalOperationV1::decode(repeated.as_bytes()).is_err());
+    check!(RenewalOperationV1::decode(repeated.as_bytes()).is_err());
     let mut value = serde_json::to_value(&row)?;
     value
         .get_mut("state")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("state")?
         .insert("allowed".into(), json!(true));
-    assert!(serde_json::from_value::<RenewalOperationV1>(value).is_err());
+    check!(serde_json::from_value::<RenewalOperationV1>(value).is_err());
     let head = RenewalHeadV1::for_operation(&closed(&row)?)?;
     let mut value = serde_json::to_value(&head)?;
-    assert_eq!(value.get("pending"), Some(&serde_json::Value::Null));
+    check_eq!(value.get("pending"), Some(&serde_json::Value::Null));
     value.as_object_mut().ok_or("head")?.remove("pending");
-    assert!(serde_json::from_value::<RenewalHeadV1>(value).is_err());
-    assert!(
+    check!(serde_json::from_value::<RenewalHeadV1>(value).is_err());
+    check!(
         serde_json::from_str::<RenewalAttemptV1>(
             r#"{"kind":"automatic","previous_operation":null}"#
         )
         .is_err()
     );
-    assert!(RenewalOperationV1::decode(&vec![b' '; MAX_OPERATION_BYTES + 1]).is_err());
+    check!(RenewalOperationV1::decode(&vec![b' '; MAX_OPERATION_BYTES + 1]).is_err());
     Ok(())
 }
 
@@ -265,7 +265,7 @@ fn closed_attempt_can_precede_exact_retry_grant_without_eternal_next_absence() -
         &terms,
         &economics,
     )?;
-    assert!(
+    check!(
         chain::verify(
             &current.licence,
             Some(&RenewalHeadV1::for_operation(&granted)?),
@@ -283,7 +283,7 @@ fn closed_attempt_can_precede_exact_retry_grant_without_eternal_next_absence() -
     wrong = serde_json::from_value(wire)?;
     let wrong_terms =
         BTreeMap::from([(b.term.generation(), &b.term), (wrong.generation(), &wrong)]);
-    assert!(
+    check!(
         chain::verify(
             &current.licence,
             Some(&RenewalHeadV1::for_operation(&granted)?),
@@ -322,7 +322,7 @@ fn retry_chain_rejects_branch_orphan_wrong_holder_and_automatic_repeat() -> Test
         &terms,
         &economics,
     )?;
-    assert!(
+    check!(
         chain::verify(
             &b.licence,
             Some(&head),
@@ -332,7 +332,7 @@ fn retry_chain_rejects_branch_orphan_wrong_holder_and_automatic_repeat() -> Test
         )
         .is_err()
     );
-    assert!(
+    check!(
         chain::check_draft(
             &b.licence,
             &draft(&b, 12, 40, RenewalAttemptV1::Automatic {})?,
@@ -343,12 +343,12 @@ fn retry_chain_rejects_branch_orphan_wrong_holder_and_automatic_repeat() -> Test
     );
     let mut wrong = retry.clone();
     wrong.binding.holder = ObjId(6);
-    assert!(chain::check_draft(&b.licence, &wrong, Some(&head), Some(&refund)).is_err());
+    check!(chain::check_draft(&b.licence, &wrong, Some(&head), Some(&refund)).is_err());
     let mut orphan = retry;
     orphan.attempt = RenewalAttemptV1::BuyerRetry {
         previous_operation: token(99),
     };
-    assert!(
+    check!(
         chain::verify(
             &b.licence,
             Some(&RenewalHeadV1::for_operation(&orphan)?),
@@ -396,8 +396,8 @@ fn current_generation_advances_without_rewriting_birth_or_historical_acquisition
         &terms,
         &economics,
     )?;
-    assert_eq!(current.licence.operation(), b.licence.operation());
-    assert_eq!(current.term.operation(), second.operation);
+    check_eq!(current.licence.operation(), b.licence.operation());
+    check_eq!(current.term.operation(), second.operation);
     first
         .binding
         .check_predecessor(&current.licence, &b.term, &b.economics)?;
@@ -406,8 +406,8 @@ fn current_generation_advances_without_rewriting_birth_or_historical_acquisition
         &second_birth.term,
         &second_birth.economics,
     )?;
-    assert!(b.term.matches_current(&current.licence).is_err());
-    assert!(
+    check!(b.term.matches_current(&current.licence).is_err());
+    check!(
         chain::verify(
             &current.licence,
             None,
@@ -431,7 +431,7 @@ fn pending_funding_preserves_old_current_rows_and_blocks_new_attempt() -> TestRe
     let draft = draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?;
     let funded = funded(&draft)?;
     let head = RenewalHeadV1::for_operation(&funded)?;
-    assert_eq!(head, RenewalHeadV1::for_operation(&draft)?);
+    check_eq!(head, RenewalHeadV1::for_operation(&draft)?);
     chain::verify(
         &b.licence,
         Some(&head),
@@ -439,9 +439,9 @@ fn pending_funding_preserves_old_current_rows_and_blocks_new_attempt() -> TestRe
         &BTreeMap::from([(b.term.generation(), &b.term)]),
         &BTreeMap::from([(b.economics.generation(), &b.economics)]),
     )?;
-    assert!(funded.granted_rows().is_err());
-    assert!(chain::check_draft(&b.licence, &draft, Some(&head), Some(&funded)).is_err());
-    assert!(
+    check!(funded.granted_rows().is_err());
+    check!(chain::check_draft(&b.licence, &draft, Some(&head), Some(&funded)).is_err());
+    check!(
         old == (
             serde_json::to_vec(&b.licence)?,
             serde_json::to_vec(&b.term)?,
@@ -458,11 +458,11 @@ fn exact_transition_and_issued_clock_refuse_crossed_receipts() -> TestResult {
     let draft = draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?;
     let funded = funded(&draft)?;
     let granted = terminal(&funded, true)?;
-    assert!(granted.follows(&draft).is_err());
-    assert!(granted.follows(&granted).is_err());
+    check!(granted.follows(&draft).is_err());
+    check!(granted.follows(&granted).is_err());
     let mut crossed = granted.clone();
     crossed.offer_digest = digest(99);
-    assert!(crossed.follows(&funded).is_err());
+    check!(crossed.follows(&funded).is_err());
     let mut wire = serde_json::to_value(&granted)?;
     let terminal = wire
         .get_mut("state")
@@ -475,10 +475,10 @@ fn exact_transition_and_issued_clock_refuse_crossed_receipts() -> TestResult {
     };
     terminal.insert("at_ic".into(), json!(other));
     terminal.insert("issued_at_ic".into(), json!(other));
-    assert!(serde_json::from_value::<RenewalOperationV1>(wire).is_err());
+    check!(serde_json::from_value::<RenewalOperationV1>(wire).is_err());
     let refund = terminal_refund_clock(&funded, 2)?;
     refund.follows(&funded)?;
-    assert!(refund.granted_rows().is_err());
+    check!(refund.granted_rows().is_err());
     Ok(())
 }
 fn terminal_refund_clock(
@@ -529,7 +529,7 @@ fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
         b.economics.product_digest(),
         b.economics.grant().clone(),
     )?;
-    assert!(RenewalBindingV1::capture(&licence, &term, &economics).is_err());
+    check!(RenewalBindingV1::capture(&licence, &term, &economics).is_err());
     Ok(())
 }
 

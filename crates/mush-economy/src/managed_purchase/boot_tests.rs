@@ -203,7 +203,7 @@ impl Fixture {
             .snapshot()
             .asset(charter)
             .ok_or("actual title")?;
-        assert_eq!(title.title_owner, PrincipalId::Object(seller));
+        check_eq!(title.title_owner, PrincipalId::Object(seller));
         let purchase = OriginalPurchase {
             quote: CommitToken::from_bytes([2; 16]),
             quote_digest: DefinitionDigest::for_canonical_value(
@@ -261,12 +261,12 @@ impl Fixture {
             self.tw.world().world_ic_now().clock,
             prepared,
         )?;
-        assert_eq!(
+        check_eq!(
             store(&self.tw)?.snapshot(),
             &before,
             "preparing complete owner writes is inert"
         );
-        assert_eq!(
+        check_eq!(
             store(&self.tw)?.purchase_receipt_audit().receipts()?.len(),
             0
         );
@@ -317,8 +317,8 @@ impl Fixture {
             self.tw.world().world_ic_now().clock,
             prepared,
         )?;
-        assert_eq!(store(&self.tw)?.snapshot(), &before);
-        assert!(
+        check_eq!(store(&self.tw)?.snapshot(), &before);
+        check!(
             store(&self.tw)?
                 .purchase_receipt_audit()
                 .get(funding.operation())?
@@ -334,7 +334,7 @@ impl Fixture {
             )?
             .apply();
         persist(&mut self.disk, writes)?;
-        assert_eq!(
+        check_eq!(
             store(&self.tw)?.purchase_receipt_audit().receipts()?.len(),
             count,
             "terminal uses its funding proof slot"
@@ -356,19 +356,19 @@ impl Fixture {
         let floor = store(&self.tw)?
             .chunk_of_seq(covered.checked_sub(2).ok_or("checkpoint floor")?)
             .ok_or("chunk")?;
-        assert!(floor > 0, "fixture actually excludes old journal chunks");
+        check!(floor > 0, "fixture actually excludes old journal chunks");
         fold(&mut self.tw, &mut self.disk);
         Ok((covered, floor, head))
     }
     fn restarted(&self, purchases: bool, disk: BootMap) -> TestResult<Box<TestWorld>> {
         let mut tw = world(purchases)?;
-        assert_eq!(
+        check_eq!(
             objects(&mut tw)?,
             (self.purchase.seller, self.purchase.charter)
         );
         tw.set_now(self.tw.world().now());
         tw.try_modules_loaded(disk)?;
-        assert!(!store(&tw)?.is_frozen());
+        check!(!store(&tw)?.is_frozen());
         Ok(tw)
     }
 }
@@ -382,8 +382,8 @@ fn check_history(
     let audit = owner.purchase_receipt_audit();
     audit.require_complete()?;
     let history = audit.get(funding.operation())?;
-    assert!(history.matches_purchase(purchase, funding.receipt()));
-    assert_eq!(
+    check!(history.matches_purchase(purchase, funding.receipt()));
+    check_eq!(
         history.effect(),
         &action("market", "purchase_original_mind")?
     );
@@ -400,9 +400,9 @@ fn check_history(
     match (outcome, history.terminal()) {
         (None, None) => {}
         (Some(outcome), Some(terminal)) => {
-            assert_eq!(terminal.commit(), CommitToken::from_bytes([4; 16]));
-            assert_eq!(terminal.granted(), outcome == PurchaseOutcome::Granted);
-            assert_eq!(
+            check_eq!(terminal.commit(), CommitToken::from_bytes([4; 16]));
+            check_eq!(terminal.granted(), outcome == PurchaseOutcome::Granted);
+            check_eq!(
                 terminal.issued_at_ic().is_some(),
                 outcome == PurchaseOutcome::Granted
             );
@@ -429,11 +429,11 @@ fn no_checkpoint(mut disk: BootMap) -> TestResult<BootMap> {
 }
 fn older_than_loaded(disk: &BootMap, seq: u64) -> TestResult {
     let data = disk.get("economy").ok_or("economy")?;
-    assert!(!data.ledger.is_empty());
+    check!(!data.ledger.is_empty());
     for (key, raw) in &data.ledger {
         if mush_core::parse_chunk_key(key).is_some_and(|(log, _)| log == JOURNAL_LOG) {
             let chunk: LedgerChunk = serde_json::from_str(raw)?;
-            assert!(chunk.entries.iter().all(|row| row.seq > seq));
+            check!(chunk.entries.iter().all(|row| row.seq > seq));
         }
     }
     Ok(())
@@ -446,19 +446,19 @@ fn same_purchase_projection(
 ) -> TestResult {
     let a = store(a)?;
     let b = store(b)?;
-    assert_eq!(
+    check_eq!(
         a.purchase_receipt_audit().get(f.operation())?,
         b.purchase_receipt_audit().get(f.operation())?
     );
     for account in [AccountId(1), AccountId(2), AccountId(3)] {
-        assert_eq!(a.snapshot().account(account), b.snapshot().account(account));
+        check_eq!(a.snapshot().account(account), b.snapshot().account(account));
     }
-    assert_eq!(a.snapshot().asset(p.charter), b.snapshot().asset(p.charter));
-    assert_eq!(
+    check_eq!(a.snapshot().asset(p.charter), b.snapshot().asset(p.charter));
+    check_eq!(
         a.snapshot().hold(f.receipt().hold()),
         b.snapshot().hold(f.receipt().hold())
     );
-    assert_eq!(
+    check_eq!(
         a.snapshot().contract(f.receipt().contract()),
         b.snapshot().contract(f.receipt().contract())
     );
@@ -471,7 +471,7 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
         let mut f = Fixture::new(true)?;
         let funding = f.fund()?;
         let (covered, floor, _) = f.checkpoint()?;
-        assert!(
+        check!(
             store(&f.tw)?
                 .transaction(funding.receipt().transaction())
                 .is_none(),
@@ -480,7 +480,7 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
         let narrowed = narrow(f.disk.clone(), floor)?;
         older_than_loaded(&narrowed, funding.receipt().journal_seq())?;
         let cold = f.restarted(true, narrowed)?;
-        assert_eq!(
+        check_eq!(
             store(&cold)?
                 .boot_replay()
                 .ok_or("boot report")?
@@ -489,7 +489,7 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
         );
         check_history(&cold, &f.purchase, &funding, None)?;
         let full = f.restarted(true, no_checkpoint(f.disk.clone())?)?;
-        assert_eq!(
+        check_eq!(
             store(&full)?
                 .boot_replay()
                 .ok_or("boot report")?
@@ -502,22 +502,22 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
         f.tw = cold;
         // Any ordinary boot projection writes precede the new terminal image.
         fold(&mut f.tw, &mut f.disk);
-        assert!(
+        check!(
             store(&f.tw)?
                 .transaction(funding.receipt().transaction())
                 .is_none()
         );
         let terminal = f.terminal(&funding, outcome)?;
         let (covered, floor, _) = f.checkpoint()?;
-        assert!(store(&f.tw)?.transaction(terminal.transaction()).is_none());
+        check!(store(&f.tw)?.transaction(terminal.transaction()).is_none());
         run(&mut f.tw, "@econ/mint 0=1 1");
         fold(&mut f.tw, &mut f.disk);
         let narrowed = narrow(f.disk.clone(), floor)?;
         older_than_loaded(&narrowed, terminal.journal_seq())?;
         let cold = f.restarted(true, narrowed)?;
         let replay = store(&cold)?.boot_replay().ok_or("boot report")?;
-        assert_eq!(replay.from_checkpoint, Some(covered));
-        assert_eq!(replay.replayed, 1);
+        check_eq!(replay.from_checkpoint, Some(covered));
+        check_eq!(replay.replayed, 1);
         check_history(&cold, &f.purchase, &funding, Some(outcome))?;
         let full = f.restarted(true, no_checkpoint(f.disk.clone())?)?;
         check_history(&full, &f.purchase, &funding, Some(outcome))?;
@@ -526,8 +526,8 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
             .snapshot()
             .account(f.purchase.payer)
             .ok_or("payer")?;
-        assert_eq!(payer.held_amount, crate::Amount::ZERO);
-        assert_eq!(
+        check_eq!(payer.held_amount, crate::Amount::ZERO);
+        check_eq!(
             payer.posted_balance.minor(),
             10_241
                 - if outcome == PurchaseOutcome::Granted {
@@ -537,7 +537,7 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
                 },
             "two real 120-post checkpoint advances plus the single tail post, then exactly one capture or release"
         );
-        assert_eq!(
+        check_eq!(
             store(&full)?
                 .snapshot()
                 .account(AccountId(2))
@@ -550,7 +550,7 @@ fn funding_and_each_terminal_survive_cold_checkpoint_and_full_replay() -> TestRe
                 0
             }
         );
-        assert_eq!(
+        check_eq!(
             store(&full)?
                 .snapshot()
                 .account(AccountId(3))
@@ -572,9 +572,9 @@ fn old_checkpoint_without_purchase_proof_requires_actual_full_fetch() -> TestRes
     let mut f = Fixture::new(false)?;
     let (_, floor, head) = f.checkpoint()?;
     let raw = doc(&f.disk, &head)?;
-    assert!(raw.pointer("/body/fold/purchase_receipts").is_none());
+    check!(raw.pointer("/body/fold/purchase_receipts").is_none());
     let legacy = f.restarted(false, narrow(f.disk.clone(), floor)?)?;
-    assert!(
+    check!(
         store(&legacy)?
             .boot_replay()
             .ok_or("boot report")?
@@ -582,23 +582,23 @@ fn old_checkpoint_without_purchase_proof_requires_actual_full_fetch() -> TestRes
             .is_some()
     );
     let mut enabled = world(true)?;
-    assert_eq!(
+    check_eq!(
         objects(&mut enabled)?,
         (f.purchase.seller, f.purchase.charter)
     );
-    assert!(
+    check!(
         matches!(enabled.try_modules_loaded(narrow(f.disk.clone(),floor)?),Err(ModError::RetryFullFetch{module,..}) if module=="economy")
     );
     enabled.try_modules_loaded(f.disk)?;
-    assert_eq!(
+    check_eq!(
         store(&enabled)?
             .boot_replay()
             .ok_or("boot report")?
             .from_checkpoint,
         None
     );
-    assert!(!store(&enabled)?.is_frozen());
-    assert_eq!(
+    check!(!store(&enabled)?.is_frozen());
+    check_eq!(
         store(&enabled)?.purchase_receipt_audit().receipts()?.len(),
         0
     );
@@ -626,7 +626,7 @@ fn doc_mut<'a>(disk: &'a mut BootMap, key: &str) -> TestResult<&'a mut Value> {
 fn selected(disk: &BootMap) -> TestResult<crate::checkpoint::ValidCheckpoint> {
     let data = disk.get("economy").ok_or("economy")?;
     let history = mush_core::inspect_ledger(&data.ledger, None);
-    assert!(history.is_clean());
+    check!(history.is_clean());
     let mut max = None;
     for (key, raw) in &data.ledger {
         if mush_core::parse_chunk_key(key).is_some_and(|(log, _)| log == JOURNAL_LOG) {
@@ -637,7 +637,7 @@ fn selected(disk: &BootMap) -> TestResult<crate::checkpoint::ValidCheckpoint> {
         }
     }
     let (checkpoint, notes) = crate::checkpoint::select(&data.kv, max, &history);
-    assert!(notes.is_empty(), "generic checkpoint integrity: {notes:?}");
+    check!(notes.is_empty(), "generic checkpoint integrity: {notes:?}");
     checkpoint.ok_or_else(|| "generic checkpoint must remain valid".into())
 }
 #[derive(Clone, Copy, Debug)]
@@ -652,7 +652,7 @@ fn damage(disk: &mut BootMap, head_key: &str, damage: Damage) -> TestResult {
     let mut head: crate::checkpoint::CheckpointHead =
         serde_json::from_value(doc(disk, head_key)?.clone())?;
     let mut proof = serde_json::to_value(&head.body.fold.purchase_receipts)?;
-    assert_eq!(proof.get("complete"), Some(&json!(true)));
+    check_eq!(proof.get("complete"), Some(&json!(true)));
     match damage {
         Damage::OmittedProof => proof
             .get_mut("histories")
@@ -702,7 +702,7 @@ fn damage(disk: &mut BootMap, head_key: &str, damage: Damage) -> TestResult {
                 reference.sha256 = crate::checkpoint::canonical_hash(&raw).ok_or("part hash")?;
                 *doc_mut(disk, &reference.key)? = raw;
             }
-            assert!(changed, "actual immutable row was altered");
+            check!(changed, "actual immutable row was altered");
         }
     }
     head.body.fold.purchase_receipts = serde_json::from_value(proof)?;
@@ -712,7 +712,7 @@ fn damage(disk: &mut BootMap, head_key: &str, damage: Damage) -> TestResult {
         .ok_or("state hash")?;
     *doc_mut(disk, head_key)? = serde_json::to_value(head)?;
     let checked = selected(disk)?;
-    assert!(
+    check!(
         !checked
             .head
             .body
@@ -732,7 +732,7 @@ fn complete_flag_cannot_hide_missing_extra_or_crossed_checkpoint_evidence() -> T
         f.terminal(&funding, outcome)?;
         let (_, floor, head) = f.checkpoint()?;
         let original = selected(&f.disk)?;
-        assert!(
+        check!(
             original
                 .head
                 .body
@@ -750,26 +750,26 @@ fn complete_flag_cannot_hide_missing_extra_or_crossed_checkpoint_evidence() -> T
             let mut damaged = f.disk.clone();
             damage(&mut damaged, &head, corruption)?;
             let mut recovery = world(true)?;
-            assert_eq!(
+            check_eq!(
                 objects(&mut recovery)?,
                 (f.purchase.seller, f.purchase.charter)
             );
             let error = recovery.try_modules_loaded(narrow(damaged.clone(), floor)?);
-            assert!(
+            check!(
                 matches!(error,Err(ModError::RetryFullFetch{module,..}) if module=="economy"),
                 "{corruption:?}"
             );
             // The same false checkpoint with the complete real journal must
             // recover the actual proof, never trust the altered complete flag.
             recovery.try_modules_loaded(damaged)?;
-            assert_eq!(
+            check_eq!(
                 store(&recovery)?
                     .boot_replay()
                     .ok_or("boot report")?
                     .from_checkpoint,
                 None
             );
-            assert!(!store(&recovery)?.is_frozen());
+            check!(!store(&recovery)?.is_frozen());
             check_history(&recovery, &f.purchase, &funding, Some(outcome))?;
             same_purchase_projection(&f.tw, &recovery, &f.purchase, &funding)?;
         }
@@ -786,11 +786,11 @@ fn closed_purchase_history_cannot_boot_with_purchase_composition_disabled() -> T
             f.terminal(&funding, PurchaseOutcome::Refunded)?;
         }
         let mut disabled = world(false)?;
-        assert_eq!(
+        check_eq!(
             objects(&mut disabled)?,
             (f.purchase.seller, f.purchase.charter)
         );
-        assert!(disabled.try_modules_loaded(f.disk.clone()).is_err());
+        check!(disabled.try_modules_loaded(f.disk.clone()).is_err());
     }
     Ok(())
 }

@@ -171,9 +171,9 @@ fn observe(
         .map_err(module_error)?
         .take()
         .ok_or("query answer")?;
-    assert!(f.disk == disk, "read changed durable state");
-    assert_eq!(f.engine.action_state().revision(), state);
-    assert_eq!(f.engine.world.world_ic_now(), ic);
+    check!(f.disk == disk, "read changed durable state");
+    check_eq!(f.engine.action_state().revision(), state);
+    check_eq!(f.engine.world.world_ic_now(), ic);
     Ok(value)
 }
 pub(super) fn exercise(
@@ -190,36 +190,36 @@ pub(super) fn exercise(
     let mut f = HouseFixture::boot(registry, saved)?;
     let published = observe(&mut f, licence, None)??;
     let listed = observe(&mut f, licence, Some(issuer))??;
-    assert_eq!(published, listed);
-    assert_eq!(listed.issuer(), issuer);
+    check_eq!(published, listed);
+    check_eq!(listed.issuer(), issuer);
     let fields = serde_json::to_value(&listed)?;
-    assert!(
+    check!(
         fields.get("source").is_none()
             && fields.get("envelope").is_none()
             && fields.get("executable").is_none()
     );
-    assert!(observe(&mut f, licence, Some(HouseIssuer::new(org, other)?))?.is_err());
+    check!(observe(&mut f, licence, Some(HouseIssuer::new(org, other)?))?.is_err());
     f.command(&format!("@house-policy-test {}=revoke", scope.0))?;
-    assert!(
+    check!(
         observe(&mut f, licence, None)?.is_err(),
         "former curator cannot publish by staff fallback"
     );
-    assert!(
+    check!(
         observe(&mut f, licence, Some(issuer))?.is_ok(),
         "house listing remains its own"
     );
     let departed = f.snapshot();
     let mut cold = HouseFixture::boot(registry, &departed)?;
-    assert!(observe(&mut cold, licence, None)?.is_err());
-    assert!(observe(&mut cold, licence, Some(issuer))?.is_ok());
+    check!(observe(&mut cold, licence, None)?.is_err());
+    check!(observe(&mut cold, licence, Some(issuer))?.is_ok());
     let mut denied = HouseFixture::boot(registry, saved)?;
     denied.command(&format!("@house-policy-test {}=deny", scope.0))?;
-    assert!(
+    check!(
         observe(&mut denied, licence, None)?.is_err(),
         "explicit scoped Deny wins over actual grant"
     );
-    assert!(observe(&mut denied, licence, Some(issuer))?.is_ok());
+    check!(observe(&mut denied, licence, Some(issuer))?.is_ok());
     denied.command("@org/status House=suspended")?;
-    assert!(observe(&mut denied, licence, Some(issuer))?.is_err());
+    check!(observe(&mut denied, licence, Some(issuer))?.is_err());
     Ok(())
 }

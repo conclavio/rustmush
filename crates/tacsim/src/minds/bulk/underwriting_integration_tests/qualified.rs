@@ -85,15 +85,15 @@ fn cold_inverse(f: &PurchaseFixture, w: &IcWorld, saved: &Durable) -> TestResult
                     .then_some(k.clone())
             })
             .collect::<Vec<_>>();
-        assert!(
+        check!(
             !keys.is_empty(),
             "actual retained qualification counterpart"
         );
         for key in keys {
             bad.disk.remove(&key);
         }
-        assert!(
-            w.reboot(f, &bad).is_err(),
+        check!(
+            crate::test_checks::refused(w.reboot(f, &bad))?,
             "missing actual qualification counterpart"
         );
     }
@@ -107,12 +107,12 @@ fn cold_inverse(f: &PurchaseFixture, w: &IcWorld, saved: &Durable) -> TestResult
         })
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(keys.len(), 1, "one actual publication retention root");
+    check_eq!(keys.len(), 1, "one actual publication retention root");
     for key in keys {
         bad.disk.remove(&key);
     }
-    assert!(
-        w.reboot(f, &bad).is_err(),
+    check!(
+        crate::test_checks::refused(w.reboot(f, &bad))?,
         "missing publication source retention"
     );
     Ok(())
@@ -168,17 +168,14 @@ fn publish_products(
 ) -> TestResult<Durable> {
     let publication = reference(w, "publish_hull_coverage")?;
     let before = w.disk.clone();
-    assert!(
-        prepare(
-            w,
-            GOD,
-            &publication,
-            N,
-            json!({"product":wrong_role.digest()?.to_hex()})
-        )
-        .is_err()
-    );
-    assert!(w.disk == before, "wrong role changed durable records");
+    check!(crate::test_checks::refused(prepare(
+        w,
+        GOD,
+        &publication,
+        N,
+        json!({"product":wrong_role.digest()?.to_hex()})
+    ))?);
+    check!(w.disk == before, "wrong role changed durable records");
     for (n, product) in [(N, ordinary), (N + 1, qualified)] {
         let p = prepare(
             w,
@@ -230,9 +227,9 @@ fn quote_other_profile(
     other.engine.set_submission_runtime(Arc::new(Runtime))?;
     observed_quote(other, quote, N + 3)?;
     let row = quote_row(other, N + 3)?;
-    assert_eq!(row["terms"]["premium"], json!(100));
-    assert_eq!(row["risk"]["qualified"], Value::Null);
-    assert_eq!((money(other, payer)?, money(other, treasury)?), original);
+    check_eq!(row["terms"]["premium"], json!(100));
+    check_eq!(row["risk"]["qualified"], Value::Null);
+    check_eq!((money(other, payer)?, money(other, treasury)?), original);
 
     Ok(())
 }
@@ -254,7 +251,13 @@ fn recall_bind_fences(
         let bind = ph.bind(&probe.engine.world, departure.clone(), token(N + 6))?;
         if phase == 0 {
             recall(&mut probe, retained, N + 10)?;
-            assert!(prepare(&mut probe, BUYER, bind.action(), N + 11, json!({})).is_err());
+            check!(crate::test_checks::refused(prepare(
+                &mut probe,
+                BUYER,
+                bind.action(),
+                N + 11,
+                json!({})
+            ))?);
         } else {
             // Core admits one pending commit, so a Recall cannot land between a
             // prepared (phase 1) or staged (phase 2) Bind and its install: the
@@ -262,21 +265,21 @@ fn recall_bind_fences(
             // abandoned Bind moves no policy or money.
             let (p, o, inv) = prepare(&mut probe, BUYER, bind.action(), N + 11, json!({}))?;
             if phase == 1 {
-                assert!(
-                    recall(&mut probe, retained, N + 10).is_err(),
+                check!(
+                    crate::test_checks::refused(recall(&mut probe, retained, N + 10))?,
                     "recall landed under a prepared Bind"
                 );
                 drop((p, o, inv));
             } else {
                 probe.stage_action(bind.action(), N + 11, p, o, &inv)?;
-                assert!(
-                    recall(&mut probe, retained, N + 10).is_err(),
+                check!(
+                    crate::test_checks::refused(recall(&mut probe, retained, N + 10))?,
                     "recall landed under a staged Bind"
                 );
             }
         }
-        assert!(rows(&probe.disk, "tacsim", "tacsim_coverage_policies").is_empty());
-        assert_eq!((money(&probe, payer)?, money(&probe, treasury)?), original);
+        check!(rows(&probe.disk, "tacsim", "tacsim_coverage_policies").is_empty());
+        check_eq!((money(&probe, payer)?, money(&probe, treasury)?), original);
     }
     Ok(())
 }
@@ -307,7 +310,7 @@ fn create_qualified_carrier(w: &mut IcWorld) -> TestResult<ObjId> {
         "@spatial/place/interior #{}=#{}",
         hull.0, w.base.0
     ))?;
-    assert!(mush_tactics::module::unit_of(&w.engine.world, hull).is_some());
+    check!(mush_tactics::module::unit_of(&w.engine.world, hull).is_some());
     w.hulls[0] = hull;
     Ok(hull)
 }
@@ -354,11 +357,11 @@ fn quote_and_bind(
         )?;
         observed_quote(w, t, n)?;
         let row = quote_row(w, n)?;
-        assert_eq!(row["terms"]["premium"], json!(premium));
-        assert_eq!(row["terms"]["discount"], json!(discount));
-        assert_eq!(row["risk"]["qualified"].is_null(), discount == 0);
+        check_eq!(row["terms"]["premium"], json!(premium));
+        check_eq!(row["terms"]["discount"], json!(discount));
+        check_eq!(row["risk"]["qualified"].is_null(), discount == 0);
     }
-    assert_eq!((money(w, payer)?, money(w, treasury)?), original);
+    check_eq!((money(w, payer)?, money(w, treasury)?), original);
     let quoted = w.snapshot();
     recall_bind_fences(
         f,
@@ -370,13 +373,13 @@ fn quote_and_bind(
         original,
     )?;
     let bind = h.bind(&w.engine.world, departure.clone(), token(N + 6))?;
-    assert_eq!(land_ticket(w, bind, N + 7)?.kind(), "bound");
+    check_eq!(land_ticket(w, bind, N + 7)?.kind(), "bound");
     let paid = original
         .0
         .checked_sub(Amount::from_minor(90))
         .ok_or("premium")?;
-    assert_eq!(money(w, payer)?, paid);
-    assert_eq!(
+    check_eq!(money(w, payer)?, paid);
+    check_eq!(
         money(w, treasury)?,
         original
             .1
@@ -393,8 +396,8 @@ pub(in super::super) fn exercise(
     retained: &ConductTrialProof,
 ) -> TestResult {
     eprintln!("M7_STORY phase=qualified_coverage event=begin");
-    assert_eq!(retained.profile(), "Transit");
-    assert_eq!(
+    check_eq!(retained.profile(), "Transit");
+    check_eq!(
         retained.role(),
         mush_roll::commerce::conduct::ConductRole::Transit
     );
@@ -446,7 +449,7 @@ pub(in super::super) fn exercise(
         recovered_host.recover_binding(ctx, departure, token(N + 7))
     })?;
     recall(&mut w, retained, N + 12)?;
-    assert!(super::super::conduct::proof(&mut w, retained.operation()).is_err());
+    check!(super::super::conduct::proof(&mut w, retained.operation()).is_err());
     // Historical proof remains valid after recall. It cannot buy a new policy,
     // but the already paid policy still permits its actual terminal transition.
     let mut w = w.reboot(f, &w.snapshot())?;
@@ -465,8 +468,8 @@ pub(in super::super) fn exercise(
     let terminal = context(&mut w, BUYER, move |ctx| {
         hc.terminal(ctx, token(N + 7), true)
     })?;
-    assert_eq!(land_ticket(&mut w, terminal, N + 14)?.kind(), "released");
-    assert_eq!(money(&w, payer)?, paid, "cancellation retains the premium");
+    check_eq!(land_ticket(&mut w, terminal, N + 14)?.kind(), "released");
+    check_eq!(money(&w, payer)?, paid, "cancellation retains the premium");
     let history = w
         .engine
         .world
@@ -474,7 +477,7 @@ pub(in super::super) fn exercise(
         .ok_or("E4")?
         .coverage_history(token(N + 7))?
         .clone();
-    assert!(matches!(
+    check!(matches!(
         &history
             .terminal()
             .ok_or("actual terminal")?
@@ -484,7 +487,7 @@ pub(in super::super) fn exercise(
     ));
     cold_inverse(f, &w, &w.snapshot())?;
     let cold = w.reboot(f, &w.snapshot())?;
-    assert_eq!(
+    check_eq!(
         cold.engine
             .world
             .module_state::<EconomyStore>()
@@ -492,7 +495,7 @@ pub(in super::super) fn exercise(
             .coverage_history(token(N + 7))?,
         &history
     );
-    assert_eq!(money(&cold, payer)?, paid);
+    check_eq!(money(&cold, payer)?, paid);
     eprintln!("M7_STORY phase=qualified_coverage event=complete");
     Ok(())
 }

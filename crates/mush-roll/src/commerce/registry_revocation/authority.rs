@@ -59,7 +59,10 @@ impl Authorization {
             || self.scope_revision == 0
             || self.sources.is_empty()
             || self.sources.len() > 64
-            || self.sources.windows(2).any(|p| p[0] >= p[1])
+            || self
+                .sources
+                .windows(2)
+                .any(|pair| matches!(pair, [a, b] if a >= b))
             || self.sources.iter().any(|s| {
                 s.revision == 0
                     || !matches!(s.tag.as_str(), "grant" | "role" | "delegation" | "policy")

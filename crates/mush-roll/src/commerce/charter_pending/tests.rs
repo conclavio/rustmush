@@ -58,29 +58,29 @@ fn document<R: Record>(h: &StateFamilyHandle<String, R>, key: String, value: Val
 #[test]
 fn pending_offer_is_closed_and_uses_exact_new_seller_action() -> Result {
     let offer = wide_offer()?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_value::<PendingOffer>(serde_json::to_value(&offer)?)?,
         offer
     );
-    assert_eq!(offer.native()?.offer_digest, offer.digest()?);
+    check_eq!(offer.native()?.offer_digest, offer.digest()?);
     for field in ["source", "valid", "authority", "parent"] {
         let mut value = serde_json::to_value(&offer)?;
         value
             .as_object_mut()
             .ok_or("offer")?
             .insert(field.into(), json!(true));
-        assert!(serde_json::from_value::<PendingOffer>(value).is_err());
+        check!(serde_json::from_value::<PendingOffer>(value).is_err());
     }
     let mut value = serde_json::to_value(&offer)?;
     value.as_object_mut().ok_or("offer")?.insert(
         "action".into(),
         serde_json::to_value(crate::commerce::charter_transfer::protocol::offer_action()?)?,
     );
-    assert!(serde_json::from_value::<PendingOffer>(value).is_err());
+    check!(serde_json::from_value::<PendingOffer>(value).is_err());
     for field in ["owner_term", "ownership", "offered_at_ic", "settle_seconds"] {
         let mut value = serde_json::to_value(&offer)?;
         value.as_object_mut().ok_or("offer")?.remove(field);
-        assert!(serde_json::from_value::<PendingOffer>(value).is_err());
+        check!(serde_json::from_value::<PendingOffer>(value).is_err());
     }
     Ok(())
 }
@@ -109,7 +109,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
     // actual maximum is attained. It is never treated as a valid native proof.
     let native =
         json!("x".repeat(mush_economy::managed_charter_transfer::MAX_PENDING_HISTORY_BYTES - 2));
-    assert_eq!(
+    check_eq!(
         mush_core::canonical_json_bytes_with_limit(&native, 32768)?.len(),
         32768
     );
@@ -133,7 +133,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
             "owner_term":owner_term,"accepted_at_ic":stamp,"deadline":stamp,
             "claim_observation":{"generation":u64::MAX,"next_transition":u64::MAX,"open_owned":1024},"economic":native,"state":state});
         let head = json!({"format":1,"charter":offer.charter,"current":{"sequence":65536,"operation":token(250),"digest":d},"state":state});
-        assert!(
+        check!(
             mush_core::canonical_json_bytes_with_limit(
                 &document(&rows, token(250).to_hex(), row),
                 PendingRecord::MAX_BYTES
@@ -141,7 +141,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
             .len()
                 < PendingRecord::MAX_BYTES
         );
-        assert!(
+        check!(
             mush_core::canonical_json_bytes_with_limit(
                 &document(&heads, offer.charter.key(), head),
                 PendingHead::MAX_BYTES
@@ -153,7 +153,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
     let ownership = json!({"format":2,"operation":token(249),"action":protocol::settle_action()?,"charter":offer.charter,"generation":65537,"birth":offer.birth,
         "predecessor":offer.ownership,"offer":offer.operation,"offer_digest":d,"accepted_at_ic":stamp,"economic":{"pending":native}});
     let head = json!({"format":1,"charter":offer.charter,"current":transfer});
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(
             &document(
                 &transfers,
@@ -165,7 +165,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
         .len()
             < CharterTransfer::MAX_BYTES
     );
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(
             &document(&owners, offer.charter.key(), head),
             CharterOwnershipHead::MAX_BYTES
@@ -173,7 +173,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
         .len()
             < CharterOwnershipHead::MAX_BYTES
     );
-    assert!(
+    check!(
         mush_core::canonical_json_bytes_with_limit(
             &document(&offers, offer.key(), serde_json::to_value(&offer)?),
             PendingOffer::MAX_BYTES
@@ -181,7 +181,7 @@ fn full_native_history_ceiling_plus_widest_outer_images_fits_four_future_targets
         .len()
             < PendingOffer::MAX_BYTES
     );
-    assert_eq!(
+    check_eq!(
         PendingRecord::MAX_BYTES
             + PendingHead::MAX_BYTES
             + CharterTransfer::MAX_BYTES

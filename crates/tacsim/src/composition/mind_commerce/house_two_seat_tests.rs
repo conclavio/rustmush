@@ -11,12 +11,12 @@ fn selected() -> Result<MindCommerce, ModError> {
 
 #[test]
 fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_two_seat_house_pins(house_policy()?)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_two_seat_house_pins(house_policy()?)
             .is_err()
@@ -29,7 +29,7 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
     let old_quote = old_config.quote_action(HouseProtocol::HouseV1)?;
     let old_engine = house_engine(&old, true)?;
     let definitions = old_engine.registry.definitions().ok_or("definitions")?;
-    assert!(
+    check!(
         !definitions
             .iter()
             .any(|d| d.reference().key().owner.as_str() == "market"
@@ -38,14 +38,14 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
     );
     let both = selected()?;
     let house = both.state.house_purchases.as_ref().ok_or("House config")?;
-    assert_eq!(house.owner_actions(HouseProtocol::HouseV1)?, old_refs);
-    assert_eq!(house.quote_action(HouseProtocol::HouseV1)?, old_quote);
+    check_eq!(house.owner_actions(HouseProtocol::HouseV1)?, old_refs);
+    check_eq!(house.quote_action(HouseProtocol::HouseV1)?, old_quote);
     let v2 = house.owner_actions(HouseProtocol::HouseV2)?;
     let v2_quote = house.quote_action(HouseProtocol::HouseV2)?;
     let actual = house_engine(&both, true)?;
     let definitions = actual.registry.definitions().ok_or("definitions")?;
     for reference in old_refs.iter().chain(&v2).chain([&old_quote, &v2_quote]) {
-        assert_eq!(
+        check_eq!(
             definitions
                 .iter()
                 .filter(|d| d.reference() == reference)
@@ -57,7 +57,7 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
         house.participants().economy(),
         house.participants().retention(),
     ] {
-        assert_eq!(
+        check_eq!(
             definitions
                 .iter()
                 .filter(|d| d.reference() == participant)
@@ -67,8 +67,8 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
     }
     // A failed composition may install private writer handles before refusing;
     // each independent boot therefore gets its own checked configuration.
-    assert!(house_engine(&selected()?, false).is_err());
-    assert!(both.with_two_seat_house_pins(house_policy()?).is_err());
+    check!(house_engine(&selected()?, false).is_err());
+    check!(both.with_two_seat_house_pins(house_policy()?).is_err());
     Ok(())
 }
 
@@ -85,13 +85,13 @@ fn house_two_seat_renewals_capture_both_policies_before_registration() -> TestRe
         .as_ref()
         .ok_or("House config")?;
     for protocol in [HouseProtocol::HouseV1, HouseProtocol::HouseV2] {
-        assert!(
+        check!(
             definitions
                 .get_exact(&house.policy_ref_for_protocol(protocol)?)
                 .is_ok()
         );
         for reference in house.owner_actions(protocol)? {
-            assert!(definitions.get_exact(&reference).is_ok());
+            check!(definitions.get_exact(&reference).is_ok());
         }
     }
     for reference in configured
@@ -101,15 +101,15 @@ fn house_two_seat_renewals_capture_both_policies_before_registration() -> TestRe
         .ok_or("renewals")?
         .actions()?
     {
-        assert!(definitions.get_exact(&reference).is_ok());
+        check!(definitions.get_exact(&reference).is_ok());
     }
-    assert!(has(
+    check!(has(
         &actual,
         "market",
         "action",
         "close_house_mind_renewal_service"
     ));
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_house_filings()?
             .with_house_minds(house_policy()?)?

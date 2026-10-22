@@ -18,7 +18,7 @@ const ENVELOPE: &str = include_str!("../../../content/minds/house/safe_conduct.e
 pub(super) fn certified_safe_conduct() -> TestResult<(Box<Fixture>, RatingRef)> {
     let mut fixture = Fixture::with_program(PROGRAM, serde_json::from_str(ENVELOPE)?)?;
     let rating = complete_registry(&mut fixture)?;
-    assert_eq!(fixture.revision.envelope().declared_class, "II");
+    check_eq!(fixture.revision.envelope().declared_class, "II");
     Ok((fixture, rating))
 }
 
@@ -27,7 +27,7 @@ pub(super) fn certified_safe_conduct() -> TestResult<(Box<Fixture>, RatingRef)> 
 pub(super) fn filed_parent() -> TestResult<(Box<Fixture>, PurchaseFixture, RatingRef)> {
     let (mut registry, rating) = certified_safe_conduct()?;
     let mut world = World::new_minimal();
-    assert_eq!(
+    check_eq!(
         world.create(ObjKind::Player, "Conduct buyer", GOD, Some(ROOM))?,
         BUYER
     );
@@ -81,7 +81,7 @@ pub(super) fn filed_parent() -> TestResult<(Box<Fixture>, PurchaseFixture, Ratin
         FIRST + 5,
         json!({"operation":token(FIRST+4)}),
     )?;
-    assert_eq!(
+    check_eq!(
         rows(&f.disk, "roll", "roll_mind_personal_paid_licence").len(),
         1
     );
@@ -143,10 +143,10 @@ fn install_submission(
     submission: Box<mush_core::AuthoritativeSubmit>,
     n: u128,
 ) -> TestResult {
-    assert_eq!(submission.actor, GOD);
-    assert_eq!(submission.subject, PerceivedRef::SelfActor);
-    assert!(submission.targets.is_empty());
-    assert_eq!(submission.action.key().owner.as_str(), "roll");
+    check_eq!(submission.actor, GOD);
+    check_eq!(submission.subject, PerceivedRef::SelfActor);
+    check!(submission.targets.is_empty());
+    check_eq!(submission.action.key().owner.as_str(), "roll");
     let action = submission.action;
     let principal = PrincipalId::Object { id: GOD };
     let query = w
@@ -183,7 +183,7 @@ fn install_submission(
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(exact, action);
+    check_eq!(exact, action);
     let invocation = resolved.invocation().clone();
     let (p, o) = w
         .engine
@@ -241,26 +241,26 @@ fn disposition_retry(
     let disk = w.disk.clone();
     for _ in 0..2 {
         pulse(w)?;
-        assert!(w.engine.take_observed_authoritative_submit().is_none());
+        check!(w.engine.take_observed_authoritative_submit().is_none());
     }
-    assert!(
-        w.command("@conduct/retry").is_err(),
+    check!(
+        crate::test_checks::refused(w.command("@conduct/retry"))?,
         "Unknown cannot authorize replacement"
     );
-    assert!(disk == w.disk, "Unknown changed durable Conduct evidence");
+    check!(disk == w.disk, "Unknown changed durable Conduct evidence");
     absence.store(true, std::sync::atomic::Ordering::Release);
     pulse(w)?;
-    assert!(
+    check!(
         w.engine.take_observed_authoritative_submit().is_none(),
         "NoIntent requires explicit retry"
     );
     w.command("@conduct/retry")?;
     let (retry, _runtime) = next_submission(w)?.into_parts();
-    assert_eq!(retry.key, original.key);
-    assert_eq!(retry.action, original.action);
-    assert_eq!(retry.parameters, original.parameters);
-    assert_eq!(retry.actor, original.actor);
-    assert!(
+    check_eq!(retry.key, original.key);
+    check_eq!(retry.action, original.action);
+    check_eq!(retry.parameters, original.parameters);
+    check_eq!(retry.actor, original.actor);
+    check!(
         disk == w.disk,
         "retry created evidence before actual installation"
     );
@@ -275,54 +275,57 @@ fn cancellation_and_cold_recovery(f: &PurchaseFixture, base: &IcWorld) -> TestRe
     queued.command("@conduct/run 1 Transit transit")?;
     let submitted = next_submission(&mut queued)?;
     let request = disposition_retry(&mut queued, submitted)?;
-    assert_eq!(
+    check_eq!(
         request.action.key().id.as_str(),
         Transition::Admit.action_id()
     );
     let job = token(FIRST + 20);
     install_submission(&mut queued, request, FIRST + 20)?;
     let stopped = queued.snapshot();
-    assert_eq!(
+    check_eq!(
         execution(&queued, job)?.observation().phase,
         ExecutionPhase::Queued
     );
     queued.command("@conduct/cancel")?;
     let (request, _) = next_submission(&mut queued)?.into_parts();
-    assert_eq!(
+    check_eq!(
         request.action.key().id.as_str(),
         Transition::Cancel.action_id()
     );
     install_submission(&mut queued, request, FIRST + 21)?;
     pulse(&mut queued)?;
-    assert_eq!(
+    check_eq!(
         execution(&queued, job)?.observation().phase,
         ExecutionPhase::Cancelled
     );
-    assert!(proof(&mut queued, job).is_err());
+    check!(crate::test_checks::refused(proof(&mut queued, job))?);
     let result: ConductResult =
         serde_json::from_value(one(rows(&queued.disk, "roll", ConductResult::FAMILY))?)?;
-    assert!(result.measurement().is_none());
+    check!(result.measurement().is_none());
     let mut cancelled_cold = boot(f, &queued, &queued.snapshot())?;
-    assert!(proof(&mut cancelled_cold, job).is_err());
+    check!(crate::test_checks::refused(proof(
+        &mut cancelled_cold,
+        job
+    ))?);
     // This independent boot comes from a real admitted nonterminal checkpoint.
     // Only the actual hydration path can mint its stopped recovery binding.
     let mut recovery = boot(f, base, &stopped)?;
     recovery.engine.set_submission_runtime(Arc::new(Runtime))?;
     let (request, _) = next_submission(&mut recovery)?.into_parts();
-    assert_eq!(
+    check_eq!(
         request.action.key().id.as_str(),
         Transition::Recover.action_id()
     );
     install_submission(&mut recovery, request, FIRST + 22)?;
     pulse(&mut recovery)?;
-    assert_eq!(
+    check_eq!(
         execution(&recovery, job)?.observation().phase,
         ExecutionPhase::Interrupted
     );
-    assert!(proof(&mut recovery, job).is_err());
+    check!(crate::test_checks::refused(proof(&mut recovery, job))?);
     let result: ConductResult =
         serde_json::from_value(one(rows(&recovery.disk, "roll", ConductResult::FAMILY))?)?;
-    assert!(result.measurement().is_none());
+    check!(result.measurement().is_none());
     Ok(())
 }
 
@@ -374,8 +377,8 @@ pub(super) fn complete(
                         w.command(&format!("@conduct/continue {id}"))?;
                     }
                     let proof = proof(w, op)?;
-                    assert_eq!(proof.profile(), profile);
-                    assert_eq!(rows(&w.disk, "roll", ConductJob::FAMILY).len(), before + 1);
+                    check_eq!(proof.profile(), profile);
+                    check_eq!(rows(&w.disk, "roll", ConductJob::FAMILY).len(), before + 1);
                     return Ok(proof);
                 }
             }
@@ -395,16 +398,16 @@ fn genuine_safe_conduct_service_result_and_complete_cold_inverse() -> TestResult
     let retained = complete(&mut w, "Transit", "transit", FIRST + 100)?;
     let saved = w.snapshot();
     let mut cold = boot(&f, &w, &saved)?;
-    assert_eq!(
+    check_eq!(
         proof(&mut cold, retained.operation())?.digest(),
         retained.digest()
     );
     let jobs = rows(&saved.disk, "roll", ConductJob::FAMILY);
     let job: ConductJob = serde_json::from_value(one(jobs)?)?;
-    assert_eq!(job.operation(), retained.operation());
+    check_eq!(job.operation(), retained.operation());
     let result: ConductResult =
         serde_json::from_value(one(rows(&saved.disk, "roll", ConductResult::FAMILY))?)?;
-    assert!(result.measurement().is_some_and(|m| m.passed()));
+    check!(result.measurement().is_some_and(|m| m.passed()));
     super::coverage::qualified::exercise(&f, &w, &saved, &retained)?;
     for remove in [
         ConductJob::FAMILY,
@@ -418,8 +421,8 @@ fn genuine_safe_conduct_service_result_and_complete_cold_inverse() -> TestResult
                 .and_then(Value::as_str)
                 != Some(remove)
         });
-        assert!(
-            boot(&f, &w, &broken).is_err(),
+        check!(
+            crate::test_checks::refused(boot(&f, &w, &broken))?,
             "missing Conduct typed half accepted"
         );
     }
@@ -445,18 +448,19 @@ fn genuine_safe_conduct_service_result_and_complete_cold_inverse() -> TestResult
                 && (key.starts_with("tacsim:conduct:")
                     || key.starts_with("tacsim:mindbulk:account:")))
     });
-    assert_eq!(
-        removed_roots, 1,
+    check_eq!(
+        removed_roots,
+        1,
         "actual Conduct root removed for independent physical inverse"
     );
-    assert!(
+    check!(
         orphan
             .disk
             .keys()
             .any(|(_, k)| k.contains(":conduct_start"))
     );
-    assert!(
-        boot(&f, &w, &orphan).is_err(),
+    check!(
+        crate::test_checks::refused(boot(&f, &w, &orphan))?,
         "retained orphan Conduct blobs became empty history"
     );
     Ok(())

@@ -40,18 +40,18 @@ fn continue_recovery(f: &mut Fixture, binding: Binding) -> TestResult<TicketId> 
     command(&mut f.engine, "@registry/continue 1");
     let ticket = TicketId::new(1)?;
     let actual = f.artifacts()?.registry.get(ticket)?;
-    assert_eq!(actual.binding(), Some(binding));
-    assert_eq!(actual.transition(), Transition::Recover);
+    check_eq!(actual.binding(), Some(binding));
+    check_eq!(actual.transition(), Transition::Recover);
     let driven = f
         .engine
         .take_observed_authoritative_submit()
         .ok_or("actual owner continuation")?;
     let (request, _unresolved_driver) = driven.into_parts();
-    assert_eq!(request.actor, binding.character);
-    assert_eq!(request.action, f.action(Transition::Recover)?);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
-    assert_eq!(
+    check_eq!(request.actor, binding.character);
+    check_eq!(request.action, f.action(Transition::Recover)?);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
+    check_eq!(
         request.parameters,
         json!({}),
         "no measurements or identity inputs"
@@ -59,7 +59,7 @@ fn continue_recovery(f: &mut Fixture, binding: Binding) -> TestResult<TicketId> 
     // Re-entering with an unresolved attempt never manufactures another ticket
     // or retries the request based on the absence of an acknowledgement.
     command(&mut f.engine, "@registry/continue 1");
-    assert!(f.engine.take_observed_authoritative_submit().is_none());
+    check!(f.engine.take_observed_authoritative_submit().is_none());
     f.artifacts()?.registry.check(ticket, &actual)?;
     Ok(ticket)
 }
@@ -68,12 +68,12 @@ pub(super) fn cold_restart(f: &mut Fixture, binding: Binding) -> TestResult<Tick
     let mut reboot = real_engine(f)?;
     load(&mut reboot, &f.disk)?;
     f.engine = reboot;
-    assert_eq!(
+    check_eq!(
         f.run(binding)?,
         before,
         "production hydration preserves exact Registry quota"
     );
-    assert!(f.artifacts()?.registry.pristine());
+    check!(f.artifacts()?.registry.pristine());
     continue_recovery(f, binding)
 }
 
@@ -116,14 +116,14 @@ fn real_tacsim_boot_waits_for_final_audits_and_recovers_queued_or_paid_only_afte
             &mut mush_core::engine::Effects::new(),
         )?;
         f.engine = reboot;
-        assert_eq!(f.run(binding)?, before);
+        check_eq!(f.run(binding)?, before);
         command(&mut f.engine, "@recovery-pulse");
         command(&mut f.engine, "@registry/continue 1");
-        assert!(
+        check!(
             f.artifacts()?.registry.pristine(),
             "closed Roll cannot mint a recovery ticket"
         );
-        assert!(f.engine.take_observed_authoritative_submit().is_none());
+        check!(f.engine.take_observed_authoritative_submit().is_none());
         for owner in ["roll", "economy"] {
             f.engine.module_loaded(
                 owner,
@@ -135,49 +135,49 @@ fn real_tacsim_boot_waits_for_final_audits_and_recovers_queued_or_paid_only_afte
         f.engine
             .all_modules_loaded(&mut Outbox::new(), &mut mush_core::engine::Effects::new())?;
         let ticket = continue_recovery(&mut f, binding)?;
-        assert_eq!(f.run(binding)?, before);
-        assert_eq!(f.roots()?, roots);
+        check_eq!(f.run(binding)?, before);
+        check_eq!(f.roots()?, roots);
         let prepared = f.prepare(Transition::Recover, ticket, binding.job, 8)?;
-        assert_eq!(f.run(binding)?, before, "prepare has no owner mutation");
+        check_eq!(f.run(binding)?, before, "prepare has no owner mutation");
         install(&mut f.engine, &mut f.disk, prepared)?;
         // Real Artifacts apply produced the ACK; let the actual service consume
         // it and validate both typed and private-quota post-images.
-        assert!(f.artifacts()?.registry.peek_acknowledged().is_some());
+        check!(f.artifacts()?.registry.peek_acknowledged().is_some());
         command(&mut f.engine, "@recovery-pulse");
         command(&mut f.engine, "@registry/continue 1");
-        assert!(f.artifacts()?.registry.peek_acknowledged().is_none());
-        assert!(f.artifacts()?.registry.get(ticket).is_err());
+        check!(f.artifacts()?.registry.peek_acknowledged().is_none());
+        check!(f.artifacts()?.registry.get(ticket).is_err());
         let service = world::service(&f.engine.world)?;
         let runtime = service.0.lock().map_err(module_error)?;
-        assert!(!runtime.recovery.pending());
-        assert!(
+        check!(!runtime.recovery.pending());
+        check!(
             runtime.registry.accounts().next().is_none(),
             "only exact terminal readback releases custody"
         );
         drop(runtime);
         let recovered = f.run(binding)?;
-        assert_eq!(recovered.status, Status::Interrupted);
-        assert_eq!(recovered.charged_unit_ms, before.charged_unit_ms);
-        assert!(recovered.flight.is_none() && recovered.result.is_none());
+        check_eq!(recovered.status, Status::Interrupted);
+        check_eq!(recovered.charged_unit_ms, before.charged_unit_ms);
+        check!(recovered.flight.is_none() && recovered.result.is_none());
         let after: RatingJob = f.retained("rating_jobs")?;
-        assert_eq!(after.subject(), retained_job.subject());
-        assert_eq!(after.compatibility(), retained_job.compatibility());
-        assert!(
+        check_eq!(after.subject(), retained_job.subject());
+        check_eq!(after.compatibility(), retained_job.compatibility());
+        check!(
             !f.roots()?
                 .contains(&format!("v1/rating_pending/{}", binding.job))
         );
-        assert!(
+        check!(
             f.roots()?
                 .contains(&format!("v1/rating_job/{}", binding.job))
         );
-        assert!(
+        check!(
             f.disk
                 .keys()
                 .all(|(_, key)| !key.starts_with("action-state/capacity/v1/"))
         );
         let mut final_boot = real_engine(&f)?;
         load(&mut final_boot, &f.disk)?;
-        assert_eq!(
+        check_eq!(
             final_boot
                 .world
                 .module_state::<BulkStore>()
@@ -185,7 +185,7 @@ fn real_tacsim_boot_waits_for_final_audits_and_recovers_queued_or_paid_only_afte
                 .account_run(binding.account, binding.run)?,
             &recovered
         );
-        assert!(
+        check!(
             !world::service(&final_boot.world)?
                 .0
                 .lock()
@@ -211,11 +211,11 @@ fn missing_account_keeps_recovery_custody_after_complete_owner_audit() -> TestRe
     let roots = f.roots()?;
     command(&mut f.engine, "@recovery-pulse");
     command(&mut f.engine, "@registry/continue 1");
-    assert!(f.artifacts()?.registry.pristine());
-    assert!(f.engine.take_observed_authoritative_submit().is_none());
-    assert_eq!(f.run(binding)?, before);
-    assert_eq!(f.roots()?, roots);
-    assert_eq!(
+    check!(f.artifacts()?.registry.pristine());
+    check!(f.engine.take_observed_authoritative_submit().is_none());
+    check_eq!(f.run(binding)?, before);
+    check_eq!(f.roots()?, roots);
+    check_eq!(
         world::service(&f.engine.world)?
             .0
             .lock()
@@ -225,11 +225,11 @@ fn missing_account_keeps_recovery_custody_after_complete_owner_audit() -> TestRe
             .collect::<Vec<_>>(),
         vec![binding.account]
     );
-    assert_eq!(
+    check_eq!(
         registry_recovery::unavailable(&f.engine.world, binding),
         Some(registry_recovery::Unavailable::MissingAccount)
     );
-    assert!(
+    check!(
         f.disk
             .keys()
             .any(|(_, key)| key.starts_with("action-state/capacity/v1/"))
@@ -250,7 +250,7 @@ fn unavailable_boot_principals_have_explicit_retained_dispositions() -> TestResu
         character: ObjId(u32::MAX),
         run: RunId(1),
     };
-    assert_eq!(
+    check_eq!(
         unavailable(&world, binding),
         Some(Unavailable::MissingActor)
     );
@@ -258,7 +258,7 @@ fn unavailable_boot_principals_have_explicit_retained_dispositions() -> TestResu
         character: GOD,
         ..binding
     };
-    assert_eq!(
+    check_eq!(
         unavailable(&world, binding),
         Some(Unavailable::MissingAccount)
     );
@@ -267,10 +267,10 @@ fn unavailable_boot_principals_have_explicit_retained_dispositions() -> TestResu
         .ok_or("actor")?
         .flags
         .insert(mush_core::Flags::GOING);
-    assert_eq!(unavailable(&world, binding), Some(Unavailable::GoingActor));
+    check_eq!(unavailable(&world, binding), Some(Unavailable::GoingActor));
     let actor = world.get_mut(GOD).ok_or("actor")?;
     actor.flags.remove(mush_core::Flags::GOING);
     actor.kind = mush_core::ObjKind::Thing;
-    assert_eq!(unavailable(&world, binding), Some(Unavailable::NotPlayer));
+    check_eq!(unavailable(&world, binding), Some(Unavailable::NotPlayer));
     Ok(())
 }

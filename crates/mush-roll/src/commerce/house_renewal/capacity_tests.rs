@@ -86,7 +86,7 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
         b.economics.product_digest(),
         b.economics.grant().clone(),
     )?;
-    assert_eq!(
+    check_eq!(
         canonical_json_bytes_with_limit(&document(&f.house_economics, &max), 8192)?.len(),
         8192
     );
@@ -111,8 +111,8 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
     for make in rows {
         let row = make(&opened, &funded)?;
         let bytes = serde_json::to_vec(&row)?;
-        assert_eq!(RenewalOperationV1::decode(&bytes)?, row);
-        assert!(
+        check_eq!(RenewalOperationV1::decode(&bytes)?, row);
+        check!(
             canonical_json_bytes_with_limit(
                 &document(&f.house_renewal_operations, &row),
                 RenewalOperationV1::MAX_BYTES
@@ -120,7 +120,7 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
             .is_ok()
         );
         let head = RenewalHeadV1::for_operation(&row)?;
-        assert!(
+        check!(
             canonical_json_bytes_with_limit(
                 &document(&f.house_renewal_heads, &head),
                 RenewalHeadV1::MAX_BYTES
@@ -129,21 +129,21 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
         );
         if row.state().granted() {
             let (licence, term, economics) = row.granted_rows()?;
-            assert!(
+            check!(
                 canonical_json_bytes_with_limit(
                     &document(&f.paid_licences, &licence),
                     PersonalPaidLicence::MAX_BYTES
                 )
                 .is_ok()
             );
-            assert!(
+            check!(
                 canonical_json_bytes_with_limit(
                     &document(&f.paid_terms, &term),
                     PaidTermRecord::MAX_BYTES
                 )
                 .is_ok()
             );
-            assert!(
+            check!(
                 canonical_json_bytes_with_limit(
                     &document(&f.house_economics, &economics),
                     HouseTermEconomicsV1::MAX_BYTES
@@ -153,7 +153,7 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
         }
     }
     let oversized = wide_birth(width.checked_add(1).ok_or("width")?)?;
-    assert!(
+    check!(
         crate::commerce::house_purchase::admission_capacity::check(
             &f.house_economics,
             &oversized.economics

@@ -91,7 +91,7 @@ fn capture(
     let driven = engine
         .take_observed_authoritative_submit()
         .ok_or("actual queue handoff")?;
-    assert!(driven.is_observed());
+    check!(driven.is_observed());
     let (selector, driver) = driven.into_parts();
     let proof = *driver
         .ok_or("actual runtime state")?
@@ -135,24 +135,24 @@ fn sixty_four_unresolved_attempts_refuse_the_next_without_replacing_any_observat
             ))
         })
         .collect::<TestResult<Vec<_>>>()?;
-    assert_eq!(runtime.entries.len(), 64);
+    check_eq!(runtime.entries.len(), 64);
     for _ in 0..3 {
-        assert!(runtime.admit(operation(65), GOD).is_err());
-        assert!(!runtime.entries.contains_key(&operation(65)));
-        assert_eq!(runtime.entries.len(), 64);
+        check!(runtime.admit(operation(65), GOD).is_err());
+        check!(!runtime.entries.contains_key(&operation(65)));
+        check_eq!(runtime.entries.len(), 64);
     }
-    assert!(runtime.admit(operation(1), ObjId(2)).is_err());
-    assert!(
+    check!(runtime.admit(operation(1), ObjId(2)).is_err());
+    check!(
         runtime.admit(operation(1), GOD)?.attempt.is_some(),
         "existing custody survives saturation"
     );
     for (id, buyer, after, action) in &snapshot {
         let entry = runtime.entries.get_mut(id).ok_or("retained entry")?;
-        assert_eq!(&entry.buyer, buyer);
-        assert_eq!(&entry.schedule_after, after);
+        check_eq!(&entry.buyer, buyer);
+        check_eq!(&entry.schedule_after, after);
         let (actual, observation) = entry.attempt.as_mut().ok_or("retained observation")?;
-        assert_eq!(&*actual, action);
-        assert_eq!(observation.take_terminal(), None);
+        check_eq!(&*actual, action);
+        check_eq!(observation.take_terminal(), None);
     }
     // Independently completing one exact backend proves the preserved handle
     // was not silently replaced, duplicated or borrowed from another entry.
@@ -163,7 +163,7 @@ fn sixty_four_unresolved_attempts_refuse_the_next_without_replacing_any_observat
         .store(true, Ordering::Release);
     for (id, entry) in &mut runtime.entries {
         let (_, observation) = entry.attempt.as_mut().ok_or("held observation")?;
-        assert_eq!(
+        check_eq!(
             observation.take_terminal(),
             if *id == selected {
                 Some(SubmissionDisposition::NoIntent)
@@ -171,10 +171,10 @@ fn sixty_four_unresolved_attempts_refuse_the_next_without_replacing_any_observat
                 None
             }
         );
-        assert_eq!(observation.take_terminal(), None);
+        check_eq!(observation.take_terminal(), None);
     }
-    assert_eq!(runtime.entries.len(), 64);
-    assert!(
+    check_eq!(runtime.entries.len(), 64);
+    check!(
         runtime.admit(operation(65), GOD).is_err(),
         "a terminal observation alone does not evict custody"
     );

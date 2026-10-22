@@ -62,7 +62,7 @@ fn probe(world: &mut PlayerWorld, conn: u64, verb: &str, accepted: bool) -> Test
             line: format!("@authored-probe {verb}"),
         },
     )?;
-    assert!(
+    check!(
         events.iter().any(
             |(_, event)| mush_testkit::text_of(event).contains(if accepted {
                 "probe accepted"
@@ -247,7 +247,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
     // Explicitly disabling fork support refuses retained marked records at the
     // real final owner audit; it cannot silently load them as original source.
     assert!(
-        PlayerWorld::boot(f, saved).is_err(),
+        crate::test_checks::refused(PlayerWorld::boot(f, saved))?,
         "default composition cannot reinterpret marked records"
     );
     // A raw status bit without its actual acknowledged cause is corruption,
@@ -259,7 +259,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
             Ok(())
         })?;
         assert!(
-            PlayerWorld::boot_forks(f, &changed, true).is_err(),
+            crate::test_checks::refused(PlayerWorld::boot_forks(f, &changed, true))?,
             "uncorroborated status must fail the actual cold audit"
         );
     }

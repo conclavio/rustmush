@@ -89,7 +89,7 @@ fn advance(trial: &mut Trial) -> Result<Option<CaseResult>, RatingError> {
 
 fn until_invoked(trial: &mut Trial) -> TestResult {
     for _ in 0..80 {
-        assert!(advance(trial)?.is_none(), "no early fabricated terminal");
+        check!(advance(trial)?.is_none(), "no early fabricated terminal");
         if trial.meter.measurement()?.summary.thinks() > 0 {
             return Ok(());
         }
@@ -99,7 +99,7 @@ fn until_invoked(trial: &mut Trial) -> TestResult {
 
 fn mutate_core(arena: &mut Arena, id: ObjId, consequence: Consequence) -> TestResult {
     let ops = arena.core_ops(id, &[consequence]);
-    assert!(!ops.is_empty(), "actual held core must change");
+    check!(!ops.is_empty(), "actual held core must change");
     let plan = UnitMutationPlan::new(ops, None, Some("registry-test-core-consequence".into()))?;
     let unit = &arena.unit(id).ok_or("candidate hull")?.unit;
     let (post, _) = mush_tactics::apply(unit, &plan, 0)?;
@@ -122,42 +122,43 @@ fn physical_core_loss_keeps_in_flight_source_and_excludes_subsequent_rom() -> Te
     let (mut trial, _) = open(SOURCE, RatingClass::I, false)?;
     until_invoked(&mut trial)?;
     let id = candidate(&trial)?;
-    assert!(
+    check!(
         trial.arena.minds.get(&id).ok_or("mind")?.pending.is_some(),
         "first source answer has been measured but its native landing is still pending"
     );
     let before = trial.meter.measurement()?;
     mutate_core(&mut trial.arena, id, Consequence::DestroyCore)?;
-    assert!(trial.arena.core_of(id).is_none());
-    assert!(advance(&mut trial)?.is_none());
+    check!(trial.arena.core_of(id).is_none());
+    check!(advance(&mut trial)?.is_none());
     let first = trial.arena.minds.get(&id).ok_or("mind")?;
-    assert_eq!(first.dropped, Some(DropCause::Core));
+    check_eq!(first.dropped, Some(DropCause::Core));
     let memory: serde_json::Value = serde_json::from_slice(&first.memory)?;
-    assert_eq!(
+    check_eq!(
         memory.get("calls").and_then(serde_json::Value::as_u64),
         Some(1),
         "the source answer collected before damage lands before any ROM memory replacement"
     );
     for _ in 0..80 {
-        assert!(advance(&mut trial)?.is_none());
+        check!(advance(&mut trial)?.is_none());
         if physical(&trial)?.rom_thinks >= 2 {
             break;
         }
     }
     let after = trial.meter.measurement()?;
-    assert_eq!(
-        after.summary, before.summary,
+    check_eq!(
+        after.summary,
+        before.summary,
         "ROM gives no source cost or invocation credit"
     );
-    assert_eq!(after.seen, before.seen);
-    assert!(physical(&trial)?.rom_thinks >= 2);
-    assert_eq!(
+    check_eq!(after.seen, before.seen);
+    check!(physical(&trial)?.rom_thinks >= 2);
+    check_eq!(
         physical(&trial)?.total_thinks,
         before.summary.thinks() + physical(&trial)?.rom_thinks
     );
     let mind = trial.arena.minds.get(&id).ok_or("mind")?;
-    assert_eq!(mind.dropped, Some(DropCause::Core));
-    assert_eq!(mind.strikes, 0);
+    check_eq!(mind.dropped, Some(DropCause::Core));
+    check_eq!(mind.strikes, 0);
     Ok(())
 }
 
@@ -175,50 +176,50 @@ fn physical_nonzero_degradation_and_present_zero_have_separate_actual_measuremen
         .clone();
     let before = trial.meter.measurement()?;
     mutate_core(&mut trial.arena, id, Consequence::DegradeCore)?;
-    assert_eq!(
+    check_eq!(
         trial.arena.core_of(id).ok_or("present core")?.class,
         CoreClass::I
     );
     for _ in 0..80 {
-        assert!(advance(&mut trial)?.is_none());
+        check!(advance(&mut trial)?.is_none());
         if physical(&trial)?.degraded_thinks >= 2 {
             break;
         }
     }
     let degraded = physical(&trial)?;
-    assert!(
+    check!(
         degraded.degraded_thinks >= 2
             && degraded.degraded_max_ops > 0
             && degraded.degraded_max_fees > 0
     );
-    assert_eq!(degraded.degraded_ops_faults, 0);
-    assert_eq!(degraded.rom_thinks, 0);
-    assert_eq!(trial.meter.measurement()?.summary, before.summary);
-    assert_eq!(trial.meter.measurement()?.seen, before.seen);
-    assert_eq!(
+    check_eq!(degraded.degraded_ops_faults, 0);
+    check_eq!(degraded.rom_thinks, 0);
+    check_eq!(trial.meter.measurement()?.summary, before.summary);
+    check_eq!(trial.meter.measurement()?.seen, before.seen);
+    check_eq!(
         trial.arena.profiles.get(&id).ok_or("runtime")?.program,
         source_binding
     );
-    assert!(trial.arena.minds.get(&id).ok_or("mind")?.dropped.is_none());
+    check!(trial.arena.minds.get(&id).ok_or("mind")?.dropped.is_none());
     mutate_core(&mut trial.arena, id, Consequence::DegradeCore)?;
-    assert_eq!(
+    check_eq!(
         trial.arena.core_of(id).ok_or("present Zero core")?.class,
         CoreClass::Zero
     );
     for _ in 0..80 {
-        assert!(advance(&mut trial)?.is_none());
+        check!(advance(&mut trial)?.is_none());
         if physical(&trial)?.rom_thinks >= 2 {
             break;
         }
     }
-    assert!(physical(&trial)?.rom_thinks >= 2);
-    assert!(
+    check!(physical(&trial)?.rom_thinks >= 2);
+    check!(
         trial.arena.minds.get(&id).ok_or("mind")?.dropped.is_none(),
         "present class Zero legitimately uses stand-in without a Core drop marker"
     );
-    assert!(!trial.arena.profiles.get(&id).ok_or("runtime")?.dropped);
-    assert_eq!(trial.meter.measurement()?.summary, before.summary);
-    assert_eq!(trial.meter.measurement()?.seen, before.seen);
+    check!(!trial.arena.profiles.get(&id).ok_or("runtime")?.dropped);
+    check_eq!(trial.meter.measurement()?.summary, before.summary);
+    check_eq!(trial.meter.measurement()?.seen, before.seen);
     Ok(())
 }
 
@@ -227,7 +228,7 @@ fn present_zero_does_not_hide_an_actual_stand_in_card_fault() -> TestResult {
     let (mut trial, _) = open(SOURCE, RatingClass::I, false)?;
     until_invoked(&mut trial)?;
     let id = candidate(&trial)?;
-    assert!(
+    check!(
         trial
             .arena
             .profiles
@@ -250,16 +251,16 @@ fn present_zero_does_not_hide_an_actual_stand_in_card_fault() -> TestResult {
             break;
         }
     }
-    assert!(
+    check!(
         refused,
         "real native stand-in profile fault is not excused by physical loss"
     );
-    assert_eq!(
+    check_eq!(
         trial.arena.core_of(id).ok_or("present Zero core")?.class,
         CoreClass::Zero
     );
-    assert!(trial.arena.minds.get(&id).ok_or("mind")?.strikes > 0);
-    assert!(trial.meter.measurement().is_err());
+    check!(trial.arena.minds.get(&id).ok_or("mind")?.strikes > 0);
+    check!(trial.meter.measurement().is_err());
     Ok(())
 }
 
@@ -271,7 +272,7 @@ fn lower_class_source_operations_fault_is_retained_without_tested_class_promotio
     until_invoked(&mut trial)?;
     let id = candidate(&trial)?;
     let before = trial.meter.measurement()?;
-    assert!(before.summary.clean());
+    check!(before.summary.clean());
     mutate_core(&mut trial.arena, id, Consequence::DegradeCore)?;
     let mut refused = false;
     for _ in 0..80 {
@@ -285,22 +286,22 @@ fn lower_class_source_operations_fault_is_retained_without_tested_class_promotio
             Err(error) => return Err(error.into()),
         }
     }
-    assert!(refused);
+    check!(refused);
     let after = trial.meter.measurement()?;
-    assert_eq!(after.summary, before.summary);
-    assert_eq!(after.seen, before.seen);
+    check_eq!(after.summary, before.summary);
+    check_eq!(after.seen, before.seen);
     let physical = after.physical.ok_or("physical measurement")?;
-    assert_eq!(physical.degraded_ops_faults, 1);
-    assert_eq!(physical.degraded_thinks, 1);
-    assert_eq!(trial.arena.minds.get(&id).ok_or("mind")?.strikes, 1);
-    assert_eq!(trial.arena.mind_class(id), CoreClass::I);
+    check_eq!(physical.degraded_ops_faults, 1);
+    check_eq!(physical.degraded_thinks, 1);
+    check_eq!(trial.arena.minds.get(&id).ok_or("mind")?.strikes, 1);
+    check_eq!(trial.arena.mind_class(id), CoreClass::I);
     Ok(())
 }
 
 #[test]
 fn physical_cycle_trial_reaches_real_terminal_with_identical_unmetered_hashes() -> TestResult {
     let (mut trial, subject) = open(SOURCE, RatingClass::I, true)?;
-    assert!(trial.cycle && trial.profiles > 1);
+    check!(trial.cycle && trial.profiles > 1);
     until_invoked(&mut trial)?;
     let id = candidate(&trial)?;
     mutate_core(&mut trial.arena, id, Consequence::DestroyCore)?;
@@ -315,32 +316,32 @@ fn physical_cycle_trial_reaches_real_terminal_with_identical_unmetered_hashes() 
         terminal = advance(&mut trial)?;
         let out = twin.step_settled(trial.wall, &[], &[]);
         drain(&mut twin, &out.ledger_chunks)?;
-        assert_eq!(
+        check_eq!(
             crate::arena::state_hash(&trial.arena),
             crate::arena::state_hash(&twin)
         );
-        assert_eq!(trial.arena.ledger.digest(), twin.ledger.digest());
-        assert_eq!(trial.arena.now_ms, twin.now_ms);
+        check_eq!(trial.arena.ledger.digest(), twin.ledger.digest());
+        check_eq!(trial.arena.now_ms, twin.now_ms);
         if terminal.is_some() {
             break;
         }
     }
     let terminal = terminal.ok_or("ordinary real combat must reach its bounded terminal")?;
-    assert!(trial.arena.ended.is_some() && twin.ended.is_some());
-    assert!(
+    check!(trial.arena.ended.is_some() && twin.ended.is_some());
+    check!(
         trial.arena.now_ms >= 10_000,
         "crossed the real cycle deadline"
     );
-    assert!(
+    check!(
         trial.next_cycle_ms > 10_000,
         "physical ROM did not make cycling fail"
     );
-    assert!(matches!(terminal.outcome(), CaseOutcome::Conformant {}));
-    assert!(terminal.coverage().complete());
-    assert_eq!(terminal.meter(), &before.summary);
+    check!(matches!(terminal.outcome(), CaseOutcome::Conformant {}));
+    check!(terminal.coverage().complete());
+    check_eq!(terminal.meter(), &before.summary);
     let observed = physical(&trial)?;
-    assert!(observed.rom_thinks > 0);
-    assert_eq!(observed.cancelled_uncalled, 1, "actual final wreck suffix");
+    check!(observed.rom_thinks > 0);
+    check_eq!(observed.cancelled_uncalled, 1, "actual final wreck suffix");
     trial.meter.require_complete()?;
     Ok(())
 }
@@ -363,14 +364,14 @@ fn physical_loss_before_any_tested_invocation_cannot_satisfy_trial_coverage() ->
             Err(error) => return Err(error.into()),
         }
     }
-    assert!(
+    check!(
         refused,
         "real terminal retains missing tested-source coverage refusal"
     );
     let measured = trial.meter.measurement()?;
-    assert_eq!(measured.summary.thinks(), 0);
-    assert!(measured.seen.iter().flatten().all(|count| *count == 0));
-    assert!(physical(&trial)?.rom_thinks > 0);
+    check_eq!(measured.summary.thinks(), 0);
+    check!(measured.seen.iter().flatten().all(|count| *count == 0));
+    check!(physical(&trial)?.rom_thinks > 0);
     Ok(())
 }
 
@@ -393,21 +394,21 @@ fn physical_loss_after_real_source_fault_does_not_erase_the_fault() -> TestResul
             }
             trial.meter.reconcile(&trial.arena)?;
         }
-        assert_eq!(trial.arena.minds.get(&id).ok_or("mind")?.strikes, 1);
+        check_eq!(trial.arena.minds.get(&id).ok_or("mind")?.strikes, 1);
         mutate_core(&mut trial.arena, id, Consequence::DestroyCore)?;
         let joined = trial.meter.reconcile(&trial.arena);
         if ops {
             joined?;
             let measured = trial.meter.measurement()?;
-            assert!(measured.summary.only_budget_faults());
-            assert_eq!(measured.summary.ops_faults(), 1);
-            assert_eq!(measured.summary.thinks(), 1);
+            check!(measured.summary.only_budget_faults());
+            check_eq!(measured.summary.ops_faults(), 1);
+            check_eq!(measured.summary.thinks(), 1);
         } else {
-            assert!(
+            check!(
                 joined.is_err(),
                 "real interpreter fault remains a refusal after core loss"
             );
-            assert!(trial.meter.measurement().is_err());
+            check!(trial.meter.measurement().is_err());
         }
     }
     Ok(())

@@ -99,7 +99,10 @@ impl RegistryRevocationPolicy {
         if self.format != 1
             || self.operators.is_empty()
             || self.operators.len() > 32
-            || self.operators.windows(2).any(|ids| ids[0] >= ids[1])
+            || self
+                .operators
+                .windows(2)
+                .any(|pair| matches!(pair, [a, b] if a >= b))
         {
             return Err(PublicationError::Invalid);
         }

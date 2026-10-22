@@ -103,7 +103,7 @@ fn prepare(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, action);
+    check_eq!(actual, action);
     let invocation = resolved.invocation().clone();
     let (p, output) = w
         .engine
@@ -230,9 +230,9 @@ fn receipt_at_acceptance(
                 && document["value"]["acceptance"] == json!(token(acceptance))
         })
         .ok_or("actual terminal receipt")?;
-    assert_eq!(document["key"], json!(token(acceptance)));
-    assert_eq!(document["value"]["operation"], json!(token(terminal)));
-    assert!(key.1.ends_with(&format!("/{}", token(acceptance).to_hex())));
+    check_eq!(document["key"], json!(token(acceptance)));
+    check_eq!(document["value"]["operation"], json!(token(terminal)));
+    check!(key.1.ends_with(&format!("/{}", token(acceptance).to_hex())));
     Ok(key.clone())
 }
 fn refuse_terminal_receipt_key(
@@ -242,7 +242,7 @@ fn refuse_terminal_receipt_key(
     terminal: u128,
 ) -> TestResult {
     let key = receipt_at_acceptance(w, acceptance, terminal)?;
-    assert_ne!(acceptance, terminal);
+    check_ne!(acceptance, terminal);
     let mut crossed = w.snapshot();
     let mut document = crossed.disk.remove(&key).ok_or("actual receipt")?;
     let prefix = key
@@ -254,8 +254,8 @@ fn refuse_terminal_receipt_key(
         (key.0, format!("{prefix}{}", token(terminal).to_hex())),
         document,
     );
-    assert!(
-        w.reboot(f, &crossed).is_err(),
+    check!(
+        crate::test_checks::refused(w.reboot(f, &crossed))?,
         "terminal-keyed receipt escaped the reserved acceptance"
     );
     Ok(())
@@ -321,21 +321,18 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
     let seller = balance(&w, WalletId(2))?;
     let buyer = balance(&w, WalletId(0))?;
     offer(&mut w, START, BUYER, GOD, 2)?;
-    assert_eq!(pointer(&w)?, before, "offer changed the holder");
-    assert!(
-        prepare(
-            &mut w,
-            ACCEPT,
-            1,
-            BUYER,
-            START + 1,
-            json!({"offer":token(START),"payer":2}),
-            None
-        )
-        .is_err()
-    );
-    assert!(
-        prepare(
+    check_eq!(pointer(&w)?, before, "offer changed the holder");
+    check!(crate::test_checks::refused(prepare(
+        &mut w,
+        ACCEPT,
+        1,
+        BUYER,
+        START + 1,
+        json!({"offer":token(START),"payer":2}),
+        None
+    ))?);
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             FUND,
             1,
@@ -343,8 +340,7 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
             START + 2,
             json!({"offer":token(START),"payer":0}),
             None
-        )
-        .is_err(),
+        ))?,
         "zero claims admitted pending custody"
     );
     let p = prepare(
@@ -362,34 +358,34 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
         .take_staged_action()?
         .ok_or("actual resale custody")?;
     let (bundle, install) = staged.into_parts();
-    assert_eq!(pointer(&w)?, before, "pre-ACK holder changed");
+    check_eq!(pointer(&w)?, before, "pre-ACK holder changed");
     let mut crash = w.snapshot();
     retain_writes(&mut crash.disk, bundle.writes())?;
     let mut cold = w.reboot(f, &crash)?;
     let changed = pointer(&cold)?;
-    assert_eq!(changed.holder(), GOD);
-    assert_eq!(changed.id(), before.id());
-    assert_eq!(changed.term(), before.term());
-    assert_eq!(changed.operation(), before.operation());
-    assert_eq!(changed.ownership().ok_or("captured holder")?.generation, 2);
-    assert_eq!(rows(&cold.disk, "roll", "roll_mind_paid_term"), term);
-    assert_eq!(
+    check_eq!(changed.holder(), GOD);
+    check_eq!(changed.id(), before.id());
+    check_eq!(changed.term(), before.term());
+    check_eq!(changed.operation(), before.operation());
+    check_eq!(changed.ownership().ok_or("captured holder")?.generation, 2);
+    check_eq!(rows(&cold.disk, "roll", "roll_mind_paid_term"), term);
+    check_eq!(
         rows(&cold.disk, "roll", "roll_mind_paid_purchase"),
         allocation
     );
-    assert_eq!(
+    check_eq!(
         history(&cold, START + 3)?.outcome(),
         mush_economy::managed_paid_resale::PaidResaleOutcome::Settled
     );
-    assert!(balance(&cold, WalletId(2))?.0 > seller.0);
-    assert!(balance(&cold, WalletId(0))?.0 < buyer.0);
+    check!(balance(&cold, WalletId(2))?.0 > seller.0);
+    check!(balance(&cold, WalletId(0))?.0 < buyer.0);
     retain_writes(&mut w.disk, bundle.writes())?;
     w.engine.install_composed_action(install)?;
-    assert_eq!(pointer(&w)?, changed);
-    assert_eq!(history(&w, START + 3)?, history(&cold, START + 3)?);
+    check_eq!(pointer(&w)?, changed);
+    check_eq!(history(&w, START + 3)?, history(&cold, START + 3)?);
     receipt_at_acceptance(&w, START + 3, START + 3)?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut cold,
             ACCEPT,
             1,
@@ -397,11 +393,10 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
             START + 4,
             json!({"offer":token(START),"payer":0}),
             None
-        )
-        .is_err(),
+        ))?,
         "offer accepted twice"
     );
-    assert!(
+    check!(
         cold.ticket(BUYER, cold.hulls[0], before.id().get())
             .and_then(|t| cold.prepare(&t, START + 5))
             .is_err(),
@@ -415,8 +410,8 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
         .into_iter()
         .find(|v| v["open"]["operation"] == json!(token(START + 6)))
         .ok_or("actual transferred claim")?;
-    assert_eq!(claim["format"], 3);
-    assert_eq!(claim["open"]["paid_ownership"]["generation"], 2);
+    check_eq!(claim["format"], 3);
+    check_eq!(claim["open"]["paid_ownership"]["generation"], 2);
     // Cold completeness is tested against actual installed paired images.
     for (owner, family) in [
         ("roll", ROLL),
@@ -432,8 +427,8 @@ fn immediate(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRe
             .cloned()
             .ok_or("actual retained family")?;
         missing.disk.remove(&k);
-        assert!(
-            w.reboot(f, &missing).is_err(),
+        check!(
+            crate::test_checks::refused(w.reboot(f, &missing))?,
             "missing paired resale row accepted"
         );
     }
@@ -461,9 +456,9 @@ fn next(w: &mut IcWorld, id: &str) -> TestResult<(Box<AuthoritativeSubmit>, Arc<
         value = w.engine.take_observed_authoritative_submit();
     }
     let (request, proof) = value.ok_or("actual resale service selector")?.into_parts();
-    assert_eq!(request.actor, GOD);
-    assert_eq!(request.action.key().id.as_str(), id);
-    assert_eq!(request.parameters, json!({}));
+    check_eq!(request.actor, GOD);
+    check_eq!(request.action.key().id.as_str(), id);
+    check_eq!(request.parameters, json!({}));
     let proof = *proof
         .ok_or("actual observation")?
         .downcast::<Arc<AtomicBool>>()
@@ -494,10 +489,10 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
     let ticket = w.ticket(BUYER, hull, before.id().get())?;
     w.land(&ticket, n, hull, false)?;
     let claim = one(rows(&w.disk, "roll", "roll_mind_ic_claim"))?;
-    assert_eq!(claim["format"], 1);
+    check_eq!(claim["format"], 1);
     offer(&mut w, n + 1, BUYER, GOD, 2)?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             ACCEPT,
             1,
@@ -505,23 +500,22 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
             n + 2,
             json!({"offer":token(n+1),"payer":0}),
             None
-        )
-        .is_err(),
+        ))?,
         "occupied licence admitted immediate sale"
     );
     let cash = balance(&w, WalletId(0))?;
     buy(&mut w, n + 3, n + 1, FUND, GOD, 0)?;
-    assert_eq!(pointer(&w)?, before);
-    assert_eq!(balance(&w, WalletId(0))?.0, cash.0);
-    assert_eq!(
+    check_eq!(pointer(&w)?, before);
+    check_eq!(balance(&w, WalletId(0))?.0, cash.0);
+    check_eq!(
         balance(&w, WalletId(0))?.1,
         cash.1.checked_add(Amount::from_minor(100)).ok_or("held")?
     );
-    assert!(
-        prepare(&mut w, SETTLE, 1, GOD, n + 4, json!({}), None).is_err(),
+    check!(
+        crate::test_checks::refused(prepare(&mut w, SETTLE, 1, GOD, n + 4, json!({}), None))?,
         "direct service invocation gained authority"
     );
-    assert!(
+    check!(
         w.ticket(BUYER, w.hulls[1], before.id().get())
             .and_then(|t| w.prepare(&t, n + 5))
             .is_err(),
@@ -530,13 +524,13 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
     let funded = w.snapshot();
     let mut w = w.reboot(f, &funded)?;
     w.engine.set_submission_runtime(Arc::new(Runtime))?;
-    assert_eq!(pointer(&w)?, before);
-    assert!(w.held(hull)?);
+    check_eq!(pointer(&w)?, before);
+    check!(w.held(hull)?);
     let id = if mode == 2 {
         // The service actor stays live. A real account-policy command makes
         // the accepted payer unavailable under the native consent predicate.
         w.command("@account/approval 0=1 threshold:1")?;
-        assert_eq!(
+        check_eq!(
             w.engine
                 .world
                 .module_state::<mush_economy::EconomyStore>()
@@ -559,35 +553,35 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
     };
     let (selector, proof) = next(&mut w, id)?;
     pulse(&mut w)?;
-    assert!(
+    check!(
         w.engine.take_observed_authoritative_submit().is_none(),
         "Unknown was resubmitted"
     );
     proof.store(true, Ordering::Release);
     let (retry, _) = next(&mut w, id)?;
-    assert_eq!(selector.key, retry.key);
-    assert_eq!(selector.parameters, retry.parameters);
+    check_eq!(selector.key, retry.key);
+    check_eq!(selector.parameters, retry.parameters);
     let p = terminal(&mut w, &retry, n + 7)?;
     land(&mut w, p)?;
-    assert_eq!(balance(&w, WalletId(0))?.1, cash.1);
+    check_eq!(balance(&w, WalletId(0))?.1, cash.1);
     if mode == 2 {
-        assert_eq!(pointer(&w)?, before);
-        assert_eq!(balance(&w, WalletId(0))?.0, cash.0);
-        assert_eq!(
+        check_eq!(pointer(&w)?, before);
+        check_eq!(balance(&w, WalletId(0))?.0, cash.0);
+        check_eq!(
             history(&w, n + 3)?.outcome(),
             mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
         );
     } else {
-        assert_eq!(pointer(&w)?.holder(), GOD);
-        assert_eq!(
+        check_eq!(pointer(&w)?.holder(), GOD);
+        check_eq!(
             history(&w, n + 3)?.outcome(),
             mush_economy::managed_paid_resale::PaidResaleOutcome::Settled
         );
         if mode == 1 {
-            assert!(w.held(hull)?, "deadline erased an old captured warrant");
-            assert_eq!(one(rows(&w.disk, "roll", "roll_mind_ic_claim"))?, claim);
+            check!(w.held(hull)?, "deadline erased an old captured warrant");
+            check_eq!(one(rows(&w.disk, "roll", "roll_mind_ic_claim"))?, claim);
             w.command(&format!("@asset/transfer #{}=#{}", w.hulls[1].0, GOD.0))?;
-            assert!(
+            check!(
                 w.ticket(GOD, w.hulls[1], before.id().get())
                     .and_then(|t| w.prepare(&t, n + 8))
                     .is_err(),
@@ -596,8 +590,8 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
         }
     }
     let cold = w.reboot(f, &w.snapshot())?;
-    assert_eq!(pointer(&cold)?, pointer(&w)?);
-    assert_eq!(history(&cold, n + 3)?, history(&w, n + 3)?);
+    check_eq!(pointer(&cold)?, pointer(&w)?);
+    check_eq!(history(&cold, n + 3)?, history(&w, n + 3)?);
     refuse_terminal_receipt_key(f, &cold, n + 3, n + 7)?;
     Ok(())
 }
@@ -616,20 +610,20 @@ fn lapsed(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestResul
     );
     offer(&mut w, START + 500, BUYER, GOD, 2)?;
     buy(&mut w, START + 501, START + 500, ACCEPT, GOD, 0)?;
-    assert_eq!(pointer(&w)?.holder(), GOD);
-    assert_eq!(pointer(&w)?.term(), original.term());
-    assert_eq!(
+    check_eq!(pointer(&w)?.holder(), GOD);
+    check_eq!(pointer(&w)?.term(), original.term());
+    check_eq!(
         one(rows(&w.disk, "roll", "roll_mind_paid_term"))?,
         serde_json::to_value(&term)?
     );
     w.command(&format!("@asset/transfer #{}=#{}", w.hulls[0].0, GOD.0))?;
-    assert!(
+    check!(
         w.ticket(GOD, w.hulls[0], original.id().get())
             .and_then(|t| w.prepare(&t, START + 502))
             .is_err(),
         "lapsed transfer revived use"
     );
-    assert_eq!(pointer(&w.reboot(f, &w.snapshot())?)?, pointer(&w)?);
+    check_eq!(pointer(&w.reboot(f, &w.snapshot())?)?, pointer(&w)?);
     Ok(())
 }
 fn compound(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestResult {
@@ -691,39 +685,39 @@ fn compound(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRes
         parameters.clone(),
         None,
     )?;
-    assert!(history(&w, START + 602)?.terminal().is_none());
-    assert!(rows(&w.disk, "roll", "roll_registry_term_revocations").is_empty());
+    check!(history(&w, START + 602)?.terminal().is_none());
+    check!(rows(&w.disk, "roll", "roll_registry_term_revocations").is_empty());
     land(&mut w, p)?;
-    assert_eq!(pointer(&w)?, before);
-    assert_eq!(balance(&w, WalletId(0))?, money);
+    check_eq!(pointer(&w)?, before);
+    check_eq!(balance(&w, WalletId(0))?, money);
     refuse_terminal_receipt_key(f, &w, START + 602, START + 603)?;
     let h = history(&w, START + 602)?;
-    assert_eq!(
+    check_eq!(
         h.outcome(),
         mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
     );
-    assert_eq!(
+    check_eq!(
         h.terminal().ok_or("actual refund")?.decision().operation,
         token(START + 603)
     );
-    assert_eq!(
+    check_eq!(
         rows(&w.disk, "roll", "roll_registry_term_revocations").len(),
         1
     );
-    assert_eq!(
+    check_eq!(
         rows(&w.disk, "roll", "roll_registry_revoked_terms").len(),
         1
     );
-    assert!(w.held(hull)?);
-    assert!(w.host.resume(&w.engine.world, token(START + 600)).is_ok());
+    check!(w.held(hull)?);
+    check!(w.host.resume(&w.engine.world, token(START + 600)).is_ok());
     let cold = w.reboot(f, &w.snapshot())?;
-    assert_eq!(history(&cold, START + 602)?, h);
+    check_eq!(history(&cold, START + 602)?, h);
     let mut corrupt = w.snapshot();
     corrupt
         .disk
         .retain(|_, v| v.pointer("/family/id") != Some(&json!("roll_registry_revoked_terms")));
-    assert!(
-        w.reboot(f, &corrupt).is_err(),
+    check!(
+        crate::test_checks::refused(w.reboot(f, &corrupt))?,
         "compound refund lost its actual sanction"
     );
     for phase in [0, 1] {
@@ -739,14 +733,14 @@ fn compound(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRes
         )?;
         if phase == 0 {
             branch.command("@org/status ResaleRegistry=suspended")?;
-            assert!(stage(&mut branch, p).is_err());
+            check!(stage(&mut branch, p).is_err());
         } else {
             stage(&mut branch, p)?;
             branch.command("@org/status ResaleRegistry=suspended")?;
-            assert!(branch.engine.take_staged_action().is_err());
+            check!(branch.engine.take_staged_action().is_err());
         }
-        assert!(history(&branch, START + 602)?.terminal().is_none());
-        assert!(rows(&branch.disk, "roll", "roll_registry_term_revocations").is_empty());
+        check!(history(&branch, START + 602)?.terminal().is_none());
+        check!(rows(&branch.disk, "roll", "roll_registry_term_revocations").is_empty());
     }
     Ok(())
 }
