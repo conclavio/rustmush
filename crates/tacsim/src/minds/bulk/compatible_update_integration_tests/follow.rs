@@ -306,10 +306,16 @@ pub(super) async fn exercise(
         let mut empty = boot(f, &Durable::capture(&cold.engine, &disk(&cold)), None)?;
         tasks.push(empty.tasks.clone());
         unavailable(&mut empty, START + 27)?;
-        let paid = empty.say(BUYER, "SIM MIND /filed")?;
+        // `/filed` lists owner licences only (the paid-holdings listing is a
+        // later feature); a paid Pin's usability is the actual selection.
+        empty.say(BUYER, "SIM TEAM red")?;
+        empty.say(BUYER, "SIM AI 1")?;
+        empty.say(BUYER, "SIM UNIT heavy_mk1")?;
+        let paid = empty.say(BUYER, "SIM MIND filed:2 PROFILE Default")?;
         assert!(
-            PlayerWorld::private_text(&paid, BUYER).contains("filed:2:"),
-            "paid Pin remains usable after author withdrawal"
+            PlayerWorld::private_text(&paid, BUYER).contains("Your slot will carry"),
+            "paid Pin remains usable after author withdrawal: {}",
+            PlayerWorld::private_text(&paid, BUYER)
         );
         // Broken newest history is not an eligibility omission, even after its
         // valid withdrawal. Complete cold reconstruction must refuse it.
