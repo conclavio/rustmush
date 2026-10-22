@@ -479,6 +479,19 @@ pub enum QuarantineBootError {
     SpoolTooLarge,
 }
 
+impl QuarantineBootError {
+    /// Whether this is the spool's lifetime lock held by another process
+    /// (the non-blocking lock answered "would block").
+    #[must_use]
+    pub fn is_lock_held(&self) -> bool {
+        matches!(self, QuarantineBootError::Io { source, .. }
+            if source.kind() == std::io::ErrorKind::WouldBlock)
+    }
+}
+
+/// How often [`QuarantineSpool::open_waiting`] tries the lock again.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A runtime failure preserving a newly confirmed persistence incident.
 #[derive(Debug, thiserror::Error)]
 pub enum QuarantineWriteError {
@@ -703,6 +716,38 @@ pub struct QuarantineSpool {
 
 impl QuarantineSpool {
     /// Open (creating if absent) and exhaustively validate a durable spool.
+    /// [`open`](Self::open), waiting up to `wait` while the spool's lifetime
+    /// lock is held by another process — a predecessor still exiting, as on a
+    /// unit restart whose old server child outlived the stop (dev2,
+    /// 2026-10-22). `on_wait` is called once, when the first attempt finds the
+    /// lock held. Any other error, or a lock still held at the deadline, is
+    /// returned as [`open`](Self::open) returns it: a second LIVE server is
+    /// refused exactly as before, a little later.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open).
+    pub fn open_waiting(
+        path: impl Into<PathBuf>,
+        wait: std::time::Duration,
+        on_wait: impl FnOnce(),
+    ) -> Result<Self, QuarantineBootError> {
+        let path = path.into();
+        let deadline = std::time::Instant::now() + wait;
+        let mut on_wait = Some(on_wait);
+        loop {
+            match Self::open(path.clone()) {
+                Err(error) if error.is_lock_held() && std::time::Instant::now() < deadline => {
+                    if let Some(tell) = on_wait.take() {
+                        tell();
+                    }
+                    std::thread::sleep(LOCK_RETRY);
+                }
+                other => return other,
+            }
+        }
+    }
+
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, QuarantineBootError> {
         let requested_path = path.into();
         let created =
@@ -3098,6 +3143,51 @@ mod tests {
                 .is_empty(),
             "recovery must not duplicate an append whose identity is unknowable"
         );
+    }
+
+    /// The restart race (dev2, 2026-10-22): a new server opening the spool
+    /// while its predecessor still holds the lifetime lock. `open` refuses at
+    /// once; `open_waiting` waits for the release and then opens, says so
+    /// once, and still refuses a holder that outlasts the wait.
+    #[test]
+    fn open_waiting_outlasts_an_exiting_predecessor_but_not_a_live_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "rustmush-quarantine-lockwait-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let held = QuarantineSpool::open(&dir).unwrap();
+        let refused = QuarantineSpool::open(&dir).expect_err("a held lock refuses");
+        assert!(refused.is_lock_held(), "{refused}");
+
+        // A live holder that outlasts the wait: refused, with the same error.
+        let mut told = 0;
+        let start = std::time::Instant::now();
+        let still =
+            QuarantineSpool::open_waiting(&dir, std::time::Duration::from_millis(300), || {
+                told += 1;
+            })
+            .expect_err("a holder past the deadline is refused");
+        assert!(still.is_lock_held());
+        assert!(start.elapsed() >= std::time::Duration::from_millis(300));
+        assert_eq!(told, 1, "told once");
+
+        // A predecessor that exits 300 ms in: opened after it.
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        let start = std::time::Instant::now();
+        let opened = QuarantineSpool::open_waiting(&dir, std::time::Duration::from_secs(10), || {});
+        releaser.join().unwrap();
+        assert!(opened.is_ok(), "{:?}", opened.err());
+        assert!(start.elapsed() >= std::time::Duration::from_millis(250));
+        drop(opened);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(lock_path_for(&dir).unwrap());
     }
 
     #[tokio::test]

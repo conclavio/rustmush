@@ -34,8 +34,13 @@ ExecReload=/bin/kill -HUP $MAINPID
 # it owns the SSH + web sockets). Server-child deaths never reach here.
 Restart=on-failure
 RestartSec=5
-# On stop, SIGTERM the gateway; it reaps the server child via kill_on_drop, and
-# the control-group sweep catches any straggler.
+# On stop, SIGTERM the gateway; it closes the boundary so the server child shuts
+# down cleanly, waits up to 20 s for the child to exit, then exits itself (the
+# child is killed via kill_on_drop only if it overran). The stop therefore ends
+# with the child gone: the control-group sweep is a backstop that cannot be
+# relied on (on conclav.io it fails with EINVAL and systemd starts the next
+# instance at once). A server that still finds the quarantine spool's lock held
+# at boot waits up to 15 s for it before refusing.
 KillMode=mixed
 
 # The gateway<->server IPC UNIX SOCKET lives at /run/rustmush/dev1.sock.

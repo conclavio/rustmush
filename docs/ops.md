@@ -2117,6 +2117,21 @@ $MAINPID`. The LLM key `EnvironmentFile` is injected into the gateway and
 Full walkthrough (first switch, redeploy, switch back, adapting to another
 instance) is in `deploy/dev1-split/README.md`.
 
+**A full restart waits for the server.** `systemctl stop` / `restart` (and
+`deploy.sh` with `GATEWAY_RESTART=1`) SIGTERMs the gateway, which closes its
+boundary so the server child shuts down cleanly (the world task, the store
+writer's flush), waits up to **20 s** for the child to exit, and only then exits
+itself; a child that overruns is killed. Before 2026-10-22 the gateway had no
+`SIGTERM` handler: it died at once, the unit's sweep SIGKILLed the server in the
+middle of its shutdown, and on hosts where systemd's control-group kill fails
+(`Failed to kill control group … Invalid argument`, as on conclav.io) the next
+instance started while the old child was still exiting and holding the
+quarantine spool's lifetime lock — `quarantine spool preflight failed: …
+operation would block`, a failed first start, and a 35 s detour through
+`Restart=on-failure`. As a second guard the server **waits up to 15 s** for that
+lock at boot (it prints that it is waiting) before refusing; a second LIVE
+server on the same data directory is still refused.
+
 **On Windows** there is no `SIGHUP`; the signal handler is `cfg(unix)`-gated and
 compiled out. Restarts there are driven programmatically (the restart-survival
 test's `RestartTrigger` path). Production is Linux, where `SIGHUP` is the deploy

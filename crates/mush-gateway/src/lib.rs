@@ -1913,6 +1913,15 @@ const BACKOFF_CAP: Duration = Duration::from_secs(5);
 /// A timeout never permits a replacement launch: this exit-only API cannot yet
 /// force-kill and reap a stuck child safely.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// How long a stopping gateway waits for its server child to finish a clean
+/// shutdown (the world task, the store writer's flush) after closing the
+/// boundary, before it exits anyway and `kill_on_drop` ends the child. Well
+/// inside systemd's default 90 s `TimeoutStopSec`, so the unit's stop is the
+/// gateway's own and never the control-group sweep's: the sweep cannot be
+/// relied on to wait (on the conclav.io hosts it fails with `EINVAL` and
+/// systemd starts the next instance while the old child is still exiting,
+/// holding the quarantine spool's lifetime lock).
+const SHUTDOWN_EXIT_WAIT: Duration = Duration::from_secs(20);
 /// Connect/handshake budget for the FIRST server boot in [`serve`]. Generous, so
 /// a slow first bind under heavy load (e.g. a full `cargo test --workspace` run
 /// on Windows) does not spuriously fail the whole gateway before it even binds
@@ -2220,12 +2229,18 @@ impl CrashGuard {
 // Eight collaborators, each already its own type: bundling them into a
 // "supervisor env" struct would only move the list, and the siteban mirror in
 // particular is built after the boundary env is (it needs the store).
+///
+/// `stop` is the gateway's own shutdown: while serving, it closes the
+/// boundary so the server sees EOF and shuts down cleanly, waits (up to
+/// [`SHUTDOWN_EXIT_WAIT`]) for the child to exit, and returns
+/// [`SupervisionOutcome::Stopped`] without respawning.
 #[allow(clippy::too_many_arguments)]
 async fn supervise(
     launcher: Box<dyn ServerLauncher>,
     boundary: BoundaryHandle,
     sessions: Arc<SessionManager>,
     mut restart_rx: mpsc::Receiver<()>,
+    mut stop: oneshot::Receiver<()>,
     first_instance: LaunchedServer,
     first_wired: WiredBoundary,
     env: BoundaryEnv,
@@ -2244,6 +2259,27 @@ async fn supervise(
         // so the gap below must NOT re-await `wired.down` in the crash case.
         let crashed;
         tokio::select! {
+            // The gateway is stopping (SIGTERM / Ctrl-C, or `serve` gone):
+            // end the server cleanly and wait for it, so the unit's stop
+            // means the child is gone and a successor can take its locks.
+            _ = &mut stop => {
+                tracing::info!("gateway stopping: closing the server boundary and waiting for the server to exit");
+                boundary.enter_gap();
+                let _ = wired.close.send(());
+                let exited = tokio::time::timeout(SHUTDOWN_EXIT_WAIT, async {
+                    let _ = (&mut wired.down).await;
+                    instance.exited.await;
+                })
+                .await;
+                match exited {
+                    Ok(()) => tracing::info!("the server exited cleanly"),
+                    Err(_) => tracing::warn!(
+                        timeout_ms = SHUTDOWN_EXIT_WAIT.as_millis() as u64,
+                        "the server did not exit in time; the gateway exits and the child is killed"
+                    ),
+                }
+                return SupervisionOutcome::Stopped;
+            }
             _ = &mut wired.down => {
                 crashed = true;
                 tracing::warn!("server boundary down (crash/exit); restarting + re-attaching");
@@ -2671,11 +2707,15 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     match launcher {
         Some(launcher) => {
             // Supervised: hold the connections across server restarts (M16c).
+            // `stop_tx` asks the supervisor to end the server cleanly when the
+            // gateway itself is stopping.
+            let (stop_tx, stop_rx) = oneshot::channel();
             let mut sup = tokio::spawn(supervise(
                 launcher,
                 boundary,
                 Arc::clone(&sessions),
                 restart_rx,
+                stop_rx,
                 first_instance,
                 first_wired,
                 env,
@@ -2686,9 +2726,12 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             // a live server (a shutdown already under way) or given up on the
             // server half entirely — and the second one used to be invisible
             // here, so the gateway went on serving refused input for ever.
+            let mut sup_done = false;
             let outcome = tokio::select! {
-                _ = tokio::signal::ctrl_c() => None,
-                joined = &mut sup => Some(match joined {
+                () = shutdown_signal() => None,
+                joined = &mut sup => Some({
+                    sup_done = true;
+                    match joined {
                     Ok(outcome) => outcome,
                     // The supervisor must never panic. If it did, nothing is
                     // supervising and that is the same fault by another route.
@@ -2696,7 +2739,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                         tracing::error!(error = %e, "the gateway supervisor task died");
                         abandon(&sessions, &metrics, AbandonReason::SupervisorDied)
                     }
-                }),
+                }}),
             };
             // An abandoned supervisor with the exit key OFF (a dev box keeping
             // the corpse) parks here: the gauge and the marker are already
@@ -2724,7 +2767,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                          supervision abandoned. Every held session is input-refused until \
                          this process is restarted by hand"
                     );
-                    let _ = tokio::signal::ctrl_c().await;
+                    shutdown_signal().await;
                     None
                 }
                 Some(SupervisionOutcome::Stopped) | None => None,
@@ -2735,6 +2778,19 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
             discord.stop().await;
+            // A supervisor still serving ends the server cleanly and waits
+            // for it to exit (bounded inside the supervisor); the extra second
+            // here only covers a supervisor caught mid-restart, which cannot
+            // take the stop and is aborted as before.
+            if !sup_done {
+                let _ = stop_tx.send(());
+                if tokio::time::timeout(SHUTDOWN_EXIT_WAIT + Duration::from_secs(1), &mut sup)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("the supervisor did not stop in time; aborting it");
+                }
+            }
             sup.abort();
             siteban_task.abort();
             if let Some(reason) = abandoned {
@@ -2751,7 +2807,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             // respawns; a server-gone EOF surfaces as WorldGone on the next
             // input, exactly as before.
             let _keepalive = first_wired;
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             tracing::info!("gateway shutting down");
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
@@ -2776,6 +2832,33 @@ async fn stop_web(web_stop: Option<oneshot::Sender<()>>, web_join: Option<JoinHa
             .is_err()
     {
         tracing::warn!("web server did not stop in time; continuing shutdown");
+    }
+}
+
+/// Resolves when the gateway is asked to stop: Ctrl-C (`SIGINT`), or on Unix
+/// `SIGTERM` — what systemd sends on `stop` and `restart`. Without the
+/// `SIGTERM` arm the signal's default action killed the gateway outright, so
+/// its server child was SIGKILLed by the unit's sweep in the middle of its
+/// own clean shutdown.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => tracing::info!("SIGTERM received; stopping"),
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot install SIGTERM handler; only Ctrl-C stops the gateway cleanly");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
@@ -3495,6 +3578,7 @@ mod tests {
             launches: Arc::clone(&launches),
         });
         let (_restart_tx, restart_rx) = mpsc::channel(1);
+        let (_stop_tx, stop_rx) = oneshot::channel();
         let env = BoundaryEnv {
             manifest: Arc::new(Mutex::new(HelloManifest::default())),
             tuning: BoundaryTuning {
@@ -3525,6 +3609,7 @@ mod tests {
             boundary.clone(),
             sessions,
             restart_rx,
+            stop_rx,
             first_instance,
             first_wired,
             env,
@@ -3553,6 +3638,116 @@ mod tests {
         );
         assert!(boundary.current().is_none(), "boundary must remain in Gap");
         assert!(boundary.is_restarting(), "Gap must continue refusing input");
+    }
+
+    /// The gateway's own stop (SIGTERM from systemd): the supervisor closes
+    /// the boundary, WAITS for the server instance to report its exit, and
+    /// only then returns `Stopped` — never launching a replacement and never
+    /// latching the abandoned gauge. Waiting is the point: a gateway that
+    /// returned at once let the unit restart while the old child still held
+    /// the quarantine spool's lifetime lock (dev2, 2026-10-22).
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_closes_the_boundary_and_waits_for_the_server_to_exit() {
+        let sessions = Arc::new(SessionManager::new());
+        let metrics = Arc::new(Metrics::new());
+        let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(8)));
+        let (raw_tx, _raw_rx) = mpsc::unbounded_channel();
+        let conn = Arc::new(BoundaryConn {
+            tx: ToServerTx::new(
+                raw_tx,
+                Arc::new(AtomicU64::new(0)),
+                Arc::clone(&metrics),
+                8,
+                80,
+                Arc::clone(&lifecycle),
+            ),
+            pending: SocketGatewayLink::pending_table(),
+        });
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::clone(&conn));
+
+        // The reader ends when the boundary is closed; the server instance
+        // reports its exit two seconds after that (a clean shutdown's work).
+        let (close, close_rx) = oneshot::channel::<()>();
+        let (closed_tx, closed_rx) = oneshot::channel::<()>();
+        let down = tokio::spawn(async move {
+            let _ = close_rx.await;
+            let _ = closed_tx.send(());
+        });
+        let exited_flag = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&exited_flag);
+        let first_wired = WiredBoundary { conn, down, close };
+        let first_instance = LaunchedServer {
+            endpoint: IpcEndpoint::parse("127.0.0.1:1").unwrap(),
+            exited: Box::pin(async move {
+                let _ = closed_rx.await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                flag.store(true, Ordering::SeqCst);
+            }),
+        };
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launcher: Box<dyn ServerLauncher> = Box::new(CountingLauncher {
+            launches: Arc::clone(&launches),
+        });
+        let (_restart_tx, restart_rx) = mpsc::channel(1);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let env = BoundaryEnv {
+            manifest: Arc::new(Mutex::new(HelloManifest::default())),
+            tuning: BoundaryTuning {
+                metrics,
+                to_server_cap: 8,
+                high_water_pct: 80,
+                write_timeout: Duration::from_secs(1),
+            },
+            controls: Arc::new(crate::controls::GatewayControls::default()),
+            lifecycle,
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
+        };
+        let siteban_mirror = SitebanMirror {
+            store: Arc::new(mush_store::InMemoryStore::new()),
+            guard: Arc::new(IpGuard::new()),
+            sessions: Arc::clone(&sessions),
+            boundary: boundary.clone(),
+            interval: SITEBAN_REFRESH,
+        };
+        let gauge = Arc::clone(&env.tuning.metrics);
+        let mut supervisor = tokio::spawn(supervise(
+            launcher,
+            boundary.clone(),
+            sessions,
+            restart_rx,
+            stop_rx,
+            first_instance,
+            first_wired,
+            env,
+            siteban_mirror,
+        ));
+        tokio::task::yield_now().await;
+        stop_tx.send(()).unwrap();
+        // One second in, the server is still shutting down: no return yet.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut supervisor)
+                .await
+                .is_err(),
+            "the supervisor must wait for the server's exit"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let outcome = supervisor.await.expect("the supervisor returns");
+        assert_eq!(outcome, SupervisionOutcome::Stopped);
+        assert!(
+            exited_flag.load(Ordering::SeqCst),
+            "returned only after the exit"
+        );
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            0,
+            "a stop never relaunches"
+        );
+        assert!(
+            !gauge.supervision_abandoned(),
+            "a stop is not an abandonment"
+        );
     }
 
     /// The crash-loop guard (R3): a server that keeps dying fast trips the
