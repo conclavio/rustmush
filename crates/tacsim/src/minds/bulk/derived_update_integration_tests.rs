@@ -234,7 +234,9 @@ pub(super) async fn exercise(
             1,
             BUYER,
             START + 2,
-            json!({"owner_licence":owner,"form":"open"}),
+            // `royalty_permille` is a required listing parameter (as in the
+            // entitlement story's `listing_params`).
+            json!({"owner_licence":owner,"form":"open","royalty_permille":100}),
         )?;
         let old_royalty = rows(&saved.disk, "roll", "roll_mind_filed_royalty_terms")
             .into_iter()
