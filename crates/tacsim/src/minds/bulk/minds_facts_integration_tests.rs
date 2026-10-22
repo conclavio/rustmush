@@ -447,7 +447,8 @@ fn actual_lapse(
     assert_eq!(event.pointer("/term/accepted_holder"), Some(&json!(GOD)));
     assert_eq!(event.get("actor"), Some(&json!(GOD)));
     assert!(event.get("at_utc").and_then(Value::as_i64).is_some());
-    for _ in 0..8 {
+    // Contracts settle only in the Economy sweep, one bounded pass per period.
+    for _ in 0..2 * mush_economy::SWEEP_PERIOD_SECS {
         if matches!(contract(&w, id)?.state, ContractState::Settled { .. }) {
             break;
         }

@@ -347,6 +347,13 @@ fn file(
     let _cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
     Ok((snapshot, owner))
 }
+/// A fresh boot seats both actors in the lobby; the market venue is ROOM.
+fn seat(world: &mut PlayerWorld) -> TestResult {
+    for actor in [GOD, BUYER] {
+        world.engine.world.move_to(actor, ROOM)?;
+    }
+    world.commit()
+}
 fn listing_params(owner: LicenceId, form: &str, rate: u16) -> Value {
     json!({"owner_licence":owner.get().to_string(),"form":form,"royalty_permille":rate})
 }

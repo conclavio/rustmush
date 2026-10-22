@@ -153,13 +153,6 @@ fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult 
     );
     Ok(())
 }
-/// A fresh boot seats both actors in the lobby; the market venue is ROOM.
-fn seat(world: &mut PlayerWorld) -> TestResult {
-    for actor in [GOD, BUYER] {
-        world.engine.world.move_to(actor, ROOM)?;
-    }
-    world.commit()
-}
 fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -> TestResult {
     let mut disabled = PlayerWorld::boot_entitlements(f, granted)?;
     assert!(action(&disabled, "roll", ACTION, 1).is_err());

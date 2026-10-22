@@ -859,7 +859,7 @@ fn corruptions(
         !(ns == "roll"
             && value.pointer("/family/id") == Some(&json!("roll_mind_paid_term"))
             && value.pointer("/value/licence") == Some(&json!(birth.licence()))
-            && value.pointer("/value/generation") == Some(&json!(2)))
+            && value.pointer("/value/generation") == Some(&json!("2")))
     });
     assert!(missing_current_term.disk.len() < before);
     assert!(
@@ -881,7 +881,7 @@ fn corruptions(
                     .ok_or("licence document")?;
                 let slot = value.get_mut(field).ok_or("licence field")?;
                 *slot = if field == "term" {
-                    json!(1)
+                    json!("1")
                 } else {
                     json!(token(START))
                 };
@@ -934,6 +934,7 @@ async fn customer(
         assert_eq!(own.window().phase_at(mush_roll::commerce::WorldIcSeconds::from_stamp(&world.engine.world.world_ic_now())?),mush_roll::commerce::TermPhase::Grace);
         source_answer(&mut world,GOD,a.licence(),Some(a.revision().source()))?;
         assert!(prepare_step(&mut world,DRAFT,GOD,START+500,json!({"licence":a.licence().get()})).is_err(),"new renewal still needs current issuer parent");
+        world.engine.world.move_to(BUYER,ROOM)?;world.commit()?;
         assert!(super::prepare(&mut world,"market","list_derived_mind",1,BUYER,START+501,listing_params(owner,"open_resale",100)).is_err(),"new sale still needs current issuer parent");
         source_answer(&mut world,BUYER,a.licence(),None)?;
         source_answer(&mut world,BUYER,owner,None)?;

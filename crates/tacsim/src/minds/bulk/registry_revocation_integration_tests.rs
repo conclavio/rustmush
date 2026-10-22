@@ -374,6 +374,8 @@ fn publication(
     assert_eq!(balances(&w)?, money);
     source_answer(&mut w, BUYER, owner, None)?;
     source_answer(&mut w, GOD, a.licence(), Some(a.revision().source()))?;
+    w.engine.world.move_to(BUYER, ROOM)?;
+    w.commit()?;
     assert!(
         prepare(
             &mut w,
@@ -504,6 +506,8 @@ fn late_consumer_fence(
 ) -> TestResult {
     for after_stage in [false, true] {
         let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+        w.engine.world.move_to(BUYER, ROOM)?;
+        w.commit()?;
         let before = disk(&w);
         let p = listing_params(owner, "open_resale", 100);
         let (prepared, out) = prepare(

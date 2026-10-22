@@ -424,6 +424,9 @@ fn publication(
     );
     source_answer(&mut world, BUYER, owner, None)?;
     source_answer(&mut world, GOD, a.licence(), None)?;
+    // BUYER lists from the market venue; GOD stays in the lobby for SIM below.
+    world.engine.world.move_to(BUYER, ROOM)?;
+    world.commit()?;
     assert!(
         prepare(
             &mut world,
