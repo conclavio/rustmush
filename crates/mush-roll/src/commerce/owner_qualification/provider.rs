@@ -36,19 +36,19 @@ impl Request {
             || !inv.targets().is_empty()
             || inv.idempotency().scope().owner.as_str() != crate::NS
         {
-            return Err(PublicationError::Invalid);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Invalid", line!()); } return Err(PublicationError::Invalid); } /* TEMP M7 diag */
         }
-        let request: Self = serde_json::from_value(inv.parameters().clone()).map_err(invalid)?;
+        let request: Self = serde_json::from_value(inv.parameters().clone()).map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
         if request.owner()? == request.parent()? {
-            return Err(PublicationError::Invalid);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Invalid", line!()); } return Err(PublicationError::Invalid); } /* TEMP M7 diag */
         }
         Ok(request)
     }
     pub(super) fn owner(&self) -> Result<LicenceId, PublicationError> {
-        LicenceId::new(self.owner_licence).map_err(invalid)
+        LicenceId::new(self.owner_licence).map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */
     }
     pub(super) fn parent(&self) -> Result<LicenceId, PublicationError> {
-        LicenceId::new(self.parent_licence).map_err(invalid)
+        LicenceId::new(self.parent_licence).map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */
     }
 }
 struct Provider {
@@ -73,25 +73,25 @@ impl Provider {
         let actor = inv.actor();
         let licence = txn
             .get(&self.families.licences, &owner_licence.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         // Lapsed metadata replacement remains legal. Prove the actual current
         // generation separately while all qualification history keeps birth term1.
         super::super::owner_attestation::history::current_in_txn(
             txn,
-            ctx.world().map_err(invalid)?,
+            ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
             &self.families,
             &licence,
         )?;
         let birth = txn
             .get(&self.families.operations, &licence.operation.to_hex())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         let ownership = super::super::charter_transfer::history::current_in_txn(
             txn,
-            ctx.world().map_err(invalid)?,
+            ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
             &self.families,
             &birth,
             actor,
@@ -101,12 +101,12 @@ impl Provider {
                 &self.families.owner_parents,
                 &OwnerParentBinding::key_for(owner_licence, birth.requester),
             )
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         let filed = txn
             .get(&self.families.filed, &binding.filed.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         let term = txn
@@ -114,17 +114,17 @@ impl Provider {
                 &self.families.terms,
                 &OwnerTerm::encoded_key(owner_licence, binding.term),
             )
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         let charter = txn
             .get(&self.families.charters, &licence.charter.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         let line = txn
             .get(&self.families.lines, &licence.line.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         licence.validate()?;
@@ -135,19 +135,19 @@ impl Provider {
         // line now selects a later compatible derived revision.
         let current_filed = txn
             .get(&self.families.filed, &line.head.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         let current_birth = super::super::line_update::audit::birth_in_txn(
             txn,
-            ctx.world().map_err(invalid)?,
+            ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
             &self.families,
             &current_filed,
         )?;
         if current_birth.commit != birth.commit
             || current_filed.content.parent() != Some(binding.parent.parent)
         {
-            return Err(PublicationError::Mismatch);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Mismatch", line!()); } return Err(PublicationError::Mismatch); } /* TEMP M7 diag */
         }
         if licence.id != owner_licence
             || licence.charter != binding.charter
@@ -164,16 +164,16 @@ impl Provider {
             || line.operation != birth.commit
             || line.head != current_filed.content.id()
         {
-            return Err(PublicationError::Mismatch);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Mismatch", line!()); } return Err(PublicationError::Mismatch); } /* TEMP M7 diag */
         }
         let source = txn
             .get(&self.families.filed, &binding.parent.parent.filed.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         let source_status = txn
             .get(&self.families.status, &binding.parent.parent.filed.key())
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .ok_or(PublicationError::Missing)?
             .clone();
         source.validate()?;
@@ -185,12 +185,12 @@ impl Provider {
             || source_status.filed != binding.parent.parent.filed
             || source_status.recalled_by.is_some()
         {
-            return Err(PublicationError::Unavailable);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Unavailable", line!()); } return Err(PublicationError::Unavailable); } /* TEMP M7 diag */
         }
         let head_key = QualificationHead::key_for(owner_licence, actor);
         let old_head = txn
             .get(&self.families.owner_qualification_heads, &head_key)
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             .cloned();
         let old_operation = match &old_head {
             None => None,
@@ -200,14 +200,14 @@ impl Provider {
                         &self.families.owner_qualification_operations,
                         &head.operation.to_hex(),
                     )
-                    .map_err(invalid)?
+                    .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
                     .ok_or(PublicationError::Missing)?
                     .clone();
                 head.matches(&op)?;
                 op.matches_birth(&binding, &filed, &term, &birth)?;
                 super::super::charter_transfer::history::require_captured_in_txn(
                     txn,
-                    ctx.world().map_err(invalid)?,
+                    ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
                     &self.families,
                     &birth,
                     op.charter_ownership.as_ref(),
@@ -217,7 +217,7 @@ impl Provider {
             }
         };
         let title_revision = {
-            let world = ctx.world().map_err(invalid)?;
+            let world = ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
             let roll = world
                 .module_state::<crate::RollStore>()
                 .ok_or(PublicationError::Unavailable)?;
@@ -235,14 +235,14 @@ impl Provider {
                     licence: request.parent()?,
                 },
             )
-            .map_err(invalid)?;
-        let world = ctx.world().map_err(invalid)?;
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
+        let world = ctx.world().map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
         parent.check_fresh(actor, world)?;
         if parent.actor() != actor
             || parent.holding().charter() != binding.parent.charter
             || parent.holding().line() != binding.parent.line
         {
-            return Err(PublicationError::Mismatch);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Mismatch", line!()); } return Err(PublicationError::Mismatch); } /* TEMP M7 diag */
         }
         let operation = QualificationOperation {
             format: if ownership.generation == 1 { 1 } else { 2 },
@@ -289,13 +289,13 @@ impl Provider {
             &self.roots,
             RootRequest::OwnerQualification(Box::new(request)),
         )
-        .map_err(invalid)?;
+        .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
         txn.insert(
             &self.families.owner_qualification_operations,
             &operation.key(),
             operation.clone(),
         )
-        .map_err(invalid)?;
+        .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
         match old_head {
             None => txn
                 .insert(
@@ -303,35 +303,35 @@ impl Provider {
                     &head_key,
                     next_head.clone(),
                 )
-                .map_err(invalid)?,
+                .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
             Some(_) => txn
                 .replace(
                     &self.families.owner_qualification_heads,
                     &head_key,
                     next_head.clone(),
                 )
-                .map_err(invalid)?,
+                .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
         }
         if txn
             .get(
                 &self.families.owner_qualification_operations,
                 &operation.key(),
             )
-            .map_err(invalid)?
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
             != Some(&operation)
             || txn
                 .get(&self.families.owner_qualification_heads, &head_key)
-                .map_err(invalid)?
+                .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?
                 != Some(&next_head)
         {
-            return Err(PublicationError::Mismatch);
+            { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{} PublicationError::Mismatch", line!()); } return Err(PublicationError::Mismatch); } /* TEMP M7 diag */
         }
         Ok(AuthoritativeActionOutput::new(
             RulesValue::new(
                 self.outcome.clone(),
                 json!({"owner_licence":owner_licence.get(),"operation":operation.operation}),
             )
-            .map_err(invalid)?,
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?,
         )
         .with_definitions(vec![
             self.action.clone(),
@@ -355,7 +355,7 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.prepare(inv, txn, ctx)
-            .map_err(|_| self.refusal.clone())
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification prepare: {e:?}"); } self.refusal.clone() }) // TEMP M7 diag
     }
     fn project_offer(
         &self,
