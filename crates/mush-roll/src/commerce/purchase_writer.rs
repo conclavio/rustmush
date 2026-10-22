@@ -162,6 +162,7 @@ impl OriginalPurchaseWriter {
             )
             .map_err(invalid)?;
         if let Some(stamp) = issued {
+            let current_licence = licence.ok_or(PublicationError::Missing)?;
             let expected_licence = PersonalPaidLicence::original(
                 row.licence,
                 row.charter,
@@ -181,7 +182,23 @@ impl OriginalPurchaseWriter {
                 },
                 row.operation,
             )?;
-            if licence != Some(&expected_licence) || term != Some(&expected_term) {
+            // The birth stays immutable when a paid resale advances the current
+            // pointer's holder; the exact resale chain is proved from the birth.
+            let birth_pointer = PersonalPaidLicence::original(
+                current_licence.id(),
+                current_licence.charter(),
+                current_licence.line(),
+                row.holder,
+                current_licence.term(),
+                current_licence.operation(),
+            )?;
+            super::paid_resale::history::current_from_birth(
+                ctx,
+                &r.families,
+                current_licence,
+                super::entitlement::history::Birth::Legacy(row),
+            )?;
+            if birth_pointer != expected_licence || term != Some(&expected_term) {
                 return Err(PublicationError::Mismatch);
             }
         } else if licence.is_some() || term.is_some() {
