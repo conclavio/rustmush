@@ -1,7 +1,7 @@
 //! Test-only checks for functions that return `Result`.
 //!
-//! This crate's root denies `clippy::panic_in_result_fn` (WS01-S12), and that
-//! lint has no test exemption: an `assert!` in a
+//! This crate's root denies `clippy::panic_in_result_fn` (WS01-S12), and
+//! that lint has no test exemption: an `assert!` in a
 //! `#[test] fn … -> Result`, or in a fixture helper that returns `Result`, is
 //! an error. These macros are the asserts' replacements — the same condition
 //! and the same message, with an early `return Err(..)` where the assert
@@ -12,20 +12,17 @@
 //! - `check_ne!(left, right[, "fmt", args..])` for `assert_ne!`.
 //!
 //! They are declared first in `lib.rs` because `macro_rules!` is textually
-//! scoped, and they neither panic nor unwrap. The same module lives in
-//! `mush-economy` and `mush-roll`; a `macro_rules!` does not cross crates.
+//! scoped, and they neither panic nor unwrap. The message is built out of
+//! line, in [`failed`] and its siblings, so a check costs its caller's stack
+//! frame no more than the assert it replaced (`clippy::large_stack_frames`
+//! measures test functions too). A `macro_rules!` does not cross crates; the
+//! same module lives in `mush-roll`.
 
 use std::error::Error;
 use std::fmt;
 
 /// The error a failed `check!`, `check_eq!` or `check_ne!` returns.
 pub(crate) struct CheckFailed(String);
-
-impl CheckFailed {
-    pub(crate) fn new(message: String) -> Self {
-        Self(message)
-    }
-}
 
 /// The bare message, like a failed assert's: a test that returns this error
 /// prints it through `Debug`, and quoting it would fold a multi-line
@@ -44,19 +41,58 @@ impl fmt::Display for CheckFailed {
 
 impl Error for CheckFailed {}
 
+/// A failed `check!(cond)`.
+pub(crate) fn failed<E: From<CheckFailed>>(message: &str) -> E {
+    E::from(CheckFailed(message.to_owned()))
+}
+
+/// A failed `check!(cond, "fmt", args..)`.
+pub(crate) fn failed_with<E: From<CheckFailed>>(message: fmt::Arguments<'_>) -> E {
+    E::from(CheckFailed(message.to_string()))
+}
+
+/// A failed `check_eq!`/`check_ne!` without a message; `op` is `==` or `!=`.
+pub(crate) fn failed_cmp<E, L, R>(op: &str, left: &L, right: &R) -> E
+where
+    E: From<CheckFailed>,
+    L: fmt::Debug + ?Sized,
+    R: fmt::Debug + ?Sized,
+{
+    E::from(CheckFailed(format!(
+        "assertion `left {op} right` failed\n  left: {left:?}\n right: {right:?}"
+    )))
+}
+
+/// A failed `check_eq!`/`check_ne!` with a message; `op` is `==` or `!=`.
+pub(crate) fn failed_cmp_with<E, L, R>(
+    op: &str,
+    left: &L,
+    right: &R,
+    message: fmt::Arguments<'_>,
+) -> E
+where
+    E: From<CheckFailed>,
+    L: fmt::Debug + ?Sized,
+    R: fmt::Debug + ?Sized,
+{
+    E::from(CheckFailed(format!(
+        "assertion `left {op} right` failed: {message}\n  left: {left:?}\n right: {right:?}"
+    )))
+}
+
 /// `assert!` for a function that returns `Result`.
 macro_rules! check {
     ($cond:expr $(,)?) => {
         if !$cond {
-            return Err($crate::test_checks::CheckFailed::new(
-                concat!("assertion failed: ", stringify!($cond)).to_owned(),
-            )
-            .into());
+            return Err($crate::test_checks::failed(concat!(
+                "assertion failed: ",
+                stringify!($cond)
+            )));
         }
     };
     ($cond:expr, $($arg:tt)+) => {
         if !$cond {
-            return Err($crate::test_checks::CheckFailed::new(format!($($arg)+)).into());
+            return Err($crate::test_checks::failed_with(format_args!($($arg)+)));
         }
     };
 }
@@ -70,11 +106,7 @@ macro_rules! check_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    return Err($crate::test_checks::CheckFailed::new(format!(
-                        "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
-                        left_val, right_val
-                    ))
-                    .into());
+                    return Err($crate::test_checks::failed_cmp("==", left_val, right_val));
                 }
             }
         }
@@ -83,13 +115,12 @@ macro_rules! check_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    return Err($crate::test_checks::CheckFailed::new(format!(
-                        "assertion `left == right` failed: {}\n  left: {:?}\n right: {:?}",
-                        format_args!($($arg)+),
+                    return Err($crate::test_checks::failed_cmp_with(
+                        "==",
                         left_val,
-                        right_val
-                    ))
-                    .into());
+                        right_val,
+                        format_args!($($arg)+),
+                    ));
                 }
             }
         }
@@ -102,11 +133,7 @@ macro_rules! check_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    return Err($crate::test_checks::CheckFailed::new(format!(
-                        "assertion `left != right` failed\n  left: {:?}\n right: {:?}",
-                        left_val, right_val
-                    ))
-                    .into());
+                    return Err($crate::test_checks::failed_cmp("!=", left_val, right_val));
                 }
             }
         }
@@ -115,13 +142,12 @@ macro_rules! check_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    return Err($crate::test_checks::CheckFailed::new(format!(
-                        "assertion `left != right` failed: {}\n  left: {:?}\n right: {:?}",
-                        format_args!($($arg)+),
+                    return Err($crate::test_checks::failed_cmp_with(
+                        "!=",
                         left_val,
-                        right_val
-                    ))
-                    .into());
+                        right_val,
+                        format_args!($($arg)+),
+                    ));
                 }
             }
         }
