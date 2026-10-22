@@ -128,7 +128,7 @@ impl EntitlementConfig {
             .register(OwnerId::new(crate::NS).map_err(error)?, d)
             .map_err(error)
     }
-    /// Exact [list,fund,grant,refund] identities passed to the private Roll
+    /// Exact `[list,fund,grant,refund]` identities passed to the private Roll
     /// writer. Quote is typed-only and receives no owner-participant grant.
     pub fn owner_actions(
         &self,

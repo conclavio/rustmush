@@ -5224,10 +5224,13 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
             "the contract-id allocator is exhausted",
         ))?
     };
-    assert_eq!(
-        id, c.id,
-        "synchronous preflight retains the next contract ID"
-    );
+    // A wiring fault, never a gameplay outcome: the world-owning task must
+    // refuse rather than panic (docs/PLAN.md).
+    if id != c.id {
+        return Err(ContractError::Infeasible(
+            "synchronous preflight did not retain the next contract ID",
+        ));
+    }
     let id = freeze_and_offer_authorized(ctx, c, &attachment).map_err(ContractError::Refused)?;
     let meta = ctx
         .w
