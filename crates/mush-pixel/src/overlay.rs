@@ -30,6 +30,7 @@
 use crate::Frame;
 use crate::frame::Rgb;
 use crate::raycast::{Ground, Map, SpriteKind};
+use crate::scene::{Anchor, Item, Scene, Shape, Transform, Viewport};
 
 /// A marked cell on the minimap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,15 +121,15 @@ pub struct Status {
 
 // ---- colours ---------------------------------------------------------------
 
-const PANEL: Rgb = [16, 18, 24];
-const BORDER: Rgb = [96, 104, 120];
-const TEXT: Rgb = [220, 224, 230];
-const DIM: Rgb = [140, 146, 156];
-const GOOD: Rgb = [70, 190, 90];
-const WARN: Rgb = [230, 180, 50];
-const BAD: Rgb = [220, 60, 50];
-const GONE: Rgb = [60, 60, 66];
-const YOU: Rgb = [255, 255, 255];
+pub(crate) const PANEL: Rgb = [16, 18, 24];
+pub(crate) const BORDER: Rgb = [96, 104, 120];
+pub(crate) const TEXT: Rgb = [220, 224, 230];
+pub(crate) const DIM: Rgb = [140, 146, 156];
+pub(crate) const GOOD: Rgb = [70, 190, 90];
+pub(crate) const WARN: Rgb = [230, 180, 50];
+pub(crate) const BAD: Rgb = [220, 60, 50];
+pub(crate) const GONE: Rgb = [60, 60, 66];
+pub(crate) const YOU: Rgb = [255, 255, 255];
 const RED_TEAM: Rgb = [230, 70, 60];
 const BLUE_TEAM: Rgb = [90, 150, 240];
 const UNKNOWN: Rgb = [170, 170, 162];
@@ -178,7 +179,7 @@ pub fn scale_for(frame: &Frame) -> usize {
     if frame.width() >= 640 { 2 } else { 1 }
 }
 
-fn fill_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
+pub(crate) fn fill_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
     for yy in y.max(0)..(y + h).max(0) {
         for xx in x.max(0)..(x + w).max(0) {
             frame.put(xx as usize, yy as usize, px);
@@ -186,7 +187,7 @@ fn fill_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
     }
 }
 
-fn outline_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
+pub(crate) fn outline_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
     fill_rect(frame, x, y, w, 1, px);
     fill_rect(frame, x, y + h - 1, w, 1, px);
     fill_rect(frame, x, y, 1, h, px);
@@ -200,7 +201,7 @@ fn panel(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64) {
 }
 
 /// A line from `(x0, y0)` to `(x1, y1)`, Bresenham.
-fn line(frame: &mut Frame, x0: i64, y0: i64, x1: i64, y1: i64, px: Rgb) {
+pub(crate) fn line(frame: &mut Frame, x0: i64, y0: i64, x1: i64, y1: i64, px: Rgb) {
     let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
     let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
     let (mut x, mut y, mut err) = (x0, y0, dx + dy);
@@ -277,7 +278,7 @@ fn glyph(c: char) -> Option<[u8; 7]> {
 
 /// Draw `text` with its top-left at `(x, y)`, each glyph cell `6 * scale`
 /// wide; unknown characters draw as `?`. Returns the width drawn.
-fn text(frame: &mut Frame, x: i64, y: i64, s: &str, px: Rgb, scale: usize) -> i64 {
+pub(crate) fn text(frame: &mut Frame, x: i64, y: i64, s: &str, px: Rgb, scale: usize) -> i64 {
     let sc = scale as i64;
     let mut cx = x;
     for c in s.chars() {
@@ -296,8 +297,12 @@ fn text(frame: &mut Frame, x: i64, y: i64, s: &str, px: Rgb, scale: usize) -> i6
 
 // ---- the instruments -------------------------------------------------------
 
-/// The minimap, bottom-left: `view` cells on a side around `you`, north
-/// up, `scale` pixels a cell.
+/// The minimap, bottom-left: 60 cells on a side around `you`, north up, a
+/// pixel a cell at the spike's 320x220 and two at 640x480; ground coloured by
+/// cell, the named spots' letters, the contacts' squares, and the pilot's
+/// square with a heading line. **A scene since doc 21 cut G.5a** (§3.3: "a
+/// scene is also what the minimap is"), drawn pixel for pixel as it was —
+/// [`minimap_scene`] builds it.
 pub fn draw_minimap(
     frame: &mut Frame,
     map: &Map,
@@ -306,80 +311,98 @@ pub fn draw_minimap(
     marks: &[MapMark],
     spots: &[Spot],
 ) {
+    minimap_scene(frame, map, you, heading_mdeg, marks, spots).draw(frame);
+}
+
+/// The minimap's scene for `frame` (see [`draw_minimap`]).
+#[must_use]
+pub fn minimap_scene(
+    frame: &Frame,
+    map: &Map,
+    you: (i64, i64),
+    heading_mdeg: u32,
+    marks: &[MapMark],
+    spots: &[Spot],
+) -> Scene {
     let s = scale_for(frame) as i64;
     let view: i64 = 60; // cells on a side
-    let px_cell = s; // 1 px a cell at 320, 2 at 640
-    let size = view * px_cell;
+    let size = view * s;
     let x0 = 4 * s;
     let y0 = frame.height() as i64 - size - 4 * s - 2;
-    panel(frame, x0 - 1, y0 - 1, size + 2, size + 2);
     let (cx, cy) = you;
-    let left = cx - view / 2;
-    let south = cy - view / 2;
-    for row in 0..view {
-        for col in 0..view {
-            let (mx, my) = (left + col, south + row);
-            let ground =
-                if mx < 0 || my < 0 || mx >= map.width() as i64 || my >= map.height() as i64 {
-                    None
-                } else {
-                    Some(map.get(mx, my))
-                };
-            let px = ground.map_or(PANEL, ground_rgb);
-            // North up: row 0 is the south edge, drawn at the bottom.
-            let sy = y0 + (view - 1 - row) * px_cell;
-            fill_rect(frame, x0 + col * px_cell, sy, px_cell, px_cell, px);
+    let (left, south) = (cx - view / 2, cy - view / 2);
+    let mut scene = Scene::new(Viewport {
+        world: (
+            left as f64,
+            south as f64,
+            (left + view) as f64,
+            (south + view) as f64,
+        ),
+        frame: (x0, y0, size, size),
+        transform: Transform::Linear,
+    });
+    scene.push(Item::Panel {
+        rect: (x0 - 1, y0 - 1, size + 2, size + 2),
+        fill: PANEL,
+        border: Some(BORDER),
+    });
+    for my in south..south + view {
+        for mx in left..left + view {
+            let inside = mx >= 0 && my >= 0 && mx < map.width() as i64 && my < map.height() as i64;
+            let fill = if inside {
+                ground_rgb(map.get(mx, my))
+            } else {
+                PANEL
+            };
+            scene.push(Item::Rect {
+                min: (mx as f64, my as f64),
+                max: ((mx + 1) as f64, (my + 1) as f64),
+                fill,
+            });
         }
     }
-    let to_px = |cell: (i64, i64)| -> Option<(i64, i64)> {
+    let shown = |cell: (i64, i64)| {
         let (dx, dy) = (cell.0 - left, cell.1 - south);
-        if (0..view).contains(&dx) && (0..view).contains(&dy) {
-            Some((
-                x0 + dx * px_cell + px_cell / 2,
-                y0 + (view - 1 - dy) * px_cell + px_cell / 2,
-            ))
-        } else {
-            None
-        }
+        ((0..view).contains(&dx) && (0..view).contains(&dy))
+            .then_some((cell.0 as f64 + 0.5, cell.1 as f64 + 0.5))
     };
     for spot in spots {
-        if let Some((px, py)) = to_px(spot.cell) {
-            text(
-                frame,
-                px - 2 * s,
-                py - 3 * s,
-                &spot.letter.to_string(),
-                TEXT,
-                s as usize,
-            );
+        if let Some(at) = shown(spot.cell) {
+            scene.push(Item::Text {
+                at,
+                offset: (-2 * s, -3 * s),
+                anchor: Anchor::TopLeft,
+                text: spot.letter.to_string(),
+                colour: TEXT,
+                scale: s as usize,
+            });
         }
     }
     for mark in marks {
-        if let Some((px, py)) = to_px(mark.cell) {
-            fill_rect(
-                frame,
-                px - s,
-                py - s,
-                2 * s + 1,
-                2 * s + 1,
-                kind_rgb(mark.kind),
-            );
+        if let Some(at) = shown(mark.cell) {
+            scene.push(Item::Marker {
+                at,
+                half: s,
+                shape: Shape::Square,
+                colour: kind_rgb(mark.kind),
+            });
         }
     }
-    if let Some((px, py)) = to_px(you) {
-        let h = (heading_mdeg % 360_000) as f32 / 1000.0;
-        let (dx, dy) = h.to_radians().sin_cos();
-        let len = 6.0 * s as f32;
-        line(
-            frame,
-            px,
-            py,
-            px + (dx * len) as i64,
-            py - (dy * len) as i64,
-            YOU,
-        );
-        fill_rect(frame, px - s, py - s, 2 * s + 1, 2 * s + 1, YOU);
+    if let Some(at) = shown(you) {
+        scene.push(Item::Ray {
+            at,
+            bearing_deg: (heading_mdeg % 360_000) as f32 / 1000.0,
+            len_px: 6.0 * s as f32,
+            colour: YOU,
+        });
+        scene.push(Item::Marker {
+            at,
+            half: s,
+            shape: Shape::Square,
+            colour: YOU,
+        });
     }
+    scene
 }
 
 /// The heat gauge, bottom centre.
@@ -814,6 +837,142 @@ fn draw_speed(frame: &mut Frame, speed_kph: i64, s: i64, w: i64, h: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The minimap as it was drawn before doc 21 cut G.5a re-based it on the
+    /// scene model, kept to prove the scene draws it pixel for pixel.
+    /// The minimap, bottom-left: `view` cells on a side around `you`, north
+    /// up, `scale` pixels a cell.
+    fn draw_minimap_before_g5a(
+        frame: &mut Frame,
+        map: &Map,
+        you: (i64, i64),
+        heading_mdeg: u32,
+        marks: &[MapMark],
+        spots: &[Spot],
+    ) {
+        let s = scale_for(frame) as i64;
+        let view: i64 = 60; // cells on a side
+        let px_cell = s; // 1 px a cell at 320, 2 at 640
+        let size = view * px_cell;
+        let x0 = 4 * s;
+        let y0 = frame.height() as i64 - size - 4 * s - 2;
+        panel(frame, x0 - 1, y0 - 1, size + 2, size + 2);
+        let (cx, cy) = you;
+        let left = cx - view / 2;
+        let south = cy - view / 2;
+        for row in 0..view {
+            for col in 0..view {
+                let (mx, my) = (left + col, south + row);
+                let ground =
+                    if mx < 0 || my < 0 || mx >= map.width() as i64 || my >= map.height() as i64 {
+                        None
+                    } else {
+                        Some(map.get(mx, my))
+                    };
+                let px = ground.map_or(PANEL, ground_rgb);
+                // North up: row 0 is the south edge, drawn at the bottom.
+                let sy = y0 + (view - 1 - row) * px_cell;
+                fill_rect(frame, x0 + col * px_cell, sy, px_cell, px_cell, px);
+            }
+        }
+        let to_px = |cell: (i64, i64)| -> Option<(i64, i64)> {
+            let (dx, dy) = (cell.0 - left, cell.1 - south);
+            if (0..view).contains(&dx) && (0..view).contains(&dy) {
+                Some((
+                    x0 + dx * px_cell + px_cell / 2,
+                    y0 + (view - 1 - dy) * px_cell + px_cell / 2,
+                ))
+            } else {
+                None
+            }
+        };
+        for spot in spots {
+            if let Some((px, py)) = to_px(spot.cell) {
+                text(
+                    frame,
+                    px - 2 * s,
+                    py - 3 * s,
+                    &spot.letter.to_string(),
+                    TEXT,
+                    s as usize,
+                );
+            }
+        }
+        for mark in marks {
+            if let Some((px, py)) = to_px(mark.cell) {
+                fill_rect(
+                    frame,
+                    px - s,
+                    py - s,
+                    2 * s + 1,
+                    2 * s + 1,
+                    kind_rgb(mark.kind),
+                );
+            }
+        }
+        if let Some((px, py)) = to_px(you) {
+            let h = (heading_mdeg % 360_000) as f32 / 1000.0;
+            let (dx, dy) = h.to_radians().sin_cos();
+            let len = 6.0 * s as f32;
+            line(
+                frame,
+                px,
+                py,
+                px + (dx * len) as i64,
+                py - (dy * len) as i64,
+                YOU,
+            );
+            fill_rect(frame, px - s, py - s, 2 * s + 1, 2 * s + 1, YOU);
+        }
+    }
+
+    /// Doc 21 cut G.5a's acceptance: the minimap re-based on the scene model
+    /// draws the very pixels it drew before — across both scales, the map's
+    /// edges (cells off the map), spots, marks off and on the window, and
+    /// eight headings.
+    #[test]
+    fn the_minimap_as_a_scene_is_pixel_equal_to_the_minimap_before() {
+        let map = yard();
+        let marks = [
+            MapMark {
+                cell: (30, 30),
+                kind: SpriteKind::Red,
+            },
+            MapMark {
+                cell: (50, 10),
+                kind: SpriteKind::Blue,
+            },
+            MapMark {
+                cell: (2, 60),
+                kind: SpriteKind::Unknown,
+            },
+            MapMark {
+                cell: (500, 500),
+                kind: SpriteKind::Wreck,
+            },
+        ];
+        let spots = [
+            Spot {
+                cell: (25, 3),
+                letter: 'A',
+            },
+            Spot {
+                cell: (90, 60),
+                letter: 'B',
+            },
+        ];
+        for (w, h) in [(320, 220), (640, 480), (640, 256)] {
+            for you in [(6, 4), (48, 32), (95, 63), (0, 0)] {
+                for heading in (0..8).map(|k| k * 45_000 + 7_000) {
+                    let mut before = Frame::new(w, h);
+                    draw_minimap_before_g5a(&mut before, &map, you, heading, &marks, &spots);
+                    let mut after = Frame::new(w, h);
+                    draw_minimap(&mut after, &map, you, heading, &marks, &spots);
+                    assert!(before == after, "{w}x{h} at {you:?} heading {heading}");
+                }
+            }
+        }
+    }
     use crate::raycast::{Camera, render};
 
     fn yard() -> Map {

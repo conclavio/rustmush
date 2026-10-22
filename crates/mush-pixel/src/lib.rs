@@ -19,6 +19,7 @@
 //!   otherwise). IDAT is zlib via `flate2`.
 //! - [`heightfield`]: the voxel-space producer for ground with relief
 //!   (G.7a), beside the raycaster.
+//! - [`scene`]: bucket B's retained 2D scene and its one rasteriser (G.5).
 //! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
 //!   terminals that draw sixel and not kitty — Windows Terminal above all.
 //! - [`kitty`]: the kitty graphics protocol framing — the capability probe,
@@ -59,6 +60,7 @@ pub mod overlay;
 pub mod picture;
 pub mod png;
 pub mod raycast;
+pub mod scene;
 pub mod sixel;
 
 pub use frame::Frame;

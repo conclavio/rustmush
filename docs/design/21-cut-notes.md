@@ -228,3 +228,17 @@ The web frame's client half, after SM.10 landed (the gateway half is G.3a; the W
 
 **Verified.** vitest (665: the command, the look's swing and wrap, the helm's lines, the keys, the store's off-drop, the socket's binary path, the screen's opt-in and stop on unmount, the whitelist probe), `svelte-check` with no errors or warnings. **Not smoked in a browser yet**: the next dev2 deploy.
 
+## G.5a
+
+The scene model (§3.3, D-21-8), the first half of G.5 (the owner's plan of 2026-10-22: G.5a the scene and the minimap, G.5b the chart picture in the TUI, G.5c the web chart's light-lag rings).
+
+- **`mush_pixel::scene`**: a `Scene` is a `Viewport` — a world rectangle (y up) on a frame rectangle (y down) through a `Transform`, `Linear` or the orbital view's `LogRadial { r0, r_max }` (`ln(1 + r/r0) / ln(1 + r_max/r0)` of 0.94 of the half-side, clamped, at the point's own angle: doc 19's chart scale, as the web's SVG draws it) — and `Layer`s of `Item`s drawn in order:
+  - in the world, through the transform: `Rect`, `Line`, `Polyline`, `Trail` (per-point ages, a segment past `old_after` in its old colour), `Circle`, `Arc` (an arc or a filled sector, bearings clockwise from north). A curve the transform bends is sampled: a circle in 180 pieces, a straight line cut into pieces no longer than 6 px on the page;
+  - at a world point, sized in pixels: `Marker` (square, disc, ring), `Ray` (a bearing and a length), `Text` (the 5x7 font, an offset, top-left or centred);
+  - frame rectangles: `Panel` (a fill and a border), `Image` (an embedded `Frame`).
+
+  Dashes are by pixel count along the stroke. No blending, no anti-aliasing: the overlay's Bresenham, fills and font (now `pub(crate)` in `overlay`) are the rasteriser's, so a scene keeps the frame inside the PNG's 256 by its builder's colours.
+- **The minimap is a scene** (`overlay::minimap_scene`; `draw_minimap` draws it): panel, 3,600 cell rects, spot letters, contact squares, the pilot's ray and square. **G.5's acceptance, pixel-equal before and after**: the old drawer is kept under `#[cfg(test)]` and the two are compared over 96 cases — three frame sizes (both scales and the text cockpit's 640x256), four positions including the map's corner and far edge (cells off the map), eight headings — and are the same pixels every time.
+
+**Verified.** `mush-pixel` (54: the scene's four — north up, the log scale's centre, edge clamp and spread, every item where it says, curves sampled through the log scale round and continuous — and the pixel-equal minimap), clippy, rustdoc.
+
