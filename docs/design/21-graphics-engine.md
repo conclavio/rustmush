@@ -4,7 +4,8 @@
 picture in a corner "won't work". A sixel picture is now shown as large as its cell box holds at the
 frame's aspect, up to three times the frame: rendered at 640x480 as before and scaled
 nearest-neighbour by the encoder, which is what a kitty terminal does with the same frame. The cost
-grows with the rows shown, not the area (cut notes §G.2b).
+grows with the rows shown, not the area (cut notes §G.2b). Smoked live on dev2: 1717x1288 at
+21 fps in a high-DPI w11term, 1013x760 in Windows Terminal over `ssh.exe`, each filling its box.
 
 **Draft 0.6.1 — 2026-10-22, G.2 smoked live on dev2.** Kitty in w11term, sixel in w11term (21 fps)
 and sixel in Windows Terminal over `ssh.exe`, all over the real path; a sixel frame is drawn at its
