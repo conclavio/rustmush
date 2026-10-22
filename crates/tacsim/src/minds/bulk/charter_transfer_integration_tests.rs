@@ -181,17 +181,26 @@ pub(super) fn exercise(base: &PurchaseFixture, granted: &Durable) -> TestResult 
                     json!(mush_core::DefinitionDigest::from_bytes([17; 32]));
                 Ok(())
             })?;
-        } else if mode == 2 {
-            change_one_family(&mut corrupt, "roll", TRANSFERS, |v| {
+        } else if mode == 2 || mode == 3 {
+            // Two transfers retain two transfer and two offer rows; corrupt one
+            // whose change is real (an offer not already naming GOD).
+            let family = if mode == 2 { TRANSFERS } else { OFFERS };
+            let (_, row) = corrupt
+                .disk
+                .iter_mut()
+                .find(|((ns, _), v)| {
+                    ns == "roll"
+                        && v.pointer("/family/id") == Some(&json!(family))
+                        && (mode == 2 || v.pointer("/value/buyer") != Some(&json!(GOD)))
+                })
+                .ok_or("actual corruption target")?;
+            let v = row.get_mut("value").ok_or("typed value")?;
+            if mode == 2 {
                 *v.pointer_mut("/economic/posted_at_utc")
                     .ok_or("native UTC")? = json!(now - 1);
-                Ok(())
-            })?;
-        } else if mode == 3 {
-            change_one_family(&mut corrupt, "roll", OFFERS, |v| {
+            } else {
                 *v.get_mut("buyer").ok_or("named buyer")? = json!(GOD);
-                Ok(())
-            })?;
+            }
         } else {
             let key = corrupt
                 .disk
