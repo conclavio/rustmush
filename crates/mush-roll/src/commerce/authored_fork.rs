@@ -379,7 +379,7 @@ mod tests {
         let [descriptor, _] = definitions(&manifest)?;
         let actual =
             DefinitionRegistryBuilder::new().register(OwnerId::new(crate::NS)?, descriptor)?;
-        assert!(exact_action(&actual, &actual));
+        check!(exact_action(&actual, &actual));
         // This is the predicate used before owner preparation and again before
         // custody; a shared RootParticipant type does not make its grants fungible.
         for (owner, kind, id, version) in [
@@ -394,8 +394,8 @@ mod tests {
             ("roll", "action", "fork_paid_mind", 2),
         ] {
             let other = reference(owner, kind, id, version, json!({"fixture":"identity only"}))?;
-            assert!(!exact_action(&other, &other));
-            assert!(!exact_action(&actual, &other));
+            check!(!exact_action(&other, &other));
+            check!(!exact_action(&actual, &other));
         }
         let altered = reference(
             "roll",
@@ -404,8 +404,8 @@ mod tests {
             1,
             json!({"format":1,"protocol":"arbitrary"}),
         )?;
-        assert_ne!(actual.digest(), altered.digest());
-        assert!(
+        check_ne!(actual.digest(), altered.digest());
+        check!(
             !exact_action(&actual, &altered),
             "same locator does not replace the captured exact configured action"
         );

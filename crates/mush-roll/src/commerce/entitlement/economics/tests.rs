@@ -96,20 +96,20 @@ fn term() -> TestResult<PaidTermEconomicsV1> {
 fn terms_are_required_closed_and_duplicate_fields_never_collapse() -> TestResult {
     let row = term()?;
     let raw = serde_json::to_vec(&row)?;
-    assert_eq!(PaidTermEconomicsV1::decode(&raw)?, row);
+    check_eq!(PaidTermEconomicsV1::decode(&raw)?, row);
     let mut unknown = serde_json::to_value(&row)?;
     unknown
         .as_object_mut()
         .ok_or("object")?
         .insert("authorized".into(), json!(true));
-    assert!(serde_json::from_value::<PaidTermEconomicsV1>(unknown).is_err());
+    check!(serde_json::from_value::<PaidTermEconomicsV1>(unknown).is_err());
     let mut missing = serde_json::to_value(&row)?;
     missing.as_object_mut().ok_or("object")?.remove("grant");
-    assert!(serde_json::from_value::<PaidTermEconomicsV1>(missing).is_err());
+    check!(serde_json::from_value::<PaidTermEconomicsV1>(missing).is_err());
     let raw = String::from_utf8(raw)?;
     let duplicate = raw.replacen("{", "{\"format\":1,", 1);
-    assert!(PaidTermEconomicsV1::decode(duplicate.as_bytes()).is_err());
-    assert!(PaidTermEconomicsV1::decode(&vec![b' '; MAX_ECONOMICS_BYTES + 1]).is_err());
+    check!(PaidTermEconomicsV1::decode(duplicate.as_bytes()).is_err());
+    check!(PaidTermEconomicsV1::decode(&vec![b' '; MAX_ECONOMICS_BYTES + 1]).is_err());
     Ok(())
 }
 #[test]
@@ -123,17 +123,17 @@ fn source_form_requires_explicit_matching_rate_and_sealed_stays_sealed() -> Test
         row.downstream = DownstreamTermsV1::Source {
             royalty_permille: 301,
         };
-        assert!(row.validate().is_err());
+        check!(row.validate().is_err());
         row.downstream = DownstreamTermsV1::Sealed {};
-        assert!(row.validate().is_err());
+        check!(row.validate().is_err());
     }
     let mut row = grant(PaidForm::Sealed {})?;
     row.downstream = DownstreamTermsV1::Source {
         royalty_permille: 0,
     };
-    assert!(row.validate().is_err());
-    assert!(serde_json::from_str::<DownstreamTermsV1>(r#"{"kind":"source"}"#).is_err());
-    assert!(
+    check!(row.validate().is_err());
+    check!(serde_json::from_str::<DownstreamTermsV1>(r#"{"kind":"source"}"#).is_err());
+    check!(
         serde_json::from_str::<DownstreamTermsV1>(r#"{"kind":"sealed","royalty_permille":0}"#)
             .is_err()
     );
@@ -142,30 +142,30 @@ fn source_form_requires_explicit_matching_rate_and_sealed_stays_sealed() -> Test
 #[test]
 fn royalty_depth_cycles_order_and_aggregate_are_immutable() -> TestResult {
     let row = chain()?;
-    assert_eq!(row.total_permille()?, 300);
-    assert_eq!(
+    check_eq!(row.total_permille()?, 300);
+    check_eq!(
         FiledRoyaltyTermsV1::decode(&serde_json::to_vec(&row)?)?,
         row
     );
     let mut over = row.clone();
     over.edges.0.first_mut().ok_or("edge")?.royalty_permille = 101;
-    assert!(over.validate().is_err());
+    check!(over.validate().is_err());
     let mut deep = row.clone();
     deep.edges.0.push(edge(4, 0)?);
-    assert!(deep.validate().is_err());
-    assert!(FiledRoyaltyTermsV1::decode(&serde_json::to_vec(&deep)?).is_err());
+    check!(deep.validate().is_err());
+    check!(FiledRoyaltyTermsV1::decode(&serde_json::to_vec(&deep)?).is_err());
     let mut cycle = row.clone();
     cycle.edges.0.first_mut().ok_or("edge")?.parent.filed = row.filed;
-    assert!(cycle.validate().is_err());
+    check!(cycle.validate().is_err());
     let mut duplicate = row.clone();
     duplicate.edges.0.pop();
     duplicate.edges.0.push(edge(1, 100)?);
-    assert!(duplicate.validate().is_err());
+    check!(duplicate.validate().is_err());
     let mut ordered = row.clone();
     ordered.edges.0.reverse();
     ordered.validate()?;
-    assert_ne!(ordered.digest()?, row.digest()?);
-    assert!(
+    check_ne!(ordered.digest()?, row.digest()?);
+    check!(
         row.check_next_resale(0).is_err(),
         "depth bound remains separate from zero rate"
     );
@@ -179,18 +179,18 @@ fn historical_zero_is_explicit_and_cannot_be_repriced_or_retyped() -> TestResult
     };
     edge.validate()?;
     let zero = serde_json::to_vec(&edge)?;
-    assert_eq!(serde_json::from_slice::<RoyaltyEdgeV1>(&zero)?, edge);
+    check_eq!(serde_json::from_slice::<RoyaltyEdgeV1>(&zero)?, edge);
     edge.royalty_permille = 1;
-    assert!(edge.validate().is_err());
+    check!(edge.validate().is_err());
     edge.royalty_permille = 0;
     edge.basis = RoyaltyBasisV1::LegacySourceFormsV2Zero {
         effect: definition("action", "purchase_original_mind", 1)?,
     };
-    assert!(edge.validate().is_err());
+    check!(edge.validate().is_err());
     edge.basis = RoyaltyBasisV1::LegacySourceFormsV2Zero {
         effect: definition("action", "purchase_derived_mind", 2)?,
     };
-    assert!(edge.validate().is_err());
+    check!(edge.validate().is_err());
     // This codec does not claim the historical effect was granted or OpenResale;
     // the owner must separately prove the actual allocation/term/E4 history.
     Ok(())
@@ -201,11 +201,11 @@ fn renewal_template_matches_exact_product_without_inventing_current_eligibility(
     let r = row.renewal();
     r.matches_product(r.terms(), r.revision(), r.instrument(), r.policy())?;
     let other = PaidTerms::original_personal_form(RatingClass::II, PaidForm::OpenResale {}, false)?;
-    assert!(
+    check!(
         r.matches_product(other, r.revision(), r.instrument(), r.policy())
             .is_err()
     );
-    assert!(
+    check!(
         r.matches_product(
             r.terms(),
             r.revision(),
@@ -216,21 +216,21 @@ fn renewal_template_matches_exact_product_without_inventing_current_eligibility(
     );
     let mut bad = r.clone();
     bad.price = Amount::ZERO;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     bad = r.clone();
     bad.term_seconds = MAX_TERM_SECONDS + 1;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     bad = r.clone();
     bad.grace_seconds = MAX_GRACE_SECONDS + 1;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     bad = r.clone();
     bad.revision = RevisionPolicy::Follow {
         line: LineId::new(1)?,
     };
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     bad = r.clone();
     bad.policy = definition("entitlement_policy", "foreign", 1)?;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     Ok(())
 }
 #[test]
@@ -238,17 +238,17 @@ fn acquisition_generation_and_exact_issue_identity_change_their_own_digests() ->
     let row = chain()?;
     let mut changed = row.clone();
     changed.edges.0.first_mut().ok_or("edge")?.acquisition.term = TermGeneration::new(2)?;
-    assert_ne!(changed.digest()?, row.digest()?);
+    check_ne!(changed.digest()?, row.digest()?);
     let row = term()?;
     let mut changed = row.clone();
     changed.operation = CommitToken::from_bytes([90; 16]);
-    assert_ne!(changed.digest()?, row.digest()?);
-    assert_eq!(
+    check_ne!(changed.digest()?, row.digest()?);
+    check_eq!(
         changed.grant.digest()?,
         row.grant.digest()?,
         "consented content precedes allocation"
     );
-    assert_eq!(row.key(), "licence/000000000000000c/term/0000000000000001");
+    check_eq!(row.key(), "licence/000000000000000c/term/0000000000000001");
     Ok(())
 }
 #[test]
@@ -272,14 +272,14 @@ fn existing_paid_term_wire_is_not_an_economics_record() -> TestResult {
         CommitToken::from_bytes([1; 16]),
     )?;
     let before = serde_json::to_vec(&old)?;
-    assert!(PaidTermEconomicsV1::decode(&before).is_err());
-    assert!(
+    check!(PaidTermEconomicsV1::decode(&before).is_err());
+    check!(
         !serde_json::to_value(&old)?
             .as_object()
             .ok_or("object")?
             .contains_key("economics")
     );
     let decoded = super::super::super::paid::PaidTermRecord::decode(&before)?;
-    assert_eq!(serde_json::to_vec(&decoded)?, before);
+    check_eq!(serde_json::to_vec(&decoded)?, before);
     Ok(())
 }

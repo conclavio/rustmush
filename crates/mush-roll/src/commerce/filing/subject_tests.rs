@@ -29,7 +29,7 @@ fn original_filing_rejects_structurally_valid_marked_source() -> TestResult {
     // Executable digest/subject/term/economic rows are otherwise unchanged.
     // Only owner provenance prevents laundering the child as parent=None.
     f.subject.revision.validate()?;
-    assert!(f.check(&f.rows).is_err());
+    check!(f.check(&f.rows).is_err());
     Ok(())
 }
 fn token(byte: u8) -> CommitToken {
@@ -238,26 +238,26 @@ fn individually_valid_crossed_revision_shell_rating_economic_and_root_rows_refus
     let mut mixed = a.rows.clone();
     mixed.filed = b.rows.filed.clone();
     mixed.filed.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.charter = b.rows.charter.clone();
     mixed.charter.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.operation.economic = b.rows.operation.economic.clone();
     mixed.operation.charter = b.rows.operation.charter;
     mixed.operation.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.filed.rating = b.rating.reference()?;
     mixed.operation.rating = mixed.filed.rating.clone();
     mixed.filed.validate()?;
     mixed.operation.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.identity = b.rows.identity.clone();
     mixed.identity.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     Ok(())
 }
 
@@ -267,11 +267,11 @@ fn lawful_but_uncaptured_definition_dates_and_window_cannot_change_the_bundle() 
     let mut mixed = a.rows.clone();
     mixed.filed.definition = digest(99);
     mixed.filed.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.term.window = InitialFilingTerms::new(7200, 100)?.window(&a.subject.issued)?;
     mixed.term.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     let later = ClockStamp {
         at: 101,
@@ -285,6 +285,6 @@ fn lawful_but_uncaptured_definition_dates_and_window_cannot_change_the_bundle() 
         None,
     )?;
     mixed.filed.validate()?;
-    assert_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
+    check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     Ok(())
 }

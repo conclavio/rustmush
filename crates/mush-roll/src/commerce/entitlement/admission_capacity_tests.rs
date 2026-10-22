@@ -107,31 +107,31 @@ fn real_complete_envelope_reserves_all_future_generation_digits_before_admission
     let birth = row(width, 1)?;
     // The real old body codec accepts this row. That does not prove future
     // complete-envelope capacity, and admission must reject it now.
-    assert_eq!(
+    check_eq!(
         PaidTermEconomicsV1::decode(&serde_json::to_vec(&birth)?)?,
         birth
     );
-    assert_eq!(
+    check_eq!(
         canonical_json_bytes_with_limit(&document(&handle, &birth), 8192)?.len(),
         8192
     );
-    assert!(check(&handle, &birth).is_err());
+    check!(check(&handle, &birth).is_err());
     let mut txn = engine.action_transaction(&handle)?;
     txn.insert(&handle, &birth.key(), birth.clone())?;
     let (ops, installation) = txn.prepare()?.into_parts();
-    assert_eq!(ops.len(), 1);
+    check_eq!(ops.len(), 1);
     engine.install_prepared_action(installation)?;
     let future = row(width, u64::MAX)?;
-    assert_eq!(future.key().len(), birth.key().len());
+    check_eq!(future.key().len(), birth.key().len());
     let mut txn = engine.action_transaction(&handle)?;
-    assert!(txn.insert(&handle, &future.key(), future).is_err());
+    check!(txn.insert(&handle, &future.key(), future).is_err());
     drop(txn);
     let safe_width = width.checked_sub(19).ok_or("digit reserve")?;
     let safe = row(safe_width, 1)?;
     check(&handle, &safe)?;
     for generation in [1, 9, 10, u64::MAX] {
         let future = row(safe_width, generation)?;
-        assert!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
+        check!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
         let mut independent = registered(&shared)?;
         let independent_handle = shared
             .lock()

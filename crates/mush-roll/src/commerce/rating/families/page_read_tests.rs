@@ -134,7 +134,7 @@ fn complete(number: u8) -> TestResult<test_support::CompleteRating> {
     // MAX_PAGES117 is the representational bound. A complete certificate must
     // end each failed class on its non-kernel budget failure; its eight later
     // kernels cannot follow that failure. The full valid shape is1739/116.
-    assert_eq!(rows.len(), MAX_CASES - 2 * kernels.len());
+    check_eq!(rows.len(), MAX_CASES - 2 * kernels.len());
     let contents = rows
         .chunks(MAX_PAGE_ROWS)
         .enumerate()
@@ -147,7 +147,7 @@ fn complete(number: u8) -> TestResult<test_support::CompleteRating> {
             )
         })
         .collect::<Result<Vec<_>, RatingError>>()?;
-    assert_eq!(contents.len(), 116);
+    check_eq!(contents.len(), 116);
     let result = RatingResultRef::from_pages(&contents)?;
     let mut content = base.receipt.content.clone();
     content.classes = Rows::new(classes)?;
@@ -413,16 +413,16 @@ fn two_full_complete_receipts_and_actual_join_reads_fit_existing_owner_limits() 
         f.evidence[0].receipt.reference()?,
         f.evidence[1].receipt.reference()?,
     ];
-    assert_eq!(f.read()?, Ok(expected));
-    assert_eq!(f.engine.action_state().len(), before);
-    assert!(!f.engine.action_state().has_prepared());
+    check_eq!(f.read()?, Ok(expected));
+    check_eq!(f.engine.action_state().len(), before);
+    check!(!f.engine.action_state().has_prepared());
     Ok(())
 }
 #[test]
 fn batching_preserves_last_page_attempt_binding_and_independent_current_status() -> TestResult {
     for mode in 0..3 {
         let mut f = Fixture::new()?;
-        assert!(f.read()?.is_ok());
+        check!(f.read()?.is_ok());
         let page = f.evidence[1].pages.last().ok_or("last page")?;
         let mut txn = f.engine.action_transaction(&f.handles.receipts)?;
         match mode {
@@ -448,7 +448,7 @@ fn batching_preserves_last_page_attempt_binding_and_independent_current_status()
         }
         let (_, install) = txn.prepare()?.into_parts();
         f.engine.install_prepared_action(install)?;
-        assert_eq!(f.read()?, Err(OwnerReadError::Integrity));
+        check_eq!(f.read()?, Err(OwnerReadError::Integrity));
     }
     Ok(())
 }

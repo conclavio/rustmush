@@ -134,29 +134,29 @@ mod tests {
             notes: String::new(),
         };
         let identity = RevisionIdentity::capture(&revision)?;
-        assert!(serde_json::to_vec(&revision)?.len() > 16 * 1024);
+        check!(serde_json::to_vec(&revision)?.len() > 16 * 1024);
         let request = ForkMaterialRequest { identity };
-        assert!(
+        check!(
             serde_json::to_vec(&request)?.len() < 512,
             "exact identity fits without a larger core request cap"
         );
         let material = ForkMaterial::read_exact(identity, &source)?;
         material.check(&revision)?;
-        assert_eq!(
+        check_eq!(
             material.working_copy(&revision)?.envelope,
             revision.envelope
         );
-        assert!(serde_json::to_vec(&material)?.len() < 1024 * 1024);
-        assert!(ForkMaterial::read_exact(identity, &Source("changed".into())).is_err());
+        check!(serde_json::to_vec(&material)?.len() < 1024 * 1024);
+        check!(ForkMaterial::read_exact(identity, &Source("changed".into())).is_err());
         let mut changed = revision.clone();
         changed.envelope.declared_class = "II".into();
-        assert!(
+        check!(
             material.check(&changed).is_err(),
             "stored envelope must still hash to captured revision"
         );
         let mut crossed = revision;
         crossed.reference.key.number -= 1;
-        assert!(
+        check!(
             material.check(&crossed).is_err(),
             "same source is not another immutable revision"
         );

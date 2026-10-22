@@ -33,12 +33,12 @@ fn holder() -> Result<(PaidBirthRefV1, PaidHolderRecord)> {
 fn old_pointer_bytes_and_strict_transferred_pointer_are_disjoint() -> Result {
     let old = original();
     let p: PersonalPaidLicence = serde_json::from_value(old.clone())?;
-    assert_eq!(serde_json::to_value(&p)?, old);
+    check_eq!(serde_json::to_value(&p)?, old);
     let (birth, holder) = holder()?;
     let next = p.transferred(&birth, &holder)?;
     let valid = serde_json::to_value(&next)?;
-    assert_eq!(valid["format"], 2);
-    assert_eq!(
+    check_eq!(valid["format"], 2);
+    check_eq!(
         serde_json::from_value::<PersonalPaidLicence>(valid.clone())?,
         next
     );
@@ -67,7 +67,7 @@ fn old_pointer_bytes_and_strict_transferred_pointer_are_disjoint() -> Result {
     x["ownership"]["operation"] = json!(token(1));
     cases.push(x);
     for value in cases {
-        assert!(serde_json::from_value::<PersonalPaidLicence>(value).is_err());
+        check!(serde_json::from_value::<PersonalPaidLicence>(value).is_err());
     }
     Ok(())
 }
@@ -76,18 +76,18 @@ fn structural_transfer_keeps_birth_and_term_then_next_term_keeps_ownership() -> 
     let old: PersonalPaidLicence = serde_json::from_value(original())?;
     let (birth, h) = holder()?;
     let next = old.transferred(&birth, &h)?;
-    assert_eq!(next.id(), old.id());
-    assert_eq!(next.charter(), old.charter());
-    assert_eq!(next.line(), old.line());
-    assert_eq!(next.operation(), old.operation());
-    assert_eq!(next.term(), old.term());
-    assert_eq!(next.holder(), h.holder());
+    check_eq!(next.id(), old.id());
+    check_eq!(next.charter(), old.charter());
+    check_eq!(next.line(), old.line());
+    check_eq!(next.operation(), old.operation());
+    check_eq!(next.term(), old.term());
+    check_eq!(next.holder(), h.holder());
     let renewed = next.with_next_term(TermGeneration::new(2)?)?;
-    assert_eq!(renewed.ownership(), next.ownership());
-    assert_eq!(renewed.holder(), next.holder());
-    assert_eq!(renewed.operation(), next.operation());
-    assert!(next.with_next_term(TermGeneration::new(3)?).is_err());
-    assert!(
+    check_eq!(renewed.ownership(), next.ownership());
+    check_eq!(renewed.holder(), next.holder());
+    check_eq!(renewed.operation(), next.operation());
+    check!(next.with_next_term(TermGeneration::new(3)?).is_err());
+    check!(
         next.transferred(&birth, &h).is_err(),
         "same captured ownership cannot transfer twice"
     );
@@ -95,11 +95,11 @@ fn structural_transfer_keeps_birth_and_term_then_next_term_keeps_ownership() -> 
         let mut row = serde_json::to_value(&h)?;
         row[key] = value;
         let crossed: PaidHolderRecord = serde_json::from_value(row)?;
-        assert!(old.transferred(&birth, &crossed).is_err());
+        check!(old.transferred(&birth, &crossed).is_err());
     }
     let mut row = serde_json::to_value(&h)?;
     row["term"]["generation"] = json!("2");
-    assert!(
+    check!(
         old.transferred(&birth, &serde_json::from_value(row)?)
             .is_err()
     );
@@ -109,25 +109,25 @@ fn structural_transfer_keeps_birth_and_term_then_next_term_keeps_ownership() -> 
 fn exact_new_family_keys_and_private_root_spellings_are_bounded() -> Result {
     use crate::commerce::families::valid_key;
     let (_, row) = holder()?;
-    assert!(valid_key(PaidHolderRecord::FAMILY, &row.key()));
-    assert!(valid_key(
+    check!(valid_key(PaidHolderRecord::FAMILY, &row.key()));
+    check!(valid_key(
         PaidHolderRecord::FAMILY,
         &PaidHolderRecord::key_for(row.licence(), 65537)
     ));
     for generation in [0, 1, 65538, u64::MAX] {
-        assert!(!valid_key(
+        check!(!valid_key(
             PaidHolderRecord::FAMILY,
             &PaidHolderRecord::key_for(row.licence(), generation)
         ));
     }
-    assert!(valid_key(PaidResaleHead::FAMILY, &row.licence().key()));
-    assert!(valid_key(PaidResaleRecord::FAMILY, &token(2).to_hex()));
+    check!(valid_key(PaidResaleHead::FAMILY, &row.licence().key()));
+    check!(valid_key(PaidResaleRecord::FAMILY, &token(2).to_hex()));
     for root in [
         RootAnchor::PaidResaleFunding(token(3), hash(1)),
         RootAnchor::PaidResaleTerminal(token(3), hash(2)),
     ] {
-        assert_eq!(RootAnchor::parse(&root.record())?, root);
-        assert!(RootAnchor::parse(&format!("{}/extra", root.record())).is_err());
+        check_eq!(RootAnchor::parse(&root.record())?, root);
+        check!(RootAnchor::parse(&format!("{}/extra", root.record())).is_err());
     }
     Ok(())
 }

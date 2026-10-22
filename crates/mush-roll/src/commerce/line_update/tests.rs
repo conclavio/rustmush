@@ -55,35 +55,35 @@ fn compatible_rows_reject_crossed_identity_and_unknown_authority() -> TestResult
             .get_mut("economic")
             .and_then(|v| v.get_mut(field))
             .ok_or("economic field")? = value;
-        assert!(serde_json::from_value::<UpdateOperation>(wire).is_err());
+        check!(serde_json::from_value::<UpdateOperation>(wire).is_err());
     }
     for field in ["permission", "source", "parent", "validated"] {
         let mut wire = serde_json::to_value(&row)?;
         wire.as_object_mut()
             .ok_or("wire")?
             .insert(field.into(), json!(true));
-        assert!(serde_json::from_value::<UpdateOperation>(wire).is_err());
+        check!(serde_json::from_value::<UpdateOperation>(wire).is_err());
     }
     for seq in [0, 1, crate::MAX_RECORDS as u64 + 2] {
         let mut wire = serde_json::to_value(&row)?;
         *wire.get_mut("sequence").ok_or("sequence")? = json!(seq);
-        assert!(serde_json::from_value::<UpdateOperation>(wire).is_err());
+        check!(serde_json::from_value::<UpdateOperation>(wire).is_err());
     }
     // The additive native derived protocol cannot be relabeled as an old
     // original update merely by retaining the old action and outer format.
     let mut derived = row.clone();
     derived.economic.kind = Some(mush_economy::registry_filing::UpdateKind::DependentV1);
-    assert!(derived.validate().is_err());
-    assert!(serde_json::from_value::<UpdateOperation>(serde_json::to_value(derived)?).is_err());
+    check!(derived.validate().is_err());
+    check!(serde_json::from_value::<UpdateOperation>(serde_json::to_value(derived)?).is_err());
     let mut same = row.clone();
     same.previous = same.filed;
-    assert!(same.validate().is_err());
+    check!(same.validate().is_err());
     let mut same = row.clone();
     same.initial = same.commit;
-    assert!(same.validate().is_err());
+    check!(same.validate().is_err());
     let root = RootAnchor::UpdateOperation(row.commit);
-    assert_eq!(RootAnchor::parse(&root.record())?, root);
-    assert_ne!(root.record(), RootAnchor::Operation(row.commit).record());
+    check_eq!(RootAnchor::parse(&root.record())?, root);
+    check_ne!(root.record(), RootAnchor::Operation(row.commit).record());
     Ok(())
 }
 #[test]
@@ -97,7 +97,7 @@ fn sequence_index_and_old_line_format_remain_exact() -> TestResult {
         operation: row.commit,
     };
     position.check(&row)?;
-    assert_eq!(
+    check_eq!(
         position.key(),
         UpdatePosition::key_for(row.line, row.sequence)
     );
@@ -108,7 +108,7 @@ fn sequence_index_and_old_line_format_remain_exact() -> TestResult {
             1 => crossed.filed = row.previous,
             _ => crossed.operation = row.initial,
         };
-        assert!(crossed.check(&row).is_err());
+        check!(crossed.check(&row).is_err());
     }
     let mut line = LineRecord {
         format: 1,
@@ -122,14 +122,14 @@ fn sequence_index_and_old_line_format_remain_exact() -> TestResult {
     line.validate()?;
     let old = serde_json::to_vec(&line)?;
     line.next_sequence = 3;
-    assert!(line.validate().is_err());
+    check!(line.validate().is_err());
     line.format = 2;
     line.validate()?;
     line.next_sequence = 2;
-    assert!(line.validate().is_err());
+    check!(line.validate().is_err());
     let restored: LineRecord = serde_json::from_slice(&old)?;
     restored.validate()?;
-    assert_eq!(serde_json::to_vec(&restored)?, old);
+    check_eq!(serde_json::to_vec(&restored)?, old);
     Ok(())
 }
 type Handle = StateFamilyHandle<String, UpdateOperation>;
@@ -160,7 +160,7 @@ fn registered_update_family_bounds_complete_numeric_row_and_refuses_oversize() -
     let row = operation()?;
     let document = json!({"family":{"owner":handle.owner(),"id":handle.descriptor().id()},"key":row.key(),"schema":{"id":handle.descriptor().value_schema(),"version":1},"value":row});
     let bytes = mush_core::canonical_json_bytes_with_limit(&document, UpdateOperation::MAX_BYTES)?;
-    assert!(bytes.len() < UpdateOperation::MAX_BYTES);
+    check!(bytes.len() < UpdateOperation::MAX_BYTES);
     let mut later = row.clone();
     later.format = 2;
     later.term = TermGeneration::new(u64::MAX)?;
@@ -178,7 +178,7 @@ fn registered_update_family_bounds_complete_numeric_row_and_refuses_oversize() -
         mush_economy::InstrumentId::new("x".repeat(UpdateOperation::MAX_BYTES))
             .ok_or("instrument")?;
     let mut txn = engine.action_transaction(&handle)?;
-    assert!(txn.insert(&handle, &huge.key(), huge).is_err());
+    check!(txn.insert(&handle, &huge.key(), huge).is_err());
     Ok(())
 }
 #[test]
@@ -198,7 +198,7 @@ fn update_registration_requires_explicit_active_configuration_and_actual_fee_own
             RatingCompatibility::combat_v1(manifest.digest()),
         )?)
     };
-    assert!(
+    check!(
         make(CommerceMode::Initialize)?
             .with_compatible_updates()
             .is_err()
@@ -239,11 +239,11 @@ fn update_registration_requires_explicit_active_configuration_and_actual_fee_own
             ],
         );
         if enabled && !fee_owner {
-            assert!(result.is_err());
+            check!(result.is_err());
             continue;
         }
         let engine = result?;
-        assert_eq!(
+        check_eq!(
             engine
                 .registry
                 .definitions()
@@ -271,11 +271,11 @@ fn historical_update_reference_uses_retained_compatibility_not_current_manifest(
         registration::historical_action(&RatingCompatibility::combat_v1(old.digest()))?;
     let changed_action =
         registration::historical_action(&RatingCompatibility::combat_v1(changed.digest()))?;
-    assert_eq!(old_action, action()?);
-    assert_eq!(old_action.locator(), changed_action.locator());
-    assert_ne!(old_action, changed_action);
+    check_eq!(old_action, action()?);
+    check_eq!(old_action.locator(), changed_action.locator());
+    check_ne!(old_action, changed_action);
     let [descriptor, _] = registration::definitions(&changed)?;
-    assert_eq!(
+    check_eq!(
         changed_action,
         DefinitionRegistryBuilder::new().register(OwnerId::new("roll")?, descriptor)?
     );
@@ -291,7 +291,7 @@ fn update_generation_formats_keep_old_bytes_and_require_exact_historical_owner_t
     row.at_ic.at = 1000;
     let old_bytes = serde_json::to_vec(&row)?;
     let restored: UpdateOperation = serde_json::from_slice(&old_bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, old_bytes);
+    check_eq!(serde_json::to_vec(&restored)?, old_bytes);
     let mut term = OwnerTerm {
         format: 1,
         licence: row.licence,
@@ -312,12 +312,12 @@ fn update_generation_formats_keep_old_bytes_and_require_exact_historical_owner_t
         let mut crossed = row.clone();
         crossed.format = format;
         crossed.term = TermGeneration::new(generation)?;
-        assert!(crossed.validate().is_err());
-        assert!(serde_json::from_value::<UpdateOperation>(serde_json::to_value(crossed)?).is_err());
+        check!(crossed.validate().is_err());
+        check!(serde_json::from_value::<UpdateOperation>(serde_json::to_value(crossed)?).is_err());
     }
     row.format = 2;
     row.term = TermGeneration::new(2)?;
-    assert!(row.check_owner_term(&term).is_err());
+    check!(row.check_owner_term(&term).is_err());
     term.format = 3;
     term.generation = row.term;
     term.operation = CommitToken::from_bytes([252; 16]);
@@ -328,14 +328,14 @@ fn update_generation_formats_keep_old_bytes_and_require_exact_historical_owner_t
     });
     row.check_owner_term(&term)?;
     let new_bytes = serde_json::to_vec(&row)?;
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&serde_json::from_slice::<UpdateOperation>(&new_bytes)?)?,
         new_bytes
     );
     for at in [899, 1200] {
         let mut crossed = row.clone();
         crossed.at_ic.at = at;
-        assert!(crossed.check_owner_term(&term).is_err());
+        check!(crossed.check_owner_term(&term).is_err());
     }
     for at in [900, 1100, 1199] {
         let mut current = row.clone();
@@ -344,15 +344,15 @@ fn update_generation_formats_keep_old_bytes_and_require_exact_historical_owner_t
     }
     let mut crossed = term.clone();
     crossed.operation = row.initial;
-    assert!(row.check_owner_term(&crossed).is_err());
+    check!(row.check_owner_term(&crossed).is_err());
     let mut crossed = term.clone();
     crossed.generation = TermGeneration::new(3)?;
-    assert!(row.check_owner_term(&crossed).is_err());
+    check!(row.check_owner_term(&crossed).is_err());
     let mut crossed = term.clone();
     crossed.revision = RevisionPolicy::Follow {
         line: LineId::new(1)?,
     };
-    assert!(row.check_owner_term(&crossed).is_err());
+    check!(row.check_owner_term(&crossed).is_err());
     Ok(())
 }
 
@@ -363,14 +363,14 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     let old = operation()?;
     let bytes = serde_json::to_vec(&old)?;
     let restored: UpdateOperation = serde_json::from_slice(&bytes)?;
-    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    check_eq!(serde_json::to_vec(&restored)?, bytes);
     let legacy = serde_json::to_value(&old)?;
-    assert!(legacy.get("charter_ownership").is_none());
+    check!(legacy.get("charter_ownership").is_none());
     let proof = serde_json::json!({"generation":65537,"operation":mush_core::CommitToken::from_bytes([249;16]),"digest":mush_core::DefinitionDigest::from_bytes([255;32])});
     let mut value = legacy.clone();
     let fields = value.as_object_mut().ok_or("operation")?;
     fields.insert("charter_ownership".into(), proof.clone());
-    assert!(
+    check!(
         serde_json::from_value::<UpdateOperation>(value.clone()).is_err(),
         "old format cannot carry new authority attribution"
     );
@@ -381,7 +381,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
 
     let new: UpdateOperation = serde_json::from_value(value.clone())?;
     new.validate()?;
-    assert_eq!(serde_json::to_value(&new)?, value);
+    check_eq!(serde_json::to_value(&new)?, value);
     let shared = Arc::new(Mutex::new(None));
     let mut engine = boxed_test_engine(
         World::new_minimal(),
@@ -408,21 +408,21 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
         bad.as_object_mut()
             .ok_or("operation")?
             .insert("charter_ownership".into(), corrupt);
-        assert!(serde_json::from_value::<UpdateOperation>(bad).is_err());
+        check!(serde_json::from_value::<UpdateOperation>(bad).is_err());
     }
     let mut missing = value.clone();
     missing
         .as_object_mut()
         .ok_or("operation")?
         .remove("charter_ownership");
-    assert!(serde_json::from_value::<UpdateOperation>(missing).is_err());
+    check!(serde_json::from_value::<UpdateOperation>(missing).is_err());
     let mut extra = value.clone();
     extra
         .get_mut("charter_ownership")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("ownership")?
         .insert("validated".into(), serde_json::json!(true));
-    assert!(serde_json::from_value::<UpdateOperation>(extra).is_err());
+    check!(serde_json::from_value::<UpdateOperation>(extra).is_err());
     Ok(())
 }
 

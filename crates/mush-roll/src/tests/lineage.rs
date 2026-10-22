@@ -46,7 +46,7 @@ fn fixture() -> Result<(World, RevisionRef, DerivativeProvenance), Box<dyn std::
     let provenance = ancestry(&world, parent)?;
     world.create(AUTHOR, "child", "working child");
     mark(&mut world, "child", &provenance)?;
-    assert_eq!(
+    check_eq!(
         world.store.mind(AUTHOR, "child")?.provenance.as_ref(),
         Some(&provenance)
     );
@@ -59,18 +59,18 @@ fn owner_lifecycle_preserves_lineage_and_cas_without_content_authority() -> Test
     let stale = world.store.mind(AUTHOR, "child")?.base();
     world.edit(AUTHOR, "child", "replacement source");
     let before = world.disk.clone();
-    assert_eq!(
+    check_eq!(
         world
             .store
             .prepare_edit(AUTHOR, "child", stale, draft("stale"))
             .err(),
         Some(RollError::StaleEdit)
     );
-    assert_eq!(world.disk, before);
+    check_eq!(world.disk, before);
     let first = world.save(AUTHOR, "child", "notes", Some("named"));
     let saved = world.store.revision(AUTHOR, first.key)?.clone();
-    assert_eq!(saved.provenance.as_ref(), Some(&provenance));
-    assert_eq!(saved.require_original_access(), Err(RollError::Missing));
+    check_eq!(saved.provenance.as_ref(), Some(&provenance));
+    check_eq!(saved.require_original_access(), Err(RollError::Missing));
     saved.verify_source(&world.sources)?; // Frozen immutable custody still validates.
 
     for (copy, revision) in [("copydraft", None), ("copysaved", Some(first))] {
@@ -78,7 +78,7 @@ fn owner_lifecycle_preserves_lineage_and_cas_without_content_authority() -> Test
             .store
             .prepare_copy(AUTHOR, copy, "child", revision, &world.sources)?;
         world.commit(change);
-        assert_eq!(
+        check_eq!(
             world.store.mind(AUTHOR, copy)?.provenance.as_ref(),
             Some(&provenance)
         );
@@ -101,21 +101,21 @@ fn owner_lifecycle_preserves_lineage_and_cas_without_content_authority() -> Test
             .store
             .prepare_rename(AUTHOR, "child", base, "renamed")?,
     );
-    assert_eq!(
+    check_eq!(
         world.store.mind(AUTHOR, "renamed")?.provenance.as_ref(),
         Some(&provenance)
     );
     let base = world.store.mind(AUTHOR, "renamed")?.base();
     let before = world.disk.clone();
-    assert_eq!(
+    check_eq!(
         world.store.prepare_remove(AUTHOR, "renamed", base).err(),
         Some(RollError::Missing)
     );
-    assert_eq!(world.disk, before);
+    check_eq!(world.disk, before);
     world.reboot();
-    assert_eq!(world.store.revision(AUTHOR, first.key)?, &saved);
-    assert_eq!(world.store.mind(AUTHOR, "renamed")?.id(), first.key.mind);
-    assert_eq!(
+    check_eq!(world.store.revision(AUTHOR, first.key)?, &saved);
+    check_eq!(world.store.mind(AUTHOR, "renamed")?.id(), first.key.mind);
+    check_eq!(
         world.store.mind(AUTHOR, "renamed")?.provenance.as_ref(),
         Some(&provenance)
     );
@@ -132,10 +132,10 @@ fn marked_child_retains_exact_parent_after_original_history_is_gone() -> TestRes
         world.save(AUTHOR, "parent", "", None);
     }
     let prune = world.store.prepare_prune(MAX_GC_BATCH)?;
-    assert!(!prune.removed.contains(&parent));
+    check!(!prune.removed.contains(&parent));
     let child = world.save(AUTHOR, "child", "", None);
     let base = world.store.mind(AUTHOR, "child")?.base();
-    assert_eq!(
+    check_eq!(
         world.store.prepare_remove(AUTHOR, "child", base).err(),
         Some(RollError::Missing)
     );
@@ -171,7 +171,7 @@ fn marked_child_retains_exact_parent_after_original_history_is_gone() -> TestRes
         .store
         .revision(AUTHOR, child.key)?
         .verify_source(&world.sources)?;
-    assert!(
+    check!(
         !world
             .store
             .prepare_prune(MAX_GC_BATCH)?
@@ -195,7 +195,7 @@ fn record_version_requires_provenance_and_client_content_cannot_carry_it() -> Te
         row.as_object_mut()
             .ok_or("object")?
             .insert("provenance".into(), malformed);
-        assert!(
+        check!(
             serde_json::from_value::<Mind>(row)
                 .map_err(|_| RollError::Missing)
                 .and_then(|m| m.validate())
@@ -204,34 +204,34 @@ fn record_version_requires_provenance_and_client_content_cannot_carry_it() -> Te
     }
     let mut absent = pristine.clone();
     absent.as_object_mut().ok_or("object")?.remove("provenance");
-    assert!(serde_json::from_value::<Mind>(absent)?.validate().is_err());
+    check!(serde_json::from_value::<Mind>(absent)?.validate().is_err());
     let mut wrong_version = pristine;
     wrong_version
         .as_object_mut()
         .ok_or("object")?
         .insert("format".into(), json!(FORMAT));
-    assert!(
+    check!(
         serde_json::from_value::<Mind>(wrong_version)?
             .validate()
             .is_err()
     );
 
     let copy = serde_json::to_value(child.draft())?;
-    assert!(copy.get("provenance").is_none());
+    check!(copy.get("provenance").is_none());
     let mut injected = copy;
     injected
         .as_object_mut()
         .ok_or("object")?
         .insert("provenance".into(), serde_json::to_value(&provenance)?);
-    assert!(serde_json::from_value::<WorkingCopy>(injected).is_err());
+    check!(serde_json::from_value::<WorkingCopy>(injected).is_err());
     let original = world.store.mind(AUTHOR, "parent")?;
     let bytes = serde_json::to_vec(original)?;
-    assert!(
+    check!(
         serde_json::from_slice::<Value>(&bytes)?
             .get("provenance")
             .is_none()
     );
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&serde_json::from_slice::<Mind>(&bytes)?)?,
         bytes
     );
@@ -246,7 +246,7 @@ fn missing_crossed_cyclic_and_overdepth_sources_quarantine_without_repair() -> T
     provenance.parent.revision =
         RevisionIdentity::capture(world.store.revision(AUTHOR, child.key)?)?;
     mark(&mut world, "child", &provenance)?;
-    assert!(world.store.mind(AUTHOR, "child").is_err(), "self cycle");
+    check!(world.store.mind(AUTHOR, "child").is_err(), "self cycle");
 
     let (mut world, _, _) = fixture()?;
     let child = world.save(AUTHOR, "child", "", None);
@@ -261,16 +261,16 @@ fn missing_crossed_cyclic_and_overdepth_sources_quarantine_without_repair() -> T
     row.remove("provenance");
     let bytes = world.disk.clone();
     world.reboot();
-    assert!(
+    check!(
         world.store.mind(AUTHOR, "child").is_err(),
         "saved lineage cannot be stripped independently"
     );
-    assert_eq!(world.disk, bytes);
+    check_eq!(world.disk, bytes);
 
     let (mut world, _, _) = fixture()?;
     world.disk.remove(&(NS.to_owned(), parent.key.key()));
     world.reboot();
-    assert!(
+    check!(
         world.store.mind(AUTHOR, "child").is_err(),
         "missing exact parent"
     );
@@ -284,7 +284,7 @@ fn missing_crossed_cyclic_and_overdepth_sources_quarantine_without_repair() -> T
         world.create(AUTHOR, &name, &name);
         mark(&mut world, &name, &provenance)?;
         if depth > crate::commerce::filed::MAX_PARENT_DEPTH {
-            assert!(world.store.mind(AUTHOR, &name).is_err());
+            check!(world.store.mind(AUTHOR, &name).is_err());
         } else {
             parent = world.save(AUTHOR, &name, "", None);
         }
@@ -319,16 +319,16 @@ fn fork_participant_write_codec_accepts_only_canonical_fresh_attributed_images()
                 value,
             })
         };
-        assert!(RootParticipant.accepts_write(&make(NS, key, value.clone())?));
+        check!(RootParticipant.accepts_write(&make(NS, key, value.clone())?));
         images += 1;
-        assert!(!RootParticipant.accepts_write(&make("tacsim", key, value.clone())?));
-        assert!(!RootParticipant.accepts_write(&make(NS, "source:arbitrary", value.clone())?));
+        check!(!RootParticipant.accepts_write(&make("tacsim", key, value.clone())?));
+        check!(!RootParticipant.accepts_write(&make(NS, "source:arbitrary", value.clone())?));
         let mut extra = value.clone();
         extra
             .as_object_mut()
             .ok_or("image")?
             .insert("authority".into(), json!(true));
-        assert!(!RootParticipant.accepts_write(&make(NS, key, extra)?));
+        check!(!RootParticipant.accepts_write(&make(NS, key, extra)?));
         if key.starts_with("mind:") {
             for (field, bad) in [
                 ("edit", json!(1)),
@@ -337,16 +337,16 @@ fn fork_participant_write_codec_accepts_only_canonical_fresh_attributed_images()
             ] {
                 let mut changed = value.clone();
                 *changed.get_mut(field).ok_or("mind field")? = bad;
-                assert!(!RootParticipant.accepts_write(&make(NS, key, changed)?));
+                check!(!RootParticipant.accepts_write(&make(NS, key, changed)?));
             }
             // The shared retention participant now admits the exact Mind
             // deletion shape for its closed Retirement request. This structural
             // filter does not grant that request or prove its paired cause.
-            assert!(RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
+            check!(RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
                 namespace: OwnerId::new(NS)?,
                 key: AuthoritativeKey::parse_canonical(key)?
             }));
-            assert!(!RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
+            check!(!RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
                 namespace: OwnerId::new("tacsim")?,
                 key: AuthoritativeKey::parse_canonical(key)?
             }));
@@ -360,15 +360,16 @@ fn fork_participant_write_codec_accepts_only_canonical_fresh_attributed_images()
                 "revision:1:1:1",
                 "source:arbitrary",
             ] {
-                assert!(!RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
+                check!(!RootParticipant.accepts_write(&ReplayWrite::ModuleDelete {
                     namespace: OwnerId::new(NS)?,
                     key: AuthoritativeKey::parse_canonical(bad_key)?
                 }));
             }
         }
     }
-    assert_eq!(
-        images, 2,
+    check_eq!(
+        images,
+        2,
         "the actual owner emits only its library and first draft"
     );
     Ok(())

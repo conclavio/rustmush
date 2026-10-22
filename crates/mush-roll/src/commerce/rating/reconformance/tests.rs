@@ -45,8 +45,8 @@ fn admission_requires_explicit_previous_and_preserves_absent_historical_bytes() 
     let historical = serde_json::to_vec(old.execution.admission())?;
     let round: crate::commerce::rating::execution::ExecutionAdmission =
         serde_json::from_slice(&historical)?;
-    assert_eq!(serde_json::to_vec(&round)?, historical);
-    assert!(
+    check_eq!(serde_json::to_vec(&round)?, historical);
+    check!(
         !serde_json::to_value(&round)?
             .as_object()
             .ok_or("object")?
@@ -58,20 +58,20 @@ fn admission_requires_explicit_previous_and_preserves_absent_historical_bytes() 
         None,
     )?;
     let wire = serde_json::to_value(&binding)?;
-    assert_eq!(wire.get("previous_attempt"), Some(&Value::Null));
+    check_eq!(wire.get("previous_attempt"), Some(&Value::Null));
     let mut missing = wire.clone();
     missing
         .as_object_mut()
         .ok_or("object")?
         .remove("previous_attempt");
-    assert!(serde_json::from_value::<ReconformanceAdmission>(missing).is_err());
+    check!(serde_json::from_value::<ReconformanceAdmission>(missing).is_err());
     let mut extra = wire;
     extra
         .as_object_mut()
         .ok_or("object")?
         .insert("authorized".into(), json!(true));
-    assert!(serde_json::from_value::<ReconformanceAdmission>(extra).is_err());
-    assert!(
+    check!(serde_json::from_value::<ReconformanceAdmission>(extra).is_err());
+    check!(
         ReconformanceAdmission::new(
             binding.filed(),
             binding.birth_rating(),
@@ -82,19 +82,19 @@ fn admission_requires_explicit_previous_and_preserves_absent_historical_bytes() 
     let mut marked = round.clone();
     marked.reconformance = Some(binding);
     marked.measured_rejection = true;
-    assert!(
+    check!(
         marked.validate().is_err(),
         "the saved author is not the Registry service actor"
     );
     marked.character = GOD;
     marked.validate()?;
     marked.measured_rejection = false;
-    assert!(marked.validate().is_err());
+    check!(marked.validate().is_err());
     let mut null = serde_json::to_value(round)?;
     null.as_object_mut()
         .ok_or("object")?
         .insert("reconformance".into(), Value::Null);
-    assert!(
+    check!(
         serde_json::from_value::<crate::commerce::rating::execution::ExecutionAdmission>(null)
             .is_err()
     );
@@ -114,8 +114,8 @@ fn exact_profile_and_head_identity_bind_full_manifest_and_filed_revision() -> Re
         .zip(current.actions())
         .zip(changed.actions())
     {
-        assert_ne!(old, service);
-        assert_ne!(service, new);
+        check_ne!(old, service);
+        check_ne!(service, new);
     }
     let row = ReconformanceHead {
         format: 1,
@@ -125,20 +125,20 @@ fn exact_profile_and_head_identity_bind_full_manifest_and_filed_revision() -> Re
         admitted_at_utc: 100,
     };
     row.validate()?;
-    assert_eq!(row.key().len(), 64);
-    assert_ne!(
+    check_eq!(row.key().len(), 64);
+    check_ne!(
         row.key(),
         ReconformanceHead::key_for(FiledRevisionId::new(2)?, first.digest())?
     );
-    assert_ne!(row.key(), ReconformanceHead::key_for(row.filed, hash(99))?);
+    check_ne!(row.key(), ReconformanceHead::key_for(row.filed, hash(99))?);
     let mut wrong = row.clone();
     wrong.admitted_at_utc = -1;
-    assert!(wrong.validate().is_err());
+    check!(wrong.validate().is_err());
     let mut wire = serde_json::to_value(row)?;
     wire.as_object_mut()
         .ok_or("object")?
         .insert("certified".into(), json!(true));
-    assert!(serde_json::from_value::<ReconformanceHead>(wire).is_err());
+    check!(serde_json::from_value::<ReconformanceHead>(wire).is_err());
     Ok(())
 }
 #[test]
@@ -169,29 +169,29 @@ fn measured_cause_is_closed_separate_from_manual_recall_and_has_full_envelope_ro
         at_utc: 1000,
     };
     row.validate()?;
-    assert_eq!(row.status().withdrawn_by, Some(token(6)));
-    assert_eq!(row.status().recalled_by, Some(token(10)));
-    assert_eq!(row.root()?.identity, row.revision);
+    check_eq!(row.status().withdrawn_by, Some(token(6)));
+    check_eq!(row.status().recalled_by, Some(token(10)));
+    check_eq!(row.root()?.identity, row.revision);
     let wire = serde_json::to_value(&row)?;
-    assert_eq!(serde_json::from_value::<MeasuredRecall>(wire.clone())?, row);
+    check_eq!(serde_json::from_value::<MeasuredRecall>(wire.clone())?, row);
     for field in ["withdrawn_by", "rejection", "manifest"] {
         let mut missing = wire.clone();
         missing.as_object_mut().ok_or("object")?.remove(field);
-        assert!(serde_json::from_value::<MeasuredRecall>(missing).is_err());
+        check!(serde_json::from_value::<MeasuredRecall>(missing).is_err());
     }
     let mut actor = row.clone();
     actor.actor = ObjId(7);
-    assert!(actor.validate().is_err());
+    check!(actor.validate().is_err());
     let mut crossed = row.clone();
     crossed.manifest = manifest(4)?;
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut crossed = row.clone();
     crossed.operation = crossed.rejection.job();
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut wire = wire;
     wire.as_object_mut()
         .ok_or("object")?
         .insert("operator".into(), json!(GOD));
-    assert!(serde_json::from_value::<MeasuredRecall>(wire).is_err());
+    check!(serde_json::from_value::<MeasuredRecall>(wire).is_err());
     Ok(())
 }

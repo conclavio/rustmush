@@ -54,7 +54,7 @@ fn inputs() -> Result<(
 #[test]
 fn current_selection_requires_exact_completed_profile_source_and_birth() -> Result {
     let (filed, head, current) = inputs()?;
-    assert_eq!(
+    check_eq!(
         selected(
             &head,
             &filed,
@@ -65,10 +65,10 @@ fn current_selection_requires_exact_completed_profile_source_and_birth() -> Resu
         current.receipt.reference()?
     );
     let wrong = RatingCompatibility::combat_v1(hash(99));
-    assert!(selected(&head, &filed, &wrong, &current.job, &current.execution).is_err());
+    check!(selected(&head, &filed, &wrong, &current.job, &current.execution).is_err());
     let mut crossed = head.clone();
     crossed.filed = FiledRevisionId::new(2)?;
-    assert!(
+    check!(
         selected(
             &crossed,
             &filed,
@@ -80,7 +80,7 @@ fn current_selection_requires_exact_completed_profile_source_and_birth() -> Resu
     );
     let mut crossed = filed.clone();
     crossed.rating = complete(7)?.receipt.reference()?;
-    assert!(
+    check!(
         selected(
             &head,
             &crossed,
@@ -92,7 +92,7 @@ fn current_selection_requires_exact_completed_profile_source_and_birth() -> Resu
     );
     let mut crossed = filed;
     crossed.definition = hash(98);
-    assert!(
+    check!(
         selected(
             &head,
             &crossed,
@@ -130,7 +130,7 @@ fn pending_or_generic_failure_cannot_become_current_success() -> Result {
         current.execution.admission().clone(),
         before.clone(),
     )?;
-    assert!(matches!(
+    check!(matches!(
         selected(
             &head,
             &filed,
@@ -152,7 +152,7 @@ fn pending_or_generic_failure_cannot_become_current_success() -> Result {
         &failed,
         token(33),
     )?;
-    assert!(matches!(
+    check!(matches!(
         selected(
             &head,
             &filed,
@@ -162,6 +162,6 @@ fn pending_or_generic_failure_cannot_become_current_success() -> Result {
         ),
         Err(RatingError::Unavailable)
     ));
-    assert!(matches!(failed.state(), RatingJobState::Failed { .. }));
+    check!(matches!(failed.state(), RatingJobState::Failed { .. }));
     Ok(())
 }

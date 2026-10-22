@@ -1409,17 +1409,17 @@ fn boot_does_not_accept_forged_or_unregistered_internal_root_families() -> Resul
             kv: vec![(key.as_str().into(), value)],
             ..Default::default()
         })?;
-        assert!(store.quarantine().contains_key(&key));
+        check!(store.quarantine().contains_key(&key));
         let reason = store
             .quarantine()
             .get(&key)
             .ok_or_else(|| invalid("test quarantine", "missing expected refusal"))?;
-        assert!(reason.contains(refusal), "unexpected quarantine: {reason}");
-        assert!(matches!(
+        check!(reason.contains(refusal), "unexpected quarantine: {reason}");
+        check!(matches!(
             store.prepare_prune(1),
             Err(RollError::Quarantined(_))
         ));
-        assert!(matches!(
+        check!(matches!(
             store.prepare_prune_owned(AUTHOR, 1),
             Err(RollError::Quarantined(_))
         ));
@@ -1429,7 +1429,7 @@ fn boot_does_not_accept_forged_or_unregistered_internal_root_families() -> Resul
             ReferenceKind::Listing,
             ReferenceKind::Commercial,
         ] {
-            assert!(store.reference_keys(owner, known).is_empty());
+            check!(store.reference_keys(owner, known).is_empty());
         }
     }
     Ok(())

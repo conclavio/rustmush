@@ -255,17 +255,15 @@ impl Rig {
 fn registry_revocation_actual_authorizer_has_no_staff_or_unconfigured_operator_fallback() -> Result
 {
     let r = Rig::new()?;
-    assert!(r.observe().is_ok());
+    check!(r.observe().is_ok());
     for actor in [GOD, r.other] {
-        assert!(authority::observe(&r.engine.world, &r.ready, &r.policy, actor).is_err());
+        check!(authority::observe(&r.engine.world, &r.ready, &r.policy, actor).is_err());
     }
-    assert!(
-        authority::observe(&r.engine.world, &Readiness::default(), &r.policy, r.actor).is_err()
-    );
+    check!(authority::observe(&r.engine.world, &Readiness::default(), &r.policy, r.actor).is_err());
     let mut altered = r.policy.clone();
     altered.scope = OrgScopeId(u64::MAX);
-    assert!(authority::observe(&r.engine.world, &r.ready, &altered, r.actor).is_err());
-    assert!(
+    check!(authority::observe(&r.engine.world, &r.ready, &altered, r.actor).is_err());
+    check!(
         r.engine
             .world
             .module_state::<crate::RollStore>()
@@ -331,8 +329,8 @@ fn registry_revocation_fresh_org_deny_replacement_revocation_and_expiry_are_deci
             "expired" => r.engine.world.set_now(105),
             _ => return Err("mode".into()),
         }
-        assert!(r.observe().is_err(), "live refusal {mode}");
-        assert!(
+        check!(r.observe().is_err(), "live refusal {mode}");
+        check!(
             authority::recheck(
                 &r.engine.world,
                 &r.ready,
@@ -352,7 +350,7 @@ fn registry_revocation_real_policy_allow_remains_subject_to_deny_precedence() ->
     let mut r = Rig::new()?;
     let grant = r.grant()?;
     r.mutate(OrgMutationOp::RevokeGrant { grant: grant.id })?;
-    assert!(r.observe().is_err());
+    check!(r.observe().is_err());
     let rule = |effect| PolicyRule {
         effect,
         subject: PolicySubject::Principal(mush_org::PrincipalId::Object(r.actor)),
@@ -377,8 +375,8 @@ fn registry_revocation_real_policy_allow_remains_subject_to_deny_precedence() ->
     policy.rules.push(deny);
     policy.revision = 2;
     r.mutate(OrgMutationOp::PutPolicy { policy })?;
-    assert!(r.observe().is_err());
-    assert!(
+    check!(r.observe().is_err());
+    check!(
         authority::recheck(
             &r.engine.world,
             &r.ready,
@@ -421,7 +419,7 @@ fn registry_revocation_actual_owner_freeze_actor_loss_and_clock_drift_refuse_ret
             }
             _ => return Err("mode".into()),
         }
-        assert!(
+        check!(
             authority::recheck(
                 &r.engine.world,
                 &r.ready,
@@ -468,8 +466,8 @@ fn registry_revocation_full_envelope_and_closed_term_identity_are_bounded() -> R
     op.validate()?;
     let encoded = serde_json::to_value(&op)?;
     let envelope = json!({"family":{"owner":"roll","id":records::RevocationOperation::FAMILY},"schema":{"id":format!("{}.value.v1",records::RevocationOperation::FAMILY),"version":1},"key":op.key(),"value":encoded});
-    assert!(serde_json::to_vec(&envelope)?.len() <= records::RevocationOperation::MAX_BYTES);
-    assert_eq!(
+    check!(serde_json::to_vec(&envelope)?.len() <= records::RevocationOperation::MAX_BYTES);
+    check_eq!(
         serde_json::from_value::<records::RevocationOperation>(encoded.clone())?,
         op
     );
@@ -486,7 +484,7 @@ fn registry_revocation_full_envelope_and_closed_term_identity_are_bounded() -> R
     ] {
         let mut invalid = encoded.clone();
         invalid.as_object_mut().ok_or("record")?.remove(field);
-        assert!(
+        check!(
             serde_json::from_value::<records::RevocationOperation>(invalid).is_err(),
             "required {field}"
         );
@@ -507,7 +505,7 @@ fn registry_revocation_full_envelope_and_closed_term_identity_are_bounded() -> R
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("nested")?
             .insert("override".into(), json!(true));
-        assert!(serde_json::from_value::<records::RevocationOperation>(invalid).is_err());
+        check!(serde_json::from_value::<records::RevocationOperation>(invalid).is_err());
     }
     let mut oversized = op.clone();
     let huge = SystemPrincipalId::new("r".repeat(records::RevocationOperation::MAX_BYTES))
@@ -515,12 +513,12 @@ fn registry_revocation_full_envelope_and_closed_term_identity_are_bounded() -> R
     oversized.authority.issuer = huge.clone();
     oversized.initial_issuer = huge;
     oversized.action = oversized.authority.action()?;
-    assert!(matches!(
+    check!(matches!(
         oversized.validate(),
         Err(PublicationError::Capacity)
     ));
     let wire = serde_json::to_string(&op)?;
-    assert!(
+    check!(
         serde_json::from_str::<records::RevocationOperation>(&wire.replacen(
             "\"format\":1",
             "\"format\":1,\"format\":1",
@@ -539,34 +537,34 @@ fn registry_revocation_is_exact_generation_and_never_restores_old_use() -> Resul
         clock: mush_core::ClockRef::WorldIc { generation: 1 },
         at,
     };
-    assert!(
+    check!(
         !status.permits_successor(super::super::WorldIcSeconds::from_stamp(&stamp(
             i64::MAX - 1
         ))?)
     );
-    assert!(status.permits_successor(super::super::WorldIcSeconds::from_stamp(&stamp(i64::MAX))?));
-    assert_ne!(
+    check!(status.permits_successor(super::super::WorldIcSeconds::from_stamp(&stamp(i64::MAX))?));
+    check_ne!(
         status.key(),
         records::RevokedTerm::key_for(status.licence, super::super::TermGeneration::new(2)?)
     );
     let mut crossed = status.clone();
     crossed.generation = super::super::TermGeneration::new(2)?;
-    assert!(crossed.matches(&op).is_err());
+    check!(crossed.matches(&op).is_err());
     let mut changed = op.clone();
     changed.at_ic.at = i64::MAX;
-    assert!(
+    check!(
         changed.validate().is_err(),
         "cannot revoke an already expired term"
     );
     let mut changed = op.clone();
     changed.at_ic.at = i64::MAX - 2;
-    assert_ne!(changed.digest()?, op.digest()?);
+    check_ne!(changed.digest()?, op.digest()?);
     Ok(())
 }
 #[test]
 fn registry_revocation_policy_is_closed_bounded_and_does_not_invent_identifier_minima() -> Result {
     let issuer = SystemPrincipalId::new("roll.registry").ok_or("issuer")?;
-    assert!(
+    check!(
         RegistryRevocationPolicy::new(issuer.clone(), OrgId(0), OrgScopeId(0), vec![ObjId(0)])
             .is_ok()
     );
@@ -576,7 +574,7 @@ fn registry_revocation_policy_is_closed_bounded_and_does_not_invent_identifier_m
         vec![ObjId(3), ObjId(2)],
         (0..33).map(ObjId).collect(),
     ] {
-        assert!(
+        check!(
             RegistryRevocationPolicy::new(issuer.clone(), OrgId(1), OrgScopeId(2), operators)
                 .is_err()
         );
@@ -586,7 +584,7 @@ fn registry_revocation_policy_is_closed_bounded_and_does_not_invent_identifier_m
     raw.as_object_mut()
         .ok_or("policy")?
         .insert("god_override".into(), json!(true));
-    assert!(serde_json::from_value::<RegistryRevocationPolicy>(raw).is_err());
+    check!(serde_json::from_value::<RegistryRevocationPolicy>(raw).is_err());
     Ok(())
 }
 
@@ -621,8 +619,8 @@ fn registered_revocation_families_allow_empty_reads_and_exact_term_and_operation
     let op = operation()?;
     let status = op.status()?;
     let mut txn = engine.action_transaction(&f.revoked_terms)?;
-    assert!(txn.get(&f.revoked_terms, &status.key())?.is_none());
-    assert!(txn.get(&f.registry_revocations, &op.key())?.is_none());
+    check!(txn.get(&f.revoked_terms, &status.key())?.is_none());
+    check!(txn.get(&f.registry_revocations, &op.key())?.is_none());
     super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)?;
     drop(txn);
     for key in [
@@ -631,8 +629,8 @@ fn registered_revocation_families_allow_empty_reads_and_exact_term_and_operation
         status.key().replace("licence/", "license/"),
     ] {
         let mut txn = engine.action_transaction(&f.revoked_terms)?;
-        assert!(txn.get(&f.revoked_terms, &key).is_err());
-        assert!(txn.prepare().is_err());
+        check!(txn.get(&f.revoked_terms, &key).is_err());
+        check!(txn.prepare().is_err());
     }
     for key in [
         format!("{}/extra", op.key()),
@@ -640,22 +638,22 @@ fn registered_revocation_families_allow_empty_reads_and_exact_term_and_operation
         status.key(),
     ] {
         let mut txn = engine.action_transaction(&f.registry_revocations)?;
-        assert!(txn.get(&f.registry_revocations, &key).is_err());
-        assert!(txn.prepare().is_err());
+        check!(txn.get(&f.registry_revocations, &key).is_err());
+        check!(txn.prepare().is_err());
     }
     let mut txn = engine.action_transaction(&f.revoked_terms)?;
     txn.insert(&f.registry_revocations, &op.key(), op.clone())?;
     txn.insert(&f.revoked_terms, &status.key(), status.clone())?;
-    assert!(
+    check!(
         super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)
             .is_err()
     );
     let (_, installation) = txn.prepare()?.into_parts();
     engine.install_prepared_action(installation)?;
     let mut txn = engine.action_transaction(&f.revoked_terms)?;
-    assert!(txn.get(&f.revoked_terms, &status.key())? == Some(&status));
-    assert!(txn.get(&f.registry_revocations, &op.key())? == Some(&op));
-    assert!(
+    check!(txn.get(&f.revoked_terms, &status.key())? == Some(&status));
+    check!(txn.get(&f.registry_revocations, &op.key())? == Some(&op));
+    check!(
         super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)
             .is_err()
     );

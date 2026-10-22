@@ -62,7 +62,7 @@ impl Fitting {
         let id = s.f.accepted()?;
         s.incoming = s.complete_manufacture(id, 22)?;
         s.f.commit(7, buyer, 28, FactoryRig::order_parameters(id))?;
-        assert_eq!(
+        check_eq!(
             s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
             Some(buyer)
         );
@@ -261,13 +261,13 @@ impl Fitting {
         let mut observed = Vec::new();
         for target in targets {
             let key = target.get("key").ok_or("target key")?;
-            assert_eq!(key.get("owner").and_then(Value::as_str), Some("industry"));
+            check_eq!(key.get("owner").and_then(Value::as_str), Some("industry"));
             let family = key.get("family").and_then(Value::as_str).ok_or("family")?;
             let ceiling = target
                 .get("ceiling")
                 .and_then(Value::as_u64)
                 .ok_or("ceiling")?;
-            assert_eq!(
+            check_eq!(
                 target.get("mode").and_then(Value::as_str),
                 Some(if family == "core_component_exchanges" {
                     "create"
@@ -279,9 +279,9 @@ impl Fitting {
         }
         observed.sort();
         expected.sort();
-        assert_eq!(observed, expected);
-        assert_eq!(targets.len(), if displaced { 9 } else { 8 });
-        assert_eq!(
+        check_eq!(observed, expected);
+        check_eq!(targets.len(), if displaced { 9 } else { 8 });
+        check_eq!(
             observed.iter().map(|(_, n)| *n).sum::<u64>(),
             if displaced { 429_056 } else { 424_960 }
         );
@@ -306,45 +306,45 @@ fn actual_refit_escrow_schedule_and_two_owner_install_preserve_condition_and_col
         let before = s.unit()?;
         let id = s.accepted(40)?;
         let reservation = s.reservation_targets(id, false)?;
-        assert_eq!(
+        check_eq!(
             s.f.balance(s.f.payer)?,
             (money.0, Amount::from_minor(10_000))
         );
-        assert_eq!(
+        check_eq!(
             s.position(s.incoming)?,
             AssetPosition::Pending { order: id }
         );
         let inv = invocation(s.f.buyer, 44, FactoryRig::order_parameters(id));
-        assert!(s.prepare_inv(4, &inv, 44).is_err());
+        check!(s.prepare_inv(4, &inv, 44).is_err());
         s.ready(id, 42)?;
-        assert!(
+        check!(
             s.reservation(id)?.as_ref() == Some(&reservation),
             "progress changed terminal reservation"
         );
         let p = s.prepare_inv(4, &inv, 44)?;
-        assert_eq!(s.unit()?, before);
-        assert_eq!(
+        check_eq!(s.unit()?, before);
+        check_eq!(
             s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
             Some(s.f.buyer)
         );
         s.stage(4, &inv, 44, p)?;
         let writes = s.f.take_install()?;
-        assert_eq!(
+        check_eq!(
             writes
                 .iter()
                 .filter(|w| matches!(w, ReplayWrite::ObjectSet { .. }))
                 .count(),
             3
         );
-        assert!(
+        check!(
             s.reservation(id)?.is_none(),
             "installed fitting retained capacity"
         );
         let after = s.unit()?;
         let row = s.order(id)?;
         let installation = row.installation.as_ref().ok_or("actual installed proof")?;
-        assert_eq!(after.revision(), before.revision() + 1);
-        assert_eq!(
+        check_eq!(after.revision(), before.revision() + 1);
+        check_eq!(
             SavedComponent::from_unit(&after, &ComponentId::new("core")?)?
                 .installed
                 .asset,
@@ -353,11 +353,11 @@ fn actual_refit_escrow_schedule_and_two_owner_install_preserve_condition_and_col
         let heat = CellAddr::Unit {
             cell: CellId::new("heat")?,
         };
-        assert_eq!(
+        check_eq!(
             before.cells().find(|(k, _)| *k == &heat),
             after.cells().find(|(k, _)| *k == &heat)
         );
-        assert_eq!(
+        check_eq!(
             s.f.balance(s.f.payer)?,
             (
                 money
@@ -367,24 +367,24 @@ fn actual_refit_escrow_schedule_and_two_owner_install_preserve_condition_and_col
                 Amount::from_minor(0)
             )
         );
-        assert_eq!(
+        check_eq!(
             s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
             Some(s.hull)
         );
-        assert_eq!(
+        check_eq!(
             s.position(s.incoming)?,
             AssetPosition::Mounted {
                 order: id,
                 hull: s.hull
             }
         );
-        assert_eq!(
+        check_eq!(
             installation.replacement.inserted.installed.asset,
             Some(s.incoming)
         );
         s.f.restart(CoreOriginMode::Active)?;
-        assert_eq!(s.order(id)?, row);
-        assert_eq!(s.unit()?, after);
+        check_eq!(s.order(id)?, row);
+        check_eq!(s.unit()?, after);
     }
     Ok(())
 }
@@ -395,22 +395,22 @@ fn actual_refit_cancel_releases_exact_fee_and_slot_after_recipe_change_and_expir
     let money = s.f.balance(s.f.payer)?;
     let id = s.accepted(40)?;
     let before = s.order(id)?;
-    assert_eq!(
+    check_eq!(
         before.intent.expires_at.at - before.intent.accepted_at.at,
         7 * 86400
     );
     s.f.r.w.world_mut().set_now(before.intent.expires_at.at);
     let inv = invocation(s.f.buyer, 44, FactoryRig::order_parameters(id));
-    assert!(s.prepare_inv(4, &inv, 44).is_err());
+    check!(s.prepare_inv(4, &inv, 44).is_err());
     s.f.composition.refits.as_mut().ok_or("rules")?.revision += 1;
     s.f.restart(CoreOriginMode::Active)?;
     s.commit(5, s.f.buyer, 45, FactoryRig::order_parameters(id))?;
-    assert_eq!(s.f.balance(s.f.payer)?, money);
-    assert_eq!(
+    check_eq!(s.f.balance(s.f.payer)?, money);
+    check_eq!(
         s.position(s.incoming)?,
         AssetPosition::Released { order: id }
     );
-    assert_eq!(
+    check_eq!(
         s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
         Some(s.f.buyer)
     );
@@ -443,16 +443,16 @@ fn actual_refit_cancel_repeats_requester_lifecycle_before_prepare_stage_and_take
         s.f.r.w.world_mut().take_dirty();
         let revision = s.f.r.w.engine().action_state().revision();
         match phase {
-            0 => assert!(s.prepare_inv(5, &inv, 44).is_err()),
-            1 => assert!(
+            0 => check!(s.prepare_inv(5, &inv, 44).is_err()),
+            1 => check!(
                 s.stage(5, &inv, 44, prepared.take().ok_or("prepared")?)
                     .is_err()
             ),
-            _ => assert!(s.f.r.w.engine_mut().take_staged_action().is_err()),
+            _ => check!(s.f.r.w.engine_mut().take_staged_action().is_err()),
         }
-        assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
-        assert!(s.order(id)?.terminal.is_none());
-        assert_eq!(s.f.balance(s.f.payer)?.1, Amount::from_minor(10_000));
+        check_eq!(s.f.r.w.engine().action_state().revision(), revision);
+        check!(s.order(id)?.terminal.is_none());
+        check_eq!(s.f.balance(s.f.payer)?.1, Amount::from_minor(10_000));
     }
     Ok(())
 }
@@ -480,13 +480,13 @@ fn actual_refit_install_repeats_title_and_unit_preimages_at_all_custody_boundari
             }
             let revision = s.f.r.w.engine().action_state().revision();
             match phase {
-                0 => assert!(s.prepare_inv(4, &inv, 44).is_err()),
-                1 => assert!(s.stage(4, &inv, 44, p.take().ok_or("prepared")?).is_err()),
-                _ => assert!(s.f.r.w.engine_mut().take_staged_action().is_err()),
+                0 => check!(s.prepare_inv(4, &inv, 44).is_err()),
+                1 => check!(s.stage(4, &inv, 44, p.take().ok_or("prepared")?).is_err()),
+                _ => check!(s.f.r.w.engine_mut().take_staged_action().is_err()),
             }
-            assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
-            assert!(s.order(id)?.terminal.is_none());
-            assert_eq!(
+            check_eq!(s.f.r.w.engine().action_state().revision(), revision);
+            check!(s.order(id)?.terminal.is_none());
+            check_eq!(
                 s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
                 Some(s.f.buyer)
             );
@@ -542,22 +542,22 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
     s.reservation_targets(second, true)?;
     s.ready(second, 72)?;
     let writes = s.commit(4, s.f.buyer, 74, FactoryRig::order_parameters(second))?;
-    assert_eq!(
+    check_eq!(
         writes
             .iter()
             .filter(|w| matches!(w, ReplayWrite::ObjectSet { .. }))
             .count(),
         4
     );
-    assert_eq!(
+    check_eq!(
         s.f.r.w.world().get(old).ok_or("displaced")?.location,
         Some(s.f.buyer)
     );
-    assert_eq!(
+    check_eq!(
         s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
         Some(s.hull)
     );
-    assert_eq!(
+    check_eq!(
         s.order(second)?
             .installation
             .as_ref()
@@ -566,13 +566,13 @@ fn actual_second_refit_returns_displaced_core_with_retained_condition_and_curren
             .displaced,
         displaced
     );
-    assert!(
+    check!(
         matches!(s.position(old)?,AssetPosition::Detached{order,from_hull,..}if order==second&&from_hull==s.hull)
     );
     s.f.restart(CoreOriginMode::Active)?;
-    assert!(s.order(first)?.installation.is_some());
-    assert!(s.order(second)?.installation.is_some());
-    assert_eq!(
+    check!(s.order(first)?.installation.is_some());
+    check!(s.order(second)?.installation.is_some());
+    check_eq!(
         SavedComponent::from_unit(&s.unit()?, &core)?
             .installed
             .asset,
@@ -609,8 +609,8 @@ fn actual_refit_cold_recovery_rejects_each_receipt_head_and_independent_index_om
                 !yes
             });
         }
-        assert_eq!(removed, 1, "one exact history target");
-        assert!(
+        check_eq!(removed, 1, "one exact history target");
+        check!(
             s.f.cold(boot, &s.f.composition, CoreOriginMode::Active, true)
                 .is_err(),
             "missing fitting proof accepted"
@@ -621,8 +621,8 @@ fn actual_refit_cold_recovery_rejects_each_receipt_head_and_independent_index_om
     let before = data.kv.len();
     data.kv
         .retain(|(k, _)| k.as_str() != refit::records::INDEX_KEY);
-    assert_eq!(before - data.kv.len(), 1);
-    assert!(
+    check_eq!(before - data.kv.len(), 1);
+    check!(
         s.f.cold(boot, &s.f.composition, CoreOriginMode::Active, true)
             .is_err(),
         "missing independent index accepted"
@@ -638,7 +638,7 @@ fn actual_refit_cold_recovery_rejects_each_receipt_head_and_independent_index_om
                 })
         });
     }
-    assert!(
+    check!(
         s.f.cold(boot, &s.f.composition, CoreOriginMode::Active, true)
             .is_err(),
         "all typed fitting evidence lost"
@@ -662,8 +662,8 @@ fn actual_refit_cold_recovery_rejects_each_receipt_head_and_independent_index_om
                 }
             }
         }
-        assert_eq!(count, 1);
-        assert!(
+        check_eq!(count, 1);
+        check!(
             s.f.cold(boot, &s.f.composition, CoreOriginMode::Active, true)
                 .is_err(),
             "crossed fitting proof accepted"
@@ -671,7 +671,7 @@ fn actual_refit_cold_recovery_rejects_each_receipt_head_and_independent_index_om
     }
     let mut disabled = s.f.composition.clone();
     disabled.refits = None;
-    assert!(
+    check!(
         s.f.cold(s.f.r.boot.clone(), &disabled, CoreOriginMode::Active, true)
             .is_err(),
         "disabled fitting accepted retained native evidence"
@@ -687,19 +687,19 @@ fn actual_refit_pending_carry_is_blocked_and_cancel_restores_ordinary_carry() ->
     let disk = s.f.r.boot.clone();
     s.f.r.w.run(s.f.buyer, &format!("drop #{}", s.incoming.0));
     s.f.r.flush();
-    assert_eq!(
+    check_eq!(
         s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
         Some(s.f.buyer)
     );
-    assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
-    assert!(
+    check_eq!(s.f.r.w.engine().action_state().revision(), revision);
+    check!(
         factory_boot_image(&s.f.r.boot) == factory_boot_image(&disk),
         "refused ordinary carry published history"
     );
     s.commit(5, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
     s.f.r.w.run(s.f.buyer, &format!("drop #{}", s.incoming.0));
     s.f.r.flush();
-    assert_eq!(
+    check_eq!(
         s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
         Some(s.f.composition.factory.payment.factory)
     );
@@ -727,17 +727,17 @@ fn held_refit_rejects_late_object_change_before_any_owner_or_typed_apply() -> Re
     let money = s.f.balance(s.f.payer)?;
     s.f.r.w.world_mut().get_mut(s.hull).ok_or("hull")?.name = "changed after custody".into();
     s.f.r.w.world_mut().take_dirty();
-    assert!(
+    check!(
         s.f.r
             .w
             .engine_mut()
             .install_composed_action(install)
             .is_err()
     );
-    assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
-    assert_eq!(s.unit()?, before);
-    assert_eq!(s.f.balance(s.f.payer)?, money);
-    assert!(s.order(id)?.terminal.is_none());
+    check_eq!(s.f.r.w.engine().action_state().revision(), revision);
+    check_eq!(s.unit()?, before);
+    check_eq!(s.f.balance(s.f.payer)?, money);
+    check!(s.order(id)?.terminal.is_none());
     Ok(())
 }
 
@@ -766,12 +766,12 @@ fn actual_refit_scheduler_requires_real_ingress_and_current_dependency_readiness
                 },
             )?;
             match phase {
-                0 => assert!(s.prepare_inv(3, &inv, 42).is_err()),
-                1 => assert!(s.stage(3, &inv, 42, p.take().ok_or("prepared")?).is_err()),
-                _ => assert!(s.f.r.w.engine_mut().take_staged_action().is_err()),
+                0 => check!(s.prepare_inv(3, &inv, 42).is_err()),
+                1 => check!(s.stage(3, &inv, 42, p.take().ok_or("prepared")?).is_err()),
+                _ => check!(s.f.r.w.engine_mut().take_staged_action().is_err()),
             }
-            assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
-            assert!(
+            check_eq!(s.f.r.w.engine().action_state().revision(), revision);
+            check!(
                 factory_boot_image(&s.f.r.boot) == factory_boot_image(&disk),
                 "frozen dependency published fitting"
             );
@@ -781,19 +781,19 @@ fn actual_refit_scheduler_requires_real_ingress_and_current_dependency_readiness
     let id = s.accepted(40)?;
     let real = s.advance_inv(id)?;
     let bad = invocation(s.f.buyer, 42, real.parameters().clone());
-    assert!(s.prepare_inv(3, &bad, 42).is_err());
+    check!(s.prepare_inv(3, &bad, 42).is_err());
     let before = s.order(id)?;
     let revision = s.f.r.w.engine().action_state().revision();
     let action = s.action(3)?;
-    assert!(
+    check!(
         s.f.r
             .w
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&action, &real, token(42))
             .is_err()
     );
-    assert!(s.order(id)? == before);
-    assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
+    check!(s.order(id)? == before);
+    check_eq!(s.f.r.w.engine().action_state().revision(), revision);
     let p = s.prepare_inv(3, &real, 42)?;
     s.stage(3, &real, 42, p)?;
     s.f.take_install()?;
@@ -805,7 +805,7 @@ fn actual_refit_offer_and_accept_are_self_bound_and_do_not_allow_forged_payer_or
     let mut s = Fitting::new(false)?;
     let operator = s.f.r.policy.agents[1].actor;
     let bad = invocation(s.f.buyer, 39, s.offer_parameters());
-    assert!(s.prepare_inv(1, &bad, 39).is_err());
+    check!(s.prepare_inv(1, &bad, 39).is_err());
     s.commit(1, operator, 40, s.offer_parameters())?;
     for actor in [GOD, operator] {
         let inv = invocation(
@@ -813,7 +813,7 @@ fn actual_refit_offer_and_accept_are_self_bound_and_do_not_allow_forged_payer_or
             41,
             json!({"offer":token(40),"payer":s.f.payer.0.to_string()}),
         );
-        assert!(s.prepare_inv(2, &inv, 41).is_err());
+        check!(s.prepare_inv(2, &inv, 41).is_err());
     }
     for selector in [
         json!({"offer":token(40),"payer":s.f.payer.0}),
@@ -822,7 +822,7 @@ fn actual_refit_offer_and_accept_are_self_bound_and_do_not_allow_forged_payer_or
         json!({"offer":token(40),"payer":s.f.composition.factory.payment.integrator.account.0.to_string()}),
     ] {
         let inv = invocation(s.f.buyer, 41, selector);
-        assert!(s.prepare_inv(2, &inv, 41).is_err());
+        check!(s.prepare_inv(2, &inv, 41).is_err());
     }
     s.commit(
         2,
@@ -835,7 +835,7 @@ fn actual_refit_offer_and_accept_are_self_bound_and_do_not_allow_forged_payer_or
         42,
         json!({"offer":token(40),"payer":s.f.payer.0.to_string()}),
     );
-    assert!(s.prepare_inv(2, &inv, 42).is_err());
+    check!(s.prepare_inv(2, &inv, 42).is_err());
     Ok(())
 }
 
@@ -853,7 +853,7 @@ fn actual_refit_capacity_survives_progress_and_cold_boot_and_rejects_corrupt_res
         let mut boot = s.f.r.boot.clone();
         let data = boot.get_mut("industry").ok_or("industry")?;
         let before = data.kv.iter().filter(|(k, _)| k.as_str() == key).count();
-        assert_eq!(before, 1);
+        check_eq!(before, 1);
         if corruption == 0 {
             data.kv.retain(|(k, _)| k.as_str() != key);
         } else {
@@ -889,14 +889,14 @@ fn actual_refit_capacity_survives_progress_and_cold_boot_and_rejects_corrupt_res
                 }
             }
         }
-        assert!(
+        check!(
             s.f.cold(boot, &s.f.composition, CoreOriginMode::Active, true)
                 .is_err(),
             "invalid fixed completion capacity accepted"
         );
     }
     s.f.restart(CoreOriginMode::Active)?;
-    assert!(
+    check!(
         s.reservation(id)?.as_ref() == Some(&exact),
         "cold reservation changed"
     );
@@ -904,12 +904,12 @@ fn actual_refit_capacity_survives_progress_and_cold_boot_and_rejects_corrupt_res
     let p = s.prepare_inv(3, &inv, 42)?;
     s.stage(3, &inv, 42, p)?;
     s.f.take_install()?;
-    assert!(
+    check!(
         s.reservation(id)?.as_ref() == Some(&exact),
         "advance reservation changed"
     );
     s.commit(5, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
-    assert!(
+    check!(
         s.reservation(id)?.is_none(),
         "cancelled fitting retained capacity"
     );
@@ -933,7 +933,7 @@ fn complete_refit_future_record_bound_fits_every_independent_maximum_inside_real
         ("installation", 69632),
     ] {
         let full = Value::String("x".repeat(cap - 2));
-        assert_eq!(
+        check_eq!(
             mush_core::canonical_json_bytes_with_limit(&full, cap)?.len(),
             cap
         );
@@ -947,8 +947,8 @@ fn complete_refit_future_record_bound_fits_every_independent_maximum_inside_real
         "key":format!("{:016x}",u64::MAX),"schema":{"id":descriptor.value_schema(),"version":descriptor.schema_version()},"value":value});
     let bytes =
         mush_core::canonical_json_bytes_with_limit(&envelope, descriptor.max_record_bytes())?;
-    assert!(bytes.len() <= 197_632);
-    assert_eq!(descriptor.max_record_bytes(), 197_632);
+    check!(bytes.len() <= 197_632);
+    check_eq!(descriptor.max_record_bytes(), 197_632);
     Ok(())
 }
 
@@ -1008,15 +1008,15 @@ fn actual_class_three_refit_requires_current_personal_entitlement_at_each_instal
         )?;
         s.f.r.flush();
         match boundary {
-            0 => assert!(s.prepare_inv(4, &inv, 74).is_err()),
-            1 => assert!(
+            0 => check!(s.prepare_inv(4, &inv, 74).is_err()),
+            1 => check!(
                 s.stage(4, &inv, 74, prepared.take().ok_or("prepared")?)
                     .is_err()
             ),
-            _ => assert!(s.f.r.w.engine_mut().take_staged_action().is_err()),
+            _ => check!(s.f.r.w.engine_mut().take_staged_action().is_err()),
         }
-        assert!(s.order(fitting)?.terminal.is_none());
-        assert_eq!(
+        check!(s.order(fitting)?.terminal.is_none());
+        check_eq!(
             s.f.r.w.world().get(s.incoming).ok_or("incoming")?.location,
             Some(s.f.buyer)
         );
@@ -1027,8 +1027,8 @@ fn actual_class_three_refit_requires_current_personal_entitlement_at_each_instal
         )?;
         s.f.r.flush();
         s.commit(4, s.f.buyer, 75, FactoryRig::order_parameters(fitting))?;
-        assert_eq!(s.f.balance(licence)?.0, Amount::from_minor(1));
-        assert_eq!(
+        check_eq!(s.f.balance(licence)?.0, Amount::from_minor(1));
+        check_eq!(
             s.unit()?.schema(),
             &s.runtime()?.config.payment.fitted_units[2]
         );
@@ -1054,9 +1054,9 @@ fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent()
     s.ready(id, 42)?;
     s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
     let completed = s.order(id)?;
-    assert_eq!(completed.intent, accepted.intent);
-    assert_eq!(completed.funding, accepted.funding);
-    assert!(completed.installation.is_some());
+    check_eq!(completed.intent, accepted.intent);
+    check_eq!(completed.funding, accepted.funding);
+    check!(completed.installation.is_some());
     s.f.restart(CoreOriginMode::Active)?;
     Ok(())
 }
@@ -1070,17 +1070,17 @@ fn real_refit_roster_validates_all_six_exact_actions_and_outcome() -> Result {
         for (name, reference) in refit::ACTIONS.iter().zip(&runtime.actions) {
             let expected = runtime.config.action_descriptor(name)?;
             let actual = definitions.get_exact(reference)?;
-            assert_eq!(reference, &runtime.config.action(name)?);
-            assert_eq!(actual.payload(), expected.payload());
+            check_eq!(reference, &runtime.config.action(name)?);
+            check_eq!(actual.payload(), expected.payload());
             let mut references = expected.references().to_vec();
             references.sort();
-            assert_eq!(actual.references(), references.as_slice());
-            assert_eq!(actual.is_current(), expected.is_current());
+            check_eq!(actual.references(), references.as_slice());
+            check_eq!(actual.is_current(), expected.is_current());
         }
         let expected = refit::runtime::outcome_descriptor()?;
         let actual = definitions.get_exact(&runtime.outcome)?;
-        assert_eq!(actual.payload(), expected.payload());
-        assert_eq!(actual.references(), expected.references());
+        check_eq!(actual.payload(), expected.payload());
+        check_eq!(actual.references(), expected.references());
     }
     let absent = FactoryRig::new_options(false, true, false)?;
     let definitions = absent
@@ -1090,7 +1090,7 @@ fn real_refit_roster_validates_all_six_exact_actions_and_outcome() -> Result {
         .registry
         .definitions()
         .ok_or("definitions")?;
-    assert!(
+    check!(
         !definitions
             .iter()
             .any(|d| d.reference().key().owner.as_str() == "industry"

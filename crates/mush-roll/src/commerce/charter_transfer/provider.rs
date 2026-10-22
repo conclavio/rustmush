@@ -525,7 +525,10 @@ pub(crate) fn register(
     }
     let readiness = Readiness::default();
     for i in 0..2 {
-        let action = definitions[i].clone();
+        let (Some(action), Some(outcome)) = (definitions.get(i), definitions.get(i + 2)) else {
+            return Err(ModError::msg("charter transfer registration differs"));
+        };
+        let action = action.clone();
         let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
         let economy = if i == 1 {
             Some(reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?)
@@ -537,7 +540,7 @@ pub(crate) fn register(
             Provider {
                 accept: i == 1,
                 action,
-                outcome: definitions[i + 2].clone(),
+                outcome: outcome.clone(),
                 retention: super::super::authored_retirement::retention_reference()?,
                 f: f.clone(),
                 roots,

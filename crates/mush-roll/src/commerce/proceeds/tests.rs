@@ -33,17 +33,17 @@ fn gross_cuts_and_rounding_residue_feed_real_e4_exact_outcome() -> TestResult {
         &[cut(8, 125), cut(3, 100), cut(7, 75)],
         AccountId(1),
     )?;
-    assert_eq!(
+    check_eq!(
         rows(&result)?,
         vec![(1, 615), (2, 50), (3, 101), (7, 76), (8, 127), (9, 50)]
     );
     let e4 = apply_outcome(result.gross(), result.shares())?;
-    assert_eq!(
+    check_eq!(
         e4.iter().map(|(_, value)| value.widen()).sum::<i128>(),
         1_019
     );
-    assert_eq!(e4.len(), MAX_EXACT_PAYEES);
-    assert!(e4.len() <= MAX_SHARES);
+    check_eq!(e4.len(), MAX_EXACT_PAYEES);
+    check!(e4.len() <= MAX_SHARES);
     Ok(())
 }
 
@@ -57,7 +57,7 @@ fn one_minor_unit_and_zero_gross_have_no_zero_payout_rows() -> TestResult {
         &parents,
         AccountId(6),
     )?;
-    assert_eq!(rows(&one)?, vec![(6, 1)]);
+    check_eq!(rows(&one)?, vec![(6, 1)]);
     let zero = calculate(
         Amount::ZERO,
         cut(1, 50),
@@ -65,8 +65,8 @@ fn one_minor_unit_and_zero_gross_have_no_zero_payout_rows() -> TestResult {
         &parents,
         AccountId(6),
     )?;
-    assert!(zero.shares().is_empty());
-    assert!(apply_outcome(zero.gross(), zero.shares())?.is_empty());
+    check!(zero.shares().is_empty());
+    check!(apply_outcome(zero.gross(), zero.shares())?.is_empty());
     Ok(())
 }
 
@@ -81,7 +81,7 @@ fn repeated_recipients_merge_only_after_each_declared_cut_is_floored() -> TestRe
         &[cut(7, 50), cut(7, 50)],
         AccountId(3),
     )?;
-    assert_eq!(rows(&result)?, vec![(3, 19)]);
+    check_eq!(rows(&result)?, vec![(3, 19)]);
     let same = calculate(
         Amount::from_minor(1_019),
         cut(7, 50),
@@ -89,7 +89,7 @@ fn repeated_recipients_merge_only_after_each_declared_cut_is_floored() -> TestRe
         &[cut(7, 100), cut(7, 100), cut(7, 100)],
         AccountId(7),
     )?;
-    assert_eq!(rows(&same)?, vec![(7, 1_019)]);
+    check_eq!(rows(&same)?, vec![(7, 1_019)]);
     Ok(())
 }
 
@@ -102,8 +102,8 @@ fn real_economy_account_zero_and_large_ids_keep_their_identity() -> TestResult {
         &[],
         AccountId(u64::MAX),
     )?;
-    assert_eq!(rows(&result)?, vec![(0, 5), (u64::MAX, 95)]);
-    assert_eq!(apply_outcome(result.gross(), result.shares())?.len(), 2);
+    check_eq!(rows(&result)?, vec![(0, 5), (u64::MAX, 95)]);
+    check_eq!(apply_outcome(result.gross(), result.shares())?.len(), 2);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ fn parent_order_does_not_change_the_canonical_merged_split() -> TestResult {
         &[cut(7, 100), cut(7, 25), cut(6, 175)],
         AccountId(9),
     )?;
-    assert_eq!(a, b);
+    check_eq!(a, b);
     Ok(())
 }
 
@@ -143,8 +143,8 @@ fn supplied_primary_or_secondary_remainder_is_never_inferred_or_redirected() -> 
         &[cut(3, 100)],
         AccountId(8),
     )?;
-    assert_eq!(rows(&primary)?, vec![(0, 5), (3, 10), (7, 85)]);
-    assert_eq!(rows(&secondary)?, vec![(0, 5), (3, 10), (8, 85)]);
+    check_eq!(rows(&primary)?, vec![(0, 5), (3, 10), (7, 85)]);
+    check_eq!(rows(&secondary)?, vec![(0, 5), (3, 10), (8, 85)]);
     Ok(())
 }
 
@@ -215,13 +215,13 @@ fn maximum_amount_uses_widened_checked_math_and_conserves_every_minor_unit() -> 
         AccountId(5),
     )?;
     let paid = apply_outcome(gross, result.shares())?;
-    assert_eq!(
+    check_eq!(
         paid.iter().map(|(_, amount)| amount.widen()).sum::<i128>(),
         gross.widen()
     );
-    assert!(paid.iter().all(|(_, amount)| amount.minor() > 0));
+    check!(paid.iter().all(|(_, amount)| amount.minor() > 0));
     let all = calculate(gross, cut(0, 700), None, &[cut(1, 300)], AccountId(2))?;
-    assert_eq!(
+    check_eq!(
         apply_outcome(gross, all.shares())?
             .iter()
             .map(|(_, a)| a.widen())

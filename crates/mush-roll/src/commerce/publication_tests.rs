@@ -313,16 +313,16 @@ fn house_attribution_is_required_only_in_the_scoped_operation_format()
     let (_, _, _, revision) = saved();
     let (_, _, personal) = rows(&revision);
     let old = serde_json::to_value(&personal)?;
-    assert!(old.get("economic").and_then(|v| v.get("house")).is_none());
+    check!(old.get("economic").and_then(|v| v.get("house")).is_none());
     let roundtrip: InitialFilingOperation = serde_json::from_value(old.clone())?;
-    assert_eq!(serde_json::to_value(&roundtrip)?, old);
+    check_eq!(serde_json::to_value(&roundtrip)?, old);
     let mut null_attribution = old.clone();
     null_attribution
         .get_mut("economic")
         .and_then(Value::as_object_mut)
         .ok_or("economic")?
         .insert("house".into(), Value::Null);
-    assert!(serde_json::from_value::<InitialFilingOperation>(null_attribution).is_err());
+    check!(serde_json::from_value::<InitialFilingOperation>(null_attribution).is_err());
     let mut house = personal.clone();
     house.format = 2;
     house.economic.issued_owner = PrincipalId::Organization(mush_org::OrgId(7));
@@ -333,8 +333,8 @@ fn house_attribution_is_required_only_in_the_scoped_operation_format()
     )?);
     let encoded = serde_json::to_value(&house)?;
     let decoded: InitialFilingOperation = serde_json::from_value(encoded.clone())?;
-    assert_eq!(decoded, house);
-    assert_eq!(
+    check_eq!(decoded, house);
+    check_eq!(
         decoded.audit_subject()?.house(),
         house.economic.house.as_ref()
     );
@@ -373,14 +373,14 @@ fn house_attribution_is_required_only_in_the_scoped_operation_format()
                     .ok_or("attribution format")? = json!(2);
             }
         }
-        assert!(
+        check!(
             serde_json::from_value::<InitialFilingOperation>(crossed).is_err(),
             "mode {mode}"
         );
     }
     let mut missing = old;
     *missing.get_mut("format").ok_or("format")? = json!(2);
-    assert!(serde_json::from_value::<InitialFilingOperation>(missing).is_err());
+    check!(serde_json::from_value::<InitialFilingOperation>(missing).is_err());
     Ok(())
 }
 
@@ -1084,7 +1084,7 @@ fn real_typed_family_hydration_refuses_unknown_fields_missing_nullable_facts_and
             "bad_version" => {
                 body.insert("format".into(), json!(2));
             }
-            _ => unreachable!(),
+            other => panic!("unlisted envelope case {other}"),
         }
         let (mut restarted, _) = engine_mode(which == "wrong_key");
         // Wrong body/key linkage is detected by complete boot audit, while the

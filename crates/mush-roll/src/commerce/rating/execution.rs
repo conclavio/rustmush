@@ -460,23 +460,23 @@ mod tests {
         let account = AccountId::mint("structural-rating-fixture", 1)?;
         let job = CommitToken::from_bytes([3; 16]);
         let binding = job_account_binding(account, job, 1, 1)?;
-        assert_ne!(
+        check_ne!(
             binding,
             job_account_binding(account, CommitToken::from_bytes([4; 16]), 1, 1)?
         );
-        assert_ne!(binding, job_account_binding(account, job, 2, 1)?);
-        assert_ne!(binding, job_account_binding(account, job, 1, 2)?);
-        assert_ne!(
+        check_ne!(binding, job_account_binding(account, job, 2, 1)?);
+        check_ne!(binding, job_account_binding(account, job, 1, 2)?);
+        check_ne!(
             binding,
             job_account_binding(AccountId::mint("other", 1)?, job, 1, 1)?
         );
         let execution = complete()?.execution;
-        assert_eq!(execution.admission.job_account_binding, binding);
+        check_eq!(execution.admission.job_account_binding, binding);
         let raw = serde_json::to_string(&account)?;
         let wire = serde_json::to_string(&execution)?;
-        assert!(!wire.contains(&raw));
-        assert!(wire.contains("job_account_binding"));
-        assert!(job_account_binding(account, job, 0, 1).is_err());
+        check!(!wire.contains(&raw));
+        check!(wire.contains("job_account_binding"));
+        check!(job_account_binding(account, job, 0, 1).is_err());
         Ok(())
     }
 
@@ -493,8 +493,8 @@ mod tests {
             content: &evidence.receipt.content,
             pages: evidence.pages.iter().map(|page| page.content()).collect(),
         };
-        assert_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&image)?);
-        assert_eq!(
+        check_eq!(serde_json::to_vec(&old)?, serde_json::to_vec(&image)?);
+        check_eq!(
             evidence.execution.observation.result,
             Some(image.artifact()?)
         );
@@ -508,15 +508,15 @@ mod tests {
             .as_mut()
             .ok_or(RatingError::Incomplete)?
             .sha256 = DefinitionDigest::from_bytes([99; 32]);
-        assert!(
+        check!(
             crossed
                 .verify_completion(&evidence.job, &evidence.receipt, &evidence.pages)
                 .is_err()
         );
-        assert!(!evidence.completion.matches(&evidence.receipt, &crossed)?);
+        check!(!evidence.completion.matches(&evidence.receipt, &crossed)?);
         let mut different_run = evidence.execution.clone();
         different_run.admission.run += 1;
-        assert!(
+        check!(
             !evidence
                 .completion
                 .matches(&evidence.receipt, &different_run)?
@@ -578,10 +578,10 @@ mod tests {
             receipt: receipt.reference()?,
         })?;
         let mut execution = test_support::completed_execution(&receipt, &pages)?;
-        assert_eq!(execution.admission.maximum_pages, 1);
+        check_eq!(execution.admission.maximum_pages, 1);
         execution.verify_completion(&job, &receipt, &pages)?;
         execution.admission.cases = 1;
-        assert!(execution.verify_completion(&job, &receipt, &pages).is_err());
+        check!(execution.verify_completion(&job, &receipt, &pages).is_err());
         execution.admission.cases = 3;
         execution.verify_completion(&job, &receipt, &pages)?;
         Ok(())
@@ -593,30 +593,30 @@ mod tests {
         row.admission.cases = u16::try_from(MAX_CASES)?;
         row.admission.maximum_pages = u16::try_from(MAX_PAGES)?;
         let targets = row.terminal_targets()?;
-        assert_eq!(targets.len(), 122);
-        assert_eq!(targets.iter().filter(|target| target.existing).count(), 2);
-        assert_eq!(
+        check_eq!(targets.len(), 122);
+        check_eq!(targets.iter().filter(|target| target.existing).count(), 2);
+        check_eq!(
             targets
                 .iter()
                 .filter(|target| target.family == "rating_pages")
                 .count(),
             117
         );
-        assert!(
+        check!(
             targets
                 .windows(2)
                 .all(|pair| matches!(pair, [a,b] if (&a.family,&a.key) < (&b.family,&b.key)))
         );
-        assert!(
+        check!(
             targets
                 .iter()
                 .all(|target| target.key.starts_with(&row.job.to_string()))
         );
-        assert_eq!(
+        check_eq!(
             targets.iter().map(|target| target.ceiling).sum::<usize>(),
             3_915_776
         );
-        assert!(
+        check!(
             serde_json::to_vec(&row)?.len() + super::super::TYPED_ENVELOPE_RESERVE
                 <= EXECUTION_BYTES
         );
@@ -633,13 +633,13 @@ mod tests {
         ] {
             let mut execution = evidence.execution.clone();
             execution.observation.phase = phase;
-            assert!(
+            check!(
                 execution
                     .observation
                     .validate(execution.admission.maximum_unit_ms)
                     .is_err()
             );
-            assert!(
+            check!(
                 serde_json::from_value::<RatingExecution>(serde_json::to_value(&execution)?)
                     .is_err()
             );
@@ -647,7 +647,7 @@ mod tests {
             execution
                 .observation
                 .validate(execution.admission.maximum_unit_ms)?;
-            assert_eq!(
+            check_eq!(
                 serde_json::from_value::<RatingExecution>(serde_json::to_value(&execution)?)?,
                 execution
             );
@@ -659,7 +659,7 @@ mod tests {
     fn execution_decode_refuses_missing_payment_fields_and_incoherent_phases() -> TestResult {
         let evidence = complete()?;
         let wire = serde_json::to_value(&evidence.execution)?;
-        assert_eq!(
+        check_eq!(
             serde_json::from_value::<RatingExecution>(wire.clone())?,
             evidence.execution
         );
@@ -670,19 +670,19 @@ mod tests {
                 .as_object_mut()
                 .ok_or(RatingError::Incomplete)?
                 .remove(key);
-            assert!(serde_json::from_value::<RatingExecution>(bad).is_err());
+            check!(serde_json::from_value::<RatingExecution>(bad).is_err());
         }
         let mut bad = wire.clone();
         bad.as_object_mut()
             .ok_or(RatingError::Incomplete)?
             .insert("authority".into(), json!(true));
-        assert!(serde_json::from_value::<RatingExecution>(bad).is_err());
+        check!(serde_json::from_value::<RatingExecution>(bad).is_err());
         let mut bad = wire;
         bad.as_object_mut()
             .ok_or(RatingError::Incomplete)?
             .insert("updated_by".into(), json!(evidence.execution.job()));
-        assert!(serde_json::from_value::<RatingExecution>(bad).is_err());
-        assert!(
+        check!(serde_json::from_value::<RatingExecution>(bad).is_err());
+        check!(
             evidence
                 .execution
                 .observed(

@@ -54,7 +54,7 @@ fn evidence(classes: &[RatingClass]) -> TestResult<MeasuredNonconformance> {
 #[test]
 fn measured_rejection_requires_every_admitted_class_through_the_maximum() -> TestResult {
     let row = evidence(&[RatingClass::I, RatingClass::II, RatingClass::III])?;
-    assert_eq!(row.cause(), NonconformanceCause::MaximumClassBudget);
+    check_eq!(row.cause(), NonconformanceCause::MaximumClassBudget);
     for classes in [
         vec![RatingClass::I],
         vec![RatingClass::I, RatingClass::II],
@@ -62,7 +62,7 @@ fn measured_rejection_requires_every_admitted_class_through_the_maximum() -> Tes
         vec![RatingClass::II, RatingClass::III],
         vec![RatingClass::III],
     ] {
-        assert!(evidence(&classes).is_err());
+        check!(evidence(&classes).is_err());
     }
     let mut only_three = row.clone();
     only_three.subject.declared = RatingClass::III;
@@ -82,11 +82,11 @@ fn rejection_does_not_accept_a_passing_case_or_infrastructure_fault() -> TestRes
     clean.validate()?;
     let mut changed = row.clone();
     *changed.pages.0[0].rows.0.last_mut().ok_or("last row")? = clean;
-    assert!(changed.validate().is_err());
+    check!(changed.validate().is_err());
     for field in ["other_faults", "unmeasured", "dropped"] {
         let mut wire = serde_json::to_value(&row)?;
         wire["pages"][0]["rows"][2]["meter"][field] = json!(1);
-        assert!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
+        check!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
     }
     Ok(())
 }
@@ -96,17 +96,17 @@ fn rejected_artifact_strictly_binds_source_manifest_order_and_pages() -> TestRes
     for path in [vec!["subject"], vec!["compatibility"]] {
         let mut wire = serde_json::to_value(&row)?;
         wire["pages"][0][path[0]] = json!(hash(99));
-        assert!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
+        check!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
     }
     let mut wrong = row.clone();
     wrong.pages.0[0].rows.0[2].binding.source = hash(99);
-    assert!(wrong.validate().is_err());
+    check!(wrong.validate().is_err());
     let mut wrong = row.clone();
     wrong.pages.0[0].rows.0.swap(0, 1);
-    assert!(wrong.validate().is_err());
+    check!(wrong.validate().is_err());
     let mut wrong = row.clone();
     wrong.pages.0[0].ordinal = 1;
-    assert!(wrong.validate().is_err());
+    check!(wrong.validate().is_err());
     let mut wrong = row.clone();
     let tail = wrong.pages.0[0].rows.0.split_off(2);
     wrong.pages.0.push(PageContent::new(
@@ -115,16 +115,16 @@ fn rejected_artifact_strictly_binds_source_manifest_order_and_pages() -> TestRes
         1,
         tail,
     )?);
-    assert!(
+    check!(
         wrong.validate().is_err(),
         "short nonfinal page is not canonical"
     );
     let mut wire = serde_json::to_value(&row)?;
     wire["cancelled"] = json!(true);
-    assert!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
+    check!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
     let mut wire = serde_json::to_value(&row)?;
     wire["format"] = json!(2);
-    assert!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
+    check!(serde_json::from_value::<MeasuredNonconformance>(wire).is_err());
     Ok(())
 }
 #[test]
@@ -142,27 +142,27 @@ fn result_union_preserves_existing_success_bytes_and_never_certifies_rejection()
     let cert = execution::MeasuredRating::from_receipt(&complete.receipt, &complete.pages)?;
     let old = serde_json::to_vec(&cert)?;
     let result = MeasuredRegistryResult::Certified(cert.clone());
-    assert_eq!(serde_json::to_vec(&result)?, old);
-    assert_eq!(result.artifact()?, cert.artifact()?);
-    assert_eq!(
+    check_eq!(serde_json::to_vec(&result)?, old);
+    check_eq!(result.artifact()?, cert.artifact()?);
+    check_eq!(
         serde_json::from_slice::<MeasuredRegistryResult>(&old)?,
         result
     );
     let rejected = evidence(&[RatingClass::I, RatingClass::II, RatingClass::III])?;
     let bytes = serde_json::to_vec(&rejected)?;
-    assert!(serde_json::from_slice::<execution::MeasuredRating>(&bytes).is_err());
-    assert_eq!(
+    check!(serde_json::from_slice::<execution::MeasuredRating>(&bytes).is_err());
+    check_eq!(
         serde_json::from_slice::<MeasuredRegistryResult>(&bytes)?,
         MeasuredRegistryResult::Nonconforming(rejected.clone())
     );
-    assert_eq!(rejected.artifact()?.bytes, bytes.len() as u64);
-    assert_eq!(
+    check_eq!(rejected.artifact()?.bytes, bytes.len() as u64);
+    check_eq!(
         rejected.artifact()?.sha256,
         DefinitionDigest::from_bytes(Sha256::digest(&bytes).into())
     );
     let mut crossed = serde_json::to_value(&rejected)?;
     crossed["content"] = serde_json::to_value(&cert)?["content"].clone();
-    assert!(serde_json::from_value::<MeasuredRegistryResult>(crossed).is_err());
+    check!(serde_json::from_value::<MeasuredRegistryResult>(crossed).is_err());
     Ok(())
 }
 
@@ -179,27 +179,27 @@ fn rejection_header_reconstructs_exact_worker_bytes_and_cannot_decode_as_certifi
         },
     )?;
     let (receipt, pages) = measured.publish_parts(publication)?;
-    assert_eq!(
+    check_eq!(
         MeasuredNonconformance::from_receipt(&receipt, &pages)?.artifact()?,
         artifact
     );
     let bytes = serde_json::to_vec(&receipt)?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_slice::<RatingNonconformance>(&bytes)?,
         receipt
     );
-    assert!(serde_json::from_slice::<RatingReceipt>(&bytes).is_err());
-    assert!(receipt.verify_pages(&[]).is_err());
+    check!(serde_json::from_slice::<RatingReceipt>(&bytes).is_err());
+    check!(receipt.verify_pages(&[]).is_err());
     let mut crossed = pages.clone();
     crossed[0].job = CommitToken::from_bytes([9; 16]);
-    assert!(receipt.verify_pages(&crossed).is_err());
+    check!(receipt.verify_pages(&crossed).is_err());
     let mut crossed = pages;
     crossed[0].content.rows.0[0].binding.source = hash(99);
-    assert!(receipt.verify_pages(&crossed).is_err());
+    check!(receipt.verify_pages(&crossed).is_err());
     let mut wrong = serde_json::to_value(&receipt)?;
     wrong["publication"]["job"] = json!(CommitToken::from_bytes([9; 16]));
     let other: RatingNonconformance = serde_json::from_value(wrong)?;
-    assert_ne!(other.reference()?, receipt.reference()?);
+    check_ne!(other.reference()?, receipt.reference()?);
     Ok(())
 }
 
@@ -251,19 +251,19 @@ fn rejected_execution_requires_new_admission_and_the_exact_artifact() -> TestRes
         "updated_by":CommitToken::from_bytes([4;16])}),
     )?;
     execution.verify_nonconformance(&terminal, &receipt, &pages)?;
-    assert_eq!(crate::commerce::rating_roots::required(&terminal)?.len(), 1);
-    assert!(terminal.transition(RatingJobState::Cancelled {}).is_err());
+    check_eq!(crate::commerce::rating_roots::required(&terminal)?.len(), 1);
+    check!(terminal.transition(RatingJobState::Cancelled {}).is_err());
     let mut old = serde_json::to_value(&execution)?;
     old["admission"]
         .as_object_mut()
         .ok_or("admission")?
         .remove("measured_rejection");
     let old: RatingExecution = serde_json::from_value(old)?;
-    assert!(
+    check!(
         old.verify_nonconformance(&terminal, &receipt, &pages)
             .is_err()
     );
-    assert!(
+    check!(
         !serde_json::to_value(&old)?["admission"]
             .as_object()
             .ok_or("admission")?
@@ -272,7 +272,7 @@ fn rejected_execution_requires_new_admission_and_the_exact_artifact() -> TestRes
     let mut crossed = serde_json::to_value(&execution)?;
     crossed["observation"]["result"]["sha256"] = json!(hash(99));
     let crossed: RatingExecution = serde_json::from_value(crossed)?;
-    assert!(
+    check!(
         crossed
             .verify_nonconformance(&terminal, &receipt, &pages)
             .is_err()

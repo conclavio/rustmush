@@ -124,12 +124,12 @@ fn canonical_content_roundtrips_without_source_or_authority() -> TestResult {
     let (book, content) = chain(4)?;
     content.check_links(&book)?;
     let bytes = content.encode()?;
-    assert!(bytes.len() < MAX_CONTENT_BYTES);
-    assert_eq!(
+    check!(bytes.len() < MAX_CONTENT_BYTES);
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), &bytes)?,
         content
     );
-    assert_eq!(content.encode()?, bytes);
+    check_eq!(content.encode()?, bytes);
     let value: Value = serde_json::from_slice(&bytes)?;
     let keys: BTreeSet<_> = value
         .as_object()
@@ -137,18 +137,18 @@ fn canonical_content_roundtrips_without_source_or_authority() -> TestResult {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(
+    check_eq!(
         keys,
         BTreeSet::from([
             "filed", "filed_at", "format", "parent", "position", "revision",
         ])
     );
     let text = String::from_utf8(bytes)?;
-    assert!(!text.contains("private executable"));
-    assert!(!text.contains("private notes"));
-    assert!(!text.contains("rating"));
-    assert!(!text.contains("holder"));
-    assert!(!text.contains("certified"));
+    check!(!text.contains("private executable"));
+    check!(!text.contains("private notes"));
+    check!(!text.contains("rating"));
+    check!(!text.contains("holder"));
+    check!(!text.contains("certified"));
     Ok(())
 }
 
@@ -169,10 +169,10 @@ fn maximum_scalar_widths_fit_without_rounding_or_numeric_aliases() -> TestResult
             revision: RevisionIdentity::capture(&revision)?,
         }),
     )?;
-    assert_eq!(content.key(), "filed/ffffffffffffffff");
+    check_eq!(content.key(), "filed/ffffffffffffffff");
     let bytes = content.encode()?;
-    assert!(bytes.len() < MAX_CONTENT_BYTES);
-    assert_eq!(
+    check!(bytes.len() < MAX_CONTENT_BYTES);
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), &bytes)?,
         content
     );
@@ -185,7 +185,7 @@ fn maximum_scalar_widths_fit_without_rounding_or_numeric_aliases() -> TestResult
         json!("1.0"),
         json!("18446744073709551616"),
     ] {
-        assert!(serde_json::from_value::<FilingSequence>(bad).is_err());
+        check!(serde_json::from_value::<FilingSequence>(bad).is_err());
     }
     Ok(())
 }
@@ -194,7 +194,7 @@ fn maximum_scalar_widths_fit_without_rounding_or_numeric_aliases() -> TestResult
 fn strict_version_key_unknown_missing_duplicate_and_byte_bounds() -> TestResult {
     let (_, content) = chain(1)?;
     for version in [0, 2] {
-        assert_eq!(
+        check_eq!(
             FiledRevisionContent::decode(
                 &content.key(),
                 &changed(&content, "format", json!(version))?
@@ -208,29 +208,27 @@ fn strict_version_key_unknown_missing_duplicate_and_byte_bounds() -> TestResult 
         "line/0000000000000001",
         "FILED/0000000000000001",
     ] {
-        assert_eq!(
+        check_eq!(
             FiledRevisionContent::decode(key, &content.encode()?),
             Err(ContentError::Key)
         );
     }
-    assert_eq!(
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), &changed(&content, "extra", json!(true))?),
         Err(ContentError::Encoding)
     );
     for field in ["parent", "revision", "position", "filed_at"] {
         let mut value = serde_json::to_value(&content)?;
         value.as_object_mut().ok_or("object")?.remove(field);
-        assert!(
-            FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err()
-        );
+        check!(FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err());
     }
     let text = String::from_utf8(content.encode()?)?;
     let duplicate = text.replacen("{", "{\"format\":1,", 1);
-    assert_eq!(
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), duplicate.as_bytes()),
         Err(ContentError::Encoding)
     );
-    assert_eq!(
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), &vec![b' '; MAX_CONTENT_BYTES + 1]),
         Err(ContentError::Encoding)
     );
@@ -251,18 +249,14 @@ fn nested_unknown_and_missing_identity_fields_are_not_ignored() -> TestResult {
             .and_then(Value::as_object_mut)
             .ok_or("nested object")?
             .insert("extra".into(), json!(1));
-        assert!(
-            FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err()
-        );
+        check!(FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err());
         let mut value = serde_json::to_value(&content)?;
         value
             .get_mut(field)
             .and_then(Value::as_object_mut)
             .ok_or("nested object")?
             .remove(required);
-        assert!(
-            FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err()
-        );
+        check!(FiledRevisionContent::decode(&content.key(), &serde_json::to_vec(&value)?).is_err());
     }
     Ok(())
 }
@@ -272,12 +266,12 @@ fn unavailable_is_distinct_from_available_empty_and_valid_parentless_content() -
     let (mut book, content) = chain(1)?;
     content.check_links(&book)?;
     book.ready = false;
-    assert_eq!(content.check_links(&book), Err(ContentError::Unavailable));
+    check_eq!(content.check_links(&book), Err(ContentError::Unavailable));
     let empty = Book {
         ready: true,
         ..Book::default()
     };
-    assert_eq!(content.check_links(&empty), Err(ContentError::Missing));
+    check_eq!(content.check_links(&empty), Err(ContentError::Missing));
     Ok(())
 }
 
@@ -286,20 +280,20 @@ fn line_charter_saved_revision_and_source_must_match_exactly() -> TestResult {
     let (mut book, content) = chain(1)?;
     book.lines
         .insert(content.position.line, CharterId::new(99)?);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     book.lines
         .insert(content.position.line, content.position.charter);
     let key = content.revision.revision().key;
     let saved = book.revisions.remove(&key).ok_or("saved revision")?;
-    assert_eq!(content.check_links(&book), Err(ContentError::Missing));
+    check_eq!(content.check_links(&book), Err(ContentError::Missing));
     let mut changed = saved.clone();
     changed.source = crate::source_digest("different source");
     book.revisions.insert(key, changed);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     let mut changed = saved;
     changed.reference.digest = crate::source_digest("different revision");
     book.revisions.insert(key, changed);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     Ok(())
 }
 
@@ -308,19 +302,19 @@ fn actual_parent_chain_rejects_missing_swapped_or_future_parent() -> TestResult 
     let (mut book, content) = chain(2)?;
     let parent = content.parent.ok_or("parent")?;
     let original = book.contents.remove(&parent.filed).ok_or("parent record")?;
-    assert_eq!(content.check_links(&book), Err(ContentError::Missing));
+    check_eq!(content.check_links(&book), Err(ContentError::Missing));
     let mut wrong = original.clone();
     wrong.filed = FiledRevisionId::new(88)?;
     book.contents.insert(parent.filed, wrong);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     let mut wrong = original.clone();
     wrong.revision = RevisionIdentity::capture(&revision(99)?)?;
     book.contents.insert(parent.filed, wrong);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     let mut wrong = original.clone();
     wrong.filed_at = time(99)?;
     book.contents.insert(parent.filed, wrong);
-    assert_eq!(content.check_links(&book), Err(ContentError::Mismatch));
+    check_eq!(content.check_links(&book), Err(ContentError::Mismatch));
     book.contents.insert(parent.filed, original);
     content.check_links(&book)?;
     Ok(())
@@ -331,7 +325,7 @@ fn parent_depth_and_actual_cycles_are_bounded_without_recursive_decode() -> Test
     let (book, content) = chain(4)?;
     content.check_links(&book)?;
     let (book, too_deep) = chain(5)?;
-    assert_eq!(too_deep.check_links(&book), Err(ContentError::Ancestry));
+    check_eq!(too_deep.check_links(&book), Err(ContentError::Ancestry));
     let (mut book, mut content) = chain(2)?;
     content.filed_at = time(1)?;
     let parent = content.parent.ok_or("parent")?;
@@ -341,7 +335,7 @@ fn parent_depth_and_actual_cycles_are_bounded_without_recursive_decode() -> Test
         revision: content.revision,
     });
     book.contents.insert(content.filed, content.clone());
-    assert_eq!(content.check_links(&book), Err(ContentError::Ancestry));
+    check_eq!(content.check_links(&book), Err(ContentError::Ancestry));
     let bad = changed(
         &content,
         "parent",
@@ -350,7 +344,7 @@ fn parent_depth_and_actual_cycles_are_bounded_without_recursive_decode() -> Test
             revision: content.revision,
         })?,
     )?;
-    assert_eq!(
+    check_eq!(
         FiledRevisionContent::decode(&content.key(), &bad),
         Err(ContentError::Ancestry)
     );
@@ -363,9 +357,9 @@ fn an_ancestor_saved_source_or_line_mismatch_is_not_hidden_by_a_valid_child() ->
     let ancestor = FiledRevisionId::new(1)?;
     let record = book.contents.get(&ancestor).ok_or("ancestor")?;
     book.revisions.remove(&record.revision.revision().key);
-    assert_eq!(content.check_links(&book), Err(ContentError::Missing));
+    check_eq!(content.check_links(&book), Err(ContentError::Missing));
     let (mut book, content) = chain(4)?;
     book.lines.remove(&LineId::new(1)?);
-    assert_eq!(content.check_links(&book), Err(ContentError::Missing));
+    check_eq!(content.check_links(&book), Err(ContentError::Missing));
     Ok(())
 }

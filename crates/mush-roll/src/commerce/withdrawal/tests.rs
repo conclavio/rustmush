@@ -32,7 +32,7 @@ fn invocation(parameters: serde_json::Value) -> TestResult<ActionInvocation> {
 #[test]
 fn withdrawal_request_has_only_canonical_filed_selector_and_exact_new_action() -> TestResult {
     let action = action_reference()?;
-    assert_eq!(
+    check_eq!(
         Request::parse(&invocation(json!({"filed":"7"}))?, &action)?,
         FiledRevisionId::new(7)?
     );
@@ -44,7 +44,7 @@ fn withdrawal_request_has_only_canonical_filed_selector_and_exact_new_action() -
         json!(7),
         json!(null),
     ] {
-        assert!(Request::parse(&invocation(json!({"filed":value}))?, &action).is_err());
+        check!(Request::parse(&invocation(json!({"filed":value}))?, &action).is_err());
     }
     for field in ["actor", "title", "parent", "recall", "validated"] {
         let mut params = json!({"filed":"7"});
@@ -52,9 +52,9 @@ fn withdrawal_request_has_only_canonical_filed_selector_and_exact_new_action() -
             .as_object_mut()
             .ok_or("object")?
             .insert(field.into(), json!(true));
-        assert!(Request::parse(&invocation(params)?, &action).is_err());
+        check!(Request::parse(&invocation(params)?, &action).is_err());
     }
-    assert!(
+    check!(
         Request::parse(
             &invocation(json!({"filed":"7"}))?,
             &super::super::authored_retirement::action_reference()?
@@ -75,33 +75,33 @@ fn cause() -> TestResult<records::WithdrawalOperation> {
 fn withdrawal_cause_is_strict_exact_and_root_bound_without_mutating_filing() -> TestResult {
     let row = cause()?;
     row.validate()?;
-    assert_eq!(
+    check_eq!(
         RootAnchor::parse(&row.root()?.anchor.record())?,
         row.root()?.anchor
     );
-    assert_eq!(row.status().withdrawn_by, Some(row.operation));
-    assert!(row.status().recalled_by.is_none());
+    check_eq!(row.status().withdrawn_by, Some(row.operation));
+    check!(row.status().recalled_by.is_none());
     let mut changed = row.clone();
     changed.title_revision = 2;
-    assert_ne!(row.digest()?, changed.digest()?);
+    check_ne!(row.digest()?, changed.digest()?);
     changed.author = ObjId(3);
-    assert!(changed.validate().is_err());
+    check!(changed.validate().is_err());
     changed = row.clone();
     changed.operation = changed.initial_filing;
-    assert!(changed.validate().is_err());
+    check!(changed.validate().is_err());
     for field in ["permission", "recall", "source_access"] {
         let mut wire = serde_json::to_value(&row)?;
         wire.as_object_mut()
             .ok_or("object")?
             .insert(field.into(), json!(true));
-        assert!(serde_json::from_value::<records::WithdrawalOperation>(wire).is_err());
+        check!(serde_json::from_value::<records::WithdrawalOperation>(wire).is_err());
     }
     let mut wire = serde_json::to_value(&row)?;
     wire.get_mut("revision")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("revision")?
         .insert("authority".into(), json!(true));
-    assert!(serde_json::from_value::<records::WithdrawalOperation>(wire).is_err());
+    check!(serde_json::from_value::<records::WithdrawalOperation>(wire).is_err());
     Ok(())
 }
 #[test]
@@ -121,7 +121,7 @@ fn withdrawal_is_explicit_active_registration_and_never_default_or_setup() -> Te
             RatingCompatibility::combat_v1(manifest.digest()),
         )
     };
-    assert!(
+    check!(
         make(CommerceMode::Initialize)?
             .with_author_withdrawal()
             .is_err()
@@ -165,7 +165,7 @@ fn withdrawal_is_explicit_active_registration_and_never_default_or_setup() -> Te
             .iter()
             .filter(|entry| entry.reference() == &expected)
             .count();
-        assert_eq!(count, usize::from(enabled));
+        check_eq!(count, usize::from(enabled));
     }
     Ok(())
 }

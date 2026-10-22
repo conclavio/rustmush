@@ -67,15 +67,15 @@ fn phase_mapping_retains_progress_distinguishes_cancel_and_keeps_actual_failure_
         )
     };
     let running = resulting_job(&old, &output(Transition::Grant, after.clone())?, None)?;
-    assert_eq!(
+    check_eq!(
         running.state(),
         &RatingJobState::Running { lease_sequence: 1 }
     );
-    assert_eq!(
+    check_eq!(
         resulting_job(&running, &output(Transition::Settle, after.clone())?, None)?,
         running
     );
-    assert_eq!(
+    check_eq!(
         resulting_job(
             &running,
             &output(
@@ -100,7 +100,7 @@ fn phase_mapping_retains_progress_distinguishes_cancel_and_keeps_actual_failure_
         )?,
         None,
     )?;
-    assert_eq!(
+    check_eq!(
         failed.state(),
         &RatingJobState::Failed {
             reason: RatingFailure::Execution
@@ -117,8 +117,8 @@ fn phase_mapping_retains_progress_distinguishes_cancel_and_keeps_actual_failure_
         )?,
         None,
     )?;
-    assert_eq!(cancelled.state(), &RatingJobState::Cancelled {});
-    assert!(
+    check_eq!(cancelled.state(), &RatingJobState::Cancelled {});
+    check!(
         resulting_job(
             &running,
             &output(
@@ -132,7 +132,7 @@ fn phase_mapping_retains_progress_distinguishes_cancel_and_keeps_actual_failure_
         )
         .is_err()
     );
-    assert!(resulting_job(&running, &output(Transition::Recover, after)?, None).is_err());
+    check!(resulting_job(&running, &output(Transition::Recover, after)?, None).is_err());
     Ok(())
 }
 
@@ -163,9 +163,9 @@ fn measured_complete_joins_exact_owner_output_and_a_different_job_cannot_take_it
         None,
     )?;
     let artifacts = ArtifactOutput::observed(&output, Some(measured.clone()))?;
-    assert!(artifacts.matches(&output)?);
+    check!(artifacts.matches(&output)?);
     let completed = resulting_job(&old, &output, Some(&data.receipt))?;
-    assert_eq!(completed, data.job);
+    check_eq!(completed, data.job);
     data.execution
         .verify_completion(&completed, &data.receipt, &data.pages)?;
     let other = RatingJob::new(
@@ -175,7 +175,7 @@ fn measured_complete_joins_exact_owner_output_and_a_different_job_cannot_take_it
         old.plan(),
     )
     .transition(RatingJobState::Running { lease_sequence: 1 })?;
-    assert!(
+    check!(
         RatingRoots::transition(
             &other,
             &completed,
@@ -196,7 +196,7 @@ fn measured_complete_joins_exact_owner_output_and_a_different_job_cannot_take_it
         altered,
         None,
     )?;
-    assert!(ArtifactOutput::observed(&altered, Some(measured)).is_err());
+    check!(ArtifactOutput::observed(&altered, Some(measured)).is_err());
     Ok(())
 }
 
@@ -218,7 +218,7 @@ fn wire_has_no_account_actor_class_measurement_or_owner_output_fields() -> TestR
             .as_object_mut()
             .ok_or("object")?
             .insert(field.into(), json!(true));
-        assert!(
+        check!(
             serde_json::from_value::<AdmissionWire>(injected).is_err(),
             "{field}"
         );
@@ -230,7 +230,7 @@ fn wire_has_no_account_actor_class_measurement_or_owner_output_fields() -> TestR
         .as_object_mut()
         .ok_or("object")?
         .insert("after".into(), json!({"phase":"complete"}));
-    assert!(serde_json::from_value::<TransitionWire>(injected).is_err());
+    check!(serde_json::from_value::<TransitionWire>(injected).is_err());
     Ok(())
 }
 
@@ -245,20 +245,20 @@ fn recovery_preserves_old_manifest_without_authorizing_old_execution() -> TestRe
     )
     .transition(RatingJobState::Running { lease_sequence: 1 })?;
     let current = RatingCompatibility::combat_v1(DefinitionDigest::from_bytes([99; 32]));
-    assert_ne!(&current, previous.compatibility());
+    check_ne!(&current, previous.compatibility());
     for transition in [
         Transition::Admit,
         Transition::Grant,
         Transition::Settle,
         Transition::Cancel,
     ] {
-        assert!(!accepts_compatibility(
+        check!(!accepts_compatibility(
             transition,
             &current,
             previous.compatibility().digest()
         ));
     }
-    assert!(accepts_compatibility(
+    check!(accepts_compatibility(
         Transition::Recover,
         &current,
         previous.compatibility().digest()
@@ -283,10 +283,10 @@ fn recovery_preserves_old_manifest_without_authorizing_old_execution() -> TestRe
         None,
     )?;
     let interrupted = resulting_job(&previous, &output, None)?;
-    assert_eq!(interrupted.state(), &RatingJobState::Interrupted {});
-    assert_eq!(interrupted.subject(), previous.subject());
-    assert_eq!(interrupted.compatibility(), previous.compatibility());
-    assert_eq!(interrupted.plan(), previous.plan());
-    assert!(resulting_job(&previous, &output, Some(&data.receipt)).is_err());
+    check_eq!(interrupted.state(), &RatingJobState::Interrupted {});
+    check_eq!(interrupted.subject(), previous.subject());
+    check_eq!(interrupted.compatibility(), previous.compatibility());
+    check_eq!(interrupted.plan(), previous.plan());
+    check!(resulting_job(&previous, &output, Some(&data.receipt)).is_err());
     Ok(())
 }

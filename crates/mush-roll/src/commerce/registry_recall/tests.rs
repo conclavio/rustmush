@@ -253,17 +253,15 @@ impl Rig {
 #[test]
 fn registry_recall_actual_authorizer_has_no_staff_or_unconfigured_operator_fallback() -> Result {
     let r = Rig::new()?;
-    assert!(r.observe().is_ok());
+    check!(r.observe().is_ok());
     for actor in [GOD, r.other] {
-        assert!(authority::observe(&r.engine.world, &r.ready, &r.policy, actor).is_err());
+        check!(authority::observe(&r.engine.world, &r.ready, &r.policy, actor).is_err());
     }
-    assert!(
-        authority::observe(&r.engine.world, &Readiness::default(), &r.policy, r.actor).is_err()
-    );
+    check!(authority::observe(&r.engine.world, &Readiness::default(), &r.policy, r.actor).is_err());
     let mut altered = r.policy.clone();
     altered.scope = OrgScopeId(u64::MAX);
-    assert!(authority::observe(&r.engine.world, &r.ready, &altered, r.actor).is_err());
-    assert!(
+    check!(authority::observe(&r.engine.world, &r.ready, &altered, r.actor).is_err());
+    check!(
         r.engine
             .world
             .module_state::<crate::RollStore>()
@@ -329,8 +327,8 @@ fn registry_recall_fresh_org_deny_replacement_revocation_and_expiry_are_decisive
             "expired" => r.engine.world.set_now(105),
             _ => return Err("mode".into()),
         }
-        assert!(r.observe().is_err(), "live refusal {mode}");
-        assert!(
+        check!(r.observe().is_err(), "live refusal {mode}");
+        check!(
             authority::recheck(
                 &r.engine.world,
                 &r.ready,
@@ -350,7 +348,7 @@ fn registry_recall_real_policy_allow_remains_subject_to_deny_precedence() -> Res
     let mut r = Rig::new()?;
     let grant = r.grant()?;
     r.mutate(OrgMutationOp::RevokeGrant { grant: grant.id })?;
-    assert!(r.observe().is_err());
+    check!(r.observe().is_err());
     let rule = |effect| PolicyRule {
         effect,
         subject: PolicySubject::Principal(mush_org::PrincipalId::Object(r.actor)),
@@ -375,8 +373,8 @@ fn registry_recall_real_policy_allow_remains_subject_to_deny_precedence() -> Res
     policy.rules.push(deny);
     policy.revision = 2;
     r.mutate(OrgMutationOp::PutPolicy { policy })?;
-    assert!(r.observe().is_err());
-    assert!(
+    check!(r.observe().is_err());
+    check!(
         authority::recheck(
             &r.engine.world,
             &r.ready,
@@ -419,7 +417,7 @@ fn registry_recall_actual_owner_freeze_actor_loss_and_clock_drift_refuse_retaine
             }
             _ => return Err("mode".into()),
         }
-        assert!(
+        check!(
             authority::recheck(
                 &r.engine.world,
                 &r.ready,
@@ -461,8 +459,8 @@ fn registry_recall_closed_full_envelope_maximum_fixed_widths_and_digest_are_boun
     op.validate()?;
     let encoded = serde_json::to_value(&op)?;
     let envelope = json!({"family":{"owner":"roll","id":records::RecallOperation::FAMILY},"schema":{"id":format!("{}.value.v1",records::RecallOperation::FAMILY),"version":1},"key":op.key(),"value":encoded});
-    assert!(serde_json::to_vec(&envelope)?.len() <= records::RecallOperation::MAX_BYTES);
-    assert_eq!(
+    check!(serde_json::to_vec(&envelope)?.len() <= records::RecallOperation::MAX_BYTES);
+    check_eq!(
         serde_json::from_value::<records::RecallOperation>(encoded.clone())?,
         op
     );
@@ -478,7 +476,7 @@ fn registry_recall_closed_full_envelope_maximum_fixed_widths_and_digest_are_boun
     ] {
         let mut bad = encoded.clone();
         bad.as_object_mut().ok_or("record")?.remove(field);
-        assert!(
+        check!(
             serde_json::from_value::<records::RecallOperation>(bad).is_err(),
             "required {field}"
         );
@@ -496,7 +494,7 @@ fn registry_recall_closed_full_envelope_maximum_fixed_widths_and_digest_are_boun
             .and_then(serde_json::Value::as_object_mut)
             .ok_or("nested")?
             .insert("authority_override".into(), json!(true));
-        assert!(serde_json::from_value::<records::RecallOperation>(bad).is_err());
+        check!(serde_json::from_value::<records::RecallOperation>(bad).is_err());
     }
     let mut bad = encoded.clone();
     bad.get_mut("authorization")
@@ -504,7 +502,7 @@ fn registry_recall_closed_full_envelope_maximum_fixed_widths_and_digest_are_boun
         .and_then(serde_json::Value::as_array_mut)
         .ok_or("sources")?
         .push(json!({"tag":"grant","revision":1}));
-    assert!(serde_json::from_value::<records::RecallOperation>(bad).is_err());
+    check!(serde_json::from_value::<records::RecallOperation>(bad).is_err());
     // SystemPrincipalId has no intrinsic text length limit. The complete
     // protocol envelope, including both issuer occurrences, is authoritative.
     let mut oversized = op.clone();
@@ -513,22 +511,22 @@ fn registry_recall_closed_full_envelope_maximum_fixed_widths_and_digest_are_boun
     oversized.authority.issuer = huge.clone();
     oversized.initial_issuer = huge;
     oversized.action = oversized.authority.action()?;
-    assert!(matches!(
+    check!(matches!(
         oversized.validate(),
         Err(PublicationError::Capacity)
     ));
     let mut changed = op.clone();
     changed.authorization.at += 1;
-    assert_ne!(changed.digest()?, op.digest()?);
+    check_ne!(changed.digest()?, op.digest()?);
     let wire = serde_json::to_string(&op)?;
     let duplicate = wire.replacen("\"format\":1", "\"format\":1,\"format\":1", 1);
-    assert!(serde_json::from_str::<records::RecallOperation>(&duplicate).is_err());
+    check!(serde_json::from_str::<records::RecallOperation>(&duplicate).is_err());
     Ok(())
 }
 #[test]
 fn registry_recall_policy_is_closed_bounded_and_does_not_invent_identifier_minima() -> Result {
     let issuer = SystemPrincipalId::new("roll.registry").ok_or("issuer")?;
-    assert!(
+    check!(
         RegistryRecallPolicy::new(issuer.clone(), OrgId(0), OrgScopeId(0), vec![ObjId(0)]).is_ok()
     );
     for operators in [
@@ -537,7 +535,7 @@ fn registry_recall_policy_is_closed_bounded_and_does_not_invent_identifier_minim
         vec![ObjId(3), ObjId(2)],
         (0..33).map(ObjId).collect(),
     ] {
-        assert!(
+        check!(
             RegistryRecallPolicy::new(issuer.clone(), OrgId(1), OrgScopeId(2), operators).is_err()
         );
     }
@@ -546,7 +544,7 @@ fn registry_recall_policy_is_closed_bounded_and_does_not_invent_identifier_minim
     raw.as_object_mut()
         .ok_or("policy")?
         .insert("god_override".into(), json!(true));
-    assert!(serde_json::from_value::<RegistryRecallPolicy>(raw).is_err());
+    check!(serde_json::from_value::<RegistryRecallPolicy>(raw).is_err());
     Ok(())
 }
 

@@ -779,7 +779,11 @@ pub(crate) fn register(
     let ready = Readiness::default();
     let runtime = service::Runtime::default();
     for phase in 0..4 {
-        let action = definitions[phase].clone();
+        let (Some(action), Some(outcome)) = (definitions.get(phase), definitions.get(phase + 4))
+        else {
+            return Err(ModError::msg("pending charter registration differs"));
+        };
+        let action = action.clone();
         let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
         let economy = if phase == 0 {
             None
@@ -791,7 +795,7 @@ pub(crate) fn register(
             Provider {
                 phase,
                 action,
-                outcome: definitions[phase + 4].clone(),
+                outcome: outcome.clone(),
                 retention: crate::commerce::authored_retirement::retention_reference()?,
                 f: f.clone(),
                 roots,
