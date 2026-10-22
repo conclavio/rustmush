@@ -44,9 +44,8 @@
 use crate::Frame;
 use crate::frame::Rgb;
 use crate::raycast::{
-    Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS,
-    SPRITE_HEIGHT_CM, SPRITE_WIDTH_CM, Shades, Sprite, SpriteAt, SpriteKind, draw_sprite, focal,
-    fog_step,
+    Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS, Shades, Sprite,
+    SpriteAt, draw_sprite, focal, fog_step,
 };
 
 /// How far out the march begins, in cells.
@@ -536,20 +535,21 @@ fn draw_sprites(
     let hf = focal(w);
     let horizon = (h / 2) as f32;
     let invdet = 1.0 / (planex * diry - dirx * planey);
-    let mut placed: Vec<(f32, f32, f32, SpriteKind)> = sprites
+    let mut placed: Vec<(f32, f32, f32, &Sprite)> = sprites
         .iter()
         .map(|s| {
             let (wx, wy) = (s.x_cm as f32 / cell, s.y_cm as f32 / cell);
             let (relx, rely) = (wx - posx, wy - posy);
             let tx = invdet * (diry * relx - dirx * rely);
             let ty = invdet * (-planey * relx + planex * rely);
-            (tx, ty, terrain.height(wx, wy), s.kind)
+            (tx, ty, terrain.height(wx, wy), s)
         })
         .filter(|(_, ty, _, _)| *ty > 0.05)
         .collect();
     placed.sort_by(|a, b| b.1.total_cmp(&a.1));
     let depth_at = |x: usize, y: usize| depth.get(y * w + x).copied().unwrap_or(f32::INFINITY);
-    for (tx, ty, ground, kind) in placed {
+    for (tx, ty, ground, sprite) in placed {
+        let (wcm, hcm) = sprite.size_cm();
         draw_sprite(
             frame,
             shades,
@@ -557,9 +557,10 @@ fn draw_sprites(
                 screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
                 bottom: horizon + (eye - ground) * hf / ty,
                 depth: ty,
-                height: SPRITE_HEIGHT_CM as f32 / cell * hf / ty,
-                width: SPRITE_WIDTH_CM as f32 / cell * hf / ty,
-                kind,
+                height: hcm / cell * hf / ty,
+                width: wcm / cell * hf / ty,
+                kind: sprite.kind,
+                pose: sprite.pose,
             },
             &depth_at,
         );
@@ -569,6 +570,8 @@ fn draw_sprites(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::look::Material;
+    use crate::raycast::{SpriteKind, sprite_colour};
 
     /// A 64-cell square of grass with a crater in the middle: a bowl 12 m
     /// deep and 16 cells across, its rim 6 m above the plain.
@@ -739,6 +742,7 @@ mod tests {
             x_cm: 32_000,
             y_cm: 30_000,
             kind: SpriteKind::Red,
+            pose: None,
         };
         let reddish = |f: &Frame| {
             (0..f.height()).any(|y| {
@@ -765,9 +769,18 @@ mod tests {
                 .filter(|&(x, y)| f.get(x, y) == px)
                 .count()
         };
-        assert_eq!(count(&hidden, shades.shade(Base::Red, fog_step(20.0))), 0);
+        assert_eq!(
+            count(
+                &hidden,
+                sprite_colour(&shades, SpriteKind::Red, Material::Team, fog_step(20.0))
+            ),
+            0
+        );
         assert!(
-            count(&hidden, shades.shade(Base::Red, 0)) >= 8,
+            count(
+                &hidden,
+                sprite_colour(&shades, SpriteKind::Red, Material::Team, 0)
+            ) >= 8,
             "the bracket"
         );
     }

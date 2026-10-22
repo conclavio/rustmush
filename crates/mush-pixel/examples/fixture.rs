@@ -107,6 +107,7 @@ fn main() {
         x_cm: 138_000,
         y_cm: 124_000,
         kind: SpriteKind::Red,
+        pose: None,
     };
     let mut relief = Frame::new(640, 480);
     let t3 = Instant::now();
@@ -212,6 +213,62 @@ fn main() {
             f.count_colours(300),
             bytes.len()
         );
+    }
+    // Doc 22 cut U.3: the sprite line-up — the shipped sheets across both
+    // teams, their facings and a wreck, standing on grass in the text
+    // cockpit's frame shape — written to `sprites.png`.
+    {
+        use mush_pixel::look::{self, Facing};
+        use mush_pixel::raycast::{Ground, Map, SpritePose, render};
+        let mut ground = Map::new(96, 96, 1000);
+        for y in 0..96 {
+            for x in 0..96 {
+                ground.set(x, y, Ground::Grass);
+            }
+        }
+        let cam = Camera {
+            x_cm: 48_000,
+            y_cm: 20_000,
+            heading_mdeg: 0,
+        };
+        let tank = look::for_unit("tacsim.unit.line_tank").and_then(|l| l.sprites.as_ref());
+        let biped = look::for_unit("tacsim.unit.biped_mk1").and_then(|l| l.sprites.as_ref());
+        let unknown = look::unknown().and_then(|l| l.sprites.as_ref());
+        let at = |bearing: f64,
+                  range: f64,
+                  kind: SpriteKind,
+                  sheet: Option<&'static look::Sheet>,
+                  facing: Facing,
+                  moving: bool| Sprite {
+            pose: sheet.map(|sheet| SpritePose {
+                sheet,
+                facing,
+                moving,
+                step: 1,
+            }),
+            ..Sprite::at_bearing(&cam, bearing, range, kind)
+        };
+        let lineup = [
+            at(-24.0, 70.0, SpriteKind::Red, tank, Facing::Right, true),
+            at(-12.0, 90.0, SpriteKind::Blue, tank, Facing::Front, false),
+            at(-3.0, 60.0, SpriteKind::Blue, biped, Facing::Front, true),
+            at(6.0, 80.0, SpriteKind::Red, biped, Facing::Left, true),
+            at(
+                15.0,
+                120.0,
+                SpriteKind::Unknown,
+                unknown,
+                Facing::Front,
+                false,
+            ),
+            at(24.0, 75.0, SpriteKind::Wreck, tank, Facing::Right, false),
+        ];
+        let mut f = Frame::new(640, 256);
+        render(&mut f, &ground, &cam, &lineup);
+        if let Err(err) = std::fs::write(format!("{out_dir}/sprites.png"), png::encode(&f)) {
+            eprintln!("sprites.png: {err}");
+        }
+        println!("sprites: {} colours", f.count_colours(300));
     }
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.

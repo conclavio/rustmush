@@ -8,7 +8,9 @@
 //! (or is named below as drawing `unknown`, with the reason); every unit a look
 //! names exists; every section of every unit it draws is in its doll; every
 //! doll part names a section — and a facet of it — each of those units has;
-//! every weapon short name names a weapon component of one of them.
+//! every weapon short name, and every sprite muzzle, names a weapon component
+//! of one of them. The reserved `unknown` look (an unclassified contact's)
+//! names no unit.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -127,6 +129,17 @@ fn every_unit_type_has_a_look_and_every_look_fits_its_units() {
         );
     }
     for look in look::shipped() {
+        // The reserved `unknown` look draws contacts not yet classified, and
+        // names no unit type.
+        if look.units.iter().any(|u| u == look::UNKNOWN) {
+            assert_eq!(
+                look.units,
+                [look::UNKNOWN],
+                "the unknown look draws nothing else"
+            );
+            assert!(look.doll.is_none(), "an unknown contact has no doll");
+            continue;
+        }
         let mine: Vec<&Unit> = look
             .units
             .iter()
@@ -164,7 +177,12 @@ fn every_unit_type_has_a_look_and_every_look_fits_its_units() {
                 }
             }
         }
-        for weapon in look.weapons.keys() {
+        let muzzles = look
+            .sprites
+            .iter()
+            .flat_map(|sheet| sheet.facings.values())
+            .flat_map(|facing| facing.muzzles.keys());
+        for weapon in look.weapons.keys().chain(muzzles) {
             assert!(
                 mine.iter().any(|u| u.weapons.contains(weapon)),
                 "{}: weapon {weapon} is fitted to none of its units",

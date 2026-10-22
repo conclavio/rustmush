@@ -685,7 +685,10 @@ without sending and keeps what you typed for the next `Enter`. Up and Down
 walk your history, as in the input box.
 
 It shows what your cockpit screen shows and nothing more. A contact is drawn
-where your own scope plots it, **in its team's colour** — the red team red and
+where your own scope plots it, as what it is once your scope has told it apart
+(a tank, a walker), showing the face your scope last saw — its front, its back,
+a side — rolling or striding while it moves, with a shadow under it; until then
+it is a plain grey shape. It is drawn **in its team's colour** — the red team red and
 the blue team blue, whichever side you are on, grey while your scope has not
 told it apart yet, dark brown a wreck — so the colour never says friend or foe:
 the contacts list does (`friend`), and the lock's box is yellow whoever it is

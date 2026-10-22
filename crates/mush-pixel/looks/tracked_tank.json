@@ -37,15 +37,283 @@
       "lll.BBBBBBBBBBBBBBBB.rrr"
     ],
     "legend": {
-      "F": { "section": "hull", "facet": "front" },
-      "B": { "section": "hull", "facet": "rear" },
-      "L": { "section": "hull", "facet": "left" },
-      "R": { "section": "hull", "facet": "right" },
-      "H": { "section": "hull" },
-      "T": { "section": "turret" },
-      "E": { "section": "engine" },
-      "l": { "section": "left_track" },
-      "r": { "section": "right_track" }
+      "F": {
+        "section": "hull",
+        "facet": "front"
+      },
+      "B": {
+        "section": "hull",
+        "facet": "rear"
+      },
+      "L": {
+        "section": "hull",
+        "facet": "left"
+      },
+      "R": {
+        "section": "hull",
+        "facet": "right"
+      },
+      "H": {
+        "section": "hull"
+      },
+      "T": {
+        "section": "turret"
+      },
+      "E": {
+        "section": "engine"
+      },
+      "l": {
+        "section": "left_track"
+      },
+      "r": {
+        "section": "right_track"
+      }
     }
+  },
+  "sprites": {
+    "size": [
+      32,
+      16
+    ],
+    "size_cm": [
+      720,
+      300
+    ],
+    "anchor": [
+      16,
+      15
+    ],
+    "palette": {
+      "a": "team-dark",
+      "b": "team",
+      "c": "team-light",
+      "k": "black",
+      "s": "steel",
+      "p": "pale"
+    },
+    "facings": {
+      "front": {
+        "still": [
+          "................................",
+          "................................",
+          "................................",
+          "...........kkkkkkkkkk...........",
+          "...........kcckkkkcck...........",
+          "...........kbbkkkkbbk...........",
+          "...........kbbkkkkbbk...........",
+          ".......kkkkkkkkkkkkkkkkkk.......",
+          "....kkkkcccccccccccccccckkkk....",
+          "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+          "....ksskbpbbbbbbbbbbbbpbkssk....",
+          "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+          "....ksskaaaaaaaaaaaaaaaakssk....",
+          "....kkkkkkkkkkkkkkkkkkkkkkkk....",
+          "....kssk................kssk....",
+          "....kkkk................kkkk...."
+        ],
+        "moving": [
+          [
+            "................................",
+            "................................",
+            "................................",
+            "...........kkkkkkkkkk...........",
+            "...........kcckkkkcck...........",
+            "...........kbbkkkkbbk...........",
+            "...........kbbkkkkbbk...........",
+            ".......kkkkkkkkkkkkkkkkkk.......",
+            "....kkkkcccccccccccccccckkkk....",
+            "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+            "....ksskbpbbbbbbbbbbbbpbkssk....",
+            "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+            "....ksskaaaaaaaaaaaaaaaakssk....",
+            "....kkkkkkkkkkkkkkkkkkkkkkkk....",
+            "....kssk................kssk....",
+            "....kkkk................kkkk...."
+          ],
+          [
+            "................................",
+            "................................",
+            "................................",
+            "...........kkkkkkkkkk...........",
+            "...........kcckkkkcck...........",
+            "...........kbbkkkkbbk...........",
+            "...........kbbkkkkbbk...........",
+            ".......kkkkkkkkkkkkkkkkkk.......",
+            "....kkkkcccccccccccccccckkkk....",
+            "....ksskbbbbbbbbbbbbbbbbkssk....",
+            "....kkkkbpbbbbbbbbbbbbpbkkkk....",
+            "....ksskbbbbbbbbbbbbbbbbkssk....",
+            "....kkkkaaaaaaaaaaaaaaaakkkk....",
+            "....ksskkkkkkkkkkkkkkkkkkssk....",
+            "....kkkk................kkkk....",
+            "....kkkk................kkkk...."
+          ]
+        ],
+        "muzzles": {
+          "cannon": [
+            15,
+            5
+          ],
+          "laser": [
+            15,
+            5
+          ],
+          "missiles": [
+            12,
+            4
+          ]
+        }
+      },
+      "rear": {
+        "still": [
+          "................................",
+          "................................",
+          "................................",
+          "...........kkkkkkkkkk...........",
+          "...........kcccccccck...........",
+          "...........kbbbbbbbbk...........",
+          "...........kbbbbbbbbk...........",
+          ".......kkkkkkkkkkkkkkkkkk.......",
+          "....kkkkcccccccccccccccckkkk....",
+          "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+          "....ksskbbkbkbkbkbkbkbbbkssk....",
+          "....kkkkbbkbkbkbkbkbkbbbkkkk....",
+          "....ksskaaaaaaaaaaaaaaaakssk....",
+          "....kkkkkkkkkkkkkkkkkkkkkkkk....",
+          "....kssk................kssk....",
+          "....kkkk................kkkk...."
+        ],
+        "moving": [
+          [
+            "................................",
+            "................................",
+            "................................",
+            "...........kkkkkkkkkk...........",
+            "...........kcccccccck...........",
+            "...........kbbbbbbbbk...........",
+            "...........kbbbbbbbbk...........",
+            ".......kkkkkkkkkkkkkkkkkk.......",
+            "....kkkkcccccccccccccccckkkk....",
+            "....kkkkbbbbbbbbbbbbbbbbkkkk....",
+            "....ksskbbkbkbkbkbkbkbbbkssk....",
+            "....kkkkbbkbkbkbkbkbkbbbkkkk....",
+            "....ksskaaaaaaaaaaaaaaaakssk....",
+            "....kkkkkkkkkkkkkkkkkkkkkkkk....",
+            "....kssk................kssk....",
+            "....kkkk................kkkk...."
+          ],
+          [
+            "................................",
+            "................................",
+            "................................",
+            "...........kkkkkkkkkk...........",
+            "...........kcccccccck...........",
+            "...........kbbbbbbbbk...........",
+            "...........kbbbbbbbbk...........",
+            ".......kkkkkkkkkkkkkkkkkk.......",
+            "....kkkkcccccccccccccccckkkk....",
+            "....ksskbbbbbbbbbbbbbbbbkssk....",
+            "....kkkkbbkbkbkbkbkbkbbbkkkk....",
+            "....ksskbbkbkbkbkbkbkbbbkssk....",
+            "....kkkkaaaaaaaaaaaaaaaakkkk....",
+            "....ksskkkkkkkkkkkkkkkkkkssk....",
+            "....kkkk................kkkk....",
+            "....kkkk................kkkk...."
+          ]
+        ]
+      },
+      "right": {
+        "still": [
+          "................................",
+          "................................",
+          "................................",
+          "..........kkkkkkkkkk............",
+          "..........kcccccccckkkkkkkkkkkkk",
+          "..........kbbpbbbbbksssssssssssk",
+          "..........kbbbbbbbbkkkkkkkkkkkkk",
+          "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+          "..kcccccccccccccccccccccccccck..",
+          "..kbbbbbbbbbbbbbbbbbbbbbbbbbbk..",
+          "..kaaaaaaaaaaaaaaaaaaaaaaaaaak..",
+          ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk.",
+          ".kskkkskkkskkkskkkskkkskkkskkkk.",
+          ".kskkkskskskkkskskskkkskskskkkk.",
+          ".kskkkskkkskkkskkkskkkskkkskkkk.",
+          ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk."
+        ],
+        "moving": [
+          [
+            "................................",
+            "................................",
+            "................................",
+            "..........kkkkkkkkkk............",
+            "..........kcccccccckkkkkkkkkkkkk",
+            "..........kbbpbbbbbksssssssssssk",
+            "..........kbbbbbbbbkkkkkkkkkkkkk",
+            "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccccccccccck..",
+            "..kbbbbbbbbbbbbbbbbbbbbbbbbbbk..",
+            "..kaaaaaaaaaaaaaaaaaaaaaaaaaak..",
+            ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk.",
+            ".kskkkskkkskkkskkkskkkskkkskkkk.",
+            ".kskkkskskskkkskskskkkskskskkkk.",
+            ".kskkkskkkskkkskkkskkkskkkskkkk.",
+            ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "................................",
+            "................................",
+            "................................",
+            "..........kkkkkkkkkk............",
+            "..........kcccccccckkkkkkkkkkkkk",
+            "..........kbbpbbbbbksssssssssssk",
+            "..........kbbbbbbbbkkkkkkkkkkkkk",
+            "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccccccccccck..",
+            "..kbbbbbbbbbbbbbbbbbbbbbbbbbbk..",
+            "..kaaaaaaaaaaaaaaaaaaaaaaaaaak..",
+            ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk.",
+            ".kskkkskkkskkkskkkskkkskkkskkkk.",
+            ".kskskskkkskskskkkskskskkkskskk.",
+            ".kskkkskkkskkkskkkskkkskkkskkkk.",
+            ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk."
+          ]
+        ],
+        "muzzles": {
+          "cannon": [
+            31,
+            5
+          ],
+          "laser": [
+            31,
+            5
+          ],
+          "missiles": [
+            18,
+            3
+          ]
+        }
+      }
+    },
+    "wreck": [
+      [
+        "................................",
+        "................................",
+        "................................",
+        "................................",
+        "........kkkkkkkkkk..............",
+        "........kkkkkssssk..............",
+        "........kssssssssk..............",
+        "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+        "..kssssssssssssssssssssssssssk..",
+        "..kssssssssssssssssssssssssssk..",
+        "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+        ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk.",
+        ".kskkkskkkskkkskkkskkkskkkskkkk.",
+        ".kskkkskskskkkskskskkkskskskkkk.",
+        ".kskkkskkkskkkskkkskkkskkkskkkk.",
+        ".kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk."
+      ]
+    ]
   }
 }

@@ -1,5 +1,12 @@
 # 22. The unit kit — what a new unit defines
 
+**Draft 0.2 — 2026-10-22, U.1–U.3 as built.** The frame names your team and every classified
+contact's type; bodies are drawn in team colour; four looks ship with dolls (tank, scout, biped,
+drone) and three with sprite sheets (tank, biped, and the `unknown` look a contact not yet
+classified is drawn with); a contract test holds every unit type to its look. One change from
+Draft 0.1, made building U.3: a sheet's palette names **materials** from a closed set rather than
+free RGB colours (§3.2), so every frame stays inside its 256 colours by construction.
+
 **Draft 0.1 — 2026-10-22.** Written from the owner's ask, after the text cockpit's live smoke:
 "as we work on the sprite sheets, I'd like to use it as an opportunity to template out what a
 'new unit' needs to define … the list of sections, the doll structure … the sprite sheet with a
@@ -118,7 +125,7 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   "anchor": [16, 15],
   "palette": {
     "a": "team-dark", "b": "team", "c": "team-light",
-    "k": [30, 30, 30], "g": [90, 90, 90], "w": [200, 200, 190]
+    "k": "black", "s": "steel", "p": "pale"
   },
   "facings": {
     "front": { "still": [ ["...rows..."] ], "moving": [ [...], [...] ], "muzzles": { "cannon": [16, 4] } },
@@ -137,10 +144,12 @@ the form a player-designed unit is written in; a PNG importer can produce it lat
   was showing — `aspect`, front/left/right/rear off the plot, by design — so four is what a sheet
   can be chosen by. The format names facings by word; `front_left` and the other diagonals are
   reserved for the day the owner lets a sensor say more.
-- **Team colour** (D-22-3): the palette's `team-dark`, `team`, `team-light` are not colours but
-  slots, recoloured when the sprite is drawn: red for the red team, blue for the blue, a neutral
-  grey while the contact is unknown. A wreck has no team. Every other palette colour is fixed;
-  a sheet holds at most 16 colours, so the frame stays within its 256 after fog.
+- **Materials and team colour** (D-22-3, D-22-7 as built): a palette maps each character to one
+  of six materials — `team-dark`, `team`, `team-light`, `black`, `steel`, `pale` — never to a
+  colour. The three team slots are recoloured when the sprite is drawn: red for the red team, blue
+  for the blue, a neutral grey while the contact is unknown; a wreck has no team (its team slots
+  draw black, burnt and steel). The renderer fogs the materials in six steps (the ground has
+  twelve), so the ground's bases, the sky and the sprites are exactly 256 colours.
 - `size` is the frame in pixels, `size_cm` how big the unit stands in the world (the picture
   scales the frame to it at the contact's range), `anchor` the pixel that stands on the ground.
   A dark ground shadow is drawn under every unit at its anchor, by the renderer, not the sheet.
@@ -168,10 +177,12 @@ Neither is a frame version: fields added for the person in the seat are not one 
 - **Text panel** (the TUI's text cockpit, doc 21 D-21-10 revised): the armour column draws the
   pilot's own unit's doll from its look in half-blocks, then a line a section.
 - **Pixel picture**: each contact is drawn from its type's sheet — facing from `aspect`, `moving`
-  frames cycled on the picture's clock while the contact is moving, the team slots recoloured —
-  scaled to `size_cm` at its range, standing on the ground at its anchor with a shadow under it;
-  the bracket rule stands (a contact the sim reports is never invisible). An unknown contact uses
-  the `unknown` look. Fog dims a sprite as it dims the ground.
+  frames cycled on the picture's clock while the contact is moving (a step every three draws, 150
+  ms at 20 Hz), the team slots recoloured — scaled to `size_cm` at its range, standing on the
+  ground at its anchor with a shadow under it; the bracket rule stands (a contact the sim reports
+  is never invisible). An unknown contact uses the `unknown` look (the reserved unit id
+  `unknown`); a type whose look has no sheet is the old silhouette, in team colour. Fog dims a
+  sprite as it dims the ground.
 - **Web**: the cockpit tab's doll and the picture's sprites read the same looks (a later cut).
 
 ## 6. Checks — D-22-6
@@ -219,5 +230,6 @@ player can write.
   close reading).
 - **D-22-6** A look is checked on its own and against its unit by a contract test; a unit with no
   look draws `unknown`.
-- **D-22-7** Sprites are pixel art written as text with a palette, at most 16 colours.
+- **D-22-7** Sprites are pixel art written as text; a palette names materials from a closed set
+  of six (as built in U.3: Draft 0.1 had free colours, at most 16).
 - **D-22-8** The cuts U.0–U.5 above.

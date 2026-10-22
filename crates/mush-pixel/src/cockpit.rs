@@ -16,11 +16,12 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::Frame;
+use crate::look::{self, Facing};
 use crate::overlay::{
     self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
-use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, project, render};
+use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, SpritePose, project, render};
 
 /// The pilot's own frame: pose, contacts, hull, weapons, heat.
 pub const COCKPIT_FEED: &str = "arena.cockpit";
@@ -52,7 +53,14 @@ pub struct CockpitPicture {
     arena: Map,
     /// What is drawn over the view.
     overlay: Overlay,
+    /// Draws so far: the sprites' animation clock (a moving cycle steps every
+    /// [`ANIMATION_DRAWS`] draws).
+    draws: usize,
 }
+
+/// How many draws a moving cycle's frame is held for: three at 20 Hz is a
+/// step every 150 ms.
+pub const ANIMATION_DRAWS: usize = 3;
 
 impl Default for CockpitPicture {
     fn default() -> Self {
@@ -74,6 +82,7 @@ impl CockpitPicture {
             built_for: None,
             arena: Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
             overlay,
+            draws: 0,
         }
     }
 
@@ -107,7 +116,8 @@ impl Picture for CockpitPicture {
         };
         let map = feeds.feed(ARENA_MAP_FEED);
         let cam = camera(cockpit, look);
-        let sprites = contacts_as_sprites(cockpit, &cam);
+        self.draws = self.draws.wrapping_add(1);
+        let sprites = contacts_as_sprites(cockpit, &cam, self.draws / ANIMATION_DRAWS);
         let overlay = self.overlay;
         let arena = self.ensure_map(map);
         render(frame, arena, &cam, &sprites);
@@ -223,19 +233,44 @@ pub fn contact_kind(c: &Value) -> SpriteKind {
 
 /// The frame's contacts as sprites, placed by bearing and range from `cam`.
 #[must_use]
-pub fn contacts_as_sprites(cockpit: &Value, cam: &Camera) -> Vec<Sprite> {
+///
+/// Each is drawn from its type's look (doc 22 cut U.3): the contact's
+/// `unit_type` (known from classification, D-22-5) names it, an unclassified
+/// contact is drawn with the [`look::UNKNOWN`] look; the face it shows is its
+/// `aspect`, it plays its moving cycle while `moving`, at animation `step`. A
+/// type whose look has no sheet (or that has no look) is the silhouette.
+pub fn contacts_as_sprites(cockpit: &Value, cam: &Camera, step: usize) -> Vec<Sprite> {
     cockpit
         .get("contacts")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .map(|c| {
-            Sprite::at_bearing(
-                cam,
-                c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0),
-                c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0),
-                contact_kind(c),
-            )
+            let kind = contact_kind(c);
+            let look = match c.get("unit_type").and_then(Value::as_str) {
+                Some(unit) => look::for_unit(unit),
+                None if kind == SpriteKind::Unknown => look::unknown(),
+                None => None,
+            };
+            let pose = look
+                .and_then(|l| l.sprites.as_ref())
+                .map(|sheet| SpritePose {
+                    sheet,
+                    facing: Facing::from_aspect(
+                        c.get("aspect").and_then(Value::as_str).unwrap_or("front"),
+                    ),
+                    moving: c.get("moving").and_then(Value::as_bool) == Some(true),
+                    step,
+                });
+            Sprite {
+                pose,
+                ..Sprite::at_bearing(
+                    cam,
+                    c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0),
+                    c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0),
+                    kind,
+                )
+            }
         })
         .collect()
 }
@@ -563,7 +598,7 @@ mod tests {
             y_cm: 4_500,
             heading_mdeg: 45_000,
         };
-        let sprites = contacts_as_sprites(&cockpit, &cam);
+        let sprites = contacts_as_sprites(&cockpit, &cam, 0);
         assert_eq!(sprites.len(), 4);
         // Doc 22 D-22-3: by team, not by friend — RB (the pilot's own red
         // team) is red and BA blue.

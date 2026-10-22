@@ -32,13 +32,16 @@
 //! too far off to draw, is bracketed where it stands.
 //!
 //! **Colours are a closed set by construction** — the private `Base` set times
-//! [`FOG_STEPS`] plus the sky's [`SKY_STEPS`] — so a rendered frame never
-//! has more than 256 colours and the PNG encoder always takes the palette
-//! path. A wrong constant here shows up as the truecolor fallback, which a
-//! test pins against.
+//! [`FOG_STEPS`], plus the sky's [`SKY_STEPS`], plus the sprites' paints
+//! (the three teams' ramps and the fixed materials, doc 22 cut U.3) times
+//! their coarser `SPRITE_FOG` — 14 x 12 + 16 + 12 x 6 = 256, so a rendered
+//! frame never has more than 256 colours and the PNG encoder always takes
+//! the palette path. A wrong constant here shows up as the truecolor
+//! fallback, which a test pins against.
 
 use crate::Frame;
 use crate::frame::Rgb;
+use crate::look::{Facing, Material, Sheet};
 
 /// What a cell is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -210,7 +213,9 @@ pub enum SpriteKind {
     Wreck,
 }
 
-/// A unit on the ground, drawn as a tank silhouette facing the eye.
+/// A unit on the ground: drawn from its look's sprite sheet where it has a
+/// [`SpritePose`] (doc 22 cut U.3), else as a tank silhouette facing the eye,
+/// in its team's colour either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sprite {
     /// East, centimetres.
@@ -219,6 +224,23 @@ pub struct Sprite {
     pub y_cm: i64,
     /// Drawn as.
     pub kind: SpriteKind,
+    /// Its sheet and pose, where its type has a look with sprites.
+    pub pose: Option<SpritePose>,
+}
+
+/// How a unit with a sprite sheet stands (doc 22 cut U.3): which face it
+/// shows, whether it is moving, and the animation step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpritePose {
+    /// The sheet.
+    pub sheet: &'static Sheet,
+    /// The face it shows the eye.
+    pub facing: Facing,
+    /// Whether it plays its moving cycle.
+    pub moving: bool,
+    /// The animation step (the moving cycle's frame is `step` modulo its
+    /// length).
+    pub step: usize,
 }
 
 impl Sprite {
@@ -233,7 +255,106 @@ impl Sprite {
             x_cm: cam.x_cm + (range_cm * b.sin()).round() as i64,
             y_cm: cam.y_cm + (range_cm * b.cos()).round() as i64,
             kind,
+            pose: None,
         }
+    }
+
+    /// How big it stands in the world, `(width, height)` centimetres: its
+    /// sheet's `size_cm`, or the silhouette's.
+    pub(crate) fn size_cm(&self) -> (f32, f32) {
+        self.pose
+            .map_or((SPRITE_WIDTH_CM as f32, SPRITE_HEIGHT_CM as f32), |pose| {
+                (pose.sheet.size_cm.0 as f32, pose.sheet.size_cm.1 as f32)
+            })
+    }
+}
+
+/// A sprite's colour before fog (doc 22 D-22-7): the three teams' ramps —
+/// red, blue, and the grey of a contact not told apart yet — and the fixed
+/// materials. Black is [`Base::Outline`] and a wreck's body [`Base::Wreck`].
+/// Fogged in [`SPRITE_FOG`] steps, so with the ground's bases and the sky the
+/// picture never has more than 256 colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Paint {
+    RedDark,
+    Red,
+    RedLight,
+    BlueDark,
+    Blue,
+    BlueLight,
+    GreyDark,
+    Grey,
+    GreyLight,
+    Steel,
+    Pale,
+    Shadow,
+}
+
+impl Paint {
+    /// How many paints there are: the rows of the sprite shade table.
+    const COUNT: usize = 12;
+    const ALL: [Paint; Paint::COUNT] = [
+        Paint::RedDark,
+        Paint::Red,
+        Paint::RedLight,
+        Paint::BlueDark,
+        Paint::Blue,
+        Paint::BlueLight,
+        Paint::GreyDark,
+        Paint::Grey,
+        Paint::GreyLight,
+        Paint::Steel,
+        Paint::Pale,
+        Paint::Shadow,
+    ];
+
+    fn rgb(self) -> Rgb {
+        match self {
+            Paint::RedDark => [120, 36, 32],
+            Paint::Red => [178, 54, 48],
+            Paint::RedLight => [214, 98, 84],
+            Paint::BlueDark => [40, 78, 140],
+            Paint::Blue => [64, 124, 204],
+            Paint::BlueLight => [118, 166, 228],
+            Paint::GreyDark => [92, 92, 88],
+            Paint::Grey => [132, 132, 126],
+            Paint::GreyLight => [174, 174, 166],
+            Paint::Steel => [96, 100, 108],
+            Paint::Pale => [216, 216, 198],
+            Paint::Shadow => [34, 40, 28],
+        }
+    }
+}
+
+/// The sprite fog's steps: half the ground's.
+pub(crate) const SPRITE_FOG: usize = FOG_STEPS / 2;
+
+/// The colour a sprite of `kind` paints `material` at fog `step` (of the
+/// ground's [`FOG_STEPS`]): the team slots by its team, a wreck's body burnt,
+/// black the outline's.
+pub(crate) fn sprite_colour(
+    shades: &Shades,
+    kind: SpriteKind,
+    material: Material,
+    step: usize,
+) -> Rgb {
+    let team = |dark, mid, light| match material {
+        Material::TeamDark => Some(dark),
+        Material::Team => Some(mid),
+        _ => Some(light),
+    };
+    let paint = match (material, kind) {
+        (Material::Black, _) | (Material::TeamDark, SpriteKind::Wreck) => None,
+        (Material::Steel, _) | (Material::TeamLight, SpriteKind::Wreck) => Some(Paint::Steel),
+        (Material::Pale, _) => Some(Paint::Pale),
+        (Material::Team, SpriteKind::Wreck) => return shades.shade(Base::Wreck, step),
+        (_, SpriteKind::Red) => team(Paint::RedDark, Paint::Red, Paint::RedLight),
+        (_, SpriteKind::Blue) => team(Paint::BlueDark, Paint::Blue, Paint::BlueLight),
+        (_, SpriteKind::Unknown) => team(Paint::GreyDark, Paint::Grey, Paint::GreyLight),
+    };
+    match paint {
+        Some(p) => shades.paint(p, step),
+        None => shades.shade(Base::Outline, step),
     }
 }
 
@@ -252,16 +373,13 @@ pub(crate) enum Base {
     WallDark,
     Woods,
     WoodsHeavy,
-    Red,
-    Blue,
-    Unknown,
     Wreck,
     Outline,
 }
 
 impl Base {
     /// How many bases there are: the rows of the shade table.
-    const COUNT: usize = 17;
+    const COUNT: usize = 14;
 
     pub(crate) fn rgb(self) -> Rgb {
         match self {
@@ -277,9 +395,6 @@ impl Base {
             Base::WallDark => [104, 104, 112],
             Base::Woods => [40, 84, 44],
             Base::WoodsHeavy => [28, 62, 34],
-            Base::Red => [178, 54, 48],
-            Base::Blue => [64, 124, 204],
-            Base::Unknown => [132, 132, 126],
             Base::Wreck => [72, 62, 52],
             Base::Outline => [18, 18, 22],
         }
@@ -375,6 +490,7 @@ fn sky(step: usize) -> Rgb {
 pub(crate) struct Shades {
     base: [[Rgb; FOG_STEPS]; Base::COUNT],
     sky: [Rgb; SKY_STEPS],
+    paint: [[Rgb; SPRITE_FOG]; Paint::COUNT],
 }
 
 impl Shades {
@@ -392,9 +508,6 @@ impl Shades {
             Base::WallDark,
             Base::Woods,
             Base::WoodsHeavy,
-            Base::Red,
-            Base::Blue,
-            Base::Unknown,
             Base::Wreck,
             Base::Outline,
         ];
@@ -408,7 +521,27 @@ impl Shades {
         for (step, px) in bands.iter_mut().enumerate() {
             *px = sky(step);
         }
-        Shades { base, sky: bands }
+        let mut paint = [[[0; 3]; SPRITE_FOG]; Paint::COUNT];
+        for (row, p) in paint.iter_mut().zip(Paint::ALL) {
+            for (step, px) in row.iter_mut().enumerate() {
+                *px = lerp(p.rgb(), HORIZON, step as f32 / (SPRITE_FOG - 1) as f32);
+            }
+        }
+        Shades {
+            base,
+            sky: bands,
+            paint,
+        }
+    }
+
+    /// Sprite paint `p` at the ground's fog `step`, in the sprite fog's
+    /// coarser steps.
+    pub(crate) fn paint(&self, p: Paint, step: usize) -> Rgb {
+        self.paint
+            .get(p as usize)
+            .and_then(|row| row.get(step * SPRITE_FOG / FOG_STEPS))
+            .copied()
+            .unwrap_or(HORIZON)
     }
 
     /// `base` at fog `step` (the horizon colour past the last step, which
@@ -486,13 +619,15 @@ impl Eye {
             return None;
         }
         let hf = focal(w);
+        let (wcm, hcm) = s.size_cm();
         Some(SpriteAt {
             screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
             bottom: (h / 2) as f32 + self.eye * hf / ty,
             depth: ty,
-            height: SPRITE_HEIGHT_CM as f32 / self.cell * hf / ty,
-            width: SPRITE_WIDTH_CM as f32 / self.cell * hf / ty,
+            height: hcm / self.cell * hf / ty,
+            width: wcm / self.cell * hf / ty,
             kind: s.kind,
+            pose: s.pose,
         })
     }
 
@@ -647,6 +782,7 @@ pub(crate) struct SpriteAt {
     pub(crate) height: f32,
     pub(crate) width: f32,
     pub(crate) kind: SpriteKind,
+    pub(crate) pose: Option<SpritePose>,
 }
 
 /// Draw one unit: its silhouette wherever the picture drew nothing nearer
@@ -667,40 +803,43 @@ pub(crate) fn draw_sprite(
     if at.screenx + at.width / 2.0 < 0.0 || at.screenx - at.width / 2.0 >= wf {
         return;
     }
-    let kind_base = match at.kind {
-        SpriteKind::Red => Base::Red,
-        SpriteKind::Blue => Base::Blue,
-        SpriteKind::Unknown => Base::Unknown,
-        SpriteKind::Wreck => Base::Wreck,
-    };
     let top = at.bottom - at.height;
     let left = at.screenx - at.width / 2.0;
     let mut drawn = 0usize;
     if at.height >= 2.0 && at.width >= 1.0 {
         let step = fog_step(at.depth);
-        let body = shades.shade(kind_base, step);
-        let outline = shades.shade(Base::Outline, step);
-        let x0 = left.floor().max(0.0) as usize;
-        let x1 = ((left + at.width).ceil().max(0.0) as usize).min(w);
-        let y0 = top.floor().max(0.0) as usize;
-        let y1 = (at.bottom.ceil().max(0.0) as usize).min(h);
-        let (du, dv) = (1.0 / at.width, 1.0 / at.height);
-        for x in x0..x1 {
-            let u = (x as f32 + 0.5 - left) / at.width;
-            for y in y0..y1 {
-                if at.depth >= depth_at(x, y) {
-                    continue;
+        drawn = match at.pose {
+            Some(pose) => draw_sheet(frame, shades, &at, pose, step, depth_at),
+            None => {
+                let body = sprite_colour(shades, at.kind, Material::Team, step);
+                let outline = shades.shade(Base::Outline, step);
+                let x0 = left.floor().max(0.0) as usize;
+                let x1 = ((left + at.width).ceil().max(0.0) as usize).min(w);
+                let y0 = top.floor().max(0.0) as usize;
+                let y1 = (at.bottom.ceil().max(0.0) as usize).min(h);
+                let (du, dv) = (1.0 / at.width, 1.0 / at.height);
+                let mut n = 0;
+                for x in x0..x1 {
+                    let u = (x as f32 + 0.5 - left) / at.width;
+                    for y in y0..y1 {
+                        if at.depth >= depth_at(x, y) {
+                            continue;
+                        }
+                        let v = (y as f32 + 0.5 - top) / at.height;
+                        if !tank(u, v) {
+                            continue;
+                        }
+                        let edge = !tank(u - du, v)
+                            || !tank(u + du, v)
+                            || !tank(u, v - dv)
+                            || !tank(u, v + dv);
+                        frame.put(x, y, if edge { outline } else { body });
+                        n += 1;
+                    }
                 }
-                let v = (y as f32 + 0.5 - top) / at.height;
-                if !tank(u, v) {
-                    continue;
-                }
-                let edge =
-                    !tank(u - du, v) || !tank(u + du, v) || !tank(u, v - dv) || !tank(u, v + dv);
-                frame.put(x, y, if edge { outline } else { body });
-                drawn += 1;
+                n
             }
-        }
+        };
     }
     if drawn == 0 {
         let bw = at.width.max(MARK_MIN_PX);
@@ -709,9 +848,89 @@ pub(crate) fn draw_sprite(
         mark(
             frame,
             (at.screenx - bw / 2.0, cy - bh / 2.0, bw, bh),
-            shades.shade(kind_base, 0),
+            sprite_colour(shades, at.kind, Material::Team, 0),
         );
     }
+}
+
+/// Draw a unit from its sheet (doc 22 cut U.3): a shadow on the ground under
+/// its anchor, then the frame its pose picks — its facing (the left mirrored
+/// from the right where the sheet has no left), its moving cycle at the
+/// pose's step, or its wreck — scaled over the sprite's box with the anchor
+/// pixel standing on `at.bottom` at `at.screenx`, every pixel hidden where
+/// the picture drew something nearer. Returns the unit's pixels drawn (the
+/// shadow's are not counted: a shadow alone is not a contact seen).
+fn draw_sheet(
+    frame: &mut Frame,
+    shades: &Shades,
+    at: &SpriteAt,
+    pose: SpritePose,
+    step: usize,
+    depth_at: &dyn Fn(usize, usize) -> f32,
+) -> usize {
+    let (w, h) = (frame.width(), frame.height());
+    let sheet = pose.sheet;
+    let picked = if at.kind == SpriteKind::Wreck {
+        sheet.wreck_frame(pose.facing).map(|f| (f, false))
+    } else {
+        sheet.frame(pose.facing, pose.moving, pose.step)
+    };
+    let Some((pixels, mirrored)) = picked else {
+        return 0;
+    };
+    let (sw, sh) = (sheet.width as f32, sheet.height as f32);
+    let (ax, ay) = (sheet.anchor.0 as f32, sheet.anchor.1 as f32);
+    let ax = if mirrored { sw - 1.0 - ax } else { ax };
+    let left = at.screenx - (ax + 0.5) / sw * at.width;
+    let top = at.bottom - (ay + 1.0) / sh * at.height;
+
+    // The shadow: a flat ellipse on the ground about the anchor, drawn only
+    // over ground at about the unit's own distance.
+    let rx = at.width * 0.42;
+    let ry = (rx * 0.16).max(1.0);
+    let shadow = shades.paint(Paint::Shadow, step);
+    let (sx0, sx1) = (
+        (at.screenx - rx).floor().max(0.0) as usize,
+        ((at.screenx + rx).ceil().max(0.0) as usize).min(w),
+    );
+    let (sy0, sy1) = (
+        (at.bottom - ry).floor().max(0.0) as usize,
+        ((at.bottom + ry).ceil().max(0.0) as usize).min(h),
+    );
+    for y in sy0..sy1 {
+        for x in sx0..sx1 {
+            let (dx, dy) = (
+                (x as f32 + 0.5 - at.screenx) / rx,
+                (y as f32 + 0.5 - at.bottom) / ry,
+            );
+            if dx * dx + dy * dy <= 1.0 && depth_at(x, y) >= at.depth * 0.85 {
+                frame.put(x, y, shadow);
+            }
+        }
+    }
+
+    let x0 = left.floor().max(0.0) as usize;
+    let x1 = ((left + at.width).ceil().max(0.0) as usize).min(w);
+    let y0 = top.floor().max(0.0) as usize;
+    let y1 = ((top + at.height).ceil().max(0.0) as usize).min(h);
+    let mut drawn = 0;
+    for y in y0..y1 {
+        let sy = (((y as f32 + 0.5 - top) / at.height * sh).floor().max(0.0) as usize)
+            .min(sheet.height - 1);
+        for x in x0..x1 {
+            if at.depth >= depth_at(x, y) {
+                continue;
+            }
+            let u = ((x as f32 + 0.5 - left) / at.width * sw).floor().max(0.0) as usize;
+            let sx = u.min(sheet.width - 1);
+            let sx = if mirrored { sheet.width - 1 - sx } else { sx };
+            if let Some(Some(material)) = pixels.get(sy * sheet.width + sx) {
+                frame.put(x, y, sprite_colour(shades, at.kind, *material, step));
+                drawn += 1;
+            }
+        }
+    }
+    drawn
 }
 
 /// Four corner brackets around a box (`x`, `y`, width, height in pixels),
@@ -980,7 +1199,7 @@ mod tests {
         let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Red)];
         let mut f = Frame::new(320, 220);
         render(&mut f, &map, &cam, &behind);
-        let unfogged = shades.shade(Base::Red, 0);
+        let unfogged = sprite_colour(&shades, SpriteKind::Red, Material::Team, 0);
         let count = |f: &Frame, px: Rgb| {
             (0..f.width())
                 .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
@@ -991,7 +1210,7 @@ mod tests {
             count(&f, unfogged) >= 8,
             "the bracket in its unfogged colour"
         );
-        let fogged = shades.shade(Base::Red, fog_step(11.5));
+        let fogged = sprite_colour(&shades, SpriteKind::Red, Material::Team, fog_step(11.5));
         assert_eq!(count(&f, fogged), 0, "no silhouette through 8 m woods");
         // A 3 m wall instead: the tank (3.5 m) shows its top over it.
         for x in 0..32 {
@@ -1019,5 +1238,97 @@ mod tests {
         assert_eq!((east.x_cm, east.y_cm), (1000, 0));
         let north = Sprite::at_bearing(&cam, 0.0, 10.0, SpriteKind::Unknown);
         assert_eq!((north.x_cm, north.y_cm), (0, 1000));
+    }
+
+    /// The shade table, the sky and the sprites' paints together are the
+    /// 256 colours a frame can hold, and no more (doc 22 cut U.3).
+    #[test]
+    fn the_palette_budget_is_256() {
+        assert_eq!(
+            Base::COUNT * FOG_STEPS + SKY_STEPS + Paint::COUNT * SPRITE_FOG,
+            256
+        );
+    }
+
+    /// Doc 22 cut U.3: a unit with a sheet is drawn from it — in its team's
+    /// colour, its left face the right one mirrored, a shadow under it — and
+    /// one the picture covers is still bracketed.
+    #[test]
+    fn a_sheet_sprite_draws_in_team_colour_mirrored_with_a_shadow() {
+        let sheet = crate::look::for_unit("tacsim.unit.line_tank")
+            .and_then(|l| l.sprites.as_ref())
+            .expect("the tank's sheet");
+        let mut map = Map::new(64, 64, 1000);
+        for y in 0..64 {
+            for x in 0..64 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        let cam = Camera {
+            x_cm: 32_000,
+            y_cm: 10_000,
+            heading_mdeg: 0,
+        };
+        let shades = Shades::new();
+        let draw = |kind, facing| {
+            let tank = Sprite {
+                pose: Some(SpritePose {
+                    sheet,
+                    facing,
+                    moving: false,
+                    step: 0,
+                }),
+                ..Sprite::at_bearing(&cam, 0.0, 30.0, kind)
+            };
+            let mut f = Frame::new(320, 128);
+            render(&mut f, &map, &cam, &[tank]);
+            f
+        };
+        let count = |f: &Frame, px: Rgb| {
+            (0..f.width())
+                .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| f.get(x, y) == px)
+                .count()
+        };
+        let step = fog_step(3.0);
+        let right = draw(SpriteKind::Red, Facing::Right);
+        let red = sprite_colour(&shades, SpriteKind::Red, Material::Team, step);
+        assert!(count(&right, red) > 20, "red-team body");
+        let blue = draw(SpriteKind::Blue, Facing::Right);
+        assert_eq!(count(&blue, red), 0, "a blue tank has no red in it");
+        assert!(
+            count(
+                &blue,
+                sprite_colour(&shades, SpriteKind::Blue, Material::Team, step)
+            ) > 20
+        );
+        assert!(
+            count(&right, shades.paint(Paint::Shadow, step)) > 0,
+            "a shadow"
+        );
+        // The left face is the right one mirrored about the anchor column.
+        let left = draw(SpriteKind::Red, Facing::Left);
+        let columns = |f: &Frame| -> Vec<usize> {
+            (0..f.width())
+                .map(|x| (0..f.height()).filter(|&y| f.get(x, y) == red).count())
+                .collect()
+        };
+        let (r, l) = (columns(&right), columns(&left));
+        let (rmin, rmax) = (
+            r.iter().position(|&n| n > 0).expect("drawn"),
+            r.iter().rposition(|&n| n > 0).expect("drawn"),
+        );
+        let (lmin, lmax) = (
+            l.iter().position(|&n| n > 0).expect("drawn"),
+            l.iter().rposition(|&n| n > 0).expect("drawn"),
+        );
+        assert!(
+            (rmax - rmin).abs_diff(lmax - lmin) <= 1,
+            "the same width, to the pixel the sampling rounds"
+        );
+        assert_ne!(r, l, "but facing the other way");
+        // A wreck has no team colour.
+        let wreck = draw(SpriteKind::Wreck, Facing::Right);
+        assert_eq!(count(&wreck, red), 0);
     }
 }

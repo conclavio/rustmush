@@ -11,7 +11,15 @@
 //!   stands for, `.` empty; `view` is `top` (a vehicle from above, front up)
 //!   or `upright` (a walker standing, its left on the left, as its pilot
 //!   thinks of it);
-//! - `sprites`: the sprite sheet (doc 22 §3.2; cut U.3).
+//! - `sprites`: the sprite sheet (doc 22 §3.2; cut U.3) — pixel art written
+//!   as text, each character a [`Material`] or `.` for nothing: the facings
+//!   `front`, `rear` and `right` (and `left`, else `right` mirrored), each a
+//!   `still` frame and two to four `moving` frames, one or more `wreck`
+//!   frames, the frame's size in pixels, the unit's size in the world, the
+//!   pixel that stands on the ground, a muzzle point a weapon a facing.
+//!
+//! The reserved unit id [`UNKNOWN`] names the look a contact not yet
+//! classified is drawn with.
 //!
 //! The shipped looks are JSON files under `crates/mush-pixel/looks/`, embedded
 //! here ([`shipped`]); [`Look::parse`] is the check a look must pass on its own
@@ -27,6 +35,10 @@ use serde_json::Value;
 pub const DOLL_MAX_W: usize = 24;
 /// The tallest a doll may be, cells.
 pub const DOLL_MAX_H: usize = 16;
+/// The largest sprite frame, pixels a side.
+pub const SPRITE_MAX: usize = 64;
+/// The reserved unit id of the look an unclassified contact is drawn with.
+pub const UNKNOWN: &str = "unknown";
 
 /// The looks this build ships, by file name and text.
 const SHIPPED: &[(&str, &str)] = &[
@@ -40,7 +52,132 @@ const SHIPPED: &[(&str, &str)] = &[
     ),
     ("biped.json", include_str!("../looks/biped.json")),
     ("drone.json", include_str!("../looks/drone.json")),
+    ("unknown.json", include_str!("../looks/unknown.json")),
 ];
+
+/// What a sprite pixel is made of (doc 22 D-22-7): the three team slots,
+/// recoloured by the contact's team when it is drawn, and three fixed
+/// materials. A closed set, so the picture's palette stays closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Material {
+    /// The team's dark shade.
+    TeamDark,
+    /// The team's colour.
+    Team,
+    /// The team's light shade.
+    TeamLight,
+    /// Black: outlines, openings, shadowed parts.
+    Black,
+    /// Steel: tracks, wheels, barrels, bare metal.
+    Steel,
+    /// Pale: glass, lamps, highlights.
+    Pale,
+}
+
+impl Material {
+    fn named(name: &str) -> Option<Material> {
+        Some(match name {
+            "team-dark" => Material::TeamDark,
+            "team" => Material::Team,
+            "team-light" => Material::TeamLight,
+            "black" => Material::Black,
+            "steel" => Material::Steel,
+            "pale" => Material::Pale,
+            _ => return None,
+        })
+    }
+}
+
+/// Which face a sprite shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Facing {
+    /// Its front, toward the viewer.
+    Front,
+    /// Its back.
+    Rear,
+    /// Its right side: its front points to the viewer's right.
+    Right,
+    /// Its left side.
+    Left,
+}
+
+impl Facing {
+    /// The face a contact row's `aspect` word names, front when it names
+    /// none.
+    #[must_use]
+    pub fn from_aspect(word: &str) -> Facing {
+        match word {
+            "rear" => Facing::Rear,
+            "right" => Facing::Right,
+            "left" => Facing::Left,
+            _ => Facing::Front,
+        }
+    }
+}
+
+/// One sprite frame: a material a pixel or nothing, row by row from the top.
+pub type SpriteFrame = Vec<Option<Material>>;
+
+/// One facing's frames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FacingFrames {
+    /// Standing still.
+    pub still: SpriteFrame,
+    /// The moving cycle, two to four frames.
+    pub moving: Vec<SpriteFrame>,
+    /// Where each weapon's shot leaves, by weapon component id.
+    pub muzzles: BTreeMap<String, (usize, usize)>,
+}
+
+/// A sprite sheet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sheet {
+    /// Frame width, pixels.
+    pub width: usize,
+    /// Frame height, pixels.
+    pub height: usize,
+    /// How big the unit stands in the world, `(width, height)` centimetres.
+    pub size_cm: (u32, u32),
+    /// The frame pixel that stands on the ground, `(x, y)`.
+    pub anchor: (usize, usize),
+    /// The facings: front, rear, right, and left where the sheet gives it.
+    pub facings: BTreeMap<Facing, FacingFrames>,
+    /// The wreck, one or more frames.
+    pub wreck: Vec<SpriteFrame>,
+}
+
+impl Sheet {
+    /// The frame to draw for `facing`, moving or still at animation `step`,
+    /// and whether it is drawn mirrored (a left face from the right one).
+    #[must_use]
+    pub fn frame(&self, facing: Facing, moving: bool, step: usize) -> Option<(&SpriteFrame, bool)> {
+        let (frames, mirrored) = match self.facings.get(&facing) {
+            Some(f) => (Some(f), false),
+            None if facing == Facing::Left => (self.facings.get(&Facing::Right), true),
+            None => (self.facings.get(&Facing::Front), false),
+        };
+        let frames = frames.or_else(|| self.facings.values().next())?;
+        let cycle = frames.moving.len();
+        let frame = if moving && cycle > 0 {
+            frames.moving.get(step % cycle)?
+        } else {
+            &frames.still
+        };
+        Some((frame, mirrored))
+    }
+
+    /// The wreck frame for `facing`.
+    #[must_use]
+    pub fn wreck_frame(&self, facing: Facing) -> Option<&SpriteFrame> {
+        let i = match facing {
+            Facing::Front => 0,
+            Facing::Rear => 1,
+            Facing::Right => 2,
+            Facing::Left => 3,
+        };
+        self.wreck.get(i % self.wreck.len().max(1))
+    }
+}
 
 /// How a doll is seen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,6 +334,8 @@ pub struct Look {
     pub weapons: BTreeMap<String, String>,
     /// The doll, where it has one.
     pub doll: Option<Doll>,
+    /// The sprite sheet, where it has one.
+    pub sprites: Option<Sheet>,
 }
 
 /// Why a look was refused.
@@ -278,12 +417,14 @@ impl Look {
             }
         }
         let doll = obj.get("doll").map(parse_doll).transpose()?;
+        let sprites = obj.get("sprites").map(parse_sheet).transpose()?;
         Ok(Look {
             units,
             label,
             short,
             weapons,
             doll,
+            sprites,
         })
     }
 
@@ -384,6 +525,189 @@ fn parse_doll(v: &Value) -> Result<Doll, LookError> {
     })
 }
 
+fn pair(v: Option<&Value>, what: &str) -> Result<(u64, u64), LookError> {
+    let a = v.and_then(Value::as_array);
+    match a.map(Vec::as_slice) {
+        Some([x, y]) => match (x.as_u64(), y.as_u64()) {
+            (Some(x), Some(y)) => Ok((x, y)),
+            _ => err(format!("sprites: `{what}` must be two whole numbers")),
+        },
+        _ => err(format!("sprites: `{what}` must be two whole numbers")),
+    }
+}
+
+fn parse_sheet(v: &Value) -> Result<Sheet, LookError> {
+    let Some(obj) = v.as_object() else {
+        return err("sprites: must be an object");
+    };
+    only(
+        obj,
+        &["size", "size_cm", "anchor", "palette", "facings", "wreck"],
+        "sprites",
+    )?;
+    let (w, h) = pair(obj.get("size"), "size")?;
+    let (w, h) = (
+        usize::try_from(w).unwrap_or(0),
+        usize::try_from(h).unwrap_or(0),
+    );
+    if w == 0 || h == 0 || w > SPRITE_MAX || h > SPRITE_MAX {
+        return err(format!(
+            "sprites: frames {w}x{h}; at most {SPRITE_MAX}x{SPRITE_MAX}"
+        ));
+    }
+    let (cw, ch) = pair(obj.get("size_cm"), "size_cm")?;
+    if cw == 0 || ch == 0 {
+        return err("sprites: `size_cm` must not be zero");
+    }
+    let (ax, ay) = pair(obj.get("anchor"), "anchor")?;
+    let anchor = (
+        usize::try_from(ax).unwrap_or(w),
+        usize::try_from(ay).unwrap_or(h),
+    );
+    if anchor.0 >= w || anchor.1 >= h {
+        return err("sprites: `anchor` must be inside the frame");
+    }
+    let Some(palette) = obj.get("palette").and_then(Value::as_object) else {
+        return err("sprites: `palette` must be an object");
+    };
+    let mut keys: Vec<(char, Material)> = Vec::new();
+    for (key, name) in palette {
+        let mut chars = key.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return err(format!(
+                "sprites: palette key `{key}` must be one character"
+            ));
+        };
+        if c == '.' {
+            return err("sprites: `.` is nothing, not a palette key");
+        }
+        let Some(m) = name.as_str().and_then(Material::named) else {
+            return err(format!(
+                "sprites: palette `{key}` must name team-dark, team, team-light, black, steel or pale"
+            ));
+        };
+        keys.push((c, m));
+    }
+    let frame = |v: &Value, what: &str| -> Result<SpriteFrame, LookError> {
+        let rows: Vec<&str> = v
+            .as_array()
+            .and_then(|r| r.iter().map(Value::as_str).collect())
+            .ok_or_else(|| LookError(format!("sprites: {what} must be a list of rows")))?;
+        if rows.len() != h {
+            return err(format!("sprites: {what} has {} rows, not {h}", rows.len()));
+        }
+        let mut out = Vec::with_capacity(w * h);
+        for (y, row) in rows.iter().enumerate() {
+            if row.chars().count() != w {
+                return err(format!("sprites: {what} row {y} is not {w} wide"));
+            }
+            for c in row.chars() {
+                if c == '.' {
+                    out.push(None);
+                } else {
+                    match keys.iter().find(|(k, _)| *k == c) {
+                        Some((_, m)) => out.push(Some(*m)),
+                        None => {
+                            return err(format!(
+                                "sprites: {what} row {y} uses `{c}`, which the palette lacks"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    };
+    let Some(facings_obj) = obj.get("facings").and_then(Value::as_object) else {
+        return err("sprites: `facings` must be an object");
+    };
+    let mut facings = BTreeMap::new();
+    for (name, f) in facings_obj {
+        let facing = match name.as_str() {
+            "front" => Facing::Front,
+            "rear" => Facing::Rear,
+            "right" => Facing::Right,
+            "left" => Facing::Left,
+            other => {
+                return err(format!(
+                    "sprites: facing `{other}` is not front, rear, right or left"
+                ));
+            }
+        };
+        let Some(fo) = f.as_object() else {
+            return err(format!("sprites: facing `{name}` must be an object"));
+        };
+        only(fo, &["still", "moving", "muzzles"], "sprites facing")?;
+        let still = frame(
+            fo.get("still").unwrap_or(&Value::Null),
+            &format!("{name} still"),
+        )?;
+        let moving: Vec<SpriteFrame> = match fo.get("moving").and_then(Value::as_array) {
+            Some(list) if (2..=4).contains(&list.len()) => list
+                .iter()
+                .enumerate()
+                .map(|(i, v)| frame(v, &format!("{name} moving {i}")))
+                .collect::<Result<_, _>>()?,
+            _ => {
+                return err(format!(
+                    "sprites: facing `{name}` needs two to four moving frames"
+                ));
+            }
+        };
+        let mut muzzles = BTreeMap::new();
+        if let Some(m) = fo.get("muzzles") {
+            let Some(m) = m.as_object() else {
+                return err("sprites: `muzzles` must be an object");
+            };
+            for (weapon, at) in m {
+                let (x, y) = pair(Some(at), "muzzle")?;
+                let at = (
+                    usize::try_from(x).unwrap_or(w),
+                    usize::try_from(y).unwrap_or(h),
+                );
+                if at.0 >= w || at.1 >= h {
+                    return err(format!(
+                        "sprites: {name} muzzle `{weapon}` is outside the frame"
+                    ));
+                }
+                muzzles.insert(weapon.clone(), at);
+            }
+        }
+        facings.insert(
+            facing,
+            FacingFrames {
+                still,
+                moving,
+                muzzles,
+            },
+        );
+    }
+    for need in [Facing::Front, Facing::Rear, Facing::Right] {
+        if !facings.contains_key(&need) {
+            return err(format!("sprites: the {need:?} facing is required").to_lowercase());
+        }
+    }
+    let wreck: Vec<SpriteFrame> = match obj.get("wreck").and_then(Value::as_array) {
+        Some(list) if (1..=4).contains(&list.len()) => list
+            .iter()
+            .enumerate()
+            .map(|(i, v)| frame(v, &format!("wreck {i}")))
+            .collect::<Result<_, _>>()?,
+        _ => return err("sprites: `wreck` needs one to four frames"),
+    };
+    Ok(Sheet {
+        width: w,
+        height: h,
+        size_cm: (
+            u32::try_from(cw).unwrap_or(u32::MAX),
+            u32::try_from(ch).unwrap_or(u32::MAX),
+        ),
+        anchor,
+        facings,
+        wreck,
+    })
+}
+
 /// The looks this build ships, parsed once. A shipped look that does not
 /// parse is a build defect the tests catch; it is left out here rather than
 /// taking a renderer down.
@@ -402,6 +726,12 @@ pub fn shipped() -> &'static [Look] {
 #[must_use]
 pub fn for_unit(unit: &str) -> Option<&'static Look> {
     shipped().iter().find(|l| l.units.iter().any(|u| u == unit))
+}
+
+/// The look an unclassified contact is drawn with ([`UNKNOWN`]).
+#[must_use]
+pub fn unknown() -> Option<&'static Look> {
+    for_unit(UNKNOWN)
 }
 
 /// The shipped looks' file names and texts, for the contract test.
@@ -469,6 +799,75 @@ mod tests {
             r#"{"units":[],"label":"U","short":"U"}"#.to_string(),
             "at least one",
         );
+    }
+
+    /// Doc 22 cut U.3: a sheet's check refuses what §3.2 says it must, and
+    /// its frames are picked by facing, motion and step — the left mirrored
+    /// from the right, the moving cycle wrapping, the wreck by facing.
+    #[test]
+    fn a_sheet_is_checked_and_picks_its_frames() {
+        let sheet = for_unit("tacsim.unit.biped_mk1")
+            .and_then(|l| l.sprites.as_ref())
+            .expect("the biped's sheet");
+        assert_eq!(
+            (sheet.width, sheet.height, sheet.anchor),
+            (20, 32, (10, 31))
+        );
+        let (right, mirrored) = sheet.frame(Facing::Right, false, 0).expect("right");
+        let (left, left_mirrored) = sheet.frame(Facing::Left, false, 0).expect("left");
+        assert!(!mirrored && left_mirrored && std::ptr::eq(right, left));
+        let cycle = &sheet.facings[&Facing::Front].moving;
+        let (third, _) = sheet
+            .frame(Facing::Front, true, 2 + cycle.len())
+            .expect("moving");
+        assert!(std::ptr::eq(third, &cycle[2]), "the cycle wraps");
+        let (still, _) = sheet.frame(Facing::Front, false, 3).expect("still");
+        assert!(std::ptr::eq(still, &sheet.facings[&Facing::Front].still));
+        assert!(sheet.wreck_frame(Facing::Rear).is_some());
+
+        let text = shipped_sources()
+            .iter()
+            .find(|(n, _)| *n == "biped.json")
+            .map(|(_, t)| *t)
+            .expect("the biped's look");
+        let edited = |edit: &dyn Fn(&mut Value)| {
+            let mut v: Value = serde_json::from_str(text).expect("JSON");
+            edit(&mut v);
+            Look::parse(&v.to_string())
+        };
+        let refused = |edit: &dyn Fn(&mut Value), why: &str| {
+            let e = edited(edit).expect_err(why);
+            assert!(e.0.contains(why), "{e} should say {why}");
+        };
+        refused(
+            &|v| {
+                v["sprites"]["facings"]
+                    .as_object_mut()
+                    .map(|f| f.remove("rear"));
+            },
+            "rear facing",
+        );
+        refused(
+            &|v| v["sprites"]["palette"]["k"] = "purple".into(),
+            "must name",
+        );
+        refused(
+            &|v| v["sprites"]["facings"]["front"]["still"][0] = "...".into(),
+            "not 20 wide",
+        );
+        refused(
+            &|v| {
+                let one = v["sprites"]["facings"]["front"]["moving"][0].clone();
+                v["sprites"]["facings"]["front"]["moving"] = Value::Array(vec![one]);
+            },
+            "two to four",
+        );
+        refused(
+            &|v| v["sprites"]["anchor"] = serde_json::json!([20, 31]),
+            "inside the frame",
+        );
+        refused(&|v| v["sprites"]["wreck"] = serde_json::json!([]), "wreck");
+        assert!(edited(&|_| {}).is_ok());
     }
 
     /// A part is coloured by its facet's armour where it names one the
