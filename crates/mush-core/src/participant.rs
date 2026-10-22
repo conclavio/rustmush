@@ -924,20 +924,6 @@ impl ParticipantRegistry {
                 _ => return Err(ParticipantError::WriteFamily),
             };
             if namespace != &r.owner || !r.adapter.accepts_write(write) {
-                if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-                    // TEMP M7 diag
-                    let key = match write {
-                        ReplayWrite::ModuleJsonSet { key, .. } => format!("set {key}"),
-                        ReplayWrite::ModuleDelete { key, .. } => format!("delete {key}"),
-                        _ => "ledger chunk".to_string(),
-                    };
-                    eprintln!(
-                        "M7_CONDUCT_DIAG write_family owner={} provider={} namespace={namespace} {key} accepts={}",
-                        r.owner,
-                        provider.owner(),
-                        r.adapter.accepts_write(write)
-                    );
-                }
                 return Err(ParticipantError::WriteFamily);
             }
         }

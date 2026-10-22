@@ -54,16 +54,7 @@ fn act(
     let mut matching = projected
         .iter()
         .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(&verb));
-    let offer = matching.next().ok_or_else(|| {
-        // TEMP M7 diag
-        let verbs: Vec<_> = projected.iter().map(|o| o.presentation().verb.to_string()).collect();
-        let room = w.engine.world.containing_room(actor);
-        let kind = w.engine.world.get(actor).map(|o| (o.kind, o.flags));
-        format!(
-            "actual HouseV2 public offer (wanted {verb} for {id} v{version}; actor {actor:?} kind {kind:?} room {room:?} base {:?}; projected {verbs:?})",
-            w.base
-        )
-    })?;
+    let offer = matching.next().ok_or("actual HouseV2 public offer")?;
     assert!(matching.next().is_none(), "ambiguous HouseV2 public offer");
     let request = request(n, actor, "market", params.clone())?;
     let resolved = w.engine.resolve_legal_action(
@@ -102,12 +93,6 @@ fn act(
     land(w, prepared)
 }
 fn paid_term(w: &IcWorld, generation: u64) -> TestResult<PaidTermRecord> {
-    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        // TEMP M7 diag
-        let all = rows(&w.disk, "roll", TERMS);
-        let gens: Vec<_> = all.iter().map(|r| (r["generation"].clone(), r["licence"].clone())).collect();
-        eprintln!("M7_HOUSE_DIAG paid_term want={generation} rows={} (generation, licence)={gens:?}", all.len());
-    }
     let value = one(rows(&w.disk, "roll", TERMS)
         .into_iter()
         // A term generation is stored as its canonical decimal string.
@@ -262,19 +247,6 @@ fn exercise_new_holder_renewal(
 #[inline(never)]
 pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestResult {
     let (mut w, third, seller_account, buyer_account) = open_purchased_house(registry, saved)?;
-    if rows(&w.disk, "roll", BIRTH).len() != 1 {
-        // TEMP M7 diag
-        let mut families = std::collections::BTreeMap::<String, usize>::new();
-        for ((ns, _), v) in w.disk.iter() {
-            let family = v
-                .get("family")
-                .and_then(|f| f.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("-");
-            *families.entry(format!("{ns}/{family}")).or_default() += 1;
-        }
-        eprintln!("M7_HOUSE_DIAG disk families after two-seat purchase: {families:?}");
-    }
     let allocation: HouseAllocationV1 = serde_json::from_value(one(rows(&w.disk, "roll", BIRTH))?)?;
     assert_eq!(allocation.protocol(), HouseProtocol::HouseV2);
     let original = pointer(&w)?;

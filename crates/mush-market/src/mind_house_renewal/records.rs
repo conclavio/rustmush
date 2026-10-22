@@ -18,11 +18,7 @@ use mush_roll::commerce::{
 };
 use serde::{Deserialize, Serialize};
 
-#[track_caller]
 pub(super) fn invalid() -> String {
-    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        eprintln!("M7_CONDUCT_DIAG renewal records invalid at {}", std::panic::Location::caller()); // TEMP M7 diag
-    }
     "renewal records disagree or exceed their bounds".into()
 }
 fn error(_: impl std::fmt::Display) -> String {

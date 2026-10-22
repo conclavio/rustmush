@@ -154,7 +154,6 @@ impl OwnerReadService for HouseHoldingReader {
             return Ok(HouseHoldingResult::Other);
         };
         if owner.is_some() {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG house reader: licence {} is both an owner and a paid licence", licence.get()); } // TEMP M7 diag
             return Err(OwnerReadError::Integrity);
         }
         let key = paid.operation().to_hex();
@@ -166,7 +165,6 @@ impl OwnerReadService for HouseHoldingReader {
             + usize::from(entitlement.is_some())
             != 1
         {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG house reader: births house={} original={} entitlement={}", house.is_some(), original.is_some(), entitlement.is_some()); } // TEMP M7 diag
             return Err(OwnerReadError::Integrity);
         }
         if house.is_none() {
@@ -174,6 +172,6 @@ impl OwnerReadService for HouseHoldingReader {
         }
         project_house_paid_for(ctx, holder, &f.families, &f.ratings, licence, &f.expected)
             .map(|p| HouseHoldingResult::Holding(Box::new(PersonalFiledHolding::paid(p))))
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG house reader projection: {e:?}"); } refused(e) }) // TEMP M7 diag
+            .map_err(refused)
     }
 }

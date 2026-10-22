@@ -17,13 +17,6 @@ use mush_core::{
 use mush_economy::managed_coverage::{CoverageHistory, CoverageOutput};
 use std::sync::{Arc, OnceLock};
 
-// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
-fn bad_at(e: impl std::fmt::Display, line: u32) -> PublicationError {
-    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
-    }
-    bad(e)
-}
 fn bad(_: impl std::fmt::Display) -> PublicationError {
     PublicationError::Mismatch
 }
@@ -139,7 +132,7 @@ impl CoverageWriter {
         {
             return Err(PublicationError::Unavailable);
         }
-        roll.coverage_audit_ready().map_err(|e| bad_at(e, line!()))?;
+        roll.coverage_audit_ready().map_err(bad)?;
         super::publication::all(ctx, roll, &r.families, true)
     }
     pub fn verify_qualified_quote_for_boot(
@@ -176,7 +169,7 @@ impl CoverageWriter {
             .module_state::<crate::RollStore>()
             .ok_or(PublicationError::Unavailable)?
             .commerce_ready()
-            .map_err(|e| bad_at(e, line!()))
+            .map_err(bad)
     }
     /// Independent final boot audit over actual loaded owner images. Final hook
     /// ordering never supplies authority: this cannot open Roll or mint a host
@@ -199,7 +192,7 @@ impl CoverageWriter {
         {
             return Err(PublicationError::Unavailable);
         }
-        roll.coverage_audit_ready().map_err(|e| bad_at(e, line!()))?;
+        roll.coverage_audit_ready().map_err(bad)?;
         super::audit::all(ctx, roll, &r.families, true)
     }
 }
@@ -238,7 +231,7 @@ impl RegisteredCoveragePublicationWriter {
         )?;
         if txn
             .get(&r.families.coverage_publications, &row.key())
-            .map_err(|e| bad_at(e, line!()))?
+            .map_err(bad)?
             .is_some()
         {
             return Err(PublicationError::Mismatch);
@@ -247,17 +240,17 @@ impl RegisteredCoveragePublicationWriter {
             self.action.clone(),
             ctx.commit_token(),
             actor,
-            ctx.world().map_err(|e| bad_at(e, line!()))?.now(),
+            ctx.world().map_err(bad)?.now(),
             proofs.clone(),
         );
         let request = CoverageRoots::publication(&row, fence, &proofs)?;
         txn.insert(&r.families.coverage_publications, &row.key(), row.clone())
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         if txn
             .get(&r.families.coverage_publications, &row.key())
-            .map_err(|e| bad_at(e, line!()))?
+            .map_err(bad)?
             != Some(&row)
         {
             return Err(PublicationError::Mismatch);
@@ -328,12 +321,12 @@ impl RegisteredCoverageWriter {
         let request = CoverageRoots::quote(
             self.action.clone(),
             ctx.commit_token(),
-            ctx.world().map_err(|e| bad_at(e, line!()))?.now(),
+            ctx.world().map_err(bad)?.now(),
             observed.facts,
             extra,
         )?;
         ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         Ok(())
     }
     pub fn observe(
@@ -348,7 +341,7 @@ impl RegisteredCoverageWriter {
         }
         let facts = ctx
             .read_owner_preimage(txn, &self.reader, CoverageOpenRequest::acknowledged(open))
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         Ok(PreparedCoverageOpen {
             action: self.action.clone(),
             commit: ctx.commit_token(),
@@ -387,7 +380,7 @@ impl RegisteredCoverageWriter {
         let doc = serde_json::json!({"family":{"owner":r.families.coverages.owner(),"id":descriptor.id()},
             "key":row.key(),"schema":{"id":descriptor.value_schema(),"version":descriptor.schema_version()},"value":row});
         let now = mush_core::canonical_json_bytes_with_limit(&doc, CoverageRetention::MAX_BYTES)
-            .map_err(|e| bad_at(e, line!()))?
+            .map_err(bad)?
             .len();
         if now
             .checked_sub(4)
@@ -397,15 +390,15 @@ impl RegisteredCoverageWriter {
             return Err(PublicationError::Capacity);
         }
         let key = row.key();
-        if txn.get(&r.families.coverages, &key).map_err(|e| bad_at(e, line!()))?.is_some() {
+        if txn.get(&r.families.coverages, &key).map_err(bad)?.is_some() {
             return Err(PublicationError::Mismatch);
         }
         txn.insert(&r.families.coverages, &key, row.clone())
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         let request = CoverageRoots::bind(&row, observed.facts, extra)?;
         ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
-            .map_err(|e| bad_at(e, line!()))?;
-        if txn.get(&r.families.coverages, &key).map_err(|e| bad_at(e, line!()))? != Some(&row) {
+            .map_err(bad)?;
+        if txn.get(&r.families.coverages, &key).map_err(bad)? != Some(&row) {
             return Err(PublicationError::Mismatch);
         }
         Ok(CoverageWriteResult {
@@ -438,7 +431,7 @@ impl RegisteredCoverageWriter {
         let key = history.consent().operation.to_hex();
         let before = txn
             .get(&r.families.coverages, &key)
-            .map_err(|e| bad_at(e, line!()))?
+            .map_err(bad)?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         if before.key() != key {
@@ -449,20 +442,20 @@ impl RegisteredCoverageWriter {
                 &r.families.ic_claims,
                 &history.consent().basis.ic_open.to_hex(),
             )
-            .map_err(|e| bad_at(e, line!()))?
+            .map_err(bad)?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         let after = before.finish(&output, &claim)?;
         txn.replace(&r.families.coverages, &key, after.clone())
-            .map_err(|e| bad_at(e, line!()))?;
+            .map_err(bad)?;
         ctx.prepare_owner(
             &self.roots,
             RootRequest::Coverage(Box::new(CoverageRoots::terminal(
                 &before, &after, claim, extra,
             )?)),
         )
-        .map_err(|e| bad_at(e, line!()))?;
-        if txn.get(&r.families.coverages, &key).map_err(|e| bad_at(e, line!()))? != Some(&after) {
+        .map_err(bad)?;
+        if txn.get(&r.families.coverages, &key).map_err(bad)? != Some(&after) {
             return Err(PublicationError::Mismatch);
         }
         Ok(CoverageWriteResult {

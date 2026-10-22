@@ -389,7 +389,7 @@ impl<
             return Ok(None);
         }
         let Some(selector) = Q::project_selector(engine, query, self.transition)
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG project_selector {:?}: {e:?}", self.transition); } self.refusal.clone() })? // TEMP M7 diag
+            .map_err(|_| self.refusal.clone())?
         else {
             return Ok(None);
         };
@@ -428,7 +428,7 @@ impl<
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         self.request(invocation)
             .map(|_| ())
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG validate {:?}: {e:?}", self.transition); } self.refusal.clone() }) // TEMP M7 diag
+            .map_err(|_| self.refusal.clone())
     }
     fn prepare_authoritative_with_context(
         &self,
@@ -437,6 +437,6 @@ impl<
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.prepare(invocation, txn, ctx)
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG prepare {:?}: {e:?}", self.transition); } self.refusal.clone() }) // TEMP M7 diag
+            .map_err(|_| self.refusal.clone())
     }
 }

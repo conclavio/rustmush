@@ -568,7 +568,6 @@ fn transactions(
         json!({"quote":token(FIRST+3)}),
     )?;
     // E4 and typed images remain unchanged before the actual owner install.
-    eprintln!("M7_STORY_DIAG {} god_room={:?} room={:?}", "main purchase", world.engine.world.get(GOD).and_then(|o| o.location), ROOM); // TEMP M7 diag
     let (prepared, _) = prepare(
         &mut world,
         "market",
@@ -935,13 +934,9 @@ pub(super) async fn exercise(
 ) -> TestResult {
     eprintln!("M7_STORY phase=entitlement.file event=begin");
     let (filed, owner) = file(f, certified, rating)?;
-    eprintln!("M7_STORY_DIAG entitlement step=filed"); // TEMP M7 diag
     title_fences(f, &filed, owner)?;
-    eprintln!("M7_STORY_DIAG entitlement step=title_fences"); // TEMP M7 diag
     original_v3(f, &filed)?;
-    eprintln!("M7_STORY_DIAG entitlement step=original_v3"); // TEMP M7 diag
     lapse_refund(f, &filed, owner)?;
-    eprintln!("M7_STORY_DIAG entitlement step=lapse_refund"); // TEMP M7 diag
     let (granted, allocation) = transactions(f, &filed, owner)?;
     resale_routes::exercise(
         &f.accounts,

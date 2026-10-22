@@ -36,8 +36,8 @@ impl Execution {
         arena: &ArenaConfig,
         minds: &MindsConfig,
     ) -> Result<Self, ParticipantError> {
-        arena.validate().map_err(|e| bad(e))?;
-        minds.validate().map_err(|e| bad(e))?;
+        arena.validate().map_err(bad)?;
+        minds.validate().map_err(bad)?;
         if sortie == 0 || profiles.len() > crate::arena::card::ProfileSet::MOST {
             return Err(bad("profile or sortie bound"));
         }
@@ -77,7 +77,7 @@ impl Execution {
             .ok_or_else(|| bad("unit binding"))?
             .spec
             .validate_instance(unit)
-            .map_err(|e| bad(e))?;
+            .map_err(bad)?;
         let weapons = crate::match_::weapon_summaries(catalog, unit)
             .into_iter()
             .map(|w| RuleWeapon {
@@ -85,7 +85,7 @@ impl Execution {
                 rounds_max: w.count_per_load,
             })
             .collect::<Vec<_>>();
-        let material = FiledExecutable::resolve(facts.holding().clone(), store).map_err(|e| bad(e))?;
+        let material = FiledExecutable::resolve(facts.holding().clone(), store).map_err(bad)?;
         let source = material.source_for_execution();
         let held = material.into_held();
         let definition = held
@@ -120,7 +120,7 @@ impl Execution {
                 fallback: &fallback,
             },
         )
-        .map_err(|e| bad(e))?;
+        .map_err(bad)?;
         let result = Self {
             seal,
             source: source.to_string(),
@@ -134,10 +134,10 @@ impl Execution {
         Ok(result)
     }
     pub(super) fn validate(&self) -> Result<(), ParticipantError> {
-        self.arena.validate().map_err(|e| bad(e))?;
+        self.arena.validate().map_err(bad)?;
         self.seal
             .verify(&self.classes, &self.seal.weapons)
-            .map_err(|e| bad(e))?;
+            .map_err(bad)?;
         let digest: [u8; 32] = Sha256::digest(self.source.as_bytes()).into();
         if self.source.is_empty()
             || self.source.len() > mush_roll::MAX_SOURCE_BYTES
@@ -166,7 +166,7 @@ impl Execution {
                     &self.source,
                     mush_mind::Digest(self.seal.source_sha256),
                 )
-                .map_err(|e| bad(e))?,
+                .map_err(bad)?,
             ))
         } else {
             Ok(crate::arena::mind::default_mind_runner(&self.arena))
@@ -219,7 +219,7 @@ impl Execution {
                         &self.seal.channels,
                         arena.odds_floor_permille,
                     )
-                    .map_err(|e| bad(e))?;
+                    .map_err(bad)?;
                 let hash = crate::arena::hash::state_hash(arena);
                 let runtime = arena
                     .profiles
@@ -241,10 +241,10 @@ impl Execution {
                         Vec::new(),
                         hash,
                     )
-                    .map_err(|e| bad(e))?;
+                    .map_err(bad)?;
                 runtime
                     .commit(&mut arena.conditions, prepared)
-                    .map_err(|e| bad(e))?;
+                    .map_err(bad)?;
                 arena
                     .minds
                     .get_mut(&unit)

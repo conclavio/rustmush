@@ -295,7 +295,6 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             assert_eq!(disk(&world), before);
             assert_eq!(roll(&world)?.mind(BUYER, "child")?, &edited);
         }
-        eprintln!("M7_STORY_DIAG b1 step=after_loop"); // TEMP M7 diag
         // Exact original helpers still deny, even after lawful working edits.
         let store = roll(&world)?;
         let source = world
@@ -312,7 +311,6 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             )
             .is_err()
         );
-        eprintln!("M7_STORY_DIAG b1 step=after_owned_copy"); // TEMP M7 diag
         // A real disconnect/reconnect changes the physical lease. A held source
         // observation cannot emit into the replacement session or its sibling.
         probe(&mut world, "capture-source", true)?;
@@ -333,24 +331,19 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             draft.source,
             "fresh request can use the new session"
         );
-        eprintln!("M7_STORY_DIAG b1 step=before_cold"); // TEMP M7 diag
         let edited_disk = disk(&world);
         let retained = capture(&world, &edited_disk);
         let cold = PlayerWorld::boot_forks(f, &retained, true)?;
         assert_eq!(roll(&cold)?.mind(BUYER, "child")?, &edited);
         cold.tasks.shutdown(Duration::from_secs(5)).await;
-        eprintln!("M7_STORY_DIAG b1 step=after_cold"); // TEMP M7 diag
         // Same timestamp, changed actual clock generation invalidates a held view.
         probe(&mut world, "capture-source", true)?;
         let before = world.engine.world.world_ic_now();
         let epoch = world.engine.world.next_world_timeline_epoch(2)?;
-        eprintln!("M7_STORY_DIAG b1 step=epoch_next"); // TEMP M7 diag
         world.engine.world.append_world_timeline_epoch(epoch)?;
-        eprintln!("M7_STORY_DIAG b1 step=epoch_appended"); // TEMP M7 diag
         assert_eq!(world.engine.world.world_ic_now().at, before.at);
         assert_ne!(world.engine.world.world_ic_now().clock, before.clock);
         probe(&mut world, "check", false)?;
-        eprintln!("M7_STORY_DIAG b1 step=checked"); // TEMP M7 diag
         Ok(retained)
     }
     .await;
@@ -360,9 +353,7 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
 
 pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     let edited = story_phase("access.working", || working(f, saved))?.await?;
-    eprintln!("M7_STORY_DIAG exercise boot_forks begin"); // TEMP M7 diag
     let mut world = PlayerWorld::boot_forks(f, &edited, true)?;
-    eprintln!("M7_STORY_DIAG exercise boot_forks done"); // TEMP M7 diag
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let term:PaidTermRecord=serde_json::from_value(one(rows(&disk(&world),"roll","roll_mind_paid_term"))?)?;

@@ -27,7 +27,7 @@ pub(super) fn claims(
         .module_state::<mush_tactics::UnitStore>()
         .ok_or_else(|| bad("units"))?
         .ic_custody_inventory()
-        .map_err(|e| bad(e))?;
+        .map_err(bad)?;
     if units.len() != claims.len() {
         return Err(bad("units"));
     }
@@ -41,7 +41,7 @@ pub(super) fn claims(
             .iter()
             .find(|u| u.open() == claim.open())
             .ok_or_else(|| bad("physical open"))?;
-        unit.verify_open_unit(&record.open.unit).map_err(|e| bad(e))?;
+        unit.verify_open_unit(&record.open.unit).map_err(bad)?;
         match (&record.closed, unit.closed()) {
             (None, None) => {}
             (Some(c), Some((_, _, _, digest))) if c.unit_digest == digest => {}
@@ -51,13 +51,13 @@ pub(super) fn claims(
     Ok(())
 }
 fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
-    row.validate().map_err(|e| bad(e))?;
+    row.validate().map_err(bad)?;
     let open = &row.open;
     if open.action != *claim.action()
         || open.protocol.manifest != *claim.manifest()
         || open.protocol.participants != claim.participants()
         || open.dispatcher != claim.dispatcher()
-        || open.admission_digest != claim.admission_digest().map_err(|e| bad(e))?
+        || open.admission_digest != claim.admission_digest().map_err(bad)?
         || open.at_ic != *claim.opened_at_ic()
         || open.execution.seal.unit != claim.unit()
         || open.execution.seal.sortie.0 != claim.sortie()
@@ -113,5 +113,5 @@ fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
     }
     // Compilation uses only the captured source/configuration. It never asks
     // the current seller/holder/parent for permission to resume a held sortie.
-    row.open.execution.compile().map_err(|e| bad(e))
+    row.open.execution.compile().map_err(bad)
 }

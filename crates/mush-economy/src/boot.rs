@@ -2338,29 +2338,6 @@ pub(crate) fn load_boot_with_coverage(
                     && !holds.contains(&h.id)
             })
         {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-                // TEMP M7 diag: which managed contract or closed hold is unclaimed.
-                for c in stored_contracts
-                    .values()
-                    .filter(|c| c.consent.managed.is_some() && !contracts.contains(&c.id))
-                {
-                    let m = c.consent.managed.as_ref();
-                    eprintln!(
-                        "M7_CONDUCT_DIAG unclaimed managed contract {:?} renewal={} house_renewal={} paid_resale={} charter_pending={}",
-                        c.id,
-                        m.and_then(|m| m.renewal_offer_marker()).is_some(),
-                        m.and_then(|m| m.house_renewal_offer_marker()).is_some(),
-                        m.and_then(|m| m.paid_resale_marker()).is_some(),
-                        m.and_then(|m| m.charter_pending_marker()).is_some()
-                    );
-                }
-                for h in stored_holds.values().filter(|h| {
-                    crate::managed_purchase::closed_namespace(h.holder.namespace.as_str())
-                        && !holds.contains(&h.id)
-                }) {
-                    eprintln!("M7_CONDUCT_DIAG unclaimed closed hold {:?} namespace={}", h.id, h.holder.namespace.as_str());
-                }
-            }
             return Err(ModError::msg(
                 "economy: purchase projection lacks authoritative history",
             ));

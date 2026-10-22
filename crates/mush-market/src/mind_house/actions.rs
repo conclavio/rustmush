@@ -25,17 +25,6 @@ pub(super) fn offer(
     parameters: Vec<mush_core::ProjectedParameter>,
     refusal: &ActionError,
 ) -> Result<Option<ProviderOfferDraft>, ActionError> {
-    if action == actual && std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        // TEMP M7 diag
-        eprintln!(
-            "M7_HOUSE_DIAG {} principal_ok={} subject_ok={} projected_ok={} current={:?}",
-            action.key().id.as_str(),
-            query.principal() == &(PrincipalId::Object { id: query.actor() }),
-            query.truth_subject() == &(mush_core::SubjectKey::Object { id: query.actor() }),
-            query.projected_subject() == &PerceivedRef::SelfActor,
-            guard.current(&engine.world, query.actor())
-        );
-    }
     if action != actual
         || query.principal() != &(PrincipalId::Object { id: query.actor() })
         || query.truth_subject() != &(mush_core::SubjectKey::Object { id: query.actor() })

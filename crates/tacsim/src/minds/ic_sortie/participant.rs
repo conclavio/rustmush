@@ -51,7 +51,7 @@ impl CloseEvent {
             super::protocol::MAX_RECORD_BYTES,
         )
         .map(|v| v.len())
-        .map_err(|e| bad(e))
+        .map_err(bad)
     }
 }
 // Neither a player token, recorded receipt, nor a current Interior can create
@@ -80,7 +80,7 @@ pub(super) struct Config {
 }
 impl Config {
     fn check(&self, ctx: &OwnerPrepareContext<'_>, close: bool) -> Result<(), ParticipantError> {
-        let expected = self.writer.require_audited(ctx.world()).map_err(|e| bad(e))?;
+        let expected = self.writer.require_audited(ctx.world()).map_err(bad)?;
         let state = ctx
             .world()
             .module_state::<IcSorties>()
@@ -92,7 +92,7 @@ impl Config {
             .definitions
             .get()
             .ok_or_else(|| bad("definitions unavailable"))?;
-        let actions = self.claims.actions().map_err(|e| bad(e))?;
+        let actions = self.claims.actions().map_err(bad)?;
         if actions.get(usize::from(close)) != Some(ctx.action())
             || ctx.invocation().principal()
                 != &(PrincipalId::Object {
@@ -107,7 +107,7 @@ impl Config {
             .iter()
             .chain([self.claims.manifest(), ctx.action()])
         {
-            definitions.get_exact(r).map_err(|e| bad(e))?;
+            definitions.get_exact(r).map_err(bad)?;
         }
         Ok(())
     }
@@ -279,7 +279,7 @@ impl IcSortieParticipant {
                         protocol: CapturedProtocol::capture(&self.config.claims),
                         dispatcher: start.actor,
                         withheld,
-                        admission_digest: facts.binding_digest().map_err(|e| bad(e))?,
+                        admission_digest: facts.binding_digest().map_err(bad)?,
                         at_ic: ctx.world().world_ic_now(),
                         unit: start.unit.clone(),
                         execution,
@@ -309,10 +309,10 @@ impl IcSortieParticipant {
                 current_unit(ctx.world(), &event.unit)?;
                 let digest = DefinitionDigest::for_canonical_value_with_limit(
                     "tacsim.ic_conditions.v1",
-                    &serde_json::to_value(&event.conditions).map_err(|e| bad(e))?,
+                    &serde_json::to_value(&event.conditions).map_err(bad)?,
                     super::protocol::MAX_RECORD_BYTES,
                 )
-                .map_err(|e| bad(e))?;
+                .map_err(bad)?;
                 let physical = ctx
                     .world()
                     .module_state::<mush_tactics::UnitStore>()
@@ -387,14 +387,14 @@ impl OwnerParticipant for IcSortieParticipant {
         });
         let writes = vec![
             ReplayWrite::ModuleJsonSet {
-                namespace: OwnerId::new(crate::NS).map_err(|e| bad(e))?,
-                key: AuthoritativeKey::parse_canonical(row.key()).map_err(|e| bad(e))?,
-                value: serde_json::to_value(&row).map_err(|e| bad(e))?,
+                namespace: OwnerId::new(crate::NS).map_err(bad)?,
+                key: AuthoritativeKey::parse_canonical(row.key()).map_err(bad)?,
+                value: serde_json::to_value(&row).map_err(bad)?,
             },
             ReplayWrite::ModuleJsonSet {
-                namespace: OwnerId::new(crate::NS).map_err(|e| bad(e))?,
-                key: AuthoritativeKey::parse_canonical(HEAD).map_err(|e| bad(e))?,
-                value: serde_json::to_value(head).map_err(|e| bad(e))?,
+                namespace: OwnerId::new(crate::NS).map_err(bad)?,
+                key: AuthoritativeKey::parse_canonical(HEAD).map_err(bad)?,
+                value: serde_json::to_value(head).map_err(bad)?,
             },
         ];
         Ok(OwnerPreparation::new(
@@ -532,7 +532,7 @@ pub(crate) fn fixture_close(
             Some(record.open.unit.revision()),
             Some("ic fixture terminal conditions".into()),
         )
-        .map_err(|e| bad(e))?,
+        .map_err(bad)?,
         coverage: None,
         _transition: HostTransition { _private: () },
     }))
@@ -594,13 +594,13 @@ pub(crate) fn fixture_covered_loss(
     actual.kind = EventKind::Destroyed {};
     actual.conditions = UnitMutationPlan::new(
         vec![mush_tactics::UnitMutationOp::SetSectionCondition {
-            section: mush_tactics::SectionId::new("hull").map_err(|e| bad(e))?,
+            section: mush_tactics::SectionId::new("hull").map_err(bad)?,
             condition: mush_tactics::ConditionId::new(crate::arena::damage::WRECK_CONDITION)
-                .map_err(|e| bad(e))?,
+                .map_err(bad)?,
         }],
         Some(actual.unit.revision()),
         Some("private region loss fixture".into()),
     )
-    .map_err(|e| bad(e))?;
+    .map_err(bad)?;
     Ok(event)
 }

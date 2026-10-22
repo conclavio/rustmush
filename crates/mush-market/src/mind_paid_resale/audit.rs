@@ -8,10 +8,7 @@ use mush_core::{CommitToken, ModError, ModuleCtx, StateFamilyHandle};
 use mush_economy::EconomyStore;
 use mush_roll::commerce::paid_resale::ResaleRates;
 use std::collections::BTreeSet;
-fn error(e: impl std::fmt::Display) -> ModError {
-    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        eprintln!("M7_CONDUCT_DIAG paid_resale_audit cause={e}"); // TEMP M7 diag
-    }
+fn error(_: impl std::fmt::Display) -> ModError {
     ModError::msg("paid resale paired history is incomplete or contradictory")
 }
 fn scan<R: Row>(

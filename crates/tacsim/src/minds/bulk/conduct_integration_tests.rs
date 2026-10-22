@@ -152,7 +152,7 @@ fn install_submission(
     let query = w
         .engine
         .legal_action_query(principal.clone(), GOD, PerceivedRef::SelfActor)?;
-    let offers = w.engine.project_legal_actions(&query).map_err(|e| format!("conduct stage=project n={n}: {e:?}"))?; // TEMP M7 diag
+    let offers = w.engine.project_legal_actions(&query)?;
     let projected = offers
         .projected_for_action(&action)
         .ok_or("actual Conduct signed offer")?;
@@ -181,14 +181,13 @@ fn install_submission(
             targets: vec![],
             parameters: submission.parameters,
         },
-    ).map_err(|e| format!("conduct stage=resolve n={n}: {e:?}"))?; // TEMP M7 diag
+    )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
     assert_eq!(exact, action);
     let invocation = resolved.invocation().clone();
     let (p, o) = w
         .engine
-        .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))
-        .map_err(|e| format!("conduct stage=prepare n={n}: {e:?}"))?; // TEMP M7 diag
+        .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?;
     w.stage_action(&action, n, p, o, &invocation)?;
     let held = w
         .engine

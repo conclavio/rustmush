@@ -58,7 +58,7 @@ impl Provider {
                     .map(|r| Request::Terminal(r.operation, matches!(self.kind, Kind::Grant)))
             }
         }
-        .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */
+        .map_err(|e| e.to_string())
     }
     fn current(
         &self,
@@ -76,7 +76,7 @@ impl Provider {
         }
         let listing = txn
             .get(&self.families.listings, &q.listing)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+            .map_err(|e| e.to_string())?
             .cloned()
             .ok_or("entitlement listing missing")?;
         if listing.publication != q.listing
@@ -95,7 +95,7 @@ impl Provider {
         let observation = self
             .writer
             .observe_purchase(ctx, txn, q.subject.seller, q.subject.owner_licence)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         offers::current_listing(
             &self.config,
             self.protocol,
@@ -103,7 +103,7 @@ impl Provider {
             observation.facts(),
             inv.actor(),
         )?;
-        let world = ctx.world().map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+        let world = ctx.world().map_err(|e| e.to_string())?;
         self.guard.current(world, inv.actor())?;
         if world.now() < q.quoted_at_utc || world.now() >= q.expires_at_utc {
             return Err("entitlement quote expired".into());
@@ -124,7 +124,7 @@ impl Provider {
         }
         let q = txn
             .get(&self.families.quotes, &quote)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+            .map_err(|e| e.to_string())?
             .cloned()
             .ok_or("quote unavailable")?;
         if q.publication != quote {
@@ -134,14 +134,14 @@ impl Provider {
         let economics = q.economic_subject()?;
         self.writer
             .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         let output = ctx
             .prepare_owner(
                 &self.economy,
                 EconomyRequest::EntitlementFunding(economics.clone()),
             )
             .and_then(|o| o.entitlement_funding())
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         let allocation = self
             .writer
             .fund(
@@ -152,7 +152,7 @@ impl Provider {
                 &observed,
                 &output,
             )
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         let row = EntitlementPurchaseV1::funded(
             q,
             self.action.clone(),
@@ -161,17 +161,17 @@ impl Provider {
             &allocation,
         )?;
         txn.insert(&self.families.operations, &commit, row.clone())
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         self.families.consume_quote(txn, quote)?;
         if txn
             .get(&self.families.operations, &commit)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+            .map_err(|e| e.to_string())?
             != Some(&row)
         {
             return Err("funded entitlement post-image differs".into());
         }
         ctx.reserve_mind_entitlement_purchase_completion(txn)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         Ok((commit, "funded"))
     }
     #[inline(never)]
@@ -185,7 +185,7 @@ impl Provider {
     ) -> Result<(CommitToken, &'static str), String> {
         let before = txn
             .get(&self.families.operations, &operation)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+            .map_err(|e| e.to_string())?
             .cloned()
             .ok_or("funded entitlement unavailable")?;
         before.validate()?;
@@ -199,7 +199,7 @@ impl Provider {
         let allocation = self
             .writer
             .allocation(txn, operation)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         before.matches_allocation(&allocation)?;
         let observed = if grant {
             if before.participants != self.config.participants {
@@ -222,7 +222,7 @@ impl Provider {
         let output = ctx
             .prepare_owner(&self.economy, request)
             .and_then(|o| o.entitlement_terminal())
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         let after_allocation = self
             .writer
             .terminal(
@@ -234,26 +234,26 @@ impl Provider {
                 observed.as_ref(),
                 &output,
             )
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         let (after, receipt) = before.terminal(&output)?;
         after.matches_allocation(&after_allocation)?;
         txn.replace(&self.families.operations, &operation, after.clone())
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         txn.insert(&self.families.receipts, &operation, receipt.clone())
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         if txn
             .get(&self.families.operations, &operation)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+            .map_err(|e| e.to_string())?
             != Some(&after)
             || txn
                 .get(&self.families.receipts, &operation)
-                .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?
+                .map_err(|e| e.to_string())?
                 != Some(&receipt)
         {
             return Err("terminal entitlement post-image differs".into());
         }
         ctx.finish_mind_entitlement_purchase_completion(txn, operation)
-            .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+            .map_err(|e| e.to_string())?;
         Ok((operation, if grant { "granted" } else { "refunded" }))
     }
     fn prepare(
@@ -273,7 +273,7 @@ impl Provider {
             self.outcome.clone(),
             serde_json::json!({"kind":kind,"operation":operation,"commit":commit}),
         )
-        .map_err(|e| { let m = e.to_string(); if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs:{}: {m}", line!()); } m }) /* TEMP M7 diag */?;
+        .map_err(|e| e.to_string())?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![self.outcome.clone(), self.config.manifest.clone()])
             .with_eligible_witnesses(vec![inv.principal().clone()]))
@@ -283,7 +283,7 @@ impl ActionProvider for Provider {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
         self.request(inv)
             .map(|_| ())
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs validate: {e}"); } self.refusal.clone() }) // TEMP M7 diag
+            .map_err(|_| self.refusal.clone())
     }
     fn prepare_authoritative_with_context(
         &self,
@@ -292,7 +292,7 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.prepare(inv, txn, ctx)
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs prepare: {e}"); } self.refusal.clone() }) // TEMP M7 diag
+            .map_err(|_| self.refusal.clone())
     }
     fn project_offer(
         &self,

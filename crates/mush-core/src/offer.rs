@@ -294,29 +294,20 @@ impl ProjectedParameterSchema {
         let supplied = supplied
             .as_object()
             .ok_or(OfferResolveError::InvalidParameters)?;
-        // TEMP M7 diag: parameter ids and kinds only, never values.
-        let ids: Vec<_> = self.0.iter().map(|p| p.id.as_str()).collect();
         if supplied.len() > self.0.len() {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG params too many supplied={:?} schema={ids:?}", supplied.keys().collect::<Vec<_>>()); }
             return Err(OfferResolveError::InvalidParameters);
         }
         for key in supplied.keys() {
             if !self.0.iter().any(|parameter| parameter.id.as_str() == key) {
-                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG params unknown key={key} schema={ids:?}"); }
                 return Err(OfferResolveError::InvalidParameters);
             }
         }
         for parameter in &self.0 {
             let value = supplied.get(parameter.id.as_str());
             if parameter.required && value.is_none() {
-                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG params missing required={} schema={ids:?}", parameter.id.as_str()); }
                 return Err(OfferResolveError::InvalidParameters);
             }
             if let Some(value) = value {
-                if validate_parameter_value(&parameter.kind, value).is_err() {
-                    let shape = match value { Value::String(_) => "string", Value::Number(_) => "number", Value::Bool(_) => "bool", Value::Null => "null", Value::Array(_) => "array", Value::Object(_) => "object" };
-                    if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG params bad value key={} kind={:?} supplied_shape={shape}", parameter.id.as_str(), parameter.kind); }
-                }
                 validate_parameter_value(&parameter.kind, value)?;
             }
         }
@@ -1036,7 +1027,6 @@ fn merge_parameters(fixed: &Value, public: Value) -> Result<Value, OfferResolveE
         .ok_or(OfferResolveError::InvalidParameters)?;
     for (key, value) in public {
         if merged.insert(key.clone(), value.clone()).is_some() {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG params public key={key} collides with a fixed parameter"); } // TEMP M7 diag
             return Err(OfferResolveError::InvalidParameters);
         }
     }

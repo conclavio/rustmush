@@ -162,7 +162,6 @@ impl<'a> HoldingAccess<'a> {
         holder: Option<ObjId>,
         licence: LicenceId,
     ) -> Result<PersonalFiledHolding, OwnerReadError> {
-        if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG read_holding licence={} house_seam={} holder={holder:?}", licence.get(), self.world().module_state::<HouseAccessSeam>().is_some()); } // TEMP M7 diag
         if let Some(house) = self.world().module_state::<HouseAccessSeam>() {
             use mush_roll::commerce::house_purchase::customer::{
                 HouseHoldingRequest, HouseHoldingResult,
@@ -171,9 +170,7 @@ impl<'a> HoldingAccess<'a> {
                 Some(holder) => HouseHoldingRequest::admission(holder, licence),
                 None => HouseHoldingRequest::own(licence),
             };
-            let read = self.context.read_owner(&house.reader, request);
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG read_holding house read ok={} other={} err={:?}", read.as_ref().is_ok_and(|r| matches!(r, HouseHoldingResult::Holding(_))), read.as_ref().is_ok_and(|r| matches!(r, HouseHoldingResult::Other)), read.as_ref().err()); } // TEMP M7 diag
-            match read? {
+            match self.context.read_owner(&house.reader, request)? {
                 HouseHoldingResult::Holding(holding) => return Ok(*holding),
                 HouseHoldingResult::Other => {}
             }
@@ -211,12 +208,10 @@ impl<'a> HoldingAccess<'a> {
     }
     fn executable(&self, holding: PersonalFiledHolding, holder: ObjId) -> Option<HeldMind> {
         if holding.actor() != holder {
-            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG executable actor {:?} != holder {holder:?}", holding.actor()); } // TEMP M7 diag
             return None;
         }
         let sources = self.world().module_state::<crate::TacsimStore>()?;
         FiledExecutable::resolve(holding, sources)
-            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG executable resolve: {e:?}"); } e }) // TEMP M7 diag
             .ok()
             .map(FiledExecutable::into_held)
     }

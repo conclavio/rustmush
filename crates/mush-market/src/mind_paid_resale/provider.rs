@@ -21,13 +21,6 @@ use mush_roll::commerce::{
     paid_resale::{reader::PaidResaleRequest, writer::RegisteredPaidResaleWriter},
 };
 use serde::Deserialize;
-// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
-fn invalid_at(e: impl std::fmt::Display, line: u32) -> String {
-    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
-        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
-    }
-    invalid(e)
-}
 fn invalid(_: impl std::fmt::Display) -> String {
     "paid resale is unavailable or has changed".into()
 }
@@ -67,7 +60,7 @@ pub(super) enum Request {
 pub(super) fn decode(kind: Kind, value: &serde_json::Value) -> Result<Request, String> {
     match kind {
         Kind::Offer => {
-            let v: OfferParameters = serde_json::from_value(value.clone()).map_err(|e| invalid_at(e, line!()))?;
+            let v: OfferParameters = serde_json::from_value(value.clone()).map_err(invalid)?;
             if v.licence > i64::MAX as u64
                 || v.buyer == 0
                 || v.buyer > u32::MAX as u64
@@ -77,14 +70,14 @@ pub(super) fn decode(kind: Kind, value: &serde_json::Value) -> Result<Request, S
                 return Err(invalid("selector"));
             }
             Ok(Request::Offer {
-                licence: LicenceId::new(v.licence).map_err(|e| invalid_at(e, line!()))?,
+                licence: LicenceId::new(v.licence).map_err(invalid)?,
                 buyer: ObjId(v.buyer as u32),
                 price: Amount::from_minor(v.price),
                 seller_account: v.seller_account,
             })
         }
         Kind::Accept | Kind::Fund => {
-            let v: AcceptParameters = serde_json::from_value(value.clone()).map_err(|e| invalid_at(e, line!()))?;
+            let v: AcceptParameters = serde_json::from_value(value.clone()).map_err(invalid)?;
             if v.payer.0 > i64::MAX as u64 {
                 return Err(invalid("payer"));
             }
@@ -134,12 +127,12 @@ impl Provider {
                 let observed = self
                     .writer
                     .observe(ctx, txn, PaidResaleRequest::Seller { licence, buyer })
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 self.writer
                     .preflight(ctx, txn, &observed)
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 let row = super::offer::build(
-                    ctx.world().map_err(|e| invalid_at(e, line!()))?,
+                    ctx.world().map_err(invalid)?,
                     txn,
                     self.legacy.as_ref(),
                     observed.facts(),
@@ -151,11 +144,11 @@ impl Provider {
                 envelope(
                     &self.families.offers,
                     commit,
-                    serde_json::to_value(&row).map_err(|e| invalid_at(e, line!()))?,
+                    serde_json::to_value(&row).map_err(invalid)?,
                 )?;
                 txn.insert(&self.families.offers, &commit, row.clone())
-                    .map_err(|e| invalid_at(e, line!()))?;
-                if txn.get(&self.families.offers, &commit).map_err(|e| invalid_at(e, line!()))? != Some(&row) {
+                    .map_err(invalid)?;
+                if txn.get(&self.families.offers, &commit).map_err(invalid)? != Some(&row) {
                     return Err(invalid("offer readback"));
                 }
                 (commit, "offered")
@@ -163,7 +156,7 @@ impl Provider {
             Request::Accept { offer, payer } => {
                 let row = txn
                     .get(&self.families.offers, &offer)
-                    .map_err(|e| invalid_at(e, line!()))?
+                    .map_err(invalid)?
                     .cloned()
                     .ok_or_else(|| invalid("offer missing"))?;
                 row.validate()?;
@@ -180,7 +173,7 @@ impl Provider {
                             seller: row.terms().seller,
                         },
                     )
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 if observed.facts().binding() != row.binding() {
                     return Err(invalid("captured property differs"));
                 }
@@ -190,9 +183,9 @@ impl Provider {
                 }
                 self.writer
                     .preflight(ctx, txn, &observed)
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 preflight_market(&self.families)?;
-                let world = ctx.world().map_err(|e| invalid_at(e, line!()))?;
+                let world = ctx.world().map_err(invalid)?;
                 accounts::personal(
                     world,
                     accounts::live(world)?,
@@ -223,37 +216,37 @@ impl Provider {
                         )),
                     )
                     .and_then(|o| o.paid_resale())
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 let roll = self
                     .writer
                     .accept(ctx, txn, &observed, &output)
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 row.matches_roll(&roll)?;
                 let market = MindPaidResaleOperation::from_roll(&roll)?;
                 envelope(
                     &self.families.operations,
                     commit,
-                    serde_json::to_value(&market).map_err(|e| invalid_at(e, line!()))?,
+                    serde_json::to_value(&market).map_err(invalid)?,
                 )?;
                 txn.insert(&self.families.operations, &commit, market.clone())
-                    .map_err(|e| invalid_at(e, line!()))?;
+                    .map_err(invalid)?;
                 if immediate {
                     let receipt = MindPaidResaleReceipt::from_roll(&roll)?;
                     envelope(
                         &self.families.receipts,
                         commit,
-                        serde_json::to_value(&receipt).map_err(|e| invalid_at(e, line!()))?,
+                        serde_json::to_value(&receipt).map_err(invalid)?,
                     )?;
                     txn.insert(&self.families.receipts, &commit, receipt.clone())
-                        .map_err(|e| invalid_at(e, line!()))?;
-                    if txn.get(&self.families.receipts, &commit).map_err(|e| invalid_at(e, line!()))? != Some(&receipt)
+                        .map_err(invalid)?;
+                    if txn.get(&self.families.receipts, &commit).map_err(invalid)? != Some(&receipt)
                     {
                         return Err(invalid("receipt readback"));
                     }
                 } else {
                     if txn
                         .get(&self.families.receipts, &commit)
-                        .map_err(|e| invalid_at(e, line!()))?
+                        .map_err(invalid)?
                         .is_some()
                     {
                         return Err(invalid("premature receipt"));
@@ -261,13 +254,13 @@ impl Provider {
                 }
                 if txn
                     .get(&self.families.operations, &commit)
-                    .map_err(|e| invalid_at(e, line!()))?
+                    .map_err(invalid)?
                     != Some(&market)
                 {
                     return Err(invalid("operation readback"));
                 }
                 if !immediate {
-                    ctx.reserve_paid_resale_completion(txn).map_err(|e| invalid_at(e, line!()))?;
+                    ctx.reserve_paid_resale_completion(txn).map_err(invalid)?;
                 }
                 (commit, if immediate { "settled" } else { "funded" })
             }
@@ -276,7 +269,7 @@ impl Provider {
             self.outcome.clone(),
             serde_json::json!({"kind":label,"operation":operation,"commit":commit}),
         )
-        .map_err(|e| invalid_at(e, line!()))?;
+        .map_err(invalid)?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![self.outcome.clone()])
             .with_eligible_witnesses(vec![inv.principal().clone()]))
@@ -287,7 +280,7 @@ fn preflight_market(f: &Families) -> Result<(), String> {
     let digest = mush_core::DefinitionDigest::from_bytes([255; 32]);
     // The Market operation is a fixed scalar mirror, not a second native copy.
     let state = serde_json::json!({"phase":"refunded","terminal":token,"reason":{"kind":"registry_revoked","sanction":token,"licence":u64::MAX,"generation":u64::MAX,"term_digest":digest}});
-    let row = serde_json::json!({"format":1,"operation":token,"action":mush_roll::commerce::paid_resale::protocol::actions().map_err(|e| invalid_at(e, line!()))?[2],"licence":u64::MAX.to_string(),"sequence":65536,"offer":token,"offer_digest":digest,"roll_digest":digest,"state":state});
+    let row = serde_json::json!({"format":1,"operation":token,"action":mush_roll::commerce::paid_resale::protocol::actions().map_err(invalid)?[2],"licence":u64::MAX.to_string(),"sequence":65536,"offer":token,"offer_digest":digest,"roll_digest":digest,"state":state});
     envelope(&f.operations, token, row)?;
     envelope(
         &f.receipts,
