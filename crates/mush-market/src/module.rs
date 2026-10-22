@@ -882,7 +882,7 @@ impl GameModule for MarketModule {
             self.state.paid_resale_families = Some(crate::mind_paid_resale::register(
                 reg,
                 config,
-                self.state.original_mind_families.clone(),
+                self.state.original_purchase_families.clone(),
             )?);
         }
         crate::commands::register(reg)?;
@@ -983,7 +983,7 @@ impl GameModule for MarketModule {
                 .paid_resale_families
                 .as_ref()
                 .ok_or_else(|| ModError::msg("paid resale families unavailable"))?
-                .audit(ctx, config, self.state.original_mind_families.as_ref())?;
+                .audit(ctx, config, self.state.original_purchase_families.as_ref())?;
         } else {
             crate::mind_paid_resale::require_disabled(ctx)?;
         }

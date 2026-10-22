@@ -14,7 +14,7 @@ fn error(e: impl std::fmt::Display) -> ModError {
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     config: &PaidResaleConfig,
-    legacy: Option<crate::mind_trade::Families>,
+    legacy: Option<crate::mind_trade::PurchaseFamilies>,
 ) -> Result<Families, ModError> {
     if reg.module() != crate::NS {
         return Err(error("paid resale owner differs"));

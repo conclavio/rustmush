@@ -63,7 +63,7 @@ impl Families {
         &self,
         ctx: &ModuleCtx<'_>,
         config: &PaidResaleConfig,
-        legacy: Option<&crate::mind_trade::Families>,
+        legacy: Option<&crate::mind_trade::PurchaseFamilies>,
     ) -> Result<(), ModError> {
         let e = ctx
             .state::<EconomyStore>()
@@ -95,7 +95,7 @@ impl Families {
                 } => {
                     let quote = legacy
                         .ok_or_else(|| error("legacy family"))?
-                        .resale_quote_for_boot(ctx, *quote)
+                        .resale_quote_for_boot(ctx, offer.binding().birth().operation, *quote)
                         .map_err(error)?;
                     if quote.digest().map_err(error)? != *quote_digest {
                         return Err(error("quote digest"));

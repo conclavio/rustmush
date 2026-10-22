@@ -273,38 +273,6 @@ pub(crate) struct Families {
     >,
 }
 impl Families {
-    pub(crate) fn resale_quote_for_boot(
-        &self,
-        ctx: &mush_core::ModuleCtx<'_>,
-        id: CommitToken,
-    ) -> Result<MindQuote, String> {
-        let row = ctx
-            .action_state(&self.quotes, &id)
-            .map_err(|_| "retained quote unavailable")?
-            .cloned()
-            .ok_or("retained quote missing")?;
-        if row.publication() != id {
-            return Err("retained quote identity differs".into());
-        }
-        row.resale_rates()?;
-        Ok(row)
-    }
-    pub(crate) fn resale_quote(
-        &self,
-        txn: &mut mush_core::ActionTxn<'_>,
-        id: CommitToken,
-    ) -> Result<MindQuote, String> {
-        let row = txn
-            .get(&self.quotes, &id)
-            .map_err(|_| "retained quote unavailable")?
-            .cloned()
-            .ok_or("retained quote missing")?;
-        if row.publication() != id {
-            return Err("retained quote identity differs".into());
-        }
-        row.resale_rates()?;
-        Ok(row)
-    }
     pub(crate) fn audit(&self, ctx: &mush_core::ModuleCtx<'_>) -> Result<(), ModError> {
         index::audit(ctx, self)
     }

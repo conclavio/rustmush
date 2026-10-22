@@ -111,6 +111,40 @@ pub(crate) struct PurchaseFamilies {
     pub(super) operations: StateFamilyHandle<CommitToken, Purchase>,
     pub(super) receipts: StateFamilyHandle<CommitToken, PurchaseReceipt>,
 }
+impl PurchaseFamilies {
+    /// Funding retires the live quote; its exact copy is retained on the
+    /// purchase operation, which is the paid licence's birth.
+    fn retained_quote(row: Option<&Purchase>, quote: CommitToken) -> Result<MindQuote, String> {
+        let row = row.ok_or("retained purchase missing")?;
+        if row.quote.publication() != quote || row.quote_digest != row.quote.digest()? {
+            return Err("retained purchase quote differs".into());
+        }
+        row.quote.resale_rates()?;
+        Ok(row.quote.clone())
+    }
+    pub(crate) fn resale_quote(
+        &self,
+        txn: &mut mush_core::ActionTxn<'_>,
+        operation: CommitToken,
+        quote: CommitToken,
+    ) -> Result<MindQuote, String> {
+        let row = txn
+            .get(&self.operations, &operation)
+            .map_err(|_| "retained purchase unavailable")?;
+        Self::retained_quote(row, quote)
+    }
+    pub(crate) fn resale_quote_for_boot(
+        &self,
+        ctx: &mush_core::ModuleCtx<'_>,
+        operation: CommitToken,
+        quote: CommitToken,
+    ) -> Result<MindQuote, String> {
+        let row = ctx
+            .action_state(&self.operations, &operation)
+            .map_err(|_| "retained purchase unavailable")?;
+        Self::retained_quote(row, quote)
+    }
+}
 
 pub(crate) fn register(
     reg: &mut Registrar<'_>,

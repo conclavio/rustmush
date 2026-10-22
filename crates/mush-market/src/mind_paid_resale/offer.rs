@@ -11,7 +11,7 @@ use mush_roll::commerce::paid_resale::{ResaleRates, protocol, reader::PaidResale
 pub(super) fn build(
     world: &World,
     txn: &mut ActionTxn<'_>,
-    legacy: Option<&crate::mind_trade::Families>,
+    legacy: Option<&crate::mind_trade::PurchaseFamilies>,
     facts: &PaidResaleFacts,
     operation: CommitToken,
     price: Amount,
@@ -33,7 +33,7 @@ pub(super) fn build(
         } => {
             let actual = legacy
                 .ok_or("retained legacy quote family unavailable")?
-                .resale_quote(txn, *quote)?;
+                .resale_quote(txn, facts.binding().birth().operation, *quote)?;
             if actual.digest()? != *quote_digest {
                 return Err("retained legacy quote differs".into());
             }

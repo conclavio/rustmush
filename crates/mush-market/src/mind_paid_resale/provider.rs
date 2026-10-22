@@ -94,7 +94,7 @@ pub(super) struct Provider {
     pub kind: Kind,
     pub config: PaidResaleConfig,
     pub families: Families,
-    pub legacy: Option<crate::mind_trade::Families>,
+    pub legacy: Option<crate::mind_trade::PurchaseFamilies>,
     pub economy: Option<ParticipantHandle<InitialFilingParticipant>>,
     pub writer: RegisteredPaidResaleWriter,
     pub refusal: ActionError,
