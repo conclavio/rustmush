@@ -77,6 +77,11 @@ impl ClaimInventory {
             } else {
                 value.add_open(&row)?;
             }
+            // Every live Open and Close advances both; a reboot reproduces them.
+            value.generation = value
+                .generation
+                .checked_add(1)
+                .ok_or(PublicationError::Capacity)?;
             value.next_transition = value
                 .next_transition
                 .checked_add(1)

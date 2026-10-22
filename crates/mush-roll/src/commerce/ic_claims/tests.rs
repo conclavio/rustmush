@@ -116,6 +116,12 @@ fn current_paid_seats_count_prior_term_and_holder_claims_while_owned_has_no_seat
     let empty = ClaimInventory::reconstruct(Vec::new())?;
     let held = empty.opening(first.clone())?;
     assert_eq!(held.paid_open(first.open.licence), 1);
+    let rebooted = ClaimInventory::reconstruct(vec![first.clone()])?;
+    assert_eq!(
+        (rebooted.generation(), rebooted.next_transition()),
+        (held.generation(), held.next_transition()),
+        "a reboot reproduces the live generation and transition head"
+    );
     let mut later = row(2, 11, one_seat()?)?;
     later.open.dispatcher = ObjId(2);
     later.open.term = TermGeneration::new(2)?;
