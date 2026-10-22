@@ -410,8 +410,10 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
     assert_eq!(title(&w)?, EconomicOwner::Object(BUYER));
     w.reboot(f, &w.snapshot())?;
 
-    // A real owned claim closes after Fund preparation. The exact claim
-    // observation is retained through both custody boundaries.
+    // A real owned claim closing races Fund. Core admits one pending commit,
+    // so neither can land under the other's custody: a claim close cannot
+    // land under a prepared Fund, a Fund cannot prepare under a staged close,
+    // and once the actual close lands Fund is refused by the closed claim.
     for after_stage in [false, true] {
         let mut w = start_branch(f, template, seeded)?;
         owner_claim(&mut w, START + 510)?;
@@ -428,39 +430,37 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
             None,
         )?;
         land(&mut w, offered)?;
-        let retained_close = if after_stage {
+        let fund_params = json!({"offer":token(START+511),"payer":payer.id.0.to_string()});
+        if after_stage {
             let event = ic_sortie::fixture_close(&w.engine.world, GOD, token(START + 510), w.base)?;
             let ticket = w.host.enqueue_close(&event)?;
             let (prepared, output, inv) = w.prepare(&ticket, START + 513)?;
             w.stage(&ticket, START + 513, prepared, output, &inv)?;
-            Some(
-                w.engine
-                    .take_staged_action()?
-                    .ok_or("actual close custody")?
-                    .into_parts(),
-            )
-        } else {
-            None
-        };
-        let p = prepare(
-            &mut w,
-            FUND,
-            1,
-            BUYER,
-            START + 512,
-            json!({"offer":token(START+511),"payer":payer.id.0.to_string()}),
-            None,
-        )?;
-        if let Some((bundle, installation)) = retained_close {
-            stage(&mut w, p)?;
+            let (bundle, installation) = w
+                .engine
+                .take_staged_action()?
+                .ok_or("actual close custody")?
+                .into_parts();
+            assert!(
+                prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params.clone(), None).is_err(),
+                "Fund prepared under a staged claim close"
+            );
             // This is an actual prepared four-owner close image, not a patched
-            // claim counter. Its acknowledgement lands before Fund is taken.
+            // claim counter.
             retain_writes(&mut w.disk, bundle.writes())?;
             w.engine.install_composed_action(installation)?;
-            assert!(w.engine.take_staged_action().is_err());
+            let refused = match prepare(&mut w, FUND, 1, BUYER, START + 514, fund_params, None) {
+                Err(_) => true,
+                Ok(p) => stage(&mut w, p).is_err(),
+            };
+            assert!(refused, "Fund accepted after the claim closed");
         } else {
-            close(&mut w, START + 510, START + 513)?;
-            assert!(stage(&mut w, p).is_err());
+            let p = prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params, None)?;
+            assert!(
+                close(&mut w, START + 510, START + 513).is_err(),
+                "claim close landed under a prepared Fund"
+            );
+            drop(p);
         }
         assert!(rows(&w.disk, "roll", PENDING).is_empty());
         assert_eq!(balance(&w, payer.id)?.1, Amount::from_minor(0));
