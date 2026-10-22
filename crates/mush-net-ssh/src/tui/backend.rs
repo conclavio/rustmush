@@ -55,6 +55,11 @@ pub struct SshBackend {
     /// Last position written by `draw`/`set_cursor_position`, returned by the
     /// (never-hit, on the fullscreen path) cursor query.
     cursor: Position,
+    /// A cell box (0-based `x`, `y`, `w`, `h`) whose cells a sixel picture
+    /// occupies (doc 21 cut G.2): writing into it, or clearing the screen,
+    /// erases the picture, and [`take_touched`](Self::take_touched) says so.
+    watch: Option<(u16, u16, u16, u16)>,
+    touched: bool,
 }
 
 impl SshBackend {
@@ -67,6 +72,8 @@ impl SshBackend {
             height: height.clamp(1, MAX_HEIGHT),
             depth,
             cursor: Position::ORIGIN,
+            watch: None,
+            touched: false,
         }
     }
 
@@ -77,6 +84,17 @@ impl SshBackend {
         self.width = width.clamp(1, MAX_WIDTH);
         self.height = height.clamp(1, MAX_HEIGHT);
         self.depth = depth;
+    }
+
+    /// Watch `area` (0-based `x`, `y`, `w`, `h`), or nothing.
+    pub fn set_watch(&mut self, area: Option<(u16, u16, u16, u16)>) {
+        self.watch = area;
+    }
+
+    /// Whether a draw wrote into the watched box, or the screen was cleared,
+    /// since the last call.
+    pub fn take_touched(&mut self) -> bool {
+        std::mem::take(&mut self.touched)
     }
 
     /// Take the accumulated output bytes, leaving the buffer empty.
@@ -194,10 +212,17 @@ impl Backend for SshBackend {
         // re-emits (each `cell_sgr` leads with a reset, so runs are
         // self-contained). `depth == None` short-circuits every SGR.
         let colored = !matches!(self.depth, ColorDepth::None);
+        let watch = self.watch;
         let reset: &[u8] = b"\x1b[0m";
         let mut expected: Option<(u16, u16)> = None;
         let mut cur_sgr: Vec<u8> = reset.to_vec();
         for (x, y, cell) in content {
+            if let Some((wx, wy, ww, wh)) = watch
+                && (wx..wx.saturating_add(ww)).contains(&x)
+                && (wy..wy.saturating_add(wh)).contains(&y)
+            {
+                self.touched = true;
+            }
             if expected != Some((x, y)) {
                 self.push_cup(x, y);
             }
@@ -253,6 +278,7 @@ impl Backend for SshBackend {
     fn clear(&mut self) -> io::Result<()> {
         // Reset attributes, erase the whole screen, home the cursor.
         self.out.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
+        self.touched = true;
         self.cursor = Position::ORIGIN;
         Ok(())
     }

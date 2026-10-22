@@ -2,10 +2,13 @@
 //! the primary device attributes reply and the graphics record the encoder
 //! choice reads.
 //!
-//! The `@tui` probe sends a kitty query image and then `CSI c`. A kitty OK
-//! that arrives before the DA1 reply means kitty graphics; the DA1 reply
-//! itself lists attribute `4` on a terminal that does sixel, so sixel
-//! detection costs nothing beyond the reply the probe already elicits.
+//! The `@tui` probe ([`probe_bytes`]) sends a kitty query image, `CSI 16 t`
+//! and then `CSI c`. A kitty OK that arrives before the DA1 reply means kitty
+//! graphics; the DA1 reply itself lists attribute `4` on a terminal that does
+//! sixel, so sixel detection costs nothing beyond the reply the probe already
+//! elicits; the `CSI 6 ; h ; w t` reply is the size of a cell in the pixels a
+//! sixel image is drawn in (G.2), which a terminal that does not answer is
+//! assumed to be [`CellSize::DEFAULT`].
 
 /// A primary device attributes reply (`CSI ? <level> ; <attr> ; … c`): the
 /// conformance level and the attributes below 64 (every attribute a
@@ -52,6 +55,54 @@ impl DeviceAttributes {
     }
 }
 
+/// The whole capability probe, sent once on entering `@tui`: the kitty
+/// query, the cell-size report request (`CSI 16 t`), then `CSI c`, which
+/// every terminal answers last.
+#[must_use]
+pub fn probe_bytes() -> Vec<u8> {
+    let mut out = crate::kitty::query_bytes();
+    out.extend_from_slice(b"\x1b[16t");
+    out.extend_from_slice(b"\x1b[c");
+    out
+}
+
+/// The size of one character cell in the pixels a sixel image is drawn in:
+/// the terminal's answer to `CSI 16 t`, `CSI 6 ; <height> ; <width> t`.
+///
+/// It is what sizes a sixel picture's cell box, because a sixel image is not
+/// scaled into cells the way a kitty image is. Windows Terminal draws sixel
+/// against a virtual cell of 10 by 20 whatever its font and scales the image
+/// to the real cell, which is why that is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellSize {
+    /// Pixels across.
+    pub width: u16,
+    /// Pixels down.
+    pub height: u16,
+}
+
+impl CellSize {
+    /// The VT340's cell, and Windows Terminal's virtual one: what a terminal
+    /// that did not answer is taken to have.
+    pub const DEFAULT: CellSize = CellSize {
+        width: 10,
+        height: 20,
+    };
+
+    /// The report's parameters as the key parser holds them, `"6;20;10"`;
+    /// `None` for any other `CSI … t` report or a zero side.
+    #[must_use]
+    pub fn parse(params: &str) -> Option<CellSize> {
+        let mut fields = params.split(';');
+        if fields.next() != Some("6") {
+            return None;
+        }
+        let height: u16 = fields.next()?.parse().ok()?;
+        let width: u16 = fields.next()?.parse().ok()?;
+        (width > 0 && height > 0 && fields.next().is_none()).then_some(CellSize { width, height })
+    }
+}
+
 /// What the probe found, once it is over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Graphics {
@@ -66,15 +117,84 @@ pub struct Graphics {
 pub enum Encoder {
     /// The kitty graphics protocol: inline PNG under one image id.
     Kitty,
+    /// DEC sixel, drawn into the cell grid at the cursor (G.2).
+    Sixel,
+}
+
+impl Encoder {
+    /// The encoder's name, as `@pixel/encoder` and the HUD say it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Encoder::Kitty => "kitty",
+            Encoder::Sixel => "sixel",
+        }
+    }
 }
 
 impl Graphics {
-    /// The encoder to use (D-21-5): kitty if the probe said OK, else none —
-    /// the TUI's text panes stay the cockpit. Sixel, second in that order,
-    /// is recorded here and chosen once its encoder lands (G.2).
+    /// The encoder to use (D-21-5): kitty if the probe said OK, else sixel if
+    /// the DA1 reply listed it, else none — the TUI's text panes stay the
+    /// cockpit.
     #[must_use]
     pub fn encoder(&self) -> Option<Encoder> {
-        self.kitty.then_some(Encoder::Kitty)
+        if self.kitty {
+            Some(Encoder::Kitty)
+        } else if self.sixel {
+            Some(Encoder::Sixel)
+        } else {
+            None
+        }
+    }
+}
+
+/// What a player set with `@pixel/encoder` for one connection (Q-21-2,
+/// D-21-17; per connection until a per-account store exists): the probe's
+/// choice, one encoder forced whatever the probe found (for a terminal that
+/// answers for another, as tmux does), or no picture at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncoderChoice {
+    /// The probe decides (D-21-5).
+    #[default]
+    Auto,
+    /// This encoder, without waiting on the probe.
+    Forced(Encoder),
+    /// No picture.
+    Off,
+}
+
+impl EncoderChoice {
+    /// `auto`, `kitty`, `sixel` or `off`, case-folded.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<EncoderChoice> {
+        Some(match word.to_ascii_lowercase().as_str() {
+            "auto" => EncoderChoice::Auto,
+            "kitty" => EncoderChoice::Forced(Encoder::Kitty),
+            "sixel" => EncoderChoice::Forced(Encoder::Sixel),
+            "off" => EncoderChoice::Off,
+            _ => return None,
+        })
+    }
+
+    /// The word [`parse`](Self::parse) reads.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            EncoderChoice::Auto => "auto",
+            EncoderChoice::Forced(e) => e.name(),
+            EncoderChoice::Off => "off",
+        }
+    }
+
+    /// The encoder this choice yields, given what the probe found once it is
+    /// over (`None` while it runs): a forced encoder does not wait for it.
+    #[must_use]
+    pub fn encoder(self, probed: Option<Graphics>) -> Option<Encoder> {
+        match self {
+            EncoderChoice::Auto => probed.and_then(|g| g.encoder()),
+            EncoderChoice::Forced(e) => Some(e),
+            EncoderChoice::Off => None,
+        }
     }
 }
 
@@ -101,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn kitty_is_chosen_and_sixel_waits_for_its_encoder() {
+    fn kitty_then_sixel_then_nothing() {
         let both = Graphics {
             kitty: true,
             sixel: true,
@@ -111,7 +231,63 @@ mod tests {
             kitty: false,
             sixel: true,
         };
-        assert_eq!(sixel.encoder(), None);
+        assert_eq!(sixel.encoder(), Some(Encoder::Sixel));
         assert_eq!(Graphics::default().encoder(), None);
+    }
+
+    #[test]
+    fn a_choice_forces_or_defers_to_the_probe() {
+        let sixel = Graphics {
+            kitty: false,
+            sixel: true,
+        };
+        assert_eq!(
+            EncoderChoice::Auto.encoder(Some(sixel)),
+            Some(Encoder::Sixel)
+        );
+        assert_eq!(
+            EncoderChoice::Auto.encoder(None),
+            None,
+            "the probe is still out"
+        );
+        let kitty = EncoderChoice::Forced(Encoder::Kitty);
+        assert_eq!(
+            kitty.encoder(None),
+            Some(Encoder::Kitty),
+            "forced does not wait"
+        );
+        assert_eq!(kitty.encoder(Some(sixel)), Some(Encoder::Kitty));
+        assert_eq!(EncoderChoice::Off.encoder(Some(sixel)), None);
+        for word in ["auto", "KITTY", "Sixel", "off"] {
+            let choice = EncoderChoice::parse(word);
+            assert_eq!(
+                choice.map(EncoderChoice::name),
+                Some(word.to_ascii_lowercase().as_str())
+            );
+        }
+        assert_eq!(EncoderChoice::parse("png"), None);
+        assert_eq!(EncoderChoice::default(), EncoderChoice::Auto);
+    }
+
+    #[test]
+    fn the_cell_size_report_and_the_probe() {
+        assert_eq!(
+            CellSize::parse("6;20;10"),
+            Some(CellSize {
+                width: 10,
+                height: 20
+            })
+        );
+        assert_eq!(CellSize::parse("6;0;10"), None);
+        assert_eq!(
+            CellSize::parse("4;480;640"),
+            None,
+            "the text area, not a cell"
+        );
+        assert_eq!(CellSize::parse("6;20"), None);
+        assert_eq!(CellSize::parse("6;20;10;1"), None);
+        let probe = String::from_utf8_lossy(&probe_bytes()).into_owned();
+        assert!(probe.starts_with("\x1b_Gi=31,"), "{probe:?}");
+        assert!(probe.ends_with("\x1b\\\x1b[16t\x1b[c"), "{probe:?}");
     }
 }

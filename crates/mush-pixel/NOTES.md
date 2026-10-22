@@ -287,3 +287,12 @@ graphics record), the cockpit as `CockpitPicture`, and the raycaster in two pass
 pixels by row, colours from tables). Same pixels as the spike, pinned by a reference test; the
 fixture at 640x480 went from 4,024 µs to ~950 µs of render plus instruments on the owner's box. The
 details are in `docs/design/21-cut-notes.md` §G.1a.
+
+## G.2: sixel (2026-10-22)
+
+`sixel::encode` draws the same frame as a sixel stream (a register a colour, six-row bands, `!n`
+runs). On the fixture at 640x480: encode 1.11 ms, 20,631 bytes raw (kitty's stream 9,382), and
+6,594 bytes after zlib against kitty's 6,680 — so sixel runs at the same 20 Hz (the owner's ruling)
+and `ssh -C` matters for it. `fixture.sixel` typed in Windows Terminal 1.24 through ConPTY draws the
+cockpit; WT scales sixel to its own cells, hence the frame is sized from `CSI 16 t`'s cell. Details in
+`docs/design/21-cut-notes.md` §G.2.

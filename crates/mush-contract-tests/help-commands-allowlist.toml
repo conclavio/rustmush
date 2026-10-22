@@ -63,6 +63,10 @@ word = "@history"
 reason = "the SSH front end's own scrollback reader (mush-net-ssh/src/server.rs)"
 
 [[token]]
+word = "@pixel"
+reason = "the SSH front end's own picture settings, `@pixel/encoder` (mush-net-ssh/src/server.rs, doc 21 cut G.2)"
+
+[[token]]
 word = "+history"
 reason = "the same front-end scrollback reader under its older spelling"
 

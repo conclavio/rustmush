@@ -67,6 +67,9 @@ pub enum Key {
     /// sends for `CSI c`: the probe's "no answer is the answer" marker, and
     /// (doc 21 cut G.1) the attributes it lists, attribute `4` being sixel.
     DeviceAttributes(mush_pixel::caps::DeviceAttributes),
+    /// The terminal's cell size in sixel pixels (`CSI 6 ; h ; w t`), its
+    /// answer to the probe's `CSI 16 t` (doc 21 cut G.2). Not a key either.
+    CellSize(mush_pixel::caps::CellSize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -301,6 +304,9 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
         // is DA2 and `CSI c` alone is a request, neither of which a terminal
         // sends us unasked).
         b'c' => Key::DeviceAttributes(mush_pixel::caps::DeviceAttributes::parse(params)?),
+        // A window report: only the cell size is asked for, and only it is a
+        // marker; every other `CSI … t` is swallowed.
+        b't' => Key::CellSize(mush_pixel::caps::CellSize::parse(params)?),
         b'~' => match first {
             "1" | "7" => Key::Home,
             "4" | "8" => Key::End,
@@ -462,6 +468,15 @@ mod tests {
         );
         assert_eq!(keys(b"\x1b[>1;10;0c"), vec![]);
         assert_eq!(keys(b"\x1b[c"), vec![]);
+        // The cell-size report, and another window report that is not it.
+        assert_eq!(
+            keys(b"\x1b[6;20;10t"),
+            vec![Key::CellSize(mush_pixel::caps::CellSize {
+                width: 10,
+                height: 20
+            })]
+        );
+        assert_eq!(keys(b"\x1b[4;480;640t"), vec![]);
         // The probe's two answers in one burst, in the order a kitty sends
         // them, then a typed key.
         assert_eq!(

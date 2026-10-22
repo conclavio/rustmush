@@ -4,7 +4,7 @@
 //! One [`Frame`], drawn by a [`picture::Picture`] from the per-observer
 //! feeds a renderer already holds, and encoded for what the client proved it
 //! can show. Today: a first-person view of the arena streamed to a terminal
-//! that speaks the kitty graphics protocol. The pieces, each pure and
+//! that speaks the kitty graphics protocol or draws sixel. The pieces, each pure and
 //! testable on its own:
 //!
 //! - [`picture`]: the seam a renderer drives — a producer with its
@@ -17,6 +17,8 @@
 //! - [`png`]: a minimal PNG encoder (palette when the frame has at most 256
 //!   colours, which the raycaster guarantees by construction; truecolor
 //!   otherwise). IDAT is zlib via `flate2`.
+//! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
+//!   terminals that draw sixel and not kitty — Windows Terminal above all.
 //! - [`kitty`]: the kitty graphics protocol framing — the capability probe,
 //!   a PNG frame as chunked inline transmission with a fixed image id and
 //!   placement, wrapped in synchronized output.
@@ -51,5 +53,6 @@ pub mod overlay;
 pub mod picture;
 pub mod png;
 pub mod raycast;
+pub mod sixel;
 
 pub use frame::Frame;

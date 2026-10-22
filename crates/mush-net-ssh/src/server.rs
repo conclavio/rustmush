@@ -57,6 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_ansi::AnsiTheme;
+use mush_pixel::caps::{Encoder, EncoderChoice};
 use mush_proto::{ClientCaps, InputMode, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
 use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
@@ -108,6 +109,9 @@ const HISTORY_DEFAULT: u32 = 20;
 /// against [`WRITE_TIMEOUT`] and is rendered under the connection lock.
 const HISTORY_MAX: u32 = 100;
 const HISTORY_USAGE: &str = "Usage: @history [<1-100>] [more]";
+
+/// Doc 21 cut G.2: `@pixel/encoder`'s usage line.
+const PIXEL_ENCODER_USAGE: &str = "Usage: @pixel/encoder [auto|kitty|sixel|off]";
 
 const WELCOME_HELP: &str = "\
   connect <account> <password>   connect to an existing account\n\
@@ -297,6 +301,7 @@ impl russh::server::Server for Ingress {
                 manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
                 history: HistoryCursor::default(),
+                pixel_choice: EncoderChoice::Auto,
             })),
             route: Route::PreAuth,
             auth_method: AuthMethod::None,
@@ -391,6 +396,10 @@ struct Shared {
     repaint: Arc<Notify>,
     /// Where line mode's `@history` has read back to (interface plan I12).
     history: HistoryCursor,
+    /// `@pixel/encoder` for this connection (doc 21 cut G.2; Q-21-2 asks
+    /// for it per account, which waits on a per-account store). Kept here,
+    /// not in the TUI, so it survives `@notui` and applies at the next `@tui`.
+    pixel_choice: EncoderChoice,
 }
 
 /// Per-connection `@history` paging state. The resume ring is per-session;
@@ -496,6 +505,61 @@ fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+/// `@pixel/encoder [auto|kitty|sixel|off]`, read transport-side (doc 21 cut
+/// G.2): the picture's encoder for this connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PixelEncoderReq {
+    /// Bare: say what is set and what this terminal showed.
+    Show,
+    /// Set it.
+    Set(EncoderChoice),
+    /// Anything else after the verb.
+    Usage,
+}
+
+/// Read `@pixel/encoder`; `None` for any other line.
+fn parse_pixel_encoder(line: &str) -> Option<PixelEncoderReq> {
+    let rest = strip_verb(line.trim(), "@pixel/encoder")?;
+    let mut words = rest.split_whitespace();
+    Some(match (words.next(), words.next()) {
+        (None, _) => PixelEncoderReq::Show,
+        (Some(word), None) => {
+            EncoderChoice::parse(word).map_or(PixelEncoderReq::Usage, PixelEncoderReq::Set)
+        }
+        _ => PixelEncoderReq::Usage,
+    })
+}
+
+/// `@pixel/encoder`'s answer: what is set, and — inside `@tui`, where the
+/// probe ran — what the terminal showed and what `^G` draws in.
+fn pixel_encoder_reply(
+    req: PixelEncoderReq,
+    choice: EncoderChoice,
+    report: Option<(&str, Option<Encoder>)>,
+) -> String {
+    let set = match req {
+        PixelEncoderReq::Usage => return PIXEL_ENCODER_USAGE.to_string(),
+        PixelEncoderReq::Set(_) => {
+            format!("Picture encoder for this connection: {}.", choice.name())
+        }
+        PixelEncoderReq::Show => format!("Picture encoder: {}.", choice.name()),
+    };
+    let then = match report {
+        Some((probe, Some(encoder))) => {
+            format!(
+                " Your terminal: {probe}. Ctrl-G draws the picture in {}.",
+                encoder.name()
+            )
+        }
+        Some((probe, None)) if choice == EncoderChoice::Off => {
+            format!(" Your terminal: {probe}. Ctrl-G draws nothing until you set it back.")
+        }
+        Some((probe, None)) => format!(" Your terminal: {probe}. Ctrl-G draws nothing here."),
+        None => " Your terminal is asked what it can show when you enter @tui.".to_string(),
+    };
+    set + &then
 }
 
 /// What an `@history` line asks for (interface plan I12).
@@ -705,6 +769,12 @@ impl ConnHandler {
                 if let Some(req) = parse_history(&line) {
                     return self.history_line(session, req).await;
                 }
+                // Doc 21 cut G.2: the picture's encoder is the front end's,
+                // never the world's.
+                if let Some(req) = parse_pixel_encoder(&line) {
+                    let text = self.pixel_encoder(req);
+                    return self.write_sys(session, &text);
+                }
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
             }
@@ -743,6 +813,7 @@ impl ConnHandler {
             let mut sh = self.lock();
             let caps = sh.caps;
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
+            tui.set_pixel_choice(sh.pixel_choice);
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
             // Pixel cockpit spike (2026-10-21): ask the terminal whether it
@@ -816,6 +887,16 @@ impl ConnHandler {
                 if line.trim().eq_ignore_ascii_case("@notui") {
                     return self.leave_tui(session).await;
                 }
+                // Doc 21 cut G.2: answered here, into the TUI's own
+                // scrollback, as `@history` is in line mode.
+                if let Some(req) = parse_pixel_encoder(&line) {
+                    let text = self.pixel_encoder(req);
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
                 self.hooks.line(self.conn_id, line).await;
             }
             return Ok(());
@@ -835,6 +916,23 @@ impl ConnHandler {
             self.fire_repaint();
         }
         Ok(())
+    }
+
+    // ---- the picture's encoder (doc 21 cut G.2) ---------------------------
+
+    /// `@pixel/encoder`: set or show this connection's choice, applied to an
+    /// open TUI at once (a change closes the picture), and the answer's text.
+    fn pixel_encoder(&self, req: PixelEncoderReq) -> String {
+        let mut sh = self.lock();
+        if let PixelEncoderReq::Set(choice) = req {
+            sh.pixel_choice = choice;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_pixel_choice(choice);
+            }
+        }
+        let choice = sh.pixel_choice;
+        let report = sh.tui.as_mut().map(|t| t.pixel_report());
+        pixel_encoder_reply(req, choice, report)
     }
 
     // ---- line-mode scene history (interface plan I12) --------------------
@@ -2392,6 +2490,46 @@ mod tests {
         ));
     }
 
+    /// Doc 21 cut G.2: `@pixel/encoder` is read transport-side, case-folded,
+    /// and answered from the connection's own state.
+    #[test]
+    fn pixel_encoder_reads_and_answers() {
+        use PixelEncoderReq::{Set, Show, Usage};
+        assert_eq!(parse_pixel_encoder("@pixel/encoder"), Some(Show));
+        assert_eq!(
+            parse_pixel_encoder("  @PIXEL/ENCODER Sixel "),
+            Some(Set(EncoderChoice::Forced(Encoder::Sixel)))
+        );
+        assert_eq!(
+            parse_pixel_encoder("@pixel/encoder off"),
+            Some(Set(EncoderChoice::Off))
+        );
+        assert_eq!(parse_pixel_encoder("@pixel/encoder png"), Some(Usage));
+        assert_eq!(parse_pixel_encoder("@pixel/encoder auto now"), Some(Usage));
+        assert_eq!(parse_pixel_encoder("@pixel/encoders"), None);
+        assert_eq!(parse_pixel_encoder("say @pixel/encoder"), None);
+        assert_eq!(
+            pixel_encoder_reply(Show, EncoderChoice::Auto, None),
+            "Picture encoder: auto. Your terminal is asked what it can show when you enter @tui."
+        );
+        assert_eq!(
+            pixel_encoder_reply(
+                Set(EncoderChoice::Auto),
+                EncoderChoice::Auto,
+                Some(("sixel graphics OK", Some(Encoder::Sixel)))
+            ),
+            "Picture encoder for this connection: auto. Your terminal: sixel graphics OK. Ctrl-G draws the picture in sixel."
+        );
+        assert!(
+            pixel_encoder_reply(Show, EncoderChoice::Off, Some(("kitty graphics OK", None)))
+                .ends_with("Ctrl-G draws nothing until you set it back.")
+        );
+        assert_eq!(
+            pixel_encoder_reply(Usage, EncoderChoice::Auto, None),
+            PIXEL_ENCODER_USAGE
+        );
+    }
+
     /// A connection's shared state as a fresh line-mode session holds it.
     fn line_mode_shared() -> Shared {
         Shared {
@@ -2408,6 +2546,7 @@ mod tests {
             manifest: TuiManifest::default(),
             repaint: Arc::new(Notify::new()),
             history: HistoryCursor::default(),
+            pixel_choice: EncoderChoice::Auto,
         }
     }
 

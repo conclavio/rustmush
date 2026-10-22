@@ -1,5 +1,11 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.6 — 2026-10-22, G.2 landed; sixel at 20 Hz.** The sixel encoder, the cell-size probe,
+the encoder choice and a per-connection `@pixel/encoder`. Measured on the cockpit fixture, a sixel
+frame is 20.6 KB raw against kitty's 9.4 KB but 6.6 KB each after zlib, so the owner set sixel's
+rate to the picture's own **20 Hz** (D-21-3 and D-21-16 amended: the 10 Hz default assumed a frame
+twice kitty's). Notes in `21-cut-notes.md` §G.2.
+
 **Draft 0.5 — 2026-10-22, G.1 split.** The lead split G.1 in two (§10): **G.1a landed** — the
 picture seam, the two-pass raycaster (render plus instruments 4.0 → 0.95 ms a frame at 640x480 on the
 owner's box, the same pixels), the probe's DA1 attributes as a graphics record, the help text G.0
@@ -220,7 +226,11 @@ parser's `Key::DeviceAttributes` grows the attribute set and the view reads it. 
 with the MechWarrior 2 frame in Windows Terminal Preview 1.26 (and by the protocol: foot, xterm,
 mintty, mlterm). Bytes: about twice the PNG after SSH's own zlib on flat frames (the MW2 frame
 measured 87 KB against 49 KB), so sixel's default cap is **10 Hz** (Q-21-1), and it follows the
-same step-down.
+same step-down. *As built (G.2, 2026-10-22): **20 Hz**, the owner's
+ruling once the cockpit fixture measured 20.6 KB raw against kitty's 9.4 KB but 6.6 KB each after
+zlib (the MW2 frame's ratio is a busy textured frame's, not the flat cockpit's); the frame is sized
+to the cell box from the terminal's `CSI 16 t` answer, sent again when text overwrites it, wiped by a
+full repaint on close (cut notes §G.2).*
 
 ### 4.3 Web — D-21-4 (G.3, G.3b)
 
@@ -341,7 +351,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 |---|---|---|---|---|
 | **G.0** | This document; the README row; the cut notes started; `help cockpit` names `^G`, the keys, the terminals that work and tmux that does not | S | — | the README row; help text |
 | **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set. **Split 2026-10-22:** **G.1a (landed)** the seam, the two-pass render, the attribute set and the help; **G.1b** the step-down, `[pixel]`, `@pixel/stats` and the `u` gate | M | — | 640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke); a client that stops reading costs one frame; the step-down test; the contract gates |
-| **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe` | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal |
+| **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe`. **Landed 2026-10-22** at 20 Hz (D-21-3 amended), with the `CSI 16 t` cell size, the frame sized to the box, the resend after text and the wipe on close, and `@pixel/encoder` per connection | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal (as built: a decoder round trip in place of a reference encoder; the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed) |
 | **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |
 | **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
@@ -359,7 +369,8 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   half per connection; nothing pixel-shaped crosses IPC; the server stays pixel-free.
 - **D-21-2** Kitty: inline PNG under one id and placement, active probe, APC replies as marker keys.
 - **D-21-3** Sixel: the same frame as a whole-picture DCS stream, DA1 attribute 4 detection, 10 Hz
-  default.
+  default. *Amended 2026-10-22 (owner, at G.2): 20 Hz, the picture's own clock — measured, a sixel
+  frame compresses to a kitty frame's bytes; the frame sized to the cell box from `CSI 16 t`.*
 - **D-21-4** Web: the gateway's frame over the websocket first; the WebAssembly render of the same
   crate replaces it; the frame stays as the fallback.
 - **D-21-5** Encoder choice per connection: kitty, then sixel, then text; the web is its own case.
@@ -379,7 +390,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 - **D-21-14** The camera on a leash: a turn is a helm order, the view interpolates, the picture
   never claims what the sim has not granted.
 - **D-21-15** The heightfield producer is built when the first map carries height.
-- **D-21-16..22** The Q-21-1..7 defaults, accepted by the owner 2026-10-21: sixel at 10 Hz; an
+- **D-21-16..22** The Q-21-1..7 defaults, accepted by the owner 2026-10-21: sixel at 10 Hz (amended to 20 Hz at G.2); an
   encoder may be forced per account; the web frame before the WebAssembly render; the orbital view
   is the first scene; a Ceres site is the first map with height; corridor views deferred; no
   one-shot picture in line mode in v1.
@@ -453,8 +464,7 @@ superseded its default (D-21-23).
 ## 14. Amendments owed (made by the cuts that land them)
 
 - **Doc 02 §5.6** (capability detection): the active kitty probe, the DA1 attribute set, the
-  encoder choice (G.1, G.2). *Made by G.1a for the probe and the attribute set; G.2 owes sixel's
-  place in the choice.*
+  encoder choice (G.1, G.2). *Made by G.1a and G.2.*
 - **Doc 16 §5** (the cockpit): the pixel view as the cockpit's fourth surface beside line, TUI and
   web; the instruments as drawn (G.1). *Made by G.1a, in doc 16 §11.*
 - **Doc 19 §5** (`+chart`): the chart as a picture (G.5).

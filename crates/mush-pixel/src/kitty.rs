@@ -26,16 +26,16 @@ pub const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 /// End synchronized output.
 pub const SYNC_END: &[u8] = b"\x1b[?2026l";
 
-/// The capability probe: a 1x1 RGB query image under [`PROBE_IMAGE_ID`]
-/// then `CSI c`.
+/// The kitty half of the capability probe: a 1x1 RGB query image under
+/// [`PROBE_IMAGE_ID`]. The whole probe, with the `CSI c` that ends it, is
+/// [`crate::caps::probe_bytes`].
 #[must_use]
-pub fn probe_bytes() -> Vec<u8> {
+pub fn query_bytes() -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"\x1b_G");
     out.extend_from_slice(format!("i={PROBE_IMAGE_ID},s=1,v=1,a=q,t=d,f=24;").as_bytes());
     out.extend_from_slice(base64(&[0, 0, 0]).as_bytes());
     out.extend_from_slice(b"\x1b\\");
-    out.extend_from_slice(b"\x1b[c");
     out
 }
 
@@ -119,9 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_is_a_query_then_da1_and_its_ok_is_recognised() {
-        let s = String::from_utf8_lossy(&probe_bytes()).into_owned();
-        assert_eq!(s, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+    fn the_query_is_one_pixel_and_its_ok_is_recognised() {
+        let s = String::from_utf8_lossy(&query_bytes()).into_owned();
+        assert_eq!(s, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\");
         assert!(is_probe_ok("Gi=31;OK"));
         assert!(is_probe_ok("Gi=31,I=0;OK"));
         assert!(!is_probe_ok("Gi=31;ENOENT:not found"));

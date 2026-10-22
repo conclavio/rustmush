@@ -32,6 +32,7 @@ pub mod sheet;
 pub use app::{InputResult, Mode, StickyMode, TuiApp, TuiManifest};
 use backend::{ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, SshBackend};
 
+use mush_pixel::caps::Encoder;
 use mush_proto::{ClientCaps, OutputEvent};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -117,11 +118,19 @@ impl TuiSession {
         // ([`Self::pixel_frame`]): on dev2's first live turn the arena's
         // per-pulse events each repainted a moved camera too, and the wire
         // carried ~35 frames a second against a 20 Hz clock.
-        self.paint_text()
+        let bytes = self.paint_text();
+        // Doc 21 cut G.2: a repaint that wrote into a sixel picture's box (an
+        // overlay, a resize's clear) erased those pixels; the next tick sends
+        // the picture again.
+        if self.terminal.backend_mut().take_touched() {
+            self.app.pixel_text_touched();
+        }
+        bytes
     }
 
-    /// The text frame alone: the ratatui diff, plus the image free when the
-    /// pixel view closed since the last paint.
+    /// The text frame alone: the ratatui diff, plus what a picture taken off
+    /// screen since the last paint needs — a kitty image freed after it, a
+    /// sixel one wiped by repainting the whole frame over it.
     fn paint_text(&mut self) -> Vec<u8> {
         // Keep the backend geometry in step with the app caps every frame so
         // a resize that arrived between paints is honored here.
@@ -130,11 +139,19 @@ impl TuiSession {
             .backend_mut()
             .set_geometry(caps.width, caps.height, caps.color);
         let TuiSession { terminal, app } = self;
+        let closed = app.pixel_take_close();
+        // A sixel picture is pixels in the cell grid, not an image to free:
+        // a diff would leave every cell the next screen draws as a blank
+        // showing the old picture, so the whole frame is repainted.
+        if closed == Some(Encoder::Sixel) || app.pixel_take_wipe() {
+            let _ = terminal.clear();
+        }
+        terminal.backend_mut().set_watch(app.pixel_sixel_box());
         // The only error path is a backend write error; `SshBackend` writes
         // into a `Vec` and never errors, so a failure just yields no bytes.
         let _ = terminal.draw(|frame| app.draw(frame));
         let mut bytes = terminal.backend_mut().take_output();
-        if app.pixel_take_close() {
+        if closed == Some(Encoder::Kitty) {
             bytes.extend_from_slice(&mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
         }
         bytes
@@ -152,16 +169,30 @@ impl TuiSession {
             return Vec::new();
         }
         let mut bytes = self.paint_text();
+        // The picture goes out after the text, so whatever this text paint
+        // wrote into its box is drawn over.
+        let _ = self.terminal.backend_mut().take_touched();
         bytes.extend(picture);
         bytes
     }
 
-    /// The kitty graphics capability probe (pixel cockpit spike), sent once
-    /// right after the first frame; starts the probe's clock.
+    /// The graphics capability probe (pixel cockpit spike; doc 21 cuts G.1,
+    /// G.2): the kitty query, the cell-size request and DA1, sent once right
+    /// after the first frame; starts the probe's clock.
     #[must_use]
     pub fn probe_bytes(&mut self) -> Vec<u8> {
         self.app.pixel_probe_sent();
-        mush_pixel::kitty::probe_bytes()
+        mush_pixel::caps::probe_bytes()
+    }
+
+    /// `@pixel/encoder <choice>` for this connection (doc 21 cut G.2).
+    pub fn set_pixel_choice(&mut self, choice: mush_pixel::caps::EncoderChoice) {
+        self.app.pixel_set_choice(choice);
+    }
+
+    /// What the probe found, in words, and the encoder `^G` would draw in.
+    pub fn pixel_report(&mut self) -> (&'static str, Option<Encoder>) {
+        self.app.pixel_report()
     }
 
     /// Whether the pixel view is open (the pump then runs its frame clock).
@@ -185,7 +216,7 @@ impl TuiSession {
     /// send before leaving the alternate screen.
     #[must_use]
     pub fn pixel_close_bytes(&self) -> Vec<u8> {
-        if self.app.pixel_active() {
+        if self.app.pixel_active() && self.app.pixel_shown() == Some(Encoder::Kitty) {
             mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID)
         } else {
             Vec::new()
@@ -469,5 +500,75 @@ mod tests {
         plain.feed_input(b"\x1b[?62;22c\x1b_Gi=31;OK\x1b\\");
         plain.feed_input(b"\x07");
         assert!(!plain.pixel_active());
+    }
+
+    /// Doc 21 cut G.2, end to end through the session: a terminal that
+    /// answers as Windows Terminal does (a cell size, then DA1 with sixel and
+    /// no kitty answer) gets a sixel picture in its cell box; a resize clears
+    /// the screen, so the next tick sends the picture again; closing wipes it
+    /// with a full repaint and frees no kitty image.
+    #[test]
+    fn a_sixel_terminal_gets_a_sixel_picture_resent_after_a_clear_and_wiped_on_close() {
+        let mut wide = caps();
+        wide.width = 120;
+        wide.height = 40;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let probe = sess.probe_bytes();
+        assert!(
+            probe.ends_with(b"\x1b[16t\x1b[c"),
+            "the cell size is asked before DA1: {probe:?}"
+        );
+        let r = sess.feed_input(b"\x1b[6;20;10t\x1b[?61;4;6;22c");
+        assert!(!r.redraw && r.submit.is_empty(), "markers, not keys");
+        assert_eq!(
+            sess.pixel_report(),
+            ("sixel graphics OK", Some(Encoder::Sixel))
+        );
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let map: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("map fixture");
+        for (feed, data) in [("arena.cockpit", cockpit), ("arena.map", map)] {
+            sess.apply_event(&OutputEvent::Panel {
+                feed: feed.into(),
+                kind: PanelFrameKind::Keyframe,
+                data,
+            });
+        }
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        let _ = sess.paint();
+        sess.pixel_tick();
+        let first = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;640;480"),
+            "a 640x480 sixel at the box's corner"
+        );
+        assert!(!first.contains("\x1b_G"), "no kitty bytes");
+        sess.pixel_tick();
+        assert!(sess.pixel_frame().is_empty(), "unchanged: nothing");
+        // A resize: the text repaint clears the screen, the picture goes again.
+        let mut wider = wide;
+        wider.width = 160;
+        sess.set_caps(wider);
+        let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(repaint.contains("\x1b[2J"), "the resize cleared the screen");
+        sess.pixel_tick();
+        let again = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(again.contains("\x1bP0;1;0q"), "resent after the clear");
+        // Leaving with a sixel picture frees nothing; closing wipes it.
+        assert!(sess.pixel_close_bytes().is_empty());
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
+        let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            closed.contains("\x1b[2J"),
+            "a full repaint over the picture"
+        );
+        assert!(!closed.contains("\x1b_G"), "no kitty delete");
     }
 }

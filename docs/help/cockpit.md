@@ -683,25 +683,33 @@ Every other key does nothing while it is open. **Turning the view does not turn
 the tank**: the line over the picture says the view's heading against the
 tank's (`camera 075° (sim 045° +30°)`), and `HEADING` is still how you steer.
 
-**Which terminals show it.** The picture needs a terminal that speaks the kitty
-graphics protocol, reached through that terminal's own SSH client:
+**Which terminals show it.** The picture is sent one of two ways, whichever
+your terminal can show: as a kitty graphics image, or as sixel.
 
-  w11term        the Windows terminal that ships beside the game
-  WezTerm        through `wezterm ssh` or an SSH domain; on Windows, run it
-                 with `front_end = "Software"`
-  kitty, Ghostty through their own SSH
+  w11term          the Windows terminal that ships beside the game: kitty
+  Windows Terminal `ssh` from PowerShell or cmd: sixel
+  WezTerm          through `wezterm ssh` or an SSH domain: kitty (on Windows,
+                   run it with `front_end = "Software"`)
+  kitty, Ghostty   through their own SSH: kitty
+  foot, xterm, mintty, mlterm   sixel
 
-Windows Terminal, foot, xterm and mintty draw sixel pictures instead, which the
-picture does not send yet; on them `Ctrl-G` does nothing and screen 0 is the
-cockpit, as before. On Windows, anything run inside a console window (`ssh` in
-PowerShell or cmd, even inside WezTerm) loses the picture on the way: use the
-terminal's own SSH client. **tmux is not supported**: it swallows the
-terminal's answer. Run `@tui` outside it.
+On Windows, a kitty picture does not survive a console window (`ssh` in
+PowerShell or cmd, even inside WezTerm), but sixel does, which is why Windows
+Terminal gets sixel. A sixel picture is two to three times the bytes of a kitty
+one unless your SSH link is compressed: `ssh -C` turns that on, and it is worth
+it here. **tmux is not supported**: it swallows the terminal's answer. Run
+`@tui` outside it.
 
 When you enter `@tui` the game asks your terminal, for half a second at most,
-what it can show, and the line over the picture says what it found: `kitty
-graphics OK`, `sixel only (not drawn yet)` or `no terminal graphics`. If
-`Ctrl-G` does nothing, your terminal answered no.
+what it can show, and the line over the picture says what it found and what it
+is drawing: `kitty graphics OK, drawing kitty`, `sixel graphics OK, drawing
+sixel`, or `no terminal graphics`. If `Ctrl-G` does nothing, your terminal
+answered no.
+
+`@pixel/encoder` says what this connection uses. `@pixel/encoder sixel` (or
+`kitty`) forces one for a terminal that answers wrongly, `@pixel/encoder off`
+turns the picture off, and `@pixel/encoder auto` goes back to asking the
+terminal. It lasts until you disconnect.
 
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type

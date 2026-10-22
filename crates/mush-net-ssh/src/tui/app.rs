@@ -2419,6 +2419,11 @@ impl TuiApp {
                 r.redraw = false;
                 return;
             }
+            Key::CellSize(cell) => {
+                self.pixel.cell_size(cell);
+                r.redraw = false;
+                return;
+            }
             Key::DeviceAttributes(da1) => {
                 self.pixel.device_attributes(da1);
                 r.redraw = false;
@@ -3829,10 +3834,44 @@ impl TuiApp {
         self.pixel.interval()
     }
 
-    /// Whether the view closed since the last call (the caller frees the
-    /// image).
-    pub fn pixel_take_close(&mut self) -> bool {
+    /// The encoder of the picture a close since the last call took off
+    /// screen (the caller frees a kitty image or wipes a sixel one).
+    pub fn pixel_take_close(&mut self) -> Option<mush_pixel::caps::Encoder> {
         self.pixel.take_close()
+    }
+
+    /// The encoder of the picture on screen, if any.
+    #[must_use]
+    pub fn pixel_shown(&self) -> Option<mush_pixel::caps::Encoder> {
+        self.pixel.shown()
+    }
+
+    /// A sixel picture's cell box, 0-based, for the backend to watch.
+    #[must_use]
+    pub fn pixel_sixel_box(&self) -> Option<(u16, u16, u16, u16)> {
+        self.pixel.sixel_box()
+    }
+
+    /// The text frame wrote over the sixel picture: send it again.
+    pub fn pixel_text_touched(&mut self) {
+        self.pixel.text_touched();
+    }
+
+    /// Whether the next picture goes out under a full text repaint.
+    pub fn pixel_take_wipe(&mut self) -> bool {
+        self.pixel.take_wipe()
+    }
+
+    /// `@pixel/encoder <choice>` for this connection.
+    pub fn pixel_set_choice(&mut self, choice: mush_pixel::caps::EncoderChoice) {
+        self.pixel.set_choice(choice);
+    }
+
+    /// What the probe found, in words, and the encoder the view would draw
+    /// in now (for `@pixel/encoder`'s answer).
+    pub fn pixel_report(&mut self) -> (&'static str, Option<mush_pixel::caps::Encoder>) {
+        let now = Instant::now();
+        (self.pixel.probe_words(now), self.pixel.encoder(now))
     }
 
     /// The kitty bytes that place this tick's picture, or nothing (closed,

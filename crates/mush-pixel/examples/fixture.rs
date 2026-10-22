@@ -1,7 +1,9 @@
 //! Render the canonical cockpit scene (`web/src/lib/fixtures/cockpit`) and
-//! write `fixture.png` (to look at) and `fixture.kitty` (to `cat` in a
-//! terminal that speaks the kitty graphics protocol) into the directory
-//! given as the first argument, then print render / encode timings.
+//! write `fixture.png` (to look at), `fixture.kitty` (to `cat` in a terminal
+//! that speaks the kitty graphics protocol) and `fixture.sixel` (to `cat` or
+//! `type` in one that draws sixel: Windows Terminal, foot, xterm, mintty)
+//! into the directory given as the first argument, then print render and
+//! encode timings.
 //!
 //! ```text
 //! cargo run -p mush-pixel --example fixture -- out/
@@ -12,7 +14,7 @@ use std::time::Instant;
 
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, map_from_feed};
 use mush_pixel::picture::{Look, Picture};
-use mush_pixel::{Frame, kitty, png};
+use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
 const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
@@ -54,12 +56,24 @@ fn main() {
     }
     let encode_us = t1.elapsed().as_micros() / u128::from(N);
     let stream = kitty::frame_bytes(&bytes, 1, 1, 2, 120, 30);
+    let t2 = Instant::now();
+    let mut six = Vec::new();
+    for _ in 0..N {
+        six = sixel::encode(&frame);
+    }
+    let sixel_us = t2.elapsed().as_micros() / u128::from(N);
+    // Home the cursor first so the picture lands at the top left of the
+    // screen it is typed into.
+    let six_stream = sixel::frame_bytes(&six, 1, 1);
 
     if let Err(err) = std::fs::write(format!("{out_dir}/fixture.png"), &bytes) {
         eprintln!("fixture.png: {err}");
     }
     if let Err(err) = std::fs::write(format!("{out_dir}/fixture.kitty"), &stream) {
         eprintln!("fixture.kitty: {err}");
+    }
+    if let Err(err) = std::fs::write(format!("{out_dir}/fixture.sixel"), &six_stream) {
+        eprintln!("fixture.sixel: {err}");
     }
     println!(
         "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
@@ -73,5 +87,18 @@ fn main() {
         "render + instruments {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
         bytes.len(),
         stream.len()
+    );
+    // What SSH's own zlib makes of each, at a level close to OpenSSH's.
+    let squeeze = |b: &[u8]| {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+        let _ = z.write_all(b);
+        z.finish().map_or(0, |v| v.len())
+    };
+    println!(
+        "sixel encode {sixel_us} us, sixel stream {} bytes; after zlib: kitty {} bytes, sixel {} bytes",
+        six_stream.len(),
+        squeeze(&stream),
+        squeeze(&six_stream)
     );
 }
