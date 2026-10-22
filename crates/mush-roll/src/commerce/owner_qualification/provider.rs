@@ -274,6 +274,7 @@ impl Provider {
         operation.follows(old_operation.as_ref())?;
         let next_head = operation.head();
         let request = Qualification {
+            source_owner: binding.parent.owner,
             operation: operation.clone(),
             fence: QualificationFence {
                 action: self.action.clone(),

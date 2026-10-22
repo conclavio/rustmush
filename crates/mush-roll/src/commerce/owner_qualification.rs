@@ -62,6 +62,10 @@ pub(crate) fn current_title(
 pub(crate) struct Qualification {
     operation: records::QualificationOperation,
     fence: QualificationFence,
+    /// The birth requester who holds the parent grant. The parent root was
+    /// retained under them, which a chartered owner who is not the requester
+    /// is not.
+    source_owner: mush_core::ObjId,
 }
 impl Qualification {
     pub(crate) fn commit(&self) -> CommitToken {
@@ -77,7 +81,7 @@ impl Qualification {
                 identity: self.operation.child_revision,
             },
             RequiredRoot {
-                anchor: RootAnchor::OwnerParent(self.operation.owner_licence, self.operation.owner),
+                anchor: RootAnchor::OwnerParent(self.operation.owner_licence, self.source_owner),
                 identity: self.operation.source_parent.revision,
             },
         ]
