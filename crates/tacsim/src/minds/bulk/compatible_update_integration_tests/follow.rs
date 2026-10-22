@@ -102,11 +102,16 @@ fn to_market(w: &mut PlayerWorld) -> TestResult<ObjId> {
         .ok_or("GOD location")?;
     w.engine.world.move_to(GOD, ROOM)?;
     w.commit()?;
+    // A seat change is setup, not part of the next step: a staged action
+    // refuses to share a step with legacy object mutations.
+    let _ = w.engine.world.take_dirty();
     Ok(back)
 }
 fn back_from_market(w: &mut PlayerWorld, back: ObjId) -> TestResult {
     w.engine.world.move_to(GOD, back)?;
-    w.commit()
+    w.commit()?;
+    let _ = w.engine.world.take_dirty();
+    Ok(())
 }
 fn listing(w: &mut PlayerWorld, n: u128, expected: &FiledRecord) -> TestResult {
     let back = to_market(w)?;

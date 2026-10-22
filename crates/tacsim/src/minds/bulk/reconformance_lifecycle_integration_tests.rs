@@ -302,6 +302,14 @@ async fn run(
                 | RatingJobState::Interrupted {} => {
                     return Err("real re-conformance did not finish measured work".into());
                 }
+                // A terminal state other than the expected ending can never
+                // become it; fail at once rather than spin to the deadline.
+                RatingJobState::Completed { .. } | RatingJobState::Nonconforming { .. } => {
+                    return Err(
+                        "real re-conformance ended in a terminal state other than the expected ending"
+                            .into(),
+                    );
+                }
                 _ => {}
             }
         }
@@ -328,7 +336,9 @@ async fn scenario(
         let old = rows(&saved.disk, "roll", "rating_receipts");
         let paid = rows(&saved.disk, "roll", "roll_mind_paid_term");
         let mut cfg = f.resources.config();
-        cfg.minds.bench_eval_ops = cfg.minds.bench_eval_ops.checked_add(1).ok_or("policy")?;
+        // The default is the configured maximum; a different manifest digest
+        // needs a value inside the bound.
+        cfg.minds.bench_eval_ops = cfg.minds.bench_eval_ops.checked_sub(1).ok_or("policy")?;
         let (configured, mut w) = branch(f, saved, cfg.clone())?;
         all_tasks.push(w.tasks.clone());
         let manifest = configured.resources.reference()?;
@@ -336,12 +346,30 @@ async fn scenario(
         // Birth evidence alone is historical, so a current paid selection refuses until
         // an actual completed current-policy head is published.
         let team = w.say(BUYER, "SIM TEAM red")?;
-        assert!(PlayerWorld::private_text(&team, BUYER).contains("red slot 1"));
+        // The lobby announces a claimed slot to its rooms, not as a private reply.
+        let here = w.engine.world.get(BUYER).and_then(|o| o.location);
+        let heard = team
+            .iter()
+            .filter(|(audience, _)| {
+                matches!(audience, mush_core::Audience::Actor(who) if *who == BUYER)
+                    || matches!(audience, mush_core::Audience::Room { room, .. } if Some(*room) == here)
+            })
+            .map(|(_, event)| mush_testkit::text_of(event))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(heard.contains("red slot 1"), "SIM TEAM red: {heard}");
         w.say(BUYER, "SIM AI 1")?;
         w.say(BUYER, "SIM UNIT heavy_mk1")?;
+        // `filed:` selects a licence; the buyer's paid licence, not the filed id.
+        let paid_licence = paid
+            .first()
+            .and_then(|row| row.get("licence"))
+            .and_then(|v| v.as_str())
+            .ok_or("paid licence")?
+            .to_string();
         let events = w.say(
             BUYER,
-            &format!("SIM MIND filed:{} PROFILE Default", id.get()),
+            &format!("SIM MIND filed:{paid_licence} PROFILE Default"),
         )?;
         assert!(!PlayerWorld::private_text(&events, BUYER).contains("Your slot will carry"));
         let tasks = w.tasks.clone();
