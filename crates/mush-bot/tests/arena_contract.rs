@@ -185,6 +185,7 @@ fn friendly_frame() -> Frame {
         aspect: Aspect::Front,
         reads_dead: Some(false),
         fatal: None,
+        unit_type: None,
     });
     frame.lock = Some(RB_ID);
     frame
@@ -223,6 +224,7 @@ fn facet(id: &str, armor: i64, armor_max: i64) -> FrameFacet {
 fn frame() -> Frame {
     Frame {
         unit: ObjId(101),
+        unit_type: "tacsim.unit.line_tank".into(),
         callsign: Designator::Slot {
             team: Team::Red,
             slot: 1,
@@ -263,6 +265,7 @@ fn frame() -> Frame {
                 aspect: Aspect::Left,
                 reads_dead: Some(false),
                 fatal: None,
+                unit_type: None,
             },
             FrameContact {
                 id: X2_ID,
@@ -279,6 +282,7 @@ fn frame() -> Frame {
                 aspect: Aspect::Rear,
                 reads_dead: Some(false),
                 fatal: None,
+                unit_type: None,
             },
         ],
         scan_tables: Vec::new(),

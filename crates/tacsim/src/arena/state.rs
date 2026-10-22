@@ -1603,6 +1603,9 @@ pub struct ChassisWords {
     /// frame's `FrameCondition::table` indexes (all sections, not the scanned
     /// prefix: the table names the whole chassis).
     pub section_names: Vec<SmolStr>,
+    /// **The unit's type**, its definition id (`tacsim.unit.line_tank`): what
+    /// a classified contact row names its look by (doc 22 D-22-5).
+    pub unit_type: SmolStr,
 }
 
 impl ChassisWords {
@@ -1619,6 +1622,7 @@ impl ChassisWords {
                 .sections()
                 .map(|(section, _)| SmolStr::new(section.as_str()))
                 .collect(),
+            unit_type: SmolStr::new(unit.schema().key().id.as_str()),
         }
     }
 

@@ -47,7 +47,8 @@
       ],
       "range_m": 450,
       "reads_dead": false,
-      "relative_deg": 0
+      "relative_deg": 0,
+      "unit_type": "tacsim.unit.line_tank"
     },
     {
       "age_ms": 400,
@@ -70,7 +71,8 @@
       "odds": [],
       "range_m": 100,
       "reads_dead": false,
-      "relative_deg": 225
+      "relative_deg": 225,
+      "unit_type": "tacsim.unit.line_tank"
     },
     {
       "age_ms": 3500,
@@ -93,7 +95,8 @@
       "odds": [],
       "range_m": 200,
       "reads_dead": false,
-      "relative_deg": 270
+      "relative_deg": 270,
+      "unit_type": null
     },
     {
       "age_ms": 6000,
@@ -116,7 +119,8 @@
       "odds": [],
       "range_m": 600,
       "reads_dead": false,
-      "relative_deg": 345
+      "relative_deg": 345,
+      "unit_type": null
     }
   ],
   "ecm": null,
@@ -920,9 +924,11 @@
   "speed_kph": 43,
   "surface": "fixture_yard",
   "t_ms": 61250,
+  "team": "red",
   "tempo": "engaged",
   "title": "Arena window",
   "unit": 101,
+  "unit_type": "tacsim.unit.line_tank",
   "units": [
     {
       "cell": [

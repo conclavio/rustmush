@@ -667,11 +667,13 @@ under it, or an arrow at the edge when it is off to one side), and your speed
 as a bar on the right. `Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still
 detaches.
 
-Under the picture, in plain text: your armour as a small top-down tank, each
-part coloured by what is left of it (green, yellow, red, grey when gone), with
-a line a section; your heat and your weapons (ready, or the seconds to the
+Under the picture, in plain text: your armour as a small picture of your own
+machine — a tank from above, a walker standing — each part coloured by what is
+left of it (green, yellow, red, grey when gone; parts that touch are told apart
+by a lighter shade), with a line a section; your heat and your weapons (ready, or the seconds to the
 next shot, rounds left, your chance on the lock); your contacts, nearest
-first, with an arrow for where each one lies from where you are looking; the
+first, with an arrow for where each one lies from where you are looking and
+`friend` beside one of your own side; the
 arena's notices; and the comms, the tail of everything said around you, so
 you read chat while you drive.
 
@@ -683,9 +685,12 @@ without sending and keeps what you typed for the next `Enter`. Up and Down
 walk your history, as in the input box.
 
 It shows what your cockpit screen shows and nothing more. A contact is drawn
-where your own scope plots it (red hostile, blue friendly, khaki not told
-apart yet, dark brown a wreck), and a machine your scope does not hold is not
-drawn at all, however close it is.
+where your own scope plots it, **in its team's colour** — the red team red and
+the blue team blue, whichever side you are on, grey while your scope has not
+told it apart yet, dark brown a wreck — so the colour never says friend or foe:
+the contacts list does (`friend`), and the lock's box is yellow whoever it is
+on. A machine your scope does not hold is not drawn at all, however close it
+is.
 
 While the picture is open:
 

@@ -11,8 +11,8 @@
 //!   the frame says so.
 //! - [`draw_weapons`]: one row a weapon — name, a recycle bar (full when
 //!   ready, a countdown while it cycles), rounds, the hit chance.
-//! - [`draw_doll`]: the armour-status doll — a top-down tank whose hull
-//!   facets, turret, tracks and engine are coloured by what is left of them.
+//! - [`draw_doll`]: the armour-status doll — the unit's look's grid (doc 22),
+//!   each cell coloured by what is left of its part.
 //! - [`draw_status`]: the one-line strip — callsign, speed, heading, lock.
 //!
 //! **The flight HUD** ([`draw_hud`], the text cockpit of 2026-10-22): when
@@ -129,9 +129,11 @@ const WARN: Rgb = [230, 180, 50];
 const BAD: Rgb = [220, 60, 50];
 const GONE: Rgb = [60, 60, 66];
 const YOU: Rgb = [255, 255, 255];
-const HOSTILE: Rgb = [230, 70, 60];
-const FRIENDLY: Rgb = [90, 150, 240];
-const UNKNOWN: Rgb = [220, 210, 120];
+const RED_TEAM: Rgb = [230, 70, 60];
+const BLUE_TEAM: Rgb = [90, 150, 240];
+const UNKNOWN: Rgb = [170, 170, 162];
+/// The lock's box and label: a marker, never a team's colour.
+const LOCK: Rgb = [240, 200, 60];
 const WRECK: Rgb = [110, 100, 90];
 
 fn ground_rgb(ground: Ground) -> Rgb {
@@ -148,8 +150,8 @@ fn ground_rgb(ground: Ground) -> Rgb {
 
 fn kind_rgb(kind: SpriteKind) -> Rgb {
     match kind {
-        SpriteKind::Hostile => HOSTILE,
-        SpriteKind::Friendly => FRIENDLY,
+        SpriteKind::Red => RED_TEAM,
+        SpriteKind::Blue => BLUE_TEAM,
         SpriteKind::Unknown => UNKNOWN,
         SpriteKind::Wreck => WRECK,
     }
@@ -473,79 +475,84 @@ pub fn draw_weapons(frame: &mut Frame, rows: &[WeaponRow]) {
     }
 }
 
-/// The armour-status doll, bottom right: a top-down tank.
-pub fn draw_doll(frame: &mut Frame, sections: &[Section]) {
+/// A doll and what is left of each of its parts, `(left, max)` a part.
+pub type DollState<'a> = (&'a crate::look::Doll, &'a [Option<(i64, i64)>]);
+
+/// **The armour-status doll**, bottom right (doc 22 D-22-2): the unit's look's
+/// grid — `doll` with what is left of each of its parts, from
+/// [`crate::look::Doll::condition`] — one square a cell, each coloured by the
+/// ramp (green, amber, red, grey when gone). A unit type with no look gets a
+/// bar a section instead, from `sections`.
+pub fn draw_doll(frame: &mut Frame, doll: Option<DollState<'_>>, sections: &[Section]) {
     let s = scale_for(frame) as i64;
-    let w = 48 * s;
-    let h = 64 * s;
-    let x0 = frame.width() as i64 - w - 4 * s;
-    let y0 = frame.height() as i64 - h - 4 * s - 2;
-    panel(frame, x0 - 1, y0 - 1, w + 2, h + 2);
-    let find = |id: &str| sections.iter().find(|sec| sec.id == id);
-    let facet = |sec: Option<&Section>, id: &str| -> Rgb {
-        sec.and_then(|sec| sec.facets.iter().find(|f| f.id == id))
-            .map_or(GONE, |f| ramp(f.armor, f.armor_max))
+    let Some((doll, condition)) = doll else {
+        draw_section_bars(frame, sections, s);
+        return;
     };
-    let body = |sec: Option<&Section>| -> Rgb {
-        sec.map_or(GONE, |sec| {
-            if sec.condition == "destroyed" {
-                GONE
+    let c = 3 * s;
+    let (w, h) = (doll.width as i64 * c, doll.height as i64 * c);
+    let x0 = frame.width() as i64 - w - 6 * s;
+    let y0 = frame.height() as i64 - h - 6 * s - 2;
+    panel(frame, x0 - 2 * s, y0 - 2 * s, w + 4 * s, h + 4 * s);
+    let tones = doll.tones();
+    let part_at = |x: usize, y: usize| doll.cells.get(y * doll.width + x).copied().flatten();
+    for y in 0..doll.height {
+        for x in 0..doll.width {
+            let Some(part) = part_at(x, y) else {
+                continue;
+            };
+            let px = match condition.get(part).copied().flatten() {
+                Some((left, max)) => ramp(left, max),
+                None => GONE,
+            };
+            // Touching parts in the same state are told apart by tone.
+            let px = if tones.get(part) == Some(&1) {
+                lighter(px)
             } else {
-                ramp(sec.internals, sec.internals_max)
+                px
+            };
+            let (cx, cy) = (x0 + x as i64 * c, y0 + y as i64 * c);
+            fill_rect(frame, cx, cy, c, c, px);
+            // A part's edge against another part, or against nothing, is
+            // outlined.
+            if x + 1 >= doll.width || part_at(x + 1, y) != Some(part) {
+                fill_rect(frame, cx + c - 1, cy, 1, c, PANEL);
             }
-        })
-    };
-    let hull = find("hull");
-    // Hull body: a rectangle inset from the panel, with four facet plates
-    // around it and the top plate as its fill.
-    let (hx, hy, hw, hh) = (x0 + 10 * s, y0 + 6 * s, w - 20 * s, h - 12 * s);
-    fill_rect(frame, hx, hy, hw, hh, facet(hull, "top"));
-    let t = 3 * s; // plate thickness
-    fill_rect(frame, hx, hy - t, hw, t, facet(hull, "front"));
-    fill_rect(frame, hx, hy + hh, hw, t, facet(hull, "rear"));
-    fill_rect(frame, hx - t, hy, t, hh, facet(hull, "left"));
-    fill_rect(frame, hx + hw, hy, t, hh, facet(hull, "right"));
-    // Tracks: bars outside the side plates, coloured by the section.
-    fill_rect(
-        frame,
-        hx - t - 2 * s - 2 * s,
-        hy - t,
-        2 * s,
-        hh + 2 * t,
-        body(find("left_track")),
-    );
-    fill_rect(
-        frame,
-        hx + hw + t + 2 * s,
-        hy - t,
-        2 * s,
-        hh + 2 * t,
-        body(find("right_track")),
-    );
-    // Engine: a block at the rear inside the hull.
-    fill_rect(
-        frame,
-        hx + hw / 4,
-        hy + hh - 10 * s,
-        hw / 2,
-        7 * s,
-        body(find("engine")),
-    );
-    // Turret: a square forward of centre, its top facet, with a barrel.
-    let turret = find("turret");
-    let (tx, ty, tw) = (hx + hw / 2 - 7 * s, hy + 8 * s, 14 * s);
-    fill_rect(frame, tx, ty, tw, tw, facet(turret, "top"));
-    outline_rect(frame, tx, ty, tw, tw, body(turret));
-    fill_rect(
-        frame,
-        tx + tw / 2 - s,
-        hy - t - 4 * s,
-        2 * s,
-        ty - hy + t + 4 * s,
-        body(turret),
-    );
-    // Section internals as a border on the hull outline.
-    outline_rect(frame, hx - t, hy - t, hw + 2 * t, hh + 2 * t, body(hull));
+            if part_at(x, y + 1) != Some(part) {
+                fill_rect(frame, cx, cy + c - 1, c, 1, PANEL);
+            }
+        }
+    }
+}
+
+/// The lighter twin of a ramp colour, for a doll's tone `1`.
+fn lighter(px: Rgb) -> Rgb {
+    match px {
+        GOOD => [120, 220, 130],
+        WARN => [245, 210, 110],
+        BAD => [240, 120, 105],
+        _ => [96, 96, 104],
+    }
+}
+
+/// The doll of a unit type with no look: a bar a section, its internals.
+fn draw_section_bars(frame: &mut Frame, sections: &[Section], s: i64) {
+    let (bw, bh) = (40 * s, 4 * s);
+    let h = sections.len() as i64 * (bh + 2 * s);
+    let x0 = frame.width() as i64 - bw - 6 * s;
+    let y0 = frame.height() as i64 - h - 6 * s - 2;
+    panel(frame, x0 - 2 * s, y0 - 2 * s, bw + 4 * s, h + 2 * s);
+    for (i, sec) in sections.iter().enumerate() {
+        let y = y0 + i as i64 * (bh + 2 * s);
+        let left = if sec.condition == "destroyed" {
+            0
+        } else {
+            sec.internals
+        };
+        fill_rect(frame, x0, y, bw, bh, GONE);
+        let fill = bw * left.clamp(0, sec.internals_max.max(1)) / sec.internals_max.max(1);
+        fill_rect(frame, x0, y, fill, bh, ramp(left, sec.internals_max));
+    }
 }
 
 /// The status strip, top left.
@@ -754,10 +761,10 @@ fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i6
             let m = 2 * s;
             let (bx, by) = (x - m, y - m);
             let (bw, bh) = ((bw + 2 * m).max(8 * s), (bh + 2 * m).max(8 * s));
-            outline_rect(frame, bx, by, bw, bh, HOSTILE);
-            outline_rect(frame, bx + 1, by + 1, bw - 2, bh - 2, HOSTILE);
+            outline_rect(frame, bx, by, bw, bh, LOCK);
+            outline_rect(frame, bx + 1, by + 1, bw - 2, bh - 2, LOCK);
             let lx = (bx + bw / 2 - lw / 2).clamp(0, (w - lw).max(0));
-            text(frame, lx, by + bh + 2 * s, &label, HOSTILE, s as usize);
+            text(frame, lx, by + bh + 2 * s, &label, LOCK, s as usize);
         }
         LockAt::Off(side) => {
             let (ax, dir, lx) = if side < 0 {
@@ -765,8 +772,8 @@ fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i6
             } else {
                 (w - 2 * s, 2, w - 8 * s - lw)
             };
-            caret(frame, (ax, cy), 5 * s, dir, HOSTILE);
-            text(frame, lx, cy - 3 * s, &label, HOSTILE, s as usize);
+            caret(frame, (ax, cy), 5 * s, dir, LOCK);
+            text(frame, lx, cy - 3 * s, &label, LOCK, s as usize);
         }
     }
 }
@@ -895,11 +902,11 @@ mod tests {
             &[
                 MapMark {
                     cell: (36, 14),
-                    kind: SpriteKind::Hostile,
+                    kind: SpriteKind::Red,
                 },
                 MapMark {
                     cell: (2, 9),
-                    kind: SpriteKind::Friendly,
+                    kind: SpriteKind::Blue,
                 },
             ],
             &[Spot {
@@ -936,7 +943,14 @@ mod tests {
                 },
             ],
         );
-        draw_doll(frame, &sections());
+        // The tank's look's grid, every part at full, then the lookless
+        // bars beside it.
+        let doll = crate::look::for_unit("tacsim.unit.line_tank")
+            .and_then(|look| look.doll.as_ref())
+            .expect("the tank's doll");
+        let full = vec![Some((10, 10)); doll.parts.len()];
+        draw_doll(frame, Some((doll, full.as_slice())), &sections());
+        draw_doll(frame, None, &sections());
         draw_status(
             frame,
             &Status {

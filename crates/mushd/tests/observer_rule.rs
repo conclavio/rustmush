@@ -4452,6 +4452,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         mush_sim::RulesValue::new(schema, serde_json::json!({})).expect("an empty posture");
     tacsim::arena::step::Frame {
         unit: mush_core::ObjId(101),
+        unit_type: "tacsim.unit.line_tank".into(),
         callsign: tacsim::arena::state::Designator::Slot {
             team: tacsim::arena::state::Team::Red,
             slot: 1,
@@ -4651,6 +4652,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         aspect: tacsim::arena::perception::Aspect::Front,
         reads_dead: None,
         fatal: None,
+        unit_type: None,
     };
     let now = tacsim::arena::perception::FrameContact {
         designator: Designator::Provisional(2),

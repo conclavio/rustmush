@@ -24,6 +24,8 @@
 //! - [`kitty`]: the kitty graphics protocol framing — the capability probe,
 //!   a PNG frame as chunked inline transmission with a fixed image id and
 //!   placement, wrapped in synchronized output.
+//! - [`look`]: a unit type's look (doc 22): its name, its doll grid, its
+//!   sprite sheet, kept apart from its rules.
 //! - [`overlay`]: the instruments drawn into the frame over the picture —
 //!   minimap, heat gauge, weapons, the armour doll, the status strip — from
 //!   a small fixed palette so the PNG stays indexed.
@@ -52,6 +54,7 @@ pub mod cockpit;
 pub mod frame;
 pub mod heightfield;
 pub mod kitty;
+pub mod look;
 pub mod overlay;
 pub mod picture;
 pub mod png;

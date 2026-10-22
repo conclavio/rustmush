@@ -1,0 +1,22 @@
+{
+  "units": ["tacsim.unit.drone_mk1"],
+  "label": "Ground drone",
+  "short": "DR",
+  "doll": {
+    "view": "top",
+    "rows": [
+      "..FFFFFF..",
+      ".LbbbbbbR.",
+      ".LbbbbbbR.",
+      ".LbbbbbbR.",
+      "..BBBBBB.."
+    ],
+    "legend": {
+      "F": { "section": "body", "facet": "front" },
+      "B": { "section": "body", "facet": "rear" },
+      "L": { "section": "body", "facet": "left" },
+      "R": { "section": "body", "facet": "right" },
+      "b": { "section": "body" }
+    }
+  }
+}

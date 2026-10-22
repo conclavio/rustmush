@@ -29,6 +29,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use serde_json::Value;
 
+use mush_pixel::look;
+
 use super::pixel::picture_area;
 use super::render::PaneRows;
 
@@ -288,14 +290,6 @@ fn bar(left: i64, max: i64, cells: usize) -> String {
 
 // ---- the armour doll -------------------------------------------------------
 
-fn section<'a>(cockpit: &'a Value, id: &str) -> Option<&'a Value> {
-    cockpit
-        .get("sections")?
-        .as_array()?
-        .iter()
-        .find(|s| s.get("id").and_then(Value::as_str) == Some(id))
-}
-
 /// A section's internals left and their most; a destroyed section has none.
 fn internals(sec: &Value) -> (i64, i64) {
     let max = num(sec.get("internals_max"));
@@ -306,120 +300,61 @@ fn internals(sec: &Value) -> (i64, i64) {
     }
 }
 
-/// A facet's armour left and its most, or the section's internals where it
-/// has no such facet.
-fn facet(sec: &Value, id: &str) -> (i64, i64) {
-    sec.get("facets")
-        .and_then(Value::as_array)
-        .and_then(|fs| {
-            fs.iter()
-                .find(|f| f.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .map_or_else(
-            || internals(sec),
-            |f| (num(f.get("armor")), num(f.get("armor_max"))),
-        )
-}
-
-/// The doll's parts and where each takes its colour from.
-#[derive(Clone, Copy)]
-enum Part {
-    Gap,
-    LeftTrack,
-    RightTrack,
-    Front,
-    Rear,
-    LeftSide,
-    RightSide,
-    Turret,
-    Engine,
-}
-
-fn part_colour(cockpit: &Value, part: Part) -> Color {
-    let hull = || section(cockpit, "hull");
-    let left = match part {
-        Part::Gap => return Color::Reset,
-        Part::LeftTrack => section(cockpit, "left_track").map(internals),
-        Part::RightTrack => section(cockpit, "right_track").map(internals),
-        Part::Front => hull().map(|h| facet(h, "front")),
-        Part::Rear => hull().map(|h| facet(h, "rear")),
-        Part::LeftSide => hull().map(|h| facet(h, "left")),
-        Part::RightSide => hull().map(|h| facet(h, "right")),
-        Part::Turret => section(cockpit, "turret").map(internals),
-        Part::Engine => section(cockpit, "engine").map(internals),
+/// **The doll** (doc 22 D-22-2): the grid of the pilot's own unit's look,
+/// found by the frame's `unit_type`, drawn in half-blocks — two grid rows to
+/// a text row, the upper cell the glyph's colour and the lower its
+/// background — each cell coloured by what is left of its part (a facet's
+/// armour, or its section's internals) — touching parts in the same state
+/// told apart by a lighter tone ([`look::Doll::tones`]) — centred in
+/// `width`. Nothing for a
+/// unit type with no look, or a look with no doll.
+fn doll_rows(cockpit: &Value, width: usize, utf8: bool) -> Vec<Line<'static>> {
+    let Some(doll) = cockpit
+        .get("unit_type")
+        .and_then(Value::as_str)
+        .and_then(look::for_unit)
+        .and_then(|l| l.doll.as_ref())
+    else {
+        return Vec::new();
     };
-    left.map_or(Color::DarkGray, |(l, m)| ramp(l, m))
+    let condition = doll.condition(cockpit.get("sections").unwrap_or(&Value::Null));
+    let tones = doll.tones();
+    let colour = |x: usize, y: usize| -> Option<Color> {
+        if y >= doll.height {
+            return None;
+        }
+        let part = (*doll.cells.get(y * doll.width + x)?)?;
+        let base = match condition.get(part).copied().flatten() {
+            Some((left, max)) => ramp(left, max),
+            None => Color::DarkGray,
+        };
+        // Touching parts in the same state are told apart by tone.
+        Some(match (tones.get(part), base) {
+            (Some(1), Color::Green) => Color::LightGreen,
+            (Some(1), Color::Yellow) => Color::LightYellow,
+            (Some(1), Color::Red) => Color::LightRed,
+            (Some(1), Color::DarkGray) => Color::Gray,
+            (_, c) => c,
+        })
+    };
+    let pad = " ".repeat(width.saturating_sub(doll.width) / 2);
+    (0..doll.height)
+        .step_by(2)
+        .map(|y| {
+            let mut spans = vec![Span::raw(pad.clone())];
+            spans.extend((0..doll.width).map(|x| {
+                let (glyph, style) = match (colour(x, y), colour(x, y + 1)) {
+                    (None, None) => (" ", Style::default()),
+                    (Some(top), None) => ("\u{2580}", Style::default().fg(top)),
+                    (None, Some(low)) => ("\u{2584}", Style::default().fg(low)),
+                    (Some(top), Some(low)) => ("\u{2580}", Style::default().fg(top).bg(low)),
+                };
+                Span::styled(glyphs(glyph, utf8), style)
+            }));
+            Line::from(spans)
+        })
+        .collect()
 }
-
-/// A top-down tank, front up, 15 cells wide: tracks either side, the hull's
-/// front and rear facets across its ends and its side facets down its
-/// walls, the turret amidships, the engine behind it.
-const DOLL: [&[(&str, Part)]; 6] = [
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        (
-            "\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}",
-            Part::Front,
-        ),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        ("\u{2588}", Part::LeftSide),
-        ("  ", Part::Gap),
-        ("\u{2597}\u{2584}\u{2596}", Part::Turret),
-        ("  ", Part::Gap),
-        ("\u{2588}", Part::RightSide),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        ("\u{2588}", Part::LeftSide),
-        ("  ", Part::Gap),
-        ("\u{2590}\u{2588}\u{258c}", Part::Turret),
-        ("  ", Part::Gap),
-        ("\u{2588}", Part::RightSide),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        ("\u{2588}", Part::LeftSide),
-        ("  ", Part::Gap),
-        ("\u{259d}\u{2580}\u{2598}", Part::Turret),
-        ("  ", Part::Gap),
-        ("\u{2588}", Part::RightSide),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        ("\u{2588}", Part::LeftSide),
-        ("  ", Part::Gap),
-        ("\u{2593}\u{2593}\u{2593}", Part::Engine),
-        ("  ", Part::Gap),
-        ("\u{2588}", Part::RightSide),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-    &[
-        ("\u{2590}\u{258c}", Part::LeftTrack),
-        (" ", Part::Gap),
-        (
-            "\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}",
-            Part::Rear,
-        ),
-        (" ", Part::Gap),
-        ("\u{2590}\u{258c}", Part::RightTrack),
-    ],
-];
 
 /// A section's short name: the tracks as `L track` and `R track`, others
 /// with spaces for underscores, cut to ten.
@@ -432,23 +367,11 @@ fn short(id: &str) -> String {
     name.chars().take(10).collect()
 }
 
-/// The armour column: the doll (for a unit with a hull) and a row a
-/// section — its name, a bar of its internals, and the numbers.
+/// The armour column: the doll from the unit's look ([`doll_rows`]) and a
+/// row a section — its name, a bar of its internals, and the numbers.
 #[must_use]
 pub fn armour_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    if section(cockpit, "hull").is_some() {
-        for row in DOLL {
-            let mut spans = vec![Span::raw("  ")];
-            spans.extend(row.iter().map(|(text, part)| {
-                Span::styled(
-                    glyphs(text, utf8),
-                    Style::default().fg(part_colour(cockpit, *part)),
-                )
-            }));
-            lines.push(Line::from(spans));
-        }
-    }
+    let mut lines = doll_rows(cockpit, usize::from(ARMOUR_W), utf8);
     for sec in cockpit
         .get("sections")
         .and_then(Value::as_array)
@@ -569,8 +492,9 @@ fn arrow(bearing_deg: f64, camera_mdeg: i64) -> &'static str {
 
 /// The contacts column, nearest first: an arrow for where each lies from
 /// the camera, its designator and class, range and bearing, the best hit
-/// chance on it, and `LOCK` on the lock; coloured hostile red, friendly
-/// blue, unknown yellow, a wreck grey.
+/// chance on it, `LOCK` on the lock and `friend` on one of the pilot's own
+/// side; coloured by **team** (doc 22 D-22-3: red, blue, unknown grey, a wreck
+/// dark), so the colour never says friend or foe — the word does.
 #[must_use]
 pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'static>> {
     let lock = cockpit.get("lock").and_then(Value::as_str);
@@ -599,9 +523,9 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
                 .collect();
             let colour = match mush_pixel::cockpit::contact_kind(c) {
                 mush_pixel::raycast::SpriteKind::Wreck => Color::DarkGray,
-                mush_pixel::raycast::SpriteKind::Friendly => Color::LightBlue,
-                mush_pixel::raycast::SpriteKind::Hostile => Color::LightRed,
-                mush_pixel::raycast::SpriteKind::Unknown => Color::Yellow,
+                mush_pixel::raycast::SpriteKind::Blue => Color::LightBlue,
+                mush_pixel::raycast::SpriteKind::Red => Color::LightRed,
+                mush_pixel::raycast::SpriteKind::Unknown => Color::Gray,
             };
             let best = c
                 .get("odds")
@@ -623,11 +547,17 @@ pub fn contact_rows(cockpit: &Value, camera_mdeg: i64, utf8: bool) -> Vec<Line<'
                 glyphs(&text, utf8),
                 Style::default().fg(colour),
             )];
+            if c.get("friendly").and_then(Value::as_bool) == Some(true) {
+                spans.push(Span::styled(
+                    " friend",
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
             if lock.is_some() && c.get("id").and_then(Value::as_str) == lock {
                 spans.push(Span::styled(
                     " LOCK",
                     Style::default()
-                        .fg(Color::LightRed)
+                        .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ));
             }
@@ -673,45 +603,97 @@ mod tests {
         );
     }
 
-    /// The doll colours each part by what is left of it: the fixture's
-    /// destroyed right track grey, its worn left track (6 of 24) red, the
-    /// rest green until a facet is worn past a third.
+    /// The colour each doll cell of `row` (a text row) is drawn in: the
+    /// glyph's and its background, for the cell `x` cells into the doll.
+    fn cell_colours(line: &Line<'_>, x: usize) -> (Option<Color>, Option<Color>) {
+        // The first span is the centring pad.
+        let span = &line.spans[1 + x];
+        (span.style.fg, span.style.bg)
+    }
+
+    /// Doc 22 D-22-2: the tank's doll is its look's 24x16 grid in eight
+    /// half-block rows, centred, each cell coloured by what is left of its
+    /// part — the fixture's worn left track (6 of 24) red, its destroyed
+    /// right track grey, its front facet (55 of 80) green until worn past a
+    /// third — then a row a section.
     #[test]
-    fn the_doll_colours_each_part_by_what_is_left() {
-        let c = fixture();
-        assert_eq!(part_colour(&c, Part::RightTrack), Color::DarkGray);
-        assert_eq!(part_colour(&c, Part::LeftTrack), Color::Red);
-        assert_eq!(part_colour(&c, Part::Front), Color::Green, "55 of 80");
-        let mut worn = c.clone();
-        worn["sections"][1]["facets"][0]["armor"] = 40.into();
-        assert_eq!(part_colour(&worn, Part::Front), Color::Yellow, "40 of 80");
-        assert_eq!(part_colour(&c, Part::Rear), Color::Green);
-        assert_eq!(
-            part_colour(&c, Part::LeftSide),
-            Color::Green,
-            "no left facet: the hull's internals"
-        );
-        assert_eq!(part_colour(&c, Part::Turret), Color::Green);
-        let rows = texts(&armour_rows(&c, true));
-        assert_eq!(rows.len(), 6 + 5, "the doll and a row a section");
+    fn the_doll_is_the_looks_grid_coloured_by_what_is_left() {
+        let mut c = fixture();
+        c["unit_type"] = "tacsim.unit.line_tank".into();
+        let lines = armour_rows(&c, true);
+        let rows = texts(&lines);
+        assert_eq!(rows.len(), 8 + 5, "the doll and a row a section");
+        let top = "\u{2580}";
         assert_eq!(
             rows[0],
-            "  \u{2590}\u{258c} \u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584} \u{2590}\u{258c}"
+            format!(" {t}{t}{t} {f} {t}{t}{t}", t = top, f = top.repeat(16))
         );
         assert_eq!(
-            rows[6],
+            cell_colours(&lines[0], 0),
+            (Some(Color::Red), Some(Color::Red))
+        );
+        assert_eq!(
+            cell_colours(&lines[0], 22),
+            (Some(Color::DarkGray), Some(Color::DarkGray))
+        );
+        assert_eq!(
+            cell_colours(&lines[0], 5),
+            (Some(Color::Green), Some(Color::Green))
+        );
+        let mut worn = c.clone();
+        worn["sections"][1]["facets"][0]["armor"] = 40.into();
+        let worn = armour_rows(&worn, true);
+        assert_eq!(cell_colours(&worn[0], 5).0, Some(Color::Yellow), "40 of 80");
+        assert_eq!(
+            rows[8],
             "engine     \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} 40/40"
         );
         assert_eq!(
-            rows[8],
+            rows[10],
             "L track    \u{2588}\u{2588}\u{2591}\u{2591}\u{2591} 6/24"
-        );
-        assert_eq!(
-            rows[9],
-            "R track    \u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 0/24"
         );
         let ascii = texts(&armour_rows(&c, false));
         assert!(ascii.iter().all(|r| r.is_ascii()), "{ascii:?}");
+    }
+
+    /// The biped gets its own, upright doll (the hard-coded tank doll gave it
+    /// none); a unit type with no look gets the section rows alone.
+    #[test]
+    fn a_biped_gets_its_own_doll_and_a_lookless_unit_none() {
+        let section = |id: &str, left: i64| serde_json::json!({ "id": id, "condition": "intact", "internals": left, "internals_max": 100, "facets": [] });
+        let biped = serde_json::json!({
+            "unit_type": "tacsim.unit.biped_mk1",
+            "sections": [
+                section("torso", 100), section("head", 100), section("left_arm", 20),
+                section("right_arm", 100), section("left_leg", 100), section("right_leg", 100)
+            ]
+        });
+        let lines = armour_rows(&biped, true);
+        assert_eq!(lines.len(), 8 + 6);
+        // Row 1 holds grid rows 2 and 3: the left arm at cells 3..7, red.
+        // The arm is red at either tone; the whole torso beside it is green,
+        // in the tone that tells it from the arms and the head.
+        assert!(matches!(
+            cell_colours(&lines[1], 3).0,
+            Some(Color::Red | Color::LightRed)
+        ));
+        let torso = cell_colours(&lines[1], 10);
+        assert!(
+            matches!(torso.0, Some(Color::Green | Color::LightGreen)) && torso.0 == torso.1,
+            "{torso:?}"
+        );
+        assert_ne!(
+            cell_colours(&lines[1], 10).0,
+            cell_colours(&lines[0], 10).0,
+            "the head and the torso touch, so their tones differ"
+        );
+        let mut hauler = biped.clone();
+        hauler["unit_type"] = "tacsim.unit.dray".into();
+        assert_eq!(
+            armour_rows(&hauler, true).len(),
+            6,
+            "no look: sections only"
+        );
     }
 
     #[test]
@@ -735,14 +717,15 @@ mod tests {
 
     /// Nearest first, an arrow for where each lies from the camera (the
     /// fixture faces 045: BA dead ahead, RB at 270 behind-left), the lock
-    /// marked.
+    /// marked, a teammate marked `friend` (doc 22: its colour is its team's,
+    /// red, as the pilot's own is).
     #[test]
     fn the_contacts_point_from_the_camera_nearest_first() {
         let c = fixture();
         assert_eq!(
             texts(&contact_rows(&c, 45_000, true)),
             [
-                "\u{2199} RB  red        100m 270\u{b0}",
+                "\u{2199} RB  red        100m 270\u{b0} friend",
                 "\u{2190} X3  unknown    200m 315\u{b0}",
                 "\u{2191} BA  blue       450m 045\u{b0} 62% LOCK",
                 "\u{2191} X4  unknown    600m 030\u{b0}",

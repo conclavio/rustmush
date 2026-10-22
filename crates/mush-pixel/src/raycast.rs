@@ -195,16 +195,18 @@ pub struct Camera {
     pub heading_mdeg: u32,
 }
 
-/// What a sprite is drawn as.
+/// What a sprite is drawn as: **its team's colour** (doc 22 D-22-3) — the red
+/// team red and the blue team blue whoever is looking, so a pilot on red is
+/// never told that red means enemy; friend or foe is the markers' job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpriteKind {
-    /// A hostile contact.
-    Hostile,
-    /// A friendly contact.
-    Friendly,
-    /// An unclassified contact.
+    /// A contact classified on the red team.
+    Red,
+    /// A contact classified on the blue team.
+    Blue,
+    /// An unclassified contact: a neutral grey.
     Unknown,
-    /// A wreck.
+    /// A wreck: burnt brown, no team.
     Wreck,
 }
 
@@ -250,8 +252,8 @@ pub(crate) enum Base {
     WallDark,
     Woods,
     WoodsHeavy,
-    Hostile,
-    Friendly,
+    Red,
+    Blue,
     Unknown,
     Wreck,
     Outline,
@@ -275,9 +277,9 @@ impl Base {
             Base::WallDark => [104, 104, 112],
             Base::Woods => [40, 84, 44],
             Base::WoodsHeavy => [28, 62, 34],
-            Base::Hostile => [178, 54, 48],
-            Base::Friendly => [64, 124, 204],
-            Base::Unknown => [168, 160, 96],
+            Base::Red => [178, 54, 48],
+            Base::Blue => [64, 124, 204],
+            Base::Unknown => [132, 132, 126],
             Base::Wreck => [72, 62, 52],
             Base::Outline => [18, 18, 22],
         }
@@ -390,8 +392,8 @@ impl Shades {
             Base::WallDark,
             Base::Woods,
             Base::WoodsHeavy,
-            Base::Hostile,
-            Base::Friendly,
+            Base::Red,
+            Base::Blue,
             Base::Unknown,
             Base::Wreck,
             Base::Outline,
@@ -666,8 +668,8 @@ pub(crate) fn draw_sprite(
         return;
     }
     let kind_base = match at.kind {
-        SpriteKind::Hostile => Base::Hostile,
-        SpriteKind::Friendly => Base::Friendly,
+        SpriteKind::Red => Base::Red,
+        SpriteKind::Blue => Base::Blue,
         SpriteKind::Unknown => Base::Unknown,
         SpriteKind::Wreck => Base::Wreck,
     };
@@ -929,8 +931,8 @@ mod tests {
             heading_mdeg: 0,
         };
         let sprites = [
-            Sprite::at_bearing(&cam, 10.0, 30.0, SpriteKind::Hostile),
-            Sprite::at_bearing(&cam, 350.0, 50.0, SpriteKind::Friendly),
+            Sprite::at_bearing(&cam, 10.0, 30.0, SpriteKind::Red),
+            Sprite::at_bearing(&cam, 350.0, 50.0, SpriteKind::Blue),
         ];
         let mut frame = Frame::new(320, 220);
         render(&mut frame, &map, &cam, &sprites);
@@ -975,10 +977,10 @@ mod tests {
             y_cm: 4_500,
             heading_mdeg: 0,
         };
-        let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Hostile)];
+        let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Red)];
         let mut f = Frame::new(320, 220);
         render(&mut f, &map, &cam, &behind);
-        let unfogged = shades.shade(Base::Hostile, 0);
+        let unfogged = shades.shade(Base::Red, 0);
         let count = |f: &Frame, px: Rgb| {
             (0..f.width())
                 .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
@@ -989,7 +991,7 @@ mod tests {
             count(&f, unfogged) >= 8,
             "the bracket in its unfogged colour"
         );
-        let fogged = shades.shade(Base::Hostile, fog_step(11.5));
+        let fogged = shades.shade(Base::Red, fog_step(11.5));
         assert_eq!(count(&f, fogged), 0, "no silhouette through 8 m woods");
         // A 3 m wall instead: the tank (3.5 m) shows its top over it.
         for x in 0..32 {

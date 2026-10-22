@@ -2538,6 +2538,7 @@ mod fixture {
     pub fn frame() -> Frame {
         Frame {
             unit: UNIT,
+            unit_type: "tacsim.unit.line_tank".into(),
             callsign: Designator::Slot {
                 team: Team::Red,
                 slot: 1,
@@ -2604,6 +2605,7 @@ mod fixture {
                     aspect: Aspect::Left,
                     reads_dead: Some(false),
                     fatal: Some(vec![SmolStr::new_static("hull")]),
+                    unit_type: Some("tacsim.unit.line_tank".into()),
                 },
                 // Classified friendly off the mesh: no reading at all, which is
                 // what keeps its chassis out of `scan_tables`.
@@ -2625,6 +2627,7 @@ mod fixture {
                     aspect: Aspect::Front,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: Some("tacsim.unit.line_tank".into()),
                 },
                 // Unknown, standing ON the building block inside the window: its
                 // marker overwrites the wall glyph.
@@ -2644,6 +2647,7 @@ mod fixture {
                     aspect: Aspect::Front,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: None,
                 },
                 // Unknown, plotted north of the window: on `CONTACTS`, not on
                 // the map, and the reason `VIEW` says its one line.
@@ -2661,6 +2665,7 @@ mod fixture {
                     aspect: Aspect::Rear,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: None,
                 },
             ],
             scan_tables: vec![vec![
@@ -4432,6 +4437,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         aspect: tacsim::arena::perception::Aspect::Front,
         reads_dead: None,
         fatal: None,
+        unit_type: None,
     };
     let friend = row(
         0xa1a1_a1a1_a1a1_a1a1,

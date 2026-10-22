@@ -738,7 +738,7 @@ mod tests {
         let tank_at = Sprite {
             x_cm: 32_000,
             y_cm: 30_000,
-            kind: SpriteKind::Hostile,
+            kind: SpriteKind::Red,
         };
         let reddish = |f: &Frame| {
             (0..f.height()).any(|y| {
@@ -765,12 +765,9 @@ mod tests {
                 .filter(|&(x, y)| f.get(x, y) == px)
                 .count()
         };
-        assert_eq!(
-            count(&hidden, shades.shade(Base::Hostile, fog_step(20.0))),
-            0
-        );
+        assert_eq!(count(&hidden, shades.shade(Base::Red, fog_step(20.0))), 0);
         assert!(
-            count(&hidden, shades.shade(Base::Hostile, 0)) >= 8,
+            count(&hidden, shades.shade(Base::Red, 0)) >= 8,
             "the bracket"
         );
     }

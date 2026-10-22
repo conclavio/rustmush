@@ -1,0 +1,39 @@
+{
+  "units": ["tacsim.unit.biped_mk1", "tacsim.unit.biped_mk2"],
+  "label": "Biped",
+  "short": "BP",
+  "weapons": {
+    "cannon": "105",
+    "laser": "LASER",
+    "machine_gun": "MG"
+  },
+  "doll": {
+    "view": "upright",
+    "rows": [
+      "..........hhhh..........",
+      "..........hhhh..........",
+      "...aaaa.tttttttt.bbbb...",
+      "...aaaa.tttttttt.bbbb...",
+      "...aaaa.tttttttt.bbbb...",
+      "...aaaa.tttttttt.bbbb...",
+      "...aaa..tttttttt..bbb...",
+      "...aaa..tttttttt..bbb...",
+      "........llll..rrrr......",
+      "........llll..rrrr......",
+      "........llll..rrrr......",
+      "........llll..rrrr......",
+      "........llll..rrrr......",
+      "........llll..rrrr......",
+      ".......lllll..rrrrr.....",
+      ".......lllll..rrrrr....."
+    ],
+    "legend": {
+      "h": { "section": "head" },
+      "t": { "section": "torso" },
+      "a": { "section": "left_arm" },
+      "b": { "section": "right_arm" },
+      "l": { "section": "left_leg" },
+      "r": { "section": "right_leg" }
+    }
+  }
+}

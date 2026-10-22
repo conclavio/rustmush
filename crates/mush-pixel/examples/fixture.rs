@@ -106,7 +106,7 @@ fn main() {
     let tank = Sprite {
         x_cm: 138_000,
         y_cm: 124_000,
-        kind: SpriteKind::Hostile,
+        kind: SpriteKind::Red,
     };
     let mut relief = Frame::new(640, 480);
     let t3 = Instant::now();

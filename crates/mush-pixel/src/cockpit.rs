@@ -206,21 +206,18 @@ pub fn map_from_feed(map: &Value) -> Map {
     out
 }
 
-/// How a contact is drawn: wreck, friend, classified hostile, or unknown.
+/// How a contact is drawn (doc 22 D-22-3): a wreck, or its team's colour —
+/// the frame's `class` is the team a classified contact is on (`red`,
+/// `blue`) — or unknown. Never by whether it is a friend.
 #[must_use]
 pub fn contact_kind(c: &Value) -> SpriteKind {
     if c.get("reads_dead").and_then(Value::as_bool) == Some(true) {
-        SpriteKind::Wreck
-    } else if c.get("friendly").and_then(Value::as_bool) == Some(true) {
-        SpriteKind::Friendly
-    } else if c
-        .get("class")
-        .and_then(Value::as_str)
-        .is_some_and(|s| s != "?" && !s.is_empty() && s != "unknown")
-    {
-        SpriteKind::Hostile
-    } else {
-        SpriteKind::Unknown
+        return SpriteKind::Wreck;
+    }
+    match c.get("class").and_then(Value::as_str) {
+        Some("red") => SpriteKind::Red,
+        Some("blue") => SpriteKind::Blue,
+        _ => SpriteKind::Unknown,
     }
 }
 
@@ -432,7 +429,15 @@ pub fn draw_instruments(
                 .collect(),
         })
         .collect();
-    overlay::draw_doll(frame, &sections);
+    let doll = cockpit
+        .get("unit_type")
+        .and_then(Value::as_str)
+        .and_then(crate::look::for_unit)
+        .and_then(|look| look.doll.as_ref());
+    let condition = doll
+        .map(|d| d.condition(cockpit.get("sections").unwrap_or(&Value::Null)))
+        .unwrap_or_default();
+    overlay::draw_doll(frame, doll.map(|d| (d, condition.as_slice())), &sections);
 
     // The status strip.
     let lock = cockpit
@@ -560,13 +565,20 @@ mod tests {
         };
         let sprites = contacts_as_sprites(&cockpit, &cam);
         assert_eq!(sprites.len(), 4);
+        // Doc 22 D-22-3: by team, not by friend — RB (the pilot's own red
+        // team) is red and BA blue.
+        assert_eq!(
+            sprites.iter().filter(|s| s.kind == SpriteKind::Red).count(),
+            1,
+            "RB, red"
+        );
         assert_eq!(
             sprites
                 .iter()
-                .filter(|s| s.kind == SpriteKind::Hostile)
+                .filter(|s| s.kind == SpriteKind::Blue)
                 .count(),
             1,
-            "BA alone is classified"
+            "BA, blue"
         );
         assert_eq!(
             sprites

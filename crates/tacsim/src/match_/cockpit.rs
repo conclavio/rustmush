@@ -6464,6 +6464,10 @@ pub fn status_frame_held(
                 // reading would have to show destroyed for `reads_dead`.
                 "aspect": held.map_or("front", |held| held.aspect.as_str()),
                 "fatal": held.and_then(|held| held.fatal.as_ref()),
+                // **Doc 22 D-22-5**: the contact's unit type, its definition
+                // id, from classification on (with its team), `null` before —
+                // the look a renderer draws it with.
+                "unit_type": held.and_then(|held| held.unit_type.as_deref()),
             });
             if armed && let Some(object) = contact.as_object_mut() {
                 // **17b cut M1a.3**: the weapons station's two fields. Every
@@ -6763,6 +6767,11 @@ pub fn status_frame_held(
     // Keep the public objective and own motor facts together. Inserting this
     // block separately keeps the large frame macro within its recursion bound.
     if let Some(object) = payload.as_object_mut() {
+        // **Doc 22**: the pilot's own side and own unit type — never secrets
+        // from the pilot — so a picture draws bodies in team colour and the
+        // doll from the right look.
+        object.insert("team".into(), frame.team.as_str().into());
+        object.insert("unit_type".into(), frame.unit_type.as_str().into());
         object.insert("mode".into(), frame.mode.as_str().into());
         object.insert(
             "objective".into(),
@@ -12386,6 +12395,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             },
             FrameContact {
                 id: ContactId(2),
@@ -12401,6 +12411,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             },
         ];
         frame.lock = Some(ContactId(1));
@@ -12549,6 +12560,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             })
             .collect();
         let lines = ap3_lines(&crowded);
@@ -12641,6 +12653,7 @@ mod tests {
             aspect: crate::arena::perception::Aspect::Front,
             reads_dead: None,
             fatal: None,
+            unit_type: None,
         });
         friendly.lock = Some(ContactId(3));
         assert!(

@@ -114,6 +114,9 @@ pub struct Frame {
     /// pilot's slot was on. The platform's own side is never a secret from its
     /// pilot.
     pub team: Team,
+    /// **Its own unit type** (doc 22): its definition id, which names the look
+    /// its pilot's doll is drawn from. Never a secret from its pilot.
+    pub unit_type: SmolStr,
     /// Where it is.
     pub pose: Pose,
     /// How fast, cm/s; negative is reverse.
@@ -2754,6 +2757,7 @@ impl Arena {
         Some(Frame {
             unit: unit.id,
             team: unit.team,
+            unit_type: SmolStr::new(unit.unit.schema().key().id.as_str()),
             // 16b cut Q.1: the platform's own public name, and the cell
             // it is standing in.
             callsign: unit.callsign,
@@ -4201,6 +4205,8 @@ impl Arena {
                 aspect: Aspect::from_band(facet_band_seen(&held.seen_at, from)),
                 reads_dead,
                 fatal,
+                // Doc 22 D-22-5: the type with the team, never before it.
+                unit_type: held.class.team().map(|_| words.unit_type.clone()),
             });
         }
         (rows, tables)
@@ -6825,6 +6831,7 @@ mod tests {
             aspect: crate::arena::perception::Aspect::Front,
             reads_dead: None,
             fatal: None,
+            unit_type: None,
         }
     }
 
@@ -8808,6 +8815,7 @@ mod tests {
             fatal_mask: 0,
             fatal_words: vec![SmolStr::new_static("turret")],
             section_names: vec![SmolStr::new_static("turret")],
+            unit_type: SmolStr::new_static("tacsim.unit.line_tank"),
         };
         arena.chassis = doctored.into();
         let read = row(&red(&arena), TIE_ID);

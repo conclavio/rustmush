@@ -30,7 +30,7 @@ names the unit it draws, and a contract test holds the two halves to each other 
 
 One JSON pack per unit type, `{manifest, entries: {"tacsim.unit.<id>": {kind: "unit", def}}}`,
 embedded by `crates/tacsim/src/definitions/content.rs`; the struct is `UnitSpec`
-(`definitions/unit.rs`), every level `deny_unknown_fields`. Sixteen types today: the line tank and
+(`definitions/unit.rs`), every level `deny_unknown_fields`. Fourteen types today: the line tank and
 its four variants, `heavy_mk1`, `target_mk1`, `scout_mk1` (wheeled), the walkers `biped_mk1` and
 `biped_mk2` (the "mech"), `drone_mk1`, the `dray` haulers and `tv_prospector`.
 
@@ -98,7 +98,8 @@ the section, and optionally the facet, each character stands for; `.` is empty.
 
 A cell is coloured by what is left of its section (or of its facet, where the legend names one):
 green, yellow, red, grey when gone — the instruments' ramp. `view` is `top` (a vehicle from above,
-front up) or `front` (a walker from in front). Every renderer draws the same grid: the text panel
+front up) or `upright` (a walker standing, drawn with its left on the left, as its pilot thinks of
+it). Every renderer draws the same grid: the text panel
 in half-blocks, two grid rows to a text row (24x16 is 24 columns by 8 rows), the pixel and web
 dolls scaled. Every section the unit has must appear in the grid at least once; every legend
 character must be used and name a section the unit has (and a facet that section has).
@@ -208,7 +209,7 @@ player can write.
 - **D-22-1** The look is a separate file keyed by the unit's definition id, never in the rules pack
   or the hash.
 - **D-22-2** The doll is a grid at most 24x16, rows of characters and a legend of section and
-  facet, `top` or `front` view; every section appears.
+  facet, `top` or `upright` view; every section appears.
 - **D-22-3** Bodies in team colour (red, blue; unknown grey; wreck brown) through three team
   palette slots; friend or foe is the markers'.
 - **D-22-4** Facings front, rear, right (left mirrored), two to four moving frames, a wreck frame,

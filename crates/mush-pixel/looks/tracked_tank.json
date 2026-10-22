@@ -1,0 +1,51 @@
+{
+  "units": [
+    "tacsim.unit.line_tank",
+    "tacsim.unit.line_tank_laser",
+    "tacsim.unit.line_tank_thermal",
+    "tacsim.unit.line_tank_ecm",
+    "tacsim.unit.line_tank_eccm",
+    "tacsim.unit.heavy_mk1",
+    "tacsim.unit.target_mk1"
+  ],
+  "label": "Tracked tank",
+  "short": "TK",
+  "weapons": {
+    "cannon": "105",
+    "laser": "LASER",
+    "machine_gun": "MG",
+    "missiles": "LRM"
+  },
+  "doll": {
+    "view": "top",
+    "rows": [
+      "lll.FFFFFFFTTFFFFFFF.rrr",
+      "lll.FFFFFFFTTFFFFFFF.rrr",
+      "lll.LHHHHHHTTHHHHHHR.rrr",
+      "lll.LHHHHHHTTHHHHHHR.rrr",
+      "lll.LHHHTTTTTTTTHHHR.rrr",
+      "lll.LHHHTTTTTTTTHHHR.rrr",
+      "lll.LHHHTTTTTTTTHHHR.rrr",
+      "lll.LHHHTTTTTTTTHHHR.rrr",
+      "lll.LHHHTTTTTTTTHHHR.rrr",
+      "lll.LHHHHHHHHHHHHHHR.rrr",
+      "lll.LHHHHEEEEEEHHHHR.rrr",
+      "lll.LHHHHEEEEEEHHHHR.rrr",
+      "lll.LHHHHEEEEEEHHHHR.rrr",
+      "lll.LHHHHHHHHHHHHHHR.rrr",
+      "lll.BBBBBBBBBBBBBBBB.rrr",
+      "lll.BBBBBBBBBBBBBBBB.rrr"
+    ],
+    "legend": {
+      "F": { "section": "hull", "facet": "front" },
+      "B": { "section": "hull", "facet": "rear" },
+      "L": { "section": "hull", "facet": "left" },
+      "R": { "section": "hull", "facet": "right" },
+      "H": { "section": "hull" },
+      "T": { "section": "turret" },
+      "E": { "section": "engine" },
+      "l": { "section": "left_track" },
+      "r": { "section": "right_track" }
+    }
+  }
+}
