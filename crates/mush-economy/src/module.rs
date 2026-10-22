@@ -2462,6 +2462,25 @@ impl GameModule for EconomyModule {
             .map_err(|_| {
                 ModError::msg("compatible-update protocol requires exact paired composition")
             })?;
+        // A composition without the service action cannot audit, and must not
+        // boot over, a service closure that an opted-in composition published.
+        let personal_unserved = store.renewal_offers.has_services()
+            && self
+                .state
+                .mind_renewals
+                .as_ref()
+                .is_none_or(|c| c.service_close.is_none());
+        let house_unserved = store.house_renewal_offers.has_services()
+            && self
+                .state
+                .house_mind_renewals
+                .as_ref()
+                .is_none_or(|c| c.service_close.is_none());
+        if personal_unserved || house_unserved {
+            return Err(ModError::msg(
+                "renewal service closure requires the service-enabled composition",
+            ));
+        }
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly
         // when it crosses the line the owner drew.

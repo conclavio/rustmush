@@ -248,6 +248,10 @@ impl OfferBook {
     pub(super) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
         self.rows.keys().copied()
     }
+    /// Any retained service closure needs the service action in this composition.
+    pub(crate) fn has_services(&self) -> bool {
+        !self.services.is_empty()
+    }
     pub(super) fn service(&self, operation: CommitToken) -> Option<&super::service::ServiceRecord> {
         self.services.get(&operation)
     }
