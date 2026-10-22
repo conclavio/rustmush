@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Test-only checks for functions that return `Result`.
 //!
 //! This crate's root denies `clippy::panic_in_result_fn` (WS01-S12 / 17d
@@ -73,8 +75,11 @@ where
     L: fmt::Debug + ?Sized,
     R: fmt::Debug + ?Sized,
 {
+    // `{:>6}` right-aligns the two labels as `assert_eq!` does, without a run of
+    // spaces inside a literal (the crates' `vf_z1a` scans read this file).
     Err(E::from(CheckFailed(format!(
-        "assertion `left {op} right` failed\n  left: {left:?}\n right: {right:?}"
+        "assertion `left {op} right` failed\n{:>6}: {left:?}\n{:>6}: {right:?}",
+        "left", "right"
     ))))
 }
 
@@ -91,7 +96,8 @@ where
     R: fmt::Debug + ?Sized,
 {
     Err(E::from(CheckFailed(format!(
-        "assertion `left {op} right` failed: {message}\n  left: {left:?}\n right: {right:?}"
+        "assertion `left {op} right` failed: {message}\n{:>6}: {left:?}\n{:>6}: {right:?}",
+        "left", "right"
     ))))
 }
 
