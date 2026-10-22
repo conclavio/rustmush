@@ -195,16 +195,32 @@ fn contract(w: &PlayerWorld, id: ContractId) -> TestResult<EconomicContract> {
         .ok_or_else(|| "actual contract".into())
 }
 fn draft(w: &mut PlayerWorld, actor: ObjId, name: &str) -> TestResult<ContractId> {
-    w.say(actor, &format!("@contract/draft {name}"))?;
-    w.engine
+    let reply = w.say(actor, &format!("@contract/draft {name}"))?;
+    let snapshot = w
+        .engine
         .world
         .module_state::<mush_economy::EconomyStore>()
         .ok_or("Economy")?
-        .snapshot()
+        .snapshot();
+    let issuer = mush_org::PrincipalId::Object(actor);
+    let id = snapshot
         .contracts()
+        .filter(|c| c.issuer == issuer)
         .map(|c| c.id)
         .max()
-        .ok_or_else(|| "actual draft".into())
+        .ok_or("actual draft")?;
+    let open: Vec<_> = snapshot
+        .contracts()
+        .filter(|c| c.issuer == issuer && !c.state.is_terminal())
+        .map(|c| (c.id, c.name.clone(), c.state.clone()))
+        .collect();
+    let drafted = snapshot.contract(id).is_some_and(|c| c.name == name);
+    assert!(
+        drafted,
+        "{actor:?} draft refused: {}; open as issuer: {open:?}",
+        PlayerWorld::private_text(&reply, actor)
+    );
+    Ok(id)
 }
 fn acct(w: &PlayerWorld, actor: ObjId) -> TestResult<mush_economy::AccountId> {
     let snapshot = w
