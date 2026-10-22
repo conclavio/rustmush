@@ -91,8 +91,8 @@ fn explicit_pending_consent_rejects_old_or_crossed_actions_and_identity() -> Res
             10 => row.terms.owner_term.generation = 0,
             _ => row.terms.owner_term.grace_end = row.terms.owner_term.term_end - 1,
         }
-        assert!(row.validate().is_err());
-        assert!(
+        check!(row.validate().is_err());
+        check!(
             serde_json::from_value::<CharterPendingConsentV1>(serde_json::to_value(row)?).is_err()
         );
     }
@@ -101,17 +101,17 @@ fn explicit_pending_consent_rejects_old_or_crossed_actions_and_identity() -> Res
 #[test]
 fn deadline_is_positive_and_term_cap_may_already_be_due() -> Result {
     let mut row = sample()?;
-    assert!(!row.deadline_reached(&stamp(209))?);
-    assert!(row.deadline_reached(&stamp(210))?);
-    assert!(row.deadline_reached(&stamp(300))?);
+    check!(!row.deadline_reached(&stamp(209))?);
+    check!(row.deadline_reached(&stamp(210))?);
+    check!(row.deadline_reached(&stamp(300))?);
     row.terms.owner_term.term_end = 105;
     row.deadline = row.terms.deadline(&row.accepted_at_ic)?;
-    assert_eq!(row.deadline.at, 105);
-    assert!(row.deadline_reached(&row.accepted_at_ic)?);
-    assert!(row.deadline_reached(&stamp(109)).is_err());
+    check_eq!(row.deadline.at, 105);
+    check!(row.deadline_reached(&row.accepted_at_ic)?);
+    check!(row.deadline_reached(&stamp(109)).is_err());
     let mut changed = stamp(210);
     changed.clock = ClockRef::WorldIc { generation: 2 };
-    assert!(row.deadline_reached(&changed).is_err());
+    check!(row.deadline_reached(&changed).is_err());
     // A different clock cannot be passed to this settlement predicate. A real
     // separate owner-proved ClockChanged refund must handle it later.
     Ok(())
@@ -131,7 +131,7 @@ fn exact_deadline_and_offer_clocks_are_not_caller_extension_fields() -> Result {
             6 => row.terms.settle_seconds = 0,
             _ => row.terms.settle_seconds = 259201,
         }
-        assert!(row.validate().is_err());
+        check!(row.validate().is_err());
     }
     let mut at = good;
     at.accepted_at_utc = at.terms.expires_at_utc - 1;
@@ -144,7 +144,7 @@ fn bounded_strict_decoder_retains_explicit_fields_and_canonical_bytes() -> Resul
     let value = serde_json::to_value(&good)?;
     let raw =
         mush_core::canonical_json_bytes_with_limit(&value, MAX_CHARTER_PENDING_SUBJECT_BYTES)?;
-    assert_eq!(CharterPendingConsentV1::decode(&raw)?, good);
+    check_eq!(CharterPendingConsentV1::decode(&raw)?, good);
     for pointer in [
         "/terms/owner_term",
         "/terms/ownership",
@@ -153,7 +153,7 @@ fn bounded_strict_decoder_retains_explicit_fields_and_canonical_bytes() -> Resul
     ] {
         let mut v = value.clone();
         *v.pointer_mut(pointer).ok_or("field")? = serde_json::Value::Null;
-        assert!(serde_json::from_value::<CharterPendingConsentV1>(v).is_err());
+        check!(serde_json::from_value::<CharterPendingConsentV1>(v).is_err());
     }
     let mut extra = value.clone();
     extra
@@ -161,11 +161,11 @@ fn bounded_strict_decoder_retains_explicit_fields_and_canonical_bytes() -> Resul
         .and_then(|v| v.as_object_mut())
         .ok_or("terms")?
         .insert("source".into(), json!("not authority"));
-    assert!(serde_json::from_value::<CharterPendingConsentV1>(extra).is_err());
+    check!(serde_json::from_value::<CharterPendingConsentV1>(extra).is_err());
     let mut padded = raw.clone();
     padded.push(b' ');
-    assert!(CharterPendingConsentV1::decode(&padded).is_err());
-    assert!(
+    check!(CharterPendingConsentV1::decode(&padded).is_err());
+    check!(
         CharterPendingConsentV1::decode(&vec![b' '; MAX_CHARTER_PENDING_SUBJECT_BYTES + 1])
             .is_err()
     );
@@ -200,7 +200,7 @@ pub(super) fn maximum_consent() -> Result<CharterPendingConsentV1> {
     row.terms.expires_at_utc = i64::MAX;
     row.accepted_at_utc = i64::MAX - 10;
     row.deadline = row.terms.deadline(&row.accepted_at_ic)?;
-    assert_eq!(row.deadline.at, i64::MAX - 1);
+    check_eq!(row.deadline.at, i64::MAX - 1);
     row.terms.offer_action = DefinitionRef::new(
         row.terms.offer_action.key().clone(),
         2,
@@ -227,7 +227,7 @@ pub(super) fn maximum_consent() -> Result<CharterPendingConsentV1> {
     }
     row.terms.instrument = InstrumentId::new("i".repeat(low)).ok_or("instrument")?;
     row.validate()?;
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&row)?.len(),
         MAX_CHARTER_PENDING_SUBJECT_BYTES
     );
@@ -239,8 +239,8 @@ fn maximum_scalar_consent_and_saturating_term_cap_fit_exact_subject_limit() -> R
     let value = serde_json::to_value(&row)?;
     let raw =
         mush_core::canonical_json_bytes_with_limit(&value, MAX_CHARTER_PENDING_SUBJECT_BYTES)?;
-    assert!(raw.len() <= MAX_CHARTER_PENDING_SUBJECT_BYTES);
-    assert_eq!(CharterPendingConsentV1::decode(&raw)?, row);
+    check!(raw.len() <= MAX_CHARTER_PENDING_SUBJECT_BYTES);
+    check_eq!(CharterPendingConsentV1::decode(&raw)?, row);
     // Account zero is a real account identity, never a sentinel.
     row.payer = AccountId(0);
     row.validate()?;
@@ -265,7 +265,7 @@ fn retained_decision_keeps_deadline_clock_and_exact_term_refund_causes_separate(
     good.matches_consent(&consent)?;
     let mut early = good.clone();
     early.at_ic.at = 209;
-    assert!(early.matches_consent(&consent).is_err());
+    check!(early.matches_consent(&consent).is_err());
     let mut last = good.clone();
     last.reason = CharterPendingDecisionKindV1::LastClaimClosed { next_transition: 9 };
     last.at_ic.at = 110;
@@ -273,7 +273,7 @@ fn retained_decision_keeps_deadline_clock_and_exact_term_refund_causes_separate(
     let mut changed = good.clone();
     changed.action = action(REFUND_ACTION, 1)?;
     changed.reason = CharterPendingDecisionKindV1::ClockChanged;
-    assert!(changed.matches_consent(&consent).is_err());
+    check!(changed.matches_consent(&consent).is_err());
     changed.at_ic.clock = ClockRef::WorldIc { generation: 2 };
     changed.at_ic.at = 0;
     changed.matches_consent(&consent)?;
@@ -290,10 +290,10 @@ fn retained_decision_keeps_deadline_clock_and_exact_term_refund_causes_separate(
     if let CharterPendingDecisionKindV1::RegistryRevoked { generation, .. } = &mut crossed.reason {
         *generation += 1;
     }
-    assert!(crossed.matches_consent(&consent).is_err());
+    check!(crossed.matches_consent(&consent).is_err());
     crossed = revoked;
     crossed.posted_at_utc = consent.accepted_at_utc - 1;
-    assert!(crossed.matches_consent(&consent).is_err());
+    check!(crossed.matches_consent(&consent).is_err());
     // None of these structurally valid values proves a claim census, actor
     // capability or sanction: actual registered owner preparation must join it.
     Ok(())

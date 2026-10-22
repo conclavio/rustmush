@@ -200,7 +200,7 @@ fn house_fixture() -> Result<(Box<Fixture>, ObjId, OrgId, OrgScopeId)> {
         .next()
         .ok_or("actual scope")?
         .id;
-    assert_eq!(scope, OrgScopeId(0), "actual first scope allocator");
+    check_eq!(scope, OrgScopeId(0), "actual first scope allocator");
     let first = f.actor;
     policy_command(&mut f, first, scope, "birth")?;
     let initial = f.rules.house_initial.clone().ok_or("House initial")?;
@@ -274,8 +274,8 @@ fn house_update_charges_real_scoped_treasury_for_current_curator_without_title_e
     let before = f.state().snapshot.clone();
     let title = before.asset(f.shell).ok_or("House title")?.clone();
     let birth = serde_json::to_value(f.state().filing_receipt_audit())?;
-    assert_ne!(curator, f.actor);
-    assert!(
+    check_ne!(curator, f.actor);
+    check!(
         !mush_org::authorize_in_world(
             f.world.world(),
             &AuthRequest {
@@ -289,15 +289,15 @@ fn house_update_charges_real_scoped_treasury_for_current_curator_without_title_e
         .is_allow(),
         "fee-only update needs no title transfer right"
     );
-    assert!(
+    check!(
         update(&mut f, GOD, org, scope, 2).is_err(),
         "no staff fallback"
     );
     let action = f.rules.house_update.clone().ok_or("action")?;
     let p = update(&mut f, curator, org, scope, 2)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     let writes = f.stage(action, 2, p)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     let actual = prepared_receipt(
         &writes,
         &f.rules,
@@ -308,17 +308,17 @@ fn house_update_charges_real_scoped_treasury_for_current_curator_without_title_e
     f.take_install()?;
     actual.verify(f.state())?;
     let subject = receipt_for(&f, 2)?;
-    assert_eq!(subject.kind, Some(UpdateKind::HouseCompatibleV1));
-    assert_eq!(
+    check_eq!(subject.kind, Some(UpdateKind::HouseCompatibleV1));
+    check_eq!(
         subject.house,
         Some(HouseFilingAttribution::new(curator, org, scope)?)
     );
-    assert_eq!(f.state().snapshot.asset(f.shell), Some(&title));
-    assert_eq!(
+    check_eq!(f.state().snapshot.asset(f.shell), Some(&title));
+    check_eq!(
         serde_json::to_value(f.state().filing_receipt_audit())?,
         birth
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(1))
@@ -326,7 +326,7 @@ fn house_update_charges_real_scoped_treasury_for_current_curator_without_title_e
             .posted_balance,
         Amount::from_minor(9800)
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(2))
@@ -334,16 +334,16 @@ fn house_update_charges_real_scoped_treasury_for_current_curator_without_title_e
             .posted_balance,
         Amount::from_minor(200)
     );
-    assert!(!writes.iter().any(
+    check!(!writes.iter().any(
         |w| matches!(w,ReplayWrite::ModuleJsonSet{key,..} if key.as_str().starts_with("asset:"))
     ));
     let tx = f
         .state()
         .transaction(subject.transaction)
         .ok_or("native transaction")?;
-    assert_eq!(receipt::subject_of(tx)?, subject);
-    assert_eq!(tx.idempotency.namespace.as_str(), receipt::HOUSE_NAMESPACE);
-    assert_eq!(
+    check_eq!(receipt::subject_of(tx)?, subject);
+    check_eq!(tx.idempotency.namespace.as_str(), receipt::HOUSE_NAMESPACE);
+    check_eq!(
         crate::contract::managed::require_legacy_transaction(tx, &f.state().snapshot),
         Err(crate::EconomyError::ManagedContract)
     );
@@ -408,23 +408,23 @@ fn house_update_repeats_scoped_authorization_readiness_and_money_at_all_custody_
             let before = f.state().snapshot.clone();
             let next = f.state().next_transaction;
             match phase {
-                0 => assert!(
+                0 => check!(
                     update(&mut f, curator, org, scope, 2).is_err(),
                     "prepare {drift}"
                 ),
-                1 => assert!(
+                1 => check!(
                     f.stage(action, 2, prepared.take().ok_or("prepared")?)
                         .is_err(),
                     "stage {drift}"
                 ),
-                _ => assert!(
+                _ => check!(
                     f.world.engine_mut().take_staged_action().is_err(),
                     "take {drift}"
                 ),
             }
-            assert_eq!(f.state().snapshot, before);
-            assert_eq!(f.state().next_transaction, next);
-            assert_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
+            check_eq!(f.state().snapshot, before);
+            check_eq!(f.state().next_transaction, next);
+            check_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
         }
     }
     Ok(())
@@ -444,14 +444,14 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
         .ok_or("actual cold economy")?
         .update_receipt_audit()
         .verify(&subject)?;
-    assert!(cold(&f, &derived_rules()?).is_err());
+    check!(cold(&f, &derived_rules()?).is_err());
     let tx = f
         .state()
         .transaction(subject.transaction)
         .ok_or("transaction")?;
     let audit = f.state().update_receipt_audit();
     audit.require_all_protocols(true, true, false, true)?;
-    assert!(audit.require_protocols(true, true, true).is_err());
+    check!(audit.require_protocols(true, true, true).is_err());
     let rows = vec![crate::checkpoint::IdemRow {
         ns: receipt::HOUSE_NAMESPACE.into(),
         key: subject.commit.to_hex().into(),
@@ -464,17 +464,17 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
         posted_at: subject.posted_at_utc,
         seq: subject.journal_seq,
     }];
-    assert!(audit.checkpoint_complete(&rows));
-    assert!(!audit.checkpoint_complete(&[]));
-    assert!(!UpdateReceiptAudit::default().checkpoint_complete(&rows));
+    check!(audit.checkpoint_complete(&rows));
+    check!(!audit.checkpoint_complete(&[]));
+    check!(!UpdateReceiptAudit::default().checkpoint_complete(&rows));
     let mut wrong = rows.clone();
     wrong.first_mut().ok_or("row")?.ns = receipt::NAMESPACE.into();
-    assert!(!audit.checkpoint_complete(&wrong));
+    check!(!audit.checkpoint_complete(&wrong));
     let mut crossed = tx.clone();
     crossed.idempotency.namespace = receipt::NAMESPACE.into();
     let mut invalid = UpdateReceiptAudit::default();
     invalid.observe(&crossed);
-    assert!(invalid.finish_replay().is_err());
+    check!(invalid.finish_replay().is_err());
     for change in 0..4 {
         let mut value = serde_json::to_value(&subject)?;
         match change {
@@ -486,7 +486,7 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
             _ => value["house"]["curator"] = json!(GOD),
         };
         let parsed = serde_json::from_value::<UpdateAuditSubject>(value);
-        assert!(parsed.is_err() || parsed.is_ok_and(|r| r.validate().is_err()));
+        check!(parsed.is_err() || parsed.is_ok_and(|r| r.validate().is_err()));
     }
     let mut personal = Fixture::new_derived()?;
     for (a, n) in [
@@ -496,7 +496,7 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
         let actor = personal.actor;
         let p = personal.prepare(&a, actor, n)?;
         personal.publish(a, n, p)?;
-        assert!(
+        check!(
             serde_json::to_value(receipt_for(&personal, n)?)?
                 .get("house")
                 .is_none()
@@ -517,7 +517,7 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
         AccountId(u64::MAX - 1),
         Some(&h),
     );
-    assert!(cause.len() <= 192);
+    check!(cause.len() <= 192);
     Ok(())
 }
 
@@ -531,9 +531,9 @@ fn house_update_requires_exact_registration_and_initial_policy_in_either_owner_o
         }
         let _engine = registered(m)?;
     }
-    assert!(registered(modules(&r, 0)).is_err());
+    check!(registered(modules(&r, 0)).is_err());
     let action = r.house_update.clone().ok_or("action")?;
-    assert!(
+    check!(
         registered(vec![Box::new(
             crate::EconomyModule::new().with_house_mind_updates(action)
         )])
@@ -549,6 +549,6 @@ fn house_update_requires_exact_registration_and_initial_policy_in_either_owner_o
             .with_house_initial_filing(r.house_initial.clone().ok_or("initial")?)
             .with_house_mind_updates(r.update.clone()),
     ));
-    assert!(registered(wrong).is_err());
+    check!(registered(wrong).is_err());
     Ok(())
 }

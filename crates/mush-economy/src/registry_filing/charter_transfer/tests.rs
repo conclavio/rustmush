@@ -594,9 +594,9 @@ fn native_sale_commits_buyer_money_and_title_together_preserving_birth() -> Resu
     let before_birth = serde_json::to_value(f.state().filing_receipt_audit())?;
     let title = before.asset(f.shell).ok_or("title")?.clone();
     let p = f.update(2)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     let writes = f.stage(f.rules.update.clone(), 2, p)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     f.take_install()?;
     let subject = f
         .state()
@@ -608,20 +608,20 @@ fn native_sale_commits_buyer_money_and_title_together_preserving_birth() -> Resu
     f.state()
         .charter_transfer_receipt_audit()
         .verify(&subject)?;
-    assert_eq!(subject.seller, f.actor);
-    assert_eq!(subject.buyer, f.buyer);
-    assert_eq!(subject.title_revision, title.revision);
-    assert_eq!(subject.title.revision, title.revision + 1);
-    assert_eq!(subject.title.catalog, title.catalog);
-    assert_eq!(subject.title.title_owner, PrincipalId::Object(f.buyer));
-    assert_eq!(f.state().snapshot.asset(f.shell), Some(&subject.title));
-    assert_eq!(
+    check_eq!(subject.seller, f.actor);
+    check_eq!(subject.buyer, f.buyer);
+    check_eq!(subject.title_revision, title.revision);
+    check_eq!(subject.title.revision, title.revision + 1);
+    check_eq!(subject.title.catalog, title.catalog);
+    check_eq!(subject.title.title_owner, PrincipalId::Object(f.buyer));
+    check_eq!(f.state().snapshot.asset(f.shell), Some(&subject.title));
+    check_eq!(
         serde_json::to_value(f.state().filing_receipt_audit())?,
         before_birth
     );
-    assert_eq!(f.state().snapshot.managed_titles, before.managed_titles);
+    check_eq!(f.state().snapshot.managed_titles, before.managed_titles);
     for (id, value) in [(1, 10_400), (2, 100), (3, 9500)] {
-        assert_eq!(
+        check_eq!(
             f.state()
                 .snapshot
                 .account(AccountId(id))
@@ -630,7 +630,7 @@ fn native_sale_commits_buyer_money_and_title_together_preserving_birth() -> Resu
             Amount::from_minor(value)
         );
     }
-    assert_eq!(
+    check_eq!(
         writes.len(),
         7,
         "native journal, two accounts, title, key, meta and typed witness"
@@ -639,17 +639,17 @@ fn native_sale_commits_buyer_money_and_title_together_preserving_birth() -> Resu
         .state()
         .transaction(subject.transaction)
         .ok_or("native transaction")?;
-    assert_eq!(receipt::subject_of(tx)?, subject);
+    check_eq!(receipt::subject_of(tx)?, subject);
     let mut replay = CharterTransferReceiptAudit::default();
     let mut history: Vec<_> = f.state().transactions.values().collect();
     history.sort_by_key(|t| t.journal_seq);
     for entry in history {
         replay.observe(entry);
     }
-    assert!(replay.verify(&subject).is_err());
+    check!(replay.verify(&subject).is_err());
     replay.finish_replay()?;
     replay.verify(&subject)?;
-    assert!(
+    check!(
         f.update(3).is_err(),
         "old seller never retains transfer authority"
     );
@@ -698,16 +698,16 @@ fn sale_rechecks_title_money_and_birth_at_both_custody_boundaries() -> Result {
             let before = f.state().snapshot.clone();
             let next = f.state().next_transaction;
             if at_take {
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             } else {
-                assert!(
+                check!(
                     f.stage(action, 2, prepared.take().ok_or("preparation")?)
                         .is_err()
                 );
             }
-            assert_eq!(f.state().snapshot, before);
-            assert_eq!(f.state().next_transaction, next);
-            assert_eq!(
+            check_eq!(f.state().snapshot, before);
+            check_eq!(f.state().next_transaction, next);
+            check_eq!(
                 f.state().charter_transfer_receipt_audit().receipts()?.len(),
                 0
             );
@@ -723,10 +723,10 @@ fn sale_requires_actual_buyer_personal_payer_and_exact_registered_action() -> Re
     let seller = f.actor;
     let buyer = f.buyer;
     let other = f.world.spawn_player("Unrelated buyer");
-    assert!(f.prepare(&action, seller, 2).is_err());
-    assert!(f.prepare(&action, other, 2).is_err());
+    check!(f.prepare(&action, seller, 2).is_err());
+    check!(f.prepare(&action, other, 2).is_err());
     let wrong = f.rules.wrong.clone();
-    assert!(f.prepare(&wrong, buyer, 2).is_err());
+    check!(f.prepare(&wrong, buyer, 2).is_err());
     for id in [1, 3] {
         let original = f
             .state()
@@ -739,7 +739,7 @@ fn sale_requires_actual_buyer_personal_payer_and_exact_registered_action() -> Re
             .account_mut(AccountId(id))
             .ok_or("account")?
             .owner = PrincipalId::Object(other);
-        assert!(f.update(2).is_err());
+        check!(f.update(2).is_err());
         *f.state_mut()
             .snapshot
             .account_mut(AccountId(id))
@@ -758,9 +758,9 @@ fn sale_requires_actual_buyer_personal_payer_and_exact_registered_action() -> Re
         window: None,
     });
     let before = f.state().snapshot.clone();
-    assert!(f.update(2).is_err());
-    assert_eq!(f.state().snapshot, before);
-    assert_eq!(
+    check!(f.update(2).is_err());
+    check_eq!(f.state().snapshot, before);
+    check_eq!(
         f.state().charter_transfer_receipt_audit().receipts()?.len(),
         0
     );
@@ -780,21 +780,21 @@ fn sale_cold_replay_preserves_exact_title_and_requires_paired_recovery() -> Resu
         .ok_or("receipt")?
         .clone();
     let mut cold = Fixture::empty()?;
-    assert_eq!(cold.shell, f.shell);
-    assert_eq!(cold.buyer, f.buyer);
+    check_eq!(cold.shell, f.shell);
+    check_eq!(cold.buyer, f.buyer);
     cold.world.try_modules_loaded(f.boot.clone())?;
     cold.state()
         .charter_transfer_receipt_audit()
         .verify(&subject)?;
-    assert_eq!(
+    check_eq!(
         cold.state().snapshot.asset(f.shell),
         f.state().snapshot.asset(f.shell)
     );
-    assert_eq!(
+    check_eq!(
         cold.state().snapshot.managed_titles,
         f.state().snapshot.managed_titles
     );
-    assert_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
+    check_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
     let mut disabled = TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(crate::EconomyModule::new().with_title_issuers(vec![
@@ -806,12 +806,12 @@ fn sale_cold_replay_preserves_exact_title_and_requires_paired_recovery() -> Resu
         .try_modules_loaded(f.boot)
         .err()
         .ok_or("disabled sale history must refuse")?;
-    assert!(
+    check!(
         error
             .to_string()
             .contains("charter-transfer history requires paired recovery")
     );
-    assert!(disabled.take_module_ops().is_empty());
+    check!(disabled.take_module_ops().is_empty());
     Ok(())
 }
 
@@ -835,21 +835,21 @@ fn sale_history_checks_complete_inverse_and_rejects_crossed_native_title() -> Re
         seq: subject.journal_seq,
     };
     let mut rows = journal_rows(&f);
-    assert!(audit.checkpoint_complete(&rows));
-    assert!(
+    check!(audit.checkpoint_complete(&rows));
+    check!(
         !audit.checkpoint_complete(std::slice::from_ref(&row)),
         "filing inverse missing"
     );
-    assert!(!audit.checkpoint_complete(&[]));
-    assert!(!audit.checkpoint_complete(&[row.clone(), row.clone()]));
-    assert!(!CharterTransferReceiptAudit::default().checkpoint_complete(&[row]));
-    assert!(CharterTransferReceiptAudit::default().checkpoint_complete(&[]));
+    check!(!audit.checkpoint_complete(&[]));
+    check!(!audit.checkpoint_complete(&[row.clone(), row.clone()]));
+    check!(!CharterTransferReceiptAudit::default().checkpoint_complete(&[row]));
+    check!(CharterTransferReceiptAudit::default().checkpoint_complete(&[]));
     let tx = f
         .state()
         .transaction(subject.transaction)
         .ok_or("transaction")?;
     rows.retain(|r| r.ns.as_str() != receipt::NAMESPACE);
-    assert!(!audit.checkpoint_complete(&rows));
+    check!(!audit.checkpoint_complete(&rows));
     for change in 0..7 {
         let mut bad = tx.clone();
         match change {
@@ -885,9 +885,9 @@ fn sale_history_checks_complete_inverse_and_rejects_crossed_native_title() -> Re
             replay.observe(entry);
         }
         replay.observe(&bad);
-        assert!(replay.finish_replay().is_err());
+        check!(replay.finish_replay().is_err());
         replay.observe(tx);
-        assert!(replay.finish_replay().is_err());
+        check!(replay.finish_replay().is_err());
     }
     Ok(())
 }
@@ -931,7 +931,7 @@ fn legacy_managed_title_mutation_cannot_disappear_from_native_namespace_census()
     };
     let mut audit = before_sale.clone();
     audit.observe(&old_generic);
-    assert!(
+    check!(
         audit.finish_replay().is_err(),
         "old generic transfer must poison managed lineage"
     );
@@ -945,14 +945,14 @@ fn legacy_managed_title_mutation_cannot_disappear_from_native_namespace_census()
         mutation.asset_effects.get_mut(0).ok_or("effect")?.kind = kind;
         let mut audit = before_sale.clone();
         audit.observe(&mutation);
-        assert!(audit.finish_replay().is_err());
+        check!(audit.finish_replay().is_err());
     }
     let rows = journal_rows(&f);
     let mut missing = serde_json::to_value(f.state().charter_transfer_receipt_audit())?;
     missing.as_object_mut().ok_or("audit")?.remove("lineages");
     let missing: CharterTransferReceiptAudit = serde_json::from_value(missing)?;
-    assert!(!missing.checkpoint_complete(&rows));
-    assert!(!CharterTransferReceiptAudit::default().checkpoint_complete(&rows));
+    check!(!missing.checkpoint_complete(&rows));
+    check!(!CharterTransferReceiptAudit::default().checkpoint_complete(&rows));
     Ok(())
 }
 
@@ -987,7 +987,7 @@ fn public_post_and_exact_key_retries_never_gain_private_title_authority() -> Res
             spent: BTreeMap::new(),
             keys: &gate,
         };
-        assert!(matches!(
+        check!(matches!(
             crate::engine::validate(&plan, &f.state().snapshot, &env),
             PlanResult::Refused(crate::EconomyError::ManagedContract)
         ));

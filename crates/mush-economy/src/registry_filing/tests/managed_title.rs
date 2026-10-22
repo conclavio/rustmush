@@ -32,9 +32,9 @@ fn actual_filed_charter_refuses_every_generic_title_and_collateral_escape() -> T
     let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
     let (_, patch, _) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    assert!(!state.snapshot.managed_titles.contains(shell));
+    check!(!state.snapshot.managed_titles.contains(shell));
     Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
-    assert!(state.snapshot.managed_titles.contains(shell));
+    check!(state.snapshot.managed_titles.contains(shell));
     let before = state.snapshot.clone();
     let mut operations = vec![
         AssetOp::TransferTitle {
@@ -78,13 +78,13 @@ fn actual_filed_charter_refuses_every_generic_title_and_collateral_escape() -> T
         });
     }
     for operation in operations {
-        assert!(matches!(
+        check!(matches!(
             crate::validate(&plan(operation), &state.snapshot, &unrestricted()),
             PlanResult::Refused(crate::EconomyError::Unauthorized)
         ));
     }
-    assert_eq!(state.snapshot, before);
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 1);
+    check_eq!(state.snapshot, before);
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 1);
     Ok(())
 }
 
@@ -100,7 +100,7 @@ fn birth_identity_outlives_mutable_title_fields_and_catalogue_text_is_not_author
     changed.lifecycle = crate::AssetLifecycle::WrittenOff;
     changed.title_owner = PrincipalId::Object(GOD);
     state.snapshot.put_asset(changed.clone());
-    assert!(matches!(
+    check!(matches!(
         crate::validate(
             &plan(AssetOp::Title {
                 object: shell,
@@ -122,7 +122,7 @@ fn birth_identity_outlives_mutable_title_fields_and_catalogue_text_is_not_author
         code: "mind_charter".into(),
     });
     state.snapshot.put_asset(changed);
-    assert!(matches!(
+    check!(matches!(
         crate::validate(
             &plan(AssetOp::TransferTitle {
                 object: ordinary,
@@ -149,11 +149,11 @@ fn managed_title_projection_requires_complete_actual_receipt_replay() -> TestRes
             .transaction(output.transaction())
             .ok_or("transaction")?,
     );
-    assert!(crate::managed_title::ManagedTitleIndex::from_filings(&audit).is_err());
+    check!(crate::managed_title::ManagedTitleIndex::from_filings(&audit).is_err());
     audit.finish_replay()?;
     let rebuilt = crate::managed_title::ManagedTitleIndex::from_filings(&audit)?;
-    assert_eq!(rebuilt, state.snapshot.managed_titles);
+    check_eq!(rebuilt, state.snapshot.managed_titles);
     let decoded: ReceiptAudit = serde_json::from_slice(&serde_json::to_vec(&audit)?)?;
-    assert!(crate::managed_title::ManagedTitleIndex::from_filings(&decoded).is_err());
+    check!(crate::managed_title::ManagedTitleIndex::from_filings(&decoded).is_err());
     Ok(())
 }

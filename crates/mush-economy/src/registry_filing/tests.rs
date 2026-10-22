@@ -109,18 +109,18 @@ fn assert_inert_filing_images(
     let before_filter = state.key_filter.clone();
     let (output, patch, writes) =
         adapter.prepare_images(state, world, actor, commit(), request(actor, shell))?;
-    assert_eq!(state.snapshot, before);
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
-    assert_eq!(
+    check_eq!(state.snapshot, before);
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
+    check_eq!(
         writes.len(),
         6,
         "journal, two accounts, title, key and allocator travel together"
     );
-    assert!(writes.iter().all(|write| adapter.accepts_write(write)));
+    check!(writes.iter().all(|write| adapter.accepts_write(write)));
     drop(Arc::new(adapter.clone()).bind(state, patch.into())?);
-    assert_eq!(state.snapshot, before);
-    assert_eq!(state.fold, before_fold);
-    assert_eq!(state.key_filter, before_filter);
+    check_eq!(state.snapshot, before);
+    check_eq!(state.fold, before_fold);
+    check_eq!(state.key_filter, before_filter);
     Ok(Box::new(output))
 }
 
@@ -133,30 +133,30 @@ fn exact_images_are_inert_until_bound_apply_and_match_actual_state() -> TestResu
     Arc::new(adapter.as_ref().clone())
         .bind(&mut state, patch.into())?
         .apply();
-    assert_eq!(
+    check_eq!(
         state
             .snapshot
             .account(AccountId(0))
             .map(|a| a.posted_balance),
         Some(Amount::from_minor(9_900))
     );
-    assert_eq!(
+    check_eq!(
         state
             .snapshot
             .account(AccountId(1))
             .map(|a| a.posted_balance),
         Some(Amount::from_minor(100))
     );
-    assert_eq!(state.snapshot.asset(shell), Some(output.title()));
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 1);
-    assert_eq!(state.next_transaction, 1);
+    check_eq!(state.snapshot.asset(shell), Some(output.title()));
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 1);
+    check_eq!(state.next_transaction, 1);
     for write in writes {
         if let ReplayWrite::ModuleJsonSet { key, value, .. } = write {
             if key.as_str() == asset_key(shell) {
-                assert_eq!(value, serde_json::to_value(output.title())?);
+                check_eq!(value, serde_json::to_value(output.title())?);
             }
             if key.as_str() == crate::api::META_KEY {
-                assert_eq!(value, state.meta_doc());
+                check_eq!(value, state.meta_doc());
             }
         }
     }
@@ -166,7 +166,7 @@ fn exact_images_are_inert_until_bound_apply_and_match_actual_state() -> TestResu
             .ok_or("actual transaction")?,
     )?;
     state.filing_receipt_audit().verify(&subject)?;
-    assert!(
+    check!(
         adapter
             .prepare_images(&state, &world, actor, commit(), request(actor, shell))
             .is_err(),
@@ -183,11 +183,11 @@ fn account_doc_authority_change_without_journal_movement_refuses_before_any_appl
     let payer = state.snapshot.account_mut(AccountId(0)).ok_or("payer")?;
     payer.status = AccountStatus::Frozen; // Deliberately preserve its economic revision.
     let before = state.snapshot.clone();
-    assert!(Arc::new(*adapter).bind(&mut state, patch.into()).is_err());
-    assert_eq!(state.snapshot, before);
-    assert!(state.snapshot.asset(shell).is_none());
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
-    assert_eq!(state.next_transaction, 0);
+    check!(Arc::new(*adapter).bind(&mut state, patch.into()).is_err());
+    check_eq!(state.snapshot, before);
+    check!(state.snapshot.asset(shell).is_none());
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
+    check_eq!(state.next_transaction, 0);
     Ok(())
 }
 
@@ -200,13 +200,13 @@ fn foreign_payer_authority_and_nonlive_shell_are_not_inherited_from_the_issuer()
         .account_mut(AccountId(0))
         .ok_or("payer")?
         .owner = PrincipalId::Object(other);
-    assert!(
+    check!(
         adapter
             .prepare_images(&state, &world, actor, commit(), request(actor, shell))
             .is_err()
     );
-    assert!(state.snapshot.asset(shell).is_none());
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
+    check!(state.snapshot.asset(shell).is_none());
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
     state
         .snapshot
         .account_mut(AccountId(0))
@@ -217,13 +217,13 @@ fn foreign_payer_authority_and_nonlive_shell_are_not_inherited_from_the_issuer()
         .ok_or("shell")?
         .flags
         .insert(mush_core::Flags::GOING);
-    assert!(
+    check!(
         adapter
             .prepare_images(&state, &world, actor, commit(), request(actor, shell))
             .is_err()
     );
-    assert!(state.snapshot.asset(shell).is_none());
-    assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
+    check!(state.snapshot.asset(shell).is_none());
+    check_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
     Ok(())
 }
 
@@ -232,7 +232,7 @@ fn a_lawful_zero_fee_still_commits_title_and_auditable_payer_product_identity() 
     let (world, mut state, adapter, actor, shell) = fixture(Amount::ZERO)?;
     let (output, patch, writes) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    assert_eq!(
+    check_eq!(
         writes.len(),
         4,
         "zero omits account writes, never the journal/title/key/meta"
@@ -241,11 +241,11 @@ fn a_lawful_zero_fee_still_commits_title_and_auditable_payer_product_identity() 
     let tx = state
         .transaction(output.transaction())
         .ok_or("actual transaction")?;
-    assert!(tx.lines.is_empty());
-    assert_eq!(tx.asset_effects.len(), 1);
+    check!(tx.lines.is_empty());
+    check_eq!(tx.asset_effects.len(), 1);
     let subject = receipt::subject_of(tx)?;
     state.filing_receipt_audit().verify(&subject)?;
-    assert_eq!(
+    check_eq!(
         state
             .snapshot
             .account(AccountId(0))
@@ -266,7 +266,7 @@ fn deserialized_receipt_state_is_not_verified_until_actual_replay_completion() -
         .ok_or("actual transaction")?;
     let subject = receipt::subject_of(tx)?;
     let mut replay = ReceiptAudit::default();
-    assert_eq!(
+    check_eq!(
         replay.require_complete(),
         Err(ReceiptAuditError::Incomplete)
     );
@@ -275,8 +275,8 @@ fn deserialized_receipt_state_is_not_verified_until_actual_replay_completion() -
     replay.verify(&subject)?;
     let encoded = serde_json::to_vec(&replay)?;
     let mut checkpoint: ReceiptAudit = serde_json::from_slice(&encoded)?;
-    assert!(checkpoint.checkpoint_complete());
-    assert_eq!(
+    check!(checkpoint.checkpoint_complete());
+    check_eq!(
         checkpoint.verify(&subject),
         Err(ReceiptAuditError::Incomplete)
     );
@@ -299,7 +299,7 @@ fn deserialized_receipt_state_is_not_verified_until_actual_replay_completion() -
             .clone()
             .ok_or("fixture title catalog absent")?,
     )?;
-    assert_eq!(checkpoint.verify(&mixed), Err(ReceiptAuditError::Refused));
+    check_eq!(checkpoint.verify(&mixed), Err(ReceiptAuditError::Refused));
     Ok(())
 }
 
@@ -311,12 +311,12 @@ fn malformed_or_duplicate_closed_journal_entry_cannot_complete_an_audit() -> Tes
     let mut duplicate = ReceiptAudit::default();
     duplicate.observe(&patch.transaction);
     duplicate.observe(&patch.transaction);
-    assert_eq!(duplicate.finish_replay(), Err(ReceiptAuditError::Refused));
+    check_eq!(duplicate.finish_replay(), Err(ReceiptAuditError::Refused));
     let mut forged = patch.transaction;
     forged.asset_effects.clear();
     let mut audit = ReceiptAudit::default();
     audit.observe(&forged);
-    assert_eq!(audit.finish_replay(), Err(ReceiptAuditError::Refused));
+    check_eq!(audit.finish_replay(), Err(ReceiptAuditError::Refused));
     Ok(())
 }
 
@@ -329,9 +329,9 @@ fn prepared_bloom_bits_match_legacy_insertion_and_dropped_binding_is_inert() -> 
     expected.insert(&key);
     let patch = actual.prepare_insert(&key).ok_or("prepare bloom")?;
     drop(actual.bind_insert(patch).ok_or("bind bloom")?);
-    assert_eq!(actual, before);
+    check_eq!(actual, before);
     let patch = actual.prepare_insert(&key).ok_or("prepare bloom")?;
     actual.bind_insert(patch).ok_or("bind bloom")?.apply();
-    assert_eq!(actual, expected);
+    check_eq!(actual, expected);
     Ok(())
 }

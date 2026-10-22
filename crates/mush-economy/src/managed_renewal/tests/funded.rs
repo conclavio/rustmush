@@ -81,7 +81,7 @@ fn cash(r: &mut Rig) -> TestResult {
         .prepare_append(JOURNAL_LOG, serde_json::to_value(&tx)?)?;
     let (actual_seq, _write) = r.state.journal.apply_prepared(append)?;
     delta.apply_to(&mut r.state.snapshot);
-    assert_eq!(actual_seq, seq);
+    check_eq!(actual_seq, seq);
     r.state.fold.fold_entry(seq, &tx);
     r.state.transactions.insert(txid, tx.clone());
     r.state.tx_index.insert(
@@ -98,7 +98,7 @@ fn cash(r: &mut Rig) -> TestResult {
         .checked_add(1)
         .ok_or("transaction")?;
     r.state.posts_since_boot = r.state.posts_since_boot.checked_add(1).ok_or("posts")?;
-    assert_eq!(
+    check_eq!(
         r.state
             .snapshot
             .account(r.offer.terms.payer)
@@ -106,7 +106,7 @@ fn cash(r: &mut Rig) -> TestResult {
             .posted_balance,
         Amount::from_minor(1000)
     );
-    assert_eq!(
+    check_eq!(
         r.state
             .snapshot
             .account(AccountId(10))
@@ -191,8 +191,8 @@ fn renewal_funding_keeps_exact_contract_consent_and_accepts_one_real_cash_hold()
     let prep = prepared(&r, req.clone(), Transition::Fund, 4)?;
     let (_, patch, _) = money_install::finish_images(&r.state, r.world.world_ic_now().clock, prep)?;
     drop(patch);
-    assert_eq!(r.state.snapshot.contract(req.contract), Some(&before));
-    assert_eq!(
+    check_eq!(r.state.snapshot.contract(req.contract), Some(&before));
+    check_eq!(
         r.state
             .snapshot
             .account(r.offer.terms.payer)
@@ -206,19 +206,19 @@ fn renewal_funding_keeps_exact_contract_consent_and_accepts_one_real_cash_hold()
         return Err("funded output".into());
     };
     let after = r.state.snapshot.contract(req.contract).ok_or("contract")?;
-    assert_eq!(r.state.next_contract, allocator);
-    assert_eq!(after.id, before.id);
-    assert_eq!(after.consent, before.consent);
-    assert_eq!(after.consent_hash, before.consent_hash);
-    assert_eq!(after.acceptances.len(), 1);
-    assert_eq!(after.escrow.as_slice(), &[output.receipt().hold()]);
-    assert_eq!(after.revision, 2);
-    assert_eq!(after.state, ContractState::ReadyToSettle);
-    assert_eq!(
+    check_eq!(r.state.next_contract, allocator);
+    check_eq!(after.id, before.id);
+    check_eq!(after.consent, before.consent);
+    check_eq!(after.consent_hash, before.consent_hash);
+    check_eq!(after.acceptances.len(), 1);
+    check_eq!(after.escrow.as_slice(), &[output.receipt().hold()]);
+    check_eq!(after.revision, 2);
+    check_eq!(after.state, ContractState::ReadyToSettle);
+    check_eq!(
         serde_json::to_vec(r.state.renewal_offers.get(req.operation).ok_or("offer")?)?,
         book
     );
-    assert_eq!(
+    check_eq!(
         r.state
             .snapshot
             .account(r.offer.terms.payer)
@@ -226,18 +226,18 @@ fn renewal_funding_keeps_exact_contract_consent_and_accepts_one_real_cash_hold()
             .held_amount,
         r.offer.terms.price
     );
-    assert!(prepared(&r, req.clone(), Transition::Fund, 5).is_err());
+    check!(prepared(&r, req.clone(), Transition::Fund, 5).is_err());
     let docs = documents(&writes)?;
     OfferBook::from_documents_with_renewals(
         &r.state.snapshot,
         &docs,
         &r.state.fold.renewal_receipts,
     )?;
-    assert!(
+    check!(
         OfferBook::from_documents(&r.state.snapshot, &docs).is_err(),
         "old unfunded verifier must not infer funding"
     );
-    assert!(!images.is_empty());
+    check!(!images.is_empty());
     Ok(())
 }
 #[test]
@@ -249,18 +249,18 @@ fn renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance() -> 
         let prep = prepared(&r, req.clone(), transition, 5)?;
         let tx = prep.transaction.clone();
         if transition == Transition::Grant {
-            assert_eq!(tx.lines.len(), 7);
+            check_eq!(tx.lines.len(), 7);
         } else {
-            assert!(tx.lines.is_empty());
+            check!(tx.lines.is_empty());
         }
         let (out, _) = install_money(&mut r, prep)?;
         let MoneyOutput::Terminal(out) = out else {
             return Err("terminal".into());
         };
-        assert_eq!(out.receipt().commit(), token(5));
-        assert_eq!(r.state.next_contract, allocator);
-        assert_eq!(r.state.next_hold, hold_allocator);
-        assert_eq!(
+        check_eq!(out.receipt().commit(), token(5));
+        check_eq!(r.state.next_contract, allocator);
+        check_eq!(r.state.next_hold, hold_allocator);
+        check_eq!(
             r.state
                 .snapshot
                 .account(r.offer.terms.payer)
@@ -268,7 +268,7 @@ fn renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance() -> 
                 .held_amount,
             Amount::ZERO
         );
-        assert_eq!(
+        check_eq!(
             r.state
                 .snapshot
                 .account(r.offer.terms.payer)
@@ -281,7 +281,7 @@ fn renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance() -> 
             })
         );
         let h = r.state.fold.renewal_receipts.get(req.operation)?;
-        assert_eq!(h.terminal(), Some(out.receipt()));
+        check_eq!(h.terminal(), Some(out.receipt()));
         h.verify_documents(
             r.state.snapshot.contract(req.contract).ok_or("contract")?,
             r.state.snapshot.hold(h.funding().hold()).ok_or("hold")?,
@@ -298,11 +298,12 @@ fn renewal_six_payee_capture_and_refund_have_exact_real_journal_provenance() -> 
             replay.fold_entry(tx.journal_seq, tx);
         }
         replay.renewal_receipts.finish_replay()?;
-        assert_eq!(
-            r.state.fold, replay,
+        check_eq!(
+            r.state.fold,
+            replay,
             "consuming install must equal actual journal replay"
         );
-        assert!(prepared(&r, req, transition, 6).is_err());
+        check!(prepared(&r, req, transition, 6).is_err());
     }
     Ok(())
 }
@@ -331,10 +332,10 @@ fn renewal_exhausted_money_allocators_refuse_before_any_image_install() -> TestR
                 p,
             )?)
         });
-        assert!(result.is_err());
-        assert_eq!(r.state.snapshot.holds().count(), 0);
-        assert_eq!(r.state.snapshot.contract(offered.contract()), Some(&before));
-        assert_eq!(
+        check!(result.is_err());
+        check_eq!(r.state.snapshot.holds().count(), 0);
+        check_eq!(r.state.snapshot.contract(offered.contract()), Some(&before));
+        check_eq!(
             r.state
                 .snapshot
                 .account(r.offer.terms.payer)
@@ -356,7 +357,7 @@ fn renewal_refund_ignores_seller_lapse_and_old_clock_but_grant_does_not() -> Tes
         .clone();
     title.frozen = true;
     r.state.snapshot.put_asset(title);
-    assert!(prepared(&r, req.clone(), Transition::Grant, 5).is_err());
+    check!(prepared(&r, req.clone(), Transition::Grant, 5).is_err());
     let epoch = r.world.next_world_timeline_epoch(2)?;
     r.world.append_world_timeline_epoch(epoch)?;
     let prep = prepared(&r, req, Transition::Refund, 5)?;
@@ -364,7 +365,7 @@ fn renewal_refund_ignores_seller_lapse_and_old_clock_but_grant_does_not() -> Tes
     let MoneyOutput::Terminal(out) = out else {
         return Err("refund".into());
     };
-    assert_eq!(out.receipt().issued_at_ic(), None);
+    check_eq!(out.receipt().issued_at_ic(), None);
     Ok(())
 }
 #[test]
@@ -372,12 +373,12 @@ fn renewal_history_cannot_be_minted_by_mutable_contract_or_decoded_checkpoint() 
     let (r, req, docs) = funded(false)?;
     let raw = serde_json::to_vec(&r.state.fold.renewal_receipts)?;
     let decoded: receipt::RenewalReceiptAudit = serde_json::from_slice(&raw)?;
-    assert!(decoded.require_complete().is_err());
-    assert!(OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &decoded).is_err());
+    check!(decoded.require_complete().is_err());
+    check!(OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &decoded).is_err());
     let mut empty = receipt::RenewalReceiptAudit::default();
     empty.finish_replay()?;
-    assert!(OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &empty).is_err());
-    assert!(
+    check!(OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &empty).is_err());
+    check!(
         OfferBook::from_documents_with_renewals(
             &r.state.snapshot,
             &[],
@@ -392,7 +393,7 @@ fn renewal_history_cannot_be_minted_by_mutable_contract_or_decoded_checkpoint() 
         replay.fold_entry(tx.journal_seq, tx);
     }
     replay.renewal_receipts.finish_replay()?;
-    assert_eq!(
+    check_eq!(
         replay.renewal_receipts.get(req.operation)?,
         r.state.fold.renewal_receipts.get(req.operation)?
     );
@@ -419,32 +420,32 @@ fn renewal_checkpoint_join_requires_both_actual_money_rows_even_after_hot_evicti
             seq: tx.journal_seq,
         })
         .collect::<Vec<_>>();
-    assert_eq!(rows.len(), 2);
+    check_eq!(rows.len(), 2);
     let raw = serde_json::to_vec(&r.state.fold.renewal_receipts)?;
     let decoded: receipt::RenewalReceiptAudit = serde_json::from_slice(&raw)?;
-    assert!(decoded.require_complete().is_err());
-    assert!(decoded.checkpoint_complete(&rows));
-    assert!(!decoded.checkpoint_complete(&[]));
+    check!(decoded.require_complete().is_err());
+    check!(decoded.checkpoint_complete(&rows));
+    check!(!decoded.checkpoint_complete(&[]));
     for removed in 0..rows.len() {
         let mut missing = rows.clone();
         missing.remove(removed);
-        assert!(!decoded.checkpoint_complete(&missing));
+        check!(!decoded.checkpoint_complete(&missing));
     }
     let mut duplicate = rows.clone();
     duplicate.push(rows.first().ok_or("row")?.clone());
-    assert!(!decoded.checkpoint_complete(&duplicate));
+    check!(!decoded.checkpoint_complete(&duplicate));
     let mut crossed = rows.clone();
     crossed.first_mut().ok_or("row")?.tx = crate::TransactionId(u64::MAX);
-    assert!(!decoded.checkpoint_complete(&crossed));
+    check!(!decoded.checkpoint_complete(&crossed));
     let empty: receipt::RenewalReceiptAudit = serde_json::from_value(json!({
         "histories":{},"complete":true,"invalid":false,
     }))?;
-    assert!(!empty.checkpoint_complete(&rows));
+    check!(!empty.checkpoint_complete(&rows));
     // The actual journal-derived history survives removal of the hot map.
     // This tests retained evidence only; production replay/boot stays disabled.
     r.state.transactions.clear();
     let history = r.state.fold.renewal_receipts.get(req.operation)?;
-    assert!(history.terminal().is_some());
+    check!(history.terminal().is_some());
     OfferBook::from_documents_with_renewals(
         &r.state.snapshot,
         &docs,
@@ -467,20 +468,20 @@ fn renewal_replay_refuses_missing_fund_duplicate_and_changed_real_hold() -> Test
         .ok_or("fund transaction")?;
     let mut missing = receipt::RenewalReceiptAudit::default();
     missing.observe(&terminal);
-    assert!(missing.finish_replay().is_err());
+    check!(missing.finish_replay().is_err());
     let mut duplicate = receipt::RenewalReceiptAudit::default();
     duplicate.observe(fund);
     duplicate.observe(fund);
-    assert!(duplicate.finish_replay().is_err());
+    check!(duplicate.finish_replay().is_err());
     let mut forged = terminal.clone();
     forged.hold_effects.first_mut().ok_or("hold")?.hold.amount = Amount::from_minor(99);
     let mut changed = receipt::RenewalReceiptAudit::default();
     changed.observe(fund);
     changed.observe(&forged);
-    assert!(changed.finish_replay().is_err());
+    check!(changed.finish_replay().is_err());
     // A later lawful row cannot erase a prior replay contradiction.
     changed.observe(&terminal);
-    assert!(changed.finish_replay().is_err());
+    check!(changed.finish_replay().is_err());
     Ok(())
 }
 
@@ -491,9 +492,9 @@ fn renewal_borrowed_audit_requires_combined_replay_and_exact_current_projection(
     let (offered, writes) = r.publish()?;
     let req = request(&offered);
     let docs = documents(&writes)?;
-    assert!(r.state.renewal_audit().is_err());
+    check!(r.state.renewal_audit().is_err());
     r.state.renewal_offers = OfferBook::from_documents(&r.state.snapshot, &docs)?;
-    assert!(
+    check!(
         r.state.renewal_audit().is_err(),
         "unfunded-only audit is insufficient"
     );
@@ -503,20 +504,20 @@ fn renewal_borrowed_audit_requires_combined_replay_and_exact_current_projection(
         &r.state.fold.renewal_receipts,
     )?;
     let audit = r.state.renewal_audit()?;
-    assert_eq!(audit.len(), 1);
-    assert!(!audit.is_empty());
-    assert!(audit.get(req.operation)?.history().is_none());
-    assert_eq!(audit.offers().collect::<Result<Vec<_>, _>>()?.len(), 1);
+    check_eq!(audit.len(), 1);
+    check!(!audit.is_empty());
+    check!(audit.get(req.operation)?.history().is_none());
+    check_eq!(audit.offers().collect::<Result<Vec<_>, _>>()?.len(), 1);
     let p = prepared(&r, req.clone(), Transition::Fund, 4)?;
     install_money(&mut r, p)?;
     let audit = r.state.renewal_audit()?;
     let row = audit.get(req.operation)?;
-    assert_eq!(row.operation(), offered.operation());
-    assert_eq!(row.contract(), offered.contract());
-    assert_eq!(row.offer(), &r.offer);
-    assert_eq!(row.consent_hash(), offered.consent_hash());
-    assert!(row.closure().is_none());
-    assert_eq!(row.history().ok_or("history")?.funding().commit(), token(4));
+    check_eq!(row.operation(), offered.operation());
+    check_eq!(row.contract(), offered.contract());
+    check_eq!(row.offer(), &r.offer);
+    check_eq!(row.consent_hash(), offered.consent_hash());
+    check!(row.closure().is_none());
+    check_eq!(row.history().ok_or("history")?.funding().commit(), token(4));
     let mut changed = r
         .state
         .snapshot
@@ -525,9 +526,9 @@ fn renewal_borrowed_audit_requires_combined_replay_and_exact_current_projection(
         .clone();
     changed.revision += 1;
     r.state.snapshot.put_contract(changed);
-    assert!(r.state.renewal_audit()?.get(req.operation).is_err());
+    check!(r.state.renewal_audit()?.get(req.operation).is_err());
     r.state.frozen = true;
-    assert!(r.state.renewal_audit().is_err());
+    check!(r.state.renewal_audit().is_err());
     Ok(())
 }
 #[test]
@@ -554,7 +555,7 @@ fn renewal_new_namespace_legacy_refuses_before_exact_idempotency() -> TestResult
         spent: BTreeMap::new(),
         keys: &keys,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&plan, &r.state.snapshot, &env),
         PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
@@ -579,7 +580,7 @@ fn maximum_primitive_receipts_fit_their_real_strict_codecs() -> TestResult {
     });
     let funding = receipt::RenewalFundingReceiptV1::decode(&serde_json::to_vec(&funding)?)?;
     let funding_bytes = serde_json::to_vec(&funding)?.len();
-    assert!(funding_bytes <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
+    check!(funding_bytes <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
     for grant in [false, true] {
         let terminal = json!({
             "format":1,"commit":CommitToken::from_bytes([254;16]),
@@ -590,7 +591,7 @@ fn maximum_primitive_receipts_fit_their_real_strict_codecs() -> TestResult {
         });
         let terminal = receipt::RenewalTerminalReceiptV1::decode(&serde_json::to_vec(&terminal)?)?;
         let terminal_bytes = serde_json::to_vec(&terminal)?.len();
-        assert!(terminal_bytes <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
+        check!(terminal_bytes <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
         eprintln!(
             "F1_SIZE receipt_funding={funding_bytes} receipt_terminal={terminal_bytes} grant={grant}"
         );
@@ -638,8 +639,8 @@ fn renewal_live_contract_account_and_book_fences_refuse_stale_bind() -> TestResu
                 r.state.renewal_offers.install(row, generation);
             }
         }
-        assert!(patch.bind(&mut r.state).is_err());
-        assert_eq!(
+        check!(patch.bind(&mut r.state).is_err());
+        check_eq!(
             r.state
                 .snapshot
                 .account(r.offer.terms.payer)
@@ -662,11 +663,11 @@ fn renewal_receipt_strict_nested_decode_and_complete_terminal_margin() -> TestRe
         .funding()
         .clone();
     let encoded = serde_json::to_string(&funding)?;
-    assert_eq!(
+    check_eq!(
         receipt::RenewalFundingReceiptV1::decode(encoded.as_bytes())?,
         funding
     );
-    assert!(
+    check!(
         receipt::RenewalFundingReceiptV1::decode(
             encoded.replacen("{", "{\"format\":1,", 1).as_bytes()
         )
@@ -676,34 +677,34 @@ fn renewal_receipt_strict_nested_decode_and_complete_terminal_margin() -> TestRe
     bad.as_object_mut()
         .ok_or("receipt")?
         .insert("actor".into(), json!(GOD));
-    assert!(receipt::RenewalFundingReceiptV1::decode(&serde_json::to_vec(&bad)?).is_err());
+    check!(receipt::RenewalFundingReceiptV1::decode(&serde_json::to_vec(&bad)?).is_err());
     bad = serde_json::to_value(&funding)?;
     bad.get_mut("at_ic")
         .and_then(|v| v.get_mut("clock"))
         .and_then(|v| v.get_mut("generation"))
         .ok_or("generation")?
         .clone_from(&json!(0));
-    assert!(serde_json::from_value::<receipt::RenewalFundingReceiptV1>(bad).is_err());
+    check!(serde_json::from_value::<receipt::RenewalFundingReceiptV1>(bad).is_err());
     let prep = prepared(&r, req.clone(), Transition::Grant, 5)?;
     install_money(&mut r, prep)?;
     let history = r.state.fold.renewal_receipts.get(req.operation)?;
     let terminal = history.terminal().ok_or("terminal")?;
     let raw = serde_json::to_vec(terminal)?;
-    assert_eq!(receipt::RenewalTerminalReceiptV1::decode(&raw)?, *terminal);
+    check_eq!(receipt::RenewalTerminalReceiptV1::decode(&raw)?, *terminal);
     let mut missing = serde_json::to_value(terminal)?;
     missing
         .as_object_mut()
         .ok_or("receipt")?
         .remove("issued_at_ic");
-    assert!(serde_json::from_value::<receipt::RenewalTerminalReceiptV1>(missing).is_err());
-    assert!(
+    check!(serde_json::from_value::<receipt::RenewalTerminalReceiptV1>(missing).is_err());
+    check!(
         receipt::RenewalTerminalReceiptV1::decode(&vec![
             b' ';
             receipt::MAX_RENEWAL_RECEIPT_BYTES + 1
         ])
         .is_err()
     );
-    assert!(raw.len() <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
+    check!(raw.len() <= receipt::MAX_RENEWAL_RECEIPT_BYTES);
     Ok(())
 }
 fn replace_instrument(r: &mut Rig, length: usize) -> TestResult {
@@ -741,9 +742,9 @@ fn largest_actual_offer_keeps_both_complete_terminal_images_with_unchanged_f0_ca
         }
     }
     replace_instrument(&mut r, lo)?;
-    assert!(r.prepare().is_ok());
+    check!(r.prepare().is_ok());
     replace_instrument(&mut r, lo + 1)?;
-    assert!(r.prepare().is_err());
+    check!(r.prepare().is_err());
     replace_instrument(&mut r, lo)?;
     cash(&mut r)?;
     let (offer, offered) = r.publish()?;
@@ -757,21 +758,21 @@ fn largest_actual_offer_keeps_both_complete_terminal_images_with_unchanged_f0_ca
     .len();
     let before_record =
         serde_json::to_vec(r.state.renewal_offers.get(req.operation).ok_or("record")?)?.len();
-    assert!(before_record <= history::MAX_RECORD_BYTES - history::FUTURE_RESERVE_BYTES);
-    assert!(before_contract <= history::MAX_CONTRACT_BYTES - history::FUTURE_RESERVE_BYTES);
+    check!(before_record <= history::MAX_RECORD_BYTES - history::FUTURE_RESERVE_BYTES);
+    check!(before_contract <= history::MAX_CONTRACT_BYTES - history::FUTURE_RESERVE_BYTES);
     let prep = prepared(&r, req.clone(), Transition::Fund, 4)?;
     let (_, funded_images) = install_money(&mut r, prep)?;
     let h = r.state.fold.renewal_receipts.get(req.operation)?;
     h.require_terminal_room()?;
     let history_bytes = serde_json::to_vec(h)?.len();
-    assert!(history_bytes <= receipt::MAX_HISTORY_BYTES - receipt::TERMINAL_RESERVE_BYTES);
+    check!(history_bytes <= receipt::MAX_HISTORY_BYTES - receipt::TERMINAL_RESERVE_BYTES);
     for transition in [Transition::Grant, Transition::Refund] {
         let prep = prepared(&r, req.clone(), transition, 5)?;
-        assert!(serde_json::to_vec(&prep.transaction)?.len() <= crate::engine::MAX_ENTRY_BYTES);
+        check!(serde_json::to_vec(&prep.transaction)?.len() <= crate::engine::MAX_ENTRY_BYTES);
         let (_, patch, writes) =
             money_install::finish_images(&r.state, r.world.world_ic_now().clock, prep)?;
         let complete = serde_json::to_vec(&writes)?.len();
-        assert!(complete <= mush_core::authoritative::MAX_AUTHORITATIVE_BUNDLE_BYTES);
+        check!(complete <= mush_core::authoritative::MAX_AUTHORITATIVE_BUNDLE_BYTES);
         eprintln!(
             "F1_SIZE terminal={} complete_writes={} offered_record={} offered_contract={} funded_history={}",
             if transition == Transition::Grant {
@@ -786,7 +787,7 @@ fn largest_actual_offer_keeps_both_complete_terminal_images_with_unchanged_f0_ca
         );
         drop(patch);
     }
-    assert!(!offered.is_empty() && !funded_images.is_empty());
+    check!(!offered.is_empty() && !funded_images.is_empty());
     Ok(())
 }
 #[test]
@@ -825,8 +826,8 @@ fn renewal_zero_cash_credit_changed_owner_and_approval_rule_never_create_escrow(
             }
         }
         r.state.snapshot.put_account(payer);
-        assert!(prepared(&r, request(&offer), Transition::Fund, 4).is_err());
-        assert_eq!(r.state.snapshot.holds().count(), 0);
+        check!(prepared(&r, request(&offer), Transition::Fund, 4).is_err());
+        check_eq!(r.state.snapshot.holds().count(), 0);
     }
     Ok(())
 }
@@ -852,7 +853,7 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
             .state
             .hold_terminal_at(hold)
             .ok_or("actual terminal timestamp")?;
-        assert!(
+        check!(
             !r.state
                 .snapshot
                 .hold(hold)
@@ -890,13 +891,13 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
             .world()
             .module_state::<EconomyStore>()
             .ok_or("actual store")?;
-        assert_eq!(state.last_sweep().0, now, "actual registered sweep ran");
-        assert!(!state.frozen);
-        assert!(
+        check_eq!(state.last_sweep().0, now, "actual registered sweep ran");
+        check!(!state.frozen);
+        check!(
             state.snapshot.hold(hold).is_some(),
             "renewal audit hold must remain"
         );
-        assert!(state.fold.journal_holds.contains_key(&hold));
+        check!(state.fold.journal_holds.contains_key(&hold));
         actual.verify_documents(
             state.snapshot.contract(req.contract).ok_or("contract")?,
             state.snapshot.hold(hold).ok_or("hold")?,
@@ -920,12 +921,12 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
             &docs,
             true,
         )?;
-        assert!(book.combined_verified());
-        assert!(replay.renewal_receipts.get(req.operation)? == &actual);
+        check!(book.combined_verified());
+        check!(replay.renewal_receipts.get(req.operation)? == &actual);
         let retained = state.snapshot.hold(hold).ok_or("hold")?.clone();
         let mut missing = holds.clone();
-        assert_eq!(missing.remove(&hold), Some(retained));
-        assert!(
+        check_eq!(missing.remove(&hold), Some(retained));
+        check!(
             crate::managed_renewal::bridge::recover(
                 &mut replay,
                 &mut snapshot,

@@ -393,7 +393,7 @@ fn renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_
         let engine = result?;
         let definitions = engine.registry.definitions().ok_or("definitions")?;
         definitions.get_exact(&specs.economy)?;
-        assert_eq!(
+        check_eq!(
             definitions
                 .iter()
                 .filter(|d| d.reference().key().owner.as_str() == "economy"
@@ -402,8 +402,8 @@ fn renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_
             1
         );
         let calls = trace.lock().map_err(|_| "trace poisoned")?;
-        assert_eq!(calls.len(), 12);
-        assert_eq!(calls.iter().cloned().collect::<BTreeSet<_>>().len(), 12);
+        check_eq!(calls.len(), 12);
+        check_eq!(calls.iter().cloned().collect::<BTreeSet<_>>().len(), 12);
         for action in specs.actions() {
             definitions.get_exact(&action)?;
             engine
@@ -411,22 +411,22 @@ fn renewal_bridge_resolves_all_actions_to_the_one_actual_economy_slot_in_either_
                 .action_providers()
                 .ok_or("providers")?
                 .get_exact(&action)?;
-            assert!(calls.contains(&action));
+            check!(calls.contains(&action));
         }
         if let Some(old) = fingerprint {
-            assert_eq!(definitions.fingerprint(), old);
+            check_eq!(definitions.fingerprint(), old);
         } else {
             fingerprint = Some(definitions.fingerprint());
         }
-        assert!(engine.action_state().is_empty());
-        assert!(!engine.action_state().has_prepared());
-        assert!(!engine.action_state().reservation_lost());
+        check!(engine.action_state().is_empty());
+        check!(!engine.action_state().has_prepared());
+        check!(!engine.action_state().reservation_lost());
         let store = engine
             .world
             .module_state::<EconomyStore>()
             .ok_or("actual Economy slot")?;
-        assert_eq!(store.renewal_offers.operations().len(), 0);
-        assert!(
+        check_eq!(store.renewal_offers.operations().len(), 0);
+        check!(
             store.require_no_renewal_history().is_err(),
             "registration does not establish boot absence"
         );
@@ -444,7 +444,7 @@ fn renewal_bridge_rejects_wrong_manifest_participant_order_or_digest() -> TestRe
     ] {
         for first in [false, true] {
             let (result, _, _) = attempt(first, fault)?;
-            assert!(result.is_err(), "crossed exact composition accepted");
+            check!(result.is_err(), "crossed exact composition accepted");
         }
     }
     Ok(())
@@ -457,7 +457,7 @@ fn renewal_bridge_rejects_swapped_or_rehashed_action_definitions() -> TestResult
         Fault::ActionVersion,
     ] {
         let (result, _, _) = attempt(false, fault)?;
-        assert!(result.is_err(), "crossed exact action accepted");
+        check!(result.is_err(), "crossed exact action accepted");
     }
     Ok(())
 }
@@ -470,7 +470,7 @@ fn renewal_bridge_requires_existing_filing_and_entitlement_configuration() -> Te
     ] {
         for first in [false, true] {
             let (result, _, _) = attempt(first, fault)?;
-            assert!(result.is_err(), "missing owner prerequisite accepted");
+            check!(result.is_err(), "missing owner prerequisite accepted");
         }
     }
     Ok(())
@@ -483,14 +483,14 @@ fn renewal_bridge_final_freeze_requires_actual_dependencies_and_every_provider()
         Fault::MissingProvider,
     ] {
         let (result, _, _) = attempt(true, fault)?;
-        assert!(result.is_err(), "missing registered dependency accepted");
+        check!(result.is_err(), "missing registered dependency accepted");
     }
     Ok(())
 }
 #[test]
 fn renewal_bridge_cannot_register_a_second_adapter_for_the_existing_state_slot() -> TestResult {
     let (result, _, _) = attempt(true, Fault::DuplicateSlot)?;
-    assert!(
+    check!(
         result.is_err(),
         "duplicate actual Economy participant accepted"
     );
@@ -507,9 +507,9 @@ fn renewal_bridge_configured_module_completes_actual_empty_boot() -> TestResult 
         .ok_or("actual Economy state")?;
     let audit = state.renewal_audit()?;
     audit.require_complete()?;
-    assert!(audit.is_empty());
+    check!(audit.is_empty());
     state.require_no_renewal_history()?;
-    assert_eq!(state.snapshot.contracts().count(), 0);
-    assert_eq!(state.snapshot.holds().count(), 0);
+    check_eq!(state.snapshot.contracts().count(), 0);
+    check_eq!(state.snapshot.holds().count(), 0);
     Ok(())
 }

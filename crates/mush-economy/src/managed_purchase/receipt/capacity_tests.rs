@@ -45,18 +45,18 @@ fn exact_history_ceiling_refuses_funding_but_preserves_both_terminal_slots() -> 
     // adds valid, distinct data rows without claiming a boot or live-money run.
     for ordinal in 100..u64::try_from(MAX_HISTORIES)? + 98 {
         let row = counted_row(&original, ordinal)?;
-        assert!(audit.histories.insert(row.operation, row).is_none());
+        check!(audit.histories.insert(row.operation, row).is_none());
     }
-    assert_eq!(audit.histories.len(), MAX_HISTORIES - 1);
+    check_eq!(audit.histories.len(), MAX_HISTORIES - 1);
     let accepted = audit.prepare(&next_funding)?;
-    assert!(accepted.matches(&audit));
-    assert_eq!(audit.histories.len(), MAX_HISTORIES - 1);
-    assert!(accepted.before.is_none());
-    assert!(
+    check!(accepted.matches(&audit));
+    check_eq!(audit.histories.len(), MAX_HISTORIES - 1);
+    check!(accepted.before.is_none());
+    check!(
         serde_json::to_vec(&accepted.after)?.len() <= MAX_HISTORY_BYTES - TERMINAL_RESERVE_BYTES
     );
     accepted.apply(&mut audit);
-    assert_eq!(audit.histories.len(), MAX_HISTORIES);
+    check_eq!(audit.histories.len(), MAX_HISTORIES);
 
     // A distinct admissible funding transaction fails specifically at the
     // count ceiling, not merely because its operation is already present.
@@ -64,30 +64,30 @@ fn exact_history_ceiling_refuses_funding_but_preserves_both_terminal_slots() -> 
     let new_operation = CommitToken::from_bytes([5; 16]);
     let removed = full.histories.remove(&new_operation).ok_or("new funding")?;
     let replacement = counted_row(&removed, u64::try_from(MAX_HISTORIES)? + 100)?;
-    assert!(
+    check!(
         full.histories
             .insert(replacement.operation, replacement)
             .is_none()
     );
-    assert_eq!(full.histories.len(), MAX_HISTORIES);
-    assert!(!full.histories.contains_key(&new_operation));
+    check_eq!(full.histories.len(), MAX_HISTORIES);
+    check!(!full.histories.contains_key(&new_operation));
     let before = full.clone();
-    assert!(full.prepare(&next_funding).is_err());
-    assert_eq!(full, before, "refused preparation must remain inert");
+    check!(full.prepare(&next_funding).is_err());
+    check_eq!(full, before, "refused preparation must remain inert");
 
     for terminal in terminals {
         let mut target = full.clone();
         let prepared = target.prepare(&terminal)?;
-        assert!(prepared.matches(&target));
-        assert_eq!(prepared.before.as_ref(), Some(&original));
+        check!(prepared.matches(&target));
+        check_eq!(prepared.before.as_ref(), Some(&original));
         let suffix = prepared.after.terminal.as_ref().ok_or("terminal proof")?;
-        assert!(serde_json::to_vec(suffix)?.len() <= TERMINAL_RESERVE_BYTES);
-        assert!(serde_json::to_vec(&prepared.after)?.len() <= MAX_HISTORY_BYTES);
-        assert_eq!(target, full, "terminal preparation must remain inert");
+        check!(serde_json::to_vec(suffix)?.len() <= TERMINAL_RESERVE_BYTES);
+        check!(serde_json::to_vec(&prepared.after)?.len() <= MAX_HISTORY_BYTES);
+        check_eq!(target, full, "terminal preparation must remain inert");
         prepared.apply(&mut target);
-        assert_eq!(target.histories.len(), MAX_HISTORIES);
-        assert!(target.get(original.operation)?.terminal().is_some());
-        assert!(
+        check_eq!(target.histories.len(), MAX_HISTORIES);
+        check!(target.get(original.operation)?.terminal().is_some());
+        check!(
             target.prepare(&terminal).is_err(),
             "no second terminal post"
         );
@@ -100,10 +100,10 @@ fn prepared_history_refuses_changed_count_and_terminal_before_image() -> TestRes
     let (mut audit, next_funding, terminals) = super::super::tests::receipt_capacity_fixture()?;
     let terminal = terminals.first().ok_or("grant")?;
     let prepared = audit.prepare(terminal)?;
-    assert!(prepared.matches(&audit));
+    check!(prepared.matches(&audit));
     let funding = audit.prepare(&next_funding)?;
     funding.apply(&mut audit);
-    assert!(
+    check!(
         !prepared.matches(&audit),
         "another admitted history changes the fence"
     );
@@ -111,7 +111,7 @@ fn prepared_history_refuses_changed_count_and_terminal_before_image() -> TestRes
     let prepared = audit.prepare(terminal)?;
     let competing = audit.prepare(terminals.last().ok_or("refund")?)?;
     competing.apply(&mut audit);
-    assert!(
+    check!(
         !prepared.matches(&audit),
         "terminal phase cannot be replaced"
     );

@@ -50,8 +50,8 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
         let mut r = Rig::new()?;
         cash(&mut r)?;
         let (first, _) = r.publish()?;
-        assert_eq!(first.attempt(), RenewalAttemptV1::Automatic);
-        assert!(retry(&r, 3, 6).is_err(), "unaccepted is not terminal");
+        check_eq!(first.attempt(), RenewalAttemptV1::Automatic);
+        check!(retry(&r, 3, 6).is_err(), "unaccepted is not terminal");
         if reason == UnfundedCloseReason::Expired {
             r.world.set_now(r.offer.terms.expires_at.at);
         }
@@ -62,43 +62,43 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
         r.offer.terms.not_before = r.world.world_ic_now();
         r.offer.terms.expires_at.at = r.offer.terms.not_before.at.checked_add(100).ok_or("time")?;
         let next_contract = r.state.next_contract;
-        assert!(install::offer(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err());
+        check!(install::offer(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err());
         let second = publish_retry(&mut r, 3, 6)?;
-        assert_eq!(
+        check_eq!(
             second.attempt(),
             RenewalAttemptV1::BuyerRetry {
                 previous_operation: token(3)
             }
         );
-        assert_eq!(second.contract(), ContractId(next_contract));
-        assert_ne!(second.contract(), first.contract());
-        assert_ne!(second.consent_hash(), first.consent_hash());
-        assert_eq!(
+        check_eq!(second.contract(), ContractId(next_contract));
+        check_ne!(second.contract(), first.contract());
+        check_ne!(second.consent_hash(), first.consent_hash());
+        check_eq!(
             serde_json::to_vec(r.state.renewal_offers.get(token(3)).ok_or("old offer")?)?,
             before
         );
-        assert!(
+        check!(
             retry(&r, 3, 7).is_err(),
             "older terminal cannot fork the chain"
         );
-        assert!(retry(&r, 6, 7).is_err(), "new pending offer is retained");
+        check!(retry(&r, 6, 7).is_err(), "new pending offer is retained");
         close_at(&mut r, 6, 7)?;
         publish_retry(&mut r, 6, 8)?;
         let mut docs = all_documents(&r)?;
         docs.reverse();
         r.state.renewal_offers = cold(&r, &docs)?;
         let audit = r.state.renewal_audit()?;
-        assert_eq!(audit.len(), 3);
+        check_eq!(audit.len(), 3);
         let row = audit.get(token(8))?;
-        assert_eq!(row.format(), 2);
-        assert_eq!(
+        check_eq!(row.format(), 2);
+        check_eq!(
             row.attempt(),
             RenewalAttemptV1::BuyerRetry {
                 previous_operation: token(6)
             }
         );
-        assert!(row.history().is_none());
-        assert!(
+        check!(row.history().is_none());
+        check!(
             retry(&r, 3, 9).is_err(),
             "cold order cannot roll back latest attempt"
         );
@@ -110,7 +110,7 @@ fn actual_unfunded_closures_allow_only_explicit_fresh_latest_buyer_retry() -> Te
 fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_proof() -> TestResult
 {
     let (mut r, first, _) = funded(true)?;
-    assert!(
+    check!(
         retry(&r, 3, 6).is_err(),
         "funded without terminal is not retryable"
     );
@@ -123,25 +123,25 @@ fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_
     install_money(&mut r, prep)?;
     let prep = prepared(&r, second, Transition::Grant, 8)?;
     install_money(&mut r, prep)?;
-    assert_eq!(r.state.fold.renewal_receipts.get(token(3))?, &old);
+    check_eq!(r.state.fold.renewal_receipts.get(token(3))?, &old);
     let current = r.state.fold.renewal_receipts.get(token(6))?;
-    assert_ne!(old.funding().hold(), current.funding().hold());
-    assert_eq!(
+    check_ne!(old.funding().hold(), current.funding().hold());
+    check_eq!(
         old.terminal().ok_or("old refund")?.outcome(),
         RenewalOutcome::Refunded
     );
-    assert_eq!(
+    check_eq!(
         current.terminal().ok_or("new grant")?.outcome(),
         RenewalOutcome::Granted
     );
-    assert!(
+    check!(
         retry(&r, 6, 9).is_err(),
         "Grant never authorizes same-generation retry"
     );
     let mut docs = all_documents(&r)?;
     docs.reverse();
     r.state.renewal_offers = cold(&r, &docs)?;
-    assert_eq!(
+    check_eq!(
         r.state
             .renewal_audit()?
             .offers()
@@ -149,7 +149,7 @@ fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_
             .len(),
         2
     );
-    assert!(OfferBook::from_documents(&r.state.snapshot, &docs).is_err());
+    check!(OfferBook::from_documents(&r.state.snapshot, &docs).is_err());
     let mut replay = crate::fold::FoldState::default();
     let mut txs = r.state.transactions.values().collect::<Vec<_>>();
     txs.sort_by_key(|tx| tx.journal_seq);
@@ -157,7 +157,7 @@ fn actual_refund_then_retry_grant_retains_both_journal_histories_and_old_closed_
         replay.fold_entry(tx.journal_seq, tx);
     }
     replay.renewal_receipts.finish_replay()?;
-    assert_eq!(replay, r.state.fold);
+    check_eq!(replay, r.state.fold);
     OfferBook::from_documents_with_renewals(&r.state.snapshot, &docs, &replay.renewal_receipts)?;
     Ok(())
 }
@@ -202,28 +202,28 @@ fn retry_refuses_crossed_principal_basis_clock_and_stale_terminal_before_custody
             }
             _ => return Err("case".into()),
         }
-        assert!(retry(&r, 3, 6).is_err(), "crossed retry case {case}");
+        check!(retry(&r, 3, 6).is_err(), "crossed retry case {case}");
     }
     r.state = state.clone();
     r.offer = offer;
     let mut context = r.context(false, token(6));
     context.actor = GOD;
-    assert!(install::retry(&r.state, &context, r.offer.clone(), token(3)).is_err());
+    check!(install::retry(&r.state, &context, r.offer.clone(), token(3)).is_err());
     let (_, patch, _) = retry(&r, 3, 6)?;
     r.state.fold.renewal_receipts = receipt::RenewalReceiptAudit::default();
-    assert!(
+    check!(
         patch
             .recheck_in(&r.state, &r.context(false, token(6)))
             .is_err()
     );
-    assert!(
+    check!(
         patch.bind(&mut r.state).is_err(),
         "actual terminal proof must survive until bind"
     );
     r.state = state;
     let (_, pending, _) = retry(&r, 3, 6)?;
     publish_retry(&mut r, 3, 7)?;
-    assert!(
+    check!(
         pending.bind(&mut r.state).is_err(),
         "a different winning retry consumes latest link"
     );
@@ -260,19 +260,19 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
         created_at_utc: old.created_at_utc,
         closure: old.closure.as_ref(),
     };
-    assert_eq!(serde_json::to_vec(old)?, serde_json::to_vec(&original)?);
+    check_eq!(serde_json::to_vec(old)?, serde_json::to_vec(&original)?);
     let old_value = serde_json::to_value(old)?;
     close_at(&mut r, 3, 4)?;
     publish_retry(&mut r, 3, 6)?;
     let new = r.state.renewal_offers.get(token(6)).ok_or("new")?;
     let new_value = serde_json::to_value(new)?;
-    assert_eq!(new.format, 2);
+    check_eq!(new.format, 2);
     for mut value in [old_value.clone(), new_value.clone()] {
         value
             .as_object_mut()
             .ok_or("object")?
             .insert("attempt".into(), serde_json::Value::Null);
-        assert!(serde_json::from_value::<OfferRecord>(value).is_err());
+        check!(serde_json::from_value::<OfferRecord>(value).is_err());
     }
     for (mut value, attempt) in [
         (
@@ -293,7 +293,7 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
             obj.remove("attempt");
         }
         let row: OfferRecord = serde_json::from_value(value)?;
-        assert!(row.validate().is_err());
+        check!(row.validate().is_err());
     }
     let bytes = serde_json::to_string(new)?;
     let duplicate = bytes.replacen(
@@ -301,7 +301,7 @@ fn legacy_wire_is_exact_and_retry_shape_forbids_missing_null_or_automatic_attemp
         "\"attempt\":{\"kind\":\"automatic\"},\"attempt\":",
         1,
     );
-    assert!(serde_json::from_str::<OfferRecord>(&duplicate).is_err());
+    check!(serde_json::from_str::<OfferRecord>(&duplicate).is_err());
     Ok(())
 }
 
@@ -375,7 +375,7 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
             docs.push((history::key(row.operation), serde_json::to_vec(row)?));
         }
         docs.reverse();
-        assert!(
+        check!(
             OfferBook::from_documents_with_renewals(
                 &snapshot,
                 &docs,
@@ -387,10 +387,10 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
     }
     let mut missing = baseline.clone();
     missing.retain(|(key, _)| key != &history::key(token(3)));
-    assert!(cold(&r, &missing).is_err());
+    check!(cold(&r, &missing).is_err());
     let mut without_root = r.state.snapshot.clone();
     without_root.remove_contract(r.state.renewal_offers.get(token(3)).ok_or("root")?.contract);
-    assert!(
+    check!(
         OfferBook::from_documents_with_renewals(
             &without_root,
             &missing,
@@ -401,7 +401,7 @@ fn complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links() -
     );
     let mut duplicate = baseline.clone();
     duplicate.push(baseline.first().ok_or("first")?.clone());
-    assert!(cold(&r, &duplicate).is_err());
+    check!(cold(&r, &duplicate).is_err());
     Ok(())
 }
 
@@ -419,12 +419,12 @@ fn newer_automatic_predecessor_prevents_returning_to_old_retry_head() -> TestRes
     let (_, patch, _) = install::offer(&r.state, &r.context(false, token(6)), r.offer.clone())?;
     patch.bind(&mut r.state)?.apply();
     r.offer = old;
-    assert!(retry(&r, 3, 7).is_err());
-    assert!(install::offer(&r.state, &r.context(false, token(7)), r.offer.clone()).is_err());
+    check!(retry(&r, 3, 7).is_err());
+    check!(install::offer(&r.state, &r.context(false, token(7)), r.offer.clone()).is_err());
     let mut docs = all_documents(&r)?;
     docs.reverse();
     r.state.renewal_offers = cold(&r, &docs)?;
-    assert!(retry(&r, 3, 7).is_err());
+    check!(retry(&r, 3, 7).is_err());
     Ok(())
 }
 
@@ -512,7 +512,7 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
     oversized.offer.terms.instrument =
         InstrumentId::new(format!("{}a", original.offer.terms.instrument)).ok_or("instrument")?;
     oversized.consent_hash = contract(&oversized)?.consent_hash;
-    assert!(
+    check!(
         oversized.validate().is_err(),
         "actual legacy admission boundary"
     );
@@ -526,8 +526,8 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
     retry.consent_hash = contract(&retry)?.consent_hash;
     retry.validate()?;
     let open_bytes = serde_json::to_vec(&retry)?.len();
-    assert!(open_bytes > legacy_bytes);
-    assert!(open_bytes <= history::MAX_RECORD_BYTES);
+    check!(open_bytes > legacy_bytes);
+    check!(open_bytes <= history::MAX_RECORD_BYTES);
     for reason in [UnfundedCloseReason::Declined, UnfundedCloseReason::Expired] {
         let mut terminal = retry.clone();
         terminal.closure = Some(history::Closure {
@@ -549,18 +549,18 @@ fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap() -> 
                 &actual,
             )?,
         ];
-        assert!(serde_json::to_vec(&terminal)?.len() <= history::MAX_RECORD_BYTES);
-        assert!(serde_json::to_vec(&actual)?.len() <= history::MAX_CONTRACT_BYTES);
+        check!(serde_json::to_vec(&terminal)?.len() <= history::MAX_RECORD_BYTES);
+        check!(serde_json::to_vec(&actual)?.len() <= history::MAX_CONTRACT_BYTES);
         let envelope = serde_json::to_vec(&writes)?;
-        assert!(envelope.len() <= 32_768);
-        assert_eq!(
+        check!(envelope.len() <= 32_768);
+        check_eq!(
             serde_json::from_slice::<Vec<ReplayWrite>>(&envelope)?,
             writes
         );
-        assert_eq!(actual.consent_hash, contract(&retry)?.consent_hash);
+        check_eq!(actual.consent_hash, contract(&retry)?.consent_hash);
     }
-    assert_eq!(history::MAX_RECORD_BYTES, 8192);
-    assert_eq!(history::MAX_CONTRACT_BYTES, 8192);
-    assert_eq!(history::FUTURE_RESERVE_BYTES, 2048);
+    check_eq!(history::MAX_RECORD_BYTES, 8192);
+    check_eq!(history::MAX_CONTRACT_BYTES, 8192);
+    check_eq!(history::FUTURE_RESERVE_BYTES, 2048);
     Ok(())
 }

@@ -189,7 +189,7 @@ fn m7_settlement_preparation_is_inert_and_preserves_legacy_plan_and_receipt() ->
     let prepared = prepare_settlement(&contract, &snapshot, &environment)?;
     // EconomyPlan deliberately is not a wire record. Its derived equality
     // compares every semantic field, including all staleness expectations.
-    assert_eq!(prepared.plan(), &legacy_plan);
+    check_eq!(prepared.plan(), &legacy_plan);
     let PlanResult::Post(prepared_post) = validate_preparation(&prepared, &snapshot, &MapOnlyKeys)
     else {
         return Err("prepared settlement must post".into());
@@ -202,19 +202,19 @@ fn m7_settlement_preparation_is_inert_and_preserves_legacy_plan_and_receipt() ->
     ) else {
         return Err("legacy settlement must post".into());
     };
-    assert_eq!(prepared_post, legacy_post);
-    assert_eq!(
+    check_eq!(prepared_post, legacy_post);
+    check_eq!(
         apply(&snapshot, &prepared_post, TransactionId(9), 7, NOW),
         apply(&snapshot, &legacy_post, TransactionId(9), 7, NOW),
         "actual post-images and immutable journal receipt must agree"
     );
-    assert!(matches!(
+    check!(matches!(
         validate(prepared.plan(), &snapshot, &environment),
         PlanResult::Refused(_)
     ));
     drop(prepared);
-    assert_eq!(snapshot, before_snapshot);
-    assert_eq!(contract, before_contract);
+    check_eq!(snapshot, before_snapshot);
+    check_eq!(contract, before_contract);
     Ok(())
 }
 
@@ -222,20 +222,20 @@ fn m7_settlement_preparation_is_inert_and_preserves_legacy_plan_and_receipt() ->
 fn m7_settlement_preparation_rejects_changed_consent_and_old_acceptances() -> TestResult {
     let (snapshot, mut contract) = fixture()?;
     let environment = env(&NoFacts, &NoAuthority, &MapOnlyKeys);
-    assert!(prepare_settlement(&contract, &snapshot, &environment).is_ok());
+    check!(prepare_settlement(&contract, &snapshot, &environment).is_ok());
     contract.consent.visibility = EconomicVisibility::Public;
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(&contract, &snapshot, &environment),
         Err(ContractError::ConsentMismatch)
     ));
     contract.consent_hash = consent_hash(&contract.issuer, &contract.consent);
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(&contract, &snapshot, &environment),
         Err(ContractError::NotAccepted)
     ));
     reoffer(&mut contract);
-    assert!(prepare_settlement(&contract, &snapshot, &environment).is_ok());
-    assert_eq!(
+    check!(prepare_settlement(&contract, &snapshot, &environment).is_ok());
+    check_eq!(
         snapshot.hold(HoldId(1)).ok_or("missing hold")?.status,
         HoldStatus::Held
     );
@@ -254,7 +254,7 @@ fn m7_settlement_preparation_refuses_foreign_and_spent_escrow() -> TestResult {
         },
         ..original.clone()
     });
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(&contract, &foreign, &environment),
         Err(ContractError::EscrowIncomplete)
     ));
@@ -263,11 +263,11 @@ fn m7_settlement_preparation_refuses_foreign_and_spent_escrow() -> TestResult {
         status: HoldStatus::Released,
         ..original
     });
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(&contract, &spent, &environment),
         Err(ContractError::HoldNotHeld(HoldId(1)))
     ));
-    assert_eq!(
+    check_eq!(
         snapshot
             .account(AccountId(1))
             .ok_or("missing payer")?
@@ -285,7 +285,7 @@ fn m7_settlement_preparation_keeps_the_actual_engine_hold_revision_fence() -> Te
     let mut changed = snapshot.hold(HoldId(1)).ok_or("missing hold")?.clone();
     changed.revision += 1;
     snapshot.put_hold(changed);
-    assert!(matches!(
+    check!(matches!(
         validate_preparation(&prepared, &snapshot, &MapOnlyKeys),
         PlanResult::Refused(EconomyError::StaleHold {
             hold: HoldId(1),
@@ -293,8 +293,8 @@ fn m7_settlement_preparation_keeps_the_actual_engine_hold_revision_fence() -> Te
         })
     ));
     let fresh = prepare_settlement(&contract, &snapshot, &environment)?;
-    assert!(validate_preparation(&fresh, &snapshot, &MapOnlyKeys).is_post());
-    assert_eq!(
+    check!(validate_preparation(&fresh, &snapshot, &MapOnlyKeys).is_post());
+    check_eq!(
         snapshot.hold(HoldId(1)).ok_or("missing hold")?.status,
         HoldStatus::Held
     );
@@ -369,7 +369,7 @@ fn m7_settlement_preparation_rechecks_non_outcome_conditions() -> TestResult {
     contract.satisfied = vec![None];
     reoffer(&mut contract);
     let present = OutcomeFacts::new(Some(true), None);
-    assert!(
+    check!(
         prepare_settlement(
             &contract,
             &snapshot,
@@ -379,7 +379,7 @@ fn m7_settlement_preparation_rechecks_non_outcome_conditions() -> TestResult {
     );
     for answer in [Some(false), None] {
         let absent = OutcomeFacts::new(answer, None);
-        assert!(matches!(
+        check!(matches!(
             prepare_settlement(
                 &contract,
                 &snapshot,
@@ -388,7 +388,7 @@ fn m7_settlement_preparation_rechecks_non_outcome_conditions() -> TestResult {
             Err(ContractError::ConditionFailed(0))
         ));
     }
-    assert_eq!(contract.state, ContractState::ReadyToSettle);
+    check_eq!(contract.state, ContractState::ReadyToSettle);
     Ok(())
 }
 
@@ -402,18 +402,18 @@ fn m7_settlement_preparation_binds_plan_and_auth_to_one_current_outcome() -> Tes
         &snapshot,
         &env(&success, &NoAuthority, &MapOnlyKeys),
     )?;
-    assert_eq!(success.reads.get(), 2, "each outcome fact is resolved once");
-    assert!(validate_preparation(&first, &snapshot, &MapOnlyKeys).is_post());
+    check_eq!(success.reads.get(), 2, "each outcome fact is resolved once");
+    check!(validate_preparation(&first, &snapshot, &MapOnlyKeys).is_post());
     let failure = OutcomeFacts::new(Some(false), Some(true));
     let second = prepare_settlement(
         &contract,
         &snapshot,
         &env(&failure, &NoAuthority, &MapOnlyKeys),
     )?;
-    assert_eq!(failure.reads.get(), 2);
-    assert!(validate_preparation(&second, &snapshot, &MapOnlyKeys).is_post());
-    assert_ne!(first.plan().requested_lines, second.plan().requested_lines);
-    assert!(matches!(
+    check_eq!(failure.reads.get(), 2);
+    check!(validate_preparation(&second, &snapshot, &MapOnlyKeys).is_post());
+    check_ne!(first.plan().requested_lines, second.plan().requested_lines);
+    check!(matches!(
         validate(
             first.plan(),
             &snapshot,
@@ -421,7 +421,7 @@ fn m7_settlement_preparation_binds_plan_and_auth_to_one_current_outcome() -> Tes
         ),
         PlanResult::Refused(_)
     ));
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(
             &contract,
             &snapshot,
@@ -433,7 +433,7 @@ fn m7_settlement_preparation_binds_plan_and_auth_to_one_current_outcome() -> Tes
         ),
         Err(ContractError::AmbiguousOutcome)
     ));
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(
             &contract,
             &snapshot,
@@ -458,7 +458,7 @@ fn m7_settlement_preparation_preserves_unknown_key_and_exact_receipt_replay() ->
         &snapshot,
         &env(&NoFacts, &NoAuthority, &MapOnlyKeys),
     )?;
-    assert_eq!(
+    check_eq!(
         validate_preparation(&prepared, &snapshot, &UnknownKey),
         PlanResult::Refused(EconomyError::RetryShortly)
     );
@@ -468,26 +468,26 @@ fn m7_settlement_preparation_preserves_unknown_key_and_exact_receipt_replay() ->
         return Err("exact contract authorization must validate".into());
     };
     let (after, transaction) = apply(&snapshot, &engine_prepared, TransactionId(7), 12, NOW);
-    assert_eq!(transaction.id, TransactionId(7));
-    assert_eq!(
+    check_eq!(transaction.id, TransactionId(7));
+    check_eq!(
         validate_preparation(&prepared, &after, &MapOnlyKeys),
         PlanResult::AlreadyPosted(TransactionId(7))
     );
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(1))
             .ok_or("missing payer")?
             .posted_balance,
         Amount::from_minor(900)
     );
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(2))
             .ok_or("missing payee")?
             .posted_balance,
         Amount::from_minor(100)
     );
-    assert_eq!(
+    check_eq!(
         contract.state,
         ContractState::ReadyToSettle,
         "only the live post result may publish the terminal contract row"
@@ -503,7 +503,7 @@ fn m7_settlement_preparation_keeps_live_refusal_precedence() -> TestResult {
     // second fault would separately make the surface unaccepted.
     contract.consent.visibility = EconomicVisibility::Public;
     let facts = OutcomeFacts::new(Some(true), Some(true));
-    assert!(matches!(
+    check!(matches!(
         prepare_settlement(
             &contract,
             &snapshot,
@@ -511,7 +511,7 @@ fn m7_settlement_preparation_keeps_live_refusal_precedence() -> TestResult {
         ),
         Err(ContractError::AmbiguousOutcome)
     ));
-    assert!(matches!(
+    check!(matches!(
         settlement_plan(
             &contract,
             &snapshot,
@@ -542,14 +542,14 @@ fn managed_marker() -> Result<crate::contract::managed::ManagedConsent, Box<dyn 
 fn managed_consent_is_exact_and_none_preserves_legacy_wire() -> TestResult {
     let (_, mut contract) = fixture()?;
     let legacy = serde_json::to_value(&contract)?;
-    assert!(legacy["consent"].get("managed").is_none());
+    check!(legacy["consent"].get("managed").is_none());
     let legacy_hash = consent_hash(&contract.issuer, &contract.consent);
     let marker = managed_marker()?;
     contract.consent.managed = Some(marker.clone());
     let managed_hash = consent_hash(&contract.issuer, &contract.consent);
-    assert_ne!(managed_hash, legacy_hash);
+    check_ne!(managed_hash, legacy_hash);
     let encoded = serde_json::to_vec(&contract)?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_slice::<EconomicContract>(&encoded)?,
         contract
     );
@@ -565,7 +565,7 @@ fn managed_consent_is_exact_and_none_preserves_legacy_wire() -> TestResult {
         };
         wire[field] = replacement;
         contract.consent.managed = Some(serde_json::from_value(wire)?);
-        assert_ne!(
+        check_ne!(
             consent_hash(&contract.issuer, &contract.consent),
             managed_hash
         );
@@ -573,17 +573,17 @@ fn managed_consent_is_exact_and_none_preserves_legacy_wire() -> TestResult {
     for field in ["actor", "validated", "authority"] {
         let mut wire = serde_json::to_value(&marker)?;
         wire[field] = serde_json::json!(true);
-        assert!(serde_json::from_value::<crate::contract::managed::ManagedConsent>(wire).is_err());
+        check!(serde_json::from_value::<crate::contract::managed::ManagedConsent>(wire).is_err());
     }
     let encoded_marker = serde_json::to_string(&marker)?;
     let duplicate = encoded_marker.replacen("{", "{\"kind\":\"original_personal\",", 1);
-    assert!(serde_json::from_str::<crate::contract::managed::ManagedConsent>(&duplicate).is_err());
+    check!(serde_json::from_str::<crate::contract::managed::ManagedConsent>(&duplicate).is_err());
     let mut wrong = serde_json::to_value(&marker)?;
     wrong["effect"]["key"]["owner"] = serde_json::json!("roll");
-    assert!(serde_json::from_value::<crate::contract::managed::ManagedConsent>(wrong).is_err());
+    check!(serde_json::from_value::<crate::contract::managed::ManagedConsent>(wrong).is_err());
     contract.consent.managed = None;
-    assert_eq!(serde_json::to_value(&contract)?, legacy);
-    assert_eq!(
+    check_eq!(serde_json::to_value(&contract)?, legacy);
+    check_eq!(
         consent_hash(&contract.issuer, &contract.consent),
         legacy_hash
     );
@@ -611,14 +611,14 @@ fn managed_contract_auth_refuses_actual_marker_and_marker_stripped_clone() -> Te
         amount: Amount::from_minor(100),
     };
     let release = crate::plan::HoldOp::Release { hold: HoldId(1) };
-    assert!(
+    check!(
         crate::contract::ContractAuth::new(&ordinary, &snapshot).authorize_hold(
             &who(1),
             hold,
             &capture
         )
     );
-    assert!(
+    check!(
         crate::contract::ContractAuth::new(&ordinary, &snapshot).authorize_title_receipt(
             &who(1),
             &who(2),
@@ -632,20 +632,20 @@ fn managed_contract_auth_refuses_actual_marker_and_marker_stripped_clone() -> Te
     let hold = snapshot.hold(HoldId(1)).ok_or("missing hold")?;
     for supplied in [&contract, &ordinary] {
         let settle = crate::contract::ContractAuth::new(supplied, &snapshot);
-        assert!(!settle.authorize_hold(&who(1), hold, &capture));
-        assert!(!settle.authorize_title_receipt(&who(1), &who(2), None));
-        assert!(
+        check!(!settle.authorize_hold(&who(1), hold, &capture));
+        check!(!settle.authorize_title_receipt(&who(1), &who(2), None));
+        check!(
             !crate::contract::ContractAuth::settling(supplied, &snapshot, None).authorize_hold(
                 &who(1),
                 hold,
                 &capture
             )
         );
-        assert!(
+        check!(
             !crate::contract::ContractAuth::forfeiting(supplied, &snapshot, AccountId(2))
                 .authorize_hold(&who(1), hold, &capture)
         );
-        assert!(
+        check!(
             !crate::contract::ContractAuth::unwinding(supplied, &snapshot).authorize_hold(
                 &who(1),
                 hold,
@@ -655,14 +655,14 @@ fn managed_contract_auth_refuses_actual_marker_and_marker_stripped_clone() -> Te
     }
     let mut changed_id = ordinary;
     changed_id.id = ContractId(99);
-    assert!(
+    check!(
         !crate::contract::ContractAuth::new(&changed_id, &snapshot).authorize_hold(
             &who(1),
             hold,
             &capture
         )
     );
-    assert_eq!(snapshot, before);
+    check_eq!(snapshot, before);
     Ok(())
 }
 
@@ -704,12 +704,12 @@ fn managed_actual_escrow_refuses_fresh_key_and_known_retry_before_key_gate() -> 
             Vec::new(),
         );
         plan.hold_ops.push(op);
-        assert!(matches!(
+        check!(matches!(
             validate(&plan, &snapshot, &env(&NoFacts, &AllowAll, &NeverKeys)),
             PlanResult::Refused(EconomyError::ManagedContract)
         ));
     }
-    assert_eq!(snapshot, before);
+    check_eq!(snapshot, before);
     Ok(())
 }
 
@@ -769,7 +769,7 @@ fn managed_actual_asset_and_custody_references_refuse_even_with_unrelated_plan_i
     ] {
         let mut plan = plain.clone();
         plan.asset_ops.push(op);
-        assert!(matches!(
+        check!(matches!(
             validate(&plan, &snapshot, &env(&NoFacts, &AllowAll, &MapOnlyKeys)),
             PlanResult::Refused(EconomyError::ManagedContract)
         ));
@@ -787,12 +787,12 @@ fn managed_actual_asset_and_custody_references_refuse_even_with_unrelated_plan_i
     ] {
         let mut plan = plain.clone();
         plan.custody_ops.push(op);
-        assert!(matches!(
+        check!(matches!(
             validate(&plan, &snapshot, &env(&NoFacts, &AllowAll, &MapOnlyKeys)),
             PlanResult::Refused(EconomyError::ManagedContract)
         ));
     }
-    assert_eq!(snapshot, before);
+    check_eq!(snapshot, before);
     Ok(())
 }
 
@@ -920,7 +920,7 @@ fn managed_actual_command_and_programmatic_paths_leave_free_acceptance_unchanged
             .map(|(_, event)| mush_testkit::text_of(event))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
+        check!(
             text.contains("complete entitlement operation"),
             "{line}: {text}"
         );
@@ -928,9 +928,9 @@ fn managed_actual_command_and_programmatic_paths_leave_free_acceptance_unchanged
             .world()
             .module_state::<crate::EconomyStore>()
             .ok_or("missing store")?;
-        assert_eq!(store.snapshot(), &before, "{line}");
-        assert_eq!(store.transactions().count(), 0, "{line}");
-        assert!(
+        check_eq!(store.snapshot(), &before, "{line}");
+        check_eq!(store.transactions().count(), 0, "{line}");
+        check!(
             world.take_module_ops().is_empty(),
             "{line}: queued writes on refusal"
         );
@@ -941,11 +941,11 @@ fn managed_actual_command_and_programmatic_paths_leave_free_acceptance_unchanged
         .map(|(_, event)| mush_testkit::text_of(event))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(
+    check!(
         !text.contains("complete entitlement operation"),
         "read-only visibility remains: {text}"
     );
-    assert!(
+    check!(
         text.contains("prepared-settlement"),
         "read-only record still visible: {text}"
     );
@@ -982,16 +982,16 @@ fn managed_automatic_settlement_expiry_and_canon_do_not_repair_half_an_operation
                 .world()
                 .module_state::<crate::EconomyStore>()
                 .ok_or("missing store")?;
-            assert_eq!(store.snapshot(), &before, "{line}");
-            assert_eq!(store.transactions().count(), 0, "{line}");
-            assert!(
+            check_eq!(store.snapshot(), &before, "{line}");
+            check_eq!(store.transactions().count(), 0, "{line}");
+            check!(
                 world.take_module_ops().is_empty(),
                 "{line}: queued half-operation writes"
             );
         }
         world.set_now(NOW + crate::contract::DRAFT_TTL_SECS + 1);
         world.fire_due((NOW + crate::contract::DRAFT_TTL_SECS + 1).saturating_mul(1000));
-        assert_eq!(
+        check_eq!(
             world
                 .world()
                 .module_state::<crate::EconomyStore>()
@@ -999,7 +999,7 @@ fn managed_automatic_settlement_expiry_and_canon_do_not_repair_half_an_operation
                 .snapshot(),
             &before
         );
-        assert_eq!(
+        check_eq!(
             world
                 .world()
                 .module_state::<crate::EconomyStore>()
@@ -1037,11 +1037,11 @@ fn managed_boot_requires_full_operation_recovery_before_legacy_healing() -> Test
         let error = world
             .try_modules_loaded(boot)
             .expect_err("managed boot cannot silently use legacy reconciliation");
-        assert!(
+        check!(
             error.to_string().contains("complete entitlement recovery"),
             "{error}"
         );
-        assert!(world.take_module_ops().is_empty());
+        check!(world.take_module_ops().is_empty());
     }
     Ok(())
 }

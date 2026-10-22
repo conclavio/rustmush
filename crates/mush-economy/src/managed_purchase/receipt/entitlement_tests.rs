@@ -40,34 +40,34 @@ fn shared_history_binds_new_namespace_without_changing_legacy_subject_bytes() ->
     let SubjectWire::Original(p) = &original.purchase else {
         return Err("original arm".into());
     };
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&original.purchase)?,
         serde_json::to_vec(p)?
     );
     let retained_original = original.original()?.ok_or("actual original recipe")?;
-    assert!(original.entitlement()?.is_none());
-    assert!(original.matches_purchase(&retained_original, original.funding()));
+    check!(original.entitlement()?.is_none());
+    check!(original.matches_purchase(&retained_original, original.funding()));
     let (mut new, tx, terminals) = super::super::tests::entitlement::history_fixture()?;
     let retained_new = new.histories.values().next().ok_or("new history")?;
-    assert!(retained_new.original()?.is_none());
+    check!(retained_new.original()?.is_none());
     let new_recipe = retained_new
         .entitlement()?
         .ok_or("actual entitlement recipe")?;
-    assert!(retained_new.matches_entitlement(&new_recipe, retained_new.funding()));
+    check!(retained_new.matches_entitlement(&new_recipe, retained_new.funding()));
     let before = new.clone();
     let rows = idem_rows(&new);
-    assert!(new.checkpoint_complete(&rows));
+    check!(new.checkpoint_complete(&rows));
     let mut wrong = rows.clone();
     wrong.first_mut().ok_or("row")?.ns = NAMESPACE.into();
-    assert!(!new.checkpoint_complete(&wrong));
+    check!(!new.checkpoint_complete(&wrong));
     let mut duplicate = rows.clone();
     duplicate.push(rows.first().ok_or("row")?.clone());
-    assert!(!new.checkpoint_complete(&duplicate));
+    check!(!new.checkpoint_complete(&duplicate));
     let mut crossed = tx.clone();
     crossed.idempotency.namespace = NAMESPACE.into();
     let mut replay = PurchaseReceiptAudit::default();
     replay.observe(&crossed);
-    assert!(replay.finish_replay().is_err());
+    check!(replay.finish_replay().is_err());
     for terminal in terminals {
         let mut replay = PurchaseReceiptAudit::default();
         replay.observe(&tx);
@@ -75,27 +75,27 @@ fn shared_history_binds_new_namespace_without_changing_legacy_subject_bytes() ->
         replay.finish_replay()?;
         let mut checkpoint: PurchaseReceiptAudit =
             serde_json::from_slice(&serde_json::to_vec(&replay)?)?;
-        assert!(checkpoint.require_complete().is_err());
-        assert!(checkpoint.checkpoint_complete(&idem_rows(&replay)));
+        check!(checkpoint.require_complete().is_err());
+        check!(checkpoint.checkpoint_complete(&idem_rows(&replay)));
         checkpoint.finish_replay()?;
-        assert_eq!(checkpoint, replay);
+        check_eq!(checkpoint, replay);
         let mut wrong = terminal.clone();
         wrong.idempotency.namespace = NAMESPACE.into();
         if let EconomicCause::Ruleset { namespace, .. } = &mut wrong.cause {
             *namespace = NAMESPACE.into();
         }
-        assert!(before.prepare(&wrong).is_err());
+        check!(before.prepare(&wrong).is_err());
         replay.observe(&terminal);
-        assert!(replay.finish_replay().is_err());
+        check!(replay.finish_replay().is_err());
     }
     // Actual old and new proofs cannot alias the same global operation even in
     // distinct namespaces; all current producers use the actual commit token.
-    assert_eq!(
+    check_eq!(
         original.operation,
         new.histories.values().next().ok_or("new")?.operation
     );
     new.observe(&tx);
-    assert!(new.finish_replay().is_err());
+    check!(new.finish_replay().is_err());
     Ok(())
 }
 
@@ -198,11 +198,11 @@ fn maximum_width_real_encodings_charge_correlation_and_terminal_history_headroom
         };
         let correlation_len = serde_json::to_vec(&proof)?.len();
         let history_len = serde_json::to_vec(&row)?.len();
-        assert_eq!(
+        check_eq!(
             encode(&proof).is_ok(),
             correlation_len <= MAX_CORRELATION_BYTES
         );
-        assert_eq!(
+        check_eq!(
             row.bounded(),
             history_len <= MAX_HISTORY_BYTES - TERMINAL_RESERVE_BYTES
         );
@@ -219,9 +219,9 @@ fn maximum_width_real_encodings_charge_correlation_and_terminal_history_headroom
             break;
         }
     }
-    assert!(correlation_crossing && history_crossing);
+    check!(correlation_crossing && history_crossing);
     let (n, row) = accepted.ok_or("a fully wide six-payee proof must fit")?;
-    assert!(widen(original, n + 1)?.validate().is_err());
+    check!(widen(original, n + 1)?.validate().is_err());
     let mut terminal_hold = row.hold.clone();
     terminal_hold.status = HoldStatus::Consumed {
         transaction: TransactionId(u64::MAX),
@@ -245,9 +245,9 @@ fn maximum_width_real_encodings_charge_correlation_and_terminal_history_headroom
     let mut full = row.clone();
     terminal.plan_hash = crate::hash::plan_hash(&full.terminal_plan(&terminal)?);
     full.terminal = Some(terminal.clone());
-    assert!(serde_json::to_vec(&terminal)?.len() <= TERMINAL_RESERVE_BYTES);
-    assert!(serde_json::to_vec(&row)?.len() + TERMINAL_RESERVE_BYTES <= MAX_HISTORY_BYTES);
-    assert!(serde_json::to_vec(&full)?.len() <= MAX_HISTORY_BYTES);
+    check!(serde_json::to_vec(&terminal)?.len() <= TERMINAL_RESERVE_BYTES);
+    check!(serde_json::to_vec(&row)?.len() + TERMINAL_RESERVE_BYTES <= MAX_HISTORY_BYTES);
+    check!(serde_json::to_vec(&full)?.len() <= MAX_HISTORY_BYTES);
     full.validate()?;
     Ok(())
 }
@@ -266,12 +266,12 @@ fn combined_old_and_new_history_share_one_admission_cap_and_reserved_terminal_sl
     }
     let prepared = old.prepare(&new_funding)?;
     prepared.apply(&mut old);
-    assert_eq!(old.histories.len(), MAX_HISTORIES);
+    check_eq!(old.histories.len(), MAX_HISTORIES);
     for tx in new_terminals {
         let mut a = old.clone();
         let next = a.prepare(&tx)?;
         next.apply(&mut a);
-        assert_eq!(a.histories.len(), MAX_HISTORIES);
+        check_eq!(a.histories.len(), MAX_HISTORIES);
     }
     // Replace one old row with another valid old row to keep the count full,
     // then attempt the same absent new funding: refusal is count, not replay.
@@ -280,7 +280,7 @@ fn combined_old_and_new_history_share_one_admission_cap_and_reserved_terminal_sl
     let row = super::capacity_tests::counted_row(&original, u64::MAX - 1)?;
     old.histories.insert(row.operation, row);
     let before = old.clone();
-    assert!(old.prepare(&new_funding).is_err());
-    assert_eq!(old, before);
+    check!(old.prepare(&new_funding).is_err());
+    check_eq!(old, before);
     Ok(())
 }

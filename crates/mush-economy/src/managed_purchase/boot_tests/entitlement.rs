@@ -117,7 +117,7 @@ impl ColdFixture {
             quoted_at_utc: p.quoted_at_utc,
             expires_at_utc: p.expires_at_utc,
         };
-        assert_eq!(purchase.payouts()?.len(), 6);
+        check_eq!(purchase.payouts()?.len(), 6);
         Ok(Self {
             old,
             purchase,
@@ -202,14 +202,14 @@ impl ColdFixture {
     }
     fn restart(&self, disk: BootMap) -> TestResult<Box<TestWorld>> {
         let mut tw = world(true)?;
-        assert_eq!(
+        check_eq!(
             objects(&mut tw)?,
             (self.purchase.seller, self.purchase.charter)
         );
-        assert_eq!(parent_objects(&mut tw)?, self.parents);
+        check_eq!(parent_objects(&mut tw)?, self.parents);
         tw.set_now(self.old.tw.world().now());
         tw.try_modules_loaded(disk)?;
-        assert!(!store(&tw)?.is_frozen());
+        check!(!store(&tw)?.is_frozen());
         Ok(tw)
     }
     fn check(
@@ -220,9 +220,9 @@ impl ColdFixture {
     ) -> TestResult {
         let state = store(tw)?;
         let history = state.purchase_receipt_audit().get(funding.operation())?;
-        assert!(history.matches_entitlement(&self.purchase, funding.receipt()));
-        assert_eq!(history.entitlement()?.as_ref(), Some(&self.purchase));
-        assert_eq!(
+        check!(history.matches_entitlement(&self.purchase, funding.receipt()));
+        check_eq!(history.entitlement()?.as_ref(), Some(&self.purchase));
+        check_eq!(
             history.terminal().map(|t| t.granted()),
             terminal.map(|o| o == PurchaseOutcome::Granted)
         );
@@ -250,11 +250,11 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
         let narrowed = narrow(f.old.disk.clone(), floor)?;
         older_than_loaded(&narrowed, funding.receipt().journal_seq())?;
         let cold = f.restart(narrowed)?;
-        assert_eq!(
+        check_eq!(
             store(&cold)?.boot_replay().ok_or("boot")?.from_checkpoint,
             Some(covered)
         );
-        assert!(
+        check!(
             store(&cold)?
                 .transaction(funding.receipt().transaction())
                 .is_none()
@@ -262,7 +262,7 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
         f.check(&cold, &funding, None)?;
         let full = f.restart(no_checkpoint(f.old.disk.clone())?)?;
         f.check(&full, &funding, None)?;
-        assert_eq!(
+        check_eq!(
             store(&cold)?.purchase_receipt_audit(),
             store(&full)?.purchase_receipt_audit()
         );
@@ -277,13 +277,13 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
         older_than_loaded(&narrowed, terminal.journal_seq())?;
         let cold = f.restart(narrowed)?;
         let full = f.restart(no_checkpoint(f.old.disk.clone())?)?;
-        assert_eq!(
+        check_eq!(
             store(&cold)?.boot_replay().ok_or("boot")?.from_checkpoint,
             Some(covered)
         );
         f.check(&cold, &funding, Some(outcome))?;
         f.check(&full, &funding, Some(outcome))?;
-        assert_eq!(
+        check_eq!(
             store(&cold)?.purchase_receipt_audit(),
             store(&full)?.purchase_receipt_audit()
         );
@@ -292,8 +292,8 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
                 .snapshot()
                 .account(payout.account)
                 .ok_or("payee")?;
-            assert_eq!(Some(a), store(&full)?.snapshot().account(payout.account));
-            assert_eq!(
+            check_eq!(Some(a), store(&full)?.snapshot().account(payout.account));
+            check_eq!(
                 a.posted_balance.minor(),
                 if outcome == PurchaseOutcome::Granted {
                     payout.amount.minor()
@@ -306,7 +306,7 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
             .snapshot()
             .account(f.purchase.payer)
             .ok_or("payer")?;
-        assert_eq!(
+        check_eq!(
             payer.posted_balance.minor(),
             10240
                 - if outcome == PurchaseOutcome::Granted {
@@ -315,7 +315,7 @@ fn six_payee_history_survives_real_cold_checkpoint_then_grant_or_refund_and_full
                     0
                 }
         );
-        assert_eq!(payer.held_amount, crate::Amount::ZERO);
+        check_eq!(payer.held_amount, crate::Amount::ZERO);
     }
     Ok(())
 }
@@ -332,7 +332,7 @@ fn new_namespace_missing_history_or_missing_contract_cannot_boot_as_legacy() -> 
         .retain(|(key, _)| {
             key.as_str() != crate::api::contract_key(funding.receipt().contract()).as_str()
         });
-    assert!(f.restart(missing).is_err());
+    check!(crate::test_checks::refused(f.restart(missing))?);
     let (_, floor, head) = f.old.checkpoint()?;
     let mut missing = f.old.disk.clone();
     damage(&mut missing, &head, Damage::OmittedProof)?;
@@ -340,7 +340,7 @@ fn new_namespace_missing_history_or_missing_contract_cannot_boot_as_legacy() -> 
     objects(&mut cold)?;
     parent_objects(&mut cold)?;
     cold.set_now(f.old.tw.world().now());
-    assert!(matches!(
+    check!(matches!(
         cold.try_modules_loaded(narrow(missing.clone(), floor)?),
         Err(ModError::RetryFullFetch { .. })
     ));

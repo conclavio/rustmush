@@ -144,16 +144,16 @@ pub(super) fn sample() -> Result<PaidResaleConsentV1> {
 fn resale_gross_split_preserves_six_roles_payer_credit_and_floor_before_merge() -> Result {
     let c = sample()?;
     let payouts = c.terms.payouts(c.payer)?;
-    assert_eq!(payouts.len(), 6);
+    check_eq!(payouts.len(), 6);
     let amount = |id| {
         payouts
             .iter()
             .find(|p| p.account == AccountId(id))
             .map(|p| p.amount.minor())
     };
-    assert_eq!(amount(0), Some(63));
-    assert_eq!(amount(5), Some(10));
-    assert_eq!(payouts.iter().map(|p| p.amount.minor()).sum::<i64>(), 103);
+    check_eq!(amount(0), Some(63));
+    check_eq!(amount(5), Some(10));
+    check_eq!(payouts.iter().map(|p| p.amount.minor()).sum::<i64>(), 103);
     let mut merged = c.clone();
     merged.terms.registry.recipient = Some(recipient(3, 11));
     merged.terms.venue = Some(GrossRecipientCut {
@@ -161,8 +161,8 @@ fn resale_gross_split_preserves_six_roles_payer_credit_and_floor_before_merge() 
         recipient: Some(recipient(3, 11)),
     });
     let p = merged.terms.payouts(merged.payer)?;
-    assert_eq!(p.len(), 4);
-    assert_eq!(
+    check_eq!(p.len(), 4);
+    check_eq!(
         p.iter()
             .find(|p| p.account == AccountId(3))
             .map(|p| p.amount.minor()),
@@ -170,11 +170,11 @@ fn resale_gross_split_preserves_six_roles_payer_credit_and_floor_before_merge() 
     );
     merged.terms.price = Amount::from_minor(1);
     let p = merged.terms.payouts(merged.payer)?;
-    assert_eq!(p.len(), 1);
-    assert_eq!(p[0].amount.minor(), 1);
+    check_eq!(p.len(), 1);
+    check_eq!(p[0].amount.minor(), 1);
     // A floor of zero does not excuse crossed account ownership.
     merged.terms.registry.recipient = Some(recipient(3, 99));
-    assert!(merged.validate().is_err());
+    check!(merged.validate().is_err());
     Ok(())
 }
 #[test]
@@ -183,7 +183,7 @@ fn resale_immediate_and_pending_are_disjoint_and_preserve_lapsed_dates() -> Resu
     let mut immediate = c.clone();
     immediate.effect = action(ACCEPT)?;
     immediate.mode = PaidResaleModeV1::Immediate;
-    assert!(immediate.validate().is_err());
+    check!(immediate.validate().is_err());
     immediate.claims.open_paid = 0;
     immediate.validate()?;
     let before = immediate.terms.basis.term.clone();
@@ -191,12 +191,12 @@ fn resale_immediate_and_pending_are_disjoint_and_preserve_lapsed_dates() -> Resu
     immediate.accepted_at_ic = stamp(1210);
     immediate.deadline = immediate.terms.deadline(&immediate.accepted_at_ic)?;
     immediate.validate()?;
-    assert_eq!(immediate.deadline.at, 1000);
-    assert!(immediate.deadline_reached(&immediate.accepted_at_ic)?);
-    assert_eq!(immediate.terms.basis.term, before);
+    check_eq!(immediate.deadline.at, 1000);
+    check!(immediate.deadline_reached(&immediate.accepted_at_ic)?);
+    check_eq!(immediate.terms.basis.term, before);
     immediate.mode = PaidResaleModeV1::Pending;
     immediate.effect = action(FUND)?;
-    assert!(immediate.validate().is_err());
+    check!(immediate.validate().is_err());
     Ok(())
 }
 #[test]
@@ -222,7 +222,7 @@ fn resale_strict_nested_nulls_parent_bound_and_unknown_fields_refuse() -> Result
                 .ok_or("object")?
                 .remove(path[2]);
         }
-        assert!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
+        check!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
     }
     let mut v = good.clone();
     let extra = v["terms"]["parents"][0].clone();
@@ -230,15 +230,15 @@ fn resale_strict_nested_nulls_parent_bound_and_unknown_fields_refuse() -> Result
         .as_array_mut()
         .ok_or("array")?
         .push(extra);
-    assert!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
+    check!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
     let mut v = good;
     v["terms"]["basis"]["holder"]["authority"] = json!(true);
-    assert!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
+    check!(serde_json::from_value::<PaidResaleConsentV1>(v).is_err());
     let raw = subject::bounded(&c, MAX_SUBJECT_BYTES)?;
-    assert_eq!(PaidResaleConsentV1::decode(&raw)?, c);
+    check_eq!(PaidResaleConsentV1::decode(&raw)?, c);
     let mut noncanonical = vec![b' '];
     noncanonical.extend(raw);
-    assert!(PaidResaleConsentV1::decode(&noncanonical).is_err());
+    check!(PaidResaleConsentV1::decode(&noncanonical).is_err());
     Ok(())
 }
 #[test]
@@ -256,12 +256,12 @@ fn resale_rejects_cut_overflow_cycles_and_final_holder_generation() -> Result {
             6 => v.terms.basis.holder.operation = token(9),
             _ => v.terms.settle_seconds = 1,
         }
-        assert!(v.validate().is_err());
+        check!(v.validate().is_err());
     }
     let mut max = c;
     max.terms.price = Amount::from_minor(i64::MAX);
     max.validate()?;
-    assert_eq!(
+    check_eq!(
         max.terms
             .payouts(max.payer)?
             .iter()
@@ -295,7 +295,7 @@ fn resale_deadline_last_close_and_refund_causes_keep_exact_term_bounds() -> Resu
     d.at_ic = stamp(111);
     d.matches_consent(&c)?;
     d.reason = PaidResaleDecisionKindV1::LastClaimClosed { next_transition: 5 };
-    assert!(d.matches_consent(&c).is_err());
+    check!(d.matches_consent(&c).is_err());
     let mut d = decision(
         &c,
         PaidResaleDecisionKindV1::DeadlineReached {
@@ -305,7 +305,7 @@ fn resale_deadline_last_close_and_refund_causes_keep_exact_term_bounds() -> Resu
     )?;
     d.matches_consent(&c)?;
     d.at_ic.at -= 1;
-    assert!(d.matches_consent(&c).is_err());
+    check!(d.matches_consent(&c).is_err());
     let mut d = decision(
         &c,
         PaidResaleDecisionKindV1::RegistryRevoked {
@@ -318,20 +318,20 @@ fn resale_deadline_last_close_and_refund_causes_keep_exact_term_bounds() -> Resu
     d.at_ic = stamp(1099);
     d.matches_consent(&c)?;
     d.at_ic = stamp(c.accepted_at_ic.at - 1);
-    assert!(d.matches_consent(&c).is_err());
+    check!(d.matches_consent(&c).is_err());
     d.at_ic = stamp(c.accepted_at_ic.at);
     d.matches_consent(&c)?;
     d.at_ic = stamp(1100);
-    assert!(
+    check!(
         d.matches_consent(&c).is_err(),
         "expired sanction cannot ban property"
     );
     let mut d = decision(&c, PaidResaleDecisionKindV1::ClockChanged {})?;
-    assert!(d.matches_consent(&c).is_err());
+    check!(d.matches_consent(&c).is_err());
     d.at_ic.clock = ClockRef::WorldIc { generation: 2 };
     d.matches_consent(&c)?;
     d.reason = PaidResaleDecisionKindV1::RecipientUnavailable {};
-    assert!(d.matches_consent(&c).is_err());
+    check!(d.matches_consent(&c).is_err());
     Ok(())
 }
 #[test]
@@ -348,7 +348,7 @@ fn resale_widest_scalar_subject_and_grace_issue_stay_bounded() -> Result {
     c.claims.open_paid = 32768;
     c.validate()?;
     let raw = subject::bounded(&c, MAX_SUBJECT_BYTES)?;
-    assert_eq!(PaidResaleConsentV1::decode(&raw)?, c);
-    assert!(raw.len() < MAX_SUBJECT_BYTES);
+    check_eq!(PaidResaleConsentV1::decode(&raw)?, c);
+    check!(raw.len() < MAX_SUBJECT_BYTES);
     Ok(())
 }

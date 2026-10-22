@@ -234,11 +234,11 @@ fn terminal_grant_uses_actual_escrow_and_legacy_validation_cannot_post_its_plan(
     let funding = fixture.fund()?;
     let before = fixture.state.snapshot.clone();
     let prepared = fixture.terminal(&funding, PurchaseOutcome::Granted)?;
-    assert_eq!(fixture.state.snapshot, before);
-    assert_eq!(prepared.output.operation(), funding.operation());
-    assert_eq!(prepared.output.contract(), funding.receipt().contract());
-    assert!(prepared.output.issued_at_ic().is_some());
-    assert_eq!(
+    check_eq!(fixture.state.snapshot, before);
+    check_eq!(prepared.output.operation(), funding.operation());
+    check_eq!(prepared.output.contract(), funding.receipt().contract());
+    check!(prepared.output.issued_at_ic().is_some());
+    check_eq!(
         prepared
             .transaction
             .hold_effects
@@ -247,7 +247,7 @@ fn terminal_grant_uses_actual_escrow_and_legacy_validation_cannot_post_its_plan(
             .kind,
         crate::record::HoldEffectKind::Captured
     );
-    assert_eq!(prepared.transaction.lines.len(), 3);
+    check_eq!(prepared.transaction.lines.len(), 3);
     let gate = fixture.state.key_gate();
     let auth = WorldAuth { w: &fixture.world };
     let env = ValidateEnv {
@@ -260,13 +260,13 @@ fn terminal_grant_uses_actual_escrow_and_legacy_validation_cannot_post_its_plan(
         spent: BTreeMap::new(),
         keys: &gate,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&prepared.plan, &fixture.state.snapshot, &env),
         PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
     let mut after = before;
     prepared.delta.apply_to(&mut after);
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(0))
             .ok_or("buyer")?
@@ -274,14 +274,14 @@ fn terminal_grant_uses_actual_escrow_and_legacy_validation_cannot_post_its_plan(
             .minor(),
         900
     );
-    assert!(
+    check!(
         after
             .account(AccountId(0))
             .ok_or("buyer")?
             .held_amount
             .is_zero()
     );
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(1))
             .ok_or("seller")?
@@ -289,7 +289,7 @@ fn terminal_grant_uses_actual_escrow_and_legacy_validation_cannot_post_its_plan(
             .minor(),
         90
     );
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(2))
             .ok_or("registry")?
@@ -314,17 +314,17 @@ fn expired_or_lost_seller_title_refuses_grant_but_exact_refund_returns_only_buye
         .ok_or("title")?;
     title.frozen = true;
     fixture.state.snapshot.put_asset(title);
-    assert!(
+    check!(
         fixture
             .terminal(&funding, PurchaseOutcome::Granted)
             .is_err()
     );
     let before = fixture.state.snapshot.clone();
     let prepared = fixture.terminal(&funding, PurchaseOutcome::Refunded)?;
-    assert_eq!(fixture.state.snapshot, before);
-    assert!(prepared.output.issued_at_ic().is_none());
-    assert!(prepared.transaction.lines.is_empty());
-    assert_eq!(
+    check_eq!(fixture.state.snapshot, before);
+    check!(prepared.output.issued_at_ic().is_none());
+    check!(prepared.transaction.lines.is_empty());
+    check_eq!(
         prepared
             .transaction
             .hold_effects
@@ -335,7 +335,7 @@ fn expired_or_lost_seller_title_refuses_grant_but_exact_refund_returns_only_buye
     );
     let mut after = before;
     prepared.delta.apply_to(&mut after);
-    assert_eq!(
+    check_eq!(
         after
             .account(AccountId(0))
             .ok_or("buyer")?
@@ -343,21 +343,21 @@ fn expired_or_lost_seller_title_refuses_grant_but_exact_refund_returns_only_buye
             .minor(),
         1000
     );
-    assert!(
+    check!(
         after
             .account(AccountId(0))
             .ok_or("buyer")?
             .held_amount
             .is_zero()
     );
-    assert!(
+    check!(
         after
             .account(AccountId(1))
             .ok_or("seller")?
             .posted_balance
             .is_zero()
     );
-    assert!(
+    check!(
         after
             .account(AccountId(2))
             .ok_or("registry")?
@@ -381,17 +381,17 @@ fn terminal_refuses_crossed_receipts_and_missing_actual_funding_history() -> Tes
             }
         }
         let before = fixture.state.snapshot.clone();
-        assert!(
+        check!(
             fixture
                 .terminal(&funding, PurchaseOutcome::Granted)
                 .is_err()
         );
-        assert!(
+        check!(
             fixture
                 .terminal(&funding, PurchaseOutcome::Refunded)
                 .is_err()
         );
-        assert_eq!(fixture.state.snapshot, before);
+        check_eq!(fixture.state.snapshot, before);
     }
     Ok(())
 }
@@ -411,7 +411,7 @@ fn terminal_images_install_exact_fold_and_cannot_apply_twice_or_after_hold_drift
             fixture.world.world_ic_now().clock,
             prepared,
         )?;
-        assert_eq!(
+        check_eq!(
             writes.len(),
             if outcome == PurchaseOutcome::Granted {
                 8
@@ -420,7 +420,7 @@ fn terminal_images_install_exact_fold_and_cannot_apply_twice_or_after_hold_drift
             }
         );
         drop(patch.bind(&mut fixture.state)?);
-        assert!(
+        check!(
             fixture
                 .state
                 .snapshot
@@ -435,12 +435,12 @@ fn terminal_images_install_exact_fold_and_cannot_apply_twice_or_after_hold_drift
             fixture.terminal(&funding, outcome)?,
         )?;
         patch.bind(&mut fixture.state)?.apply();
-        assert_eq!(fixture.state.fold, expected_fold);
-        assert_eq!(
+        check_eq!(fixture.state.fold, expected_fold);
+        check_eq!(
             fixture.state.transactions.get(&transaction.id),
             Some(&transaction)
         );
-        assert!(
+        check!(
             !fixture
                 .state
                 .snapshot
@@ -449,7 +449,7 @@ fn terminal_images_install_exact_fold_and_cannot_apply_twice_or_after_hold_drift
                 .status
                 .is_held()
         );
-        assert!(fixture.terminal(&funding, outcome).is_err());
+        check!(fixture.terminal(&funding, outcome).is_err());
 
         let mut changed = Fixture::new()?;
         let funding = changed.fund()?;
@@ -467,9 +467,9 @@ fn terminal_images_install_exact_fold_and_cannot_apply_twice_or_after_hold_drift
         hold.revision += 1;
         changed.state.snapshot.put_hold(hold);
         let before = changed.state.snapshot.clone();
-        assert!(patch.bind(&mut changed.state).is_err());
-        assert_eq!(changed.state.snapshot, before);
-        assert_eq!(changed.state.journal.next_seq(JOURNAL_LOG), 1);
+        check!(patch.bind(&mut changed.state).is_err());
+        check_eq!(changed.state.snapshot, before);
+        check_eq!(changed.state.journal.next_seq(JOURNAL_LOG), 1);
     }
     Ok(())
 }
@@ -487,12 +487,12 @@ fn funding_images_bind_inertly_then_install_the_exact_prebuilt_journal_and_fold(
     expected_fold.fold_entry(transaction.journal_seq, &transaction);
     let (output, patch, writes) =
         install::finish_images(&fixture.state, fixture.world.world_ic_now().clock, prepared)?;
-    assert_eq!(fixture.state.snapshot, before);
-    assert_eq!(fixture.state.meta_doc(), before_meta);
+    check_eq!(fixture.state.snapshot, before);
+    check_eq!(fixture.state.meta_doc(), before_meta);
     // The actual durable union has one journal and all five exact projection
     // images. No later ordinary post or contract write is needed.
-    assert_eq!(writes.len(), 6);
-    assert_eq!(
+    check_eq!(writes.len(), 6);
+    check_eq!(
         writes
             .iter()
             .filter(|write| matches!(write, ReplayWrite::LedgerChunkSet { .. }))
@@ -510,8 +510,8 @@ fn funding_images_bind_inertly_then_install_the_exact_prebuilt_journal_and_fold(
         })
         .ok_or("managed contract image")?;
     patch.bind(&mut fixture.state)?.apply();
-    assert_eq!(fixture.state.fold, expected_fold);
-    assert_eq!(
+    check_eq!(fixture.state.fold, expected_fold);
+    check_eq!(
         fixture.state.transactions.get(&transaction.id),
         Some(&transaction)
     );
@@ -520,8 +520,8 @@ fn funding_images_bind_inertly_then_install_the_exact_prebuilt_journal_and_fold(
         .snapshot
         .contract(output.receipt().contract())
         .ok_or("contract")?;
-    assert_eq!(serde_json::to_value(actual_contract)?, expected_contract);
-    assert_eq!(
+    check_eq!(serde_json::to_value(actual_contract)?, expected_contract);
+    check_eq!(
         actual_contract.consent.managed.as_ref(),
         Some(output.marker())
     );
@@ -530,18 +530,18 @@ fn funding_images_bind_inertly_then_install_the_exact_prebuilt_journal_and_fold(
         .snapshot
         .account(fixture.request.payer)
         .ok_or("payer")?;
-    assert_eq!(
+    check_eq!(
         payer.posted_balance,
         before
             .account(fixture.request.payer)
             .ok_or("old payer")?
             .posted_balance
     );
-    assert_eq!(payer.held_amount, fixture.request.price);
-    assert_eq!(fixture.state.next_transaction, transaction.id.0 + 1);
-    assert_eq!(fixture.state.next_contract, actual_contract.id.0 + 1);
-    assert_eq!(fixture.state.next_hold, output.receipt().hold().0 + 1);
-    assert!(
+    check_eq!(payer.held_amount, fixture.request.price);
+    check_eq!(fixture.state.next_transaction, transaction.id.0 + 1);
+    check_eq!(fixture.state.next_contract, actual_contract.id.0 + 1);
+    check_eq!(fixture.state.next_hold, output.receipt().hold().0 + 1);
+    check!(
         fixture
             .state
             .snapshot
@@ -563,12 +563,12 @@ fn dropping_funding_bind_leaves_every_economic_projection_unchanged() -> TestRes
         fixture.prepare()?,
     )?;
     drop(patch.bind(&mut fixture.state)?);
-    assert_eq!(fixture.state.snapshot, before);
-    assert_eq!(fixture.state.meta_doc(), meta);
-    assert_eq!(fixture.state.fold, fold);
-    assert!(fixture.state.transactions.is_empty());
-    assert_eq!(fixture.state.journal.next_seq(JOURNAL_LOG), 0);
-    assert_eq!(fixture.state.posts_since_boot, 0);
+    check_eq!(fixture.state.snapshot, before);
+    check_eq!(fixture.state.meta_doc(), meta);
+    check_eq!(fixture.state.fold, fold);
+    check!(fixture.state.transactions.is_empty());
+    check_eq!(fixture.state.journal.next_seq(JOURNAL_LOG), 0);
+    check_eq!(fixture.state.posts_since_boot, 0);
     Ok(())
 }
 
@@ -618,15 +618,15 @@ fn funding_bind_rejects_doc_only_authority_and_allocator_fold_drift_before_mutat
         let before = fixture.state.snapshot.clone();
         let meta = fixture.state.meta_doc();
         let fold = fixture.state.fold.clone();
-        assert!(
+        check!(
             patch.bind(&mut fixture.state).is_err(),
             "mutation {mutation}"
         );
-        assert_eq!(fixture.state.snapshot, before);
-        assert_eq!(fixture.state.meta_doc(), meta);
-        assert_eq!(fixture.state.fold, fold);
-        assert_eq!(fixture.state.journal.next_seq(JOURNAL_LOG), 0);
-        assert!(fixture.state.transactions.is_empty());
+        check_eq!(fixture.state.snapshot, before);
+        check_eq!(fixture.state.meta_doc(), meta);
+        check_eq!(fixture.state.fold, fold);
+        check_eq!(fixture.state.journal.next_seq(JOURNAL_LOG), 0);
+        check!(fixture.state.transactions.is_empty());
     }
     Ok(())
 }
@@ -655,12 +655,12 @@ fn funding_uses_actual_e4_hold_and_retains_an_inert_complete_consent() -> TestRe
         spent: BTreeMap::new(),
         keys: &gate,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&prepared.plan, &fixture.state.snapshot, &env),
         PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
-    assert_eq!(fixture.state.snapshot, before);
-    assert_eq!(
+    check_eq!(fixture.state.snapshot, before);
+    check_eq!(
         (
             fixture.state.next_contract,
             fixture.state.next_hold,
@@ -668,15 +668,15 @@ fn funding_uses_actual_e4_hold_and_retains_an_inert_complete_consent() -> TestRe
         ),
         counters
     );
-    assert_eq!(prepared.contract.escrow, vec![HoldId(counters.1)]);
-    assert!(prepared.contract.consent_intact());
-    assert!(prepared.contract.fully_accepted());
-    assert_eq!(
+    check_eq!(prepared.contract.escrow, vec![HoldId(counters.1)]);
+    check!(prepared.contract.consent_intact());
+    check!(prepared.contract.fully_accepted());
+    check_eq!(
         prepared.contract.acceptances.len(),
         1,
         "no forged seller acceptance"
     );
-    assert_eq!(
+    check_eq!(
         prepared
             .contract
             .acceptances
@@ -685,41 +685,41 @@ fn funding_uses_actual_e4_hold_and_retains_an_inert_complete_consent() -> TestRe
             .party,
         PrincipalId::Object(fixture.request.buyer)
     );
-    assert!(
+    check!(
         prepared.contract.consent.terms.deliverables.is_empty(),
         "licence is a paired typed effect, not a fabricated E4 object"
     );
     let mut landed = before.clone();
     prepared.delta.clone().apply_to(&mut landed);
     landed.put_contract(prepared.contract.clone());
-    assert!(crate::contract::qualifying_escrow(&prepared.contract, &landed).complete);
+    check!(crate::contract::qualifying_escrow(&prepared.contract, &landed).complete);
     let payer = landed.account(AccountId(0)).ok_or("payer")?;
-    assert_eq!(payer.posted_balance, crate::Amount::from_minor(1000));
-    assert_eq!(payer.held_amount, crate::Amount::from_minor(100));
-    assert_eq!(
+    check_eq!(payer.posted_balance, crate::Amount::from_minor(1000));
+    check_eq!(payer.held_amount, crate::Amount::from_minor(100));
+    check_eq!(
         landed.account(AccountId(1)).ok_or("seller")?.posted_balance,
         crate::Amount::ZERO
     );
-    assert_eq!(
+    check_eq!(
         prepared.output.receipt().transaction(),
         prepared.transaction.id
     );
-    assert_eq!(
+    check_eq!(
         prepared.output.receipt().journal_seq(),
         prepared.transaction.journal_seq
     );
-    assert_eq!(
+    check_eq!(
         prepared.output.receipt().consent_hash(),
         &prepared.contract.consent_hash
     );
-    assert_eq!(prepared.output.marker().quote(), fixture.request.quote);
-    assert_eq!(
+    check_eq!(prepared.output.marker().quote(), fixture.request.quote);
+    check_eq!(
         prepared.output.marker().product_digest(),
         fixture.request.product_digest
     );
     let mut cancelled = prepared.contract.clone();
     cancelled.state = ContractState::Cancelled;
-    assert!(
+    check!(
         crate::contract::managed::require_legacy_plan(
             &crate::contract::refund_plan(&cancelled, &landed)?,
             &landed,
@@ -735,12 +735,12 @@ fn actual_current_title_wallet_and_quote_boundaries_refuse_before_any_mutation()
     let mut fixture = Fixture::new()?;
     let before = fixture.state.snapshot.clone();
     fixture.world.set_now(fixture.request.expires_at_utc);
-    assert!(fixture.prepare().is_err());
+    check!(fixture.prepare().is_err());
     fixture.world.set_now(fixture.request.quoted_at_utc - 1);
-    assert!(fixture.prepare().is_err());
+    check!(fixture.prepare().is_err());
     fixture.world.set_now(1000);
     fixture.request.title_revision += 1;
-    assert!(fixture.prepare().is_err());
+    check!(fixture.prepare().is_err());
     fixture.request.title_revision -= 1;
     let mut title = fixture
         .state
@@ -750,7 +750,7 @@ fn actual_current_title_wallet_and_quote_boundaries_refuse_before_any_mutation()
         .clone();
     title.frozen = true;
     fixture.state.snapshot.put_asset(title.clone());
-    assert!(
+    check!(
         fixture.prepare().is_err(),
         "doc-only frozen status is authority even without a journal revision"
     );
@@ -764,11 +764,11 @@ fn actual_current_title_wallet_and_quote_boundaries_refuse_before_any_mutation()
         .clone();
     payer.owner = PrincipalId::Object(fixture.request.seller);
     fixture.state.snapshot.put_account(payer);
-    assert!(fixture.prepare().is_err());
-    assert_eq!(fixture.state.next_contract, 0);
-    assert_eq!(fixture.state.next_hold, 0);
+    check!(fixture.prepare().is_err());
+    check_eq!(fixture.state.next_contract, 0);
+    check_eq!(fixture.state.next_hold, 0);
     fixture.state.snapshot = before;
-    assert!(fixture.prepare().is_ok());
+    check!(fixture.prepare().is_ok());
     Ok(())
 }
 
@@ -777,10 +777,10 @@ fn quote_payouts_are_exact_and_actual_payee_identity_is_rechecked() -> TestResul
     let mut fixture = Fixture::new()?;
     let original = fixture.request.clone();
     fixture.request.payouts.first_mut().ok_or("payout")?.amount = crate::Amount::from_minor(91);
-    assert!(fixture.prepare().is_err());
+    check!(fixture.prepare().is_err());
     fixture.request = original.clone();
     fixture.request.payouts.reverse();
-    assert!(
+    check!(
         fixture.prepare().is_err(),
         "canonical ordering is not silently normalized"
     );
@@ -793,7 +793,7 @@ fn quote_payouts_are_exact_and_actual_payee_identity_is_rechecked() -> TestResul
         .clone();
     recipient.owner = PrincipalId::Object(fixture.request.buyer);
     fixture.state.snapshot.put_account(recipient);
-    assert!(
+    check!(
         fixture.prepare().is_err(),
         "quote owner cannot substitute for current E4 identity"
     );
@@ -808,14 +808,14 @@ fn funding_receipt_clock_is_strict_and_journal_sequence_zero_is_valid() -> TestR
     let mut value = original.clone();
     value["journal_seq"] = json!(0);
     let decoded: FundingReceipt = serde_json::from_value(value.clone())?;
-    assert_eq!(decoded.journal_seq(), 0);
+    check_eq!(decoded.journal_seq(), 0);
     value["at_ic"]["clock"] = json!({"kind":"utc"});
-    assert!(serde_json::from_value::<FundingReceipt>(value.clone()).is_err());
+    check!(serde_json::from_value::<FundingReceipt>(value.clone()).is_err());
     value["at_ic"]["clock"] = json!({"kind":"world_ic","generation":0});
-    assert!(serde_json::from_value::<FundingReceipt>(value).is_err());
+    check!(serde_json::from_value::<FundingReceipt>(value).is_err());
     let mut extra = original;
     extra["validated"] = json!(true);
-    assert!(serde_json::from_value::<FundingReceipt>(extra).is_err());
+    check!(serde_json::from_value::<FundingReceipt>(extra).is_err());
     Ok(())
 }
 
@@ -825,13 +825,13 @@ fn terminal_proof_survives_hot_transaction_eviction() -> TestResult {
     let funding = fixture.fund()?;
     fixture.state.transactions.clear();
     let before = fixture.state.snapshot.clone();
-    assert!(fixture.terminal(&funding, PurchaseOutcome::Granted).is_ok());
-    assert!(
+    check!(fixture.terminal(&funding, PurchaseOutcome::Granted).is_ok());
+    check!(
         fixture
             .terminal(&funding, PurchaseOutcome::Refunded)
             .is_ok()
     );
-    assert_eq!(fixture.state.snapshot, before);
+    check_eq!(fixture.state.snapshot, before);
     Ok(())
 }
 
@@ -861,7 +861,7 @@ fn checkpoint_proof_binds_every_actual_key_and_reconstructs_economic_plan() -> T
         let mut f = Fixture::new()?;
         let funding = f.fund()?;
         let rows = purchase_idem_rows(&f.state);
-        assert!(f.state.fold.purchase_receipts.checkpoint_complete(&rows));
+        check!(f.state.fold.purchase_receipts.checkpoint_complete(&rows));
         let (_, patch, _) = install::finish_terminal_images(
             &f.state,
             f.world.world_ic_now().clock,
@@ -869,9 +869,9 @@ fn checkpoint_proof_binds_every_actual_key_and_reconstructs_economic_plan() -> T
         )?;
         patch.bind(&mut f.state)?.apply();
         let rows = purchase_idem_rows(&f.state);
-        assert_eq!(rows.len(), 2);
+        check_eq!(rows.len(), 2);
         let audit = &f.state.fold.purchase_receipts;
-        assert!(audit.checkpoint_complete(&rows));
+        check!(audit.checkpoint_complete(&rows));
         let encoded = serde_json::to_value(audit)?;
         for alteration in 0..4 {
             let mut altered = encoded.clone();
@@ -908,26 +908,26 @@ fn checkpoint_proof_binds_every_actual_key_and_reconstructs_economic_plan() -> T
                 }
             }
             let altered: PurchaseReceiptAudit = serde_json::from_value(altered)?;
-            assert!(
+            check!(
                 !altered.checkpoint_complete(&rows),
                 "alteration {alteration}"
             );
-            assert_eq!(
+            check_eq!(
                 altered.require_complete(),
                 Err(PurchaseAuditError::Incomplete)
             );
         }
         let mut omitted = rows.clone();
         omitted.pop();
-        assert!(!audit.checkpoint_complete(&omitted));
+        check!(!audit.checkpoint_complete(&omitted));
         let mut extra = rows.clone();
         let mut row = rows.first().ok_or("row")?.clone();
         row.key = "not-an-operation/fund".into();
         extra.push(row);
-        assert!(!audit.checkpoint_complete(&extra));
+        check!(!audit.checkpoint_complete(&extra));
         let mut crossed = rows.clone();
         crossed.first_mut().ok_or("row")?.posted_at += 1;
-        assert!(!audit.checkpoint_complete(&crossed));
+        check!(!audit.checkpoint_complete(&crossed));
     }
     Ok(())
 }
@@ -948,10 +948,10 @@ fn closed_history_replay_rejects_malformed_cause_and_duplicate_terminal() -> Tes
         replay.observe(tx);
     }
     replay.finish_replay()?;
-    assert_eq!(replay, f.state.fold.purchase_receipts);
+    check_eq!(replay, f.state.fold.purchase_receipts);
     let last = transactions.last().ok_or("terminal")?;
     replay.observe(last);
-    assert_eq!(replay.finish_replay(), Err(PurchaseAuditError::Refused));
+    check_eq!(replay.finish_replay(), Err(PurchaseAuditError::Refused));
     let mut malformed = transactions.first().ok_or("funding")?.clone();
     malformed.cause = EconomicCause::Ruleset {
         namespace: NAMESPACE.into(),
@@ -959,7 +959,7 @@ fn closed_history_replay_rejects_malformed_cause_and_duplicate_terminal() -> Tes
     };
     let mut invalid = PurchaseReceiptAudit::default();
     invalid.observe(&malformed);
-    assert_eq!(invalid.finish_replay(), Err(PurchaseAuditError::Refused));
+    check_eq!(invalid.finish_replay(), Err(PurchaseAuditError::Refused));
     Ok(())
 }
 
@@ -968,18 +968,18 @@ fn economy_owner_allows_god_to_refund_but_never_grant_for_another_buyer() -> Tes
     let mut f = Fixture::new()?;
     let funding = f.fund()?;
     let before = f.state.snapshot.clone();
-    assert!(
+    check!(
         f.terminal_as(&funding, PurchaseOutcome::Granted, GOD)
             .is_err()
     );
     let refund = f.terminal_as(&funding, PurchaseOutcome::Refunded, GOD)?;
-    assert_eq!(refund.output.outcome(), PurchaseOutcome::Refunded);
-    assert!(refund.transaction.lines.is_empty());
-    assert_eq!(
+    check_eq!(refund.output.outcome(), PurchaseOutcome::Refunded);
+    check!(refund.transaction.lines.is_empty());
+    check_eq!(
         refund.transaction.actor,
         PrincipalId::Object(f.request.buyer)
     );
-    assert_eq!(f.state.snapshot, before);
+    check_eq!(f.state.snapshot, before);
     Ok(())
 }
 
@@ -1005,25 +1005,25 @@ fn versioned_original_consent_funding_and_terminal_history_preserve_closed_proto
             // consent used as permission. Full paired Registry boot is separate.
             let funding = fixture.fund()?;
             let marker = funding.marker();
-            assert_eq!(marker.effect(), &fixture.action);
+            check_eq!(marker.effect(), &fixture.action);
             let encoded = serde_json::to_vec(marker)?;
             let decoded: ManagedConsent = serde_json::from_slice(&encoded)?;
-            assert_eq!(&decoded, marker);
+            check_eq!(&decoded, marker);
             let mut unsupported = serde_json::to_value(marker)?;
             *unsupported
                 .pointer_mut("/effect/version")
                 .ok_or("effect version")? = json!(3);
-            assert!(serde_json::from_value::<ManagedConsent>(unsupported).is_err());
+            check!(serde_json::from_value::<ManagedConsent>(unsupported).is_err());
             let actual = fixture
                 .state
                 .snapshot
                 .contract(funding.receipt().contract())
                 .ok_or("contract")?;
-            assert_eq!(actual.consent.managed.as_ref(), Some(marker));
+            check_eq!(actual.consent.managed.as_ref(), Some(marker));
             let cold_document: EconomicContract =
                 serde_json::from_slice(&serde_json::to_vec(actual)?)?;
-            assert_eq!(&cold_document, actual);
-            assert!(!crate::contract::managed::legacy_contract(
+            check_eq!(&cold_document, actual);
+            check!(!crate::contract::managed::legacy_contract(
                 actual,
                 &fixture.state.snapshot
             ));
@@ -1036,14 +1036,14 @@ fn versioned_original_consent_funding_and_terminal_history_preserve_closed_proto
                 prepared,
             )?;
             patch.bind(&mut fixture.state)?.apply();
-            assert_eq!(fixture.state.fold, expected_fold);
+            check_eq!(fixture.state.fold, expected_fold);
             let payer = fixture
                 .state
                 .snapshot
                 .account(fixture.request.payer)
                 .ok_or("payer")?;
-            assert_eq!(payer.held_amount, crate::Amount::ZERO);
-            assert_eq!(
+            check_eq!(payer.held_amount, crate::Amount::ZERO);
+            check_eq!(
                 payer.posted_balance,
                 crate::Amount::from_minor(if outcome == PurchaseOutcome::Granted {
                     900
@@ -1056,12 +1056,12 @@ fn versioned_original_consent_funding_and_terminal_history_preserve_closed_proto
                 .fold
                 .purchase_receipts
                 .get(funding.operation())?;
-            assert_eq!(history.effect(), &fixture.action);
-            assert_eq!(
+            check_eq!(history.effect(), &fixture.action);
+            check_eq!(
                 history.terminal().ok_or("terminal history")?.granted(),
                 outcome == PurchaseOutcome::Granted
             );
-            assert!(fixture.terminal(&funding, outcome).is_err());
+            check!(fixture.terminal(&funding, outcome).is_err());
         }
     }
     Ok(())

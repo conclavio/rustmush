@@ -723,16 +723,16 @@ fn actual_registered_update_posts_one_fee_preserves_birth_title_and_replays_exac
     let filing = serde_json::to_value(f.state().filing_receipt_audit())?;
     let before = f.state().snapshot.clone();
     let p = f.update(2)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     let writes = f.stage(f.rules.update.clone(), 2, p)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     f.take_install()?;
-    assert_eq!(f.state().snapshot.asset(f.shell), Some(&title));
-    assert_eq!(
+    check_eq!(f.state().snapshot.asset(f.shell), Some(&title));
+    check_eq!(
         serde_json::to_value(f.state().filing_receipt_audit())?,
         filing
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(1))
@@ -740,7 +740,7 @@ fn actual_registered_update_posts_one_fee_preserves_birth_title_and_replays_exac
             .posted_balance,
         Amount::from_minor(9800)
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(2))
@@ -748,12 +748,12 @@ fn actual_registered_update_posts_one_fee_preserves_birth_title_and_replays_exac
             .posted_balance,
         Amount::from_minor(200)
     );
-    assert_eq!(
+    check_eq!(
         writes.len(),
         6,
         "five unchanged Economy writes plus one actual typed fixture receipt"
     );
-    assert!(!writes.iter().any(
+    check!(!writes.iter().any(
         |w| matches!(w,ReplayWrite::ModuleJsonSet{key,..} if key.as_str().starts_with("asset:"))
     ));
     let subject = f
@@ -768,18 +768,18 @@ fn actual_registered_update_posts_one_fee_preserves_birth_title_and_replays_exac
         .state()
         .transaction(subject.transaction)
         .ok_or("native transaction")?;
-    assert_eq!(receipt::subject_of(actual)?, subject);
+    check_eq!(receipt::subject_of(actual)?, subject);
     let mut replay = UpdateReceiptAudit::default();
     let mut tx: Vec<_> = f.state().transactions.values().collect();
     tx.sort_by_key(|t| t.journal_seq);
     for t in tx {
         replay.observe(t);
     }
-    assert!(replay.verify(&subject).is_err());
+    check!(replay.verify(&subject).is_err());
     replay.finish_replay()?;
     replay.verify(&subject)?;
-    assert_eq!(replay, *f.state().update_receipt_audit());
-    assert!(f.update(2).is_err());
+    check_eq!(replay, *f.state().update_receipt_audit());
+    check!(f.update(2).is_err());
     Ok(())
 }
 
@@ -798,8 +798,8 @@ fn update_rechecks_title_liveness_and_account_authority_at_stage_and_take() -> R
                 .ok_or("title")?
                 .frozen = true;
             let before = f.state().snapshot.clone();
-            assert!(f.world.engine_mut().take_staged_action().is_err());
-            assert_eq!(f.state().snapshot, before);
+            check!(f.world.engine_mut().take_staged_action().is_err());
+            check_eq!(f.state().snapshot, before);
         } else {
             let shell = f.shell;
             f.state_mut()
@@ -808,24 +808,24 @@ fn update_rechecks_title_liveness_and_account_authority_at_stage_and_take() -> R
                 .ok_or("title")?
                 .revision += 1;
             let before = f.state().snapshot.clone();
-            assert!(f.stage(action, 2, p).is_err());
-            assert_eq!(f.state().snapshot, before);
+            check!(f.stage(action, 2, p).is_err());
+            check_eq!(f.state().snapshot, before);
         }
-        assert_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
+        check_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
     }
     let mut f = Fixture::new()?;
     let other = f.world.spawn_player("Foreign updater");
     let action = f.rules.update.clone();
-    assert!(f.prepare(&action, other, 2).is_err());
+    check!(f.prepare(&action, other, 2).is_err());
     let wrong = f.rules.wrong.clone();
     let actor = f.actor;
-    assert!(f.prepare(&wrong, actor, 2).is_err());
+    check!(f.prepare(&wrong, actor, 2).is_err());
     f.state_mut()
         .snapshot
         .account_mut(AccountId(1))
         .ok_or("payer")?
         .owner = PrincipalId::Object(other);
-    assert!(f.update(2).is_err());
+    check!(f.update(2).is_err());
     f.state_mut()
         .snapshot
         .account_mut(AccountId(1))
@@ -837,7 +837,7 @@ fn update_rechecks_title_liveness_and_account_authority_at_stage_and_take() -> R
         .ok_or("actor")?
         .flags
         .insert(mush_core::Flags::GOING);
-    assert!(f.update(2).is_err());
+    check!(f.update(2).is_err());
     Ok(())
 }
 
@@ -854,11 +854,11 @@ fn real_cold_boot_requires_paired_history_and_preserves_initial_receipt() -> Res
         .ok_or("receipt")?
         .clone();
     let mut cold = Fixture::empty()?;
-    assert_eq!(cold.shell, f.shell);
+    check_eq!(cold.shell, f.shell);
     cold.world.try_modules_loaded(f.boot.clone())?;
     cold.state().update_receipt_audit().verify(&subject)?;
-    assert_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
-    assert_eq!(
+    check_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
+    check_eq!(
         cold.state().snapshot.asset(f.shell),
         f.state().snapshot.asset(f.shell)
     );
@@ -873,12 +873,12 @@ fn real_cold_boot_requires_paired_history_and_preserves_initial_receipt() -> Res
         .try_modules_loaded(f.boot)
         .err()
         .ok_or("disabled update history must refuse")?;
-    assert!(
+    check!(
         error
             .to_string()
             .contains("compatible-update history requires paired recovery")
     );
-    assert!(disabled.take_module_ops().is_empty());
+    check!(disabled.take_module_ops().is_empty());
     Ok(())
 }
 
@@ -901,14 +901,14 @@ fn checkpoint_requires_exact_both_direction_fee_key_join_and_replay_poison_is_st
         posted_at: subject.posted_at_utc,
         seq: subject.journal_seq,
     };
-    assert!(audit.checkpoint_complete(std::slice::from_ref(&row)));
-    assert!(!audit.checkpoint_complete(&[]));
-    assert!(!audit.checkpoint_complete(&[row.clone(), row.clone()]));
+    check!(audit.checkpoint_complete(std::slice::from_ref(&row)));
+    check!(!audit.checkpoint_complete(&[]));
+    check!(!audit.checkpoint_complete(&[row.clone(), row.clone()]));
     let mut crossed = row.clone();
     crossed.tx.0 += 1;
-    assert!(!audit.checkpoint_complete(&[crossed]));
-    assert!(!UpdateReceiptAudit::default().checkpoint_complete(&[row]));
-    assert!(UpdateReceiptAudit::default().checkpoint_complete(&[]));
+    check!(!audit.checkpoint_complete(&[crossed]));
+    check!(!UpdateReceiptAudit::default().checkpoint_complete(&[row]));
+    check!(UpdateReceiptAudit::default().checkpoint_complete(&[]));
     let tx = f
         .state()
         .transaction(subject.transaction)
@@ -928,9 +928,9 @@ fn checkpoint_requires_exact_both_direction_fee_key_join_and_replay_poison_is_st
         };
         let mut replay = UpdateReceiptAudit::default();
         replay.observe(&bad);
-        assert!(replay.finish_replay().is_err());
+        check!(replay.finish_replay().is_err());
         replay.observe(tx);
-        assert!(replay.finish_replay().is_err());
+        check!(replay.finish_replay().is_err());
     }
     Ok(())
 }
@@ -938,7 +938,7 @@ fn checkpoint_requires_exact_both_direction_fee_key_join_and_replay_poison_is_st
 #[test]
 fn zero_fee_update_registration_refuses_before_any_owner_state_exists() -> Result {
     let rules = rules()?;
-    assert!(
+    check!(
         mush_core::Engine::with_modules(
             World::new_minimal(),
             mush_core::Registry::new(),
@@ -966,9 +966,9 @@ fn approval_and_ordinary_post_routes_cannot_bypass_the_closed_fee_owner() -> Res
     });
     let before = f.state().snapshot.clone();
     let next = f.state().next_transaction;
-    assert!(f.update(2).is_err());
-    assert_eq!(f.state().snapshot, before);
-    assert_eq!(f.state().next_transaction, next);
+    check!(f.update(2).is_err());
+    check_eq!(f.state().snapshot, before);
+    check_eq!(f.state().next_transaction, next);
     f.state_mut()
         .snapshot
         .account_mut(AccountId(1))
@@ -1002,7 +1002,7 @@ fn approval_and_ordinary_post_routes_cannot_bypass_the_closed_fee_owner() -> Res
             spent: BTreeMap::new(),
             keys: &gate,
         };
-        assert!(matches!(
+        check!(matches!(
             crate::engine::validate(&plan, &f.state().snapshot, &env),
             PlanResult::Refused(crate::EconomyError::ManagedContract)
         ));
@@ -1014,7 +1014,7 @@ fn approval_and_ordinary_post_routes_cannot_bypass_the_closed_fee_owner() -> Res
                 .next()
                 .ok_or("receipt")?
                 .transaction;
-            assert_eq!(
+            check_eq!(
                 crate::contract::managed::require_legacy_transaction(
                     f.state().transaction(tx).ok_or("transaction")?,
                     &f.state().snapshot
@@ -1042,8 +1042,8 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
         .ok_or("original receipt")?
         .clone();
     let original_json = serde_json::to_value(&original_subject)?;
-    assert!(original_json.get("kind").is_none());
-    assert_eq!(
+    check!(original_json.get("kind").is_none());
+    check_eq!(
         serde_json::from_value::<UpdateAuditSubject>(original_json.clone())?,
         original_subject
     );
@@ -1052,34 +1052,34 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
     let prepared = f.prepare(&action, f.actor, 3)?;
     let before = f.state().snapshot.clone();
     let writes = f.stage(action.clone(), 3, prepared)?;
-    assert_eq!(f.state().snapshot, before);
+    check_eq!(f.state().snapshot, before);
     let prepared = prepared_receipt(&writes, &f.rules, &action, token(3), f.actor)?;
     let FixtureEffect::Update(subject) = prepared.effect else {
         return Err("actual derived output".into());
     };
-    assert_eq!(subject.kind, Some(UpdateKind::DependentV1));
-    assert_eq!(subject.commit, token(3));
+    check_eq!(subject.kind, Some(UpdateKind::DependentV1));
+    check_eq!(subject.commit, token(3));
     f.take_install()?;
     f.state().update_receipt_audit().verify(&subject)?;
     let tx = f
         .state()
         .transaction(subject.transaction)
         .ok_or("derived native transaction")?;
-    assert_eq!(
+    check_eq!(
         tx.idempotency.namespace.as_str(),
         receipt::DERIVED_NAMESPACE
     );
-    assert_eq!(receipt::subject_of(tx)?, subject);
-    assert_eq!(
+    check_eq!(receipt::subject_of(tx)?, subject);
+    check_eq!(
         crate::contract::managed::require_legacy_transaction(tx, &f.state().snapshot),
         Err(crate::EconomyError::ManagedContract)
     );
-    assert_eq!(f.state().snapshot.asset(f.shell), Some(&title));
-    assert_eq!(
+    check_eq!(f.state().snapshot.asset(f.shell), Some(&title));
+    check_eq!(
         serde_json::to_value(f.state().filing_receipt_audit())?,
         initial
     );
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(
             f.state()
                 .update_receipt_audit()
@@ -1089,7 +1089,7 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
         )?,
         original_json
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(1))
@@ -1097,7 +1097,7 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
             .posted_balance,
         Amount::from_minor(9700)
     );
-    assert_eq!(
+    check_eq!(
         f.state()
             .snapshot
             .account(AccountId(2))
@@ -1113,14 +1113,14 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
         replay.observe(tx);
     }
     replay.finish_replay()?;
-    assert_eq!(replay, *f.state().update_receipt_audit());
+    check_eq!(replay, *f.state().update_receipt_audit());
     let mut crossed = subject.clone();
     crossed.kind = None;
-    assert!(replay.verify(&crossed).is_err());
+    check!(replay.verify(&crossed).is_err());
     for kind in [Value::Null, json!("original"), json!({"dependent_v1":{}})] {
         let mut malformed = serde_json::to_value(&subject)?;
         malformed["kind"] = kind;
-        assert!(serde_json::from_value::<UpdateAuditSubject>(malformed).is_err());
+        check!(serde_json::from_value::<UpdateAuditSubject>(malformed).is_err());
     }
     // A caller-supplied ordinary plan cannot use the new namespace, even with
     // an authorizer that would permit every monetary line.
@@ -1153,7 +1153,7 @@ fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes(
         spent: BTreeMap::new(),
         keys: &gate,
     };
-    assert!(matches!(
+    check!(matches!(
         crate::engine::validate(&ordinary, &f.state().snapshot, &env),
         PlanResult::Refused(crate::EconomyError::ManagedContract)
     ));
@@ -1170,19 +1170,19 @@ fn derived_fee_cold_boot_requires_its_exact_enabled_protocol_and_checkpoint_name
     f.publish(action, 3, prepared)?;
     let mut cold = Fixture::empty_rules(derived_rules()?)?;
     cold.world.try_modules_loaded(f.boot.clone())?;
-    assert_eq!(cold.state().snapshot, f.state().snapshot);
-    assert_eq!(
+    check_eq!(cold.state().snapshot, f.state().snapshot);
+    check_eq!(
         cold.state().update_receipt_audit(),
         f.state().update_receipt_audit()
     );
-    assert_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
+    check_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
     let mut old_only = Fixture::empty()?;
     let error = old_only
         .world
         .try_modules_loaded(f.boot.clone())
         .err()
         .ok_or("derived history accepted with original-only configuration")?;
-    assert!(
+    check!(
         error
             .to_string()
             .contains("compatible-update protocol requires exact paired composition")
@@ -1204,11 +1204,11 @@ fn derived_fee_cold_boot_requires_its_exact_enabled_protocol_and_checkpoint_name
             seq: subject.journal_seq,
         })
         .collect();
-    assert!(audit.checkpoint_complete(&rows));
+    check!(audit.checkpoint_complete(&rows));
     for i in 0..rows.len() {
         let mut missing = rows.clone();
         missing.remove(i);
-        assert!(!audit.checkpoint_complete(&missing));
+        check!(!audit.checkpoint_complete(&missing));
         let mut crossed = rows.clone();
         let row = crossed.get_mut(i).ok_or("checkpoint row")?;
         row.ns = if row.ns.as_str() == receipt::NAMESPACE {
@@ -1217,10 +1217,10 @@ fn derived_fee_cold_boot_requires_its_exact_enabled_protocol_and_checkpoint_name
             receipt::NAMESPACE
         }
         .into();
-        assert!(!audit.checkpoint_complete(&crossed));
+        check!(!audit.checkpoint_complete(&crossed));
     }
-    assert!(audit.require_enabled(true, false).is_err());
-    assert!(audit.require_enabled(false, true).is_err());
+    check!(audit.require_enabled(true, false).is_err());
+    check!(audit.require_enabled(false, true).is_err());
     audit.require_enabled(true, true)?;
     Ok(())
 }
@@ -1269,16 +1269,16 @@ fn derived_fee_repeats_live_actor_title_and_account_checks_at_every_custody_boun
             let before = f.state().snapshot.clone();
             let next = f.state().next_transaction;
             match phase {
-                0 => assert!(f.prepare(&action, actor, 2).is_err()),
-                1 => assert!(
+                0 => check!(f.prepare(&action, actor, 2).is_err()),
+                1 => check!(
                     f.stage(action, 2, prepared.take().ok_or("prepared")?)
                         .is_err()
                 ),
-                _ => assert!(f.world.engine_mut().take_staged_action().is_err()),
+                _ => check!(f.world.engine_mut().take_staged_action().is_err()),
             }
-            assert_eq!(f.state().snapshot, before);
-            assert_eq!(f.state().next_transaction, next);
-            assert_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
+            check_eq!(f.state().snapshot, before);
+            check_eq!(f.state().next_transaction, next);
+            check_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
         }
     }
     Ok(())
@@ -1288,7 +1288,7 @@ fn derived_fee_repeats_live_actor_title_and_account_checks_at_every_custody_boun
 fn derived_fee_registration_requires_initial_policy_positive_fee_and_exact_action() -> Result {
     let r = derived_rules()?;
     let action = r.derived.clone().ok_or("derived action")?;
-    assert!(
+    check!(
         mush_core::Engine::with_modules(
             World::new_minimal(),
             mush_core::Registry::new(),
@@ -1296,7 +1296,7 @@ fn derived_fee_registration_requires_initial_policy_positive_fee_and_exact_actio
         )
         .is_err()
     );
-    assert!(
+    check!(
         mush_core::Engine::with_modules(
             World::new_minimal(),
             mush_core::Registry::new(),
@@ -1306,7 +1306,7 @@ fn derived_fee_registration_requires_initial_policy_positive_fee_and_exact_actio
         )
         .is_err()
     );
-    assert!(
+    check!(
         mush_core::Engine::with_modules(
             World::new_minimal(),
             mush_core::Registry::new(),

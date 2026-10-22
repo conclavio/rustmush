@@ -217,30 +217,30 @@ fn legacy_checkpoint_requires_full_fetch_before_empty_filing_history_is_trusted(
     let floor = checkpoint(&mut old, &mut saved);
     let head = &store(&old).checkpoint().unwrap().head_key;
     let (_, document) = saved["economy"].kv.iter().find(|(k, _)| k == head).unwrap();
-    assert!(document["body"]["fold"].get("filing_receipts").is_none());
+    check!(document["body"]["fold"].get("filing_receipts").is_none());
 
     // Prove this is a valid old checkpoint, not merely a bad hash fixture.
     let mut legacy = world(false);
     legacy.try_modules_loaded(narrow(saved.clone(), floor))?;
-    assert!(
+    check!(
         store(&legacy)
             .boot_replay()
             .unwrap()
             .from_checkpoint
             .is_some()
     );
-    assert!(!store(&legacy).is_frozen());
+    check!(!store(&legacy).is_frozen());
 
     let mut composed = world(true);
     let error = composed.try_modules_loaded(narrow(saved.clone(), floor));
-    assert!(matches!(error, Err(ModError::RetryFullFetch { module, .. }) if module == "economy"));
+    check!(matches!(error, Err(ModError::RetryFullFetch { module, .. }) if module == "economy"));
     composed.try_modules_loaded(saved)?;
-    assert_eq!(
+    check_eq!(
         store(&composed).boot_replay().unwrap().from_checkpoint,
         None
     );
-    assert!(!store(&composed).is_frozen());
-    assert!(store(&composed).filing_receipt_audit().is_empty()?);
+    check!(!store(&composed).is_frozen());
+    check!(store(&composed).filing_receipt_audit().is_empty()?);
     Ok(())
 }
 
@@ -259,17 +259,17 @@ fn checkpoint_and_tail_recover_a_receipt_older_than_every_loaded_journal_chunk()
     let narrowed = narrow(saved, floor);
     for (_, raw) in &narrowed["economy"].ledger {
         let chunk: LedgerChunk = serde_json::from_str(raw)?;
-        assert!(chunk.entries.iter().all(|entry| entry.seq > receipt_seq));
+        check!(chunk.entries.iter().all(|entry| entry.seq > receipt_seq));
     }
     let mut restarted = world(true);
-    assert_eq!(reserve_object(&mut restarted), title);
+    check_eq!(reserve_object(&mut restarted), title);
     restarted.try_modules_loaded(narrowed)?;
     let replay = store(&restarted).boot_replay().unwrap();
-    assert_eq!(replay.from_checkpoint, Some(covered));
-    assert_eq!(replay.replayed, 1);
-    assert!(!store(&restarted).is_frozen());
+    check_eq!(replay.from_checkpoint, Some(covered));
+    check_eq!(replay.replayed, 1);
+    check!(!store(&restarted).is_frozen());
     store(&restarted).filing_receipt_audit().verify(&subject)?;
-    assert_eq!(
+    check_eq!(
         store(&restarted).filing_receipt_audit().receipts()?.len(),
         1
     );
@@ -322,9 +322,9 @@ fn malformed_closed_namespace_journal_cannot_be_silently_treated_as_no_filings()
         }
         *raw = serde_json::to_string(&chunk)?;
     }
-    assert!(changed, "actual filing transaction must be present");
+    check!(changed, "actual filing transaction must be present");
     let mut restarted = world(true);
     reserve_object(&mut restarted);
-    assert!(restarted.try_modules_loaded(saved).is_err());
+    check!(restarted.try_modules_loaded(saved).is_err());
     Ok(())
 }
