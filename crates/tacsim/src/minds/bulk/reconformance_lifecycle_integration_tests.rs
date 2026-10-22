@@ -180,6 +180,10 @@ async fn run(
     let mut retained_unknown = false;
     let mut retained_retry = false;
     let mut recall_seen = false;
+    // The head may still name the attempt this run supersedes (a cancelled
+    // job before its retry is admitted); its terminal state is history, not
+    // this run's ending.
+    let prior_job = head(w, filed, manifest).and_then(|h| h.get("job").cloned());
     loop {
         pulse(w)?;
         if let Some(driven) = w.engine.take_observed_authoritative_submit() {
@@ -261,7 +265,9 @@ async fn run(
                 }
             }
         }
-        if let Some(h) = head(w, filed, manifest) {
+        if let Some(h) = head(w, filed, manifest)
+            .filter(|h| prior_job.is_none() || h.get("job").cloned() != prior_job)
+        {
             let current = job(w, &h)?;
             match current.state() {
                 RatingJobState::Completed { receipt } if ending == Ending::Certified => {
@@ -336,9 +342,9 @@ async fn scenario(
         let old = rows(&saved.disk, "roll", "rating_receipts");
         let paid = rows(&saved.disk, "roll", "roll_mind_paid_term");
         let mut cfg = f.resources.config();
-        // The default is the configured maximum; a different manifest digest
-        // needs a value inside the bound.
-        cfg.minds.bench_eval_ops = cfg.minds.bench_eval_ops.checked_sub(1).ok_or("policy")?;
+        // A distinct manifest digest (the whole `minds` section is hashed)
+        // from a capacity knob that cannot change measured work.
+        cfg.minds.bench_sessions = cfg.minds.bench_sessions.checked_add(1).ok_or("policy")?;
         let (configured, mut w) = branch(f, saved, cfg.clone())?;
         all_tasks.push(w.tasks.clone());
         let manifest = configured.resources.reference()?;
