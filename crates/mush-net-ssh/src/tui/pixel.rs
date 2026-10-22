@@ -1,13 +1,17 @@
-//! **The pixel cockpit view** (spike, 2026-10-21): a first-person picture of
-//! the arena streamed over the kitty graphics protocol, drawn from the
-//! `arena.cockpit` frame the TUI already holds.
+//! **The pixel cockpit view** (spike 2026-10-21; doc 21 cut G.1): a
+//! first-person picture of the arena streamed over the kitty graphics
+//! protocol, drawn by `mush-pixel`'s cockpit [`Picture`] from the feeds the
+//! TUI already holds.
 //!
-//! What lives here is the per-connection state the SSH TUI keeps for it:
+//! What lives here is the per-connection state the SSH TUI keeps for it; the
+//! picture itself (map, camera, sprites, instruments) is the engine's:
 //!
 //! - **The probe**: `@tui` sends a one-pixel kitty query and `CSI c` right
-//!   after the first frame. A graphics OK arriving first means support; the
+//!   after the first frame. A graphics OK arriving first means kitty; the
 //!   DA1 reply arriving first, or neither within [`PROBE_TIMEOUT`], means
-//!   none. The view opens only on support.
+//!   none; the DA1 reply's attributes say whether the terminal draws sixel,
+//!   whichever came first. The result is a [`Graphics`] record, and the view
+//!   opens only when it yields an encoder (kitty today; sixel at G.2).
 //! - **The camera**: the sim's own `x_cm`/`y_cm`/`heading_mdeg` plus a LOCAL
 //!   heading offset the pilot turns with toggle-turn keys (press to start
 //!   turning, press again to stop) — the camera on a leash. The sim is not
@@ -16,15 +20,16 @@
 //!   tick advances the turn, renders, and sends the frame only when its
 //!   pixels (or the cell box it is scaled into) changed since the last send.
 //!
-//! The raycaster, the PNG and the kitty framing are `mush-pixel`; the probe
+//! The picture, the PNG and the kitty framing are `mush-pixel`; the probe
 //! replies arrive through the key parser as [`Key::GraphicsOk`],
 //! [`Key::GraphicsErr`] and [`Key::DeviceAttributes`].
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use mush_pixel::cockpit::{contacts_as_sprites, draw_instruments};
-use mush_pixel::raycast::{Camera, Ground, Map, render};
+use mush_pixel::caps::{DeviceAttributes, Encoder, Graphics};
+use mush_pixel::cockpit::CockpitPicture;
+use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::{Frame, kitty, png};
 use serde_json::Value;
 
@@ -50,13 +55,11 @@ pub const FRAME_INTERVAL_UNCAPPED: Duration = Duration::from_millis(1);
 pub const IMAGE_ID: u32 = 1;
 /// How long after the probe a silent terminal is taken to lack support.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-/// The frame clock: 20 frames a second.
-pub const FRAME_INTERVAL: Duration = Duration::from_millis(50);
+/// The frame clock: 20 frames a second, bucket A's interval. The output
+/// pump's idle wait while no view is open.
+pub const FRAME_INTERVAL: Duration = BUCKET_A_INTERVAL;
 /// How fast a toggled turn swings the camera, millidegrees a second (45°/s).
 const TURN_MDEG_PER_S: i64 = 45_000;
-/// The map drawn while no `arena.map` is held: open ground, big enough that
-/// the eye never sees its edge.
-const OPEN_MAP_CELLS: usize = 512;
 
 /// Where the capability probe stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,10 +68,9 @@ pub enum Probe {
     NotSent,
     /// Sent at this instant; waiting on an answer.
     Sent(Instant),
-    /// The terminal answered the graphics query OK.
-    Supported,
-    /// It answered DA1 first, answered with an error, or stayed silent.
-    Unsupported,
+    /// Over: answered (kitty OK or error, or the DA1 reply) or timed out;
+    /// what it found is [`PixelView::graphics`].
+    Done,
 }
 
 /// Counters the HUD prints and the notes record.
@@ -92,6 +94,11 @@ pub struct Stats {
 #[derive(Debug)]
 pub struct PixelView {
     probe: Probe,
+    /// What the probe found: kitty from its answer, sixel from the DA1
+    /// reply's attributes (recorded even when it follows a kitty OK).
+    graphics: Graphics,
+    /// The DA1 reply itself, for the HUD and `@pixel/stats` (G.1b).
+    da1: Option<DeviceAttributes>,
     active: bool,
     /// `-1` turning left, `0` still, `1` turning right.
     turn: i8,
@@ -101,8 +108,8 @@ pub struct PixelView {
     /// The hash of the last frame sent, with the cell box it was scaled into.
     last_sent: Option<(u64, u16, u16)>,
     frame: Frame,
-    /// The arena map built from the held `arena.map`, keyed by its match.
-    map: Option<(Option<i64>, Map)>,
+    /// What the view draws: the engine's producer, instruments and clock.
+    picture: Box<dyn Picture>,
     close_pending: bool,
     /// `u`: the frame clock runs as fast as it can instead of 20 Hz.
     uncapped: bool,
@@ -126,13 +133,15 @@ impl PixelView {
     pub fn new() -> PixelView {
         PixelView {
             probe: Probe::NotSent,
+            graphics: Graphics::default(),
+            da1: None,
             active: false,
             turn: 0,
             offset_mdeg: 0,
             last_tick: None,
             last_sent: None,
             frame: Frame::new(FRAME_W, FRAME_H),
-            map: None,
+            picture: Box::new(CockpitPicture::new()),
             close_pending: false,
             uncapped: false,
             sent_at: VecDeque::new(),
@@ -140,13 +149,14 @@ impl PixelView {
         }
     }
 
-    /// The frame clock's wait: 20 Hz, or ~1 ms when uncapped.
+    /// The frame clock's wait: the picture's own (20 Hz for the cockpit),
+    /// or ~1 ms when uncapped.
     #[must_use]
     pub fn interval(&self) -> Duration {
         if self.uncapped {
             FRAME_INTERVAL_UNCAPPED
         } else {
-            FRAME_INTERVAL
+            self.picture.interval()
         }
     }
 
@@ -180,33 +190,51 @@ impl PixelView {
         }
     }
 
-    /// The graphics query was answered.
+    /// The graphics query was answered: the probe is over, kitty or not.
     pub fn graphics_reply(&mut self, ok: bool) {
         if matches!(self.probe, Probe::Sent(_)) {
-            self.probe = if ok {
-                Probe::Supported
-            } else {
-                Probe::Unsupported
-            };
+            self.graphics.kitty = ok;
+            self.probe = Probe::Done;
         }
     }
 
     /// The DA1 reply arrived: if the graphics answer has not, it never will.
-    pub fn device_attributes(&mut self) {
-        if matches!(self.probe, Probe::Sent(_)) {
-            self.probe = Probe::Unsupported;
+    /// Its attributes are recorded either way, so a terminal that answered
+    /// kitty OK first still reports whether it draws sixel.
+    pub fn device_attributes(&mut self, da1: DeviceAttributes) {
+        if self.probe == Probe::NotSent {
+            return;
         }
+        self.graphics.sixel = da1.sixel();
+        self.da1 = Some(da1);
+        self.probe = Probe::Done;
     }
 
     /// Where the probe stands at `now` (a `Sent` older than
-    /// [`PROBE_TIMEOUT`] becomes `Unsupported` here).
+    /// [`PROBE_TIMEOUT`] is `Done`, having found nothing, from here on).
     pub fn probe(&mut self, now: Instant) -> Probe {
         if let Probe::Sent(at) = self.probe
             && now.saturating_duration_since(at) >= PROBE_TIMEOUT
         {
-            self.probe = Probe::Unsupported;
+            self.probe = Probe::Done;
         }
         self.probe
+    }
+
+    /// What the probe found so far.
+    #[must_use]
+    pub fn graphics(&self) -> Graphics {
+        self.graphics
+    }
+
+    /// The encoder this connection's pictures go out in, once the probe is
+    /// over; `None` while it runs or when the terminal showed none we have.
+    pub fn encoder(&mut self, now: Instant) -> Option<Encoder> {
+        if self.probe(now) == Probe::Done {
+            self.graphics.encoder()
+        } else {
+            None
+        }
     }
 
     // ---- open / close / keys ---------------------------------------------
@@ -217,12 +245,12 @@ impl PixelView {
         self.active
     }
 
-    /// `^G`: open the view (only on a supported terminal) or close it.
-    /// Returns whether it is open afterwards.
+    /// `^G`: open the view (only where the probe found an encoder) or close
+    /// it. Returns whether it is open afterwards.
     pub fn toggle(&mut self, now: Instant) -> bool {
         if self.active {
             self.close();
-        } else if self.probe(now) == Probe::Supported {
+        } else if self.encoder(now).is_some() {
             self.active = true;
             self.last_tick = Some(now);
             self.last_sent = None;
@@ -303,49 +331,23 @@ impl PixelView {
         }
     }
 
-    /// Render the picture from `cockpit` (the held `arena.cockpit` frame)
-    /// and `map` (the held `arena.map`, if any) and return the kitty bytes
-    /// that place it in a terminal `cols` by `rows` — or nothing when the
-    /// view is closed, unsupported, has no frame, or the picture has not
-    /// changed since the last send.
-    pub fn paint(
-        &mut self,
-        cockpit: Option<&Value>,
-        map: Option<&Value>,
-        cols: u16,
-        rows: u16,
-        now: Instant,
-    ) -> Vec<u8> {
-        if !self.active || self.probe(now) != Probe::Supported {
+    /// Draw the picture from `feeds` (the TUI's held keyframes) and return
+    /// the kitty bytes that place it in a terminal `cols` by `rows` — or
+    /// nothing when the view is closed, has no encoder, the feeds carry no
+    /// cockpit frame, or the picture has not changed since the last send.
+    pub fn paint(&mut self, feeds: &dyn Feeds, cols: u16, rows: u16, now: Instant) -> Vec<u8> {
+        if !self.active || self.encoder(now) != Some(Encoder::Kitty) {
             return Vec::new();
         }
-        let Some(cockpit) = cockpit else {
-            return Vec::new();
+        let look = Look {
+            offset_mdeg: self.offset_mdeg,
         };
-        self.ensure_map(map);
-        let heading = (cockpit
-            .get("heading_mdeg")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            + self.offset_mdeg)
-            .rem_euclid(360_000);
-        let cam = Camera {
-            x_cm: cockpit.get("x_cm").and_then(Value::as_i64).unwrap_or(0),
-            y_cm: cockpit.get("y_cm").and_then(Value::as_i64).unwrap_or(0),
-            heading_mdeg: u32::try_from(heading).unwrap_or(0),
-        };
-        let sprites = contacts_as_sprites(cockpit, &cam);
-        let (col, row, c, r) = image_box(cols, rows, self.frame.width(), self.frame.height());
-
         let t0 = Instant::now();
-        if let Some((_, arena)) = &self.map {
-            render(&mut self.frame, arena, &cam, &sprites);
-            // The instruments, over the picture (the owner's 640x480 target
-            // of 2026-10-21): minimap, heat, weapons, the armour doll and the
-            // status strip, all from the frame the TUI's panes already read.
-            draw_instruments(&mut self.frame, arena, cockpit, map, &cam);
+        if !self.picture.draw(&mut self.frame, feeds, &look) {
+            return Vec::new();
         }
         let render_us = t0.elapsed().as_micros();
+        let (col, row, c, r) = image_box(cols, rows, self.frame.width(), self.frame.height());
 
         let key = (self.frame.hash(), c, r);
         if self.last_sent == Some(key) {
@@ -372,22 +374,6 @@ impl PixelView {
         wire
     }
 
-    /// Build (or keep) the arena map from the held `arena.map`.
-    fn ensure_map(&mut self, map: Option<&Value>) {
-        let wanted = map.and_then(|m| m.get("match").and_then(Value::as_i64));
-        if let Some((have, _)) = &self.map
-            && *have == wanted
-            && (map.is_some() || wanted.is_none())
-        {
-            return;
-        }
-        let built = map.map_or_else(
-            || Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
-            map_from_feed,
-        );
-        self.map = Some((wanted, built));
-    }
-
     /// The HUD's two lines: the top status and the bottom key legend.
     #[must_use]
     pub fn hud(&mut self, cockpit: Option<&Value>, now: Instant) -> (String, String) {
@@ -401,11 +387,12 @@ impl PixelView {
             1 => "turning right",
             _ => "steady",
         };
-        let probe = match self.probe(now) {
-            Probe::NotSent => "not probed",
-            Probe::Sent(_) => "probing",
-            Probe::Supported => "kitty graphics OK",
-            Probe::Unsupported => "no kitty graphics",
+        let probe = match (self.probe(now), self.graphics) {
+            (Probe::NotSent, _) => "not probed",
+            (Probe::Sent(_), _) => "probing",
+            (Probe::Done, Graphics { kitty: true, .. }) => "kitty graphics OK",
+            (Probe::Done, Graphics { sixel: true, .. }) => "sixel only (not drawn yet)",
+            (Probe::Done, _) => "no terminal graphics",
         };
         let s = self.stats;
         // The skipped-tick counter is NOT printed: a line that changes every
@@ -462,44 +449,11 @@ pub fn image_box(cols: u16, rows: u16, w: usize, h: usize) -> (u16, u16, u16, u1
     (1, 2, c, r)
 }
 
-/// An `arena.map` keyframe (run-length rows, south row first, a legend of
-/// `[glyph, word]`) as a raycaster map.
-fn map_from_feed(map: &Value) -> Map {
-    let width = map.get("width").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let height = map.get("height").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let cell_cm = map
-        .get("cell_cm")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .unwrap_or(1000);
-    let empty = Vec::new();
-    let rows = map.get("rows").and_then(Value::as_array).unwrap_or(&empty);
-    let grid = mush_ansi::window_rows(rows, width, height, 0, 0, width, height);
-    let legend: Vec<(char, Ground)> = map
-        .get("legend")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|pair| {
-            let g = pair.get(0)?.as_str()?.chars().next()?;
-            let name = pair.get(1)?.as_str()?;
-            Some((g, Ground::from_legend_name(name)))
-        })
-        .collect();
-    Map::from_glyph_rows(
-        &grid,
-        &|g| {
-            legend
-                .iter()
-                .find(|(c, _)| *c == g)
-                .map_or(Ground::Open, |(_, ground)| *ground)
-        },
-        cell_cm,
-    )
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use super::super::panels::{ARENA_MAP_FEED, COCKPIT_FEED};
     use super::*;
 
     const COCKPIT: &str =
@@ -513,6 +467,22 @@ mod tests {
         )
     }
 
+    /// The held feeds, by name, as the TUI's panel store would hold them.
+    fn feeds(cockpit: Option<&Value>, map: Option<&Value>) -> HashMap<String, Value> {
+        let mut held = HashMap::new();
+        if let Some(c) = cockpit {
+            held.insert(COCKPIT_FEED.to_string(), c.clone());
+        }
+        if let Some(m) = map {
+            held.insert(ARENA_MAP_FEED.to_string(), m.clone());
+        }
+        held
+    }
+
+    fn da1(params: &str) -> DeviceAttributes {
+        DeviceAttributes::parse(params).unwrap_or_default()
+    }
+
     fn supported(now: Instant) -> PixelView {
         let mut v = PixelView::new();
         v.probe_sent(now);
@@ -523,33 +493,78 @@ mod tests {
     #[test]
     fn the_probe_is_ok_before_da1_or_nothing() {
         let t0 = Instant::now();
-        // OK first, then DA1: supported, and DA1 does not undo it.
+        let kitty = Graphics {
+            kitty: true,
+            sixel: false,
+        };
+        // OK first, then DA1: kitty, and DA1 does not undo it.
         let mut v = PixelView::new();
         assert_eq!(v.probe(t0), Probe::NotSent);
         v.probe_sent(t0);
         v.graphics_reply(true);
-        v.device_attributes();
-        assert_eq!(v.probe(t0 + Duration::from_secs(5)), Probe::Supported);
-        // DA1 first: unsupported, and a late OK does not revive it.
+        v.device_attributes(da1("?62;22"));
+        assert_eq!(v.probe(t0 + Duration::from_secs(5)), Probe::Done);
+        assert_eq!(v.graphics(), kitty);
+        assert_eq!(v.encoder(t0), Some(Encoder::Kitty));
+        // DA1 first: nothing, and a late OK does not revive it.
         let mut v = PixelView::new();
         v.probe_sent(t0);
-        v.device_attributes();
+        v.device_attributes(da1("?62;22"));
         v.graphics_reply(true);
-        assert_eq!(v.probe(t0), Probe::Unsupported);
+        assert_eq!(v.probe(t0), Probe::Done);
+        assert_eq!((v.graphics(), v.encoder(t0)), (Graphics::default(), None));
         // An error reply.
         let mut v = PixelView::new();
         v.probe_sent(t0);
         v.graphics_reply(false);
-        assert_eq!(v.probe(t0), Probe::Unsupported);
-        // Silence: still pending inside the window, unsupported after it.
+        assert_eq!((v.probe(t0), v.encoder(t0)), (Probe::Done, None));
+        // Silence: still pending inside the window, over after it.
         let mut v = PixelView::new();
         v.probe_sent(t0);
         assert_eq!(v.probe(t0 + Duration::from_millis(400)), Probe::Sent(t0));
-        assert_eq!(v.probe(t0 + PROBE_TIMEOUT), Probe::Unsupported);
+        assert_eq!(v.encoder(t0 + Duration::from_millis(400)), None);
+        assert_eq!(v.probe(t0 + PROBE_TIMEOUT), Probe::Done);
+        assert_eq!(v.graphics(), Graphics::default());
         // A reply before any probe went out is ignored.
         let mut v = PixelView::new();
         v.graphics_reply(true);
-        assert_eq!(v.probe(t0), Probe::NotSent);
+        v.device_attributes(da1("?62;4"));
+        assert_eq!(
+            (v.probe(t0), v.graphics()),
+            (Probe::NotSent, Graphics::default())
+        );
+    }
+
+    /// Sixel is read off the DA1 reply whichever answer came first — Windows
+    /// Terminal (sixel, no kitty), WezTerm and w11term (both) — and is
+    /// recorded but not drawn until its encoder lands (G.2).
+    #[test]
+    fn the_da1_reply_says_sixel_and_the_view_waits_for_its_encoder() {
+        let t0 = Instant::now();
+        // Windows Terminal: no kitty answer, DA1 with 4.
+        let mut wt = PixelView::new();
+        wt.probe_sent(t0);
+        wt.device_attributes(da1("?61;4;6;7;14;21;22;23;24;28;32;42"));
+        assert_eq!(
+            wt.graphics(),
+            Graphics {
+                kitty: false,
+                sixel: true
+            }
+        );
+        assert!(!wt.toggle(t0), "sixel alone draws nothing yet");
+        assert!(wt.hud(None, t0).0.contains("sixel only"));
+        // Both: kitty OK, then DA1 with 4.
+        let mut both = supported(t0);
+        both.device_attributes(da1("?62;4;22"));
+        assert_eq!(
+            both.graphics(),
+            Graphics {
+                kitty: true,
+                sixel: true
+            }
+        );
+        assert_eq!(both.encoder(t0), Some(Encoder::Kitty));
     }
 
     #[test]
@@ -558,8 +573,9 @@ mod tests {
         let mut v = PixelView::new();
         assert!(!v.toggle(t0), "no probe, no view");
         v.probe_sent(t0);
-        v.device_attributes();
-        assert!(!v.toggle(t0), "unsupported, no view");
+        assert!(!v.toggle(t0), "probing, no view");
+        v.device_attributes(da1("?62;22"));
+        assert!(!v.toggle(t0), "no graphics, no view");
         let mut v = supported(t0);
         assert!(v.toggle(t0));
         assert!(v.is_active());
@@ -601,13 +617,16 @@ mod tests {
     fn the_fixture_scene_paints_once_then_skips_until_the_camera_moves() {
         let t0 = Instant::now();
         let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        let map_only = feeds(None, Some(&map));
+        let cockpit_only = feeds(Some(&cockpit), None);
         let mut v = supported(t0);
         // Closed: nothing.
-        assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
+        assert!(v.paint(&both, 120, 40, t0).is_empty());
         v.toggle(t0);
         // No frame held: nothing.
-        assert!(v.paint(None, Some(&map), 120, 40, t0).is_empty());
-        let first = v.paint(Some(&cockpit), Some(&map), 120, 40, t0);
+        assert!(v.paint(&map_only, 120, 40, t0).is_empty());
+        let first = v.paint(&both, 120, 40, t0);
         assert!(!first.is_empty());
         let s = String::from_utf8(first.clone()).expect("ascii");
         assert!(s.starts_with("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c="));
@@ -619,14 +638,14 @@ mod tests {
             v.stats.png_bytes
         );
         // The same picture again: skipped.
-        assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
+        assert!(v.paint(&both, 120, 40, t0).is_empty());
         assert_eq!(v.stats.skipped, 1);
         // A resize re-sends into the new box even though the pixels match.
-        assert!(!v.paint(Some(&cockpit), Some(&map), 160, 50, t0).is_empty());
+        assert!(!v.paint(&both, 160, 50, t0).is_empty());
         // Turn, tick: a new picture.
         v.key(Key::Right);
         v.tick(t0 + Duration::from_millis(200));
-        let turned = v.paint(Some(&cockpit), Some(&map), 160, 50, t0);
+        let turned = v.paint(&both, 160, 50, t0);
         assert!(!turned.is_empty());
         assert_eq!(v.stats.sent, 3);
         assert_eq!(
@@ -638,7 +657,7 @@ mod tests {
         // Without a map the view still paints (open ground).
         let mut bare = supported(t0);
         bare.toggle(t0);
-        assert!(!bare.paint(Some(&cockpit), None, 120, 40, t0).is_empty());
+        assert!(!bare.paint(&cockpit_only, 120, 40, t0).is_empty());
         let (top, bottom) = bare.hud(Some(&cockpit), t0);
         assert!(
             top.contains("camera 045°") && top.contains("kitty graphics OK"),
@@ -666,23 +685,23 @@ mod tests {
     fn r_swaps_the_size_and_u_uncaps_the_clock() {
         let t0 = Instant::now();
         let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
         let mut v = supported(t0);
         v.toggle(t0);
         assert_eq!(v.size(), (640, 480), "the target frame is the default");
         assert_eq!(v.interval(), FRAME_INTERVAL);
-        assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
-        assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert!(v.paint(&both, 120, 40, t0).is_empty());
         v.key(Key::Char('r'));
         assert_eq!(v.size(), (320, 220));
-        let small =
-            String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
+        let small = String::from_utf8_lossy(&v.paint(&both, 120, 40, t0)).into_owned();
         assert!(small.contains("c=110,r=38"), "{}", &small[..80]);
         assert!(v.stats.png_bytes > 0);
         v.key(Key::Char('u'));
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
         assert!(
-            !v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty(),
+            !v.paint(&both, 120, 40, t0).is_empty(),
             "re-sent after the switch"
         );
         let (top, bottom) = v.hud(Some(&cockpit), t0);
@@ -693,13 +712,15 @@ mod tests {
         assert_eq!((v.size(), v.uncapped()), ((640, 480), false));
     }
 
+    /// The feed names the engine's cockpit picture reads are the ones this
+    /// TUI holds its keyframes under.
     #[test]
-    fn the_fixture_map_decodes_its_legend() {
-        let (_, map) = fixtures();
-        let m = map_from_feed(&map);
-        assert_eq!((m.width(), m.height(), m.cell_cm()), (96, 64, 1000));
-        // Row 2 has water at x 20..30 (the fixture's pond), grass elsewhere.
-        assert_eq!(m.get(25, 2), Ground::Water);
-        assert_eq!(m.get(0, 0), Ground::Grass);
+    fn the_picture_reads_the_feeds_the_tui_holds() {
+        assert_eq!(mush_pixel::cockpit::COCKPIT_FEED, COCKPIT_FEED);
+        assert_eq!(mush_pixel::cockpit::ARENA_MAP_FEED, ARENA_MAP_FEED);
+        assert_eq!(
+            CockpitPicture::new().feeds(),
+            [COCKPIT_FEED, ARENA_MAP_FEED]
+        );
     }
 }

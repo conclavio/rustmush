@@ -1,8 +1,16 @@
-//! `mush-pixel` — the pixel cockpit spike (2026-10-21).
+//! `mush-pixel` — the graphics engine (doc 21), grown from the pixel cockpit
+//! spike of 2026-10-21.
 //!
-//! A first-person view of the arena streamed to a terminal that speaks the
-//! kitty graphics protocol. Three pieces, each pure and testable on its own:
+//! One [`Frame`], drawn by a [`picture::Picture`] from the per-observer
+//! feeds a renderer already holds, and encoded for what the client proved it
+//! can show. Today: a first-person view of the arena streamed to a terminal
+//! that speaks the kitty graphics protocol. The pieces, each pure and
+//! testable on its own:
 //!
+//! - [`picture`]: the seam a renderer drives — a producer with its
+//!   instruments and its clock, reading feeds by name.
+//! - [`caps`]: what the terminal proved (the DA1 attributes, the graphics
+//!   record) and the encoder that follows from it.
 //! - [`raycast`]: a Wolfenstein-style software raycaster over the arena's
 //!   2D cell grid (open / wall / woods / water / road), with the other units
 //!   as distance-scaled billboard sprites, drawing into an RGB [`Frame`].
@@ -15,7 +23,8 @@
 //! - [`overlay`]: the instruments drawn into the frame over the picture —
 //!   minimap, heat gauge, weapons, the armour doll, the status strip — from
 //!   a small fixed palette so the PNG stays indexed.
-//! - [`cockpit`]: the `arena.cockpit` keyframe read into the raycaster's
+//! - [`cockpit`]: the cockpit [`picture::Picture`] — the `arena.cockpit`
+//!   and `arena.map` keyframes read into the raycaster's map, camera and
 //!   sprites and the instruments' inputs.
 //!
 //! Nothing here touches a terminal, a channel or the world: the SSH TUI owns
@@ -34,10 +43,12 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod caps;
 pub mod cockpit;
 pub mod frame;
 pub mod kitty;
 pub mod overlay;
+pub mod picture;
 pub mod png;
 pub mod raycast;
 

@@ -2419,8 +2419,8 @@ impl TuiApp {
                 r.redraw = false;
                 return;
             }
-            Key::DeviceAttributes => {
-                self.pixel.device_attributes();
+            Key::DeviceAttributes(da1) => {
+                self.pixel.device_attributes(da1);
                 r.redraw = false;
                 return;
             }
@@ -3836,17 +3836,12 @@ impl TuiApp {
     }
 
     /// The kitty bytes that place this tick's picture, or nothing (closed,
-    /// unsupported, no frame held, or unchanged since the last send).
+    /// no encoder, no frame held, or unchanged since the last send). The
+    /// picture reads its feeds from the panel store, as every pane does.
     pub fn pixel_paint(&mut self) -> Vec<u8> {
         let (w, h) = (self.caps.width, self.caps.height);
         let TuiApp { pixel, panels, .. } = self;
-        pixel.paint(
-            panels.get(COCKPIT_FEED),
-            panels.get(ARENA_MAP_FEED),
-            w,
-            h,
-            Instant::now(),
-        )
+        pixel.paint(&*panels, w, h, Instant::now())
     }
 
     /// The view's counters.

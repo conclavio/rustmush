@@ -64,8 +64,9 @@ pub enum Key {
     /// could not honour it).
     GraphicsErr,
     /// A primary device attributes reply (`CSI ? … c`), which every terminal
-    /// sends for `CSI c`: the probe's "no answer is the answer" marker.
-    DeviceAttributes,
+    /// sends for `CSI c`: the probe's "no answer is the answer" marker, and
+    /// (doc 21 cut G.1) the attributes it lists, attribute `4` being sixel.
+    DeviceAttributes(mush_pixel::caps::DeviceAttributes),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,7 +300,7 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
         // A primary device attributes reply, `CSI ? 6 2 ; … c` (a `CSI > … c`
         // is DA2 and `CSI c` alone is a request, neither of which a terminal
         // sends us unasked).
-        b'c' if first.starts_with('?') => Key::DeviceAttributes,
+        b'c' => Key::DeviceAttributes(mush_pixel::caps::DeviceAttributes::parse(params)?),
         b'~' => match first {
             "1" | "7" => Key::Home,
             "4" | "8" => Key::End,
@@ -449,15 +450,23 @@ mod tests {
         assert_eq!(keys(b"\x1b_Gi=1;OK\x1b\\"), vec![]);
         // Another APC altogether.
         assert_eq!(keys(b"\x1b_tmux;hello\x1b\\"), vec![]);
-        // DA1 reply; DA2 is not it; a request is not it.
-        assert_eq!(keys(b"\x1b[?62;22c"), vec![Key::DeviceAttributes]);
+        // DA1 reply, with its attributes; DA2 is not it; a request is not it.
+        let da1 = |p: &str| {
+            Key::DeviceAttributes(mush_pixel::caps::DeviceAttributes::parse(p).unwrap_or_default())
+        };
+        assert_eq!(keys(b"\x1b[?62;22c"), vec![da1("?62;22")]);
+        let wt = keys(b"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c");
+        assert!(
+            matches!(wt.as_slice(), [Key::DeviceAttributes(d)] if d.sixel() && d.level() == 61),
+            "{wt:?}"
+        );
         assert_eq!(keys(b"\x1b[>1;10;0c"), vec![]);
         assert_eq!(keys(b"\x1b[c"), vec![]);
         // The probe's two answers in one burst, in the order a kitty sends
         // them, then a typed key.
         assert_eq!(
             keys(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;c1"),
-            vec![Key::GraphicsOk, Key::DeviceAttributes, Key::Char('1')]
+            vec![Key::GraphicsOk, da1("?62;"), Key::Char('1')]
         );
         // Split across bursts.
         let mut p = KeyParser::new();

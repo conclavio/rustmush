@@ -1,5 +1,11 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.5 — 2026-10-22, G.1 split.** The lead split G.1 in two (§10): **G.1a landed** — the
+picture seam, the two-pass raycaster (render plus instruments 4.0 → 0.95 ms a frame at 640x480 on the
+owner's box, the same pixels), the probe's DA1 attributes as a graphics record, the help text G.0
+owed — and G.1b (the step-down, `[pixel]`, `@pixel/stats`, the `u` key's gate) waits on the mining
+session's config change. Notes in `21-cut-notes.md` §G.1a.
+
 **Draft 0.4 — 2026-10-22, after the review of w11term 331a550.** G.10 and G.11 now state the
 wire forms w11term implements (`docs/game-client-protocol.md` there): the four-field OSC 440 with
 no loop, SFTP v3 with the `read_len` floor, the manifest rules beyond the doc, the DCS parser
@@ -334,7 +340,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | Cut | What | Size | Depends on | Acceptance |
 |---|---|---|---|---|
 | **G.0** | This document; the README row; the cut notes started; `help cockpit` names `^G`, the keys, the terminals that work and tmux that does not | S | — | the README row; help text |
-| **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set | M | — | 640x480 render ≤4 ms on the VPS; a client that stops reading costs one frame; the step-down test; the contract gates |
+| **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set. **Split 2026-10-22:** **G.1a (landed)** the seam, the two-pass render, the attribute set and the help; **G.1b** the step-down, `[pixel]`, `@pixel/stats` and the `u` gate | M | — | 640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke); a client that stops reading costs one frame; the step-down test; the contract gates |
 | **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe` | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal |
 | **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |
@@ -447,9 +453,10 @@ superseded its default (D-21-23).
 ## 14. Amendments owed (made by the cuts that land them)
 
 - **Doc 02 §5.6** (capability detection): the active kitty probe, the DA1 attribute set, the
-  encoder choice (G.1, G.2).
+  encoder choice (G.1, G.2). *Made by G.1a for the probe and the attribute set; G.2 owes sixel's
+  place in the choice.*
 - **Doc 16 §5** (the cockpit): the pixel view as the cockpit's fourth surface beside line, TUI and
-  web; the instruments as drawn (G.1).
+  web; the instruments as drawn (G.1). *Made by G.1a, in doc 16 §11.*
 - **Doc 19 §5** (`+chart`): the chart as a picture (G.5).
 - **Doc 20 §4** (the vehicle) and **§5** (knowing): the windscreen and the survey chart as pictures;
   the first map with height (G.7, Q-21-5).

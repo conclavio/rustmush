@@ -278,3 +278,12 @@ Results: the probe answered OK (w11term speaks the kitty graphics protocol), the
 the instruments drew in the cell box, a turn held `fps 21` by the HUD, and `screenshot` exported the
 pane's grid with the picture in it (850x480 at the pane's negotiated cell size, so the frame is
 shown scaled). This is the reference Windows client and the harness for every later cut's smoke.
+
+## G.1a: the engine from the spike (2026-10-22)
+
+Doc 21 cut G.1a turned the spike into the engine's first picture: the `picture` seam (a producer
+with its instruments and its clock, reading feeds by name), `caps` (the DA1 attributes and the
+graphics record), the cockpit as `CockpitPicture`, and the raycaster in two passes (rays by column,
+pixels by row, colours from tables). Same pixels as the spike, pinned by a reference test; the
+fixture at 640x480 went from 4,024 µs to ~950 µs of render plus instruments on the owner's box. The
+details are in `docs/design/21-cut-notes.md` §G.1a.

@@ -7,34 +7,16 @@
 //! cargo run -p mush-pixel --example fixture -- out/
 //! ```
 
+use std::collections::HashMap;
 use std::time::Instant;
 
-use mush_pixel::cockpit::{contacts_as_sprites, draw_instruments};
-use mush_pixel::raycast::{Camera, Ground, Map, render};
+use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, map_from_feed};
+use mush_pixel::picture::{Look, Picture};
 use mush_pixel::{Frame, kitty, png};
 use serde_json::Value;
 
 const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
 const COCKPIT: &str = include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
-
-fn expand_rows(rows: &[Value], width: usize) -> Vec<Vec<char>> {
-    rows.iter()
-        .map(|row| {
-            let mut out = Vec::with_capacity(width);
-            for run in row.as_array().into_iter().flatten() {
-                let glyph = run
-                    .get(0)
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.chars().next())
-                    .unwrap_or(' ');
-                let n = run.get(1).and_then(Value::as_u64).unwrap_or(0) as usize;
-                out.extend(std::iter::repeat_n(glyph, n));
-            }
-            out.resize(width, ' ');
-            out
-        })
-        .collect()
-}
 
 fn main() {
     let out_dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
@@ -45,48 +27,24 @@ fn main() {
         eprintln!("the cockpit fixtures did not parse");
         return;
     };
-
-    let width = map_json["width"].as_u64().unwrap_or(0) as usize;
-    let cell_cm = map_json["cell_cm"].as_u64().unwrap_or(1000) as u32;
-    let legend: Vec<(char, Ground)> = map_json["legend"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|pair| {
-            let g = pair.get(0)?.as_str()?.chars().next()?;
-            let name = pair.get(1)?.as_str()?;
-            Some((g, Ground::from_legend_name(name)))
-        })
-        .collect();
-    let rows = expand_rows(
-        map_json["rows"].as_array().map_or(&[][..], Vec::as_slice),
-        width,
-    );
-    let map = Map::from_glyph_rows(
-        &rows,
-        &|g| {
-            legend
-                .iter()
-                .find(|(c, _)| *c == g)
-                .map_or(Ground::Open, |(_, ground)| *ground)
-        },
-        cell_cm,
-    );
-
-    let cam = Camera {
-        x_cm: cockpit["x_cm"].as_i64().unwrap_or(0),
-        y_cm: cockpit["y_cm"].as_i64().unwrap_or(0),
-        heading_mdeg: cockpit["heading_mdeg"].as_u64().unwrap_or(0) as u32,
-    };
-    let sprites = contacts_as_sprites(&cockpit, &cam);
+    let map = map_from_feed(&map_json);
+    let contacts = cockpit["contacts"].as_array().map_or(0, Vec::len);
+    // The feeds a renderer would hold, by name: exactly what the TUI hands
+    // the same picture.
+    let feeds: HashMap<String, Value> = [
+        (COCKPIT_FEED.to_string(), cockpit),
+        (ARENA_MAP_FEED.to_string(), map_json),
+    ]
+    .into_iter()
+    .collect();
+    let mut picture = CockpitPicture::new();
 
     // 640x480: the target frame (the owner's ruling of 2026-10-21).
     let mut frame = Frame::new(640, 480);
     const N: u32 = 200;
     let t0 = Instant::now();
     for _ in 0..N {
-        render(&mut frame, &map, &cam, &sprites);
-        draw_instruments(&mut frame, &map, &cockpit, Some(&map_json), &cam);
+        picture.draw(&mut frame, &feeds, &Look::default());
     }
     let render_us = t0.elapsed().as_micros() / u128::from(N);
     let t1 = Instant::now();
@@ -104,16 +62,15 @@ fn main() {
         eprintln!("fixture.kitty: {err}");
     }
     println!(
-        "map {}x{} cells, {} sprites, frame {}x{}, {} colours",
+        "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
         map.width(),
         map.height(),
-        sprites.len(),
         frame.width(),
         frame.height(),
         frame.count_colours(300)
     );
     println!(
-        "render {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
+        "render + instruments {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
         bytes.len(),
         stream.len()
     );

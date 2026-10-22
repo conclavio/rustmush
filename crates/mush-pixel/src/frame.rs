@@ -41,6 +41,12 @@ impl Frame {
         &self.rgb
     }
 
+    /// The packed RGB bytes for a producer that writes whole rows (the
+    /// raycaster's sky and floor passes): `width * height * 3` of them.
+    pub(crate) fn rgb_mut(&mut self) -> &mut [u8] {
+        &mut self.rgb
+    }
+
     /// Set one pixel; out-of-range coordinates are ignored.
     pub fn put(&mut self, x: usize, y: usize, px: Rgb) {
         if x < self.width && y < self.height {
@@ -72,15 +78,26 @@ impl Frame {
         }
     }
 
-    /// A 64-bit FNV-1a hash of the pixels: two frames with the same hash are
-    /// (for the purposes of "did anything change") the same picture, so the
+    /// A 64-bit hash of the pixels: two frames with the same hash are (for
+    /// the purposes of "did anything change") the same picture, so the
     /// sender can skip a frame identical to the last one it sent.
+    ///
+    /// Taken eight bytes at a time (FNV-1a's offset and prime, a rotate to
+    /// spread each word): the frame clock hashes every tick, sent or not, and
+    /// the byte-at-a-time FNV the spike used cost about a millisecond at
+    /// 640x480. The value is only ever compared within one connection, so it
+    /// need not be stable across versions.
     #[must_use]
     pub fn hash(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in &self.rgb {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0100_0000_01b3);
+        let (words, tail) = self.rgb.as_chunks::<8>();
+        for word in words {
+            h = (h ^ u64::from_le_bytes(*word))
+                .wrapping_mul(0x0100_0000_01b3)
+                .rotate_left(29);
+        }
+        for &b in tail {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
         h ^ ((self.width as u64) << 32 | self.height as u64)
     }
@@ -122,5 +139,24 @@ mod tests {
         assert_ne!(a, f.hash());
         assert_eq!(f.count_colours(256), 2);
         assert_eq!(f.count_colours(1), 2, "stops at limit + 1");
+    }
+
+    /// Every pixel of a frame moves the hash, including one in the tail a
+    /// whole number of words leaves over, and the size is part of it.
+    #[test]
+    fn hash_sees_every_pixel_and_the_size() {
+        let mut f = Frame::new(5, 3); // 45 bytes: five words and a tail of 5
+        let mut seen = std::collections::HashSet::new();
+        assert!(seen.insert(f.hash()));
+        for y in 0..3 {
+            for x in 0..5 {
+                let mut g = f.clone();
+                g.put(x, y, [1, 0, 0]);
+                assert!(seen.insert(g.hash()), "pixel {x},{y}");
+            }
+        }
+        f.put(4, 2, [0, 0, 1]);
+        assert!(seen.insert(f.hash()), "the last byte");
+        assert_ne!(Frame::new(3, 5).hash(), Frame::new(5, 3).hash());
     }
 }

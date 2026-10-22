@@ -14,6 +14,16 @@
 //! parallax). Sprites are drawn last, far to near, against a per-column
 //! depth buffer so a wall in front of a unit hides it.
 //!
+//! **Two passes (doc 21 cut G.1).** The rays are cast column by column, and
+//! each column keeps only where its sky ends, its wall slice and where its
+//! floor starts; the frame is then written row by row, top to bottom, so the
+//! writes run along memory and everything that is constant along a row (the
+//! sky band, the floor's distance, its fog step) is worked out once a row
+//! rather than once a pixel. Every colour comes from tables built once a
+//! render instead of three float lerps a pixel. The spike's one-pass
+//! renderer is kept under `#[cfg(test)]` as the reference the new one must
+//! match pixel for pixel.
+//!
 //! **Colours are a closed set by construction** — the private `Base` set times
 //! [`FOG_STEPS`] plus the sky's [`SKY_STEPS`] — so a rendered frame never
 //! has more than 256 colours and the PNG encoder always takes the palette
@@ -221,6 +231,9 @@ enum Base {
 }
 
 impl Base {
+    /// How many bases there are: the rows of the shade table.
+    const COUNT: usize = 16;
+
     fn rgb(self) -> Rgb {
         match self {
             Base::Open => [112, 96, 70],
@@ -300,22 +313,137 @@ fn sky(step: usize) -> Rgb {
     lerp(ZENITH, HORIZON, step as f32 / (SKY_STEPS - 1) as f32)
 }
 
+/// Every colour a render can draw, worked out once: each base at each fog
+/// step, and each sky band. The values are exactly [`shade`] and [`sky`]
+/// (built by calling them), so a table read and a lerp agree to the bit.
+struct Shades {
+    base: [[Rgb; FOG_STEPS]; Base::COUNT],
+    sky: [Rgb; SKY_STEPS],
+}
+
+impl Shades {
+    fn new() -> Shades {
+        const ALL: [Base; Base::COUNT] = [
+            Base::Open,
+            Base::Grass,
+            Base::Water,
+            Base::Road,
+            Base::OpenLine,
+            Base::GrassLine,
+            Base::WaterLine,
+            Base::RoadLine,
+            Base::WallLit,
+            Base::WallDark,
+            Base::Woods,
+            Base::Hostile,
+            Base::Friendly,
+            Base::Unknown,
+            Base::Wreck,
+            Base::Outline,
+        ];
+        let mut base = [[[0; 3]; FOG_STEPS]; Base::COUNT];
+        for (row, b) in base.iter_mut().zip(ALL) {
+            for (step, px) in row.iter_mut().enumerate() {
+                *px = shade(b, step);
+            }
+        }
+        let mut bands = [[0; 3]; SKY_STEPS];
+        for (step, px) in bands.iter_mut().enumerate() {
+            *px = sky(step);
+        }
+        Shades { base, sky: bands }
+    }
+
+    /// `base` at fog `step` (the horizon colour past the last step, which
+    /// [`fog_step`] never yields).
+    fn shade(&self, base: Base, step: usize) -> Rgb {
+        self.base
+            .get(base as usize)
+            .and_then(|row| row.get(step))
+            .copied()
+            .unwrap_or(HORIZON)
+    }
+
+    /// Sky band `step` (the horizon colour past the last band).
+    fn sky(&self, step: usize) -> Rgb {
+        self.sky.get(step).copied().unwrap_or(HORIZON)
+    }
+}
+
+/// What the column pass leaves the row pass: the ray, and where the
+/// column's sky, wall and floor lie.
+#[derive(Clone, Copy)]
+struct Column {
+    rdx: f32,
+    rdy: f32,
+    /// Rows `0..sky_end` are sky.
+    sky_end: usize,
+    /// Rows `wall_top..wall_end` are the wall slice (empty when the ray hit
+    /// nothing).
+    wall_top: usize,
+    wall_end: usize,
+    wall_px: Rgb,
+    /// Rows `floor_start..` are floor. A row that is none of the three (the
+    /// horizon row under a ray that hit nothing) is drawn the horizon colour;
+    /// the spike left whatever the last frame had there, which is how a
+    /// sprite could leave a trail along the horizon of an open view.
+    floor_start: usize,
+}
+
+/// The camera in cell units: where the eye stands, the way it looks and the
+/// camera plane across it.
+#[derive(Clone, Copy)]
+struct Eye {
+    cell: f32,
+    posx: f32,
+    posy: f32,
+    dirx: f32,
+    diry: f32,
+    planex: f32,
+    planey: f32,
+}
+
+impl Eye {
+    fn new(map: &Map, cam: &Camera) -> Eye {
+        let cell = map.cell_cm() as f32;
+        let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
+        let (dirx, diry) = heading.to_radians().sin_cos();
+        Eye {
+            cell,
+            posx: cam.x_cm as f32 / cell,
+            posy: cam.y_cm as f32 / cell,
+            dirx,
+            diry,
+            planex: diry * PLANE,
+            planey: -dirx * PLANE,
+        }
+    }
+}
+
 /// Draw the scene into `frame`.
 pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
     let (w, h) = (frame.width(), frame.height());
     if w == 0 || h == 0 {
         return;
     }
-    let cell = map.cell_cm() as f32;
-    let posx = cam.x_cm as f32 / cell;
-    let posy = cam.y_cm as f32 / cell;
-    let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-    let (dirx, diry) = heading.to_radians().sin_cos();
-    let (planex, planey) = (diry * PLANE, -dirx * PLANE);
+    let eye = Eye::new(map, cam);
+    let Eye {
+        posx,
+        posy,
+        dirx,
+        diry,
+        planex,
+        planey,
+        ..
+    } = eye;
     let hf = h as f32;
     let horizon = h / 2;
+    let shades = Shades::new();
     let mut zbuf = vec![f32::INFINITY; w];
 
+    // The column pass: one ray a column. The expressions are the spike's,
+    // term for term, so the reference test can ask for equality.
+    let mut columns = Vec::with_capacity(w);
     for (x, z) in zbuf.iter_mut().enumerate() {
         let camx = 2.0 * x as f32 / w as f32 - 1.0;
         let rdx = dirx + planex * camx;
@@ -330,38 +458,71 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
         } else {
             (horizon, horizon)
         };
-
-        for y in 0..top.min(horizon) {
-            frame.put(x, y, sky(y * SKY_STEPS / horizon.max(1)));
-        }
-        if perp.is_finite() {
-            let hit = {
-                let dist = perp;
-                let hx = (posx + rdx * dist).floor() as i64;
-                let hy = (posy + rdy * dist).floor() as i64;
-                map.get(hx, hy)
-            };
-            let base = match (hit, side) {
+        let (wall_top, wall_end, wall_px) = if perp.is_finite() {
+            let hx = (posx + rdx * perp).floor() as i64;
+            let hy = (posy + rdy * perp).floor() as i64;
+            let base = match (map.get(hx, hy), side) {
                 (Ground::Woods, _) => Base::Woods,
                 (_, 0) => Base::WallLit,
                 _ => Base::WallDark,
             };
-            let px = shade(base, fog_step(perp));
-            for y in top..bottom.max(top) {
-                frame.put(x, y, px);
-            }
-        }
-        for y in bottom.max(horizon + 1)..h {
+            (top, bottom.max(top), shades.shade(base, fog_step(perp)))
+        } else {
+            (0, 0, HORIZON)
+        };
+        columns.push(Column {
+            rdx,
+            rdy,
+            sky_end: top.min(horizon),
+            wall_top,
+            wall_end,
+            wall_px,
+            floor_start: bottom.max(horizon + 1),
+        });
+    }
+
+    // The row pass: top to bottom, along memory. A row's sky band, and a
+    // floor row's distance and fog step, are one value for the whole row.
+    for (y, row) in frame.rgb_mut().chunks_exact_mut(w * 3).enumerate() {
+        let sky_px = shades.sky(y * SKY_STEPS / horizon.max(1));
+        let floor = (y > horizon).then(|| {
             let dist = EYE * hf / (y - horizon) as f32;
-            let fx = posx + rdx * dist;
-            let fy = posy + rdy * dist;
-            let ground = map.get(fx.floor() as i64, fy.floor() as i64);
-            let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
-            frame.put(x, y, shade(Base::floor(ground, line), fog_step(dist)));
+            (dist, fog_step(dist))
+        });
+        for (px, c) in row.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
+            *px = if y < c.sky_end {
+                sky_px
+            } else if (c.wall_top..c.wall_end).contains(&y) {
+                c.wall_px
+            } else if let Some((dist, step)) = floor.filter(|_| y >= c.floor_start) {
+                let fx = posx + c.rdx * dist;
+                let fy = posy + c.rdy * dist;
+                let ground = map.get(fx.floor() as i64, fy.floor() as i64);
+                let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
+                shades.shade(Base::floor(ground, line), step)
+            } else {
+                HORIZON
+            };
         }
     }
 
-    // Sprites, far to near.
+    draw_sprites(frame, &eye, sprites, &zbuf, &shades);
+}
+
+/// The sprites, far to near, against the column pass's depth buffer.
+fn draw_sprites(frame: &mut Frame, eye: &Eye, sprites: &[Sprite], zbuf: &[f32], shades: &Shades) {
+    let (w, h) = (frame.width(), frame.height());
+    let Eye {
+        cell,
+        posx,
+        posy,
+        dirx,
+        diry,
+        planex,
+        planey,
+    } = *eye;
+    let hf = h as f32;
+    let horizon = h / 2;
     let invdet = 1.0 / (planex * diry - dirx * planey);
     let mut placed: Vec<(f32, f32, SpriteKind)> = sprites
         .iter()
@@ -386,7 +547,7 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
         let top = bottom - hpx;
         let left = screenx - wpx / 2.0;
         let step = fog_step(ty);
-        let body = shade(
+        let body = shades.shade(
             match kind {
                 SpriteKind::Hostile => Base::Hostile,
                 SpriteKind::Friendly => Base::Friendly,
@@ -395,7 +556,7 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
             },
             step,
         );
-        let outline = shade(Base::Outline, step);
+        let outline = shades.shade(Base::Outline, step);
         let x0 = left.floor().max(0.0) as usize;
         let x1 = ((left + wpx).ceil().max(0.0) as usize).min(w);
         let y0 = top.floor().max(0.0) as usize;
@@ -486,6 +647,189 @@ fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The spike's renderer, as it was** (2026-10-21, one pass, column by
+    /// column, three lerps a pixel): the reference [`render`] must match
+    /// pixel for pixel on a frame cleared to the horizon colour (the one
+    /// row the spike never drew, see `Column::floor_start`).
+    fn render_reference(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
+        let (w, h) = (frame.width(), frame.height());
+        if w == 0 || h == 0 {
+            return;
+        }
+        let cell = map.cell_cm() as f32;
+        let posx = cam.x_cm as f32 / cell;
+        let posy = cam.y_cm as f32 / cell;
+        let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
+        let (dirx, diry) = heading.to_radians().sin_cos();
+        let (planex, planey) = (diry * PLANE, -dirx * PLANE);
+        let hf = h as f32;
+        let horizon = h / 2;
+        let mut zbuf = vec![f32::INFINITY; w];
+
+        for (x, z) in zbuf.iter_mut().enumerate() {
+            let camx = 2.0 * x as f32 / w as f32 - 1.0;
+            let rdx = dirx + planex * camx;
+            let rdy = diry + planey * camx;
+            let (perp, side) = cast(map, posx, posy, rdx, rdy);
+            *z = perp;
+
+            let (top, bottom) = if perp.is_finite() {
+                let top = horizon as f32 - (WALL_H - EYE) * hf / perp;
+                let bottom = horizon as f32 + EYE * hf / perp;
+                (top.max(0.0) as usize, (bottom.min(hf)) as usize)
+            } else {
+                (horizon, horizon)
+            };
+
+            for y in 0..top.min(horizon) {
+                frame.put(x, y, sky(y * SKY_STEPS / horizon.max(1)));
+            }
+            if perp.is_finite() {
+                let hit = {
+                    let dist = perp;
+                    let hx = (posx + rdx * dist).floor() as i64;
+                    let hy = (posy + rdy * dist).floor() as i64;
+                    map.get(hx, hy)
+                };
+                let base = match (hit, side) {
+                    (Ground::Woods, _) => Base::Woods,
+                    (_, 0) => Base::WallLit,
+                    _ => Base::WallDark,
+                };
+                let px = shade(base, fog_step(perp));
+                for y in top..bottom.max(top) {
+                    frame.put(x, y, px);
+                }
+            }
+            for y in bottom.max(horizon + 1)..h {
+                let dist = EYE * hf / (y - horizon) as f32;
+                let fx = posx + rdx * dist;
+                let fy = posy + rdy * dist;
+                let ground = map.get(fx.floor() as i64, fy.floor() as i64);
+                let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
+                frame.put(x, y, shade(Base::floor(ground, line), fog_step(dist)));
+            }
+        }
+
+        // Sprites, far to near.
+        let invdet = 1.0 / (planex * diry - dirx * planey);
+        let mut placed: Vec<(f32, f32, SpriteKind)> = sprites
+            .iter()
+            .map(|s| {
+                let relx = s.x_cm as f32 / cell - posx;
+                let rely = s.y_cm as f32 / cell - posy;
+                let tx = invdet * (diry * relx - dirx * rely);
+                let ty = invdet * (-planey * relx + planex * rely);
+                (tx, ty, s.kind)
+            })
+            .filter(|(_, ty, _)| *ty > 0.05)
+            .collect();
+        placed.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (tx, ty, kind) in placed {
+            let screenx = (w as f32 / 2.0) * (1.0 + tx / ty);
+            let hpx = SPRITE_H * hf / ty;
+            let wpx = SPRITE_W * hf / ty;
+            if hpx < 1.0 || wpx < 1.0 {
+                continue;
+            }
+            let bottom = horizon as f32 + EYE * hf / ty;
+            let top = bottom - hpx;
+            let left = screenx - wpx / 2.0;
+            let step = fog_step(ty);
+            let body = shade(
+                match kind {
+                    SpriteKind::Hostile => Base::Hostile,
+                    SpriteKind::Friendly => Base::Friendly,
+                    SpriteKind::Unknown => Base::Unknown,
+                    SpriteKind::Wreck => Base::Wreck,
+                },
+                step,
+            );
+            let outline = shade(Base::Outline, step);
+            let x0 = left.floor().max(0.0) as usize;
+            let x1 = ((left + wpx).ceil().max(0.0) as usize).min(w);
+            let y0 = top.floor().max(0.0) as usize;
+            let y1 = ((bottom).ceil().max(0.0) as usize).min(h);
+            let (du, dv) = (1.0 / wpx, 1.0 / hpx);
+            for (x, &z) in zbuf.iter().enumerate().take(x1).skip(x0) {
+                if ty >= z {
+                    continue;
+                }
+                let u = (x as f32 + 0.5 - left) / wpx;
+                for y in y0..y1 {
+                    let v = (y as f32 + 0.5 - top) / hpx;
+                    if !tank(u, v) {
+                        continue;
+                    }
+                    let edge = !tank(u - du, v)
+                        || !tank(u + du, v)
+                        || !tank(u, v - dv)
+                        || !tank(u, v + dv);
+                    frame.put(x, y, if edge { outline } else { body });
+                }
+            }
+        }
+    }
+
+    /// The rendered frame equals the spike's for a camera at every heading
+    /// in 7.5 degree steps across the fixture yard and an open field, at
+    /// both frame sizes, with sprites in front of and behind walls.
+    #[test]
+    fn the_two_pass_render_matches_the_spike_pixel_for_pixel() {
+        let yard = yard();
+        // Open ground as wide as the TUI's stand-in map: no ray meets its
+        // edge, so the horizon row under them is the case the spike missed.
+        let open = Map::new(512, 512, 1000);
+        for (map, x_cm, y_cm) in [(&yard, 8_000, 3_000), (&open, 256_000, 256_000)] {
+            for &(w, h) in &[(640, 480), (320, 220), (17, 9)] {
+                for step in 0..48u32 {
+                    let cam = Camera {
+                        x_cm,
+                        y_cm,
+                        heading_mdeg: step * 7_500,
+                    };
+                    let sprites = [
+                        Sprite::at_bearing(&cam, 0.0, 60.0, SpriteKind::Hostile),
+                        Sprite::at_bearing(&cam, 30.0, 150.0, SpriteKind::Friendly),
+                        Sprite::at_bearing(&cam, 200.0, 40.0, SpriteKind::Wreck),
+                    ];
+                    let mut want = Frame::new(w, h);
+                    want.clear(HORIZON);
+                    render_reference(&mut want, map, &cam, &sprites);
+                    let mut got = Frame::new(w, h);
+                    got.clear([255, 0, 255]);
+                    render(&mut got, map, &cam, &sprites);
+                    assert!(
+                        got == want,
+                        "{w}x{h} at {} mdeg from {x_cm},{y_cm}",
+                        cam.heading_mdeg
+                    );
+                }
+            }
+        }
+    }
+
+    /// The spike left the horizon row of a ray that hit nothing as it was,
+    /// so whatever the last frame drew there stayed; every pixel is drawn
+    /// now, whatever the frame held before.
+    #[test]
+    fn every_pixel_is_drawn_whatever_the_frame_held() {
+        let open = Map::new(512, 512, 1000);
+        let cam = Camera {
+            x_cm: 256_000,
+            y_cm: 256_000,
+            heading_mdeg: 90_000,
+        };
+        let mut a = Frame::new(320, 220);
+        a.clear([255, 0, 255]);
+        render(&mut a, &open, &cam, &[]);
+        let mut b = Frame::new(320, 220);
+        b.clear([0, 255, 0]);
+        render(&mut b, &open, &cam, &[]);
+        assert!(a == b);
+        assert_eq!(a.get(100, 110), HORIZON, "the horizon row is drawn");
+    }
 
     fn yard() -> Map {
         // A 16x16 grass yard with a wall across the north edge at y = 12 and

@@ -1,12 +1,177 @@
-//! The `arena.cockpit` keyframe as the instruments' inputs: the one place
-//! that reads the frame's JSON for the picture, shared by the SSH TUI's
-//! view and the fixture example.
+//! The arena cockpit as a [`Picture`] (bucket A): the `arena.cockpit` and
+//! `arena.map` keyframes read into the raycaster's map, camera and sprites
+//! and the instruments' inputs. This is the one place that reads those
+//! frames' JSON for the picture, shared by every renderer and the fixture
+//! example.
+
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::Frame;
 use crate::overlay::{self, Facet, Heat, MapMark, Section, Spot, Status, WeaponRow};
-use crate::raycast::{Camera, Map, Sprite, SpriteKind};
+use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
+use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, render};
+
+/// The pilot's own frame: pose, contacts, hull, weapons, heat.
+pub const COCKPIT_FEED: &str = "arena.cockpit";
+/// The arena's ground: the cell grid, its legend and the named spots.
+pub const ARENA_MAP_FEED: &str = "arena.map";
+/// The map drawn while no `arena.map` is held: open ground, big enough that
+/// the eye never sees its edge.
+const OPEN_MAP_CELLS: usize = 512;
+
+/// The first-person cockpit: the raycaster over the held arena map, the
+/// contacts as billboards, the instruments drawn into the frame.
+#[derive(Debug)]
+pub struct CockpitPicture {
+    /// What `arena` was built from: `None` before the first draw, then the
+    /// held `arena.map`'s match (itself `None` for open ground).
+    built_for: Option<Option<i64>>,
+    /// The arena map, open ground until an `arena.map` is held.
+    arena: Map,
+}
+
+impl Default for CockpitPicture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CockpitPicture {
+    /// A cockpit picture with no map built yet.
+    #[must_use]
+    pub fn new() -> CockpitPicture {
+        CockpitPicture {
+            built_for: None,
+            arena: Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
+        }
+    }
+
+    /// Build (or keep) the arena map from the held `arena.map`.
+    fn ensure_map(&mut self, map: Option<&Value>) -> &Map {
+        let wanted = map.and_then(|m| m.get("match").and_then(Value::as_i64));
+        let keep = self.built_for == Some(wanted) && (map.is_some() || wanted.is_none());
+        if !keep {
+            self.arena = map.map_or_else(
+                || Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
+                map_from_feed,
+            );
+            self.built_for = Some(wanted);
+        }
+        &self.arena
+    }
+}
+
+impl Picture for CockpitPicture {
+    fn feeds(&self) -> &'static [&'static str] {
+        &[COCKPIT_FEED, ARENA_MAP_FEED]
+    }
+
+    fn interval(&self) -> Duration {
+        BUCKET_A_INTERVAL
+    }
+
+    fn draw(&mut self, frame: &mut Frame, feeds: &dyn Feeds, look: &Look) -> bool {
+        let Some(cockpit) = feeds.feed(COCKPIT_FEED) else {
+            return false;
+        };
+        let map = feeds.feed(ARENA_MAP_FEED);
+        let cam = camera(cockpit, look);
+        let sprites = contacts_as_sprites(cockpit, &cam);
+        let arena = self.ensure_map(map);
+        render(frame, arena, &cam, &sprites);
+        // The instruments, over the picture (the owner's 640x480 target of
+        // 2026-10-21): minimap, heat, weapons, the armour doll and the status
+        // strip, all from the frame the text panes already read.
+        draw_instruments(frame, arena, cockpit, map, &cam);
+        true
+    }
+}
+
+/// The camera: the sim's own pose from the cockpit frame, turned by the
+/// viewer's local look.
+#[must_use]
+pub fn camera(cockpit: &Value, look: &Look) -> Camera {
+    let heading = (num(cockpit.get("heading_mdeg")) + look.offset_mdeg).rem_euclid(360_000);
+    Camera {
+        x_cm: num(cockpit.get("x_cm")),
+        y_cm: num(cockpit.get("y_cm")),
+        heading_mdeg: u32::try_from(heading).unwrap_or(0),
+    }
+}
+
+/// An `arena.map` keyframe (run-length rows `[[glyph, run], …]`, the south
+/// row first, a legend of `[glyph, word]`) as a raycaster map. A run with no
+/// length is one cell; a run past the width is clipped; a malformed run is
+/// skipped; a short row is open ground to its end. These are the rules the
+/// text renderers' `mush_ansi::window_rows` reads the same rows by.
+#[must_use]
+pub fn map_from_feed(map: &Value) -> Map {
+    let size = |key: &str| {
+        map.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    let (width, height) = (size("width"), size("height"));
+    let cell_cm = map
+        .get("cell_cm")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(1000);
+    let legend: Vec<(char, Ground)> = map
+        .get("legend")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|pair| {
+            let g = pair.get(0)?.as_str()?.chars().next()?;
+            let name = pair.get(1)?.as_str()?;
+            Some((g, Ground::from_legend_name(name)))
+        })
+        .collect();
+    let ground_of = |g: char| {
+        legend
+            .iter()
+            .find(|(c, _)| *c == g)
+            .map_or(Ground::Open, |(_, ground)| *ground)
+    };
+    let mut out = Map::new(width, height, cell_cm);
+    let rows = map.get("rows").and_then(Value::as_array);
+    for y in 0..height {
+        let runs = rows.and_then(|r| r.get(y)).and_then(Value::as_array);
+        let mut col = 0usize;
+        for run in runs.into_iter().flatten() {
+            if col >= width {
+                break;
+            }
+            let Some(pair) = run.as_array() else {
+                continue;
+            };
+            let glyph = pair.first().map_or(' ', |v| {
+                v.as_str().and_then(|s| s.chars().next()).unwrap_or('?')
+            });
+            let n = pair
+                .get(1)
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(1);
+            let end = col.saturating_add(n).min(width);
+            let ground = ground_of(glyph);
+            for x in col..end {
+                out.set(x, y, ground);
+            }
+            col = end;
+        }
+        // The rest of a short row, and a missing row, is spaces.
+        let rest = ground_of(' ');
+        for x in col..width {
+            out.set(x, y, rest);
+        }
+    }
+    out
+}
 
 /// How a contact is drawn: wreck, friend, classified hostile, or unknown.
 #[must_use]
@@ -195,15 +360,90 @@ pub fn draw_instruments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raycast::{Ground, render};
 
     const COCKPIT: &str = include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
+    const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
+
+    fn parsed(text: &str) -> Value {
+        let parsed = serde_json::from_str::<Value>(text);
+        assert!(parsed.is_ok(), "fixture: {parsed:?}");
+        parsed.unwrap_or_default()
+    }
+
+    #[test]
+    fn the_fixture_map_decodes_its_legend() {
+        let m = map_from_feed(&parsed(MAP));
+        assert_eq!((m.width(), m.height(), m.cell_cm()), (96, 64, 1000));
+        // Row 2 has water at x 20..30 (the fixture's pond), grass elsewhere.
+        assert_eq!(m.get(25, 2), Ground::Water);
+        assert_eq!(m.get(0, 0), Ground::Grass);
+    }
+
+    /// The run-length rules `mush_ansi::window_rows` reads rows by: a run
+    /// without a length is one cell, a run past the width is clipped, a
+    /// malformed run is skipped, a short row pads, rows past the height are
+    /// not read.
+    #[test]
+    fn the_map_decode_keeps_the_text_renderers_run_rules() {
+        let map = serde_json::json!({
+            "width": 4, "height": 2, "cell_cm": 500,
+            "legend": [["#", "wall"], ["~", "water"]],
+            "rows": [
+                [["#"], "junk", ["~", 9]],
+                [["~", 1]],
+                [["#", 4]]
+            ]
+        });
+        let m = map_from_feed(&map);
+        assert_eq!(m.cell_cm(), 500);
+        let row = |y| (0..4).map(|x| m.get(x, y)).collect::<Vec<_>>();
+        assert_eq!(
+            row(0),
+            [Ground::Wall, Ground::Water, Ground::Water, Ground::Water]
+        );
+        assert_eq!(
+            row(1),
+            [Ground::Water, Ground::Open, Ground::Open, Ground::Open]
+        );
+        assert_eq!(
+            m.get(0, 2),
+            Ground::Wall,
+            "outside the map, not row 2's runs"
+        );
+    }
+
+    /// Through the seam: no cockpit frame, nothing drawn and the frame
+    /// untouched; with one, the picture is drawn and turns with the look.
+    #[test]
+    fn the_cockpit_picture_draws_from_its_feeds_and_turns_with_the_look() {
+        let mut feeds = std::collections::HashMap::new();
+        let mut picture = CockpitPicture::new();
+        assert_eq!(picture.interval(), BUCKET_A_INTERVAL);
+        assert_eq!(picture.feeds(), [COCKPIT_FEED, ARENA_MAP_FEED]);
+        let mut frame = Frame::new(320, 220);
+        assert!(!picture.draw(&mut frame, &feeds, &Look::default()));
+        assert!(frame == Frame::new(320, 220), "untouched");
+        feeds.insert(COCKPIT_FEED.to_string(), parsed(COCKPIT));
+        feeds.insert(ARENA_MAP_FEED.to_string(), parsed(MAP));
+        assert!(picture.draw(&mut frame, &feeds, &Look::default()));
+        let ahead = frame.hash();
+        let look = Look {
+            offset_mdeg: 30_000,
+        };
+        assert!(picture.draw(&mut frame, &feeds, &look));
+        assert_ne!(frame.hash(), ahead, "the look turns the camera");
+        assert!(picture.draw(&mut frame, &feeds, &Look::default()));
+        assert_eq!(frame.hash(), ahead, "and back");
+        let cam = camera(&parsed(COCKPIT), &look);
+        assert_eq!(
+            cam.heading_mdeg, 75_000,
+            "the fixture faces 045, the look adds 30"
+        );
+    }
 
     #[test]
     fn the_fixture_frame_draws_every_instrument_inside_the_palette() {
-        let parsed = serde_json::from_str::<Value>(COCKPIT);
-        assert!(parsed.is_ok(), "fixture: {parsed:?}");
-        let cockpit = parsed.unwrap_or_default();
+        let cockpit = parsed(COCKPIT);
         let mut arena = Map::new(96, 64, 1000);
         for y in 0..64 {
             for x in 0..96 {

@@ -746,6 +746,15 @@ fn within_bounds(data: &Value) -> bool {
     serde_json::to_vec(data).is_ok_and(|b| b.len() <= MAX_VIEW_DATA_BYTES)
 }
 
+/// The pixel view's pictures read the same held keyframes the panes draw
+/// (doc 21 D-21-1): a picture can show nothing this connection's feeds do not
+/// carry.
+impl mush_pixel::picture::Feeds for PanelStore {
+    fn feed(&self, feed: &str) -> Option<&Value> {
+        self.get(feed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

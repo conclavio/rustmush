@@ -656,6 +656,53 @@ and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
 radio is not on this screen: its lines are on the channel screen with every
 other channel's, and the notices list does not repeat them.
 
+## The picture
+
+In `@tui`, `Ctrl-G` opens a first-person picture of the arena from your seat,
+drawn in the terminal itself, with the instruments inside it: a minimap of the
+ground around you, your heat, your weapons with their cycles, what is left of
+your armour, and a strip with your callsign, speed, heading, lock and power.
+`Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still detaches.
+
+It shows what your cockpit screen shows and nothing more. A contact is drawn
+where your own scope plots it (red hostile, blue friendly, khaki not told
+apart yet, dark brown a wreck), and a machine your scope does not hold is not
+drawn at all, however close it is.
+
+While the picture is open:
+
+  Left or a      start turning the view left; the same key again stops it
+  Right or d     start turning the view right; the same key again stops it
+  space          stop turning
+  c              look along your tank's heading again
+  r              a smaller picture (320 by 220 rather than 640 by 480), for a
+                 slow link
+  Esc or q       close the picture
+
+Every other key does nothing while it is open. **Turning the view does not turn
+the tank**: the line over the picture says the view's heading against the
+tank's (`camera 075° (sim 045° +30°)`), and `HEADING` is still how you steer.
+
+**Which terminals show it.** The picture needs a terminal that speaks the kitty
+graphics protocol, reached through that terminal's own SSH client:
+
+  w11term        the Windows terminal that ships beside the game
+  WezTerm        through `wezterm ssh` or an SSH domain; on Windows, run it
+                 with `front_end = "Software"`
+  kitty, Ghostty through their own SSH
+
+Windows Terminal, foot, xterm and mintty draw sixel pictures instead, which the
+picture does not send yet; on them `Ctrl-G` does nothing and screen 0 is the
+cockpit, as before. On Windows, anything run inside a console window (`ssh` in
+PowerShell or cmd, even inside WezTerm) loses the picture on the way: use the
+terminal's own SSH client. **tmux is not supported**: it swallows the
+terminal's answer. Run `@tui` outside it.
+
+When you enter `@tui` the game asks your terminal, for half a second at most,
+what it can show, and the line over the picture says what it found: `kitty
+graphics OK`, `sixel only (not drawn yet)` or `no terminal graphics`. If
+`Ctrl-G` does nothing, your terminal answered no.
+
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type
 often).
