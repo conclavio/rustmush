@@ -14,7 +14,7 @@
 //! parallax). Sprites are drawn last, far to near, against a per-column
 //! depth buffer so a wall in front of a unit hides it.
 //!
-//! **Colours are a closed set by construction** — [`Base`] times
+//! **Colours are a closed set by construction** — the private `Base` set times
 //! [`FOG_STEPS`] plus the sky's [`SKY_STEPS`] — so a rendered frame never
 //! has more than 256 colours and the PNG encoder always takes the palette
 //! path. A wrong constant here shows up as the truecolor fallback, which a
@@ -86,7 +86,11 @@ impl Map {
     }
 
     /// From glyph rows (south row first) and a legend.
-    pub fn from_glyph_rows(rows: &[Vec<char>], legend: &dyn Fn(char) -> Ground, cell_cm: u32) -> Map {
+    pub fn from_glyph_rows(
+        rows: &[Vec<char>],
+        legend: &dyn Fn(char) -> Ground,
+        cell_cm: u32,
+    ) -> Map {
         let height = rows.len();
         let width = rows.iter().map(Vec::len).max().unwrap_or(0);
         let mut map = Map::new(width, height, cell_cm);
@@ -407,7 +411,8 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
                 if !tank(u, v) {
                     continue;
                 }
-                let edge = !tank(u - du, v) || !tank(u + du, v) || !tank(u, v - dv) || !tank(u, v + dv);
+                let edge =
+                    !tank(u - du, v) || !tank(u + du, v) || !tank(u, v - dv) || !tank(u, v + dv);
                 frame.put(x, y, if edge { outline } else { body });
             }
         }
@@ -435,8 +440,16 @@ fn tank(u: f32, v: f32) -> bool {
 fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
     let mut mapx = posx.floor() as i64;
     let mut mapy = posy.floor() as i64;
-    let deltax = if rdx == 0.0 { f32::INFINITY } else { (1.0 / rdx).abs() };
-    let deltay = if rdy == 0.0 { f32::INFINITY } else { (1.0 / rdy).abs() };
+    let deltax = if rdx == 0.0 {
+        f32::INFINITY
+    } else {
+        (1.0 / rdx).abs()
+    };
+    let deltay = if rdy == 0.0 {
+        f32::INFINITY
+    } else {
+        (1.0 / rdy).abs()
+    };
     let (stepx, mut sidex) = if rdx < 0.0 {
         (-1, (posx - mapx as f32) * deltax)
     } else {
@@ -459,7 +472,11 @@ fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
             side = 1;
         }
         if map.get(mapx, mapy).blocks() {
-            let perp = if side == 0 { sidex - deltax } else { sidey - deltay };
+            let perp = if side == 0 {
+                sidex - deltax
+            } else {
+                sidey - deltay
+            };
             return (perp.max(1e-4), side);
         }
     }
@@ -531,7 +548,10 @@ mod tests {
         let mid = frame.get(160, 110);
         assert_ne!(mid, sky(SKY_STEPS - 1));
         let floor = frame.get(160, 219);
-        assert!(floor[1] > floor[0] && floor[1] > floor[2], "grass is green: {floor:?}");
+        assert!(
+            floor[1] > floor[0] && floor[1] > floor[2],
+            "grass is green: {floor:?}"
+        );
         assert!(frame.count_colours(256) <= 256);
         // The hostile sprite at 30 m dead-ish ahead paints red somewhere.
         let red = (0..320usize)

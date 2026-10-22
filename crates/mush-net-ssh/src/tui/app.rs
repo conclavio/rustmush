@@ -40,11 +40,11 @@ use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
 use super::mind_workshop::MindWorkshop;
-use super::pixel::PixelView;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
     PanelStore, REPLAY_FEED, UNIT_FEED,
 };
+use super::pixel::PixelView;
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, floor_line, legend_line,
     render_backlog_rows, render_channels_rows, render_event, render_rolls_rows, render_sheet_rows,

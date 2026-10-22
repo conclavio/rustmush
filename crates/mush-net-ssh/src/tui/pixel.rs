@@ -452,7 +452,12 @@ pub fn image_box(cols: u16, rows: u16, w: usize, h: usize) -> (u16, u16, u16, u1
         (u16::try_from(wide).unwrap_or(avail_cols).max(1), avail_rows)
     } else {
         let tall = u32::from(avail_cols) * fh / (2 * fw);
-        (avail_cols, u16::try_from(tall).unwrap_or(avail_rows).clamp(1, avail_rows))
+        (
+            avail_cols,
+            u16::try_from(tall)
+                .unwrap_or(avail_rows)
+                .clamp(1, avail_rows),
+        )
     };
     (1, 2, c, r)
 }
@@ -608,7 +613,11 @@ mod tests {
         assert!(s.starts_with("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c="));
         assert!(s.ends_with("\x1b[?2026l"));
         assert_eq!(v.stats.sent, 1);
-        assert!(v.stats.png_bytes > 0 && v.stats.png_bytes < 40_000, "{}", v.stats.png_bytes);
+        assert!(
+            v.stats.png_bytes > 0 && v.stats.png_bytes < 40_000,
+            "{}",
+            v.stats.png_bytes
+        );
         // The same picture again: skipped.
         assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
         assert_eq!(v.stats.skipped, 1);
@@ -620,14 +629,21 @@ mod tests {
         let turned = v.paint(Some(&cockpit), Some(&map), 160, 50, t0);
         assert!(!turned.is_empty());
         assert_eq!(v.stats.sent, 3);
-        assert_eq!(v.fps(t0 + Duration::from_millis(200)), 3, "three frames inside a second");
+        assert_eq!(
+            v.fps(t0 + Duration::from_millis(200)),
+            3,
+            "three frames inside a second"
+        );
         assert_eq!(v.fps(t0 + Duration::from_secs(2)), 0);
         // Without a map the view still paints (open ground).
         let mut bare = supported(t0);
         bare.toggle(t0);
         assert!(!bare.paint(Some(&cockpit), None, 120, 40, t0).is_empty());
         let (top, bottom) = bare.hud(Some(&cockpit), t0);
-        assert!(top.contains("camera 045°") && top.contains("kitty graphics OK"), "{top}");
+        assert!(
+            top.contains("camera 045°") && top.contains("kitty graphics OK"),
+            "{top}"
+        );
         assert!(bottom.contains("toggle a turn"));
     }
 
@@ -658,13 +674,17 @@ mod tests {
         assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
         v.key(Key::Char('r'));
         assert_eq!(v.size(), (320, 220));
-        let small = String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
+        let small =
+            String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
         assert!(small.contains("c=110,r=38"), "{}", &small[..80]);
         assert!(v.stats.png_bytes > 0);
         v.key(Key::Char('u'));
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
-        assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty(), "re-sent after the switch");
+        assert!(
+            !v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty(),
+            "re-sent after the switch"
+        );
         let (top, bottom) = v.hud(Some(&cockpit), t0);
         assert!(top.contains("320x220 uncapped"), "{top}");
         assert!(bottom.contains("640x480/320x220") && bottom.contains("uncapped"));

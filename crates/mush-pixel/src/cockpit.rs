@@ -115,7 +115,11 @@ pub fn draw_instruments(
         .into_iter()
         .flatten()
         .map(|w| WeaponRow {
-            name: w.get("id").and_then(Value::as_str).unwrap_or("?").to_string(),
+            name: w
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
             ready: w.get("ready").and_then(Value::as_bool) == Some(true),
             ready_in_ms: num(w.get("ready_in_ms")),
             rounds: num(w.get("rounds")),
@@ -132,7 +136,11 @@ pub fn draw_instruments(
         .into_iter()
         .flatten()
         .map(|sec| Section {
-            id: sec.get("id").and_then(Value::as_str).unwrap_or("?").to_string(),
+            id: sec
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
             condition: sec
                 .get("condition")
                 .and_then(Value::as_str)
@@ -146,7 +154,11 @@ pub fn draw_instruments(
                 .into_iter()
                 .flatten()
                 .map(|f| Facet {
-                    id: f.get("id").and_then(Value::as_str).unwrap_or("?").to_string(),
+                    id: f
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
                     armor: num(f.get("armor")),
                     armor_max: num(f.get("armor_max")),
                 })
@@ -198,11 +210,29 @@ mod tests {
                 arena.set(x, y, Ground::Grass);
             }
         }
-        let cam = Camera { x_cm: 6_500, y_cm: 4_500, heading_mdeg: 45_000 };
+        let cam = Camera {
+            x_cm: 6_500,
+            y_cm: 4_500,
+            heading_mdeg: 45_000,
+        };
         let sprites = contacts_as_sprites(&cockpit, &cam);
         assert_eq!(sprites.len(), 4);
-        assert_eq!(sprites.iter().filter(|s| s.kind == SpriteKind::Hostile).count(), 1, "BA alone is classified");
-        assert_eq!(sprites.iter().filter(|s| s.kind == SpriteKind::Unknown).count(), 2, "X3 and X4");
+        assert_eq!(
+            sprites
+                .iter()
+                .filter(|s| s.kind == SpriteKind::Hostile)
+                .count(),
+            1,
+            "BA alone is classified"
+        );
+        assert_eq!(
+            sprites
+                .iter()
+                .filter(|s| s.kind == SpriteKind::Unknown)
+                .count(),
+            2,
+            "X3 and X4"
+        );
         let mut frame = Frame::new(640, 480);
         render(&mut frame, &arena, &cam, &sprites);
         draw_instruments(&mut frame, &arena, &cockpit, None, &cam);

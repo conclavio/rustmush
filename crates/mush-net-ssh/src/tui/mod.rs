@@ -419,7 +419,10 @@ mod tests {
         // the first frame-clock tick, with the text frame refreshed under it.
         let hud = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(hud.contains("PIXEL"), "the HUD: {hud:?}");
-        assert!(!hud.contains("\x1b_Ga=T"), "no picture on a repaint: {hud:?}");
+        assert!(
+            !hud.contains("\x1b_Ga=T"),
+            "no picture on a repaint: {hud:?}"
+        );
         sess.pixel_tick();
         let bytes = sess.pixel_frame();
         let text = String::from_utf8_lossy(&bytes);
@@ -435,7 +438,10 @@ mod tests {
         let again = sess.pixel_frame();
         assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
         let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
-        assert!(!repaint.contains("\x1b_Ga=T"), "an event repaint re-sends no picture");
+        assert!(
+            !repaint.contains("\x1b_Ga=T"),
+            "an event repaint re-sends no picture"
+        );
         // A turn, a tick with time on the clock, a new picture.
         sess.feed_input(b"\x1b[C");
         std::thread::sleep(std::time::Duration::from_millis(80));
@@ -451,7 +457,10 @@ mod tests {
         sess.feed_input(b"\x1b");
         assert!(!sess.pixel_active());
         let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
-        assert!(closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"), "{closed:?}");
+        assert!(
+            closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"),
+            "{closed:?}"
+        );
         assert!(!closed.contains("\x1b_Ga=T"));
         assert!(sess.pixel_close_bytes().is_empty());
         // A terminal that answers DA1 first never opens the view.

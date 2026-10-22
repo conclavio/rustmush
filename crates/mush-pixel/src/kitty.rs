@@ -133,7 +133,9 @@ mod tests {
     fn a_frame_is_chunked_under_one_id_inside_synchronized_output() {
         let png = vec![7u8; 9000]; // base64 = 12000 chars: three chunks
         let s = String::from_utf8_lossy(&frame_bytes(&png, 1, 1, 2, 100, 40)).into_owned();
-        assert!(s.starts_with("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=100,r=40,m=1;"));
+        assert!(s.starts_with(
+            "\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=100,r=40,m=1;"
+        ));
         assert!(s.ends_with("\x1b\\\x1b[?2026l"));
         assert_eq!(s.matches("\x1b_G").count(), 3);
         assert_eq!(s.matches("m=1;").count(), 2);

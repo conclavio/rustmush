@@ -58,7 +58,10 @@ fn main() {
             Some((g, Ground::from_legend_name(name)))
         })
         .collect();
-    let rows = expand_rows(map_json["rows"].as_array().map_or(&[][..], Vec::as_slice), width);
+    let rows = expand_rows(
+        map_json["rows"].as_array().map_or(&[][..], Vec::as_slice),
+        width,
+    );
     let map = Map::from_glyph_rows(
         &rows,
         &|g| {

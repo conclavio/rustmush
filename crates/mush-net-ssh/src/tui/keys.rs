@@ -77,7 +77,10 @@ enum EscState {
     Ss3,
     /// Inside `ESC _` (APC), accumulating the payload until `ESC \` (ST).
     /// `esc` is true after the `ESC` of a possible terminator.
-    Apc { payload: String, esc: bool },
+    Apc {
+        payload: String,
+        esc: bool,
+    },
 }
 
 /// The stateful byte decoder; one per TUI session.

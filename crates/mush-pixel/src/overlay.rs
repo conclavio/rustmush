@@ -309,11 +309,12 @@ pub fn draw_minimap(
     for row in 0..view {
         for col in 0..view {
             let (mx, my) = (left + col, south + row);
-            let ground = if mx < 0 || my < 0 || mx >= map.width() as i64 || my >= map.height() as i64 {
-                None
-            } else {
-                Some(map.get(mx, my))
-            };
+            let ground =
+                if mx < 0 || my < 0 || mx >= map.width() as i64 || my >= map.height() as i64 {
+                    None
+                } else {
+                    Some(map.get(mx, my))
+                };
             let px = ground.map_or(PANEL, ground_rgb);
             // North up: row 0 is the south edge, drawn at the bottom.
             let sy = y0 + (view - 1 - row) * px_cell;
@@ -323,26 +324,50 @@ pub fn draw_minimap(
     let to_px = |cell: (i64, i64)| -> Option<(i64, i64)> {
         let (dx, dy) = (cell.0 - left, cell.1 - south);
         if (0..view).contains(&dx) && (0..view).contains(&dy) {
-            Some((x0 + dx * px_cell + px_cell / 2, y0 + (view - 1 - dy) * px_cell + px_cell / 2))
+            Some((
+                x0 + dx * px_cell + px_cell / 2,
+                y0 + (view - 1 - dy) * px_cell + px_cell / 2,
+            ))
         } else {
             None
         }
     };
     for spot in spots {
         if let Some((px, py)) = to_px(spot.cell) {
-            text(frame, px - 2 * s, py - 3 * s, &spot.letter.to_string(), TEXT, s as usize);
+            text(
+                frame,
+                px - 2 * s,
+                py - 3 * s,
+                &spot.letter.to_string(),
+                TEXT,
+                s as usize,
+            );
         }
     }
     for mark in marks {
         if let Some((px, py)) = to_px(mark.cell) {
-            fill_rect(frame, px - s, py - s, 2 * s + 1, 2 * s + 1, kind_rgb(mark.kind));
+            fill_rect(
+                frame,
+                px - s,
+                py - s,
+                2 * s + 1,
+                2 * s + 1,
+                kind_rgb(mark.kind),
+            );
         }
     }
     if let Some((px, py)) = to_px(you) {
         let h = (heading_mdeg % 360_000) as f32 / 1000.0;
         let (dx, dy) = h.to_radians().sin_cos();
         let len = 6.0 * s as f32;
-        line(frame, px, py, px + (dx * len) as i64, py - (dy * len) as i64, YOU);
+        line(
+            frame,
+            px,
+            py,
+            px + (dx * len) as i64,
+            py - (dy * len) as i64,
+            YOU,
+        );
         fill_rect(frame, px - s, py - s, 2 * s + 1, 2 * s + 1, YOU);
     }
 }
@@ -379,7 +404,14 @@ pub fn draw_heat(frame: &mut Frame, heat: &Heat) {
         format!("HEAT {}/{}", heat.heat, heat.max)
     };
     let tw = label.len() as i64 * 6 * s;
-    text(frame, x0 + (w - tw) / 2, y0 - 8 * s, &label, if heat.overheated { BAD } else { TEXT }, s as usize);
+    text(
+        frame,
+        x0 + (w - tw) / 2,
+        y0 - 8 * s,
+        &label,
+        if heat.overheated { BAD } else { TEXT },
+        s as usize,
+    );
 }
 
 /// The weapons, top right: a row each.
@@ -398,7 +430,12 @@ pub fn draw_weapons(frame: &mut Frame, rows: &[WeaponRow]) {
     panel(frame, x0 - 1, y0 - 1, w + 2, h + 2);
     for (i, row) in rows.iter().enumerate() {
         let y = y0 + s + i as i64 * row_h;
-        let name: String = row.name.chars().take(8).collect::<String>().replace('_', " ");
+        let name: String = row
+            .name
+            .chars()
+            .take(8)
+            .collect::<String>()
+            .replace('_', " ");
         text(frame, x0 + s, y, &name, TEXT, s as usize);
         // The recycle bar: 30 px wide at 1x.
         let bx = x0 + 52 * s;
@@ -412,7 +449,14 @@ pub fn draw_weapons(frame: &mut Frame, rows: &[WeaponRow]) {
         }
         let rounds = format!("{}/{}", row.rounds, row.rounds_max);
         let rounds_colour = ramp(row.rounds, row.rounds_max);
-        text(frame, bx + bw + 4 * s, y, &rounds, rounds_colour, s as usize);
+        text(
+            frame,
+            bx + bw + 4 * s,
+            y,
+            &rounds,
+            rounds_colour,
+            s as usize,
+        );
         if let Some(p) = row.percent {
             let pct = format!("{p}%");
             let tw = pct.len() as i64 * 6 * s;
@@ -454,16 +498,44 @@ pub fn draw_doll(frame: &mut Frame, sections: &[Section]) {
     fill_rect(frame, hx - t, hy, t, hh, facet(hull, "left"));
     fill_rect(frame, hx + hw, hy, t, hh, facet(hull, "right"));
     // Tracks: bars outside the side plates, coloured by the section.
-    fill_rect(frame, hx - t - 2 * s - 2 * s, hy - t, 2 * s, hh + 2 * t, body(find("left_track")));
-    fill_rect(frame, hx + hw + t + 2 * s, hy - t, 2 * s, hh + 2 * t, body(find("right_track")));
+    fill_rect(
+        frame,
+        hx - t - 2 * s - 2 * s,
+        hy - t,
+        2 * s,
+        hh + 2 * t,
+        body(find("left_track")),
+    );
+    fill_rect(
+        frame,
+        hx + hw + t + 2 * s,
+        hy - t,
+        2 * s,
+        hh + 2 * t,
+        body(find("right_track")),
+    );
     // Engine: a block at the rear inside the hull.
-    fill_rect(frame, hx + hw / 4, hy + hh - 10 * s, hw / 2, 7 * s, body(find("engine")));
+    fill_rect(
+        frame,
+        hx + hw / 4,
+        hy + hh - 10 * s,
+        hw / 2,
+        7 * s,
+        body(find("engine")),
+    );
     // Turret: a square forward of centre, its top facet, with a barrel.
     let turret = find("turret");
     let (tx, ty, tw) = (hx + hw / 2 - 7 * s, hy + 8 * s, 14 * s);
     fill_rect(frame, tx, ty, tw, tw, facet(turret, "top"));
     outline_rect(frame, tx, ty, tw, tw, body(turret));
-    fill_rect(frame, tx + tw / 2 - s, hy - t - 4 * s, 2 * s, ty - hy + t + 4 * s, body(turret));
+    fill_rect(
+        frame,
+        tx + tw / 2 - s,
+        hy - t - 4 * s,
+        2 * s,
+        ty - hy + t + 4 * s,
+        body(turret),
+    );
     // Section internals as a border on the hull outline.
     outline_rect(frame, hx - t, hy - t, hw + 2 * t, hh + 2 * t, body(hull));
 }
@@ -497,7 +569,15 @@ mod tests {
         let mut map = Map::new(96, 64, 1000);
         for y in 0..64 {
             for x in 0..96 {
-                map.set(x, y, if (20..30).contains(&x) && (2..6).contains(&y) { Ground::Water } else { Ground::Grass });
+                map.set(
+                    x,
+                    y,
+                    if (20..30).contains(&x) && (2..6).contains(&y) {
+                        Ground::Water
+                    } else {
+                        Ground::Grass
+                    },
+                );
             }
         }
         for x in 40..50 {
@@ -508,45 +588,131 @@ mod tests {
 
     fn sections() -> Vec<Section> {
         vec![
-            Section { id: "engine".into(), condition: "intact".into(), internals: 40, internals_max: 40, facets: vec![] },
+            Section {
+                id: "engine".into(),
+                condition: "intact".into(),
+                internals: 40,
+                internals_max: 40,
+                facets: vec![],
+            },
             Section {
                 id: "hull".into(),
                 condition: "intact".into(),
                 internals: 60,
                 internals_max: 60,
                 facets: vec![
-                    Facet { id: "front".into(), armor: 55, armor_max: 80 },
-                    Facet { id: "rear".into(), armor: 30, armor_max: 30 },
+                    Facet {
+                        id: "front".into(),
+                        armor: 55,
+                        armor_max: 80,
+                    },
+                    Facet {
+                        id: "rear".into(),
+                        armor: 30,
+                        armor_max: 30,
+                    },
                 ],
             },
-            Section { id: "left_track".into(), condition: "intact".into(), internals: 6, internals_max: 24, facets: vec![Facet { id: "left".into(), armor: 4, armor_max: 24 }] },
-            Section { id: "right_track".into(), condition: "destroyed".into(), internals: 0, internals_max: 24, facets: vec![] },
-            Section { id: "turret".into(), condition: "intact".into(), internals: 30, internals_max: 30, facets: vec![Facet { id: "top".into(), armor: 18, armor_max: 20 }] },
+            Section {
+                id: "left_track".into(),
+                condition: "intact".into(),
+                internals: 6,
+                internals_max: 24,
+                facets: vec![Facet {
+                    id: "left".into(),
+                    armor: 4,
+                    armor_max: 24,
+                }],
+            },
+            Section {
+                id: "right_track".into(),
+                condition: "destroyed".into(),
+                internals: 0,
+                internals_max: 24,
+                facets: vec![],
+            },
+            Section {
+                id: "turret".into(),
+                condition: "intact".into(),
+                internals: 30,
+                internals_max: 30,
+                facets: vec![Facet {
+                    id: "top".into(),
+                    armor: 18,
+                    armor_max: 20,
+                }],
+            },
         ]
     }
 
     fn draw_all(frame: &mut Frame) {
         let map = yard();
-        let cam = Camera { x_cm: 6_500, y_cm: 4_500, heading_mdeg: 45_000 };
+        let cam = Camera {
+            x_cm: 6_500,
+            y_cm: 4_500,
+            heading_mdeg: 45_000,
+        };
         render(frame, &map, &cam, &[]);
         draw_minimap(
             frame,
             &map,
             (6, 4),
             45_000,
-            &[MapMark { cell: (36, 14), kind: SpriteKind::Hostile }, MapMark { cell: (2, 9), kind: SpriteKind::Friendly }],
-            &[Spot { cell: (25, 3), letter: 'A' }],
+            &[
+                MapMark {
+                    cell: (36, 14),
+                    kind: SpriteKind::Hostile,
+                },
+                MapMark {
+                    cell: (2, 9),
+                    kind: SpriteKind::Friendly,
+                },
+            ],
+            &[Spot {
+                cell: (25, 3),
+                letter: 'A',
+            }],
         );
-        draw_heat(frame, &Heat { heat: 40, max: 100, overheated: false });
+        draw_heat(
+            frame,
+            &Heat {
+                heat: 40,
+                max: 100,
+                overheated: false,
+            },
+        );
         draw_weapons(
             frame,
             &[
-                WeaponRow { name: "cannon".into(), ready: true, ready_in_ms: 0, rounds: 14, rounds_max: 20, percent: Some(62) },
-                WeaponRow { name: "machine_gun".into(), ready: false, ready_in_ms: 900, rounds: 380, rounds_max: 500, percent: None },
+                WeaponRow {
+                    name: "cannon".into(),
+                    ready: true,
+                    ready_in_ms: 0,
+                    rounds: 14,
+                    rounds_max: 20,
+                    percent: Some(62),
+                },
+                WeaponRow {
+                    name: "machine_gun".into(),
+                    ready: false,
+                    ready_in_ms: 900,
+                    rounds: 380,
+                    rounds_max: 500,
+                    percent: None,
+                },
             ],
         );
         draw_doll(frame, &sections());
-        draw_status(frame, &Status { callsign: "RA".into(), speed_kph: 43, heading_deg: 45, lock: Some(("BA".into(), 440)), power: "online".into() });
+        draw_status(
+            frame,
+            &Status {
+                callsign: "RA".into(),
+                speed_kph: 43,
+                heading_deg: 45,
+                lock: Some(("BA".into(), 440)),
+                power: "online".into(),
+            },
+        );
     }
 
     #[test]
@@ -554,11 +720,16 @@ mod tests {
         for (w, h) in [(320usize, 220usize), (640, 480)] {
             let mut frame = Frame::new(w, h);
             draw_all(&mut frame);
-            assert!(frame.count_colours(256) <= 256, "{w}x{h} overflowed the palette");
+            assert!(
+                frame.count_colours(256) <= 256,
+                "{w}x{h} overflowed the palette"
+            );
             // The minimap's panel sits bottom-left and shows water (blue-ish)
             // somewhere in its window; the pilot's white dot is drawn.
             let s = scale_for(&frame);
-            let white = (0..w).flat_map(|x| (0..h).map(move |y| (x, y))).any(|(x, y)| frame.get(x, y) == YOU);
+            let white = (0..w)
+                .flat_map(|x| (0..h).map(move |y| (x, y)))
+                .any(|(x, y)| frame.get(x, y) == YOU);
             assert!(white, "the pilot's dot at scale {s}");
         }
     }
@@ -582,8 +753,17 @@ mod tests {
         assert_eq!(ramp(0, 80), GONE);
         let mut frame = Frame::new(640, 480);
         frame.clear([0, 0, 0]);
-        draw_heat(&mut frame, &Heat { heat: 95, max: 100, overheated: true });
-        let red = (0..640usize).flat_map(|x| (0..480usize).map(move |y| (x, y))).any(|(x, y)| frame.get(x, y) == BAD);
+        draw_heat(
+            &mut frame,
+            &Heat {
+                heat: 95,
+                max: 100,
+                overheated: true,
+            },
+        );
+        let red = (0..640usize)
+            .flat_map(|x| (0..480usize).map(move |y| (x, y)))
+            .any(|(x, y)| frame.get(x, y) == BAD);
         assert!(red);
     }
 }
