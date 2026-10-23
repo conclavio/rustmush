@@ -26,12 +26,11 @@ use super::narrative_emit;
 /// Lock-type names valid as `/switches` on `@lock` and `@unlock`.
 ///
 /// Deliberately limited to the lock types some command actually
-/// **enforces** in M0 — basic (exits/pickup), drop, give, page, speech,
-/// teleport, zone. `enter`/`use`/`mail` exist in [`LockType`] but are not
-/// offered until their commands land (M3+): a lock you can set but nothing
-/// checks would be a silent no-op security control.
+/// enforces — including mail's arrival-time recipient policy. `enter`/`use`
+/// remain unavailable until their consumers land: a lock you can set but
+/// nothing checks would be a silent no-op security control.
 const LOCK_SWITCHES: &[&str] = &[
-    "basic", "drop", "give", "page", "speech", "teleport", "zone",
+    "basic", "drop", "give", "page", "speech", "teleport", "zone", "mail",
 ];
 
 /// Convert a `&str` switch table into the owned form [`CommandSpec`] wants.
@@ -965,7 +964,7 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             shape: ArgShape::EqPair,
             help: "@lock[/<type>] <target>=<key>  --  Lock a target you control. \
                    Types: basic (default; exits/pickup), drop, give, page, speech, \
-                   teleport, zone. (enter/use/mail arrive with their commands.) \
+                   teleport, zone, mail. (enter/use arrive with their commands.) \
                    Keys: me, *player, #123, +#123 (carry), $#123 (owned-by), \
                    flag^WIZARD, attr:glob, @#123/type (indirect), combined with \
                    ! & | and parentheses. A key may nest at most 48 operators \

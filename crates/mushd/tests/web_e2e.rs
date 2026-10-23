@@ -616,7 +616,15 @@ async fn ssh_and_web_user_in_the_same_room() {
     for actor in ["Nick", "me"] {
         let mark = god.mark();
         god.send_line(&format!("@teleport {actor}=#{room}")).await;
-        god.expect_after(mark, "Teleported.").await;
+        god.expect_after(
+            mark,
+            if actor == "me" {
+                "Web Post Office"
+            } else {
+                "Teleported."
+            },
+        )
+        .await;
     }
     god.send_line("@mail/quick Nick=Web test/A body sent over ssh")
         .await;

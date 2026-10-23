@@ -16,6 +16,7 @@ mkdirSync(output, { recursive: true });
 const resuming=process.env.R6A_RESUME==='1';
 const evidence = resuming ? JSON.parse(readFileSync(join(output,'live.json'),'utf8'))
   : { target, at: new Date().toISOString(), checks: [], milestones: [] };
+evidence.candidate=readFileSync('/opt/rustmush/dev1/build/.source-commit','utf8').trim();
 const done = name => evidence.milestones.some(m=>m.test===name);
 if(resuming) { delete evidence.passed; delete evidence.error; }
 const sockets = [];
@@ -162,14 +163,21 @@ async function hidden(client,id,subject) {
   assert(!box(client,id),'no early mailbox entry');
   const data=await panel(client);
   assert(!data.entries.some(e=>e.id===id),'no early hydration');
-  assert(!JSON.stringify(data).includes(subject),'no early subject/thread');
+  // Replies can share a subject with already-delivered letters. Their stable
+  // identity must remain absent; a prior letter is still allowed to be read.
+  const existingSubject=data.entries.some(e=>e.subject===subject);
+  if(!existingSubject) assert(!JSON.stringify(data).includes(subject),'no early subject/thread');
   const listing=await command(client,'@mail');
-  assert(!listing.includes(subject),'no early line list');
+  if(!existingSubject) assert(!listing.includes(subject),'no early line list');
   const read=await command(client,'@mail '+(data.entries.length+1));
   assert(!read.includes(subject),'no early line read');
   assert(!client.frames.some(f=>f.t==='mail_notice'&&f.d.id===id),'no early notice');
 }
 async function connectAll() {
+  // The gateway preserves sockets across a child crash. Close those held
+  // sessions before reconnecting, otherwise the harness hits its own IP cap.
+  for(const ws of sockets) if(ws.readyState===WebSocket.OPEN) ws.close();
+  await sleep(500);
   staff=await connect(staffLogin);
   for(const [name,login] of Object.entries(logins)) clients[name]=await connect(login);
 }
@@ -221,6 +229,8 @@ try {
     }
     await command(staff,'@tacsim/time rate=24');
     if(!done('durable-boundaries')) {
+      await until(()=>!shell('redis-cli',['-p',redisPort,'--scan','--pattern','mod:mail:dispatch:*']),'previous attempt drained');
+      const unreadBefore=(await panel(clients.bob)).folders.find(f=>f.name==='inbox').unread;
       const subject='R6a private '+randomBytes(3).toString('hex');
       const id=await queued(clients.alice,[clients.bob],subject);
       await crash('source-acceptance',()=>{assert(pending(id));assert(!dispatch(id,clients.bob),'kill before transport accepts');});
@@ -251,6 +261,7 @@ try {
       assert.deepEqual(box(clients.bob,id),entry,'mailbox applies receipt once');
       const data=await panel(clients.bob);
       assert.equal(data.entries.filter(e=>e.id===id).length,1);
+      assert.equal(data.folders.find(f=>f.name==='inbox').unread,unreadBefore+1,'one unread increment across all crashes');
       await confirmed(id,clients.bob);
       milestone('durable-boundaries',{id,frozen,receipt,entry,unread:data.folders.find(f=>f.name==='inbox').unread});
     }
@@ -299,16 +310,26 @@ try {
       await command(staff,`@teleport ${clients.bob.object}=#${old.stickney}`);
     }
 
-    if(!done('changed-lock')) {
+    if(!done('changed-lock') && process.env.R6A_DEFER_LOCK!=='1') {
       const id=await queued(clients.alice,[clients.bob],'R6a lock changes');
-      await command(clients.bob,'@lock/mail me=#FALSE');
+      await command(clients.bob,'@lock/mail me=#FALSE','Locked.');
       const outbound=await until(()=>dispatch(id,clients.bob)?.transit?.flight&&dispatch(id,clients.bob),'lock test flight');
       assert(!mail(id).delivery[objectId(clients.bob)]);
       const returning=await until(()=>dispatch(id,clients.bob,true)?.transit?.flight&&dispatch(id,clients.bob,true),'failure return flight');
       assert(!box(clients.bob,id)); assert(!mail(id).delivery[objectId(clients.bob)],'failure not known before return');
       await confirmed(id,clients.bob,'refused');
-      await command(clients.bob,'@lock/mail me=#TRUE');
+      await command(clients.bob,'@unlock/mail me','Unlocked.');
       milestone('changed-lock',{id,outbound:outbound.transit.flight,returning:returning.transit.flight});
+    }
+    if(!done('changed-ignore')) {
+      const id=await queued(clients.alice,[clients.bob],'R6a ignore changes');
+      await command(clients.bob,'@ignore '+clients.alice.object,'now ignoring');
+      await until(()=>dispatch(id,clients.bob)?.transit?.flight,'ignore test flight');
+      assert(!mail(id).delivery[objectId(clients.bob)]);
+      await confirmed(id,clients.bob,'refused');
+      assert(!box(clients.bob,id));
+      await command(clients.bob,'@ignore/clear '+clients.alice.object,'no longer ignoring');
+      milestone('changed-ignore',{id});
     }
     async function restartGateway() {
       shell('systemctl',['start','dev1mush-gateway']);
@@ -388,11 +409,16 @@ try {
       const pilot=clients.alice;
       const portMap=()=>redis('mod:tacsim:tacsim:port:tacsim.lane.ceres_phobos/ceres_port');
       const before=portMap();
+      let row=evidence.charter, ticket;
+      if(!done('moving-departure')) {
       await command(staff,`@teleport ${pilot.object}=#${roomNamed('Registry & Co-op Desk')}`);
+      if(!row) {
       const name='Mail Dray '+randomBytes(3).toString('hex');
       await command(pilot,'+coop/enrol '+name,'now the '+name);
-      const row=before.hulls.find(r=>JSON.stringify(redis('obj:'+r.hull)).includes(name));
+      row=before.hulls.find(r=>JSON.stringify(redis('obj:'+r.hull)).includes(name));
       assert(row,'real chartered hull');
+      evidence.charter=row; save('live.json',evidence);
+      }
       for(const move of ['out','concourse','exchange']) await command(pilot,move);
       function listing(good,vendor) {
         const keys=shell('redis-cli',['-p',redisPort,'--scan','--pattern','mod:market:market:listing:*']).split('\n').filter(Boolean);
@@ -424,8 +450,12 @@ try {
       await command(pilot,'+ship/board','cycle the lock');
       await command(pilot,'+ship/undock stickney','Clearance filed');
       const ticketKey='mod:tacsim:action-state/v1/tacsim.ticket/'+row.hull+':1';
-      const ticket=(await until(()=>redis(ticketKey),'burned ticket',90)).value;
+      ticket=(await until(()=>redis(ticketKey),'burned ticket',90)).value;
       await until(()=>redis('mod:sim:cjourney:'+row.hull)?.state?.state==='Cruising','real departure',90);
+      milestone('moving-departure',{hull:row.hull,ticket});
+      } else {
+        ticket=evidence.milestones.find(m=>m.test==='moving-departure').ticket;
+      }
       const first=ticket.plan.legs[0], checkpoint=first.t0+Math.floor(first.secs/4);
       if(checkpoint-nowIc()>10000) {
         await command(staff,'@tacsim/time rate=3600');
@@ -456,7 +486,10 @@ try {
 
     await command(staff,'@relay/check','Bindings OK');
     await command(staff,'@tacsim/time rate=24');
-    evidence.passed=true;
+    evidence.pending=['upgrade','durable-boundaries','send-paths','large-letter-offline',
+      'changed-lock','changed-ignore','full-mailbox','destroyed-recipient',
+      'saturation-expiry','moving-hull'].filter(name=>!done(name));
+    evidence.passed=evidence.pending.length===0;
   }
 } catch(error) { evidence.passed=false; evidence.error=error.stack; process.exitCode=1; }
 finally {
@@ -465,6 +498,9 @@ finally {
     if(restoreFault.value===null) shell('redis-cli',['-p',redisPort,'DEL',restoreFault.key]);
     else shell('redis-cli',['-p',redisPort,'JSON.SET',restoreFault.key,'$',JSON.stringify(restoreFault.value)]);
     shell('systemctl',['start','dev1mush-gateway']);
+  }
+  if(staff?.ws.readyState===WebSocket.OPEN) {
+    try { await command(staff,'@tacsim/time rate=24'); } catch { /* reconnect on resume */ }
   }
   save(prepareOnly?'prepare.json':'live.json',evidence);
   for(const ws of sockets) ws.close();

@@ -873,15 +873,10 @@ async fn r6a_refusals_wait_for_arrival_and_a_physical_return() {
         );
         match expected {
             Outcome::Refused => {
-                rig.tw
-                    .world_mut()
-                    .get_mut(bob)
-                    .unwrap()
-                    .locks
-                    .insert(mush_core::LockType::Mail, mush_core::LockExpr::Const(false));
+                assert!(rig.run(bob, "@lock/mail me=#FALSE").contains("Locked."));
             }
             Outcome::Full => {
-                rig.tw.world_mut().get_mut(bob).unwrap().locks.clear();
+                assert!(rig.run(bob, "@unlock/mail me").contains("Unlocked."));
                 rig.tw
                     .world_mut()
                     .module_state_mut::<mush_mail::MailState>()

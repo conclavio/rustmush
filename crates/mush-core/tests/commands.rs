@@ -1695,17 +1695,37 @@ fn only_enforced_lock_types_are_offered() {
     let mut g = Game::new();
     // Lock types nothing checks yet must not be settable (a "Locked."
     // placebo would be a silent no-op security control).
-    for t in ["enter", "use", "mail"] {
+    for t in ["enter", "use"] {
         let out = g.run(GOD, &format!("@lock/{t} me=#1"));
         assert_error_contains(&out, GOD, &format!("Unknown switch \"/{t}\""));
     }
     // Every offered type really locks.
     for t in [
-        "basic", "drop", "give", "page", "speech", "teleport", "zone",
+        "basic", "drop", "give", "page", "speech", "teleport", "zone", "mail",
     ] {
         let out = g.run(GOD, &format!("@lock/{t} me=#1"));
         assert_error_contains(&out, GOD, "Locked.");
     }
+}
+
+#[test]
+fn players_can_set_and_remove_their_mail_arrival_lock() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let out = g.run(ann, "@lock/mail me=#FALSE");
+    assert_error_contains(&out, ann, "Locked.");
+    assert_eq!(
+        g.w.get(ann).unwrap().locks.get(&mush_core::LockType::Mail),
+        Some(&mush_core::LockExpr::Const(false))
+    );
+    let out = g.run(ann, "@unlock/mail me");
+    assert_error_contains(&out, ann, "Unlocked.");
+    assert!(
+        !g.w.get(ann)
+            .unwrap()
+            .locks
+            .contains_key(&mush_core::LockType::Mail)
+    );
 }
 
 // ---------------------------------------------------------------------

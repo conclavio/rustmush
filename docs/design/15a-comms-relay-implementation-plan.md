@@ -485,6 +485,6 @@ continues.
 The initial action was R1 only: registry, minimal Luna–Ceres seed, diagnostics,
 real Redis/client testing and an owner review. The owner subsequently authorized
 the R1 push and R2 implementation, then Gate 3 / R5 after the corrective dev1
-rerun. **Current stop: after R5, before R6a.** R5's deployed integration gate passed
-and its evidence is recorded in 15b. The owner is monitoring GitHub CI; the next
-implementation milestone needs a new continuation.
+rerun. The next authorization covers R6a and automatic continuation to R6b after
+R6a's live gate and push. **Next owner stop: after R6b, before R3.** The owner is
+monitoring GitHub CI; every live milestone gate still must pass before proceeding.

@@ -278,7 +278,15 @@ async fn m3_cross_module_journey() {
     for actor in ["Alice", "Bob", "me"] {
         let mark = god.mark();
         god.send_line(&format!("@teleport {actor}=#{room}")).await;
-        god.expect_after(mark, "Teleported.").await;
+        god.expect_after(
+            mark,
+            if actor == "me" {
+                "Local Post Office"
+            } else {
+                "Teleported."
+            },
+        )
+        .await;
     }
     // Compose over the real SSH line editor: prompt, multi-line body,
     // preview, "--" sends.

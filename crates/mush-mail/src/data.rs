@@ -95,7 +95,8 @@ pub struct MailMsg {
     pub id: u64,
     /// The sender.
     pub from: ObjId,
-    /// Every recipient it was actually delivered to.
+    /// Addressed recipients. For new IC mail, arrival and returned knowledge are
+    /// separate; this list does not imply that a destination has received it.
     pub to: Vec<ObjId>,
     /// Subject line.
     pub subject: String,
@@ -732,5 +733,81 @@ mod tests {
         assert!(MailStatus::Unread.is_unread());
         assert!(MailStatus::Urgent.is_unread());
         assert!(!MailStatus::Read.is_unread());
+    }
+
+    #[test]
+    fn rebuild_refuses_broken_handoffs_and_early_mailboxes() {
+        use crate::transit::{Copy, Dispatch};
+        let msg = MailMsg {
+            id: 1,
+            from: ObjId(2),
+            to: vec![ObjId(3)],
+            subject: "hi".into(),
+            body: "there".into(),
+            reply_to: None,
+            sent_at: 100,
+            delivery: Some(BTreeMap::new()),
+        };
+        let dispatch = Dispatch {
+            version: 1,
+            id: 1,
+            from: msg.from,
+            origin: Some(ObjId(4)),
+            at: mush_core::World::new_minimal().world_ic_now(),
+            bytes: 7,
+            urgent: false,
+            copies: vec![Copy {
+                to: ObjId(3),
+                fallback: Some(ObjId(5)),
+                result: None,
+                return_origin: None,
+                return_at: None,
+                complete: false,
+            }],
+        };
+        let valid = ModuleBootData {
+            kv: vec![
+                (msg_key(1), serde_json::to_value(&msg).unwrap()),
+                (
+                    crate::transit::dispatch_key(1),
+                    serde_json::to_value(&dispatch).unwrap(),
+                ),
+            ],
+            ..Default::default()
+        };
+        assert!(rebuild(&valid).is_ok());
+        for absent in [msg_key(1), crate::transit::dispatch_key(1)] {
+            let mut broken = valid.clone();
+            broken.kv.retain(|(key, _)| key != &absent);
+            assert!(rebuild(&broken).is_err(), "missing {absent}");
+        }
+        let mut early = valid.clone();
+        early.kv.push((
+            box_key(ObjId(3), 1),
+            serde_json::to_value(MailboxEntry {
+                owner: ObjId(3),
+                msg: 1,
+                folder: INBOX.into(),
+                status: MailStatus::Unread,
+                read_at: None,
+            })
+            .unwrap(),
+        ));
+        assert!(rebuild(&early).is_err());
+        let mut invalid = valid;
+        for (key, value) in &mut invalid.kv {
+            if key == &crate::transit::dispatch_key(1) {
+                value["bytes"] = 1.into();
+            }
+        }
+        assert!(rebuild(&invalid).is_err(), "content accounting must match");
+        let mut legacy = msg;
+        legacy.delivery = None;
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("delivery")
+                .is_none()
+        );
     }
 }

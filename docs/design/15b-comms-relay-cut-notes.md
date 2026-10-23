@@ -543,3 +543,25 @@ rows distinguish queued mail from returned delivery knowledge.
 The live gate is still in progress. The pre-upgrade dev1 fixture has delivered an
 actual legacy letter with the previous binary; the candidate must preserve it.
 No claim of completed R6a acceptance or R6b implementation is made here yet.
+
+### Automated validation
+
+The candidate's 227 targeted Rust tests passed: 146 mail/propagation tests, 21
+production relay and passage stories, 12 real SSH/WebSocket client tests, and 48
+kernel/lifecycle, scheduling, panic-budget and CI-inventory contracts. The 21
+production stories also passed on Linux on the VPS. Seven web mail-store tests,
+Svelte checking (zero errors/warnings), formatting and targeted Clippy with
+warnings denied passed. Normal GitHub CI remains separate and owner-monitored.
+
+The two older client fixtures began in unplaced Limbo and assumed instant mail.
+They now create a shared physical room through normal staff commands and exercise
+the real local transport/receipt path. The production stories and live gate cover
+strategic and moving endpoints. Boot corruption checks refuse missing intent or
+content, mismatched byte accounting, and a destination entry predating its receipt.
+
+The first live pass exposed a real command integration defect: core still refused
+the documented `/mail` lock type. R6a enables it on `@lock` and `@unlock`, retains
+the normal ownership checks, and changes the production refusal story to set the
+lock through that public command rather than inserting it into fixture state.
+The core command suite's 71 tests pass, including a normal player's set/remove
+regression. The corrected binary must pass the live gate before this cut closes.
