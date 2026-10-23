@@ -14,6 +14,10 @@
   // (held) — `HEADING` orders, sent as the SSH TUI's view sends them, the one
   // place the cockpit tab sends an order rather than prefilling one — `,` and
   // `.` swing the look (again to stop), `c` centres it, space stops both.
+  // Both are let go the moment their release could no longer be seen: the
+  // frame losing focus, the window losing focus, the page going hidden (doc
+  // 21a `X-02`: a tab switched away with an arrow down kept ordering
+  // `HEADING` every 700 ms, and the look kept swinging).
   //
   // **Drawn here** (doc 21 cut G.3b): where the browser can (WebAssembly and
   // `ImageData`), the picture is drawn in it, by the engine's own renderer
@@ -61,8 +65,13 @@
   /** Why the picture could not be drawn here, once it could not. */
   let localFailed = $state<string | null>(null);
   let local = $state.raw<LocalPicture | null>(null);
-  /** A frame has been drawn here. */
-  let drawnHere = $state(false);
+  /** The canvas the picture was last painted on. A fresh one — the picture
+   * hidden and shown again makes a new element — has nothing on it whatever
+   * the renderer last drew, so the first frame goes onto it whether or not
+   * the picture changed (doc 21a `X-04`). */
+  let painted = $state.raw<HTMLCanvasElement | null>(null);
+  /** A frame has been drawn here, on the canvas that is up. */
+  const drawnHere = $derived(painted !== null && painted === canvas);
   const here = $derived(source === "here" && localFailed === null);
   /** Whether the picture is up: drawn here while wanted and visible, or the
    * server's while asked for. */
@@ -108,12 +117,24 @@
     return () => untrack(() => app.setPicture(false, 0));
   });
 
+  // The page's visibility, and the two ways a key's release can go unseen:
+  // the page hidden (the keys' events stop: the tab switched, the window
+  // minimised) and the window blurred (another window took the keys).
+  // And the view torn down (the screen changed, the seat went) with a key
+  // still held: let go as a blur would — not every browser blurs an element
+  // it removes.
+  $effect(() => () => release());
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
+      if (!visible) release();
     };
     document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", release);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", release);
+    };
   });
 
   // Drawn here: the module loaded once, while wanted.
@@ -134,11 +155,13 @@
   });
 
   // Drawn here: a frame at most every `LOCAL_FRAME_MS` while wanted and
-  // visible, put on the canvas only when it changed.
+  // visible, put on the canvas only when it changed — or when the canvas is
+  // one nothing has been painted on yet.
   $effect(() => {
     const l = local;
     const c = canvas;
     if (!l || !c || !(wanted && visible && here)) return;
+    if (untrack(() => painted) !== c) l.forget();
     let raf = 0;
     let last = -Infinity;
     const tick = (t: number): void => {
@@ -152,7 +175,7 @@
             c.height = FRAME_H;
           }
           c.getContext("2d")?.putImageData(l.image(), 0, 0);
-          drawnHere = true;
+          painted = c;
         }
       } catch (err) {
         cancelAnimationFrame(raf);
@@ -175,6 +198,10 @@
         c.width = bmp.width;
         c.height = bmp.height;
         c.getContext("2d")?.drawImage(bmp, 0, 0);
+        // The canvas now holds the server's frame: whatever the picture
+        // drawn here last painted on it is gone, and its loop paints again
+        // when it next runs here.
+        painted = null;
       }
       bmp.close();
     });
@@ -207,6 +234,13 @@
       turning = 0;
       app.helm(helmLine(heading, 0));
     }
+  }
+
+  /** Let go of everything a key holds: the look's swing, and the held turn
+   * with its stop order (where one was held). */
+  function release(): void {
+    lookTurn = 0;
+    stopTurn();
   }
 
   function onKeyDown(ev: KeyboardEvent): void {
@@ -271,10 +305,7 @@
       aria-label="first-person view; arrows turn the tank, comma and full stop swing the look"
       onkeydown={onKeyDown}
       onkeyup={onKeyUp}
-      onblur={() => {
-        lookTurn = 0;
-        stopTurn();
-      }}
+      onblur={release}
     >
       <canvas bind:this={canvas} aria-hidden="true"></canvas>
       {#if here ? !drawnHere : app.picture.frame === null}

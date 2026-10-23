@@ -24,7 +24,12 @@
 //! - **Sprites**: the units stand on the ground at their own cell's height,
 //!   and a per-pixel depth (the distance each pixel was drawn at) lets a
 //!   ridge hide half a tank — but never all of a contact the sim reports,
-//!   which is then bracketed where it stands (the raycaster's rule).
+//!   which is then bracketed where it stands (the raycaster's rule). Where
+//!   a sprite lands is one function (`project`, the crate's own), the same
+//!   the cockpit's HUD boxes the lock with, so the box lands on the tank it
+//!   marks (doc
+//!   21a `X-03`: the box was placed by the raycaster's flat-ground
+//!   projection, well off a target down a slope).
 //!
 //! The colours are the raycaster's closed set (`Shades`), so the two
 //! producers draw the same ground the same colour.
@@ -439,6 +444,108 @@ fn base(ground: Ground, lit: bool) -> Base {
     }
 }
 
+/// The camera in cell units and the picture's scale: where the eye stands,
+/// the way it looks, the camera plane across it, the eye's height over the
+/// datum, the focal length and the horizon row. The ground march, the
+/// sprites and the HUD's lock box ([`project`]) all read the one `View`, so
+/// a point of the world lands on the same pixel for each of them.
+#[derive(Clone, Copy)]
+struct View {
+    cell: f32,
+    posx: f32,
+    posy: f32,
+    dirx: f32,
+    diry: f32,
+    planex: f32,
+    planey: f32,
+    /// The eye's height over the datum, cells.
+    eye: f32,
+    /// The focal length, pixels ([`focal`]).
+    hf: f32,
+    /// The horizon's row.
+    horizon: f32,
+    /// Half the frame's width, pixels.
+    halfw: f32,
+    /// The inverse of the camera matrix's determinant, for the sprites.
+    invdet: f32,
+}
+
+impl View {
+    /// The view from `cam` over `terrain` into a `w` by `h` frame, the eye at
+    /// `eye_cm` over the datum when given, else 1.5 m (the stock sensor
+    /// height) above the ground under the camera.
+    fn new(terrain: &Terrain, cam: &Camera, eye_cm: Option<i64>, w: usize, h: usize) -> View {
+        let cell = terrain.map.cell_cm() as f32;
+        let posx = cam.x_cm as f32 / cell;
+        let posy = cam.y_cm as f32 / cell;
+        let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
+        let (dirx, diry) = heading.to_radians().det_sin_cos();
+        let (planex, planey) = (diry * PLANE, -dirx * PLANE);
+        let eye = eye_cm.map_or_else(
+            || terrain.height(posx, posy) + EYE_HEIGHT_CM as f32 / cell,
+            |z| z as f32 / cell,
+        );
+        View {
+            cell,
+            posx,
+            posy,
+            dirx,
+            diry,
+            planex,
+            planey,
+            eye,
+            hf: focal(w),
+            horizon: (h / 2) as f32,
+            halfw: w as f32 / 2.0,
+            invdet: 1.0 / (planex * diry - dirx * planey),
+        }
+    }
+
+    /// Where `sprite` stands in the picture: its centre column, the row its
+    /// base stands on (the ground's height at its own point, seen from the
+    /// eye), its distance and its size in pixels; `None` behind the eye.
+    fn place(&self, terrain: &Terrain, sprite: &Sprite) -> Option<SpriteAt> {
+        let (wx, wy) = (
+            sprite.x_cm as f32 / self.cell,
+            sprite.y_cm as f32 / self.cell,
+        );
+        let (relx, rely) = (wx - self.posx, wy - self.posy);
+        let tx = self.invdet * (self.diry * relx - self.dirx * rely);
+        let ty = self.invdet * (-self.planey * relx + self.planex * rely);
+        if ty <= 0.05 {
+            return None;
+        }
+        let ground = terrain.height(wx, wy);
+        let (wcm, hcm) = sprite.size_cm();
+        Some(SpriteAt {
+            screenx: self.halfw * (1.0 + tx / ty),
+            bottom: self.horizon + (self.eye - ground) * self.hf / ty,
+            depth: ty,
+            fog_depth: ty * FOG_CELLS / VIEW_CELLS,
+            height: hcm / self.cell * self.hf / ty,
+            width: wcm / self.cell * self.hf / ty,
+            kind: sprite.kind,
+            pose: sprite.pose,
+        })
+    }
+}
+
+/// Where `sprite` stands in a `w` by `h` picture of `terrain` from `cam`
+/// with the eye at `eye_cm` (as [`render`] takes it): its centre column, the
+/// row its base stands on, its distance and its size, exactly as [`render`]
+/// draws it; `None` behind the eye. The cockpit's HUD boxes the lock with it
+/// (doc 21a `X-03`).
+pub(crate) fn project(
+    terrain: &Terrain,
+    cam: &Camera,
+    eye_cm: Option<i64>,
+    w: usize,
+    h: usize,
+    sprite: &Sprite,
+) -> Option<SpriteAt> {
+    View::new(terrain, cam, eye_cm, w, h).place(terrain, sprite)
+}
+
 /// Draw `terrain` from `cam` into `frame`, with `sprites` standing on it.
 /// The eye is at `eye_cm` when it is given — the cockpit frame's `z_cm` plus
 /// its `sensor_height_cm`, the very eye the sim traces the unit's sight from
@@ -455,18 +562,19 @@ pub fn render(
     if w == 0 || h == 0 {
         return;
     }
-    let cell = terrain.map.cell_cm() as f32;
-    let posx = cam.x_cm as f32 / cell;
-    let posy = cam.y_cm as f32 / cell;
-    let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-    let (dirx, diry) = heading.to_radians().det_sin_cos();
-    let (planex, planey) = (diry * PLANE, -dirx * PLANE);
-    let hf = focal(w);
-    let horizon = (h / 2) as f32;
-    let eye = eye_cm.map_or_else(
-        || terrain.height(posx, posy) + EYE_HEIGHT_CM as f32 / cell,
-        |z| z as f32 / cell,
-    );
+    let view = View::new(terrain, cam, eye_cm, w, h);
+    let View {
+        posx,
+        posy,
+        dirx,
+        diry,
+        planex,
+        planey,
+        eye,
+        hf,
+        horizon,
+        ..
+    } = view;
     let shades = Shades::new();
 
     // The lowest row each column has drawn down to (exclusive): ground
@@ -521,60 +629,28 @@ pub fn render(
         }
     }
 
-    draw_sprites(frame, terrain, sprites, &depth, &shades, eye, cam);
+    draw_sprites(frame, terrain, sprites, &depth, &shades, &view);
 }
 
 /// The sprites, far to near, each standing on the ground at its own point
-/// and hidden where nearer ground was drawn.
+/// ([`View::place`]) and hidden where nearer ground was drawn.
 fn draw_sprites(
     frame: &mut Frame,
     terrain: &Terrain,
     sprites: &[Sprite],
     depth: &[f32],
     shades: &Shades,
-    eye: f32,
-    cam: &Camera,
+    view: &View,
 ) {
-    let (w, h) = (frame.width(), frame.height());
-    let cell = terrain.map.cell_cm() as f32;
-    let posx = cam.x_cm as f32 / cell;
-    let posy = cam.y_cm as f32 / cell;
-    let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-    let (dirx, diry) = heading.to_radians().det_sin_cos();
-    let (planex, planey) = (diry * PLANE, -dirx * PLANE);
-    let hf = focal(w);
-    let horizon = (h / 2) as f32;
-    let invdet = 1.0 / (planex * diry - dirx * planey);
-    let mut placed: Vec<(f32, f32, f32, &Sprite)> = sprites
+    let w = frame.width();
+    let mut placed: Vec<SpriteAt> = sprites
         .iter()
-        .map(|s| {
-            let (wx, wy) = (s.x_cm as f32 / cell, s.y_cm as f32 / cell);
-            let (relx, rely) = (wx - posx, wy - posy);
-            let tx = invdet * (diry * relx - dirx * rely);
-            let ty = invdet * (-planey * relx + planex * rely);
-            (tx, ty, terrain.height(wx, wy), s)
-        })
-        .filter(|(_, ty, _, _)| *ty > 0.05)
+        .filter_map(|s| view.place(terrain, s))
         .collect();
-    placed.sort_by(|a, b| b.1.total_cmp(&a.1));
+    placed.sort_by(|a, b| b.depth.total_cmp(&a.depth));
     let depth_at = |x: usize, y: usize| depth.get(y * w + x).copied().unwrap_or(f32::INFINITY);
-    for (tx, ty, ground, sprite) in placed {
-        let (wcm, hcm) = sprite.size_cm();
-        draw_sprite(
-            frame,
-            shades,
-            SpriteAt {
-                screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
-                bottom: horizon + (eye - ground) * hf / ty,
-                depth: ty,
-                fog_depth: ty * FOG_CELLS / VIEW_CELLS,
-                height: hcm / cell * hf / ty,
-                width: wcm / cell * hf / ty,
-                kind: sprite.kind,
-                pose: sprite.pose,
-            },
-            &depth_at,
-        );
+    for at in placed {
+        draw_sprite(frame, shades, at, &depth_at);
     }
 }
 

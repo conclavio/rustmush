@@ -1,0 +1,689 @@
+# Doc 21a — the graphics engine: work left (verified at origin/main `7c886408`, 2026-10-23)
+
+The roll-up of everything [doc 21](21-graphics-engine.md) and its [cut notes](21-cut-notes.md) still owe, as the tree stood at `7c886408` on 2026-10-23 — the cut notes record debts per cut and never roll them up, several "owed" lines were already closed by later cuts, and several "landed" rows overstate. When the post-SM.12 graphics train is planned, start here rather than from doc 21 §10 alone, and cite the ids (`W-`, `A-`, `X-`). An item that lands is marked in place with the commit that closed it.
+
+How this was made: seven readers extracted candidate items from doc 21, its cut notes, doc 22, NOTES.md, the code's own comments, the sibling docs and git history; a merge deduplicated them; every item was verified against the tree by two independent agents (a code-tree lens and a history lens); a completeness critic added nine; its additions were verified the same way. 35 agents, 940 tool calls. Status is the two lenses' agreement; where they disagreed or an item closed, my disposition is given.
+
+Legend: status open / partly / closed; size S a day, M a few days, L a week or more; `waits on` is what must happen first.
+
+Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the four externally reported bugs below, all four confirmed in the tree.
+
+## 0. Externally reported bugs (post-SM.12 list), confirmed at 7c886408
+
+- **X-01** [P2, S, web] Web picture requests bypass the 20 Hz cap
+  - crates/mush-net-web/src/ws.rs:526-530 resets next_frame to now on every Picture command and picture.rs:70 forgets the last sent frame on any look change, so a client sending look updates gets a frame per message (a loopback probe saw 20 frames in 845 ms). Fix: keep the deadline on a look change; reset it only when the picture turns on.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): the frame clock lives with the picture (`WebPicture::deadline`/`tick`), its deadline moved by its own tick alone, never by a request; a burst of look changes is drawn at the next scheduled tick. Review follow-up: the socket test's span runs from the first look's send, so two frames a late tick bunches cannot overshoot its bound.
+- **X-02** [P2, S, web] Hidden browser tabs keep steering the tank
+  - web/src/components/PictureView.svelte: `visible` (line 105-117) gates only the server request and the local draw loop; the held-turn timer (:197-203) and the look timer (:187-194) clear on element blur alone (:274-277), never on visibilitychange. A release outside the tab leaves repeated HEADING orders running. Fix: clear turning and lookTurn on visibility loss and window blur.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): `release()` lets go of the held turn (its stop order sent) and the look's swing on the frame's blur, the window's blur and the page going hidden; pinned by `PictureView.test.ts`.
+- **X-03** [P2, M, engine] Lock reticle uses the flat-ground projection on relief maps
+  - crates/mush-pixel/src/cockpit.rs:423 places the lock box with raycast::project (flat ground, stock eye) while the sprites under it are drawn by heightfield::render from the unit's real eye over the terrain; there is no terrain-aware projection in heightfield.rs. On a slope the box sits well off the target (~148 px reproduced). Fix: one projection for both, from the Terrain and the eye the producer used.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): `heightfield::project` places a sprite as `render` draws it, and `cockpit::hud` projects the lock by whichever producer drew the picture, with the eye it used; the relief golden re-blessed. Review follow-ups: the box is the drawn sprite's (`contact_sprite` makes the one sprite the picture draws and the HUD boxes — the sheet's size, not the silhouette's; the flat and relief cases with the lock boxed re-blessed), and a lock clear over the view's top or bottom edge is `LockAt::Beyond`, an arrow at that edge in its column with the readout, a box running off the bottom keeping its readout over it.
+- **X-04** [P2, S, web] Hide and show can leave the local picture blank
+  - web/src/components/PictureView.svelte:264 puts the canvas inside the `wanted` block, so showing the picture again creates a fresh canvas, while the LocalPicture object survives with its last hash (web/src/lib/pixel/local.ts:69 returns false on an unchanged hash). An unchanged scene is never painted onto the new canvas until something moves. Fix: forget the shown hash when the canvas is (re)created.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): the view keeps the canvas it last painted on and has the picture `forget()` its shown frame when the draw loop starts on a canvas it has not painted; pinned by `local.test.ts` and `PictureView.test.ts`.
+
+## Engine (crates/mush-pixel) (21)
+
+- **W-01** [open, S, recorded-debt, cut G.1a] PNG encoder still looks up a hash map for every pixel (the next millisecond to take)
+  - After G.1a sped up the raycaster, the PNG encode (about 1.2 ms of a 640x480 frame) became the larger half of a frame's cost. Its colour counting still builds a HashMap<[u8;3],u8> index and looks up every pixel (crates/mush-pixel/src/png.rs:63). The work: build the palette faster, for example from the producers' closed colour set or a direct-mapped table. It…
+  - verifier's note: The encoder's palette index is a `HashMap<[u8;3],u8>` consulted on each colour change (a last-colour cache skips runs), not a HashSet looked up for every pixel; the cut note's wording is imprecise but the debt stands: no faster palette build (producers' close…
+  - waits on: nothing; wanted only if a frame's cost matters again (recorded as such)
+  - source: docs/design/21-cut-notes.md:32 "Also left: the PNG encode (its colour count is a `HashSet` a pixel) is the next millisecond to take if a frame's cost matters again."
+- **W-02** [open, S, stale-claim, cut G.1] PNG truecolor fallback (and sixel's 3-3-2 cut past 256 colours) is not logged, contrary to §3.2
+  - png::encode silently switches to colour type 2, and sixel silently quantises. mush-pixel has no logging dependency, and neither caller (tui/pixel.rs:1007, mush-net-web picture.rs:119) checks for it. The work: log or count it, or amend the doc.
+  - waits on: nothing (either add a counter/log in the callers or amend §3.2)
+  - source: docs/design/21-graphics-engine.md:272-273 "The encoder's truecolor fallback stays as a safety net and is logged when it fires."
+- **W-03** [partly, S, unbuilt-cut, cut none] §9: the fixture example has no --scene flag for bucket-B pictures
+  - §9 says the fixture example 'grows a --scene flag for bucket B'. crates/mush-pixel/examples/fixture.rs only reads argv[1] as the output directory and renders the cockpit and the G.7a relief. Nothing renders the chart, replay or doll pictures (ChartPicture, ReplayPicture, DollPicture) without a terminal. The work: add the flag with chart, replay and doll fix…
+  - disposition: doc stale, not unbuilt: the fixture example already writes chart, doll and replay PNGs; only the literal --scene selector is missing.
+  - waits on: nothing; either add the flag or amend §9 to say every scene is written each run
+  - source: docs/design/21-graphics-engine.md:458-459 "The example `cargo run -p mush-pixel --example fixture` stays the way to look at a frame without a terminal, and grows a `--scene` flag for bucket B."
+- **W-04** [open, S, recorded-debt, cut G.2] G.2 acceptance: the MW2 comparison frame is not in the tree and was never re-run
+  - G.2's acceptance names the MW2 fixture frame, with the cockpit frame, compared byte for byte. The cut notes still list 'the MW2 comparison frame' as owed. The frame is not in the tree and was not re-run. The work: commit the MW2 frame as a fixture and round-trip or compare it, or formally drop it from the acceptance.
+  - verifier's note: Note the MW2 frame is a screenshot of a third-party game (MechWarrior 2); committing it to the public conclavio/rustmush repo as a fixture is a licensing question the owner should rule on before anyone 'commits the MW2 frame'. The realistic close is dropping …
+  - waits on: an owner ruling on whether a third-party screenshot may be a committed fixture; otherwise an acceptance amendment
+  - source: docs/design/21-cut-notes.md:43 "there is none in the tree and no `libsixel` on the box ... The MW2 frame is not in the tree and was not re-run."
+- **W-05** [partly, S, recorded-debt, cut G.2] Sixel encoder is verified by an in-tree decoder round trip, not the acceptance's byte compare against a reference encoder
+  - G.2's acceptance asked for the frames to be byte-compared against a reference encoder such as libsixel. There is none in the tree and no libsixel on the box, so the tests decode the encoder's own subset instead. The acceptance as written is unmet for the cockpit frame as well as MW2. The work: put a reference encoder in CI, or amend the acceptance to accept…
+  - disposition: owner ruling: accept the decoder round trip as G.2's acceptance, or put libsixel in CI. Nothing to build until ruled.
+  - waits on: a lead/owner ruling on the acceptance; libsixel on CI's Ubuntu runner if kept
+  - source: docs/design/21-cut-notes.md:43 (## G.2) "The acceptance asked for a byte compare against a reference encoder; there is none in the tree and no `libsixel` on the box"
+- **W-06** [open, L, unbuilt-cut, cut G.6] G.6's fitting half is unbuilt: the fitting paper doll (hardpoints, arcs as sectors, ammunition) embedded in the sheet
+  - G.6a delivered only the armour doll as a bucket-B page, in the TUI only. The fitting half is the bucket-C fitting screen with an embedded bucket-B doll showing hardpoints, firing arcs as sectors and ammunition, on both the TUI and the web. The web has no doll picture page. It waits on a game fitting feature that does not exist, so the acceptance 'the fittin…
+  - verifier's note: "The web has no doll picture page" is right for the pixel DollPicture, but the web does draw an armour doll (U.4's DollView.svelte in the cockpit tab's damage pane, from the same look). The missing pieces are: (1) a game fitting feature carrying hardpoints, a…
+  - waits on: a game fitting feature (hardpoints/arcs/ammunition on the unit sheet) that does not exist; its own design
+  - source: docs/design/21-graphics-engine.md:476 "the fitting half waits on a fitting feature ... the fitting paper doll with hardpoints and arcs embedded in the sheet (bucket C)"
+- **W-07** [partly, M, recorded-debt, cut G.7b] Colour-map bake runs once per viewer; where a bake should run was never decided
+  - As built, CockpitPicture bakes the colour map per connection inside terrain_from_feed (cockpit.rs:105-106, 305). That is about a million fine texels, 33–42 ms a map on the owner's box and likely more on the VPS. Every SSH viewer pays it on its own pump at each match change, and so does every browser. The G.7a addendum left open whether to bake once per map …
+  - disposition: open but low priority: the bake is per viewer per match (33-42 ms on the owner's box); a shared per-map Terrain in the gateway matters only with many SSH viewers.
+  - waits on: a lead decision; the VPS bake figure from G.7b's live smoke
+  - source: docs/design/21-cut-notes.md:168 "**Not decided here**: whether the cockpit uses the bake by default ..., the sun's direction and the gains, and where a bake runs"
+- **W-08** [open, S, owner-decision-pending, cut G.7b] Heightfield lighting (sun direction, gains, which light reads best) not chosen against the reworked relief
+  - G.7a found that a single sun direction flattens slopes facing it edge-on. Per-cell light landed, then the baked colour map; per-sample light was costlier. The north-west sun at 45° with 4x relief exaggeration, and the steepness and hollow terms, are still the first guess. The addendum left the sun's direction and the gains to be chosen against G.7b.2's show…
+  - waits on: the owner looking at the showcase relief live (G.7b is undeployed and unsmoked); then a one-line ruling on sun direction and gains
+  - source: docs/design/21-cut-notes.md:168 (### G.7a addendum) "Not decided here: whether the cockpit uses the bake by default (G.7b, with the reworked arena), the sun's direction and the gains"; :143 "Which li…
+- **W-09** [open, M, recorded-debt, cut G.7a] Heightfield smooths heights between cell centres while the sim holds each cell flat (a crest can move half a cell)
+  - heightfield.rs interpolates heights between cell centres (heightfield.rs:167), while the sim's sight treats each cell as flat. A crest can therefore move by up to half a cell against the sim's line of sight. The bracket rule keeps every reported contact visible, but the drawn ground can still disagree with sight. G.7b did not address it. The work: render fl…
+  - verifier's note: The G.7b.2 showcase relief is rounded to 10 cm with smoothstep blends (21-cut-notes.md:420-421), so the sim's cells are themselves closer to a continuous surface now; the half-cell crest offset against the sim's flat-cell sight remains as recorded. Rendering …
+  - waits on: a lead decision that the bracket rule is not enough (it is the recorded guarantee); otherwise stays a recorded, accepted misalignment
+  - source: docs/design/21-cut-notes.md:178 "**Not aligned, recorded**: the heightfield producer still smooths heights between cell centres where the sim holds each cell flat"
+- **W-10** [partly, S, recorded-debt, cut G.7b] Raycaster path still uses the stock 1.5 m eye, not the unit's own sensor_height_cm
+  - G.7b.1 mostly closed this. The frame now carries sensor_height_cm, and the heightfield path uses z_cm plus that height (crates/mush-pixel/src/cockpit.rs:149). The raycaster, used for maps without heights, still sets `eye: EYE_HEIGHT_CM as f32 / cell` (crates/mush-pixel/src/raycast.rs:653), so on a flat map a unit with a non-stock sensor sees from the wrong …
+  - disposition: open, tiny: only a map without elev (fixtures, an older server) still uses the stock 1.5 m eye in the raycaster.
+  - source: docs/design/21-cut-notes.md:178 (## Sight alignment) "The eye is the stock sensor height, not the unit's own (the cockpit frame does not carry `sensor_height_cm`; a field for after the mining train, …
+- **W-11** [open, L, unbuilt-cut, cut G.9] G.9: the player annotation store (prerequisite of both boards) does not exist
+  - G.9 depends on a durable player annotation store that the strategic and investigation boards share, where players place pins that other players see. Nothing like it exists anywhere in crates/. It needs a design and a build before either board. No commit in the train touches G.9.
+  - waits on: its own design (durable per-board annotations with authorship, visibility per observer through the epistemic seam, a feed to the renderers); G.5's scene model …
+  - source: docs/design/21-graphics-engine.md:479 "| **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store |"
+- **W-12** [open, L, unbuilt-cut, cut G.9] G.9: the strategic board (claims, patrols, supply routes, age-faded last-seen contacts) is unbuilt
+  - G.9 is size L and entirely unbuilt. The strategic board is a bucket-B scene-model picture over the annotation store: a map of faction fronts and clocks (M25) plus doc 20 claims, patrols, supply routes, age-faded last-seen contacts and player annotations. Acceptance: 'two players see each other's pins'.
+  - waits on: W-11 (the annotation store); a per-observer feed that carries fronts/clocks (M25), doc 20 claims, patrols and aged last-seen contacts to the renderers (none ex…
+  - source: docs/design/21-graphics-engine.md:479 "the strategic board and the investigation board ... | two players see each other's pins |"
+- **W-13** [open, L, unbuilt-cut, cut G.9] G.9: the investigation board (people, ships, places, transactions, evidence with pins) is unbuilt
+  - G.9's second board is not started. It is a graph diagram of people, ships, places, transactions and evidence, with pins and links, over the M23 canon ledger and recaps plus player annotations. It has the same acceptance ('two players see each other's pins') and the same dependency on the annotation store.
+  - waits on: W-11 (the annotation store); a graph layout in the scene model (nothing in scene.rs lays out nodes); a per-observer feed over the M23 canon ledger/recaps
+  - source: docs/design/21-graphics-engine.md:479 "the strategic board and the investigation board; the player annotation store they share"
+- **W-14** [open, S, unbuilt-cut, cut G.5] Scene model has no `Sprite` item (a named bitmap from a scene-declared sprite sheet)
+  - D-21-8 lists `Sprite`, but `mush_pixel::scene::Item` has only Panel, Rect, Line, Polyline, Trail, Circle, Arc, Marker, Ray, Text, Label and Image. Q-21-4 already noted that the orbital view exercises every item but sprites.
+  - verifier's note: The as-built scene differs from D-21-8 in more than `Sprite`: it also has `Panel`, `Trail`, `Marker`, `Ray` and `Label` which D-21-8 does not list, and `Sector` is folded into `Arc`. Either add `Sprite` (the unit kit's text sprite sheets in look.rs are the na…
+  - waits on: a bucket-B use that needs a sprite (none of G.5b, G.6a, G.8 does); otherwise a D-21-8 amendment
+  - source: docs/design/21-graphics-engine.md:281 "`Sprite` (a small bitmap by name from a sprite sheet the scene declares)"
+- **W-15** [open, M, unbuilt-cut, cut U.5] U.5: a PNG importer that turns a PNG sprite sheet into the text look form
+  - Sheets exist only as hand-written text pixel art. mush-pixel has no image decoder, by design, so that it can build for wasm. U.5's importer is an offline tool that maps a PNG's pixels onto the closed material palette, writes the look's `sprites` JSON and lets Look::parse check it. No commit landed U.5.
+  - verifier's note: U.5 is two pieces: the importer tool (an offline binary or example outside mush-pixel's wasm build, mapping pixels onto the six materials of look.rs's palette) and the real art it imports; the item covers only the first.
+  - waits on: real art to import (the owner owes the paint-vs-IFF-tint call per the pixel-cockpit memory); the importer itself is unblocked
+  - source: docs/design/22-unit-kit.md:119 "the form a player-designed unit is written in; a PNG importer can produce it later."
+- **W-16** [open, M, deferred-by-design, cut none] Eight facings (diagonals) reserved in the sheet format, waiting on an owner ruling that a sensor may report more than `aspect`
+  - Sheets are picked by four facings because the sim reveals only front, left, right and rear. The diagonals (front_left and the rest) are reserved, not built. Building them needs an owner ruling, a finer aspect on the wire, parser support for the diagonal facings, and art for them.
+  - verifier's note: 'Reserved in the sheet format' overstates it: the parser rejects `front_left` and the other diagonals today (look.rs:631-635), so they are reserved in the design only. Building them needs: the owner's ruling, a finer `aspect` (or a bearing) on the contact row…
+  - waits on: an owner ruling that a sensor may report a finer aspect than front/left/right/rear (D-22-4)
+  - source: docs/design/22-unit-kit.md:145-146 "`front_left` and the other diagonals are reserved for the day the owner lets a sensor say more."; D-22-4 "four facings now from `aspect`, eight reserved."
+- **W-17** [open, L, deferred-by-design, cut none] Player-designed units: a builder, its economy and who may field what are left to their own design
+  - Doc 22 (U.0) only makes sure the template (rules pack plus look) is complete and can be checked alone and against the unit. The builder UI or flow, the economy around designed units and the permission to field them are undesigned and unbuilt. No cut builds the path beyond the format and the checks.
+  - waits on: its own design conversation; the ownership-and-permissions layer (future-ownership-permissions) for 'who may field what'; the economy (E8 service market) for '…
+  - source: docs/design/22-unit-kit.md:203 (§7) "A builder, its economy and who may field what are their own design; this"
+- **W-18** [open, S, stale-claim, cut G.3b] picture.rs seam doc says the WebAssembly render (G.3b) comes 'later'; it has landed
+  - mush-pixel-wasm builds CockpitPicture for wasm32, and the web cockpit tab draws it locally with the gateway picture (G.3c) as the fallback. The seam's module doc still lists the wasm render as future.
+  - verifier's note: The G.3 socket frame (G.3a/G.3c) landed too, so both 'later' items in that sentence are stale; the seam now has three live callers (crates/mush-net-ssh/src/tui/pixel.rs, crates/mush-net-web/src/picture.rs, crates/mush-pixel-wasm/src/lib.rs).
+  - source: crates/mush-pixel/src/picture.rs:1-3 "the SSH TUI today, the web client's socket frame (G.3) and its WebAssembly render (G.3b) later"
+- **W-19** [open, S, stale-claim, cut none] mush-pixel crate doc 'Today: a first-person view ... streamed to a terminal' undersells what the engine now draws
+  - The crate also draws bucket-B pages (chart G.5b, doll G.6a, replay G.8). The web gateway renders it (G.3a/c), and the browser runs it via wasm (G.3b). The 'Today' sentence predates all of these.
+  - verifier's note: Also stale in the same header: lib.rs:15-17 describes [`raycast`] as the picture with no mention that the heightfield is the default producer since G.7b.1, and the Cargo.toml description (line 7) has the same 'raycaster, kitty or sixel' scope; one doc pass sh…
+  - source: crates/mush-pixel/src/lib.rs:6 "Today: a first-person view of the arena streamed to a terminal that speaks the kitty graphics protocol or draws sixel."
+- **A-01** [open, M, unbuilt-cut, cut U.3] Muzzle flashes are never drawn: sheets' muzzle points are parsed and checked but no renderer reads them
+  - Doc 22 §3.2 promises a muzzle point per weapon per facing 'where a shot's flash is drawn'. In the tree `muzzles` is parsed and bounds-checked in crates/mush-pixel/src/look.rs (lines 129, 657-681) and held to weapon components by the contract test, but no producer (raycast, heightfield) or overlay reads a sheet's muzzles; nothing draws a flash when a contact…
+  - verifier's note: Accurate as titled. Sharpen the detail: doc 22's U.3 cut notes do not record the flash as a deferral at all (no 'not done'/'owed' line), so this is an unrecorded gap between doc 22 §3.2/D-22-4 and the tree, not a recorded debt. Doing it needs (a) a fired/shot…
+  - waits on: A per-contact 'fired' signal in the cockpit frame — a tacsim perception/arena_bridge change the Epistemic rule has to allow (what a viewer may see of a far con…
+  - source: docs/design/22-unit-kit.md:142 — "a muzzle point a weapon a facing, where a shot's flash is drawn"; grep: `muzzle` occurs only in crates/mush-pixel/src/look.rs
+- **A-05** [open, S, owner-decision-pending, cut G.2b] G.2b: the lead chose nearest-neighbour scaling in the encoder over rendering larger, against the owner's words; never put to the owner
+  - The G.2 smoke recorded 'whether to render up to the box (at its cost) is for the owner'; the owner said 'we're going to have to render the frames larger to fill the space'. G.2b landed the lead's alternative (the same 640x480 render scaled by the encoder, so a 1717x1288 sixel picture is blocky) and recorded rendering larger as 'the alternative: a sharper pi…
+  - verifier's note: G.2b landed scale-in-the-encoder (nearest-neighbour, SIXEL_MAX_SCALE hardcoded at 3) as the lead's choice against the owner's 'render the frames larger'; doc 21 Draft 0.7 records the landing and the smoke but no owner ruling accepting blocky-for-cheap, §12's …
+  - waits on: The owner's ruling: accept the scaled 640x480 sixel picture (close with a line in doc 21 §11 or Draft 0.7), or ask for a render at the shown size (then M: rend…
+  - source: docs/design/21-cut-notes.md:60 — "whether to render up to the box (at its cost) is for the owner"; :70 — "The lead's choice: scale in the encoder, not a larger render."
+
+## The SSH TUI (crates/mush-net-ssh) (25)
+
+- **W-20** [open, M, deferred-by-design, cut G.2] @pixel/encoder (and @sounds) last only for the connection; D-21-17 (Q-21-2) says an encoder may be forced per account
+  - G.2 built @pixel/encoder [auto|kitty|sixel|off], and @sounds, as per-connection settings that last until disconnect. The accepted D-21-17 says a forced encoder is kept per account, for a terminal that lies. Persistence 'waits on a per-account store' (server.rs:405), and the owner said account persistence comes later. The work: persist the choice (and @sound…
+  - verifier's note: Both `@pixel/encoder` and `@sounds` are per-connection (server.rs:408, :411). The tree has no per-account preference store at all, so the work is the store itself (world side) plus the gateway reading it at login, not just a field; or amend D-21-17 to per con…
+  - waits on: a per-account preference store (the owner: 'account persistence later'); the gateway is transport-side and has no account read today
+  - source: docs/design/21-cut-notes.md:50 "**`@pixel/encoder [auto|kitty|sixel|off]`**, per connection (the owner: account persistence later; D-21-17 says per account)."
+- **W-21** [open, S, deferred-by-design, cut G.2] SSH pty-req pixel size still not read for sizing the picture
+  - The picture box is sized from the cell size the terminal reports (CSI 16 t, default 10x20), never from the pixel size in the SSH pty-req. It was left out on purpose: the pty-req value is a real-pixel size, the wrong unit for Windows Terminal. It remains a possible fallback for terminals that do not answer CSI 16 t.
+  - verifier's note: The pixel size is ignored in both `pty_request` and `window_change_request`. Cut notes:45 also records that whether Windows Terminal answers `CSI 16 t` is still unverified, so the pty-req fallback's value is unknown.
+  - waits on: a hand-typed Windows Terminal session to see whether CSI 16 t is answered (if it is, the fallback is moot)
+  - source: docs/design/21-cut-notes.md:45 (## G.2, The cell size) "The SSH `pty-req` pixel size is still not read: it is a real-pixel size, which is the wrong unit for WT."
+- **W-22** [open, S, recorded-debt, cut G.2b] SIXEL_MAX_SCALE was meant for [pixel] in G.1b but is still a hard-coded const
+  - G.2b set the sixel upscale cap of 3 (1920x1440 at most) aside for the [pixel] config block in G.1b. G.1b's PixelCfg has only frame_interval_ms, low_interval_ms, step_down_after, step_up_after_s and diagnostics (mushd.toml.example lines 54-59). The cap is still `pub const SIXEL_MAX_SCALE: usize = 3` at crates/mush-net-ssh/src/tui/pixel.rs:1232.
+  - source: docs/design/21-cut-notes.md:72 (## G.2b) "`SIXEL_MAX_SCALE` is 3 (1920x1440 at most; for `[pixel]` in G.1b)"
+- **W-23** [open, ?, recorded-debt, cut G.2] Sixel without `ssh -C` costs ~410 KB/s against kitty's 190 KB/s; only help advice and the step-down mitigate it
+  - The gateway offers zlib, but OpenSSH (ssh.exe included) defaults to Compression no. Windows Terminal sixel viewers therefore use about twice kitty's bandwidth unless the player passes -C. The only mitigations are the help's advice and G.1b's step-down; there is no server-side fix.
+  - verifier's note: Accurate. Nothing server-side can force compression (OpenSSH's client chooses); the only server-side lever left is a lower default sixel rate or a smaller sixel frame, which the owner ruled against at G.2 (cut notes:48 'keep it at 20 Hz').
+  - waits on: the client's choice (OpenSSH `Compression no`); an owner ruling if a server-side sixel rate/size cap is wanted
+  - source: docs/design/21-cut-notes.md:49 "without `ssh -C` a sixel viewer is about 410 KB/s at 20 Hz against kitty's 190 KB/s"; docs/help/cockpit.md:741 "`ssh -C` turns that on, and it is worth it here."
+- **W-24** [open, S, recorded-debt, cut G.1] SSH output pump's frame clock wakes 20 times a second for every connection, view open or not
+  - In server.rs the pump's select! always includes sleep_until(next_frame); only the wait length depends on pixel_active(). It also takes the connection lock on each Frame wake, for line-mode connections as well as TUI ones. The web side already polls its clock only while the picture is on (G.3a). The work: arm the timer only while a view is open, for example …
+  - verifier's note: The pump is one task per SSH connection, so the 20 Hz wake and the connection-lock take happen for every SSH connection in line mode too, not only TUI ones; the web (ws.rs:566) already gates its clock with `if picture.is_on()`.
+  - source: crates/mush-pixel/NOTES.md:91 "The frame clock ticks for every TUI connection, open view or not"; crates/mush-net-ssh/src/server.rs:2282 "It ticks for every TUI connection and costs a lock and a bool…
+- **W-25** [open, S, recorded-debt, cut G.4] A disconnect mid-turn leaves the last HEADING order standing
+  - Leaving the TUI stops a turn, but a dropped connection does not. No stop order is sent, the last HEADING order stays, and the tank keeps turning by up to one lead (20–120°) after the player is gone. This was recorded with G.4 and accepted, not fixed. The work: send a stop order on teardown, or have the sim clear a seat's pending order on disconnect.
+  - verifier's note: The sim keeps continuous orders on linkdead by design (`ControlState::Linkdead`, doc 16 §3.1), so 'have the sim clear a seat's pending order on disconnect' would reverse a doc 16 ruling; the fix that fits is the gateway sending the helm's stop order (`HEADING…
+  - waits on: an owner ruling only if the sim-side option is wanted; the gateway-side stop order is blocked on nothing
+  - source: docs/design/21-cut-notes.md:113 "A disconnect mid-turn leaves the last order standing (the tank finishes at most a lead of turn)."
+- **W-26** [open, M, stale-claim, cut G.4] D-21-14 claims the view interpolates the pose between pulses; only the heading is predicted
+  - `tui::helm` predicts the heading, but the camera's x_cm and y_cm come straight from the last cockpit frame (cockpit.rs:174), so a moving tank's picture jumps once a pulse (every 0.5–5 s). The work: interpolate position, or amend D-21-14.
+  - verifier's note: Stale claim confirmed: only the heading is predicted; x_cm/y_cm are the last frame's, so a moving tank's picture steps once a pulse (500-5000 ms). The cut notes (:103) themselves call the heading prediction 'the interpolation', so the doc and the notes disagr…
+  - waits on: an owner call: amend D-21-14 to heading-only, or build position dead-reckoning (speed and heading are in the frame)
+  - source: docs/design/21-graphics-engine.md:431 "the sim resolves it at its tempo, and the view **interpolates** the pose between pulses"
+- **W-27** [open, S, owed-smoke-or-deploy, cut G.4] G.4 hold-to-turn not smoked in a terminal without the kitty keyboard protocol
+  - G.4 pushes CSI > 3 u only where CSI ? u is answered, and the only smoke was in w11term. The fallback turn behaviour in Windows Terminal and plain terminals has no live record.
+  - verifier's note: No live record of a toggled turn (Left/Right or a/d without the kitty keyboard protocol) exists in any terminal; Windows Terminal 1.24 over ssh.exe is the terminal that matters and it is recorded only for chat and frame rate.
+  - waits on: a hand-typed Windows Terminal session on dev2 (dev2 is at 3aa8238b, past 8e01dd93, so no deploy is needed)
+  - source: commit 8e01dd93: "the kitty keyboard protocol probed with CSI ? u and pushed only while the view is open"; commit 006c80bc: "in w11term (which answers CSI ? u)"
+- **W-28** [open, M, deferred-by-design, cut G.8] G.8: a live @arena/watch (arena.observer) picture is not drawn
+  - G.8 draws finished replays (arena.replay) in the TUI only. ^G on a live @arena/watch observer view still opens the NOT IN A COCKPIT card, and PictureKind has only Cockpit, Chart, Replay and Doll. The web turns an observer frame into a one-keyframe replay (liveAsReplay), and the notes say the picture 'can do the same when it is asked for'. The work: a live w…
+  - waits on: a cut that asks for it (the notes: 'the picture can do the same when it is asked for')
+  - source: docs/design/21-graphics-engine.md:478 "a live `@arena/watch` picture is not drawn yet"; 21-cut-notes.md:277 "**The live picture is left out.**"
+- **W-29** [open, M, deferred-by-design, cut G.8] Replay picture's time slider by mouse is unbuilt (keys only)
+  - G.8 scrubs with `,`, `.`, `[` and `]`. The §2 row's 'keys, then a mouse' needs mouse input, and the SSH TUI parses no mouse events at all (there is no SGR mouse handling anywhere in mush-net-ssh).
+  - waits on: mouse input parsing in the SSH TUI (shared with W-30): enabling SGR mouse mode in the TUI's enter/leave bytes and a `Key` form for it, then a hit test on the t…
+  - source: docs/design/21-graphics-engine.md:226 "the replay's grid keyframes as a picture with a time slider (keys, then a mouse)"
+- **W-30** [open, M, deferred-by-design, cut none] Mouse-look (SGR pixel mouse mode) is later
+  - D-21-13 puts mouse input after toggle-turn and hold-to-turn. The SSH TUI has no mouse parsing at all.
+  - waits on: nothing scheduled; D-21-13 puts it after hold-to-turn (landed in G.4), so it waits on a cut being asked for
+  - source: docs/design/21-graphics-engine.md:426 "Mouse-look is later and needs SGR pixel mode."
+- **W-31** [open, M, unbuilt-cut, cut G.6] Bucket-C embedding (a bucket-B scene placed as one image beside a text form) is unbuilt
+  - Every picture today is a full view under the status line, and no text form or sheet places a scene image beside its text. This is the placement half of D-21-10 that bucket C relies on, for example for the fitting screen's doll and a listing's hull thumbnail.
+  - verifier's note: Today's 'beside' is G.6a's legend drawn inside the doll picture; no text form on the TUI or the web places a scene image next to its text. The mechanism (a second, smaller image placement beside a text panel) is unbuilt and is what the fitting doll and a list…
+  - waits on: the fitting feature for the fitting doll (doc 21:476 'the fitting half waits on a fitting feature'); the placement mechanism itself is blocked on nothing
+  - source: docs/design/21-graphics-engine.md:307 "A bucket-C form that embeds a bucket-B scene places it the same way, as one image beside the text."
+- **W-32** [open, S, deferred-by-design, cut G.10] Sounds by name only in w11term: kitty (OSC 99 deferred), mintty and other terminals get BEL
+  - G.10 sends OSC 440 play only where XTVERSION names w11term. Kitty's OSC 99 sound comes with a desktop notification (one popup per sound), so kitty gets BEL. Mintty's 440;file form is not used. The notes call sounds by name in kitty 'a later cut if kitty grows a sound-only form'; named sounds in other terminals are future work.
+  - verifier's note: Add: doc 21's D-21-24 (:518-519) and the §2 G.10 row (:480) still state kitty gets OSC 99, contradicting the cut (sound.rs:16-17, Draft 0.17 :34-35) — a stale claim to amend alongside this deferral.
+  - waits on: kitty growing a sound-only OSC form; an owner call on whether mintty's `440;file` form is worth supporting
+  - source: docs/design/21-cut-notes.md:295 "**Kitty gets BEL, not OSC 99.** ... a kitty with sounds by name is a later cut if kitty grows a sound-only form."
+- **W-33** [open, M, deferred-by-design, cut G.10] Sounds in the line-mode client (outside @tui) not built
+  - Sounds are TUI-only. The line client has no probe and so no terminal name; it would get BEL alone, and it already prints the notices. A w11term player in line mode also never gets the pack announcement. Left for a cut that asks for it.
+  - verifier's note: `@sounds` is accepted in line mode (server.rs:839-841, :983-985) but only reports; the line client plays nothing. A line-mode BEL on notices needs no probe; names (OSC 440) and the pack announcement need the probe in line mode, which does not exist.
+  - waits on: a cut that asks for it (owner)
+  - source: docs/design/21-cut-notes.md:297 "**The TUI only.** The line client has no probe and so no terminal name ... Left for a cut that asks for it."
+- **W-34** [open, M, deferred-by-design, cut none] One-shot picture in line mode (`+view`) is 'no in v1' (Q-21-7 / D-21-22)
+  - A player outside the TUI whose terminal can show an image gets no one-shot frame, and no `+view` verb exists in the tree. Future work if the owner revisits it after v1.
+  - waits on: the owner revisiting D-21-22 after v1; the probe in line mode (shared with W-33)
+  - source: docs/design/21-graphics-engine.md:551 "Q-21-7 Whether a player without graphics should see a one-shot picture in line mode (`+view` ... Default: no in v1"
+- **W-35** [open, L, deferred-by-design, cut none] tmux unsupported in v1 (passthrough plus unicode placeholders would be a second kitty encoder)
+  - §13 rules tmux out of v1: tmux swallows the probe's answer, so there is no picture. Supporting it means DCS passthrough for the probe and a kitty encoder using unicode placeholders, which amounts to a second kitty encoder. `help cockpit` already says tmux is unsupported and tells players to run @tui outside it. Future work if tmux users matter.
+  - waits on: a v2 decision that tmux users matter (DCS passthrough for the probe and every frame, plus the unicode-placeholder kitty form)
+  - source: docs/design/21-graphics-engine.md:576-577 "**tmux.** Unsupported in v1: the probe is swallowed without passthrough, and passthrough plus unicode placeholders is a second kitty encoder."
+- **W-36** [open, ?, bug-seen-not-fixed, cut none] WezTerm OpenGL front-end freeze on first ^G never root-caused (WezTerm on Windows needs front_end = Software)
+  - The first live ^G hard-froze the owner's PC, with a GPU driver hang signature, under WezTerm 20240203 on its OpenGL front end. Every later run used the software front end, and help tells WezTerm users on Windows to set front_end = "Software". Doc 21 records it as a client bug the engine cannot fix, answered by building w11term, now the reference client. It …
+  - verifier's note: Doc 21 treats Q-21-8 as answered by w11term (D-21-23), not by a fix, so this is an open client-side investigation with no engine work planned; the only tree artefact is the help's `front_end = "Software"` advice.
+  - waits on: recurrence (the owner investigates if it recurs); WezTerm is no longer the reference Windows client
+  - source: crates/mush-pixel/NOTES.md:164 "Not root-caused; the owner will investigate if it recurs."
+- **W-37** [open, S, bug-seen-not-fixed, cut none] Text cockpit comms after re-entering @tui omit RedNet lines sent before (the history fetch carries only says)
+  - Seen live on dev2 at 331f418a. On re-entering @tui after @notui, the COMMS pane rebuilds from the history fetch, which includes say lines but not RedNet channel lines sent earlier. The fix: carry channel traffic in the history fetch or in the TUI's comms seed.
+  - verifier's note: The 'history fetch' is `narrative.backlog`, answered by the gateway from the session ring with a Narrative-only filter (bridge_common.rs:734-736); channel lines are in the ring but filtered out. The fix is either widening that filter (a wire/semantics change …
+  - waits on: deciding whether channel traffic belongs in the server's history/backlog reply (interface plan I12) or in a TUI-side comms seed kept across `@notui`
+  - source: docs/design/21-cut-notes.md:199 "Seen, not fixed: the comms after re-entering `@tui` start from the history fetch, which carries says but not the RedNet line sent before"
+- **W-38** [closed, S, bug-seen-not-fixed, cut none] Text cockpit armour doll's track and wall glyphs merge into solid blocks
+  - In both w11term's and Windows Terminal's fonts, the track and wall glyphs of the 15-cell block-character tank doll run together into solid blocks, so the doll reads only as a coarse tank outline. Fixing it needs a glyph choice with gaps or spacing.
+  - disposition: CLOSED: the 15-cell glyph doll was replaced by U.2's look-grid half-block doll; the smoke at 34e4d24e saw it in both terminals.
+  - waits on: a look at the tank's doll in both terminals on dev2 (deployed: dev2 is past 21590a53)
+  - source: docs/design/21-cut-notes.md:199 (## Text cockpit, smoke) "the doll's track and wall glyphs join into solid blocks in both terminals' fonts (it reads as a tank outline, coarsely)"
+- **W-39** [open, S, bug-seen-not-fixed, cut none] Unexplained: a line typed just after Enter in the picture's chat line arrived once as flying keys
+  - In w11term during the 2026-10-23 smoke, a line sent a moment after Enter (meant for the text cockpit's chat line) arrived once as flying keys and once as a line. It was not reproduced. It is worth a look with the key log, since it may be a race between Enter opening the line and the routing of the next keys, and typing must never steer (D-21-26).
+  - verifier's note: 'The key log' is not in this tree (it is presumably w11term's client-side log); investigating needs either that log or a new server-side key trace around `chat_opened`.
+  - waits on: reproduction; a key trace (client or server) to read it with
+  - source: docs/design/21-cut-notes.md:373 "**Unexplained**: in w11term, a line sent a moment after Enter ... arrived as flying keys once and as a line once; not reproduced"
+- **W-40** [open, S, stale-claim, cut G.4] pixel.rs module doc still describes the spike's camera: toggle-turn on a local offset, sim not told
+  - The header says the camera is a local offset turned with toggle keys and that 'the sim is not told'. G.4 made turns HEADING orders, held where the terminal reports releases; the same file says so at :798, and helm.rs implements it. The header also names only cuts G.1 and G.2, though the file now hosts the chart, doll and replay pictures.
+  - verifier's note: Stale header confirmed; it also omits the kitty keyboard protocol push (G.4), the text cockpit's chart/replay/doll kinds and `@pixel/encoder`'s `EncoderChoice` as the file now stands (the header's text-cockpit paragraph at :30-37 is current).
+  - source: crates/mush-net-ssh/src/tui/pixel.rs:23-26 "a LOCAL heading offset the pilot turns with toggle-turn keys ... The sim is not told; this spike proves the picture and the pacing, not the order."
+- **W-41** [open, S, owner-decision-pending, cut G.8] Owner review of G.8's implementer rulings (whole field, interpolation, 1x/4x/16x, client cursor, no live picture)
+  - The builder took G.8's rulings and marked each 'cheap to unwind'. Doc 21 records none of them as an owner decision (no D-21-n). They are: the whole field rather than a window, interpolation between keyframes, f cycling 1x/4x/16x, the client-local replay.cursor, and the live picture left out.
+  - verifier's note: The §2 G.8 row (doc 21:478) already presents the implementer's rulings as the design without a D-21-n; the owed step is an owner yes (a new D-21-n) or a note in the row that they are the implementer's, plus the live-watch ruling which the row does record.
+  - waits on: the owner
+  - source: docs/design/21-cut-notes.md:271 "The replay as a picture: a finished match drawn whole, on bucket B's clock. Rulings taken here (each cheap to unwind):"
+- **W-42** [open, S, owner-decision-pending, cut G.10] Owner review of G.10's implementer rulings (names = notice kinds, BELL_KINDS, kitty BEL, on by default, TUI only)
+  - G.10's rulings were taken in the cut, marked cheap to unwind, and override the row's own text. They are: the sound names are the wire words, not contact-gained; BEL only for nine kinds; kitty gets BEL, not OSC 99; sounds on by default; the TUI only. None is recorded as an owner decision.
+  - verifier's note: Besides the owner's acceptance being owed, D-21-24 (:518-520) and the §2 G.10 row (:480) still carry the pre-cut kitty OSC 99 text that Draft 0.17 and sound.rs contradict; the names-are-wire-words ruling also overrides the row's `contact-gained`/`contact-lost…
+  - waits on: the owner
+  - source: docs/design/21-cut-notes.md:291 "Bells and sounds, in the TUI. Rulings taken here (each cheap to unwind):"
+- **A-02** [open, S, stale-claim, cut none] The TUI's pixel view has no minimap since the text cockpit; the cut note still says an off-view unit is on it
+  - The sight-alignment note says a unit off the side of the view is not drawn because 'the minimap has it', but the text cockpit (D-21-10 revised) moved doll, weapons, heat, contacts, notices and comms to text without naming the minimap, and `Overlay::Instruments` (the only producer of the minimap) is now used solely by the fixture example and one test; `minim…
+  - verifier's note: The claim was true when written (62a6a66e, the sight alignment, with `Overlay::Instruments` the default) and went stale at 331f418a (the text cockpit made `Overlay::Hud` the default). Scope it precisely: the TUI's `^G` view and the wasm/web picture draw no mi…
+  - waits on: An owner call the text-cockpit ruling (D-21-10 revised) did not make: correct the two notes to 'the CONTACTS column and the tape pips have it' (S, docs only), …
+  - source: docs/design/21-cut-notes.md:177 — "A unit off the side of the view is not drawn (the minimap has it)."; crates/mush-pixel/src/cockpit.rs:81 (`Overlay::Hud` default), examples/fixture.rs:90 (the only …
+- **A-04** [open, S, bug-seen-not-fixed, cut G.2] Sixel in Windows Terminal over ssh.exe reached 8 fps through ConPTY against the 20 Hz clock; seen, not investigated
+  - The G.1b dev2 smoke measured sixel over Windows Terminal at 17 KB a frame reaching only 8 frames a second through ConPTY while w11term held 20-21 fps. Nothing in the notes attributes it (ConPTY throughput, WT's sixel decode, or the uncompressed link) or records a follow-up; the Windows `ssh` path is the one D-21-12 says a PowerShell player will always get. …
+  - verifier's note: The 8 fps was read off the server's `fps` counter (frames sent in the last second) with `slow_skips 0`, so it is not a slow-write symptom the step-down could ever catch: a write that waits under one frame interval never counts as slow, and a frame identical t…
+  - waits on: A live dev2 session in Windows Terminal over ssh.exe typed by hand (the owner's box; also owed for G.2's WT auto path); a code change (a rate-based step-down o…
+  - source: docs/design/21-cut-notes.md:218 — "sixel over Windows Terminal encoded in 2.7–3.0 ms at 17 KB a frame and reached 8 frames a second through ConPTY"
+
+## The web client and the web gateway (5)
+
+- **W-43** [open, M, recorded-debt, cut G.3c] Web picture's helm does not predict between pulses, so a released turn can overshoot by a pulse's turn
+  - web/src/lib/picture.ts helmLine sends a HEADING order 30° ahead of the last frame's heading, extends it every 700 ms, and on release orders the heading the frame shows. Unlike the TUI's tui::helm it does not predict between pulses, so a release can overshoot by up to one pulse's turn. LocalPicture also renders with the look only, with no hull or ordered mar…
+  - verifier's note: Accurate, with one addition: the engine seam is already in place — G.3b.2's wasm ABI (`mp_render(..., hull, ordered, has_ordered)`) and `wasm.ts`'s `PixelLook` take the hull offset and the ordered heading — so the work is (1) the prediction itself in the web …
+  - waits on: Nothing hard; a lead call on TypeScript port vs a wasm export of the Rust helm (G.3a cut notes line 131 left both open).
+  - source: docs/design/21-cut-notes.md:226 "the TUI's helm predicts between pulses and this one does not yet, so a release can overshoot by up to a pulse's turn"
+- **W-44** [open, S, recorded-debt, cut G.1b] Web socket picture (server-drawn fallback) has no step-down and no box counters
+  - G.3a's server-drawn socket picture always renders 640x480 at 20 Hz. It closes the connection as slow when a send misses send_timeout_ms (ws.rs: 'closing slow/broken web client'). G.3a said G.1b's step-down would soften both pictures, but G.1b built the step-down (PixelView::write_took) and the mush_pixel_* metrics only for the SSH pump, so mush-net-web has …
+  - verifier's note: G.3a's server-drawn socket picture — since G.3b.3 the fallback and a remembered per-browser choice (D-21-4; PictureView.svelte:56-60) — draws 640x480 at the picture's 20 Hz with no step-down: a send that misses `send_timeout_ms` closes the socket with code SL…
+  - waits on: Nothing; low priority since G.3b made the socket picture the fallback (D-21-4), so a ruling on whether it is worth doing at all.
+  - source: docs/design/21-cut-notes.md:125 "A send that misses the socket's `send_timeout_ms` closes the connection as slow, as an envelope's would (G.1b's step-down will soften both)."
+- **W-45** [partly, S, recorded-debt, cut G.3c] Fixture test pinning the web's picture to the TUI's (owed by G.3a for G.3c), possibly closed
+  - G.3a asked for a fixture test pinning the web picture to the TUI's. G.3c argues the two match by construction, since both draw CockpitPicture from the same feeds. G.3b and G.7b.1 added a web golden (native = wasm-in-Node = golden). This may therefore be closed, but no test explicitly compares the web path with the terminal path; a verifier should confirm.
+  - disposition: closed in substance by the web golden (native = wasm = golden, six cases); a one-assertion pin of WebPicture's PNG hash would make it literal.
+  - waits on: Nothing; W-43 (the web helm's hull/ordered marks) would widen the cases it should cover.
+  - source: docs/design/21-cut-notes.md:131 (## G.3a, Owed (G.3c)) "a fixture test pinning the web's picture to the TUI's"
+- **W-46** [open, M, unbuilt-cut, cut G.11] Web client receives the Hello's asset_pack but nothing reads it (no web sounds)
+  - The G.11 follow-up (3427b93f) puts the optional asset_pack {version, pack_version, manifest} on the web Hello and keeps it as SessionStore.assetPack (web/src/lib/stores/session.svelte.ts:18, 99). No web code reads it. web/src uses no Audio or AudioContext, so the browser plays no cockpit sounds, from the pack or of its own. The follow-up is also not deploye…
+  - verifier's note: The web keeps `SessionStore.assetPack` and nothing reads it; web/src plays no sound at all (no Audio/AudioContext/.wav anywhere), so G.11's note that the web's 'sounds ... are its own' overstates it. Beyond a reader, web sounds need: an HTTP route to the pack…
+  - waits on: An owner ruling that the web should play sounds at all (doc 21's G.10 row scopes sounds to the TUI; the cut notes record the line client, not the web, as 'a cu…
+  - source: docs/design/21-cut-notes.md:401 "The web keeps it as `SessionStore.assetPack`; nothing on the web reads it yet."
+- **W-47** [open, L, deferred-by-design, cut G.3b] The browser (WebAssembly) render covers only the cockpit; chart, replay and doll pictures are not drawn by the engine in the browser
+  - D-21-4 says the wasm render replaces the socket frame 'for bucket A and B alike'. mush-pixel-wasm exports only the cockpit and map feeds (mp_feed 1 and 2). The chart keeps the web's SVG (G.5c, owner default), the replay keeps the web's canvas (G.8), and a doll page has no web form at all. Porting them to the engine is unscheduled.
+  - verifier's note: Precise except for the doll: the web does have a doll — `DollView.svelte` (doc 22 U.4), the look-grid doll drawn as SVG inside the cockpit tab's damage pane, smoked on dev2 2026-10-23 — so what has no web form is G.6a's standalone doll picture with its legend…
+  - waits on: An owner ruling: the chart's SVG and the replay's canvas are recorded as the owner's default/kept (doc 21 lines 475, 478), so this is work only if the engine's…
+  - source: docs/design/21-graphics-engine.md:369 "(G.3b) replaces it for bucket A and B alike once it draws the fixture pixel-for-pixel"
+
+## Feeds and the sim (tacsim) (7)
+
+- **W-48** [open, S, recorded-debt, cut G.4] Cockpit frame does not carry the ordered heading or the turn rate (the helm measures the rate from frames)
+  - The helm starts from an assumed 30°/s (the stock tank's turn_rate_mdeg_s in the unit definition) and re-measures the rate from consecutive frames; the live smoke measured about 38°/s. Because the order is not in the frame, a second connection cannot draw the same prediction. The work: a small tacsim change adding the ordered heading and turn_rate_mdeg_s to …
+  - verifier's note: The helm's 30°/s default is right only for the stock line tank (crates/tacsim/content/units/line_tank.json:137 `"turn_rate_mdeg_s": 30000`); the other hulls differ (biped_mk1.json:161 45000, biped_mk2.json:165 40000, heavy_mk1.json:150 20000, drone_mk1.json:7…
+  - waits on: The owner lifting the 'stay out of tacsim during the mining train' rule (cut notes:105) — SM.12 is unbuilt; naturally bundled with W-51's top-speed field in on…
+  - source: docs/design/21-cut-notes.md:113 "**Not done, recorded.** The cockpit frame does not carry the ordered heading or the turn rate; carrying both would let a second connection draw the same prediction"
+- **W-49** [open, M, deferred-by-design, cut G.4] Turn rate by speed and tonnage (a per-chassis speed curve) not designed
+  - The owner asked whether the turn rate should depend on speed and tonnage. Today it is fixed per mobility mode. The suggested shape is a speed curve per chassis, a tacsim design for after the mining train that has not been started. The helm's measured rate would follow whatever the sim does.
+  - verifier's note: 'Fixed per mobility mode' is accurate: it is a field of `TrackedDef` and the content gives one value per unit (line_tank 30000, heavy_mk1 20000, biped_mk2 40000, biped_mk1 45000, drone_mk1 90000, dray 1000 mdeg/s). This is a design question not yet asked of t…
+  - waits on: An owner ruling (whether the rate should depend on speed and tonnage) and the mining train's end; if taken, W-48's frame field should carry the effective rate …
+  - source: docs/design/21-cut-notes.md:105 "a speed curve per chassis is the suggested shape, a `tacsim` design for after the train"
+- **W-50** [open, M, deferred-by-design, cut G.5b] Orbital view: sky.chart carries no ships under way, so the ship's dot is the viewer's port
+  - sky.chart is always built from a port and carries no ship in passage, so G.5b's chart picture draws 'the ship's dot' (marked 'you') at the viewer's port. Doc 19 describes ships along their tickets' legs ('your dot from Phobos to Ceres'), which needs a feed change; the owner's default left it to come. The work: add ships under way to sky.chart and draw them.
+  - verifier's note: This is first a doc 19 (astronomy engine) feed change — doc 19:531 names the intended shape, "ships under way interpolated along their tickets' frozen legs" — and only then a G.5 draw change in all three renders (the TUI grid's `units` list, the web's SVG in …
+  - waits on: The owner taking it (cut notes:249 'left to come; the owner's default'); doc 19 §5's feed work (A.3b's section), which the graphics train does not own.
+  - source: docs/design/21-graphics-engine.md:475 "the ship's dot is the viewer's port until the feed carries ships under way"
+- **W-51** [open, S, recorded-debt, cut none] Cockpit frame carries no top speed; the HUD speed bar is scaled to a fixed 60 km/h
+  - The flight HUD's speed bar is scaled against SPEED_FULL_KPH = 60 (crates/mush-pixel/src/overlay.rs:619-622) and steps up by 20 km/h above that, because arena.cockpit carries no top speed. The work: add the unit's max speed to the cockpit feed and scale the bar from it.
+  - verifier's note: The constant is at overlay.rs:621 (its doc comment at 619-620), not 619-622. The value is already on the unit rules (`TrackedDef.max_speed_cms`, crates/tacsim/src/definitions/unit.rs:585) and `speed_ceilings` already reads it on the world, so the work is one …
+  - waits on: The mining train's end (the same tacsim-frame gate as W-48); bundle with W-48.
+  - source: docs/design/21-cut-notes.md:190 (## Text cockpit) "a speed bar on the right against 60 km/h (the cockpit frame carries no top speed yet; the next 20 above a faster speed)"
+- **W-52** [open, M, recorded-debt, cut G.7b] Replays recorded on atlas v2 lose their ground once v3 is taken
+  - A replay document points at the ground loaded on the server; it does not carry its own ground or version. Taking v3 therefore leaves every v2 replay without a map ('The ground of match N is not the ground loaded on this server.'). This is accepted, as at AE.1, but every future ground change will repeat it.
+  - verifier's note: True of the match replay book (16b cut I.1): it stores an arena id and a digest, not a version, and loses the ground on any digest change. But the tree already has the remedy's precedent for another artifact: crates/tacsim/src/arena/replay_ground.rs:1-3 "Comp…
+  - waits on: An owner ruling that pre-launch replays are worth keeping across ground changes (accepted as lost at AE.1 and G.7b.2); the deploy's @atlas/pack apply to versio…
+  - source: docs/design/21-cut-notes.md:424 "replays recorded on version 2 lose their ground once version 3 is taken, as at AE.1."
+- **W-53** [open, S, bug-seen-not-fixed, cut G.5b] Chart passage text reads 'aboard the an empty tacsim.unit.dray' (the vantage hull is a raw canonical id)
+  - Seen in the G.5b dev2 smoke and still in the tree. crates/tacsim/src/port/chart.rs:234 sets hull: format!("an empty {unit}") from the raw CanonicalId. Lines 386-389 ('t aboard the {}') and 476-479 ('the {} at {} t') then format it after 'the', and web/src/lib/chart.ts:408 prints it after 'aboard'. The result is a doubled article and an id where a name belon…
+  - verifier's note: The doubled article is in the server's two lines only (chart.rs:386-389 and :476-479, printed by `+chart` and the TUI's chart pane / the picture's passage rows); the web's line (chart.ts:408) reads "aboard an empty tacsim.unit.dray" with no doubled article bu…
+  - waits on: nothing technical; the file is in `tacsim/src/port`, the mining train's area, so it waits on coordination with SM.12
+  - source: docs/design/21-cut-notes.md:371 "the passages' text reads \"the an empty tacsim.unit.dray\" (the server's passage wording, older than this work)"
+- **A-03** [open, L, unbuilt-cut, cut none] D-21-20 / Q-21-5: a Ceres site height field seeded from the geology key (the ground the TV windscreen and survey chart share) is not built
+  - §8 and D-21-20 name a Ceres site with 'the geology key seeding a height field the same way it seeds pockets' as the first map with height, and Draft 0.10 keeps it as the owner's choice for the surface vehicle's windscreen. In the tree a site's cells carry only mush-atlas background noise (crates/mush-atlas/src/background.rs:36, ±150 cm about the datum), not…
+  - verifier's note: Title holds; two refinements. (a) Q-21-5/D-21-20 as "the first map with height" has in fact been answered by the arena (G.7b landed, docs/design/21-graphics-engine.md:85 "the arena is now the nearer first map for the cockpit"), so the open work is narrower: a…
+  - waits on: A ruling reconciling SM.4b's keyless site terrain (crates/tacsim/src/surface/ground.rs:476 "no geology key is read", so a dark geology layer still builds a rig…
+  - source: docs/design/21-graphics-engine.md:446 — "a Ceres site from doc 20 with the geology key seeding a height field the same way it seeds pockets"; :85 — "D-21-20's Ceres site stays the owner's first-map c…
+
+## Assets, sounds, looks (12)
+
+- **W-54** [open, M, recorded-debt, cut G.11] Sound pack is 19 synthesised placeholder tones; real recordings owed
+  - assets/sounds holds 19 short, deterministic synthesised tones from assets::tests::placeholder_tones (acquired.wav ... target_section_lost.wav). Nothing was ever recorded, and they are 'meant to be replaced'. The work: record or source real sounds under the same names, rebless the manifest with ASSETS_BLESS=1, bump the pack version, and redeploy the gateway …
+  - verifier's note: The pack version is not bumped by hand: the blesser derives it (`pack_` + 16 hex of the SHA-256 of the names and hashes, 21-cut-notes.md:313 "so it changes exactly when the pack does"), so the work is: source/record WAVs (RIFF/WAVE PCM, ≤5 s, per tests.rs `th…
+  - waits on: a sound source (recording or licensed library) — an owner choice; then a gateway redeploy
+  - source: docs/design/21-cut-notes.md:313 "**Placeholder sounds.** Nothing was ever recorded, so the first pack is nineteen short synthesised tones ... meant to be replaced"
+- **W-55** [open, S, recorded-debt, cut G.11] Eight notice kinds have no sound file (unidentified, struck_spent, receiver_clear, drive_no_route, emcon_on, emcon_off, slot_fired, slot_held)
+  - NoticeKind::as_str (crates/tacsim/src/arena/perception.rs:2732) and tui::sound::PRIORITY (sound.rs:65-92) list 26 kinds, but the pack has files for only 18 of them plus overheat. The dev2 smoke saw slot_fired and slot_held arrive as 'missing', silent by design. After the G.10 fix they are skipped, so the arming rules make no sound. Yet help cockpit says 'ea…
+  - verifier's note: Precise as stated; add that the pack test (tests.rs:282) pins only BELL_KINDS, so nothing holds the pack to every PRIORITY kind — the work includes either extending that assertion to PRIORITY (minus a recorded silent list) or recording the six unmentioned kin…
+  - waits on: nothing for placeholder tones (add rows to `placeholder_tones` and re-bless with ASSETS_TONES=1); W-54 if real recordings
+  - source: docs/design/21-cut-notes.md:368 "`slot_fired` and `slot_held` (the arming rules, `FIRE ALL WHEN …`) have no file in the pack and were `missing`, silent as designed."
+- **W-56** [open, M, unbuilt-cut, cut G.11] Asset pack: the sprite sheet is not shipped over the manifest (D-21-25)
+  - G.11's row and D-21-25 say the sprite sheet rides the same sftp manifest. G.11 shipped a sounds-only pack: assets/ holds only manifest.json and sounds/. Doc 22's looks are compiled into the binary, and no sprite sheet goes to w11term.
+  - verifier's note: The manifest schema already accepts kind `sprite` (assets.rs:225); what is unbuilt is shipping the sheets as pack files and any client that reads them — and w11term states no sprite protocol, so a shipped sheet would only fill its cache. The sprites are drawn…
+  - waits on: an owner decision on a client-side sprite use (w11term declares none); the w11term consumer
+  - source: docs/design/21-graphics-engine.md:481 "the sprite sheet, a font with the HUD's glyphs and the help topics ride the same manifest (D-21-25)"
+- **W-57** [open, M, unbuilt-cut, cut G.11] Asset pack: a font with the HUD's glyphs is not shipped over the manifest (D-21-25)
+  - D-21-25 names a font carrying the HUD's glyphs as pack content. None exists in assets/, and the manifest has no font kind that w11term would accept. The HUD draws a built-in 5x7 bitmap font into the frame, and the text cockpit uses the terminal's own font, in which the doll glyphs were seen joining into solid blocks.
+  - verifier's note: The manifest grammar accepts kind `font` (assets.rs:225) but nothing ships one; w11term says it would only cache a font, never install or use it, so the pack half is pointless until w11term grows a consumer. The text-cockpit doll's block-glyph problem (cut no…
+  - waits on: a w11term font consumer (external repo); the font's design
+  - source: docs/design/21-graphics-engine.md:481 "a font with the HUD's glyphs" (D-21-25); assets/ contains only manifest.json and sounds/
+- **W-58** [open, M, unbuilt-cut, cut G.11] Asset pack: help topics are not shipped over the manifest (D-21-25)
+  - D-21-25 and the G.11 row list the help topics as client-side assets that w11term fetches over the player's own connection. The pack ships no help files, and there is no client-side help reader.
+  - verifier's note: Accurate; note the manifest grammar already accepts `help` and that w11term promises only to cache such files, so the work is both server (ship docs/help/*.md in the pack) and client (a reader in w11term).
+  - waits on: a w11term help reader (external repo); an owner call that offline help is wanted
+  - source: docs/design/21-graphics-engine.md:481 "and the help topics ride the same manifest (D-21-25)"
+- **W-59** [open, S, bug-seen-not-fixed, cut G.11] w11term's pack cache fails under a long data-directory path (Windows 260-character limit)
+  - In the dev2 smoke, w11term's first pack sync failed with 'failed to persist temporary file'. Its per-host cache adds two 64-hex directory levels under the data directory, so a long data directory exceeded Windows' 260-character MAX_PATH; a short one worked. The fix (long-path support or shorter cache keys) belongs in w11term (codexprojs/w11term, the referen…
+  - verifier's note: Accurate. The fix lives in codexprojs/w11term src/assets.rs (a `\\?\` verbatim prefix or shorter cache keys); the only mitigation today is a short data directory, which no rustmush doc or help topic tells players.
+  - waits on: the w11term repo (not this workstream's tree); optionally a one-line note in docs/help/cockpit.md or ops.md
+  - source: docs/design/21-cut-notes.md:367 "A first try failed on w11term's side with \"failed to persist temporary file\": a data directory under a long path tripped Windows' 260-character limit"
+- **W-60** [open, S, owner-decision-pending, cut G.11] Owner review of G.11's implementer rulings (pack compiled in, placeholder tones, sftp only in game)
+  - G.11's rulings were taken in the cut and marked cheap to unwind. They are: the pack is compiled into the binary rather than deployed as an assets/ directory beside it, so a new pack needs a gateway restart; placeholder tones; and sftp only once in game, one channel per connection. None is recorded as an owner decision.
+  - verifier's note: Three rulings remain unreviewed, not four: compiled-in pack, placeholder tones, sftp only in game/one channel. The fourth (no web Hello asset_pack) was reversed by 3427b93f. Note G.11's row still lists "deploy.sh shipping `assets/`" as a dependency (doc 21:48…
+  - waits on: the owner's ruling on each
+  - source: docs/design/21-cut-notes.md:310 "Rulings taken here (each cheap to unwind):" and 312 "**Compiled in, not deployed beside.**"
+- **W-61** [open, L, unbuilt-cut, cut U.5] U.5: replace the placeholder sprite art for the tank, biped and unknown sheets with real art
+  - The three shipped sheets (crates/mush-pixel/looks: tracked_tank.json, biped.json, unknown.json) are placeholder art drawn by a throwaway generator out of rectangles. U.5 means real pixel art for every facing, the moving cycles and the wreck frames, inside the six-material palette and the 256-colour budget. No commit landed U.5.
+  - verifier's note: U.5 is two pieces: (a) real art for the three sheets' facings, moving cycles and wreck frames inside the six-material palette (look.rs materials `team-dark`, `team`, `team-light`, `black`, `steel`, `pale`) and the 256-colour budget; (b) a PNG-to-text importer…
+  - waits on: an artist/art source; the owner's call on painted detail vs team tint (the U.3 paint-vs-IFF question)
+  - source: docs/design/22-unit-kit.md:216 "| U.5 | real art, a PNG importer to the text form | — |"; docs/design/22-cut-notes.md:33 "Drawn by a throwaway generator out of rectangles; the JSON is the source from…
+- **W-62** [open, S, recorded-debt, cut none] Sprite sheet for the wheeled scout (scout_mk1): its look has a doll but no `sprites`
+  - crates/mush-pixel/looks/wheeled_scout.json has no `sprites` key, so a scout in the picture is drawn as the old flat silhouette in team colour, not from a sheet with facings, a moving cycle and a wreck frame. U.3 shipped sheets for the tank, the biped and unknown only, and no cut covers the scout.
+  - verifier's note: Accurate. A placeholder sheet is a small text-form addition (the U.3 format: front/rear/right still, 2–4 moving frames, a wreck, muzzles per `weapons` key), checked by the existing `unit_looks` contract test.
+  - waits on: nothing for a placeholder; U.5 for real art
+  - source: docs/design/22-unit-kit.md:184 "a type whose look has no sheet is the old silhouette, in team colour."; header line 5 "three with sprite sheets (tank, biped, and the `unknown` look"
+- **W-63** [open, S, recorded-debt, cut none] Sprite sheet for the drone (drone_mk1): its look has a doll but no `sprites`
+  - crates/mush-pixel/looks/drone.json has only units, label, short and doll, so a drone in the picture falls back to the flat team-colour silhouette. It needs a sheet: facings, a hover or moving cycle, a wreck frame, and muzzles if it is armed.
+  - verifier's note: Accurate; note the drone's look also carries no `weapons` key, so any sheet would need muzzles only if crates/tacsim/content/units/drone_mk1.json has weapon components (the contract test holds muzzles to them).
+  - waits on: nothing for a placeholder; U.5 for real art
+  - source: docs/design/22-unit-kit.md:184 "a type whose look has no sheet is the old silhouette, in team colour."
+- **W-64** [open, S, recorded-debt, cut none] Looks for the haulers (dray, dray_p): listed lookless, waiting on a cut that does not exist
+  - The contract test's LOOKLESS table exempts tacsim.unit.dray and dray_p with 'its look comes with its own cut', but no U-cut or G-cut names that work. A Dray drawn on a chart, a ship or deck view, or a mining site would need a look: label and short name, a doll, and maybe a sheet.
+  - verifier's note: Accurate; sharpen: no doc 21 bucket-table use draws a hauler today (the orbital view draws "the ship's dot", G.5b), so the look is owed only once a use exists (a deck/ship view, or ships under way on the chart/strategic board).
+  - waits on: a picture use that draws a hauler (none assigned in doc 21 §2)
+  - source: crates/mush-contract-tests/tests/unit_looks.rs:26 "a hauler, never in the arena: its look comes with its own cut"
+- **W-65** [open, S, recorded-debt, cut none] A look for the mining terrain vehicle (tv_prospector), for the TV windscreen and the quarry views
+  - tv_prospector is exempted as lookless pending 'its own cut', and no such cut exists. Doc 21 puts the TV's windscreen (bucket A on Ceres) on the heightfield, so the TV will need a doll and a sheet once that use is built.
+  - verifier's note: Accurate; the look (doll + sheet) is a prerequisite of the windscreen use, which itself has no cut in doc 21 §2 and no SM cut in doc 20.
+  - waits on: the TV windscreen use getting a cut (doc 21 §2 bucket A, unassigned); the SM.12 hold on tacsim
+  - source: crates/mush-contract-tests/tests/unit_looks.rs:34 "a mining terrain vehicle, never in the arena: its look comes with its own cut"
+
+## Deploys, live smokes, measurements (23)
+
+- **W-66** [partly, S, owed-smoke-or-deploy, cut G.1] G.1 acceptance: a 640x480 render of 4 ms or less on a quiet VPS was never measured; the row still says it is owed to G.1b
+  - G.1b's dev2 smoke measured only the 640x220 text-cockpit frame (1.3–2.8 ms, under load). The only VPS figure at 640x480 comes from the G.2 smoke: 3.9–5.6 ms with the unit-minds test holding a core, which is over the 4 ms limit. That size is still drawn by the web's server-side fallback and by Overlay::Instruments. The cut notes put the figure on the next de…
+  - disposition: the 640x220 VPS figure was measured (1.3-2.8 ms) and the doc row never updated; no 640x480 quiet-box figure exists. Fold into the measurement smoke.
+  - waits on: a quiet dev2 window, or an owner ruling to settle G.1's acceptance at the text-cockpit size; then the G.1 row amendment
+  - source: docs/design/21-graphics-engine.md:470 G.1 Acceptance "640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke)"; 21-cut-notes.md:62 "the VPS render…
+- **W-67** [open, S, owed-smoke-or-deploy, cut G.1b] G.1b step-down on back-pressure has never run on a real slow link
+  - The step-down is tested end to end only in mush-net-ssh tests: a slow write skips a frame, three in a row drop to 320 wide at 10 Hz, and ten clean seconds step back up. In the dev2 smoke neither link was slow ('skipped behind a slow write 0, stepped down 0 times'), so it never ran live, and the acceptance 'a client that stops reading costs one frame' has no…
+  - waits on: a dev2 session over a throttled link (tc on the box, or an uncompressed sixel box at 1717x1288 in w11term) with @pixel/stats and /metrics read before and after
+  - source: docs/design/21-cut-notes.md:218 G.1b smoke "The step-down was not provoked: neither link was slow (`skipped behind a slow write 0, stepped down 0 times`)"; doc 21:470 "a client that stops reading cos…
+- **W-68** [open, S, owed-smoke-or-deploy, cut G.2] G.2: sixel auto-detection in Windows Terminal (DA1 attribute 4, the CSI 16 t reply) never seen live; needs a hand-typed session
+  - Every Windows Terminal smoke (G.2, G.2b, the text cockpit, the U smoke) forced the encoder with @pixel/encoder sixel, because keys were piped into ssh.exe and the pipe cannot carry the probe's replies back. Still unseen live: whether WT's DA1 reply (attribute 4) selects sixel automatically, and whether WT answers CSI 16 t (the 10x20 default covers it if not…
+  - waits on: a hand-typed `ssh -p 6792 play@dev2` session from Windows Terminal with `@pixel/encoder auto`
+  - source: docs/design/21-cut-notes.md:62 "**Owed.** The auto path in Windows Terminal typed by hand; the MW2 comparison frame"; :61 "the auto path in Windows Terminal (DA1 attribute 4, and whether it answers `…
+- **W-69** [open, M, owed-smoke-or-deploy, cut none] Picture never verified live in kitty, Ghostty, foot, xterm, mintty or mlterm
+  - §4.1, §4.2 and §6 list these terminals as working only 'by the protocol'. Every live smoke used w11term, WezTerm or Windows Terminal, yet `help cockpit` names them as terminals that show the picture.
+  - verifier's note: WezTerm is verified (doc 21:333); the six unverified terminals `help cockpit` names are kitty and Ghostty (kitty encoder) and foot, xterm, mintty and mlterm (sixel).
+  - waits on: access to a Linux/macOS box with those terminals (or a volunteer tester); nothing in the code
+  - source: docs/design/21-graphics-engine.md:333 "Verified in WezTerm (its own SSH client) and, by the protocol, kitty and Ghostty."
+- **W-70** [partly, S, owed-smoke-or-deploy, cut G.3c] Web picture's arrow-key helm (HEADING orders) never smoked against a live gateway
+  - G.3c was 'not smoked in a browser yet'. The 2026-10-23 dev2 smoke records the picture drawn in Chrome and a look-key swing ('.' to 139°), but no arrow held to send HEADING orders. The arrow-key helm is the one place the cockpit tab sends an order, and its live behaviour is unrecorded: the 700 ms repeats, the stop on release or blur, and where the tank stops.
+  - disposition: the picture was smoked in Chrome; only the arrow-key helm (HEADING orders, overshoot) is unrecorded live.
+  - waits on: a dev2 session in Chrome with a seated unit and the tank's heading watched on release
+  - source: docs/design/21-cut-notes.md:229 "Not smoked in a browser yet: the next dev2 deploy."; :372 "the look keys turned it (a `.` swing to 139°)"
+- **W-71** [closed, S, owed-smoke-or-deploy, cut G.3b] Confirm mush_pixel_viewers stays at zero while a browser draws locally (G.3b.3)
+  - G.3b.3 named this gauge check as the proof on the live gateway. The dev2 smoke measured gateway CPU ticks (5 drawn locally against 73 server-drawn) but records no /metrics or @pixel/stats reading of mush_pixel_viewers.
+  - disposition: CLOSED: the gauge counts SSH views only, so the check was vacuous; the CPU-tick comparison at 28a870ba is the real proof.
+  - source: docs/design/21-cut-notes.md:361 "where `@pixel/stats`' box counters (`mush_pixel_viewers`) should stay at zero while a browser draws."
+- **W-72** [open, S, owed-smoke-or-deploy, cut G.5c] G.5c web chart light-lag rings and scale caption never smoked in a browser
+  - G.5c (3a778059) adds the 3/6/12/24 light-minute rings, their labels and the logarithmic-scale caption to the web's SVG chart tab. It was deployed on dev2 with 5fd41392 but never looked at in a browser. The 2026-10-23 smoke list covers G.11, G.10, G.8, G.5b (TUI), G.3b and U.4, not the web chart tab.
+  - waits on: a dev2 session in Chrome on the chart tab from Ceres Freeport (dev2 at 3aa8238b already carries 3a778059, so no redeploy needed)
+  - source: docs/design/21-cut-notes.md:267 "`svelte-check` with no errors or warnings, `mush-pixel`'s chart tests on the corrected constant. Not smoked in a browser yet."
+- **W-73** [open, S, owed-smoke-or-deploy, cut G.5b] G.5b label de-clutter fix (labels clear of dots and of each other) not deployed or smoked live
+  - e8056871 keeps labels clear of dots and of each other, placing the ring labels last where they fit. It fixes MARS and EARTH overlapping in the dev2 smoke. It is pinned by a unit test that moves Mars beside Earth at 640x230, 640x480 and 320x220. It landed after dev2's 3aa8238b and has not been seen on the live moving sky. The work: open ^G on the chart scree…
+  - waits on: the dev2 redeploy (W-75); then ^G on the TUI chart screen from Ceres Freeport
+  - source: docs/design/21-cut-notes.md:384 "## G.5b fix: labels clear of dots and each other" (no smoke recorded); the dev2 smoke :371 "the de-clutter let MARS and EARTH overlap"
+- **W-74** [open, S, owed-smoke-or-deploy, cut G.6] G.6a armour-doll page (^G on the damage screen) not deployed or smoked live
+  - G.6a (971c7960, ^G on the TUI's damage screen, screen 8, documented in help tui) landed after dev2's 3aa8238b. Its notes say 'Not smoked live'; it is verified only by tests. The work: open it in kitty and in sixel and check the doll, the legend, the wide and tall layouts, and the NOT IN A COCKPIT card.
+  - waits on: the dev2 redeploy (W-75); then `8` + ^G in kitty and sixel, wide and tall, seated and after a match
+  - source: docs/design/21-cut-notes.md:397 "`mush-net-ssh` (bucket B's clock, deaf to the helm, drawn on change only, its HUD, closed by Esc). Not smoked live."
+- **W-75** [open, S, owed-smoke-or-deploy, cut G.7b] dev2 redeploy owed for everything after 3aa8238b (G.5b fix, G.6a, G.11 Hello asset_pack, G.7b.1, G.7b.2)
+  - dev2 is at 3aa8238b per the deploy-plan memory. The cut notes record only the 5fd41392 deploy, so whether 3aa8238b itself is live is not in the notes. Undeployed graphics commits: e8056871 (G.5b label fix), 971c7960 (G.6a), 3427b93f (G.11 web Hello asset_pack), 92925b46 (G.7b.1) and cc607b03 (G.7b.2). G.7b.1 changes tacsim's arena.map (elev) and the cockpit…
+  - verifier's note: The undeployed set is both halves: the server half carries SM.11 (doc 20) and G.7b.1's `arena.map elev` + `sensor_height_cm` and G.7b.2's atlas v3; the gateway half carries G.5b fix, G.6a, the Hello `asset_pack` and the G.7b picture; plus a fresh web/dist who…
+  - waits on: the owner's go-ahead (doc 21:465); the cut-notes record of whether 3aa8238b itself is live is also missing
+  - source: deploy/README.md:527-529 "The picture draws the relief only from a gateway at doc 21 cut G.7b or later ... so deploy with `GATEWAY_RESTART=1`"; doc 21:465 "No deploy without the owner"
+- **W-76** [open, S, owed-smoke-or-deploy, cut G.7b] Take the atlas pack 2 → 3 on dev2 (and any running box) with @atlas/pack plan/apply while the centre is idle
+  - G.7b.2 ships the proving ground's atlas pack v3. A world holding v2 logs the newer-pack notice at boot and keeps fighting on the old ground until staff run '@atlas/pack plan/apply tacsim.proving_ground' with the centre idle. The plan should read '@3: 0 create, 4 update, 0 retire, 2 unchanged' (the deploy/README.md shelf recipe). No record says dev2 or any o…
+  - verifier's note: This is a step after the W-75 redeploy, not independent of it; a wiped store boots v3 directly (deploy/README.md:525 "A fresh store (the reset) boots version 3 directly"), which is the alternative if dev2 is wiped again.
+  - waits on: W-75 (a build that ships v3) and an idle simulator centre; the owner's acceptance that v2 replays lose their ground
+  - source: docs/design/21-cut-notes.md:424 "`deploy/README.md` has the shelf recipe (`@atlas/pack plan/apply`, `0 create, 4 update, 0 retire, 2 unchanged`)"
+- **W-77** [open, M, owed-smoke-or-deploy, cut G.7b] G.7b heights-on-the-wire and showcase relief not smoked live (TUI kitty/sixel and browser wasm)
+  - G.7b.1 and G.7b.2 have run only in the test suites, the browser's vitest parity (six cases hash for hash) and svelte-check; the notes say 'Not smoked live'. Still to check on a live gateway: the elev field over the real feed (a 131 KB arena.map frame); the heightfield and colour map drawn by default from the unit's own eye, with the 1.5 km view, in w11term …
+  - waits on: W-75 (the gateway + server + web/dist) and W-76 (the showcase landscape needs atlas @3 taken, or a fresh store) before a SIM START shows Signal Hill, The Bowl,…
+  - source: docs/design/21-cut-notes.md:428 "then every CI-named ignored lane of tacsim ... the browser's vitest parity (six cases hash for hash) and `svelte-check`. Not smoked live."
+- **W-78** [open, S, owed-smoke-or-deploy, cut G.7b] G.7 acceptance: the VPS figure for the heightfield (6 ms or less a frame) is owed, and the per-viewer budgets need re-checking
+  - G.7's acceptance is a crater rim on the proving ground or a Ceres site at 6 ms or less a frame. Only the owner's-box figure exists (G.7a: 2.45 ms, 2.4–3.0 ms), projected near 5 ms on the VPS. G.7b changed the producer: a 1.5 km view (VIEW_CELLS 150 against 60), the baked colour map by default, and the unit's own eye. The work: time the cockpit picture over …
+  - verifier's note: Note ops.md:1924 ("a fifth of a vCPU") already disagrees with §5/D-21-11 ("a quarter") before G.7b; both need one re-derived number for the heightfield producer.
+  - waits on: W-75 (G.7b on dev2) and a quiet-ish box; then amendments to doc 21 §2/§5/G.7 row and ops.md
+  - source: docs/design/21-graphics-engine.md:477 "at ≤6 ms a frame (G.7a: 2.45 ms on the owner's box over the proving ground; the VPS figure with G.7b's smoke)"
+- **W-79** [open, S, owed-smoke-or-deploy, cut G.10] G.10 one-sound-a-frame fix (3aa8238b) has no live check recorded
+  - 3aa8238b reduces a frame to the top-ranked name the pack has. It fixes the dev2 smoke's finding that a multi-notice frame played nothing because its first name, slot_fired, had no file. It is verified only by mush-net-ssh tests (the burst slot_fired, hit, target_section_lost, kill sounds 'kill' alone). The work: re-run the two-target range in w11term and co…
+  - verifier's note: Per the deploy-plan memory dev2 already runs 3aa8238b, so this check needs no redeploy — only a w11term session with the synced pack on a two-target range.
+  - waits on: a dev2 session in w11term (sync_assets on) on a two-target range, killing a target
+  - source: docs/design/21-cut-notes.md:375 "## G.10 fix: one sound a frame" — only "**Verified.** `mush-net-ssh`: the burst ... sounds `kill` alone"
+- **W-80** [open, S, owed-smoke-or-deploy, cut G.10] G.10 acceptance: the bell on a contact gained, in Windows Terminal, not heard live
+  - G.10's acceptance needs a contact gained to ring both in w11term and as Windows Terminal's bell. The 2026-10-23 smoke heard only w11term's named sounds over OSC 440. The BEL path (BELL_KINDS only, one bell per debounce) has only been unit-tested.
+  - waits on: a Windows Terminal session on dev2 (its bell setting audible) with a contact gained
+  - source: docs/design/21-cut-notes.md:306 "Not smoked live: a w11term with a sound pack waits on G.11; the bell can be heard in Windows Terminal on dev2 once deployed."
+- **W-81** [open, S, owed-smoke-or-deploy, cut G.10] G.10 acceptance: the overheat alarm repeating and stopping not seen live
+  - The acceptance asks for the overheat alarm to repeat while the frame says the unit is overheated and to stop when that clears. Only unit tests pin it; the dev2 smoke on a two-target range never overheated a unit.
+  - verifier's note: Not blocked on a feature: two shipped units carry a heat model (line_tank_laser, biped_mk2), so the alarm can be provoked live by fielding one and firing until overheated.
+  - waits on: a dev2 session with a unit driven to overheat (sustained fire on the range) in w11term and a bell terminal
+  - source: docs/design/21-graphics-engine.md:480 Acceptance "the overheat alarm repeats while the frame says so and stops when it clears"
+- **W-82** [open, S, owed-smoke-or-deploy, cut U.3] Re-verify live the three fixes from the 2026-10-22 dev2 smoke (far-contact bracket, NOT IN A COCKPIT card, paired armour rows)
+  - The smoke at 34e4d24e found three bugs, fixed in 9c0e06aa with unit tests. No later smoke record checks them on a live box: a 550 m contact bracketed by MARK_FAR_PX, the card after a match ends, and the biped's torso fitting a 48-row terminal.
+  - verifier's note: The three fixes are deployed (dev2 at 5fd41392 and later carries 9c0e06aa); only the live re-check is unrecorded. The paired-rows case needs a biped in a 48-row terminal; the card case needs a match to end or abort while ^G is open.
+  - waits on: a dev2 session: a contact at ~550 m dead ahead, ^G after a match ends, and a biped in a 48-row terminal
+  - source: docs/design/22-cut-notes.md:50 "**What the smoke found, fixed at once (the commit after 34e4d24e).**"
+- **W-83** [open, M, owed-smoke-or-deploy, cut none] Launch-box sizing: the per-viewer budget (twenty bucket-A viewers a vCPU) never measured with concurrent SSH viewers
+  - Per §13, each SSH viewer's render shares the gateway's core with its SSH crypto, one pump task caps a viewer at a core, and 'the launch box's vCPU count is the real limit'. §5's planning number is twenty bucket-A viewers a vCPU (a quarter vCPU and about 110 KB/s per viewer), but every VPS measurement is for a single viewer. G.3b removed the cost for web vie…
+  - verifier's note: The planning number must be re-derived for the heightfield producer (G.7b default), for SSH viewers only (G.3b made web viewers free, doc 21:14-16); nothing in the tree runs N concurrent pictures.
+  - waits on: W-75 (G.7b on dev2) and a multi-session driver (N w11term control pipes or an SSH bot); then §5/D-21-11/ops.md:1924 amendments
+  - source: docs/design/21-graphics-engine.md:580-582 "The step-down keeps that bounded; the launch box's vCPU count is the real limit."
+- **W-84** [partly, S, recorded-debt, cut none] deploy.sh does not wait for the port to free on a full gateway restart
+  - The spike recorded a gateway coming up while the old one still held the port; it recovered only through systemd's Restart=on-failure 5 s later. deploy/dev2-split/deploy.sh still runs `systemctl restart` followed by a bare `sleep 2`, with no port wait. The work: wait for the old listener to close, or for the new one to bind, before reporting done.
+  - disposition: the race was closed by 29b0ecd4 (SIGTERM wait); deploy.sh still reports done after sleep 2 with no readiness wait. Minor ops item.
+  - source: crates/mush-pixel/NOTES.md:217 "a cut that redeploys often should make deploy.sh wait for the port"; deploy/dev2-split/deploy.sh:154-162 restart then "sleep 2"
+- **W-85** [closed, S, bug-seen-not-fixed, cut G.2b] Full split restart's first start failed on the old child's quarantine-spool lock (35 s detour)
+  - In the G.2b redeploy, the new server child started while the old one still held the quarantine-spool lock, so the gateway exited and systemd restarted both halves. This is likely closed on main: the G.4 smoke (cut notes :111) records a clean restart with 29b0ecd4's fix at work. What remains: dev1 (8c648527), or any box on an older build, can still take the …
+  - disposition: CLOSED by 29b0ecd4, confirmed clean at 8e01dd93; the force-kill residual belongs to the hot-restart programme.
+  - waits on: (b) the dev1 redeploy (W-86, owner-held); (a) its own small cut on the supervisor
+  - source: docs/design/21-cut-notes.md:95 (## G.2b) "Found in the redeploy, not in this cut: the full restart's first start failed. The old server child still held its quarantine-spool lock"; closure hint :111 …
+- **W-86** [open, M, owed-smoke-or-deploy, cut none] dev1 carries none of the graphics train
+  - Per the deploy-plan memory, dev1 stays at 8c648527 (held by the owner), so the pixel view, sounds, web render and relief exist only on dev2. A dev1 deploy needs the owner's go-ahead.
+  - verifier's note: dev1 predates not only the graphics train but the spike (1458a421) and the 29b0ecd4 restart fix; a dev1 deploy is both halves plus web/dist (wasm target) plus atlas 2→3 or a fresh store, and per the memory the owner's Q-18-60 ruling is owed before a long-live…
+  - waits on: the owner's go-ahead (dev1 held since 2026-10-19) and the Q-18-60 ruling
+  - source: C:/Users/faeni/.claude/projects/C--Users-faeni-cc-rustmush/memory/MEMORY.md Deploy plan line: "dev1 unchanged at 8c648527"
+- **A-06** [open, S, owed-smoke-or-deploy, cut U.3] U.3 acceptance not seen live: a walker and a tank reading differently at 300 m, and the moving (tread/walk) cycle
+  - Doc 22 §8's U.3 'done when' is a walker and a tank reading differently at 300 m, turning their faces and rolling or walking while moving. The 2026-10-22 dev2 smoke saw tank sprites only (RB, RC from the tank sheet at 150 m and 50 m) and the biped only as the pilot's own doll; no biped contact sprite, no 300 m comparison and no moving-cycle animation is reco…
+  - verifier's note: Accurate, with three refinements: (1) no deploy is owed for this — U.3 (b962ce70) is already on dev2 at 3aa8238b; only the hand-played smoke is missing. (2) The machine fill never fields a biped (docs/help/simulator.md:210) and fills nothing on a range (:297-…
+  - waits on: A hand-played dev2 session with two pilot seats in a skirmish (the machines never field a biped; the range has no fill) — no deploy needed; the owner's go-ahea…
+  - source: docs/design/22-unit-kit.md:214 — "a walker and a tank read differently at 300 m, turn their faces as they turn, and roll or walk while moving"; docs/design/22-cut-notes.md:46-47 (tank sheet only; bip…
+- **A-09** [open, M, owed-smoke-or-deploy, cut none] §3.1's claim that a picture survives a server restart with its connection has never been exercised
+  - Doc 21 states the picture survives a server restart with its connection as the TUI does. No test in crates/mush-net-ssh/tests or crates/mush-gateway/tests opens a picture across a restart, and no cut note records a smoke with ^G open through a SIGHUP or split restart (the G.2b and G.4 restarts were done with no viewer in a seat). Exercising it means a sessi…
+  - verifier's note: Refine the check: since 16b cut AF.3 the match resumes across a server-half restart but the pilot is unseated until `BOARD` (arena_custody_split.rs:811-820, "BOARD takes it back"), so a `NOT IN A COCKPIT` card right after the restart is the correct picture, n…
+  - waits on: Nothing for the test half (a split test on the pattern of arena_custody_split.rs:824 plus tui_split.rs:473, driving the kitty probe reply and ^G through the SS…
+  - source: docs/design/21-graphics-engine.md:248-249 — "A picture survives a server restart with its connection, as the TUI does."
+
+## Docs, notes and help (stale claims and owed amendments) (32)
+
+- **W-95** [open, S, stale-claim, cut G.1] §9 promises a pixel line in healthz; G.1b deliberately left healthz unchanged and used /metrics
+  - §9 says the HUD's engineering numbers become @pixel/stats and 'a line in healthz'. G.1b built @pixel/stats and the mush_pixel_* counters in /metrics, and kept /healthz at four lock-free scalars; crates/mush-config/src/metrics.rs has no pixel field. The work: amend §9 to say /metrics, or add the line.
+  - waits on: nothing for the §9 amendment (G.1b's choice of /metrics over healthz was deliberate and is recorded); an owner call only if a healthz line is still wanted
+  - source: docs/design/21-graphics-engine.md:452-453 "becomes a `@pixel/stats` verb and a line in `healthz`"; 21-cut-notes.md:213 "`healthz` is unchanged (it stays four lock-free scalars)"
+- **W-96** [open, S, stale-claim, cut G.1] §9 says the u uncapped key sits behind a privilege; it is built behind a box-wide [pixel] diagnostics switch
+  - G.1a left the gate to the owner: a box-wide switch or a staff bit on SessionInfo. G.1b built the box-wide [pixel] diagnostics switch, as the owner ruled. It is true on dev2, so any player there can uncap, at a cost of up to a core per viewer. §9 still says 'behind a privilege, never a player key'. The work: amend §9, or build a per-player staff gate if one …
+  - verifier's note: The owner ruled box-wide at G.1b (Draft 0.13 header, cut notes G.1b), so §9 line 451 is the stale text; a per-player staff gate is only work if the owner still wants one before launch.
+  - waits on: the §9 amendment on nothing; a per-player staff gate on an owner ruling (the 2026-10-22 ruling chose box-wide)
+  - source: docs/design/21-graphics-engine.md:451 "The `u` uncapped switch stays as a staff diagnostic behind a privilege, never a player key."; crates/mush-net-ssh/src/tui/pixel.rs:104 "The staff diagnostics, b…
+- **W-97** [open, S, stale-claim, cut G.2] G.2 row still says the live SSH sixel smoke is owed; it was smoked on dev2 on 2026-10-22
+  - The row's 'as built' note ends with 'the live SSH smoke owed'. The cut notes and commits d577f729 and 0e379336 record the live dev2 smoke at bbe1e75e (w11term kitty and sixel, Windows Terminal over ssh.exe) and again at 6d71b079 (G.2b). Only the WT auto path is still unseen (W-68). The row text is stale.
+  - verifier's note: The row's parenthetical contradicts the doc's own Draft 0.6.1/0.7 headers; the row should say the live SSH smoke was made (w11term kitty+sixel, WT sixel over ssh.exe) and only Windows Terminal's auto path (DA1 attribute 4, CSI 16 t) is unseen.
+  - source: docs/design/21-graphics-engine.md:471 "the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed)"; 21-cut-notes.md:54 "Smoked live on dev2 (2026-10-22, the owner's go-ahead)"
+- **W-98** [open, S, stale-claim, cut G.3] G.3 row is garbled: G.3a's gateway work is labelled 'G.3c (landed)', and a leftover 'G.3c ... after SM.10' follows
+  - The row reads: 'G.3a (landed) the gateway half; G.3c (landed) the cockpit tab's canvas — the picture command, the per-connection feed cache, the frame clock, the binary PNG'. The picture command, feed cache, clock and PNG are G.3a's gateway half (c47cdc57; the cut notes say 'the gateway half is G.3a'). The row then repeats '**G.3c** the cockpit tab's canvas…
+  - verifier's note: The row should read: G.3a (landed, c47cdc57) the gateway half — the `picture` command, the per-connection feed cache, the frame clock, the binary PNG; G.3c (landed, 456d9e4d) the cockpit tab's canvas in the web client; and the trailing pre-landing "after SM.1…
+  - source: docs/design/21-graphics-engine.md:472 "**G.3c (landed)** the cockpit tab's canvas — the `picture` command, ...; **G.3c** the cockpit tab's canvas in the web client, after SM.10"
+- **W-99** [open, S, stale-claim, cut G.3b] G.3b row still says the browser heightfield 'waits on G.7b'; G.7b.1 already draws it in the browser
+  - The G.3b row says the web render covers 'the cockpit picture only ... the heightfield waits on G.7b'. G.7b.1 (92925b46) feeds mush-pixel-wasm the same map with elev, and the web golden gained a relief map: six cases, with native = wasm-in-Node = golden. The parenthetical is stale.
+  - source: docs/design/21-graphics-engine.md:473 "the heightfield waits on G.7b"; 21-cut-notes.md:413 "**The browser draws it too**: mush-pixel-wasm feeds the same map"
+- **W-100** [open, S, owed-doc-amendment, cut G.4] Doc 17 amendment for the leash and helm order not made; the owner must name the section
+  - §14 assigned the G.4 leash and helm-order amendment to doc 17 §6, but that section covers due-event scheduling. The amendment is held for the owner to name a home. 17e (the field pilot's acceptance) is a candidate, though it does not mention the leash. Until then G.4 is recorded only in doc 21, its cut notes and doc 02 §5.6, and fb784a71 restates the placem…
+  - waits on: the owner naming the doc 17 section (17e is the candidate §14 offers)
+  - source: docs/design/21-graphics-engine.md:597-601 "*Not made: doc 17's §6 is the due-event scheduling section ... Still open on 2026-10-23"
+- **W-101** [open, S, stale-claim, cut G.10] G.10 row lists sound names that were not built (contact-gained, contact-lost, power-online) and kitty's OSC 99
+  - G.10 ruled that the sound names are the notice kinds' wire words with underscores (acquired, lost, power_online, ...). Those are what assets/sounds, assets/manifest.json and tui::sound::PRIORITY ship. The §10 row body still gives contact-gained, contact-lost and power-online, which do not exist. It also still says 'kitty's OSC 99 with its s= sound for kitty…
+  - source: docs/design/21-graphics-engine.md:480 "the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …"
+- **W-102** [open, S, owed-doc-amendment, cut G.10] D-21-24 still says kitty gets OSC 99 sounds and BEL goes everywhere
+  - D-21-24 in §11 still says sounds are sent 'as BEL everywhere', and as w11term's OSC 440 'or kitty's OSC 99 where XTVERSION or the probe says so'. G.10 ruled that kitty gets BEL, not OSC 99, and that BEL goes only to BELL_KINDS on non-w11term terminals; a w11term gets OSC 440 names instead. The decision text needs the same amendment the G.10 row's preface ca…
+  - source: docs/design/21-graphics-engine.md:518-519 "sent as BEL everywhere and as w11term's four-field OSC 440 (`440;1;play;<name>`) or kitty's OSC 99 where `XTVERSION`"
+- **W-103** [partly, S, stale-claim, cut G.10] G.10 row claims w11term queues 16 sounds, but the smoke saw it drop them
+  - The row says the client plays sounds serially at a 40 ms floor with a 16-deep queue. The dev2 smoke found that w11term drops ('rate-limited') a sound arriving within 40 ms of another rather than queueing it, which is why the G.10 fix sends one sound a frame. Either the row or w11term's behaviour needs correcting.
+  - disposition: doc wording only: w11term has the queue but its 40 ms limit drops rather than defers; the server fix (3aa8238b) is in.
+  - waits on: nothing for the doc; a w11term change is the owner's
+  - source: docs/design/21-cut-notes.md:369 "w11term drops a sound that comes within its 40 ms floor of another (`rate-limited`) rather than queueing it" vs 21-graphics-engine.md:480 "a 16-deep queue"
+- **W-104** [open, S, stale-claim, cut G.11] G.11 row's Depends column still names 'deploy.sh shipping assets/'; the pack is compiled into the gateway
+  - As built (a G.11 ruling), the pack is compiled into the gateway binary with include_bytes! (mush_net_ssh::assets::SHIPPED). deploy.sh ships nothing, and §14 confirms it. The G.11 row's Depends cell still lists the deploy.sh dependency, and its 'rooted at a shipped assets/ directory' is stale.
+  - source: docs/design/21-graphics-engine.md:481 Depends on "| G.10, deploy.sh shipping `assets/` |"; §14:603 "as built the pack is compiled into the gateway, so deploy.sh ships nothing"
+- **W-105** [open, S, owed-doc-amendment, cut G.7] Doc 20 §4/§5 amendment (windscreen and survey chart as pictures, first map with height) not made; §14's 'lands with G.7b' is stale
+  - §14 says the doc 20 amendment 'lands with G.7b'. It would record the TV's windscreen and the survey chart as pictures, and a Ceres site as the first map with height (Q-21-5/D-21-20). G.7b landed (92925b46, cc607b03) with the arena's relief, not a Ceres site, and did not touch docs/design/20-surface-mining.md, which still never mentions doc 21. The pictures …
+  - verifier's note: The §14 note is doubly stale: G.7b has landed without touching doc 20, and the amendment it describes (the windscreen and survey chart as pictures, a Ceres site as the first map with height) now records things that are not built and a first-map claim the aren…
+  - waits on: the mining train (SM.12) owning doc 20; the windscreen and survey pictures having no cut
+  - source: docs/design/21-graphics-engine.md:594-596 "*Not made yet: it lands with G.7b, after the mining train, which owns doc 20.*"
+- **W-106** [open, S, stale-claim, cut G.7] Doc 16 §11's 'as built' note on the cockpit picture is out of date
+  - §14 marks the doc 16 amendment as made by G.1a, but the note in doc 16 §11 is stale. It describes a kitty-only raycast with the instruments drawn into the frame, says a turn moves only a look 'until doc 21 G.4', and says 'No feed, frame or version moved'. Since then sixel has landed, the text cockpit has moved the instruments to text, and G.4 has made turns…
+  - verifier's note: Also stale in the same note: the contact colours (khaki unclassified, red hostile) were replaced by U.1's team colours and the neutral-grey unknown, and sixel joined kitty at G.2.
+  - source: docs/design/16-combat-arena.md:1211-1212 "the line over the picture prints the look against the sim's heading until doc 21 G.4 makes a turn a helm order. No feed, frame or version moved;"
+- **W-107** [open, S, stale-claim, cut G.0] README row for doc 21 is stuck at Draft 0.4, D-21-1..25 and 'cuts G.0–G.9'
+  - G.0's acceptance is 'the README row'. The doc 21 row in docs/design/README.md:55 still reads Draft 0.4 (2026-10-22), D-21-1..25 and 'cuts G.0–G.9'. It also still names OSC 99 for kitty and gives no landed status. Doc 21 is at Draft 0.20 (2026-10-23) with D-21-26, and its cut table runs to G.11 with G.3b, G.6a and G.7a/b landed.
+  - source: docs/design/README.md:55 "(Draft 0.4, 2026-10-22; D-21-1..25; ... G.10 sounds as names over BEL/OSC 440/OSC 99 ...)" ... "cuts G.0–G.9 |"
+- **W-108** [open, S, stale-claim, cut none] Doc 21 names `tacsim.chart` as the survey's feed, but it is a durable store family, not a client feed
+  - `tacsim.chart` is CHART_FAMILY, the typed record family of the operators' charts (tacsim/src/surface/chart.rs:63, port/families.rs:616). The panel feeds a client holds are `site.map`, `body.ground` and `tv.status`. §2's surveying row and §3.1 should name those.
+  - verifier's note: Line 220 already names "the site map" beside `tacsim.chart`; the fix is to replace `tacsim.chart` at lines 220 and 252 with the panel feeds a client holds (`site.map`, `body.ground`, `tv.status`), since `tacsim.chart` is the port's durable record family, not …
+  - source: docs/design/21-graphics-engine.md:252 "`sky.chart` carries the orbital view; `tacsim.chart` the survey."
+- **W-109** [open, S, stale-claim, cut G.7b] §3.1's 'the one feed change this needs is none' is stale
+  - G.7b added `elev` to arena.map and `sensor_height_cm` to the cockpit frame. The cut notes also record further feed changes that are owed: the ordered heading and turn rate (G.4), ships under way in sky.chart (G.5b), and site heights for the windscreen.
+  - verifier's note: §3.1 should say the cockpit needed two additive fields (`elev` on `arena.map`, `sensor_height_cm` on `arena.cockpit`, no version bump) and list the feed additions still owed (ordered heading and turn rate for G.4; ships under way for `sky.chart`).
+  - source: docs/design/21-graphics-engine.md:251 "The one feed change this needs is none: `arena.cockpit` v6 and `arena.map` v1 carry the cockpit;"
+- **W-110** [open, S, stale-claim, cut G.7] §8 says no map carries height and the first map is the owner's Q-21-5 pick (Ceres), but the arena came first
+  - G.7a found the proving ground's shipped relief, and G.7b put `elev` on arena.map and draws it by default. §8 and D-21-20 ('a Ceres site is the first map with height') therefore read as stale. The Ceres site remains the windscreen's map.
+  - verifier's note: The header and the G.7 row already record that the arena came first; the unamended text is §8's body (lines 440-447) and D-21-20's "a Ceres site is the first map with height", which should read as the windscreen's map, a later one.
+  - source: docs/design/21-graphics-engine.md:443 "Today no map does: the arena grid is flat and doc 20's geology is provinces and pockets, not relief."
+- **W-111** [open, ?, owner-decision-pending, cut none] Publishing w11term beside the game is the owner's open intention; help already says it ships
+  - Q-21-8 and §6 say the owner 'means to' publish w11term beside the game as the Windows option. Nothing in this repo (README, help or deploy doc) distributes it, links to it or says where players get it. Yet help cockpit already calls it 'the Windows terminal that ships beside the game'. Publishing is the owner's call; after that, the help should name a downl…
+  - waits on: the owner's decision to publish w11term (outside this repo); the help's download line after that
+  - source: docs/design/21-graphics-engine.md:413 "the owner means to publish it beside the game as the Windows option (Q-21-8)"; docs/help/cockpit.md:731 "the Windows terminal that ships beside the game"
+- **W-112** [open, S, stale-claim, cut none] help cockpit's terminal order contradicts D-21-23 (w11term, WezTerm software, then Windows Terminal)
+  - D-21-23 (Q-21-8) says the help names w11term first, WezTerm's software front end second and Windows Terminal (sixel) third. docs/help/cockpit.md:731-734 lists w11term, Windows Terminal, then WezTerm. Either the help or the decision text needs to change.
+  - waits on: a pick between reordering the help and amending D-21-23 to the help's order
+  - source: docs/design/21-graphics-engine.md:564 "the help page names it first, WezTerm's software front end second, Windows Terminal (sixel) third."
+- **W-113** [open, S, owed-doc-amendment, cut G.11] Help says w11term fetches sounds with 'nothing to install', but ordinary w11term SSH profiles have sync and remote sounds off
+  - w11term's protocol doc says player.remote_sounds and player.sync_assets follow game_mode or rustmush, and that ordinary SSH profiles default both off. The dev2 smoke used a profile with both on. help cockpit should say a play profile, or those flags, is needed.
+  - verifier's note: Help should say the fetch needs a w11term play (game-mode / rustmush) profile or those two flags set; an ordinary SSH profile fetches nothing and plays only BEL.
+  - source: docs/help/cockpit.md:801 "have over your own connection (nothing to install, no second login) and plays"; w11term docs/game-client-protocol.md:36 "Ordinary SSH profiles default both off."
+- **W-114** [open, S, stale-claim, cut G.1b] deploy/README.md says the dev2 lane was removed, but deploy/dev2 exists and the graphics smokes run on it
+  - deploy/dev2/ and deploy/dev2-split/ are in the tree, and deploy/dev2/instance.env:119 sets PIXEL_DIAGNOSTICS=true. G.1b calls dev2 'the smoke box', and doc 21 says 'dev2 is the box these cuts smoke on'. The README's claim is stale.
+  - verifier's note: The claim predates doc 21 (2026-09-22); the dev2 lane in the tree is the live smoke box for every graphics cut since 2026-10-21.
+  - source: deploy/README.md:13 "The unused dev2 deployment lane has been removed." vs docs/design/21-cut-notes.md:210 "`true` on dev2, the smoke box"
+- **W-115** [open, S, owed-doc-amendment, cut U.4] Doc 22 not folded for U.4 (and G.3b): header, §1, §5 and the §8 U.4 row still read as unbuilt
+  - The header still says Draft 0.2 'U.1–U.3 as built'. §1 says the look renderers live in 'later, the web client's WebAssembly', which G.3b built. §5 says the web reads the looks '(a later cut)', and the §8 U.4 row has no done-when, though U.4 landed (b7adfbcb) and the README row already says U.1–U.4 as built. A Draft 0.3 fold is owed.
+  - verifier's note: The fold should also split the U.4 row's "doll and sprites": U.4 (b7adfbcb) built the web doll only; the browser picture's sprites come through G.3b's WebAssembly render of the same crate (5fd41392).
+  - source: docs/design/22-unit-kit.md:186 "- **Web**: the cockpit tab's doll and the picture's sprites read the same looks (a later cut)."; line 3 "Draft 0.2 — 2026-10-22, U.1–U.3 as built."
+- **W-116** [open, S, stale-claim, cut U.4] 22-cut-notes says U.4 was never smoked in a browser; the 5fd41392 dev2 smoke of 2026-10-23 saw U.4's doll
+  - The U.4 note ends with 'Not smoked in a browser yet'. Doc 21's dev2 smoke record (28a870ba, made after b7adfbcb, in the owner's Chrome on 2026-10-23) reports U.4's doll in the damage pane. The U.4 note should record that smoke.
+  - source: docs/design/22-cut-notes.md:65 "Not smoked in a browser yet." vs docs/design/21-cut-notes.md:372 "U.4's doll was in the damage pane."
+- **W-117** [open, S, stale-claim, cut G.4] NOTES.md debt 'camera on a leash but the sim is deaf' is closed by G.4 but still listed
+  - helm.rs (G.4) sends turns as HEADING helm orders, predicts the heading between pulses at a measured turn rate, and lets each new frame replace the prediction, which is exactly the cut NOTES asked for. The NOTES text still lists it as debt. The only remaining piece is the feed-fields item (W-48).
+  - source: crates/mush-pixel/NOTES.md:94 "The camera is on a leash but the sim is deaf"; contradicted by crates/mush-net-ssh/src/tui/helm.rs:1 "the pixel view's turn keys steer the tank"
+- **W-118** [open, S, stale-claim, cut G.4] NOTES.md debt 'toggle-turn v1; parser does not yet decode kitty release events' is closed but still listed
+  - keys.rs decodes the kitty keyboard protocol's event type (`"3" => Key::Release(a)`) and KeyboardFlags. pixel.rs pushes the protocol while the view is open, so a held arrow turns the tank and releasing it stops the turn; toggle remains only as the fallback. NOTES still lists the debt.
+  - source: crates/mush-pixel/NOTES.md:97 "hold-to-turn needs the kitty keyboard protocol's release events (CSI … u), which the parser does not yet decode"; contradicted by crates/mush-net-ssh/src/tui/keys.rs:40…
+- **W-119** [open, S, stale-claim, cut G.2/G.3b] NOTES.md 'Sixel and the web canvas are not here' is stale: both encoders exist
+  - sixel.rs (G.2) encodes the same Frame. mush-net-web/src/picture.rs sends gateway-drawn PNGs to the web (G.3a/G.3c), and mush-pixel-wasm draws the cockpit in the browser (G.3b). NOTES estimated sixel at 4x the PNG bytes; it measured about 2.2x raw (20,631 against 9,382 B) and parity after zlib.
+  - source: crates/mush-pixel/NOTES.md:104 "Sixel and the web canvas are not here"; contradicted by crates/mush-pixel/src/sixel.rs, crates/mush-pixel-wasm/src/lib.rs:1
+- **W-120** [open, S, stale-claim, cut G.7b] NOTES.md 'heightfield terrain needs a heightmap the arena does not carry' is stale
+  - heightfield.rs is the voxel-space producer (G.7a). arena.map now carries per-cell elev, and CockpitPicture draws relief by default where heights are present (G.7b.1). The proving ground's atlas is v3, with showcase relief (G.7b.2).
+  - source: crates/mush-pixel/NOTES.md:107 "Heightfield terrain (the MechWarrior horizon) needs a heightmap the arena does not carry"; contradicted by crates/mush-pixel/src/cockpit.rs:46-58 "the held arena map d…
+- **W-121** [open, S, stale-claim, cut G.7b] NOTES.md G.7a section says the feed half is 'G.7b, after the mining train'; G.7b has landed
+  - G.7b.1 (92925b46, heights on the wire) and G.7b.2 (cc607b03, showcase relief) are on main. NOTES has no G.7b entry and still frames it as future work.
+  - source: crates/mush-pixel/NOTES.md:305 "The feed half (`arena.map` with elevations) is G.7b, after the mining train."
+- **W-122** [open, S, stale-claim, cut G.1a] NOTES.md load-experiment debt 'a per-row ground lookup ... is a real cut's work' was done in G.1a
+  - raycast.rs now casts rays by column and writes pixels row by row, computing per-row constants once from tables. NOTES' own G.1a entry records 640x480 dropping from 4,024 us to about 950 us, but the old debt line remains.
+  - verifier's note: The load-experiment section (dated 2026-10-21) reads as history and NOTES' G.1a entry already records the closure; the fix is a one-line pointer or marking that section historical.
+  - source: crates/mush-pixel/NOTES.md:200 "a per-row ground lookup would roughly halve it, and that is a real cut's work"; contradicted by crates/mush-pixel/src/raycast.rs:17 "Two passes (doc 21 cut G.1)"
+- **W-123** [open, S, stale-claim, cut none] NOTES.md 'a real cut will want a zoom or a bigger sprite scale for the lock' was answered by contact brackets, not a zoom
+  - raycast.rs brackets any reported contact that is covered, under a few pixels tall or deep in fog, at a minimum of 6-10 px (MARK_MIN_PX/MARK_FAR_PX), in both producers. No zoom exists anywhere in the engine, the TUI or doc 21. If the owner still wants a zoom, nothing is assigned to it.
+  - verifier's note: The only `zoom` in the TUI is the quarry screen's (screen.rs:1093, doc 20 SM.9); no picture zoom or lock sprite scale exists or is assigned, and the brackets (MARK_FAR_PX) are what answered the lock-readability debt.
+  - waits on: the NOTES line on nothing; a zoom or larger lock sprite on an owner ask (no cut names one)
+  - source: crates/mush-pixel/NOTES.md:85-87 "BA at 450 m is two pixels tall ... a real cut will want a zoom or a bigger sprite scale for the lock"; crates/mush-pixel/src/raycast.rs:452 "A contact drawn but too …
+- **W-124** [open, S, owed-doc-amendment, cut none] NOTES.md per-cut pointers stop at G.7a; later landed cuts have no entry
+  - NOTES points to the cut notes for G.1a, G.2 and G.7a only. It has nothing for G.1b, G.2b, G.3a/b/c, G.4, G.5a-c, G.6a, G.7b, G.8, G.10, G.11 or the text cockpit. The work: add one-paragraph pointers, or mark NOTES as frozen at G.7a and defer to docs/design/21-cut-notes.md.
+  - waits on: a choice between adding pointers per cut and freezing NOTES at G.7a with one line deferring to docs/design/21-cut-notes.md
+  - source: crates/mush-pixel/NOTES.md:282-310 headings end at "## G.7a: the heightfield (2026-10-22)"
+- **A-07** [open, S, stale-claim, cut U.3] §3.2's colour arithmetic is stale: '16 bases times 12 fog steps plus 16 sky' is now 14x12 + 16 sky + 12 paints x 6 = 256
+  - U.3 retired the three flat sprite bases and added twelve paints fogged in six steps; the raycaster's module doc and a test pin 14 x 12 + 16 + 12 x 6 = 256 exactly. Doc 21 §3.2's colour-discipline paragraph still describes the spike's palette, so a reader sizing a new producer's palette from it would overrun the PNG's 256.
+  - verifier's note: Doc 21 §3.2 (L271) should read: the raycaster's 14 bases times 12 fog steps, plus 16 sky bands, plus 12 sprite paints times 6 fog steps = 256 exactly (doc 22 U.3), pinned by `the_palette_budget_is_256`. Title is accurate; add that the pre-U.3 figure was 17 x …
+  - waits on: nothing — a one-sentence amendment to doc 21 §3.2 on the next doc 21 draft bump
+  - source: docs/design/21-graphics-engine.md:271 — "the raycaster's 16 bases times 12 fog steps plus 16 sky"; crates/mush-pixel/src/raycast.rs:37 — "14 x 12 + 16 + 12 x 6 = 256"
+- **A-08** [open, S, stale-claim, cut U.3] Doc 22 §6 still says a sheet is checked for 'at most 16 colours'; as built a palette names materials from a closed set of six
+  - D-22-7's as-built note and §3.2 say a palette maps characters to one of six materials, never a colour, but §6's list of what mush-pixel checks on a look alone still carries Draft 0.1's 'at most 16 colours'. W-115 lists the header, §1, §5 and the §8 U.4 row as unfolded; §6 is not among them.
+  - verifier's note: Source line for D-22-7 is docs/design/22-unit-kit.md:233-234, not :230 (line 230 is the tail of D-22-5). §6 L191 should read: "...legend and palette closure (every palette key naming one of the six materials), the required facings and frame counts, frames all…
+  - waits on: nothing — a one-line fix that can ride the owed doc 22 Draft 0.3 fold for U.4 (W-115)
+  - source: docs/design/22-unit-kit.md:191 — "required facings and frame counts, at most 16 colours, frames all of `size`"; D-22-7 at :230 — "a palette names materials from a closed set of six"
+
+## Doc 21 §2 uses with no cut (12)
+
+- **W-126** [open, M, unassigned-use, cut none] Surface mining TV windscreen (a bucket-A first-person picture of a Ceres site) has no cut
+  - No §10 cut draws the rig's windscreen, and mush-pixel has no site picture. The `site.map` feed (tacsim/src/port/site_map.rs) has no elevation field, though the site's cells hold `elev_cm`. Building it needs a feed that carries the site's heights and classes, plus a picture that drives the heightfield from the rig's pose. Per the G.7a addendum, its colour ma…
+  - verifier's note: The table's "the same raycaster over the site map" is stale: since G.7a/G.7b the producer for ground with relief is `mush_pixel::heightfield`, driven by an `elev` field the feed carries. The site's cells are `mush_atlas::cells::Cell` (class + elev_cm). Reword…
+  - waits on: a tacsim feed change (site heights + classes on `site.map`), which the mining train owns (SM.12a on hold); the owner's Q-21-5 call now that G.7b took the provi…
+  - source: docs/design/21-graphics-engine.md:203 "| Surface mining — the TV's windscreen (doc 20) | the rig | the site's atlas region + geology chart | the same raycaster over the site map;"
+- **W-127** [open, L, unassigned-use, cut none] Ground fighting on a body's surface (doc 17 R-B end state) as a bucket-A picture has no cut
+  - This would generalise the arena cockpit to the IC region map. Nothing is built, and the use waits on the region carrying a map that the cockpit picture can read.
+  - verifier's note: "the use waits on the region carrying a map" is imprecise: an atlas Surface region already carries a cell map with class and elevation (the proving ground is one, and G.7b.2 authored its relief). What is missing is doc 17 R-B's IC venue — a sortie outside a m…
+  - waits on: doc 17 R-B's IC venue ("not designed here"); generalising `arena.map`/`arena.cockpit` beyond a match
+  - source: docs/design/21-graphics-engine.md:204 "Ground fighting on a body's surface (doc 17 R-B's end state) | a unit | the IC region map | bucket A once the region carries a map"
+- **W-128** [open, L, unassigned-use, cut none] Remote equipment camera (drone, rover, turret, station camera) picture has no cut
+  - This is a device seat's first-person picture, with the F3 control channel deciding whose picture it is. No cut covers it, and no device-camera feed or picture exists.
+  - verifier's note: Add: the arena's `UnitClass::Drone` is a hull class with no seat, and SM.12b's mining drones are NPC excursions — neither is a remote camera; the F3 control channel/lease that would decide whose picture it is does exist (`mush_sim::seat::ControlLeaseView`), s…
+  - waits on: a device seat with a cockpit-shaped feed (the action-provider protocol on M32+F3); drones/turrets as controllable devices (SM.12b)
+  - source: docs/design/21-graphics-engine.md:205 "Remote equipment: drone, rover, turret, station camera | the device | wherever it stands | a seat is a seat: the control channel (F3) decides whose picture it i…
+- **W-129** [open, M, unassigned-use, cut none] Corridor views in room descriptions deferred past G.9 (Q-21-6 / D-21-21)
+  - The atlas carries no corridor model. The cheap first form would be a stock render built from the neighbourhood graph, which 'may not be worth the pixels'. No cut is assigned, and the decision is deferred until after G.9.
+  - verifier's note: "The atlas carries no corridor model" should read "no authored room geometry a renderer could draw": the atlas does carry corridor polylines (`ConnectionDef.corridor`, for travel) and room footprints (`RoomGeo.footprint`), which the "stock corridor render fro…
+  - waits on: G.9 landing first (not started); the owner's ruling whether the stock render is worth the pixels
+  - source: docs/design/21-graphics-engine.md:206 "**deferred**: needs authored geometry per room (Q-21-6)"; :549 "Q-21-6 Corridor views in room descriptions. Default: deferred past G.9"
+- **W-130** [open, L, unassigned-use, cut none] Naval ship-to-ship plots (ships, torpedo trails): reserved, with the plot feed still to design
+  - There is no naval ruleset feed to draw from; §3.1 calls such a use 'a feed to design, not a picture to design'. The scene model's Trail item exists, but there is no builder, no feed and no assigned cut.
+  - verifier's note: The detail's "no builder" overstates it: `Item::Trail` has a builder user already (the replay's unit trails, G.8); what is absent for the naval use is the plot feed and its own scene builder. Note the platform is now a single TacSim game (2026-09-16), so a "n…
+  - waits on: a naval plot feed (no naval ruleset exists or is planned under the single-game direction)
+  - source: docs/design/21-graphics-engine.md:217 "| Naval ship-to-ship plots: ships, torpedo trails | a plot feed the naval ruleset does not exist to push yet | reserved"
+- **W-131** [partly, L, unassigned-use, cut none] Damage control compartments (pressure, fires, breaches, power, repair crews) wait on ships having compartments
+  - G.6a built the armour doll as a page with a legend. The compartment map needs a compartment feed for ships, which does not exist, and it has no cut.
+  - disposition: open, L: ships have compartments as capacity slots only; a damage state (pressure, fire, breach, power) and its feed do not exist.
+  - waits on: a ship compartment damage/state model and its feed (none designed)
+  - source: docs/design/21-graphics-engine.md:218 "a compartment feed for ships later | the armour doll stands alone and grows a legend; compartments when ships have them"
+- **W-132** [open, M, unassigned-use, cut none] Surveying and prospecting picture (coverage shading, pocket marks with uncertainty rings) has no cut
+  - No §10 cut draws the TV's chart as a picture, and mush-pixel has no survey or site scene builder. SM.9 gave the web SVG site and ground pictures, but there is no terminal picture or scene.
+  - verifier's note: The table's feed "`tacsim.chart` (SM.4a)" names the chart record family, not a pulled feed; the picture would draw `site.map` (readings, marks, rigs, claims) and `body.ground`. The web's SM.9 SVG site and ground pictures are glyph grids with click-to-prefill,…
+  - waits on: owner priority (no cut assigned); the feeds exist, though an uncertainty radius per reading would need a tacsim field the mining train owns
+  - source: docs/design/21-graphics-engine.md:220 "| Surveying and prospecting: coverage, deposits, cross-sections (doc 20) | `tacsim.chart` (SM.4a) and the site map |"
+- **W-133** [open, L, unassigned-use, cut none] Boarding, infiltration and derelict deck plans (doors, airlocks, squads, discovery shading) have no cut
+  - This would draw the atlas neighbourhood graph as a plan, shaded by what a party has seen. It needs a party feed that does not exist, and no cut is assigned.
+  - verifier's note: Add: a plain-text neighbourhood plan already exists (`+atlas`, mush-atlas/src/view.rs, bucket C); what is missing is the scene builder, a party feed (mush-party pushes none) and a seen-rooms discovery model to shade by.
+  - waits on: a party panel feed from mush-party and a discovery (what the party has seen) model
+  - source: docs/design/21-graphics-engine.md:221 "| Boarding, infiltration, derelicts: deck plans, doors, airlocks, squads | the atlas region (rooms, exits) + a party feed |"
+- **W-134** [open, M, unassigned-use, cut none] Industrial operations flow diagram (mines to refineries, stalled nodes red) has no cut
+  - This would be a node-and-edge scene drawn from the E-series industry pools. There is no feed, scene builder or cut for it.
+  - verifier's note: Minor: "the industry pools (E-series)" live in mush-industry (facilities, families, custody) with the work-order hold in mush-economy; the node-and-edge feed would be new.
+  - waits on: an industry flow feed (nodes = facilities/pools, edges = flows, stalled state) to design
+  - source: docs/design/21-graphics-engine.md:222 "| Industrial operations and outposts: the flow from mines to refineries | the industry pools (E-series) | a node-and-edge diagram; stalled nodes red |"
+- **W-135** [open, L, unassigned-use, cut none] Docking, EVA and salvage close-scale relative-motion plot has no cut
+  - This is the same plot at a close scale and origin, drawn from doc 06's journey and route primitives. No feed, builder or cut exists.
+  - waits on: a close-scale relative-motion feed; EVA and salvage features (none exist)
+  - source: docs/design/21-graphics-engine.md:223 "| Docking, EVA, salvage: relative motion, alignment, tethers | the journey/route primitives (doc 06) at a close scale |"
+- **W-136** [open, M, unassigned-use, cut none] Cargo handling hold diagram (boxes in a hold, blocked access) has no cut
+  - This would be a bucket-B picture of the hold's stow (doc 18 §4.5). There is no scene builder and no cut.
+  - verifier's note: Doc 21's cite "doc 18 §4.5" is "The stations" (docs/design/18-trade-run-vertical-slice.md:1929); the hold is doc 18 §R "Volume beside mass: the hold binds on both" (:855) and doc 18a "Cargo Hold" (:1729) / "Hold Stowage (store)" (:1784). The hold has no arran…
+  - waits on: a hold arrangement model (today the stow is mass/volume pools); fixing the doc 18 section cite
+  - source: docs/design/21-graphics-engine.md:225 "| Cargo handling: the hold diagram | the hold's stow (doc 18 §4.5) | boxes in a hold; blocked access drawn when arrangement matters |"
+- **W-137** [open, M, unassigned-use, cut none] Bucket C: a listing's thumbnail of a hull has no cut
+  - This is a form that embeds a small bucket-B scene of a hull beside a listing's text. There is no cut, and no form embeds any picture today (see W-31).
+  - verifier's note: Sharpen: no Panel item can carry an image, and the only picture on the wire is the cockpit frame (TUI graphics or the web's binary PNG), so the bucket-C embedding mechanism itself is unbuilt — a listing's hull thumbnail needs that mechanism plus a hull scene …
+  - waits on: a Panel image item in mush-proto (the embedding mechanism); a listing/fitting feature to embed in (G.6's fitting half)
+  - source: docs/design/21-graphics-engine.md:232 "Where a form wants a picture (the fitting screen's doll, a listing's thumbnail of a hull) it embeds a bucket-B scene as one image"
+
+## Appendix: the train's timeline and the dev2 smoke records (context, not work)
+
+- **W-87** dev2 smoke record: spike kitty frame via w11term control pipe (pre-G.1a)
+  - Recorded by 4f75625c: the spike's kitty probe and the 640x480 frame with instruments at 21 fps, driven through w11term's control pipe. This is the spike build, before the G.1a engine.
+- **W-88** dev2 smoke record: G.2 sixel smoked at bbe1e75e (WT only forced sixel)
+  - d577f729 records G.2 smoked on dev2 at bbe1e75e: kitty (auto) and forced sixel in w11term, and forced sixel in Windows Terminal over ssh.exe. The WT auto path (DA1 attr 4, CSI 16 t) was not seen.
+- **W-89** dev2 smoke record: G.2b sixel-fills-box smoked at 6d71b079
+  - 0e379336 records sixel filling its box at 1717x1288 and 21 fps in high-DPI w11term, and at 1013x760 in Windows Terminal over ssh.exe.
+- **W-90** dev2 smoke record: G.4 leash smoked at 8e01dd93 (w11term only)
+  - 006c80bc records a held right turn in w11term (which answers CSI ? u): 090 to 247 deg in 4.2 s, with the release stopping at 257 and no overshoot. Only w11term was smoked; no terminal without the kitty keyboard protocol is recorded.
+- **W-91** dev2 smoke record: text cockpit smoked at 331f418a
+  - ee9f364a records the text cockpit in w11term (kitty and forced sixel) and in Windows Terminal over ssh.exe (sixel): the picture in the top two-thirds, the Enter chat line, says and RedNet lines going out, and Esc keeping the draft.
+- **W-92** dev2 smoke record: U.1-U.3 and G.1b smoked at 34e4d24e, fixes deployed at 9c0e06aa
+  - 9c0e06aa records the smoke: team-coloured sprites, facings, the biped doll under fire, @pixel/stats and a VPS render of 1.3-2.8 ms. It also fixes three findings: the far-contact bracket, the NOT IN A COCKPIT card and the paired armour rows. The fixes themselves are not recorded as re-smoked.
+- **W-93** dev2 smoke record: G.3c-G.11 and G.3b smoked at 5fd41392
+  - 28a870ba records dev2 at 5fd41392: the sound pack synced over sftp, named sounds played, the replay and chart pictures, the browser drawing the cockpit (5 ticks against 73 server-drawn), and U.4's doll in the damage pane. Findings: a burst played only its first sound (fixed in 3aa8238b), MARS and EARTH overlapped (fixed in e8056871), and the 'the an' wording (not fixed).
+- **W-94** dev2 smoke record: nothing after 5fd41392 is recorded smoked (3aa8238b, e8056871, 971c7960, 3427b93f, G.7b)
+  - No commit after 28a870ba records a live smoke. Unsmoked: 3aa8238b (G.10 one sound a frame), e8056871 (chart labels), 971c7960 (G.6a doll page; cut notes: 'Not smoked live'), 3427b93f (web Hello asset_pack) and 92925b46 + cc607b03 (G.7b; cut notes: 'Not smoked live'). The deploy-plan memory puts dev2 at 3aa8238b, so e8056871 onward is also undeployed.
+- **W-125** Timeline of the train
+  - Commits on the workstream's paths, f9a1ca90..7c886408, in log order (date = author date, -0700): 4f75625c 10-21 spike NOTES (dev2 smoke via w11term pipe); 447c5b83 10-21 rustfmt/rustdoc CI fix; 91569dfb 10-21 Draft 0.3 (G.10/G.11 designed); 069618c1 10-21 Draft 0.4 (w11term wire forms); 16b0ca4e 10-22 doc 20 SM.9 (not this workstream); 5bb5a2dc G.1a; bbe1e75e G.2; d577f729 G.2 smoke; 6d71b079 G.2b; 0e379336 G.2b smoke; 29b0ecd4 split-restart fix; 8e01dd93 G.4; 006c80bc G.4 smoke; c47cdc57 G.3a; 84725144 G.7a; 978f9ce8 G.7a colour map; 62a6a66e sim sight heights; 331f418a text cockpit; ee9f364a text cockpit smoke; fed09da2 SM.10 (doc 20); 9e11a9d4 doc 22 U.0; 21590a53 U.1+U.2; b962ce70 U.3; 34e4d24e G.1b; 9c0e06aa smoke fixes (U/G.1b); 456d9e4d G.3c; b7adfbcb U.4; 13fac1cb G.5a; 8118ba7f G.5b; 3a778059 G.5c; 4098fbb2 G.8; 81caf0e9 G.8 lint fix; 483b3d7e G.10; 87e9aacf G.11; 081be222 G.3b…
