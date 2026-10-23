@@ -117,6 +117,10 @@ pub struct Frame {
     /// **Its own unit type** (doc 22): its definition id, which names the look
     /// its pilot's doll is drawn from. Never a secret from its pilot.
     pub unit_type: SmolStr,
+    /// **How high its eye sits above its cell, centimetres** (doc 21 cut G.7b):
+    /// the height its own sight is traced from, so the pilot's picture is drawn
+    /// from the same eye — a biped's nine metres, a tank's one and a half.
+    pub sensor_height_cm: u32,
     /// Where it is.
     pub pose: Pose,
     /// How fast, cm/s; negative is reverse.
@@ -2758,6 +2762,7 @@ impl Arena {
             unit: unit.id,
             team: unit.team,
             unit_type: SmolStr::new(unit.unit.schema().key().id.as_str()),
+            sensor_height_cm: unit.sensor_height_cm,
             // 16b cut Q.1: the platform's own public name, and the cell
             // it is standing in.
             callsign: unit.callsign,

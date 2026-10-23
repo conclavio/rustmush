@@ -246,6 +246,7 @@ mod tests {
     fn fixture(name: &str) -> &'static str {
         match name {
             "cockpit" => include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
+            "relief" => include_str!("../../../web/src/lib/fixtures/pixel/arena_map_relief.json"),
             _ => include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
         }
     }
@@ -259,12 +260,22 @@ mod tests {
         ))
         .unwrap();
         assert!(feed(FEED_COCKPIT, fixture("cockpit").as_bytes()));
-        assert!(feed(FEED_MAP, fixture("map").as_bytes()));
         let (w, h) = (
             golden["width"].as_u64().unwrap(),
             golden["height"].as_u64().unwrap(),
         );
         for case in golden["cases"].as_array().unwrap() {
+            // Doc 21 cut G.7b: the relief cases draw the heightfield.
+            let map = match case["map"].as_str() {
+                Some("relief") => fixture("relief").to_string(),
+                // The flat case is the raycaster's: no heights.
+                _ => {
+                    let mut flat: Value = serde_json::from_str(fixture("map")).unwrap();
+                    flat.as_object_mut().unwrap().remove("elev");
+                    flat.to_string()
+                }
+            };
+            assert!(feed(FEED_MAP, map.as_bytes()));
             reset();
             let look = Look {
                 offset_mdeg: case["look_mdeg"].as_i64().unwrap(),

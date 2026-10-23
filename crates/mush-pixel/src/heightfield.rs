@@ -49,6 +49,12 @@ use crate::raycast::{
     SpriteAt, draw_sprite, focal, fog_step,
 };
 
+/// **How far the heightfield sees, in cells** (doc 21 cut G.7b): 1.5 km on
+/// the arena's 10 m cells, fogging to the horizon over the whole of it — two
+/// and a half times the raycaster's 60-cell fog, because a landscape's hills
+/// are the picture and a 600 m horizon hid them.
+pub const VIEW_CELLS: f32 = 150.0;
+
 /// How far out the march begins, in cells.
 const NEAR: f32 = 0.25;
 /// The march's first step, in cells; each step after is [`GROWTH`] times
@@ -434,9 +440,10 @@ fn base(ground: Ground, lit: bool) -> Base {
 }
 
 /// Draw `terrain` from `cam` into `frame`, with `sprites` standing on it.
-/// The eye stands 1.5 m (the sim's sensor height) above `eye_cm` when it is given (the cockpit
-/// frame's `z_cm`, the sim's own elevation for the unit), else above the
-/// ground under the camera.
+/// The eye is at `eye_cm` when it is given — the cockpit frame's `z_cm` plus
+/// its `sensor_height_cm`, the very eye the sim traces the unit's sight from
+/// (doc 21 cut G.7b) — else 1.5 m (the stock sensor height) above the ground
+/// under the camera.
 pub fn render(
     frame: &mut Frame,
     terrain: &Terrain,
@@ -456,8 +463,10 @@ pub fn render(
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
     let hf = focal(w);
     let horizon = (h / 2) as f32;
-    let eye = eye_cm.map_or_else(|| terrain.height(posx, posy), |z| z as f32 / cell)
-        + EYE_HEIGHT_CM as f32 / cell;
+    let eye = eye_cm.map_or_else(
+        || terrain.height(posx, posy) + EYE_HEIGHT_CM as f32 / cell,
+        |z| z as f32 / cell,
+    );
     let shades = Shades::new();
 
     // The lowest row each column has drawn down to (exclusive): ground
@@ -469,10 +478,10 @@ pub fn render(
 
     let mut z = NEAR;
     let mut dz = FIRST_STEP;
-    while z < FOG_CELLS {
+    while z < VIEW_CELLS {
         let (lx, ly) = (posx + (dirx - planex) * z, posy + (diry - planey) * z);
         let (sx, sy) = (2.0 * planex * z / wf, 2.0 * planey * z / wf);
-        let step = fog_step(z);
+        let step = fog_step(z * FOG_CELLS / VIEW_CELLS);
         for (i, low) in ybuf.iter_mut().enumerate() {
             let t = i as f32 + 0.5;
             let (px, py) = (lx + sx * t, ly + sy * t);
@@ -558,6 +567,7 @@ fn draw_sprites(
                 screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
                 bottom: horizon + (eye - ground) * hf / ty,
                 depth: ty,
+                fog_depth: ty * FOG_CELLS / VIEW_CELLS,
                 height: hcm / cell * hf / ty,
                 width: wcm / cell * hf / ty,
                 kind: sprite.kind,

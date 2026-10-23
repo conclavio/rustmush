@@ -2539,6 +2539,7 @@ mod fixture {
         Frame {
             unit: UNIT,
             unit_type: "tacsim.unit.line_tank".into(),
+            sensor_height_cm: 150,
             callsign: Designator::Slot {
                 team: Team::Red,
                 slot: 1,

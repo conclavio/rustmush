@@ -2562,6 +2562,33 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "but it IS the ground: {map}"
     );
 
+    // **Doc 21 cut G.7b**: the map carries the ground's heights, an encoded
+    // stream of the cells' elevations and nothing else — its three keys, the
+    // stream base64. It is set aside before the word scan below: a run of
+    // level ground encodes as `AAAA…`, which reads as a sixteen-digit id to a
+    // scan that is looking for words.
+    let elev = map
+        .get("elev")
+        .cloned()
+        .expect("the map carries the heights");
+    let keys: Vec<&str> = elev
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    assert_eq!(keys, ["data", "encoding", "unit_cm"], "{elev}");
+    assert!(
+        elev.get("data")
+            .and_then(Value::as_str)
+            .is_some_and(|data| data
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))),
+        "the heights are a base64 stream"
+    );
+    let mut map = map;
+    if let Some(object) = map.as_object_mut() {
+        object.remove("elev");
+    }
+
     // (c) Neither payload says one word about the tank she has not found: not
     // its object number, not its name, not its pilot's name, not its callsign.
     for (what, payload) in [("the cockpit frame", &cockpit), ("the map", &map)] {
@@ -4453,6 +4480,7 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
     tacsim::arena::step::Frame {
         unit: mush_core::ObjId(101),
         unit_type: "tacsim.unit.line_tank".into(),
+        sensor_height_cm: 150,
         callsign: tacsim::arena::state::Designator::Slot {
             team: tacsim::arena::state::Team::Red,
             slot: 1,

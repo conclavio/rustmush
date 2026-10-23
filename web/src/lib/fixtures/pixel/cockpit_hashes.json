@@ -2,15 +2,33 @@
   "cases": [
     {
       "hash": "76239582dcc4c419",
-      "look_mdeg": 0
+      "look_mdeg": 0,
+      "map": "flat"
     },
     {
       "hash": "cd0c55cc5f2699c0",
-      "look_mdeg": 45000
+      "look_mdeg": 45000,
+      "map": "flat"
     },
     {
       "hash": "0de8b40f6f5f4034",
-      "look_mdeg": -90000
+      "look_mdeg": -90000,
+      "map": "flat"
+    },
+    {
+      "hash": "5c1c27332078322f",
+      "look_mdeg": 0,
+      "map": "relief"
+    },
+    {
+      "hash": "b8a35c932b72153d",
+      "look_mdeg": 45000,
+      "map": "relief"
+    },
+    {
+      "hash": "e6f55e813cc9bdfb",
+      "look_mdeg": -90000,
+      "map": "relief"
     }
   ],
   "height": 480,

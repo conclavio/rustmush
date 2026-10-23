@@ -24,9 +24,16 @@ describe("the picture module", () => {
   it("draws the native renderer's frames, hash for hash", async () => {
     const m = await load();
     expect(m.feed(FEED_COCKPIT, fixture("cockpit_frame.json"))).toBe(true);
-    expect(m.feed(FEED_MAP, fixture("arena_map.json"))).toBe(true);
-    expect(golden.cases).toHaveLength(3);
+    const relief = readFileSync(new URL("../fixtures/pixel/arena_map_relief.json", import.meta.url), "utf8");
+    // The flat case is the raycaster's: the yard without its all-zero heights.
+    const flatMap = JSON.parse(fixture("arena_map.json")) as Record<string, unknown>;
+    delete flatMap.elev;
+    const flat = JSON.stringify(flatMap);
+    // Doc 21 cut G.7b: the flat map (the raycaster) and the relief (the
+    // heightfield over its baked colour map), three looks each.
+    expect(golden.cases).toHaveLength(6);
     for (const c of golden.cases) {
+      expect(m.feed(FEED_MAP, c.map === "relief" ? relief : flat)).toBe(true);
       m.reset();
       expect(m.render(golden.width, golden.height, { offsetMdeg: c.look_mdeg })).toBe(true);
       expect(m.hash()).toBe(c.hash);

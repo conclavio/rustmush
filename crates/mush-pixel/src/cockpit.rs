@@ -16,6 +16,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::Frame;
+use crate::heightfield::{self, Terrain};
 use crate::look::{self, Facing};
 use crate::overlay::{
     self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
@@ -42,8 +43,10 @@ pub enum Overlay {
     Instruments,
 }
 
-/// The first-person cockpit: the raycaster over the held arena map, the
-/// contacts as billboards, its [`Overlay`] drawn into the frame.
+/// The first-person cockpit: the held arena map drawn with relief where it
+/// carries heights (the heightfield over its baked colour map, doc 21 cut
+/// G.7b) and by the raycaster where it does not, the contacts as billboards,
+/// its [`Overlay`] drawn into the frame.
 #[derive(Debug)]
 pub struct CockpitPicture {
     /// What `arena` was built from: `None` before the first draw, then the
@@ -51,6 +54,9 @@ pub struct CockpitPicture {
     built_for: Option<Option<i64>>,
     /// The arena map, open ground until an `arena.map` is held.
     arena: Map,
+    /// The same map with its heights, baked, when the feed carries them
+    /// (G.7b): what the picture is drawn from then.
+    terrain: Option<Terrain>,
     /// What is drawn over the view.
     overlay: Overlay,
     /// Draws so far: the sprites' animation clock (a moving cycle steps every
@@ -81,6 +87,7 @@ impl CockpitPicture {
         CockpitPicture {
             built_for: None,
             arena: Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
+            terrain: None,
             overlay,
             draws: 0,
         }
@@ -95,6 +102,8 @@ impl CockpitPicture {
                 || Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
                 map_from_feed,
             );
+            // G.7b: relief where the feed carries it, baked once a map.
+            self.terrain = map.and_then(terrain_from_feed);
             self.built_for = Some(wanted);
         }
         &self.arena
@@ -126,8 +135,25 @@ impl Picture for CockpitPicture {
         self.draws = self.draws.wrapping_add(1);
         let sprites = contacts_as_sprites(cockpit, &cam, self.draws / ANIMATION_DRAWS);
         let overlay = self.overlay;
-        let arena = self.ensure_map(map);
-        render(frame, arena, &cam, &sprites);
+        self.ensure_map(map);
+        let arena = &self.arena;
+        match &self.terrain {
+            // G.7b: the eye is the sim's own for the unit — its elevation plus
+            // its sensor height (the stock 1.5 m where the frame names none).
+            Some(terrain) => heightfield::render(
+                frame,
+                terrain,
+                &cam,
+                cockpit.get("z_cm").and_then(Value::as_i64).map(|z| {
+                    z + cockpit
+                        .get("sensor_height_cm")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(i64::from(crate::raycast::EYE_HEIGHT_CM))
+                }),
+                &sprites,
+            ),
+            None => render(frame, arena, &cam, &sprites),
+        }
         match overlay {
             Overlay::Hud => overlay::draw_hud(frame, &hud(frame, arena, cockpit, look, &cam)),
             // The owner's 640x480 target of 2026-10-21: minimap, heat,
@@ -221,6 +247,90 @@ pub fn map_from_feed(map: &Value) -> Map {
         }
     }
     out
+}
+
+/// **The held map with its relief** (doc 21 cut G.7b): [`map_from_feed`]'s
+/// cells and the feed's `elev` — every cell's height, the south row first, as
+/// zigzag-LEB128 deltas in base64 (`tacsim::match_::cockpit::elev_field`) —
+/// as a [`Terrain`] with its colour map baked, seeded by the map's `surface`
+/// so the same ground looks the same every match and in every client. `None`
+/// for a feed with no `elev`, or one that does not decode to exactly a height
+/// a cell (the raycaster draws that ground flat, as before).
+#[must_use]
+pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
+    let elev = map.get("elev")?;
+    if elev.get("encoding").and_then(Value::as_str) != Some("zigzag-leb128-delta") {
+        return None;
+    }
+    let unit = elev.get("unit_cm").and_then(Value::as_i64).unwrap_or(1);
+    let bytes = base64_decode(elev.get("data")?.as_str()?)?;
+    let cells = map_from_feed(map);
+    let (w, h) = (cells.width(), cells.height());
+    let mut heights = Vec::with_capacity(w * h);
+    let (mut at, mut last) = (0usize, 0i64);
+    while heights.len() < w * h {
+        let (mut zig, mut shift) = (0u64, 0u32);
+        loop {
+            let b = *bytes.get(at)?;
+            at += 1;
+            zig |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+            if shift > 35 {
+                return None;
+            }
+        }
+        let delta = (zig >> 1) as i64 ^ -((zig & 1) as i64);
+        last += delta;
+        heights.push(last);
+    }
+    if at != bytes.len() {
+        return None;
+    }
+    let mut terrain = Terrain::new(cells);
+    for (i, cm) in heights.into_iter().enumerate() {
+        let cm = i32::try_from(cm.saturating_mul(unit)).ok()?;
+        terrain.set_elev_cm(i % w.max(1), i / w.max(1), cm);
+    }
+    let seed = map
+        .get("surface")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+    terrain.bake(seed);
+    Some(terrain)
+}
+
+/// Standard base64 (padding optional) to bytes; `None` for anything else.
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| -> Option<u32> {
+        Some(u32::from(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    };
+    let body = text.trim_end_matches('=');
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in body.bytes() {
+        acc = (acc << 6) | value(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 /// How a contact is drawn (doc 22 D-22-3): a wreck, or its team's colour —

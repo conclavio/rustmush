@@ -759,6 +759,13 @@ happening it drops to a narrower picture ten times a second (the line over the
 picture says `slow link: stepped down`), coming back up once the link has kept
 up for ten seconds. `r` picks the narrower picture yourself.
 
+**The ground has height.** The picture draws the hills, the crater and the
+valleys as the sim has them, coloured by slope and the light from the
+north-west, with buildings and tree lines standing on them, out to a
+kilometre and a half. Your eye is your machine's own sight, at its own height:
+a tank's a metre and a half off the ground, a walker's nine. A contact the sim
+reports that a hill hides in the picture is still bracketed where it stands.
+
 **In the web client** the cockpit tab has the same picture above its map:
 `Show the picture` asks for it (the browser remembers your choice), and it
 stops while the tab is hidden or you leave the seat. Your browser draws it

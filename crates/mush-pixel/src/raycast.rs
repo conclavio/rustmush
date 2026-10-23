@@ -630,6 +630,7 @@ impl Eye {
             screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
             bottom: (h / 2) as f32 + self.eye * hf / ty,
             depth: ty,
+            fog_depth: ty,
             height: hcm / self.cell * hf / ty,
             width: wcm / self.cell * hf / ty,
             kind: s.kind,
@@ -785,6 +786,10 @@ pub(crate) struct SpriteAt {
     pub(crate) screenx: f32,
     pub(crate) bottom: f32,
     pub(crate) depth: f32,
+    /// The distance its fog is read at, on [`FOG_CELLS`]' scale: its depth
+    /// for the raycaster, and the heightfield's longer view scaled down to it
+    /// (doc 21 cut G.7b).
+    pub(crate) fog_depth: f32,
     pub(crate) height: f32,
     pub(crate) width: f32,
     pub(crate) kind: SpriteKind,
@@ -813,7 +818,7 @@ pub(crate) fn draw_sprite(
     let left = at.screenx - at.width / 2.0;
     let mut drawn = 0usize;
     if at.height >= 2.0 && at.width >= 1.0 {
-        let step = fog_step(at.depth);
+        let step = fog_step(at.fog_depth);
         drawn = match at.pose {
             Some(pose) => draw_sheet(frame, shades, &at, pose, step, depth_at),
             None => {
@@ -847,7 +852,7 @@ pub(crate) fn draw_sprite(
             }
         };
     }
-    let faint = at.height < MARK_FAR_PX || fog_step(at.depth) >= FOG_STEPS * 2 / 3;
+    let faint = at.height < MARK_FAR_PX || fog_step(at.fog_depth) >= FOG_STEPS * 2 / 3;
     if drawn == 0 || faint {
         let least = if drawn == 0 { MARK_MIN_PX } else { MARK_FAR_PX };
         let bw = at.width.max(least);
