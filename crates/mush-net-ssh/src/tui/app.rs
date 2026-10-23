@@ -47,16 +47,17 @@ use super::panels::{
 };
 use super::pixel::PixelView;
 use super::render::{
-    BODY_GROUND_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED, TV_STATUS_FEED,
-    dim_span_owned, floor_line, legend_line, render_backlog_rows, render_channels_rows,
-    render_cockpit_notices_rows, render_event, render_rolls_rows, render_sheet_rows,
-    render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
+    BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
+    TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
+    render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
+    render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail, status_line,
+    tab_strip, vitals_line, wrap_spans,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
-    BorderRole, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction, KeyBinding,
-    LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, QUARRY_SCREEN, Screen, ScreenId,
-    builtin_screens, validate_screens,
+    BorderRole, CHART_SCREEN, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction,
+    KeyBinding, LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, QUARRY_SCREEN, Screen,
+    ScreenId, builtin_screens, validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -1449,6 +1450,7 @@ impl TuiApp {
     #[must_use]
     pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
+        self.pixel_chart_ask(&mut queries);
         if self.picture.is_some_and(|p| p.live) {
             let aged = |at: Option<i64>| {
                 at.is_none_or(|at| !(0..LIVE_STALE_S).contains(&now.saturating_sub(at)))
@@ -2461,12 +2463,20 @@ impl TuiApp {
                 return;
             }
             Key::Ctrl('g') => {
-                // The view opens flying: a line being typed is kept as the
-                // draft its chat line brings back.
-                if self.pixel.toggle(Instant::now()) && self.mode == Mode::Input {
+                // Doc 21 cut G.5b: the picture is the screen's — the orbital
+                // view on the chart screen, the cockpit elsewhere. The view
+                // opens flying: a line being typed is kept as the draft its
+                // chat line brings back.
+                let kind = if self.active == CHART_SCREEN {
+                    super::pixel::PictureKind::Chart
+                } else {
+                    super::pixel::PictureKind::Cockpit
+                };
+                if self.pixel.toggle_for(kind, Instant::now()) && self.mode == Mode::Input {
                     self.leave_input(true);
                 }
                 r.submit.extend(self.pixel.take_orders());
+                self.pixel_chart_ask(&mut r.queries);
                 return;
             }
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
@@ -2614,6 +2624,18 @@ impl TuiApp {
         }
         self.pixel.key(key, Instant::now());
         r.submit.extend(self.pixel.take_orders());
+        self.pixel_chart_ask(&mut r.queries);
+    }
+
+    /// Ask for the chart again when an open chart picture is due (doc 21 cut
+    /// G.5b): on opening, on `r`, and every minute while it is open.
+    fn pixel_chart_ask(&mut self, queries: &mut Vec<(String, Value)>) {
+        if self.pixel.chart_refresh_due(Instant::now()) {
+            queries.push((
+                CHART_FEED.to_string(),
+                Value::Object(serde_json::Map::new()),
+            ));
+        }
     }
 
     /// Invocations queued by a response (for example authoritative read after edit).
@@ -3899,25 +3921,43 @@ impl TuiApp {
         );
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
-        cockpit_text::draw_panel(
-            frame,
-            areas.panel,
-            &cockpit_text::Panel {
-                cockpit: cockpit.as_ref(),
-                camera_mdeg,
-                utf8: self.caps.utf8,
-            },
-            &|w, h| {
-                render_cockpit_notices_rows(
-                    &held,
-                    &RenderCtx {
-                        pane: Some((w, h)),
-                        ..ctx
-                    },
-                )
-            },
-            &|w| self.scrollback_rows(w),
-        );
+        if self.pixel.kind() == super::pixel::PictureKind::Chart {
+            let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
+            cockpit_text::draw_chart_panel(
+                frame,
+                areas.panel,
+                &|w, h| {
+                    render_chart_table_rows(
+                        &sky,
+                        &RenderCtx {
+                            pane: Some((w, h)),
+                            ..ctx
+                        },
+                    )
+                },
+                &|w| self.scrollback_rows(w),
+            );
+        } else {
+            cockpit_text::draw_panel(
+                frame,
+                areas.panel,
+                &cockpit_text::Panel {
+                    cockpit: cockpit.as_ref(),
+                    camera_mdeg,
+                    utf8: self.caps.utf8,
+                },
+                &|w, h| {
+                    render_cockpit_notices_rows(
+                        &held,
+                        &RenderCtx {
+                            pane: Some((w, h)),
+                            ..ctx
+                        },
+                    )
+                },
+                &|w| self.scrollback_rows(w),
+            );
+        }
         let cursor = match self.input_mode {
             InputMode::NoEcho => 0,
             _ => self.line.cursor(),

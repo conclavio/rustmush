@@ -46,6 +46,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graphics};
+use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::{Frame, kitty, png, sixel};
@@ -137,6 +138,24 @@ impl PixelConfig {
         }
     }
 }
+
+/// **Which picture the view draws** (doc 21 cut G.5b): `^G` opens the one
+/// the screen it is pressed on shows — the orbital view on the chart screen,
+/// the cockpit everywhere else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PictureKind {
+    /// The first-person cockpit (bucket A): the helm, the look, the chat.
+    #[default]
+    Cockpit,
+    /// The orbital view (bucket B): the `sky.chart` drawn as a scene,
+    /// fetched again every [`CHART_REFRESH`] while open, `r` at once.
+    Chart,
+}
+
+/// How often an open chart picture asks for the chart again: the planets
+/// drift (half a degree a real hour at rate 24), and the chart is pulled,
+/// never pushed.
+pub const CHART_REFRESH: Duration = Duration::from_secs(60);
 
 /// What a picture write did to the view's step-down (doc 21 cut G.1b), for
 /// the box's counters.
@@ -244,6 +263,11 @@ pub struct PixelView {
     wipe_pending: bool,
     /// What the view draws: the engine's producer, instruments and clock.
     picture: Box<dyn Picture>,
+    /// Which picture that is (G.5b).
+    kind: PictureKind,
+    /// When the chart was last asked for while its picture was open, or
+    /// `None` when it is due now (G.5b).
+    chart_asked: Option<Instant>,
     /// The view closed: what was on screen, for the caller to free or wipe.
     closed: Option<Encoder>,
     /// `u`: the frame clock runs as fast as it can instead of 20 Hz.
@@ -297,6 +321,8 @@ impl PixelView {
             shown: None,
             wipe_pending: false,
             picture: Box::new(CockpitPicture::new()),
+            kind: PictureKind::Cockpit,
+            chart_asked: None,
             closed: None,
             uncapped: false,
             cfg: PixelConfig::default(),
@@ -315,6 +341,9 @@ impl PixelView {
     pub fn interval(&self) -> Duration {
         if self.uncapped {
             FRAME_INTERVAL_UNCAPPED
+        } else if self.kind == PictureKind::Chart {
+            // Bucket B's clock: a diagram, redrawn on change.
+            self.picture.interval()
         } else if self.stepped_down {
             self.cfg.low_interval
         } else {
@@ -528,6 +557,42 @@ impl PixelView {
         (self.helm.predicted(now).unwrap_or(heading) + self.look_mdeg).rem_euclid(360_000)
     }
 
+    /// Which picture the view draws.
+    #[must_use]
+    pub fn kind(&self) -> PictureKind {
+        self.kind
+    }
+
+    /// `^G` on a screen whose picture is `kind`: open the view on it, or
+    /// close it.
+    pub fn toggle_for(&mut self, kind: PictureKind, now: Instant) -> bool {
+        if !self.active && kind != self.kind {
+            self.kind = kind;
+            self.picture = match kind {
+                PictureKind::Cockpit => Box::new(CockpitPicture::new()),
+                PictureKind::Chart => Box::new(ChartPicture::new()),
+            };
+            self.last_sent = None;
+        }
+        self.chart_asked = None;
+        self.toggle(now)
+    }
+
+    /// Whether an open chart picture is due to ask for the chart again — on
+    /// opening, `r`, and every [`CHART_REFRESH`] — marking it asked if so.
+    pub fn chart_refresh_due(&mut self, now: Instant) -> bool {
+        if !self.active || self.kind != PictureKind::Chart {
+            return false;
+        }
+        let due = self
+            .chart_asked
+            .is_none_or(|at| now.saturating_duration_since(at) >= CHART_REFRESH);
+        if due {
+            self.chart_asked = Some(now);
+        }
+        due
+    }
+
     /// `^G`: open the view (only where the probe found an encoder) or close
     /// it. Returns whether it is open afterwards.
     pub fn toggle(&mut self, now: Instant) -> bool {
@@ -640,6 +705,15 @@ impl PixelView {
     /// Every other key is swallowed: the view is modal. Enter, which opens
     /// the chat line, never reaches here (the app routes it).
     pub fn key(&mut self, key: Key, now: Instant) {
+        // The chart's keys (G.5b): `r` fetches it again, Esc and `q` close.
+        if self.kind == PictureKind::Chart {
+            match key {
+                Key::Char('r') => self.chart_asked = None,
+                Key::Esc | Key::Char('q') => self.close(),
+                _ => {}
+            }
+            return;
+        }
         let held = self.keyboard_pushed;
         let steer = |helm: &mut Helm, dir: i8, toggle: bool| {
             if helm.turning() == dir {
@@ -764,7 +838,7 @@ impl PixelView {
             .and_then(|c| c.get("heading_mdeg"))
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        if let Some(c) = cockpit {
+        if let Some(c) = cockpit.filter(|_| self.kind == PictureKind::Cockpit) {
             self.helm.observe(c, now);
         }
         let predicted = self.helm.predicted(now).unwrap_or(frame_heading);
@@ -839,6 +913,9 @@ impl PixelView {
     /// The HUD's two lines: the top status and the bottom key legend.
     #[must_use]
     pub fn hud(&mut self, cockpit: Option<&Value>, now: Instant) -> (String, String) {
+        if self.kind == PictureKind::Chart {
+            return self.chart_hud(now);
+        }
         let heading = cockpit
             .and_then(|c| c.get("heading_mdeg"))
             .and_then(Value::as_i64)
@@ -929,6 +1006,19 @@ impl PixelView {
 }
 
 impl PixelView {
+    /// The chart picture's two lines (G.5b).
+    fn chart_hud(&mut self, now: Instant) -> (String, String) {
+        let probe = self.probe_words(now);
+        let drawing = self
+            .current_encoder()
+            .map_or("nothing".to_string(), |e| e.name().to_string());
+        let (w, h) = self.size();
+        let top = format!("SKY CHART  |  {probe}, drawing {drawing}  {w}x{h}, redrawn on change");
+        let bottom =
+            "r: fetch the chart again   Enter: chat   Esc/q: close   ^]: detach".to_string();
+        (top, bottom)
+    }
+
     /// **`@pixel/stats`** (doc 21 cut G.1b): this connection's picture in
     /// words — what the terminal showed and what is drawn, the frame and the
     /// clock, the last frame's costs and bytes, and the counts. Everyone's
@@ -1638,6 +1728,67 @@ mod tests {
                 && stats.contains("stepped down 1 times"),
             "{stats}"
         );
+    }
+
+    /// **Doc 21 cut G.5b**: the chart picture — the orbital view on bucket
+    /// B's clock, asked for on opening, on `r` and every minute, deaf to the
+    /// helm's keys, closed by Esc.
+    #[test]
+    fn the_chart_picture_is_drawn_on_change_and_fetched_every_minute() {
+        let t0 = Instant::now();
+        let sky: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/chart/sky_chart.json"
+        ))
+        .expect("chart fixture");
+        let feeds: HashMap<String, Value> = [(mush_pixel::chart::SKY_CHART_FEED.to_string(), sky)]
+            .into_iter()
+            .collect();
+        let mut v = supported(t0);
+        assert!(v.toggle_for(PictureKind::Chart, t0));
+        assert_eq!(v.kind(), PictureKind::Chart);
+        assert_eq!(v.interval(), mush_pixel::picture::BUCKET_B_INTERVAL);
+        assert!(v.chart_refresh_due(t0), "asked on opening");
+        assert!(!v.chart_refresh_due(t0 + Duration::from_secs(59)));
+        assert!(
+            v.chart_refresh_due(t0 + Duration::from_secs(60)),
+            "and every minute"
+        );
+        v.key(Key::Char('r'), t0);
+        assert!(
+            v.chart_refresh_due(t0 + Duration::from_secs(61)),
+            "and on r"
+        );
+        // The helm's keys order nothing here.
+        v.key(Key::Right, t0);
+        v.key(Key::Char('a'), t0);
+        assert!(v.take_orders().is_empty());
+        assert!(!v.paint(&feeds, 160, 50, t0).is_empty(), "the chart drawn");
+        assert!(
+            v.paint(&feeds, 160, 50, t0).is_empty(),
+            "and not again unchanged"
+        );
+        let (top, bottom) = v.hud(None, t0);
+        assert!(
+            top.starts_with("SKY CHART") && bottom.contains("r: fetch"),
+            "{top} / {bottom}"
+        );
+        v.key(Key::Esc, t0);
+        assert!(!v.is_active());
+        assert!(
+            !v.chart_refresh_due(t0 + Duration::from_secs(600)),
+            "closed: never"
+        );
+        // Opening on the cockpit's screen puts the cockpit back.
+        assert!(v.toggle_for(PictureKind::Cockpit, t0));
+        assert_eq!(
+            (v.kind(), v.interval()),
+            (PictureKind::Cockpit, FRAME_INTERVAL)
+        );
+        // And in sixel, for Windows Terminal.
+        let mut wt = windows_terminal(t0);
+        assert!(wt.toggle_for(PictureKind::Chart, t0));
+        let bytes = String::from_utf8_lossy(&wt.paint(&feeds, 160, 50, t0)).into_owned();
+        assert!(bytes.contains("\x1bP0;1;0q"), "a sixel chart");
     }
 
     /// `[pixel]`'s numbers are held to sane bounds.

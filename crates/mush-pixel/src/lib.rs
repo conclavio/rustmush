@@ -19,6 +19,7 @@
 //!   otherwise). IDAT is zlib via `flate2`.
 //! - [`heightfield`]: the voxel-space producer for ground with relief
 //!   (G.7a), beside the raycaster.
+//! - [`chart`]: the orbital view, `sky.chart` drawn as a scene (G.5b).
 //! - [`scene`]: bucket B's retained 2D scene and its one rasteriser (G.5).
 //! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
 //!   terminals that draw sixel and not kitty — Windows Terminal above all.
@@ -51,6 +52,7 @@
 )]
 
 pub mod caps;
+pub mod chart;
 pub mod cockpit;
 pub mod frame;
 pub mod heightfield;

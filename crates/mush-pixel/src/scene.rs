@@ -12,8 +12,8 @@
 //! transform, and a curve the transform bends (a circle off the log scale's
 //! centre, a straight leg through it) is sampled; items placed at a world
 //! point but sized in pixels ([`Item::Marker`], [`Item::Ray`],
-//! [`Item::Text`]) keep their size whatever the scale; [`Item::Panel`] and
-//! [`Item::Image`] are frame rectangles.
+//! [`Item::Text`]) keep their size whatever the scale; [`Item::Panel`],
+//! [`Item::Label`] and [`Item::Image`] are placed on the frame itself.
 //!
 //! **Colours** are the items' own: a builder draws from a small fixed set
 //! (the overlay's colours and its own), so a frame stays inside the PNG's
@@ -235,6 +235,18 @@ pub enum Item {
         /// The font's scale.
         scale: usize,
     },
+    /// Text at a frame point (its top-left), in the 5x7 font: a title, a
+    /// legend — words about the page rather than in the world.
+    Label {
+        /// The top-left, pixels.
+        at: (i64, i64),
+        /// The words.
+        text: String,
+        /// The colour.
+        colour: Rgb,
+        /// The font's scale.
+        scale: usize,
+    },
     /// A frame embedded at a frame point (its top-left): a doll in a plan,
     /// a minimap in a cockpit.
     Image {
@@ -427,6 +439,14 @@ impl Scene {
                     ty -= 7 * s / 2;
                 }
                 text(frame, tx, ty, words, *colour, *scale);
+            }
+            Item::Label {
+                at,
+                text: words,
+                colour,
+                scale,
+            } => {
+                text(frame, at.0, at.1, words, *colour, *scale);
             }
             Item::Image { at, frame: image } => {
                 for y in 0..image.height() {

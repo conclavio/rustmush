@@ -170,6 +170,38 @@ pub fn draw_panel(
     );
 }
 
+/// **The chart's text panel** (doc 21 cut G.5b): under the orbital view,
+/// the chart's own passages-and-window rows (`table(w, h)`, the chart
+/// screen's right pane) beside the comms (`comms(w)`, the scrollback's tail).
+pub fn draw_chart_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    table: &dyn Fn(u16, u16) -> PaneRows,
+    comms: &dyn Fn(usize) -> Vec<Line<'static>>,
+) {
+    if area.height < 2 {
+        return;
+    }
+    let [left, right] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+        .spacing(1)
+        .areas(area);
+    let rows: Vec<Line<'static>> = table(left.width, left.height.saturating_sub(1))
+        .rows
+        .into_iter()
+        .map(|r| r.line)
+        .collect();
+    column(frame, left, "PASSAGES", rows, false);
+    let block = header("COMMS");
+    let inner = block.inner(right);
+    frame.render_widget(block, right);
+    let lines = comms(usize::from(inner.width));
+    let skip = lines.len().saturating_sub(usize::from(inner.height));
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
+}
+
 /// The chat line in `area`: while chatting, the prompt, the line and the
 /// cursor (`cursor` characters in); flying, how to open it and any draft
 /// Esc kept.

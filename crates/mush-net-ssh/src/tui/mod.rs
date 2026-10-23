@@ -545,6 +545,47 @@ mod tests {
         assert!(!plain.pixel_active());
     }
 
+    /// **Doc 21 cut G.5b**: `^G` on the chart screen opens the orbital view,
+    /// asks for the chart, and sends its picture; the passages are text under
+    /// it.
+    #[test]
+    fn ctrl_g_on_the_chart_screen_draws_the_orbital_view() {
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        let sky: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/chart/sky_chart.json"
+        ))
+        .expect("chart fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "sky.chart".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: sky,
+        });
+        sess.feed_input(b"\x1bc"); // Alt-c: the chart screen
+        let r = sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        assert!(
+            r.queries.iter().any(|(name, _)| name == "sky.chart"),
+            "the chart asked for on opening: {:?}",
+            r.queries
+        );
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            screen.contains("SKY") && screen.contains("PASSAGES"),
+            "{screen:?}"
+        );
+        sess.pixel_tick();
+        let picture = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            picture.contains("\x1b_Ga=T"),
+            "the chart's picture, in kitty"
+        );
+    }
+
     /// **The text cockpit** (2026-10-22): chat is read and sent while
     /// flying. The comms show the scrollback's tail under the picture; Enter
     /// opens the chat line and stops a turn in progress; typed letters never

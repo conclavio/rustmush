@@ -270,6 +270,32 @@ fn main() {
         }
         println!("sprites: {} colours", f.count_colours(300));
     }
+    // Doc 21 cut G.5b: the orbital view, the chart fixture drawn as a scene,
+    // in the TUI's picture shape and at 4:3 — `chart.png` and `chart43.png`.
+    {
+        use mush_pixel::chart::{ChartPicture, SKY_CHART_FEED};
+        let sky: Value = serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/chart/sky_chart.json"
+        ))
+        .unwrap_or_default();
+        let feeds: HashMap<String, Value> =
+            [(SKY_CHART_FEED.to_string(), sky)].into_iter().collect();
+        for (name, w, h) in [("chart", 640, 256), ("chart43", 640, 480)] {
+            let mut f = Frame::new(w, h);
+            let t = Instant::now();
+            ChartPicture::new().draw(&mut f, &feeds, &Look::default());
+            let us = t.elapsed().as_micros();
+            let bytes = png::encode(&f);
+            if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
+                eprintln!("{name}.png: {err}");
+            }
+            println!(
+                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                f.count_colours(300),
+                bytes.len()
+            );
+        }
+    }
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
     for (ow, oh) in [(1013, 760), (1717, 1288)] {

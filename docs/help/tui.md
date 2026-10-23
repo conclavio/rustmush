@@ -245,6 +245,11 @@ reads the scene back, and is not taken as the line you were composing.
              by letter and the listed routes, you at `@`; beside it the
              passages now and each destination's window. `r` asks again,
              `w` opens the box with `+chart ` ready, `m` prints the flat map.
+             On a terminal that shows pictures, Ctrl-G here draws the sky as
+             one: the orbits, the bodies by name, your port ringed, the
+             passages as dashed legs, and rings at 3, 6, 12 and 24
+             light-minutes about you; the passages are text under it, the
+             chart is fetched again every minute (`r` at once), Esc closes.
   q quarry   (Alt+q) Your rigs on a mining site: their status on the left,
              the map in the middle — the drive view around a rig, then
              (`z`) the whole site and the body's ground chart — your own
