@@ -772,6 +772,24 @@ showed and what it draws, the picture's size and clock, what the last frame
 cost to draw and send, and how many were sent, unchanged, skipped on a slow
 link and stepped down.
 
+## Sounds
+
+In `@tui` the cockpit makes sounds as its notices land. On most terminals that
+is the terminal's bell, for the things you must hear: a new contact, your lock
+lost, your tank struck or losing a part, your power up, a kill, your tank
+disabled or destroyed, and the overheat alarm, which sounds again every two
+seconds while you run hot. The bell rings once at most every two seconds,
+however much happens.
+
+In w11term each notice has its own sound by name (a hit, a miss, a lock, a
+contact lost, and the rest), played from the game's sound pack or your own
+sounds folder; a name with no sound there is silent. The game knows w11term
+because it asks your terminal its name when you enter `@tui`.
+
+`@sounds off` silences this connection, `@sounds on` brings them back, and
+`@sounds` says which it is and how your terminal hears them. It lasts until you
+disconnect.
+
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type
 often).

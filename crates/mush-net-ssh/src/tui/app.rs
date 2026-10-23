@@ -406,6 +406,9 @@ pub struct TuiApp {
     /// **The pixel cockpit view** (spike, 2026-10-21): the kitty graphics
     /// probe, the camera on its leash, the frame clock's counters.
     pixel: PixelView,
+    /// **The cockpit's sounds** (doc 21 cut G.10): BEL, or w11term's OSC 440
+    /// once its `XTVERSION` names it.
+    sounds: super::sound::Sounds,
 }
 
 fn system_clock() -> i64 {
@@ -724,6 +727,7 @@ impl TuiApp {
             live_seen_at: None,
             live_asked_at: None,
             pixel: PixelView::new(),
+            sounds: super::sound::Sounds::new(),
         })
     }
 
@@ -1375,6 +1379,8 @@ impl TuiApp {
         // The ring first (16b cut B.3): the frame's own notices, composed from
         // their fields, and a new match's frame empties it before they land.
         self.panels.push_cockpit_notices(frame);
+        // Doc 21 cut G.10: and the same notices as sounds.
+        self.sounds.frame(frame, Instant::now());
         self.cockpit_seat = true;
         let holds_the_ground = self.holds_the_ground(match_id);
         if !holds_the_ground && self.panels.get(ARENA_MAP_FEED).is_some() {
@@ -2461,6 +2467,12 @@ impl TuiApp {
             }
             Key::KeyboardFlags(_) => {
                 self.pixel.keyboard_reply();
+                r.redraw = false;
+                return;
+            }
+            // Doc 21 cut G.10: the terminal's name, for the sounds.
+            Key::TermVersion(version) => {
+                self.sounds.set_terminal(version.as_str());
                 r.redraw = false;
                 return;
             }
@@ -4113,6 +4125,26 @@ impl TuiApp {
     /// The probe bytes went out: start its clock.
     pub fn pixel_probe_sent(&mut self) {
         self.pixel.probe_sent(Instant::now());
+    }
+
+    /// The sounds waiting to go out with the next paint (doc 21 cut G.10).
+    pub fn take_sound_bytes(&mut self) -> Vec<u8> {
+        self.sounds.take_bytes()
+    }
+
+    /// `@sounds on|off` (doc 21 cut G.10).
+    pub fn set_sounds(&mut self, on: bool) {
+        self.sounds.set_on(on);
+    }
+
+    /// `@sounds`' report: on, the terminal's name, and whether by name.
+    #[must_use]
+    pub fn sounds_report(&self) -> (bool, Option<String>, bool) {
+        (
+            self.sounds.is_on(),
+            self.sounds.terminal().map(str::to_string),
+            self.sounds.by_name(),
+        )
     }
 
     /// Which picture the view draws (doc 21 cut G.5b).

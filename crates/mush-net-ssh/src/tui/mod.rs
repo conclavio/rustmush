@@ -30,6 +30,7 @@ pub mod render;
 pub mod replay;
 pub mod screen;
 pub mod sheet;
+pub mod sound;
 
 pub use app::{InputResult, Mode, StickyMode, TuiApp, TuiManifest};
 use backend::{ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, SshBackend};
@@ -120,13 +121,16 @@ impl TuiSession {
         // ([`Self::pixel_frame`]): on dev2's first live turn the arena's
         // per-pulse events each repainted a moved camera too, and the wire
         // carried ~35 frames a second against a 20 Hz clock.
-        let bytes = self.paint_text();
+        let mut bytes = self.paint_text();
         // Doc 21 cut G.2: a repaint that wrote into a sixel picture's box (an
         // overlay, a resize's clear) erased those pixels; the next tick sends
         // the picture again.
         if self.terminal.backend_mut().take_touched() {
             self.app.pixel_text_touched();
         }
+        // Doc 21 cut G.10: the sounds the events just painted rang, after
+        // the frame (a BEL or an OSC 440 moves no cursor and draws nothing).
+        bytes.extend(self.app.take_sound_bytes());
         bytes
     }
 
@@ -191,6 +195,18 @@ impl TuiSession {
     }
 
     /// `@pixel/encoder <choice>` for this connection (doc 21 cut G.2).
+    /// `@sounds on|off` for this connection (doc 21 cut G.10).
+    pub fn set_sounds(&mut self, on: bool) {
+        self.app.set_sounds(on);
+    }
+
+    /// What `@sounds` reports: on or off, and the terminal's name if it gave
+    /// one and whether sounds go to it by name (doc 21 cut G.10).
+    #[must_use]
+    pub fn sounds_report(&self) -> (bool, Option<String>, bool) {
+        self.app.sounds_report()
+    }
+
     pub fn set_pixel_choice(&mut self, choice: mush_pixel::caps::EncoderChoice) {
         self.app.pixel_set_choice(choice);
     }
@@ -545,6 +561,52 @@ mod tests {
         assert!(!plain.pixel_active());
     }
 
+    /// **Doc 21 cut G.10**: a seated frame's notices go out as sounds with
+    /// the paint — BEL until the terminal says it is w11term, OSC 440 by
+    /// name after — and `@sounds off` silences them.
+    #[test]
+    fn a_seated_frames_notices_ring() {
+        let cockpit = |t_ms: i64| {
+            let mut frame: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+            ))
+            .expect("cockpit fixture");
+            frame["t_ms"] = t_ms.into();
+            OutputEvent::Panel {
+                feed: "arena.cockpit".into(),
+                kind: mush_proto::PanelFrameKind::Keyframe,
+                data: frame,
+            }
+        };
+        let mut sess = TuiSession::new(caps(), TuiManifest::default());
+        let _ = sess.probe_bytes();
+        // A plain terminal: the fixture's `acquired` rings the bell.
+        sess.apply_event(&cockpit(1_000));
+        let out = sess.paint();
+        assert!(out.contains(&0x07), "BEL for a contact gained");
+        // The probe names w11term: by name from now on (the fixture's two
+        // kinds, the bell's debounce not theirs).
+        sess.feed_input(b"\x1bP>|w11term 0.4.1\x1b\\");
+        sess.apply_event(&cockpit(2_000));
+        let out = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            out.contains("\x1b]440;1;play;target_section_lost\x1b\\"),
+            "{out:?}"
+        );
+        assert_eq!(
+            sess.sounds_report(),
+            (true, Some("w11term 0.4.1".into()), true)
+        );
+        // Off: nothing.
+        sess.set_sounds(false);
+        sess.apply_event(&cockpit(9_000));
+        let out = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            !out.contains("\x1b]440") && !out.contains('\x07'),
+            "{out:?}"
+        );
+    }
+
     /// **Doc 21 cut G.8**: `^G` on screen 0 while a replay is its layout
     /// draws the replay as a picture, opened at the panes' keyframe; `.`
     /// steps the picture and the panes together, space plays, and `x` closes
@@ -790,7 +852,7 @@ mod tests {
         let mut sess = TuiSession::new(wide, TuiManifest::default());
         let probe = sess.probe_bytes();
         assert!(
-            probe.ends_with(b"\x1b[16t\x1b[?u\x1b[c"),
+            probe.ends_with(b"\x1b[16t\x1b[?u\x1b[>0q\x1b[c"),
             "the cell size is asked before DA1: {probe:?}"
         );
         let r = sess.feed_input(b"\x1b[6;20;10t\x1b[?61;4;6;22c");

@@ -80,6 +80,50 @@ pub enum Key {
     /// A cursor key let go (the protocol's release event): what ends a
     /// held turn.
     Release(Arrow),
+    /// **The terminal's name and version** (doc 21 cut G.10): its DCS reply
+    /// `ESC P >| <text> ESC \` to the probe's `XTVERSION` (`CSI > 0 q`).
+    /// Not a key; the app hands it to the sounds.
+    TermVersion(TermVersion),
+}
+
+/// An `XTVERSION` reply's text, cut to [`TermVersion::CAP`] bytes of
+/// printable ASCII and kept inline so a [`Key`] stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermVersion {
+    bytes: [u8; TermVersion::CAP],
+    len: u8,
+}
+
+impl TermVersion {
+    /// The most bytes kept.
+    pub const CAP: usize = 48;
+
+    /// The reply's text, printable ASCII only, cut to [`Self::CAP`].
+    #[must_use]
+    pub fn new(text: &str) -> TermVersion {
+        let mut bytes = [0u8; TermVersion::CAP];
+        let mut len = 0usize;
+        for b in text.bytes().filter(|b| (0x20..0x7f).contains(b)) {
+            let Some(slot) = bytes.get_mut(len) else {
+                break;
+            };
+            *slot = b;
+            len += 1;
+        }
+        TermVersion {
+            bytes,
+            len: u8::try_from(len).unwrap_or(0),
+        }
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .get(..usize::from(self.len))
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("")
+    }
 }
 
 /// A cursor key, for the kitty keyboard protocol's repeat and release events.
@@ -102,11 +146,13 @@ enum EscState {
     Csi(String),
     /// After `ESC O`, waiting for the final byte.
     Ss3,
-    /// Inside `ESC _` (APC), accumulating the payload until `ESC \` (ST).
-    /// `esc` is true after the `ESC` of a possible terminator.
+    /// Inside `ESC _` (APC) or, `dcs`, `ESC P` (DCS, doc 21 cut G.10),
+    /// accumulating the payload until `ESC \` (ST). `esc` is true after the
+    /// `ESC` of a possible terminator.
     Apc {
         payload: String,
         esc: bool,
+        dcs: bool,
     },
 }
 
@@ -165,11 +211,22 @@ impl KeyParser {
                         keys.push(k);
                     }
                 }
-                EscState::Apc { mut payload, esc } => {
+                EscState::Apc {
+                    mut payload,
+                    esc,
+                    dcs,
+                } => {
+                    let whole = |payload: &str| {
+                        if dcs {
+                            dcs_key(payload)
+                        } else {
+                            apc_key(payload)
+                        }
+                    };
                     if esc {
                         if b == b'\\' {
                             // ST: the sequence is whole.
-                            if let Some(k) = apc_key(&payload) {
+                            if let Some(k) = whole(&payload) {
                                 keys.push(k);
                             }
                         } else if i >= 2 && bytes[i - 2] == 0x1b {
@@ -183,10 +240,14 @@ impl KeyParser {
                             keys.push(Key::Esc);
                         }
                     } else if b == 0x1b {
-                        self.esc = EscState::Apc { payload, esc: true };
+                        self.esc = EscState::Apc {
+                            payload,
+                            esc: true,
+                            dcs,
+                        };
                     } else if b == 0x07 {
                         // BEL terminates too (some terminals end replies so).
-                        if let Some(k) = apc_key(&payload) {
+                        if let Some(k) = whole(&payload) {
                             keys.push(k);
                         }
                     } else {
@@ -196,6 +257,7 @@ impl KeyParser {
                         self.esc = EscState::Apc {
                             payload,
                             esc: false,
+                            dcs,
                         };
                     }
                 }
@@ -234,6 +296,18 @@ impl KeyParser {
                                 self.esc = EscState::Apc {
                                     payload: String::new(),
                                     esc: false,
+                                    dcs: false,
+                                };
+                                i += 1;
+                            }
+                            // Doc 21 cut G.10: a DCS reply (`XTVERSION`'s) is
+                            // swallowed as an APC is. A burst that ends on
+                            // the `P` is Alt-P typed, not a reply.
+                            Some(b'P') if bytes.get(i + 1).is_some() => {
+                                self.esc = EscState::Apc {
+                                    payload: String::new(),
+                                    esc: false,
+                                    dcs: true,
                                 };
                                 i += 1;
                             }
@@ -275,6 +349,14 @@ impl KeyParser {
         self.pending.push(b);
         self.pending_len = len;
     }
+}
+
+/// A whole DCS payload (between `ESC P` and `ESC \`) as a key, or nothing
+/// (doc 21 cut G.10): only the `XTVERSION` reply (`>|` and the terminal's
+/// name and version) is one; every other DCS is swallowed.
+fn dcs_key(payload: &str) -> Option<Key> {
+    let text = payload.strip_prefix(">|")?;
+    Some(Key::TermVersion(TermVersion::new(text.trim())))
 }
 
 /// The most payload bytes an APC keeps; a graphics reply is a few dozen.
@@ -604,5 +686,37 @@ mod tests {
         );
         // `ESC _` is never Alt+_.
         assert!(!keys(b"\x1b_Gi=31;OK\x1b\\").contains(&Key::Alt('_')));
+    }
+
+    /// **Doc 21 cut G.10**: `XTVERSION`'s DCS reply decodes as the
+    /// terminal's name, whole or split, ST- or BEL-ended, beside the DA1
+    /// that follows it; any other DCS is swallowed; and none of it reaches
+    /// the input line as F1 and typed text. A burst that ends on `ESC P` is
+    /// Alt-P typed.
+    #[test]
+    fn a_dcs_reply_is_swallowed_and_xtversion_is_the_terminals_name() {
+        let named = |k: &[Key]| match k {
+            [Key::TermVersion(v), ..] => v.as_str().to_string(),
+            _ => String::new(),
+        };
+        let w11 = keys(b"\x1bP>|w11term 0.4.1\x1b\\");
+        assert_eq!(named(&w11), "w11term 0.4.1");
+        assert_eq!(w11.len(), 1);
+        let with_da1 = keys(b"\x1bP>|WezTerm 20240203\x1b\\\x1b[?62;22c");
+        assert_eq!(named(&with_da1), "WezTerm 20240203");
+        assert!(matches!(with_da1.as_slice(), [_, Key::DeviceAttributes(_)]));
+        assert_eq!(named(&keys(b"\x1bP>|kitty(0.36)\x07")), "kitty(0.36)");
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1bP>|w11t"), vec![]);
+        assert_eq!(named(&p.feed(b"erm 1\x1b\\")), "w11term 1");
+        // A DECRQSS answer, say: gone, and the key after it kept.
+        assert_eq!(keys(b"\x1bP1$r0m\x1b\\a"), vec![Key::Char('a')]);
+        // Never F1 and typed text.
+        assert!(!keys(b"\x1bP>|w11term 1\x1b\\").contains(&Key::F(1)));
+        // Alt-P alone is Alt-P.
+        assert_eq!(keys(b"\x1bP"), vec![Key::Alt('P')]);
+        // An over-long name is cut, never more than the cap.
+        let long = format!("\x1bP>|{}\x1b\\", "x".repeat(200));
+        assert_eq!(named(&keys(long.as_bytes())).len(), TermVersion::CAP);
     }
 }

@@ -110,6 +110,9 @@ const HISTORY_DEFAULT: u32 = 20;
 const HISTORY_MAX: u32 = 100;
 const HISTORY_USAGE: &str = "Usage: @history [<1-100>] [more]";
 
+/// Doc 21 cut G.10: `@sounds`' usage line.
+const SOUNDS_USAGE: &str = "Usage: @sounds [on|off]";
+
 /// Doc 21 cut G.2: `@pixel/encoder`'s usage line.
 const PIXEL_ENCODER_USAGE: &str = "Usage: @pixel/encoder [auto|kitty|sixel|off]";
 
@@ -302,6 +305,7 @@ impl russh::server::Server for Ingress {
                 repaint: Arc::new(Notify::new()),
                 history: HistoryCursor::default(),
                 pixel_choice: EncoderChoice::Auto,
+                sounds_on: true,
             })),
             route: Route::PreAuth,
             auth_method: AuthMethod::None,
@@ -400,6 +404,9 @@ struct Shared {
     /// for it per account, which waits on a per-account store). Kept here,
     /// not in the TUI, so it survives `@notui` and applies at the next `@tui`.
     pixel_choice: EncoderChoice,
+    /// `@sounds on|off` for this connection (doc 21 cut G.10), kept here for
+    /// the same reason.
+    sounds_on: bool,
 }
 
 /// Per-connection `@history` paging state. The resume ring is per-session;
@@ -515,6 +522,41 @@ const PIXEL_STATS_OUTSIDE_TUI: &str =
 /// picture in numbers. Whatever follows the verb is ignored.
 fn is_pixel_stats(line: &str) -> bool {
     strip_verb(line.trim(), "@pixel/stats").is_some()
+}
+
+/// `@sounds [on|off]`, read transport-side (doc 21 cut G.10): the cockpit's
+/// sounds for this connection. `Some(None)` is the bare verb (say what is
+/// set), `Some(Some(on))` a setting; anything else after the verb is `Err`.
+fn parse_sounds(line: &str) -> Option<Result<Option<bool>, ()>> {
+    let rest = strip_verb(line.trim(), "@sounds")?;
+    let mut words = rest.split_whitespace();
+    Some(match (words.next(), words.next()) {
+        (None, _) => Ok(None),
+        (Some(word), None) if word.eq_ignore_ascii_case("on") => Ok(Some(true)),
+        (Some(word), None) if word.eq_ignore_ascii_case("off") => Ok(Some(false)),
+        _ => Err(()),
+    })
+}
+
+/// `@sounds`' answer: on or off, and — inside `@tui`, where the probe ran —
+/// whether the terminal hears them by name (w11term) or as its bell.
+fn sounds_reply(on: bool, report: Option<(bool, Option<String>, bool)>) -> String {
+    let set = if on {
+        "Sounds are on for this connection."
+    } else {
+        "Sounds are off for this connection."
+    };
+    let then = match report {
+        Some((_, Some(terminal), true)) => {
+            format!(" Your terminal ({terminal}) plays them by name.")
+        }
+        Some((_, Some(terminal), false)) => {
+            format!(" Your terminal ({terminal}) hears them as its bell.")
+        }
+        Some((_, None, _)) => " Your terminal hears them as its bell.".to_string(),
+        None => " The cockpit's sounds are played inside @tui.".to_string(),
+    };
+    format!("{set}{then}")
 }
 
 /// `@pixel/encoder [auto|kitty|sixel|off]`, read transport-side (doc 21 cut
@@ -785,6 +827,11 @@ impl ConnHandler {
                     let text = self.pixel_encoder(req);
                     return self.write_sys(session, &text);
                 }
+                // Doc 21 cut G.10: so are its sounds.
+                if let Some(req) = parse_sounds(&line) {
+                    let text = self.sounds(req);
+                    return self.write_sys(session, &text);
+                }
                 // Doc 21 cut G.1b: the picture's numbers live in `@tui`.
                 if is_pixel_stats(&line) {
                     return self.write_sys(session, PIXEL_STATS_OUTSIDE_TUI);
@@ -828,6 +875,7 @@ impl ConnHandler {
             let caps = sh.caps;
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
             tui.set_pixel_choice(sh.pixel_choice);
+            tui.set_sounds(sh.sounds_on);
             tui.set_pixel_config(self.hooks.pixel_config());
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
@@ -923,6 +971,15 @@ impl ConnHandler {
                     self.fire_repaint();
                     continue;
                 }
+                // Doc 21 cut G.10: the sounds, answered the same way.
+                if let Some(req) = parse_sounds(&line) {
+                    let text = self.sounds(req);
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
                 // Doc 21 cut G.1b: this connection's picture in numbers.
                 if is_pixel_stats(&line) {
                     if let Some(tui) = self.lock().tui.as_mut() {
@@ -970,6 +1027,25 @@ impl ConnHandler {
         let choice = sh.pixel_choice;
         let report = sh.tui.as_mut().map(|t| t.pixel_report());
         pixel_encoder_reply(req, choice, report)
+    }
+
+    // ---- the sounds (doc 21 cut G.10) ---------------------------------------
+
+    /// `@sounds [on|off]`: set or show this connection's sounds, applied to
+    /// an open TUI at once, and the answer's text.
+    fn sounds(&self, req: Result<Option<bool>, ()>) -> String {
+        let Ok(req) = req else {
+            return SOUNDS_USAGE.to_string();
+        };
+        let mut sh = self.lock();
+        if let Some(on) = req {
+            sh.sounds_on = on;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_sounds(on);
+            }
+        }
+        let report = sh.tui.as_ref().map(|t| t.sounds_report());
+        sounds_reply(sh.sounds_on, report)
     }
 
     // ---- line-mode scene history (interface plan I12) --------------------
@@ -2599,6 +2675,31 @@ mod tests {
 
     /// Doc 21 cut G.2: `@pixel/encoder` is read transport-side, case-folded,
     /// and answered from the connection's own state.
+    /// Doc 21 cut G.10: `@sounds` is read transport-side, case-folded, and
+    /// answered with what is set and how the terminal hears them.
+    #[test]
+    fn sounds_reads_and_answers() {
+        assert_eq!(parse_sounds("@sounds"), Some(Ok(None)));
+        assert_eq!(parse_sounds("  @SOUNDS Off "), Some(Ok(Some(false))));
+        assert_eq!(parse_sounds("@sounds on"), Some(Ok(Some(true))));
+        assert_eq!(parse_sounds("@sounds loud"), Some(Err(())));
+        assert_eq!(parse_sounds("@sounds on now"), Some(Err(())));
+        assert_eq!(parse_sounds("@soundsx"), None);
+        assert_eq!(parse_sounds("say @sounds"), None);
+        assert_eq!(
+            sounds_reply(true, None),
+            "Sounds are on for this connection. The cockpit's sounds are played inside @tui."
+        );
+        assert_eq!(
+            sounds_reply(true, Some((true, Some("w11term 1".into()), true))),
+            "Sounds are on for this connection. Your terminal (w11term 1) plays them by name."
+        );
+        assert_eq!(
+            sounds_reply(false, Some((false, None, false))),
+            "Sounds are off for this connection. Your terminal hears them as its bell."
+        );
+    }
+
     #[test]
     fn pixel_encoder_reads_and_answers() {
         use PixelEncoderReq::{Set, Show, Usage};
@@ -2654,6 +2755,7 @@ mod tests {
             repaint: Arc::new(Notify::new()),
             history: HistoryCursor::default(),
             pixel_choice: EncoderChoice::Auto,
+            sounds_on: true,
         }
     }
 
