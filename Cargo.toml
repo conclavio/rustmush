@@ -58,6 +58,10 @@ getrandom = "0.4"
 # already in-tree transitively.
 sha2 = "0.11"
 flate2 = "1"
+# Doc 21 cut G.3b: the picture's trigonometry in pure Rust, so a frame is the
+# same bytes on Windows, Linux and in the browser's wasm (each platform's own
+# libm differs in the last place, which moves pixels).
+libm = "0.2"
 hmac = "0.13"
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "set-header"] }

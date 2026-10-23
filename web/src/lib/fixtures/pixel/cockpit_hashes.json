@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {
+      "hash": "76239582dcc4c419",
+      "look_mdeg": 0
+    },
+    {
+      "hash": "cd0c55cc5f2699c0",
+      "look_mdeg": 45000
+    },
+    {
+      "hash": "0de8b40f6f5f4034",
+      "look_mdeg": -90000
+    }
+  ],
+  "height": 480,
+  "width": 640
+}

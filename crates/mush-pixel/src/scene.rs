@@ -22,6 +22,7 @@
 
 use crate::Frame;
 use crate::frame::Rgb;
+use crate::math::Det as _;
 use crate::overlay::{fill_rect, line, outline_rect, text};
 
 /// How world points land in the frame.
@@ -73,11 +74,11 @@ impl Viewport {
             Transform::LogRadial { r0, r_max } => {
                 let (cx, cy) = (fx as f64 + fw as f64 / 2.0, fy as f64 + fh as f64 / 2.0);
                 let half = (fw.min(fh) as f64 / 2.0) * LOG_RADIAL_FILL;
-                let r = x.hypot(y);
+                let r = x.det_hypot(y);
                 if r <= 0.0 {
                     return (cx, cy);
                 }
-                let f = ((1.0 + r / r0).ln() / (1.0 + r_max / r0).ln()).min(1.0);
+                let f = ((1.0 + r / r0).det_ln() / (1.0 + r_max / r0).det_ln()).min(1.0);
                 (cx + f * half * x / r, cy - f * half * y / r)
             }
         }
@@ -412,7 +413,7 @@ impl Scene {
                 colour,
             } => {
                 let (x, y) = vp.to_px(*at);
-                let (dx, dy) = bearing_deg.to_radians().sin_cos();
+                let (dx, dy) = bearing_deg.to_radians().det_sin_cos();
                 line(
                     frame,
                     x,
@@ -470,7 +471,7 @@ impl Scene {
         for pair in points.windows(2) {
             if let [a, b] = pair {
                 let (fa, fb) = (vp.to_frame(*a), vp.to_frame(*b));
-                let len = (fb.0 - fa.0).hypot(fb.1 - fa.1);
+                let len = (fb.0 - fa.0).det_hypot(fb.1 - fa.1);
                 // A straight line through a log scale can swing far from its
                 // ends' chord near the centre; sample by the world length too.
                 let steps = ((len / SAMPLE_PX).ceil() as usize).clamp(8, 400);
@@ -557,7 +558,7 @@ fn arc_points(
     (0..=steps)
         .map(|i| {
             let a = (start_deg + sweep_deg * i as f64 / steps as f64).to_radians();
-            (c.0 + r * a.sin(), c.1 + r * a.cos())
+            (c.0 + r * a.det_sin(), c.1 + r * a.det_cos())
         })
         .collect()
 }
@@ -735,8 +736,8 @@ mod tests {
         let r = vp.to_frame((1.0, 0.0)).0 - 100.0;
         for deg in [0.0f64, 90.0, 180.0, 270.0] {
             let (x, y) = (
-                100.0 + r * deg.to_radians().sin(),
-                100.0 - r * deg.to_radians().cos(),
+                100.0 + r * deg.to_radians().det_sin(),
+                100.0 - r * deg.to_radians().det_cos(),
             );
             let near = (-1..=1).any(|d: i64| {
                 (-1..=1)

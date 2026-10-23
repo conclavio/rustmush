@@ -42,6 +42,7 @@
 use crate::Frame;
 use crate::frame::Rgb;
 use crate::look::{Facing, Material, Sheet};
+use crate::math::Det as _;
 
 /// What a cell is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -252,8 +253,8 @@ impl Sprite {
         let b = bearing_deg.to_radians();
         let range_cm = range_m * 100.0;
         Sprite {
-            x_cm: cam.x_cm + (range_cm * b.sin()).round() as i64,
-            y_cm: cam.y_cm + (range_cm * b.cos()).round() as i64,
+            x_cm: cam.x_cm + (range_cm * b.det_sin()).round() as i64,
+            y_cm: cam.y_cm + (range_cm * b.det_cos()).round() as i64,
             kind,
             pose: None,
         }
@@ -639,7 +640,7 @@ impl Eye {
     fn new(map: &Map, cam: &Camera) -> Eye {
         let cell = map.cell_cm() as f32;
         let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-        let (dirx, diry) = heading.to_radians().sin_cos();
+        let (dirx, diry) = heading.to_radians().det_sin_cos();
         Eye {
             cell,
             posx: cam.x_cm as f32 / cell,

@@ -842,6 +842,7 @@ fn draw_speed(frame: &mut Frame, speed_kph: i64, s: i64, w: i64, h: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::Det as _;
 
     /// The minimap as it was drawn before doc 21 cut G.5a re-based it on the
     /// scene model, kept to prove the scene draws it pixel for pixel.
@@ -917,7 +918,7 @@ mod tests {
         }
         if let Some((px, py)) = to_px(you) {
             let h = (heading_mdeg % 360_000) as f32 / 1000.0;
-            let (dx, dy) = h.to_radians().sin_cos();
+            let (dx, dy) = h.to_radians().det_sin_cos();
             let len = 6.0 * s as f32;
             line(
                 frame,

@@ -9,10 +9,25 @@ description = "The graphics engine (doc 21): one Frame drawn from the per-observ
 [dependencies]
 # PNG's IDAT is a zlib stream; the workspace already carries flate2 (pure-Rust
 # zlib-rs) for the gateway, so no new dependency and no C toolchain.
-flate2.workspace = true
+flate2 = { workspace = true, optional = true }
 # The `cockpit` module reads the `arena.cockpit` keyframe (JSON) into the
 # instruments' inputs, for the SSH TUI's view and the fixture example alike.
 serde_json.workspace = true
+# Doc 21 cut G.3b: every sine, cosine, exponential, logarithm and hypotenuse
+# goes through `math` and so through libm, the same on every target.
+libm.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# The terminal and socket encoders — PNG (and so flate2), kitty, sixel — and
+# the terminal probe. On by default; the browser's wasm build (doc 21 cut G.3b,
+# `mush-pixel-wasm`) draws into a canvas and leaves them out.
+default = ["encode"]
+encode = ["dep:flate2"]
+
+[[example]]
+name = "fixture"
+required-features = ["encode"]
+

@@ -43,6 +43,7 @@
 
 use crate::Frame;
 use crate::frame::Rgb;
+use crate::math::Det as _;
 use crate::raycast::{
     Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS, Shades, Sprite,
     SpriteAt, draw_sprite, focal, fog_step,
@@ -451,7 +452,7 @@ pub fn render(
     let posx = cam.x_cm as f32 / cell;
     let posy = cam.y_cm as f32 / cell;
     let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-    let (dirx, diry) = heading.to_radians().sin_cos();
+    let (dirx, diry) = heading.to_radians().det_sin_cos();
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
     let hf = focal(w);
     let horizon = (h / 2) as f32;
@@ -530,7 +531,7 @@ fn draw_sprites(
     let posx = cam.x_cm as f32 / cell;
     let posy = cam.y_cm as f32 / cell;
     let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-    let (dirx, diry) = heading.to_radians().sin_cos();
+    let (dirx, diry) = heading.to_radians().det_sin_cos();
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
     let hf = focal(w);
     let horizon = (h / 2) as f32;
@@ -585,11 +586,14 @@ mod tests {
         let mut t = Terrain::new(map);
         for y in 0..64 {
             for x in 0..64 {
-                let d = (((x as f32 - 32.0).powi(2) + (y as f32 - 32.0).powi(2)).sqrt()) / 8.0;
+                let d = (((x as f32 - 32.0) * (x as f32 - 32.0)
+                    + (y as f32 - 32.0) * (y as f32 - 32.0))
+                    .sqrt())
+                    / 8.0;
                 let cm = if d < 1.0 {
                     -1200.0 + 1800.0 * d * d
                 } else {
-                    600.0 * (-(d - 1.0) * 2.0).exp()
+                    600.0 * (-(d - 1.0) * 2.0).det_exp()
                 };
                 t.set_elev_cm(x, y, cm as i32);
             }

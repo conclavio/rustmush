@@ -53,19 +53,24 @@
     clippy::panic_in_result_fn
 )]
 
+#[cfg(feature = "encode")]
 pub mod caps;
 pub mod chart;
 pub mod cockpit;
 pub mod frame;
 pub mod heightfield;
+#[cfg(feature = "encode")]
 pub mod kitty;
 pub mod look;
+pub mod math;
 pub mod overlay;
 pub mod picture;
+#[cfg(feature = "encode")]
 pub mod png;
 pub mod raycast;
 pub mod replay;
 pub mod scene;
+#[cfg(feature = "encode")]
 pub mod sixel;
 
 pub use frame::Frame;
