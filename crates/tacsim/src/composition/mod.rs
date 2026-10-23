@@ -247,7 +247,10 @@ fn compose_server_modules(
     .chain(game.reserved_rooms.iter().copied())
     .collect();
     let modules: Vec<Box<dyn GameModule>> = vec![
-        Box::new(mush_comsys::ComsysModule::new()),
+        Box::new(
+            mush_comsys::ComsysModule::new()
+                .with_transport(Arc::new(mail_transport::MailTransport)),
+        ),
         Box::new(mush_canon::CanonModule::new()),
         // D1: explicit-only privileges and their audit ledger (`@privilege`).
         Box::new(mush_privileges::PrivilegesModule::new()),

@@ -127,6 +127,23 @@ pub enum LineOutcome {
 /// The game-side hooks the bot calls. Every method takes the invoking
 /// Discord user's snowflake, which the Gateway asserted.
 pub trait DiscordHooks: Send + Sync {
+    fn dm_message<'a>(
+        &'a self,
+        user_id: u64,
+        _message_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, LineOutcome> {
+        self.dm_line(user_id, content)
+    }
+    fn relay_message<'a>(
+        &'a self,
+        user_id: u64,
+        channel_id: u64,
+        _message_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, RelayLineOutcome> {
+        self.relay_line(user_id, channel_id, content)
+    }
     /// Redeem a **normalized** link code for `user_id` (D-D-3).
     fn link_redeem<'a>(&'a self, user_id: u64, code: &'a str) -> BoxFuture<'a, LinkOutcome>;
 

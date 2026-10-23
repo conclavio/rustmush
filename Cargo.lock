@@ -2194,6 +2194,7 @@ name = "mush-comsys"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "getrandom 0.4.3",
  "mush-core",
  "mush-proto",
  "mush-store",
@@ -2944,6 +2945,7 @@ dependencies = [
  "mush-jobs",
  "mush-llm",
  "mush-mail",
+ "mush-net-discord",
  "mush-net-ssh",
  "mush-net-web",
  "mush-npc",

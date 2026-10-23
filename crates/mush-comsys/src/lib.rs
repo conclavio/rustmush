@@ -68,6 +68,7 @@ mod commands;
 mod data;
 mod query;
 mod speak;
+pub mod transit;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -93,10 +94,41 @@ use data::{persist_channel, persist_del, persist_membership, persist_meta};
 pub struct ComsysModule;
 
 impl ComsysModule {
+    #[must_use]
+    pub fn with_transport(self, transport: Arc<dyn transit::Transport>) -> TransportComsysModule {
+        TransportComsysModule { transport }
+    }
     /// A fresh module instance.
     #[must_use]
     pub fn new() -> ComsysModule {
         ComsysModule
+    }
+}
+
+pub struct TransportComsysModule {
+    transport: Arc<dyn transit::Transport>,
+}
+impl GameModule for TransportComsysModule {
+    fn name(&self) -> &'static str {
+        NS
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        ComsysModule.register(reg)?;
+        reg.state(transit::Services(Arc::clone(&self.transport)));
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        ComsysModule.on_world_loaded(ctx, data)
+    }
+    fn boot_stream_requests(
+        &self,
+        kv: &[(SmolStr, serde_json::Value)],
+    ) -> Result<Vec<(SmolStr, u32)>, ModError> {
+        ComsysModule.boot_stream_requests(kv)
     }
 }
 
@@ -114,6 +146,11 @@ impl GameModule for ComsysModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(ComsysState::default());
+        reg.tick(
+            transit::TICK,
+            mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(1)),
+            Arc::new(transit::settle),
+        )?;
         reg.alias_stage(Arc::new(ComsysAliases))?;
         // Programme D4: relayed lines (a linked Discord user in a mapped
         // channel) come onto channels through this, under the same gates.
@@ -214,7 +251,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             .map(|m| (m.player, m.channel))
             .collect();
         for k in &keys {
-            st.members.remove(k);
+            st.remove_member(ctx.out, k.0, k.1);
         }
         keys
     };
@@ -249,10 +286,13 @@ fn auto_join_default(ctx: &mut Ctx<'_>, player: ObjId) {
         title: None,
         gagged: false,
         last_read: seq,
+        ic: None,
     };
-    if let Some(st) = ctx.w.module_state_mut::<ComsysState>() {
-        st.members.insert((player, chan), m.clone());
-    }
+    let m = ctx
+        .w
+        .module_state_mut::<ComsysState>()
+        .map(|st| st.insert_member(m.clone()))
+        .unwrap_or(m);
     persist_membership(ctx.out, &m);
 }
 
@@ -284,6 +324,12 @@ fn auto_join_default(ctx: &mut Ctx<'_>, player: ObjId) {
 /// Corrupt data remains an operational problem to fix; the count and the
 /// per-key `tracing::error!` are how an operator learns which one.
 fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+    let ic_docs: Vec<_> = data
+        .kv
+        .iter()
+        .filter(|(k, _)| k.starts_with("ic:"))
+        .cloned()
+        .collect();
     // First boot = completely empty namespace, decided BEFORE any parsing:
     // "all channel docs corrupt" must never look like a fresh install (it
     // would reseed Public and force-join everyone), and staff legitimately
@@ -329,9 +375,20 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             }
             channels.insert(chan.id, chan);
         } else if key.starts_with("member:") {
+            let ic = value.get("ic").is_some_and(|v| !v.is_null());
             match serde_json::from_value::<Membership>(value) {
-                Ok(m) => raw_members.push(m),
+                Ok(m) => {
+                    if ic && key != member_key(m.player, m.channel) {
+                        return Err(ModError::msg("comsys: IC membership key mismatch"));
+                    }
+                    raw_members.push(m);
+                }
                 Err(e) => {
+                    if ic {
+                        return Err(ModError::msg(format!(
+                            "comsys: corrupt IC membership {key}: {e}"
+                        )));
+                    }
                     tracing::error!(%key, error = %e, "comsys: bad membership doc skipped");
                 }
             }
@@ -393,14 +450,18 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             .unwrap_or(0)
     });
 
-    *ctx.w
-        .module_state_mut::<ComsysState>()
-        .expect("comsys state slot installed at registration") = ComsysState {
+    let mut rebuilt = ComsysState {
+        channel_members: members.keys().map(|(p, c)| (*c, *p)).collect(),
         channels,
         members,
         rings,
         next_chan_id,
+        ic: transit::State::default(),
     };
+    transit::load(&mut rebuilt, ctx.out, &ic_docs, ctx.w.world_ic_now())?;
+    *ctx.w
+        .module_state_mut::<ComsysState>()
+        .expect("comsys state slot installed at registration") = rebuilt;
     for key in orphans {
         persist_del(ctx.out, key);
     }
@@ -455,8 +516,9 @@ fn seed_default_channel(ctx: &mut ModuleCtx<'_>) {
                 title: None,
                 gagged: false,
                 last_read: 0,
+                ic: None,
             };
-            st.members.insert((p, id), m.clone());
+            st.insert_member(m.clone());
             ms.push(m);
         }
         (c, ms, st.next_chan_id)

@@ -4949,6 +4949,7 @@ mod tests {
         assert_eq!(texts[3], "Exits    north");
         assert_eq!(texts[4], "Weather  Overhead: rain.");
         let ch = OutputEvent::Channel {
+            epoch: None,
             channel: "pub".into(),
             seq: 1,
             actor: ObjRef::new("#5", "Zoe"),

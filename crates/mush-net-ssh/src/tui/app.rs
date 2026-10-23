@@ -1983,6 +1983,7 @@ impl TuiApp {
             }
             OutputEvent::Channel {
                 channel,
+                epoch,
                 seq,
                 actor,
                 kind,
@@ -1997,6 +1998,7 @@ impl TuiApp {
                     mush_proto::NarrativeKind::Spoof => format!("[{}] {plain}", actor.name),
                     _ => format!("{}: {plain}", actor.name),
                 };
+                self.panels.channel_epoch(channel, epoch.as_deref());
                 self.panels.push_channel(
                     channel,
                     ChanMsg {

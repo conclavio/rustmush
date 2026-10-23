@@ -191,10 +191,7 @@ pub fn spawn_bot<A: AuthBackend + 'static>(
     bridge.install_auto_follow();
     // The server's `ToGateway::DiscordControl` (the in-game `@discord/follow`
     // family) reaches the bridge through the process's control registry.
-    controls.set_discord(Arc::new(BridgeControl(Arc::downgrade(&bridge))));
-    // D4: relay-flagged channel lines the world publishes reach the bridge
-    // through the same registry.
-    controls.set_relay(Arc::new(BridgeRelay(Arc::downgrade(&bridge))));
+    bridge.install_controls(controls);
     let sweeper = tokio::spawn(idle_sweeper(Arc::clone(&bridge)));
     let hooks: Arc<dyn DiscordHooks> = bridge;
     let (stop, stop_rx) = oneshot::channel::<()>();
@@ -331,6 +328,11 @@ impl RelayMapper {
 }
 
 impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// Register the same weak control and relay sinks for either deployment.
+    pub fn install_controls(self: &Arc<Self>, controls: &GatewayControls) {
+        controls.set_discord(Arc::new(BridgeControl(Arc::downgrade(self))));
+        controls.set_relay(Arc::new(BridgeRelay(Arc::downgrade(self))));
+    }
     /// Wire the bridge over the shared seams and the transport's REST client.
     #[must_use]
     pub fn with_link(
@@ -1472,6 +1474,16 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// game channel as the author's character after the server re-checks the
     /// pairing and comsys its gates.
     pub async fn relay_in(&self, user_id: u64, channel_id: u64, content: &str) -> RelayLineOutcome {
+        self.relay_in_identified(user_id, channel_id, None, content)
+            .await
+    }
+    pub async fn relay_in_identified(
+        &self,
+        user_id: u64,
+        channel_id: u64,
+        message_id: Option<u64>,
+        content: &str,
+    ) -> RelayLineOutcome {
         let Some(map) = self.relay.inbound(channel_id) else {
             return RelayLineOutcome::Ignored;
         };
@@ -1527,6 +1539,8 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             return RelayLineOutcome::Refused("your account has no character yet".to_string());
         };
         let req = RelaySpeak {
+            message_id,
+            dm_conn: None,
             user_id,
             account: account_id,
             actor,
@@ -1562,6 +1576,107 @@ async fn idle_sweeper<A: AuthBackend + 'static>(bridge: Arc<DiscordBridge<A>>) {
 }
 
 impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
+    fn dm_message<'a>(
+        &'a self,
+        user_id: u64,
+        message_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, LineOutcome> {
+        Box::pin(async move {
+            let Some((conn, actor, _)) = self.validated_follow(user_id).await else {
+                return LineOutcome::NotFollowing;
+            };
+            if content.len() > mush_net_ssh::MAX_LINE_CHARS.saturating_mul(4) {
+                let _ = self.core.sessions.send_to_conn(
+                    conn,
+                    Arc::new(OutputEvent::Sys(RichText::tag(
+                        "error",
+                        "Line is too long.",
+                    ))),
+                );
+                return LineOutcome::Accepted;
+            }
+            let clean = mush_session::sanitize_line(content);
+            if clean.chars().count() > mush_net_ssh::MAX_LINE_CHARS {
+                let _ = self.core.sessions.send_to_conn(
+                    conn,
+                    Arc::new(OutputEvent::Sys(RichText::tag(
+                        "error",
+                        "Line is too long.",
+                    ))),
+                );
+                return LineOutcome::Accepted;
+            }
+            let Some((alias, body)) = clean.trim().split_once(char::is_whitespace) else {
+                return self.dm_line(user_id, content).await;
+            };
+            let (kind, text) = relay_kind(body.trim());
+            let Ok(Some(account)) = self.store.account_by_discord_user(user_id).await else {
+                return LineOutcome::NotFollowing;
+            };
+            let Some(account) = account
+                .id
+                .or_else(|| AccountId::mint(&account.name, account.created).ok())
+            else {
+                return LineOutcome::NotFollowing;
+            };
+            if self.core.sessions.check_input(conn) == mush_session::FloodVerdict::Throttled {
+                let _ = self.core.sessions.send_to_conn(
+                    conn,
+                    Arc::new(OutputEvent::Sys(RichText::tag(
+                        "error",
+                        "You're doing that too fast.",
+                    ))),
+                );
+                return LineOutcome::Accepted;
+            }
+            self.core.sessions.record_input(conn);
+            if let Some(f) = locked(&self.follows, "follows").get_mut(&user_id) {
+                f.last_input = Instant::now();
+            }
+            let req = RelaySpeak {
+                message_id: Some(message_id),
+                dm_conn: Some(conn.0),
+                user_id,
+                account,
+                actor,
+                channel: alias.into(),
+                kind,
+                text: text.into(),
+            };
+            match self.core.link.request(ServiceReq::RelaySpeak(req)).await {
+                Some(ServiceResp::RelaySpeak(Err(mush_ipc::RelayError::NotChannelAlias))) => {
+                    match self.core.line_prechecked(conn, content).await {
+                        CoreLine::Continue => LineOutcome::Accepted,
+                        CoreLine::Close => LineOutcome::Closed,
+                    }
+                }
+                Some(ServiceResp::RelaySpeak(Ok(()))) => LineOutcome::Accepted,
+                _ => {
+                    let _ = self.core.sessions.send_to_conn(
+                        conn,
+                        Arc::new(OutputEvent::Sys(RichText::tag(
+                            "error",
+                            "IC channel line was refused or transport is unavailable.",
+                        ))),
+                    );
+                    LineOutcome::Accepted
+                }
+            }
+        })
+    }
+    fn relay_message<'a>(
+        &'a self,
+        user_id: u64,
+        channel_id: u64,
+        message_id: u64,
+        content: &'a str,
+    ) -> BoxFuture<'a, RelayLineOutcome> {
+        Box::pin(async move {
+            self.relay_in_identified(user_id, channel_id, Some(message_id), content)
+                .await
+        })
+    }
     fn link_redeem<'a>(&'a self, user_id: u64, code: &'a str) -> BoxFuture<'a, LinkOutcome> {
         Box::pin(async move {
             match self.redeem(user_id, code).await {
@@ -2750,6 +2865,7 @@ mod tests {
 
     fn channel_line(name: &str, kind: NarrativeKind, text: &str) -> OutputEvent {
         OutputEvent::Channel {
+            epoch: None,
             channel: mush_proto::SmolStr::new(name),
             seq: 7,
             actor: ObjRef::new("#9", "Zoe"),

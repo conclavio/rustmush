@@ -130,6 +130,30 @@ pub(crate) fn channel_speak(
 ) {
     let now_ms = w.now().saturating_mul(1000);
     let actor_ref = obj_ref(w, actor);
+    if let Some(st) = w.module_state::<ComsysState>()
+        && let Some(c) = st.channels.get(&chan)
+        && c.flags.ic
+    {
+        let title = if c.flags.no_titles {
+            None
+        } else {
+            st.members.get(&(actor, chan)).and_then(|m| m.title.clone())
+        };
+        let msg = ChanMsg {
+            seq: 0,
+            actor,
+            actor_name: actor_ref.name,
+            title,
+            kind,
+            text: text.into(),
+            ts: now_ms,
+            origin: origin.map(SmolStr::new),
+        };
+        if let Err(error) = crate::transit::submit(w, out, chan, msg) {
+            out.error(actor, error);
+        }
+        return;
+    }
 
     // Phase 1: bump seq, snapshot what delivery needs, then release the
     // mutable module-state borrow before selecting the live audience.
@@ -197,6 +221,7 @@ pub(crate) fn channel_speak(
 
     // Phase 3: emit, advance cursors, record history.
     let ev = OutputEvent::Channel {
+        epoch: None,
         channel: chan_name.clone(),
         seq,
         actor: actor_ref.clone(),
@@ -300,6 +325,11 @@ pub(crate) fn channel_notice(
         return;
     };
     let line = format!("[{}] {text}", c.name);
+    // Membership acknowledgements are local control UI. Ambient IC membership
+    // announcements would disclose remote activity without physical delivery.
+    if c.flags.ic {
+        return;
+    }
     for m in st.members_of(chan) {
         // 16b cut Z.4: `Channel::hears`, the one see-lock read of delivery.
         if m.gagged || !w.is_connected(m.player) || !c.hears(w, m.player) {
@@ -338,7 +368,7 @@ pub(crate) fn unread_notices(w: &World, actor: ObjId) -> Vec<String> {
         if !c.flags.loud || !c.hears(w, actor) {
             continue;
         }
-        let unread = c.seq.saturating_sub(m.last_read);
+        let unread = crate::transit::sequence(c, m).saturating_sub(m.last_read);
         if unread > 0 {
             lines.push(format!(
                 "[{}] {unread} message{} since you last read.",
@@ -381,27 +411,77 @@ impl RelaySpeaker for RelaySpeak {
         kind: NarrativeKind,
         text: &str,
     ) -> Result<(), RelayRefusal> {
+        self.relay_speak_identified(ctx, channel, kind, text, None)
+    }
+    fn relay_speak_identified(
+        &self,
+        ctx: &mut Ctx<'_>,
+        channel: &str,
+        kind: NarrativeKind,
+        text: &str,
+        message_id: Option<u64>,
+    ) -> Result<(), RelayRefusal> {
+        self.speak(ctx, channel, kind, text, message_id, false)
+    }
+    fn relay_alias_identified(
+        &self,
+        ctx: &mut Ctx<'_>,
+        alias: &str,
+        kind: NarrativeKind,
+        text: &str,
+        message_id: Option<u64>,
+    ) -> Result<(), RelayRefusal> {
+        self.speak(ctx, alias, kind, text, message_id, true)
+    }
+}
+impl RelaySpeak {
+    #[allow(clippy::too_many_arguments)]
+    fn speak(
+        &self,
+        ctx: &mut Ctx<'_>,
+        channel: &str,
+        kind: NarrativeKind,
+        text: &str,
+        message_id: Option<u64>,
+        alias: bool,
+    ) -> Result<(), RelayRefusal> {
         let actor = ctx.actor;
         let text = text.trim();
         if text.is_empty() {
             return Err(RelayRefusal::Empty);
         }
-        let (chan, gagged, speak) = {
+        let (chan, gagged, speak, ic, title) = {
             let st = ctx
                 .w
                 .module_state::<ComsysState>()
                 .ok_or(RelayRefusal::NoSpeaker)?;
-            let c = st
-                .channel_by_name(channel)
-                .ok_or(RelayRefusal::NoSuchChannel)?;
-            if !c.flags.relay {
+            let c = if alias {
+                st.membership_by_alias(actor, channel)
+                    .and_then(|m| st.channels.get(&m.channel))
+                    .filter(|c| c.flags.ic)
+                    .ok_or(RelayRefusal::NotChannelAlias)?
+            } else {
+                st.channel_by_name(channel)
+                    .ok_or(RelayRefusal::NoSuchChannel)?
+            };
+            if !alias && !c.flags.relay {
                 return Err(RelayRefusal::NotRelay);
             }
             let m = st
                 .members
                 .get(&(actor, c.id))
                 .ok_or(RelayRefusal::NotMember)?;
-            (c.id, m.gagged, c.perms.speak.clone())
+            (
+                c.id,
+                m.gagged,
+                c.perms.speak.clone(),
+                c.flags.ic,
+                if c.flags.no_titles {
+                    None
+                } else {
+                    m.title.clone()
+                },
+            )
         };
         if gagged {
             return Err(RelayRefusal::Gagged);
@@ -409,7 +489,29 @@ impl RelaySpeaker for RelaySpeak {
         if !eval_lock(ctx.w, &speak, actor, MAX_LOCK_DEPTH) {
             return Err(RelayRefusal::SpeakLock);
         }
-        channel_speak(ctx.w, ctx.out, actor, chan, kind, text, Some("discord"));
+        if ic {
+            let id = message_id.ok_or(RelayRefusal::RetryIdentity)?;
+            let (fingerprint, duplicate) =
+                crate::transit::relay_identity(ctx.w, id, actor, chan, kind, text)?;
+            if duplicate {
+                return Ok(());
+            }
+            let msg = ChanMsg {
+                seq: 0,
+                actor,
+                actor_name: obj_ref(ctx.w, actor).name,
+                title,
+                kind,
+                text: text.into(),
+                ts: ctx.w.now().saturating_mul(1000),
+                origin: Some("discord".into()),
+            };
+            crate::transit::submit(ctx.w, ctx.out, chan, msg)
+                .map_err(|_| RelayRefusal::Transport)?;
+            crate::transit::accept_relay(ctx.w, ctx.out, id, fingerprint);
+        } else {
+            channel_speak(ctx.w, ctx.out, actor, chan, kind, text, Some("discord"));
+        }
         Ok(())
     }
 }

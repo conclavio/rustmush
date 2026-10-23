@@ -677,6 +677,7 @@ export class GameApp {
   #onChannel(env: EnvelopeOf<"channel">): void {
     const fresh = this.channels.live({
       channel: env.d.channel,
+      epoch: env.d.epoch,
       seq: env.d.seq,
       actor: env.d.actor,
       title: env.d.title ?? null,

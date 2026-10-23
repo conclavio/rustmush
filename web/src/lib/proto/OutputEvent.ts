@@ -37,7 +37,11 @@ text: RichText, } } | { "t": "sys", "d": RichText } | { "t": "channel", "d": {
  */
 channel: string,
 /**
- * Per-channel message sequence number (monotonic).
+ * Opaque IC membership identity. A new identity resets local cursors.
+ */
+epoch?: string | null,
+/**
+ * Member-local arrival sequence for IC; channel sequence for OOC.
  */
 seq: number,
 /**

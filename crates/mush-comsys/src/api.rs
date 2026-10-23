@@ -45,11 +45,25 @@ pub fn ensure_channel(
     let st = ctx.w.module_state_mut::<ComsysState>()?;
     if let Some(id) = st.channel_by_name(name).map(|c| c.id) {
         let c = st.channels.get_mut(&id)?;
+        if c.flags.ic != flags.ic && c.seq != 0 {
+            return None;
+        }
         if c.perms != perms || c.flags != flags {
             c.perms = perms;
             c.flags = flags;
             let doc = c.clone();
             persist_channel(ctx.out, &doc);
+            for m in st.members.values_mut().filter(|m| m.channel == id) {
+                if flags.ic && m.ic.is_none() {
+                    m.ic = Some(crate::transit::Knowledge::default());
+                    m.last_read = 0;
+                    persist_membership(ctx.out, m);
+                } else if !flags.ic && m.ic.is_some() {
+                    m.ic = None;
+                    m.last_read = 0;
+                    persist_membership(ctx.out, m);
+                }
+            }
         }
         return Some(id);
     }
@@ -211,10 +225,21 @@ pub fn force_join(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId, alias: &
         title: None,
         gagged: false,
         last_read: seq,
+        ic: None,
     };
-    if let Some(st) = ctx.w.module_state_mut::<ComsysState>() {
-        st.members.insert((player, channel), m.clone());
+    let Some(st) = ctx.w.module_state_mut::<ComsysState>() else {
+        return false;
+    };
+    if st.channels.get(&channel).is_some_and(|c| c.flags.ic)
+        && st
+            .indexed_members(channel)
+            .take(crate::transit::MAX_MEMBERS)
+            .count()
+            >= crate::transit::MAX_MEMBERS
+    {
+        return false;
     }
+    let m = st.insert_member(m);
     persist_membership(ctx.out, &m);
     let line = match shadowed {
         Some(other) => format!(
@@ -233,7 +258,7 @@ pub fn force_leave(ctx: &mut Ctx<'_>, player: ObjId, channel: ChannelId) -> bool
     let existed = ctx
         .w
         .module_state_mut::<ComsysState>()
-        .is_some_and(|st| st.members.remove(&(player, channel)).is_some());
+        .is_some_and(|st| st.remove_member(ctx.out, player, channel));
     if !existed {
         return false;
     }

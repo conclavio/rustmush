@@ -977,6 +977,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     /// One input line from an attached connection.
     pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
+        self.line_inner(conn, line, true).await
+    }
+
+    /// Discord's identified channel probe already spent this input token.
+    pub(crate) async fn line_prechecked(&self, conn: ConnId, line: &str) -> LineOutcome {
+        self.line_inner(conn, line, false).await
+    }
+
+    async fn line_inner(&self, conn: ConnId, line: &str, check_flood: bool) -> LineOutcome {
         // Idle bookkeeping first — even a throttled keypress is activity.
         self.sessions.record_input(conn);
         // Cheap byte-length reject BEFORE the O(n) `sanitize_line` scan: a
@@ -1018,7 +1027,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             self.quit(conn).await;
             return LineOutcome::Close;
         }
-        if self.sessions.check_input(conn) == FloodVerdict::Throttled {
+        if check_flood && self.sessions.check_input(conn) == FloodVerdict::Throttled {
             send_event_to_conn(
                 &self.sessions,
                 conn,

@@ -1381,7 +1381,11 @@ impl WorldHandle {
         {
             return Err(WorldReadError::Unavailable);
         }
-        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+        let result = rx.await.unwrap_or(Err(WorldReadError::Unavailable))?;
+        if result.is_ok() {
+            self.barrier_result().await?;
+        }
+        Ok(result)
     }
 
     /// Dispatch a Discord component interaction the gateway forwarded
@@ -4697,15 +4701,41 @@ async fn run(
                             // oracle, no match); comsys runs its own gates.
                             let result = if engine.account_of(req.actor) != Some(req.account) {
                                 Err(mush_ipc::RelayError::AccountMismatch)
-                            } else if req.text.chars().count() > MAX_RELAY_LINE_CHARS {
+                            } else if (req.dm_conn.is_none()
+                                && req.text.chars().count() > MAX_RELAY_LINE_CHARS)
+                                || req.text.len() > mush_core::MAX_INGRESS_LINE_BYTES
+                            {
                                 Err(mush_ipc::RelayError::TooLong)
+                            } else if let Some(conn) = req.dm_conn {
+                                if engine.actor_of(conn) != Some(req.actor) {
+                                    Err(mush_ipc::RelayError::AccountMismatch)
+                                } else if engine.world.input_depth(req.actor) > 0 {
+                                    Err(mush_ipc::RelayError::NotChannelAlias)
+                                } else {
+                                    engine
+                                        .relay_alias_identified(
+                                            req.actor,
+                                            &req.channel,
+                                            req.kind,
+                                            &req.text,
+                                            req.message_id,
+                                            &mut out,
+                                        )
+                                        .map_err(|e| match e {
+                                            mush_core::RelayRefusal::NotChannelAlias => {
+                                                mush_ipc::RelayError::NotChannelAlias
+                                            }
+                                            e => mush_ipc::RelayError::Refused(e.to_string()),
+                                        })
+                                }
                             } else {
                                 engine
-                                    .relay_speak(
+                                    .relay_speak_identified(
                                         req.actor,
                                         &req.channel,
                                         req.kind,
                                         &req.text,
+                                        req.message_id,
                                         &mut out,
                                     )
                                     .map_err(|why| mush_ipc::RelayError::Refused(why.to_string()))
@@ -4716,6 +4746,7 @@ async fn run(
                                 ok = result.is_ok(),
                                 "relay speak dispatched"
                             );
+                            engine.finish_external_step(&mut out, &mut fx);
                             let _ = reply.send(Ok(result));
                             StepOutcome::Continue
                         }
@@ -14997,6 +15028,8 @@ mod tests {
         assert_eq!(
             classify_world_msg(&WorldMsg::RelaySpeak {
                 req: mush_ipc::RelaySpeak {
+                    message_id: None,
+                    dm_conn: None,
                     user_id: 1,
                     account: mush_core::AccountId::mint("nick", 1).unwrap(),
                     actor: GOD,

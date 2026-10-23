@@ -17,6 +17,276 @@ struct Rig {
     tw: TestWorld,
     serial: u64,
 }
+impl Rig {
+    fn channels(&self) -> &mush_comsys::ComsysState {
+        self.tw.world().module_state().unwrap()
+    }
+    fn channel_setup(&mut self, people: &[mush_core::ObjId]) -> mush_comsys::ChannelId {
+        self.run(GOD, "@channel/create Radio");
+        for flag in ["ic", "logged", "persist", "loud", "relay"] {
+            self.run(GOD, &format!("@channel/set Radio={flag}"));
+        }
+        for &p in people {
+            assert!(self.run(p, "addcom radio=Radio").contains("added"));
+        }
+        self.channels().channel_by_name("Radio").unwrap().id
+    }
+    fn backlog(&self, actor: mush_core::ObjId) -> String {
+        use mush_core::QueryHandler;
+        serde_json::to_string(
+            &mush_comsys::BacklogQuery
+                .query(
+                    self.tw.world(),
+                    actor,
+                    &serde_json::json!({"channel":"Radio","limit":200}),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+    }
+    fn finish_channel(&mut self, channel: mush_comsys::ChannelId, seq: u64) {
+        let prefix = format!("channel:v1:{}:{seq}:", channel.0);
+        for _ in 0..100 {
+            if !self.channels().ic.pending.contains(&(channel, seq)) {
+                return;
+            }
+            self.mail_tick();
+            let next = self
+                .tw
+                .world()
+                .module_state::<mush_propagation::PropagationStore>()
+                .unwrap()
+                .envelopes()
+                .filter(|e| e.dispatch_ref().is_some_and(|r| r.key.starts_with(&prefix)))
+                .filter_map(|e| e.transit()?.flight.as_ref().map(|f| f.due.at))
+                .min();
+            if let Some(at) = next
+                && at > self.tw.world().world_ic_now().at
+            {
+                self.advance_ic_to(at);
+            }
+        }
+        panic!("channel line {seq} did not settle");
+    }
+}
+
+#[tokio::test]
+async fn r6b_channel_holes_offline_restart_and_shared_mirror_are_arrival_gated() {
+    use mush_core::QueryHandler;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let far = rig.tw.spawn_player("FarRadio");
+    let phobos = rig
+        .tw
+        .world()
+        .iter()
+        .find(|o| o.name == "Kasei Receiving Office")
+        .unwrap()
+        .id;
+    rig.run(GOD, &format!("@teleport {far}={phobos}"));
+    let chan = rig.channel_setup(&[GOD, bob, far]);
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    let events = rig.tw.run(GOD, "radio first-secret RelayReceiver FarRadio");
+    assert!(
+        !events
+            .iter()
+            .any(|(a, _)| matches!(a, mush_core::Audience::Relay(_)))
+    );
+    rig.mail_tick();
+    assert!(!rig.backlog(bob).contains("first-secret"));
+    assert!(
+        !rig.run(bob, "@channel/recall radio")
+            .contains("first-secret")
+    );
+    let state = mush_comsys::StateQuery
+        .query(rig.tw.world(), bob, &serde_json::json!({}))
+        .unwrap();
+    let json = serde_json::to_value(state).unwrap();
+    assert!(!json.to_string().contains("first-secret"));
+    assert_eq!(
+        rig.channels().members[&(bob, chan)]
+            .ic
+            .as_ref()
+            .unwrap()
+            .sequence,
+        0
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(!rig.backlog(bob).contains("first-secret"));
+    rig.run(GOD, "@relay/enable luna_ceres.luna");
+    assert!(
+        rig.run(GOD, "radio second-fast")
+            .contains("queued for IC transit")
+    );
+    // Drive the fast covered copy alone; the uncovered recipient's physical
+    // flight must not force this test to advance over the first letter's due.
+    for _ in 0..20 {
+        rig.mail_tick();
+        if rig.backlog(bob).contains("second-fast") {
+            break;
+        }
+    }
+    assert!(rig.backlog(bob).contains("second-fast"));
+    assert!(!rig.backlog(bob).contains("first-secret"));
+    assert!(!rig.backlog(far).contains("second-fast"));
+    let k = rig.channels().members[&(bob, chan)].ic.as_ref().unwrap();
+    assert_eq!(k.sequence, 1);
+    assert_eq!(k.received[0].message, 2);
+    assert_eq!(k.received[0].seq, 1);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(!rig.backlog(bob).contains("first-secret"));
+    rig.finish_channel(chan, 1);
+    rig.finish_channel(chan, 2);
+    let k = rig.channels().members[&(bob, chan)].ic.as_ref().unwrap();
+    assert_eq!(k.sequence, 2);
+    assert_eq!(k.received[1].message, 1);
+    assert_eq!(k.received[1].seq, 2);
+    assert_eq!(
+        rig.channels().members[&(bob, chan)].last_read,
+        0,
+        "offline arrivals remain unread"
+    );
+    assert!(rig.backlog(far).contains("first-secret"));
+    assert!(rig.backlog(far).contains("second-fast"));
+    let notice = rig.tw.connect(bob);
+    assert!(
+        rig.tw
+            .seen_by(&notice, bob)
+            .join(" ")
+            .contains("2 messages since")
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.channels().members[&(bob, chan)]
+            .ic
+            .as_ref()
+            .unwrap()
+            .sequence,
+        2
+    );
+    assert!(
+        rig.run(GOD, "@channel/set Radio=!ic")
+            .contains("cannot change")
+    );
+    let events = rig.tw.run(GOD, "pub OOC still immediate");
+    assert!(events.iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Channel{text,..} if text.to_plain_text()=="OOC still immediate")));
+}
+
+#[tokio::test]
+async fn r6b_membership_revocation_and_source_loss_preserve_transport_boundaries() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let alice = rig.tw.spawn_player("RadioAlice");
+    let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
+    rig.run(GOD, &format!("@teleport {alice}={luna}"));
+    let chan = rig.channel_setup(&[alice, bob]);
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.run(alice, "radio before-rejoin");
+    rig.mail_tick();
+    rig.run(bob, "delcom radio");
+    rig.run(bob, "addcom radio=Radio");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.finish_channel(chan, 1);
+    assert!(!rig.backlog(bob).contains("before-rejoin"));
+    rig.run(alice, "radio revoked-in-flight");
+    rig.mail_tick();
+    rig.run(GOD, "@channel/perm Radio=see=#FALSE");
+    rig.finish_channel(chan, 2);
+    rig.run(GOD, "@channel/perm Radio=see=#TRUE");
+    assert!(!rig.backlog(bob).contains("revoked-in-flight"));
+    rig.run(alice, "radio source-lost-after-send");
+    rig.mail_tick();
+    // Controlled lifecycle fault after source acceptance. The frozen content
+    // and physical origin must survive loss of the source object.
+    rig.tw
+        .world_mut()
+        .set_flag(alice, mush_core::Flags::GOING, true)
+        .unwrap();
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.finish_channel(chan, 3);
+    assert!(rig.backlog(bob).contains("source-lost-after-send"));
+    assert_eq!(
+        rig.channels().members[&(bob, chan)]
+            .ic
+            .as_ref()
+            .unwrap()
+            .sequence,
+        1
+    );
+    assert!(rig.channels().ic.progress.visited <= mush_comsys::transit::MAX_COPIES);
+}
+
+#[tokio::test]
+async fn r6b_identified_relay_retries_survive_restart_without_duplicate_fanout() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let chan = rig.channel_setup(&[GOD, bob]);
+    let mut out = mush_core::Outbox::new();
+    assert_eq!(
+        rig.tw.engine_mut().relay_speak(
+            GOD,
+            "Radio",
+            mush_proto::NarrativeKind::Say,
+            "provider-private",
+            &mut out
+        ),
+        Err(mush_core::RelayRefusal::RetryIdentity)
+    );
+    // The server's actual module entry point, with a stable provider ID.
+    rig.tw
+        .engine_mut()
+        .relay_speak_identified(
+            GOD,
+            "Radio",
+            mush_proto::NarrativeKind::Say,
+            "provider-private",
+            Some(400),
+            &mut out,
+        )
+        .unwrap();
+    // Engine direct service calls defer their module writes to the same
+    // per-step drain as the shipping world loop.
+    rig.tw
+        .engine_mut()
+        .finish_external_step(&mut out, &mut mush_core::Effects::new());
+    assert!(
+        !out.events()
+            .iter()
+            .any(|(a, _)| matches!(a, mush_core::Audience::Relay(_)))
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.tw
+        .engine_mut()
+        .relay_speak_identified(
+            GOD,
+            "Radio",
+            mush_proto::NarrativeKind::Say,
+            "provider-private",
+            Some(400),
+            &mut out,
+        )
+        .unwrap();
+    assert_eq!(rig.channels().channels[&chan].seq, 1);
+    assert_eq!(
+        rig.tw.engine_mut().relay_speak_identified(
+            GOD,
+            "Radio",
+            mush_proto::NarrativeKind::Say,
+            "changed",
+            Some(400),
+            &mut out
+        ),
+        Err(mush_core::RelayRefusal::RetryIdentity)
+    );
+    rig.finish_channel(chan, 1);
+    assert_eq!(rig.backlog(bob).matches("provider-private").count(), 1);
+}
 impl Drop for Rig {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.cfg.server.data_dir);
@@ -1009,5 +1279,105 @@ async fn r6a_pending_capacity_expiry_and_deleted_sent_payload_are_bounded() {
             &format!("@mail/quick {}=capacity returned/x", targets[0])
         )
         .contains("queued for IC transit")
+    );
+}
+
+#[tokio::test]
+async fn r6b_bounds_expiry_and_retention_release_real_transport_work() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let chan = rig.channel_setup(&[GOD, bob]);
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    for n in 0..64 {
+        assert!(
+            rig.run(GOD, &format!("radio bounded-{n}"))
+                .contains("queued for IC transit")
+        );
+    }
+    assert!(rig.run(GOD, "radio refused-65").contains("full"));
+    assert_eq!(rig.channels().channels[&chan].seq, 64);
+    assert_eq!(
+        mush_comsys::transit::intents(rig.tw.world()).unwrap().len(),
+        128
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.mail_tick();
+    rig.advance_ic_to(rig.tw.world().world_ic_now().at + 31 * 86400);
+    for _ in 0..40 {
+        rig.mail_tick();
+    }
+    assert!(rig.channels().ic.pending.is_empty());
+    assert!(!rig.backlog(bob).contains("bounded-"));
+    assert!(rig.channels().ic.progress.expired >= 64);
+    rig.run(GOD, "@relay/enable luna_ceres.luna");
+    rig.run(GOD, "@channel/set Radio=cap=1");
+    for n in 65..=66 {
+        rig.run(GOD, &format!("radio retained-{n}"));
+        rig.finish_channel(chan, n);
+    }
+    assert!(!rig.backlog(bob).contains("retained-65"));
+    assert!(rig.backlog(bob).contains("retained-66"));
+    assert_eq!(rig.channels().ic.messages.len(), 1);
+    rig.run(GOD, "delcom radio");
+    rig.run(bob, "delcom radio");
+    assert!(rig.channels().ic.messages.is_empty());
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(rig.channels().ic.messages.is_empty());
+}
+
+#[tokio::test]
+async fn r6b_membership_bound_and_corrupt_knowledge_fail_closed() {
+    let mut rig = Rig::new(true).await;
+    let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
+    rig.run(GOD, &format!("@teleport me={luna}"));
+    let chan = rig.channel_setup(&[GOD]);
+    for n in 0..31 {
+        let p = rig.tw.spawn_player(&format!("RadioMember{n}"));
+        rig.run(GOD, &format!("@teleport {p}={luna}"));
+        assert!(rig.run(p, "addcom r=Radio").contains("added"));
+    }
+    let excess = rig.tw.spawn_player("ExcessMember");
+    assert!(!rig.run(excess, "addcom r=Radio").contains("added"));
+    assert_eq!(rig.channels().members_of(chan).count(), 32);
+    rig.run(GOD, "radio bounded fanout");
+    rig.finish_channel(chan, 1);
+    let epoch = rig.channels().members[&(GOD, chan)]
+        .ic
+        .as_ref()
+        .unwrap()
+        .epoch
+        .clone();
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.channels().members[&(GOD, chan)]
+            .ic
+            .as_ref()
+            .unwrap()
+            .epoch,
+        epoch
+    );
+    let mut m = rig.channels().members[&(GOD, chan)].clone();
+    m.ic.as_mut().unwrap().epoch.clear();
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "comsys".into(),
+                op: ModuleWrite::JsonSet {
+                    key: format!("member:{}:{}", GOD.0, chan.0).into(),
+                    value: serde_json::to_value(m).unwrap(),
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        rig.restart().await.is_err(),
+        "malformed receipt identity must not silently expose legacy history"
     );
 }

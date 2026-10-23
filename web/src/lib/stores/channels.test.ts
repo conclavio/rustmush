@@ -234,3 +234,30 @@ describe("IC and OOC channels (I7)", () => {
     expect(st.isIc("Plot")).toBe(false);
   });
 });
+
+
+describe("IC membership epochs", () => {
+  it("resets a rejoined membership even when the leave keyframe was missed", () => {
+    const st = new ChannelsStore();
+    st.applyState(stateData([{ name: "Radio", ic: true, epoch: "old", seq: 2, last_read: 0 }]));
+    st.live({ ...liveMsg("Radio", 2), epoch: "old" });
+    st.backlogFetched.radio = true;
+    st.applyState(stateData([{ name: "Radio", ic: true, epoch: "new", seq: 0 }]));
+    expect(st.messagesOf("Radio")).toHaveLength(0);
+    expect(st.unreadOf("Radio")).toBe(0);
+    expect(st.backlogFetched.radio).toBeUndefined();
+    expect(st.live({ ...liveMsg("Radio", 1), epoch: "new" })).toBe(true);
+    expect(st.unreadOf("Radio")).toBe(1);
+    expect(st.applyBacklog({ backlog: { channel: "Radio", epoch: "old", messages: [liveMsg("Radio", 2)] } })).toBe(0);
+    expect(st.messagesOf("Radio")).toHaveLength(1);
+  });
+  it("resets on an ordered live frame before hydration and reads wire backlog strings", () => {
+    const st = new ChannelsStore();
+    st.live({ ...liveMsg("Radio", 1), epoch: "old" });
+    expect(st.live({ ...liveMsg("Radio", 1), epoch: "new" })).toBe(true);
+    expect(st.byName("Radio")?.ic).toBe(true);
+    expect(st.messagesOf("Radio")).toHaveLength(1);
+    expect(st.applyBacklog({ backlog: { channel: "Radio", epoch: "new", messages: [{ ...liveMsg("Radio", 2), text: "arrived body" }] } })).toBe(1);
+    expect(st.messagesOf("Radio")[1]?.text).toEqual([{ text: "arrived body" }]);
+  });
+});

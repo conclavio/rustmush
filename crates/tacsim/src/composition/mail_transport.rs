@@ -8,8 +8,24 @@ pub struct MailTransport;
 
 impl dispatch::Sources for MailTransport {
     fn requests(&self, world: &World) -> Option<Vec<dispatch::Request>> {
-        Some(
-            mush_mail::transit::intents(world)?
+        let mut requests: Vec<_> = mush_mail::transit::intents(world)?
+            .into_iter()
+            .map(|intent| dispatch::Request {
+                reference: dispatch::DispatchRef {
+                    version: 1,
+                    key: intent.key,
+                    bytes: intent.bytes,
+                    origin: intent.origin,
+                    fallback: intent.fallback,
+                },
+                kind: DispatchKind::Mail,
+                issuer: intent.from,
+                recipient: intent.to,
+                issued: intent.at,
+            })
+            .collect();
+        requests.extend(
+            mush_comsys::transit::intents(world)?
                 .into_iter()
                 .map(|intent| dispatch::Request {
                     reference: dispatch::DispatchRef {
@@ -17,15 +33,35 @@ impl dispatch::Sources for MailTransport {
                         key: intent.key,
                         bytes: intent.bytes,
                         origin: intent.origin,
-                        fallback: intent.fallback,
+                        fallback: None,
                     },
-                    kind: DispatchKind::Mail,
+                    kind: DispatchKind::Channel,
                     issuer: intent.from,
                     recipient: intent.to,
                     issued: intent.at,
-                })
-                .collect(),
-        )
+                }),
+        );
+        Some(requests)
+    }
+}
+
+impl mush_comsys::transit::Transport for MailTransport {
+    fn capacity(&self, world: &World, additional: usize) -> bool {
+        dispatch::has_capacity(world, additional)
+    }
+    fn endpoint(&self, world: &World, actor: ObjId) -> Option<ObjId> {
+        crate::relay_metric::source_address(world, actor)
+    }
+    fn receipt(&self, world: &World, key: &str) -> Option<bool> {
+        let e = dispatch::find(world, key)?;
+        if e.advanced().at >= world.world_ic_now().at {
+            return None;
+        }
+        match e.state() {
+            EnvelopeState::Delivered => Some(true),
+            EnvelopeState::Expired => Some(false),
+            _ => None,
+        }
     }
 }
 

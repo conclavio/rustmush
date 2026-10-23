@@ -1033,7 +1033,10 @@ pub enum OutputEvent {
     Channel {
         /// Channel name, e.g. `"pub"`.
         channel: SmolStr,
-        /// Per-channel message sequence number (monotonic).
+        /// Opaque IC membership identity. A new identity resets local cursors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<String>,
+        /// Member-local arrival sequence for IC; channel sequence for OOC.
         seq: u64,
         /// The speaker.
         actor: ObjRef,

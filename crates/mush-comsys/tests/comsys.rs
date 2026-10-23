@@ -127,6 +127,7 @@ fn chan_events(out: &Outbox) -> Vec<ChanEv> {
                     kind,
                     text,
                     ts,
+                    ..
                 },
             ) => Some(ChanEv {
                 to: *a,
@@ -413,6 +414,7 @@ fn speaking_with_many_offline_members_only_updates_the_live_audience() {
                     title: None,
                     gagged: false,
                     last_read: 0,
+                    ic: None,
                 },
             );
         }

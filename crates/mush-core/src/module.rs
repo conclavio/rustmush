@@ -4401,6 +4401,12 @@ pub enum RelayRefusal {
     SpeakLock,
     /// Nothing to say.
     Empty,
+    /// IC source admission or routing services are unavailable.
+    Transport,
+    /// Missing, conflicting or too-old provider identity.
+    RetryIdentity,
+    /// The DM line is not an IC channel alias; ordinary input may handle it.
+    NotChannelAlias,
 }
 
 impl std::fmt::Display for RelayRefusal {
@@ -4413,6 +4419,11 @@ impl std::fmt::Display for RelayRefusal {
             RelayRefusal::Gagged => "your character has that channel gagged",
             RelayRefusal::SpeakLock => "your character cannot speak on that channel",
             RelayRefusal::Empty => "nothing to say",
+            RelayRefusal::Transport => "IC transport is unavailable or full",
+            RelayRefusal::NotChannelAlias => "not an IC channel alias",
+            RelayRefusal::RetryIdentity => {
+                "a current, unique provider message identity is required"
+            }
         })
     }
 }
@@ -4422,6 +4433,26 @@ impl std::fmt::Display for RelayRefusal {
 /// membership, gag and speak-lock exactly as its alias stage does and marks
 /// the line's origin so it is never relayed back out.
 pub trait RelaySpeaker: Send + Sync {
+    fn relay_alias_identified(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _alias: &str,
+        _kind: mush_proto::NarrativeKind,
+        _text: &str,
+        _message_id: Option<u64>,
+    ) -> Result<(), RelayRefusal> {
+        Err(RelayRefusal::NotChannelAlias)
+    }
+    fn relay_speak_identified(
+        &self,
+        ctx: &mut Ctx<'_>,
+        channel: &str,
+        kind: mush_proto::NarrativeKind,
+        text: &str,
+        _message_id: Option<u64>,
+    ) -> Result<(), RelayRefusal> {
+        self.relay_speak(ctx, channel, kind, text)
+    }
     /// Speak `text` as `ctx.actor` on the channel named `channel`.
     ///
     /// # Errors
@@ -4446,6 +4477,8 @@ pub(crate) fn apply_relay_speak(
     channel: &str,
     kind: mush_proto::NarrativeKind,
     text: &str,
+    message_id: Option<u64>,
+    alias: bool,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RelayRefusal> {
     let Some((module, handler)) = reg.relay_speaker() else {
@@ -4463,7 +4496,11 @@ pub(crate) fn apply_relay_speak(
         module: Some(module),
         typed_state,
     };
-    handler.relay_speak(&mut ctx, channel, kind, text)
+    if alias {
+        handler.relay_alias_identified(&mut ctx, channel, kind, text, message_id)
+    } else {
+        handler.relay_speak_identified(&mut ctx, channel, kind, text, message_id)
+    }
 }
 
 /// Dispatch a forwarded Discord interaction to the module handler with the

@@ -628,3 +628,59 @@ limit or physical lag was relaxed.
 **Live milestone gate passed; full acceptance still awaits normal candidate CI.**
 The owner monitors GitHub and authorized continuation to R6b after commit/push.
 R6b must finish its own live gate; the next owner stop is before R3.
+
+
+## R6b — IC channel fanout and observer bridge boundaries (candidate)
+
+IC channel speech now uses the existing propagation handshake. Comsys owns the
+frozen content, eligible dispatch roster, and each member's arrived history;
+propagation owns routing, bandwidth, expiry and durable terminal receipts.
+Composition supplies read-only adapters and shares admission with pending mail.
+OOC channel behavior remains immediate. Membership, see lock, ignore and gag are
+rechecked at arrival. A sender's accepted content and physical origin survive
+source loss. New members and rejoined members receive only later dispatches.
+
+The channel's private source sequence never reaches an IC recipient. Each member
+gets a dense arrival sequence, permitting a later fast line to overtake an older
+physical flight without revealing the gap. An opaque persisted membership epoch
+resets web/SSH history caches on rejoin. State, backlog, recall, live text, unread
+and mentions all read the same arrived knowledge. Legacy IC history migrates as
+already delivered to existing members and never creates transport intents.
+All IC receipt/content records are durable, including channels without PERSIST;
+LOGGED controls whether arrived content is retained for recall. The existing
+1–10,000 history cap applies per member, and the final reference releases content.
+IC/OOC mode cannot change after traffic; create a new channel to change mode.
+
+| Persisted comsys record | Meaning and lifecycle |
+| --- | --- |
+| `ic:msg:<channel>:<seq>` v1 | One bounded frozen content body and pending recipient set; retained by pending copies or arrived history references. |
+| `member:<actor>:<channel>.ic` | Membership epoch, private join boundary, local arrival counter and bounded received references; removed on leave. |
+| `ic:progress` | Rotating handoff cursor and aggregate diagnostic counters. |
+| `ic:relay` | Last 256 accepted provider IDs and content fingerprints, plus a monotonic retired-ID floor; old retries cannot become fresh submissions. |
+
+Limits: 32 IC members per channel, 64 pending source lines, 128 pending copies,
+16 source lines settled per coarse fire, and 16 KiB UTF-8 message text. Existing
+larger legacy rosters keep their history but refuse new speech until reduced.
+No roster is silently truncated. Propagation's shared route caps, message-unit
+accounting, 1 KiB pair limit and 30 IC day TTL remain in force. Wizard-only
+`@channel/transit` reports pending lines/copies, oldest age and settlement work;
+ordinary player queries do not expose transport internals.
+
+Discord guild ingress and IC alias commands in followed DMs retain the provider's
+message ID. Authentication still binds the linked account, selected actor and
+physical endpoint. A repeated ID with identical content is an accepted no-op;
+changed content or a retired ID is refused. Acceptance waits for the real writer
+barrier. The direct service path now drains deferred module persistence before
+committing, using the engine's normal finalization path. Shared IC mirrors are
+disabled. Followed DMs render only that actor's arrived IC channel frames, with
+quiet mode respected; ordinary OOC mirror and DM command paths remain available.
+
+The real bridge integration test uses the shipping bridge, world loop, commit
+writer, account oracle and DM renderer; only Discord REST is controlled. It found
+and repaired the renderer's previous blanket rejection of channel frames. The
+web cache tests also found a pre-existing plain-string backlog body rendering
+problem, now corrected alongside membership epoch handling.
+
+Live dev1 evidence will be appended after deploying this candidate. The explicit
+live Discord acceptance item remains open unless an enabled bot and relay mapping
+are available; controlled-provider results do not claim a live Discord run.

@@ -433,6 +433,7 @@ fn roll_line_renders_as_is_with_the_marker_styled() {
 
 fn channel(kind: NarrativeKind, title: Option<&str>, text: &str) -> OutputEvent {
     OutputEvent::Channel {
+        epoch: None,
         channel: "pub".into(),
         seq: 1,
         actor: nick(),

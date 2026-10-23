@@ -76,6 +76,7 @@ fn roundtrip_every_output_event_variant() {
         },
         OutputEvent::Sys(styled),
         OutputEvent::Channel {
+            epoch: None,
             channel: "pub".into(),
             seq: 991,
             actor: wizard(),
@@ -522,6 +523,7 @@ fn golden_hello_with_asset_pack() {
 #[test]
 fn golden_channel() {
     let ev = OutputEvent::Channel {
+        epoch: None,
         channel: "pub".into(),
         seq: 991,
         actor: wizard(),

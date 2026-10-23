@@ -14,6 +14,55 @@ pub const MAX_STRATEGIC_HULLS: usize = 64;
 #[derive(Debug)]
 pub struct RelayMetric;
 
+/// Freeze a sender's structural address at submission, including aliases that
+/// have no typed ticket read context. This does not calculate distance or claim
+/// the ship's ticket is valid: the existing routing snapshot still owns that.
+pub(crate) fn source_address(world: &World, object: ObjId) -> Option<ObjId> {
+    let state = world.module_state::<mush_sim::SpatialState>()?;
+    if state.is_quarantined(object) {
+        return None;
+    }
+    let store = world.module_state::<TacsimStore>()?;
+    let maps: Vec<_> = store.port_maps().take(MAX_STRATEGIC_PORTS + 1).collect();
+    if maps.len() > MAX_STRATEGIC_PORTS {
+        return None;
+    }
+    let hulls: Vec<_> = maps
+        .iter()
+        .flat_map(|m| &m.hulls)
+        .take(MAX_STRATEGIC_HULLS + 1)
+        .map(|h| ObjId(h.hull))
+        .collect();
+    if hulls.len() > MAX_STRATEGIC_HULLS {
+        return None;
+    }
+    let room = mush_propagation::routing::place(world, state, object);
+    let start = room
+        .and_then(|r| mush_sim::graph::anchored_space_of(world, r))
+        .unwrap_or_else(|| {
+            if state.is_placed(object) {
+                object
+            } else {
+                room.unwrap_or(object)
+            }
+        });
+    for candidate in std::iter::once(start).chain(mush_sim::graph::ancestors(state, start).ok()?) {
+        if state.is_quarantined(candidate) {
+            return None;
+        }
+        if hulls.contains(&candidate) {
+            return Some(candidate);
+        }
+        if world
+            .module_state::<mush_sim::JourneyBook>()
+            .is_some_and(|b| b.get(candidate).is_some())
+        {
+            return None;
+        }
+    }
+    room
+}
+
 #[derive(Debug, Default)]
 struct Snapshot {
     sky: Option<Sky>,

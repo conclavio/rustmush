@@ -178,6 +178,7 @@ pub struct PanelStore {
     rolls: VecDeque<Value>,
     unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
+    channel_epochs: HashMap<String, String>,
     /// **The cockpit's notices ring** (16b cut B.3, `B-64`), oldest first, at
     /// most [`COCKPIT_NOTICES`]: each seated frame's notices composed by
     /// [`super::render::notice_words`] from their fields, and — while a seated
@@ -427,6 +428,19 @@ impl PanelStore {
             .unwrap_or_default()
     }
 
+    /// Ordered live frames and keyframes identify the current membership.
+    pub fn channel_epoch(&mut self, channel: &str, epoch: Option<&str>) {
+        let key = channel.to_lowercase();
+        if self.channel_epochs.get(&key).map(String::as_str) != epoch {
+            self.backlog.remove(&key);
+            if let Some(epoch) = epoch {
+                self.channel_epochs.insert(key, epoch.into());
+            } else {
+                self.channel_epochs.remove(&key);
+            }
+        }
+    }
+
     /// Fold a live channel line into the backlog ring.
     pub fn push_channel(&mut self, channel: &str, msg: ChanMsg) {
         let ring = self.backlog.entry(channel.to_lowercase()).or_default();
@@ -469,6 +483,23 @@ impl PanelStore {
         }
         match kind {
             PanelFrameKind::Keyframe => {
+                if feed.as_str() == "comsys"
+                    && let Some(channels) = data.get("channels").and_then(Value::as_array)
+                {
+                    let names: std::collections::HashSet<_> = channels
+                        .iter()
+                        .filter_map(|c| {
+                            c.get("name").and_then(Value::as_str).map(str::to_lowercase)
+                        })
+                        .collect();
+                    self.backlog.retain(|name, _| names.contains(name));
+                    self.channel_epochs.retain(|name, _| names.contains(name));
+                    for c in channels {
+                        if let Some(name) = c.get("name").and_then(Value::as_str) {
+                            self.channel_epoch(name, c.get("epoch").and_then(Value::as_str));
+                        }
+                    }
+                }
                 if feed.ends_with(".unit") {
                     // A keyframe for another subject makes the journal rows of
                     // the one we held meaningless: drop them. "Held" is the
@@ -693,6 +724,14 @@ impl PanelStore {
         let Some(channel) = backlog.get("channel").and_then(Value::as_str) else {
             return;
         };
+        if self
+            .channel_epochs
+            .get(&channel.to_lowercase())
+            .map(String::as_str)
+            != backlog.get("epoch").and_then(Value::as_str)
+        {
+            return;
+        }
         let Some(messages) = backlog.get("messages").and_then(Value::as_array) else {
             return;
         };
@@ -758,6 +797,38 @@ impl mush_pixel::picture::Feeds for PanelStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ic_rejoin_clears_history_and_rejects_an_old_backlog_epoch() {
+        let mut st = PanelStore::new();
+        st.channel_epoch("Radio", Some("old"));
+        st.push_channel(
+            "Radio",
+            ChanMsg {
+                seq: 1,
+                actor: "A".into(),
+                line: "old body".into(),
+            },
+        );
+        st.apply_panel(
+            &"comsys".into(),
+            PanelFrameKind::Keyframe,
+            &serde_json::json!({"channels":[{"name":"Radio","epoch":"new"}]}),
+            0,
+        );
+        assert!(st.backlog("Radio").is_empty());
+        st.merge_backlog(&serde_json::json!({"channel":"Radio","epoch":"old","messages":[{"seq":1,"text":"stale"}]}));
+        assert!(st.backlog("Radio").is_empty());
+        st.push_channel(
+            "Radio",
+            ChanMsg {
+                seq: 1,
+                actor: "A".into(),
+                line: "new body".into(),
+            },
+        );
+        assert_eq!(st.backlog("Radio")[0].line, "new body");
+    }
 
     #[test]
     fn keyframes_replace_and_unknown_feeds_are_bounded() {
