@@ -22,7 +22,9 @@ use crate::overlay::{
     self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
-use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, SpritePose, project, render};
+use crate::raycast::{
+    Camera, EYE_HEIGHT_CM, Ground, Map, Sprite, SpriteKind, SpritePose, project, render,
+};
 
 /// The pilot's own frame: pose, contacts, hull, weapons, heat.
 pub const COCKPIT_FEED: &str = "arena.cockpit";
@@ -137,25 +139,18 @@ impl Picture for CockpitPicture {
         let overlay = self.overlay;
         self.ensure_map(map);
         let arena = &self.arena;
-        match &self.terrain {
-            // G.7b: the eye is the sim's own for the unit — its elevation plus
-            // its sensor height (the stock 1.5 m where the frame names none).
-            Some(terrain) => heightfield::render(
-                frame,
-                terrain,
-                &cam,
-                cockpit.get("z_cm").and_then(Value::as_i64).map(|z| {
-                    z + cockpit
-                        .get("sensor_height_cm")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(i64::from(crate::raycast::EYE_HEIGHT_CM))
-                }),
-                &sprites,
-            ),
+        // G.7b: relief where the feed carries it, seen from the sim's own eye
+        // for the unit.
+        let terrain = self.terrain.as_ref();
+        let eye = eye_cm(cockpit);
+        match terrain {
+            Some(terrain) => heightfield::render(frame, terrain, &cam, eye, &sprites),
             None => render(frame, arena, &cam, &sprites),
         }
         match overlay {
-            Overlay::Hud => overlay::draw_hud(frame, &hud(frame, arena, cockpit, look, &cam)),
+            Overlay::Hud => {
+                overlay::draw_hud(frame, &hud(frame, arena, terrain, eye, cockpit, look, &cam))
+            }
             // The owner's 640x480 target of 2026-10-21: minimap, heat,
             // weapons, the armour doll and the status strip, all from the
             // frame the text panes already read.
@@ -163,6 +158,19 @@ impl Picture for CockpitPicture {
         }
         true
     }
+}
+
+/// The eye the relief is seen from (doc 21 cut G.7b): the unit's elevation
+/// plus its sensor height (the stock 1.5 m where the frame names none), as
+/// the sim traces its sight; `None` for a frame with no `z_cm`, which the
+/// heightfield takes as the stock eye over the ground under the camera.
+fn eye_cm(cockpit: &Value) -> Option<i64> {
+    cockpit.get("z_cm").and_then(Value::as_i64).map(|z| {
+        z + cockpit
+            .get("sensor_height_cm")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::from(EYE_HEIGHT_CM))
+    })
 }
 
 /// The camera: the sim's own pose from the cockpit frame, turned by the
@@ -395,9 +403,21 @@ pub fn contacts_as_sprites(cockpit: &Value, cam: &Camera, step: usize) -> Vec<Sp
 /// The flight HUD's inputs: the camera's heading, the hull's (the sim's
 /// turned by the helm's prediction) and an ordered one from `look`, the
 /// speed, the contacts for the tape, and the lock placed in the picture as
-/// [`render`] draws it — boxed where it stands, or off a side.
+/// the picture drew it — boxed where it stands, or off a side. The picture
+/// is the heightfield's over `terrain` from the eye at `eye_cm` where the
+/// map carries relief (doc 21 cut G.7b; both as [`heightfield::render`]
+/// took them), else the raycaster's over flat `arena`; the lock is projected
+/// by whichever drew it, so its box lands on the sprite (doc 21a `X-03`).
 #[must_use]
-pub fn hud(frame: &Frame, arena: &Map, cockpit: &Value, look: &Look, cam: &Camera) -> Hud {
+pub fn hud(
+    frame: &Frame,
+    arena: &Map,
+    terrain: Option<&Terrain>,
+    eye_cm: Option<i64>,
+    cockpit: &Value,
+    look: &Look,
+    cam: &Camera,
+) -> Hud {
     let heading = num(cockpit.get("heading_mdeg"));
     let contacts = cockpit
         .get("contacts")
@@ -420,7 +440,11 @@ pub fn hud(frame: &Frame, arena: &Map, cockpit: &Value, look: &Look, cam: &Camer
             let range_m = c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0);
             let sprite = Sprite::at_bearing(cam, bearing(c), range_m, contact_kind(c));
             let (w, h) = (frame.width(), frame.height());
-            let at = match project(arena, cam, w, h, &sprite) {
+            let placed = match terrain {
+                Some(terrain) => heightfield::project(terrain, cam, eye_cm, w, h, &sprite),
+                None => project(arena, cam, w, h, &sprite),
+            };
+            let at = match placed {
                 Some(p) if p.screenx >= 0.0 && p.screenx < w as f32 => LockAt::Box(
                     (p.screenx - p.width / 2.0) as i64,
                     (p.bottom - p.height) as i64,
@@ -786,7 +810,7 @@ mod tests {
         let mut frame = Frame::new(640, 256);
         let ahead = Look::default();
         let cam = camera(&cockpit, &ahead);
-        let h = hud(&frame, &arena, &cockpit, &ahead, &cam);
+        let h = hud(&frame, &arena, None, None, &cockpit, &ahead, &cam);
         assert_eq!(
             (h.heading_mdeg, h.hull_mdeg, h.speed_kph),
             (45_000, 45_000, 43)
@@ -811,7 +835,7 @@ mod tests {
             ordered_mdeg: Some(60_000),
         };
         let cam = camera(&cockpit, &look);
-        let h = hud(&frame, &arena, &cockpit, &look, &cam);
+        let h = hud(&frame, &arena, None, None, &cockpit, &look, &cam);
         assert_eq!((h.heading_mdeg, h.hull_mdeg), (135_000, 45_000));
         assert_eq!(h.ordered_mdeg, Some(60_000));
         assert_eq!(h.lock.as_ref().map(|l| l.at), Some(LockAt::Off(-1)));
@@ -831,5 +855,96 @@ mod tests {
             &ahead
         ));
         assert_ne!(with_hud.hash(), with_instruments.hash());
+    }
+
+    /// Doc 21a `X-03`: on relief the lock box stands where the heightfield
+    /// drew the sprite — on the ground at its own point, seen from the
+    /// unit's own eye — not where flat ground from the stock eye would put
+    /// it. The fixture's yard falling away ahead of the tank (a metre a cell
+    /// each way), the tank on its own ground: BA, 440 m out, stands some
+    /// 60 m below it, and its box sits well under the row the flat
+    /// projection boxed it on; on level ground the two agree.
+    #[test]
+    fn the_lock_box_stands_on_the_relief_where_the_sprite_does() {
+        let mut cockpit = parsed(COCKPIT);
+        let arena = map_from_feed(&parsed(MAP));
+        let mut terrain = Terrain::new(arena.clone());
+        for y in 0..arena.height() {
+            for x in 0..arena.width() {
+                terrain.set_elev_cm(x, y, -((x + y) as i32) * 100);
+            }
+        }
+        // The tank on its own ground (the frame's `z_cm`), its eye the
+        // stock 1.5 m over it.
+        cockpit["z_cm"] = serde_json::json!(terrain.elev_cm(6, 4));
+        let eye = eye_cm(&cockpit);
+        assert_eq!(eye, Some(-1_000 + 150));
+        let frame = Frame::new(640, 480);
+        let look = Look::default();
+        let cam = camera(&cockpit, &look);
+        let boxed = |h: &Hud| match h.lock.as_ref().expect("BA is locked").at {
+            LockAt::Box(x, y, w, h) => (x, y, w, h),
+            at => panic!("BA dead ahead is boxed: {at:?}"),
+        };
+        let flat = boxed(&hud(&frame, &arena, None, None, &cockpit, &look, &cam));
+        let relief = boxed(&hud(
+            &frame,
+            &arena,
+            Some(&terrain),
+            eye,
+            &cockpit,
+            &look,
+            &cam,
+        ));
+        assert_eq!(
+            (flat.0, flat.2),
+            (relief.0, relief.2),
+            "dead ahead at the same range: the same column and width"
+        );
+        assert!(
+            relief.1 + relief.3 >= flat.1 + flat.3 + 30,
+            "down the slope the box drops: flat bottom {}, relief bottom {}",
+            flat.1 + flat.3,
+            relief.1 + relief.3
+        );
+        // Exactly where the heightfield draws the sprite.
+        let c = cockpit["contacts"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == cockpit["lock"]))
+            .expect("the locked contact");
+        let sprite = Sprite::at_bearing(
+            &cam,
+            c["bearing_deg"].as_f64().unwrap_or(0.0),
+            c["range_m"].as_f64().unwrap_or(0.0),
+            contact_kind(c),
+        );
+        let p = heightfield::project(&terrain, &cam, eye, 640, 480, &sprite).expect("in view");
+        assert_eq!(
+            relief,
+            (
+                (p.screenx - p.width / 2.0) as i64,
+                (p.bottom - p.height) as i64,
+                p.width.ceil() as i64,
+                p.height.ceil() as i64
+            )
+        );
+        // Level ground from the same eye: the heightfield and the raycaster
+        // box it alike (the fixture yard's all-zero heights draw the same
+        // picture either way).
+        let level = Terrain::new(arena.clone());
+        cockpit["z_cm"] = serde_json::json!(0);
+        let eye = eye_cm(&cockpit);
+        assert_eq!(
+            boxed(&hud(
+                &frame,
+                &arena,
+                Some(&level),
+                eye,
+                &cockpit,
+                &look,
+                &cam
+            )),
+            flat
+        );
     }
 }
