@@ -14,6 +14,10 @@
   // (held) — `HEADING` orders, sent as the SSH TUI's view sends them, the one
   // place the cockpit tab sends an order rather than prefilling one — `,` and
   // `.` swing the look (again to stop), `c` centres it, space stops both.
+  // Both are let go the moment their release could no longer be seen: the
+  // frame losing focus, the window losing focus, the page going hidden (doc
+  // 21a `X-02`: a tab switched away with an arrow down kept ordering
+  // `HEADING` every 700 ms, and the look kept swinging).
   //
   // **Drawn here** (doc 21 cut G.3b): where the browser can (WebAssembly and
   // `ImageData`), the picture is drawn in it, by the engine's own renderer
@@ -108,12 +112,20 @@
     return () => untrack(() => app.setPicture(false, 0));
   });
 
+  // The page's visibility, and the two ways a key's release can go unseen:
+  // the page hidden (the keys' events stop: the tab switched, the window
+  // minimised) and the window blurred (another window took the keys).
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
+      if (!visible) release();
     };
     document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", release);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", release);
+    };
   });
 
   // Drawn here: the module loaded once, while wanted.
@@ -209,6 +221,13 @@
     }
   }
 
+  /** Let go of everything a key holds: the look's swing, and the held turn
+   * with its stop order (where one was held). */
+  function release(): void {
+    lookTurn = 0;
+    stopTurn();
+  }
+
   function onKeyDown(ev: KeyboardEvent): void {
     const key = pictureKey(ev.key);
     if (key === null || !active) return;
@@ -271,10 +290,7 @@
       aria-label="first-person view; arrows turn the tank, comma and full stop swing the look"
       onkeydown={onKeyDown}
       onkeyup={onKeyUp}
-      onblur={() => {
-        lookTurn = 0;
-        stopTurn();
-      }}
+      onblur={release}
     >
       <canvas bind:this={canvas} aria-hidden="true"></canvas>
       {#if here ? !drawnHere : app.picture.frame === null}
