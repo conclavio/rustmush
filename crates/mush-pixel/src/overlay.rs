@@ -134,7 +134,7 @@ pub(crate) const RED_TEAM: Rgb = [230, 70, 60];
 pub(crate) const BLUE_TEAM: Rgb = [90, 150, 240];
 const UNKNOWN: Rgb = [170, 170, 162];
 /// The lock's box and label: a marker, never a team's colour.
-const LOCK: Rgb = [240, 200, 60];
+pub(crate) const LOCK: Rgb = [240, 200, 60];
 pub(crate) const WRECK: Rgb = [110, 100, 90];
 
 pub(crate) fn ground_rgb(ground: Ground) -> Rgb {
@@ -637,6 +637,10 @@ pub enum LockAt {
     Box(i64, i64, i64, i64),
     /// Off the side of the view: `-1` left, `1` right.
     Off(i8),
+    /// In the view's columns but clear over its top edge (`-1`) or under
+    /// its bottom (`1`) — close by, up a crest or down a steep slope — at
+    /// that column (doc 21a `X-03`).
+    Beyond(i64, i8),
 }
 
 /// The lock, for the reticle.
@@ -777,8 +781,10 @@ fn draw_tape(frame: &mut Frame, hud: &Hud, s: i64, w: i64) {
 }
 
 /// The reticle at the centre, and the lock: boxed where it stands with its
-/// designator, range and hit chance under the box, or an arrow at the side
-/// of the view it lies off.
+/// designator, range and hit chance under the box (over it where the box
+/// runs off the bottom of the view), or an arrow at the side of the view it
+/// lies off — or at the top or bottom edge it lies clear over, in its column
+/// — with them beside it: the readout is in the view wherever the lock is.
 fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i64) {
     let (cx, cy) = (w / 2, h / 2);
     let (gap, arm) = (3 * s, 5 * s);
@@ -802,7 +808,31 @@ fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i6
             outline_rect(frame, bx, by, bw, bh, LOCK);
             outline_rect(frame, bx + 1, by + 1, bw - 2, bh - 2, LOCK);
             let lx = (bx + bw / 2 - lw / 2).clamp(0, (w - lw).max(0));
-            text(frame, lx, by + bh + 2 * s, &label, LOCK, s as usize);
+            let under = by + bh + 2 * s;
+            let ly = if under + 7 * s <= h {
+                under
+            } else {
+                by - 9 * s
+            };
+            text(
+                frame,
+                lx,
+                ly.clamp(0, (h - 7 * s).max(0)),
+                &label,
+                LOCK,
+                s as usize,
+            );
+        }
+        LockAt::Beyond(x, side) => {
+            let x = x.clamp(0, w - 1);
+            let lx = (x - lw / 2).clamp(0, (w - lw).max(0));
+            if side < 0 {
+                caret(frame, (x, 2 * s), 5 * s, -1, LOCK);
+                text(frame, lx, 9 * s, &label, LOCK, s as usize);
+            } else {
+                caret(frame, (x, h - 1 - 2 * s), 5 * s, 1, LOCK);
+                text(frame, lx, h - 16 * s, &label, LOCK, s as usize);
+            }
         }
         LockAt::Off(side) => {
             let (ax, dir, lx) = if side < 0 {

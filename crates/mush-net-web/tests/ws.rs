@@ -942,11 +942,19 @@ async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
     // clock's own: its deadlines sit on a fixed grid an interval apart, so
     // `k` frames span at least `k - 1` intervals less one tick's lateness
     // (under an interval, else the clock re-bases and the gap is whole),
-    // and `span / interval + 2 >= k`. A debug build whose frame costs more
-    // than an interval cannot beat the cap either way; the clock's contract
-    // is pinned in `picture.rs` as well.
+    // and `span / interval + 2 >= k` — the span measured from the first
+    // look's send to the last frame's arrival, not between the frames' own
+    // arrivals: a tick late by more than what a frame leaves of the
+    // interval has the pump draw the next frame on the trot without
+    // yielding, and this task then reads the two together, which would
+    // shorten the frames' own span by an interval and overshoot the bound.
+    // A debug build whose frame costs more than an interval cannot beat
+    // the cap either way (the old reset's ten frames at the frame's own
+    // spacing pass the bound once a frame costs 40 ms); the clock's
+    // contract is pinned in `picture.rs` as well.
     let (mut sink, mut stream) = ws.split();
     let sender = tokio::spawn(async move {
+        let first_look = tokio::time::Instant::now();
         for look in 1..=10 {
             let cmd = ClientCommand::Picture {
                 on: true,
@@ -957,7 +965,7 @@ async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        sink
+        (sink, first_look)
     });
     let mut arrivals: Vec<tokio::time::Instant> = Vec::new();
     loop {
@@ -967,12 +975,11 @@ async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
             _ => break,
         }
     }
-    let _sink = sender.await.unwrap();
+    let (_sink, first_look) = sender.await.unwrap();
     let frames = arrivals.len() as u128;
-    let span = match (arrivals.first(), arrivals.last()) {
-        (Some(first), Some(last)) => last.duration_since(*first),
-        _ => Duration::ZERO,
-    };
+    let span = arrivals
+        .last()
+        .map_or(Duration::ZERO, |last| last.duration_since(first_look));
     let allowed = span.as_millis() / 50 + 2;
     assert!(frames >= 1, "the latest look is drawn");
     assert!(
