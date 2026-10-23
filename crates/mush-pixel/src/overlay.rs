@@ -159,7 +159,7 @@ fn kind_rgb(kind: SpriteKind) -> Rgb {
 }
 
 /// Green, amber, red or gone, by what is left of a thing.
-fn ramp(left: i64, max: i64) -> Rgb {
+pub(crate) fn ramp(left: i64, max: i64) -> Rgb {
     if max <= 0 || left <= 0 {
         GONE
     } else if left * 3 >= max * 2 {
@@ -195,7 +195,7 @@ pub(crate) fn outline_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px
 }
 
 /// A panel: a filled box with a border.
-fn panel(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64) {
+pub(crate) fn panel(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64) {
     fill_rect(frame, x, y, w, h, PANEL);
     outline_rect(frame, x, y, w, h, BORDER);
 }
@@ -554,7 +554,7 @@ pub fn draw_doll(frame: &mut Frame, doll: Option<DollState<'_>>, sections: &[Sec
 }
 
 /// The lighter twin of a ramp colour, for a doll's tone `1`.
-fn lighter(px: Rgb) -> Rgb {
+pub(crate) fn lighter(px: Rgb) -> Rgb {
     match px {
         GOOD => [120, 220, 130],
         WARN => [245, 210, 110],

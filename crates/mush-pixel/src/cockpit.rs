@@ -360,6 +360,47 @@ fn cell_of(v: Option<&Value>) -> Option<(i64, i64)> {
     Some((pair.first()?.as_i64()?, pair.get(1)?.as_i64()?))
 }
 
+/// The frame's `sections` as the doll's and the legend's inputs (doc 21 cut
+/// G.6a shares it with the doll picture).
+#[must_use]
+pub fn sections_from(cockpit: &Value) -> Vec<Section> {
+    cockpit
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|sec| Section {
+            id: sec
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+            condition: sec
+                .get("condition")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+            internals: num(sec.get("internals")),
+            internals_max: num(sec.get("internals_max")),
+            facets: sec
+                .get("facets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|f| Facet {
+                    id: f
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
+                    armor: num(f.get("armor")),
+                    armor_max: num(f.get("armor_max")),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// Draw the instruments over a rendered frame from the cockpit keyframe and
 /// the held `arena.map` (for its named spots): minimap, heat, weapons, the
 /// armour doll and the status strip.
@@ -436,41 +477,7 @@ pub fn draw_instruments(
     overlay::draw_weapons(frame, &rows);
 
     // The doll.
-    let sections: Vec<Section> = cockpit
-        .get("sections")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|sec| Section {
-            id: sec
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_string(),
-            condition: sec
-                .get("condition")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_string(),
-            internals: num(sec.get("internals")),
-            internals_max: num(sec.get("internals_max")),
-            facets: sec
-                .get("facets")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(|f| Facet {
-                    id: f
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?")
-                        .to_string(),
-                    armor: num(f.get("armor")),
-                    armor_max: num(f.get("armor_max")),
-                })
-                .collect(),
-        })
-        .collect();
+    let sections = sections_from(cockpit);
     let doll = cockpit
         .get("unit_type")
         .and_then(Value::as_str)

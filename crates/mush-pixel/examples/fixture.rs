@@ -296,6 +296,32 @@ fn main() {
             );
         }
     }
+    // Doc 21 cut G.6a: the armour doll as a page — `doll.png`, `doll43.png`.
+    {
+        use mush_pixel::cockpit::COCKPIT_FEED;
+        use mush_pixel::doll::DollPicture;
+        let cockpit: Value = serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .unwrap_or_default();
+        let feeds: HashMap<String, Value> =
+            [(COCKPIT_FEED.to_string(), cockpit)].into_iter().collect();
+        for (name, w, h) in [("doll", 640, 230), ("doll43", 640, 480)] {
+            let mut f = Frame::new(w, h);
+            let t = Instant::now();
+            DollPicture::new().draw(&mut f, &feeds, &Look::default());
+            let us = t.elapsed().as_micros();
+            let bytes = png::encode(&f);
+            if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
+                eprintln!("{name}.png: {err}");
+            }
+            println!(
+                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                f.count_colours(300),
+                bytes.len()
+            );
+        }
+    }
     // Doc 21 cut G.8: the replay fixture over its ground, a second after the
     // first hit and after the wreck — `replay.png` and `replay43.png`.
     {

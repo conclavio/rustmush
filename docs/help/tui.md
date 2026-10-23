@@ -110,7 +110,8 @@ From either mode:
                the arena, on a terminal that can show one, with your armour,
                weapons, contacts and the comms as text under it; Enter there
                opens a chat line (`help cockpit`, "The picture"). On the
-               chart screen it draws the sky, and on a replay the match.
+               chart screen it draws the sky, on a replay the match, and on
+               the damage screen your tank's armour as a page.
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it

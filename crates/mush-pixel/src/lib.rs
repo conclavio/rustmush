@@ -20,6 +20,7 @@
 //! - [`heightfield`]: the voxel-space producer for ground with relief
 //!   (G.7a), beside the raycaster.
 //! - [`chart`]: the orbital view, `sky.chart` drawn as a scene (G.5b).
+//! - [`doll`]: the armour doll as a page with a legend (G.6a).
 //! - [`replay`]: a finished match's `arena.replay` drawn as a scene over its
 //!   ground, with a timeline (G.8).
 //! - [`scene`]: bucket B's retained 2D scene and its one rasteriser (G.5).
@@ -57,6 +58,7 @@
 pub mod caps;
 pub mod chart;
 pub mod cockpit;
+pub mod doll;
 pub mod frame;
 pub mod heightfield;
 #[cfg(feature = "encode")]

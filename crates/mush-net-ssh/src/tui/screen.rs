@@ -144,6 +144,10 @@ pub const COCKPIT_SCREEN: ScreenId = ScreenId(0);
 /// letter's byte, which the tab strip prints as the letter.
 pub const CHART_SCREEN: ScreenId = ScreenId(b'c');
 
+/// The damage screen (`8`): `^G` there draws the armour doll as a page (doc
+/// 21 cut G.6a).
+pub const DAMAGE_SCREEN: ScreenId = ScreenId(8);
+
 /// **The quarry screen** (doc 20 cut SM.9; §10, D-20-13): the second lettered screen, on `q`
 /// (Alt+q) — the hull's rigs, the site map or the body's ground chart, the viewer's own
 /// readings and the log, drawn from the `site.map` and `body.ground` frames.

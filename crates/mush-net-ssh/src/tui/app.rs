@@ -2488,6 +2488,9 @@ impl TuiApp {
                 // keyframe.
                 let kind = if self.active == CHART_SCREEN {
                     super::pixel::PictureKind::Chart
+                } else if self.active == super::screen::DAMAGE_SCREEN {
+                    // Doc 21 cut G.6a: the armour doll as a page.
+                    super::pixel::PictureKind::Doll
                 } else if self.picture_layout() && self.picture.is_some_and(|p| !p.live) {
                     super::pixel::PictureKind::Replay
                 } else {

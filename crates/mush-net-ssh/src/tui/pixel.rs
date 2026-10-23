@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graphics};
 use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
+use mush_pixel::doll::DollPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::replay::ReplayPicture;
 use mush_pixel::{Frame, kitty, png, sixel};
@@ -155,6 +156,9 @@ pub enum PictureKind {
     /// document drawn as a scene at the view's own cursor, which space plays
     /// at the arena's own clock (or faster, `f`).
     Replay,
+    /// The armour doll as a page (bucket B, doc 21 cut G.6a): the pilot's
+    /// own tank, its look's doll large beside a legend of every section.
+    Doll,
 }
 
 /// The replay picture's clock while it plays: a frame a tenth of a second,
@@ -405,7 +409,10 @@ impl PixelView {
             FRAME_INTERVAL_UNCAPPED
         } else if self.kind == PictureKind::Replay && self.replay.playing {
             REPLAY_PLAY_INTERVAL
-        } else if matches!(self.kind, PictureKind::Chart | PictureKind::Replay) {
+        } else if matches!(
+            self.kind,
+            PictureKind::Chart | PictureKind::Replay | PictureKind::Doll
+        ) {
             // Bucket B's clock: a diagram, redrawn on change.
             self.picture.interval()
         } else if self.stepped_down {
@@ -636,6 +643,7 @@ impl PixelView {
                 PictureKind::Cockpit => Box::new(CockpitPicture::new()),
                 PictureKind::Chart => Box::new(ChartPicture::new()),
                 PictureKind::Replay => Box::new(ReplayPicture::new()),
+                PictureKind::Doll => Box::new(DollPicture::new()),
             };
             self.last_sent = None;
         }
@@ -815,6 +823,13 @@ impl PixelView {
                 }
                 Key::Esc | Key::Char('q') => self.close(),
                 _ => {}
+            }
+            return;
+        }
+        // The doll's (G.6a): Esc and `q` close; it has nothing to steer.
+        if self.kind == PictureKind::Doll {
+            if matches!(key, Key::Esc | Key::Char('q')) {
+                self.close();
             }
             return;
         }
@@ -1039,6 +1054,16 @@ impl PixelView {
         }
         if self.kind == PictureKind::Replay {
             return self.replay_hud(now);
+        }
+        if self.kind == PictureKind::Doll {
+            let probe = self.probe_words(now);
+            let drawing = self
+                .current_encoder()
+                .map_or("nothing".to_string(), |e| e.name().to_string());
+            return (
+                format!("ARMOUR  |  {probe}, drawing {drawing}, redrawn on change"),
+                "Enter: chat   Esc/q: close   ^]: detach".to_string(),
+            );
         }
         let heading = cockpit
             .and_then(|c| c.get("heading_mdeg"))
@@ -1977,6 +2002,39 @@ mod tests {
         v.close_kind(PictureKind::Chart);
         assert!(v.is_active());
         v.close_kind(PictureKind::Replay);
+        assert!(!v.is_active());
+    }
+
+    /// **Doc 21 cut G.6a**: the doll page — bucket B's clock, deaf to the
+    /// helm, its HUD, closed by Esc.
+    #[test]
+    fn the_doll_page_is_drawn_on_change_and_deaf_to_the_helm() {
+        let t0 = Instant::now();
+        let cockpit: Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let feeds: HashMap<String, Value> =
+            [(mush_pixel::cockpit::COCKPIT_FEED.to_string(), cockpit)]
+                .into_iter()
+                .collect();
+        let mut v = supported(t0);
+        assert!(v.toggle_for(PictureKind::Doll, t0));
+        assert_eq!(v.interval(), mush_pixel::picture::BUCKET_B_INTERVAL);
+        v.key(Key::Right, t0);
+        v.key(Key::Char('a'), t0);
+        assert!(v.take_orders().is_empty());
+        assert!(!v.paint(&feeds, 160, 50, t0).is_empty(), "drawn");
+        assert!(
+            v.paint(&feeds, 160, 50, t0).is_empty(),
+            "and not again unchanged"
+        );
+        let (top, bottom) = v.hud(None, t0);
+        assert!(
+            top.starts_with("ARMOUR") && bottom.contains("Esc/q"),
+            "{top} / {bottom}"
+        );
+        v.key(Key::Esc, t0);
         assert!(!v.is_active());
     }
 

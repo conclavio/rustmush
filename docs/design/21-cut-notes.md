@@ -385,3 +385,14 @@ The dev2 smoke's finding, fixed: w11term drops a sound within 40 ms of the last 
 
 The dev2 smoke's chart had EARTH's word over MARS's dot and the light-lag rings' labels on the bodies'. The de-clutter checked a label only against the labels placed before it and had one spot to offer. Now (`chart_scene`): every body's dot, the Sun and the viewer's ring are obstacles from the start; a body's label tries above-right, below-right, above-left and below-left of its dot, inside the chart, the viewer's first and then outward, and is left out only where none is free; the ring labels come last, at each ring's north or south point where they fit. Pinned by a test that moves Mars beside Earth and checks, at 640x230, 640x480 and 320x220, that no text covers a dot or another text and that both labels are drawn. On the fixture, PALLAS (dropped beside the vantage before) now sits below-right of its dot.
 
+## G.6a
+
+The armour doll as a page: G.6's first half; the fitting paper doll (hardpoints, arcs) waits on a fitting feature to draw.
+
+- **`mush_pixel::doll::DollPicture`** (bucket B, feeds `arena.cockpit`): the pilot's own tank — the unit's look's doll grid (doc 22) as large as the frame allows, each part coloured by what is left of it and touching parts toned apart, as the cockpit's instrument draws it — beside a legend sized first from fixed columns: each section's swatch, name, condition (DESTROYED in red), internals bar and count, and each facet's armour bar and count under it, a second column only where two whole legends fit. A wide frame (the text cockpit's picture) puts the doll left and the legend beside it; a tall one (4:3) stacks the doll on top and the legend under it. No seat is a `NOT IN A COCKPIT` card; a unit with no look draws the legend alone. `cockpit::sections_from` is the frame's sections, shared with the cockpit's instruments.
+- **The TUI**: `^G` on the damage screen (`8`, `DAMAGE_SCREEN`) opens it; Esc and `q` close; nothing to steer; the HUD reads `ARMOUR | …`; the cockpit's text panel under it.
+
+**Measured** (the cockpit fixture, release, the owner's box): 640x230 in 0.23 ms, 640x480 in 0.35 ms, 9 colours, PNG 3–4.5 KB.
+
+**Verified.** `mush-pixel` (the fixture tank drawn, a whole part green, a hurt turret moving the picture, both sizes; no seat a card; an unknown unit the legend), `mush-net-ssh` (bucket B's clock, deaf to the helm, drawn on change only, its HUD, closed by Esc). Not smoked live.
+
