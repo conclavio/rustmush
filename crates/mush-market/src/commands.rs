@@ -85,11 +85,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    into a bid whose goods have not left yet. A quote on goods another player \
                    listed from their own stock is not asked for again: taking it up a second \
                    time answers that it has already been taken up.\n\
-                   +market/sell <listing>=<qty> [from=<vault>]\n\
+                   +market/sell <listing>\n\
+                   \x20                                 what a house's standing bid still \
+                   wants, what you hold where the sale would come from, and what selling all \
+                   of it would take and pay. It sells nothing.\n\
+                   +market/sell <listing>=<qty>|all [from=<vault>]\n\
                    \x20                                 sell into a house's standing bid out \
-                   of your own endpoint (in a port, your berthed hold). The house's payment is \
-                   escrowed first and reaches you once the goods have moved into its stores; \
-                   a refusal moves nothing.\n\
+                   of your own endpoint (in a port, your berthed hold); all sells what the bid \
+                   takes and leaves the rest. The house's payment is escrowed first and \
+                   reaches you once the goods have moved into its stores; a refusal moves \
+                   nothing.\n\
                    +market/sell <obj>=<vendor>        offer something you are carrying. The \
                    vendor escrows its payment first; you then accept the contract and \
                    deposit the goods into its vault (@vault/deposit). It buys CUSTODY, so \
@@ -744,18 +749,37 @@ fn accept_signatory(ctx: &Ctx<'_>, id: QuoteId) -> Option<(String, String)> {
     Some((signatory, shop))
 }
 
-/// The lot arm's parsed arguments: the bid listing, the quantity, and the `from=`
-/// endpoint when one was named (doc 18 cut IC10).
-type LotSellArgs = (ListingId, u64, Option<mush_inventory::EndpointRef>);
+/// How much the lot arm sells (doc 18 cut IC10; doc 20 cut SM.5 adds `all`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SellQty {
+    /// Exactly this many.
+    Exact(u64),
+    /// What the bid takes: `min(remaining, held, house units)` ([`crate::BidTake::take`]).
+    All,
+}
+
+/// The lot arm's parsed arguments (doc 18 cut IC10; doc 20 cut SM.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LotSell {
+    /// `+market/sell <listing>` with no `=`: the read-only preview of what the bid takes.
+    Preview(ListingId),
+    /// `+market/sell <listing>=<qty>|all [from=<vault>]`: a sale into the bid.
+    Sell(ListingId, SellQty, Option<mush_inventory::EndpointRef>),
+}
 
 /// **The lot arm's grammar** (doc 18 cut IC10; doc 18 §6 writes it bare, `+market/sell
-/// 21=20`): the left side is bare ASCII digits naming a listing the actor may view, the
-/// right side's first word a quantity, and an optional second word `from=<vault>`
-/// (digits, optional `#`). `None` when the left side is not that — every `#`-prefixed
-/// left side stays a dbref for the object arm, and a bare number naming no viewable
-/// listing reads exactly as an unknown object does (existence hiding). `Some(Err(..))`
-/// is the lot arm's own refusal: a malformed right side, or an ask rather than a bid.
-fn lot_sell_args(ctx: &Ctx<'_>) -> Option<Result<LotSellArgs, &'static str>> {
+/// 21=20`): the left side is bare ASCII digits naming a listing the actor may view.
+/// `None` when the left side is not that — every `#`-prefixed left side stays a dbref
+/// for the object arm, and a bare number naming no viewable listing reads exactly as an
+/// unknown object does (existence hiding). Then (doc 20 cut SM.5, §7.2): **no `=` at
+/// all is the preview** (it takes no source: `from=` lives on the right side, so the
+/// preview reads the source the sale would default to); otherwise the right side's first
+/// word is a quantity or `all`, and an optional second word `from=<vault>` (digits,
+/// optional `#`). `Some(Err(..))` is the lot arm's own refusal: an empty or malformed
+/// right side (since SM.5 the lot arm owns it, the left side having named a viewable
+/// listing), or an ask rather than a bid — on the bare form checked before the preview,
+/// on the `=` forms after the right side parses (the IC10 order).
+fn lot_sell_args(ctx: &Ctx<'_>) -> Option<Result<LotSell, &'static str>> {
     let lhs = ctx.args.lhs().trim();
     if lhs.is_empty() || !lhs.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -766,9 +790,21 @@ fn lot_sell_args(ctx: &Ctx<'_>) -> Option<Result<LotSellArgs, &'static str>> {
         .module_state::<MarketStore>()
         .and_then(|s| s.listing(id).cloned())
         .filter(|l| api::may_view_listing(ctx.w, ctx.actor, l))?;
-    let rhs = ctx.args.rhs().unwrap_or_default();
+    let Some(rhs) = ctx.args.rhs() else {
+        if !listing.source.is_wanted() {
+            return Some(Err(crate::trade::SELLS_NOT_BUYS));
+        }
+        return Some(Ok(LotSell::Preview(id)));
+    };
     let mut words = rhs.split_whitespace();
-    let quantity = words.next()?.parse::<u64>().ok()?;
+    let quantity = match words.next() {
+        Some(word) if word.eq_ignore_ascii_case("all") => SellQty::All,
+        Some(word) => match word.parse::<u64>() {
+            Ok(quantity) => SellQty::Exact(quantity),
+            Err(_) => return Some(Err(crate::trade::SELL_USAGE)),
+        },
+        None => return Some(Err(crate::trade::SELL_USAGE)),
+    };
     let source = match words.next() {
         None => None,
         Some(word) => {
@@ -789,13 +825,83 @@ fn lot_sell_args(ctx: &Ctx<'_>) -> Option<Result<LotSellArgs, &'static str>> {
     if !listing.source.is_wanted() {
         return Some(Err(crate::trade::SELLS_NOT_BUYS));
     }
-    Some(Ok((id, quantity, source)))
+    Some(Ok(LotSell::Sell(id, quantity, source)))
+}
+
+/// **The bare preview** (doc 20 cut SM.5, §7.2): what the bid still wants, what the
+/// seller holds at the source a sale would default to, and what `=all` would sell. A
+/// pure read through [`crate::trade::bid_take`], so it never says more than a sale would.
+fn sell_preview(ctx: &mut Ctx<'_>, listing: ListingId) -> Result<(), CmdError> {
+    let take = match crate::trade::bid_take(ctx, listing, None, crate::module::Presence::Here) {
+        Ok(take) => take,
+        Err(e) => return Err(refuse_market(ctx, &e)),
+    };
+    let instrument = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing).cloned())
+        .and_then(|l| listing_instrument(ctx.w, &l));
+    let price = money(ctx.w, instrument.as_ref(), take.price);
+    let id = listing.0.to_string();
+    info(
+        ctx,
+        crate::trade::SELL_PREVIEW
+            .replace("{listing}", &id)
+            .replace("{name}", &take.name)
+            .replace("{house}", &take.house)
+            .replace("{remaining}", &take.remaining.to_string())
+            .replace("{price}", &price)
+            .replace("{held}", &take.held.to_string()),
+    );
+    let units = take.take();
+    let gross = i64::try_from(units)
+        .ok()
+        .and_then(|q| take.price.minor().checked_mul(q))
+        .map(Amount::from_minor);
+    let line = match gross {
+        Some(gross) if units > 0 => crate::trade::SELL_PREVIEW_ALL
+            .replace("{listing}", &id)
+            .replace("{take}", &units.to_string())
+            .replace("{gross}", &money(ctx.w, instrument.as_ref(), gross)),
+        _ => crate::trade::SELL_PREVIEW_NONE.replace("{listing}", &id),
+    };
+    info(ctx, line);
+    Ok(())
 }
 
 fn sell(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // ---- doc 18 cut IC10: the lot arm — a sale into a standing bid ----
     match lot_sell_args(ctx) {
-        Some(Ok((listing, quantity, source))) => {
+        Some(Ok(LotSell::Preview(listing))) => return sell_preview(ctx, listing),
+        Some(Ok(LotSell::Sell(listing, quantity, source))) => {
+            // Doc 20 cut SM.5: `all` sells what the bid takes now, read through the
+            // same steps as the preview; nothing to take is refused with the reason.
+            let quantity = match quantity {
+                SellQty::Exact(quantity) => quantity,
+                SellQty::All => {
+                    let take = match crate::trade::bid_take(
+                        ctx,
+                        listing,
+                        source,
+                        crate::module::Presence::Here,
+                    ) {
+                        Ok(take) => take,
+                        Err(e) => return Err(refuse_market(ctx, &e)),
+                    };
+                    let units = take.take();
+                    if units == 0 {
+                        let why = if take.remaining == 0 {
+                            crate::trade::NOT_BUYING
+                        } else if take.house_units == 0 {
+                            crate::trade::UNFUNDED
+                        } else {
+                            crate::trade::SELL_NONE_HELD
+                        };
+                        return Err(refuse_market(ctx, &MarketError::bad(why)));
+                    }
+                    units
+                }
+            };
             let req = crate::trade::BidSaleRequest {
                 listing,
                 quantity,

@@ -20,17 +20,22 @@
 
 pub mod app;
 mod backend;
+mod cockpit_text;
+pub mod helm;
 pub mod keys;
 mod mind_workshop;
 pub mod panels;
+pub mod pixel;
 pub mod render;
 pub mod replay;
 pub mod screen;
 pub mod sheet;
+pub mod sound;
 
 pub use app::{InputResult, Mode, StickyMode, TuiApp, TuiManifest};
 use backend::{ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, SshBackend};
 
+use mush_pixel::caps::Encoder;
 use mush_proto::{ClientCaps, OutputEvent};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -111,6 +116,28 @@ impl TuiSession {
     /// drops it before the async write (invariant T2).
     #[must_use]
     pub fn paint(&mut self) -> Vec<u8> {
+        // Pixel cockpit spike (2026-10-21): an event or key repaint carries
+        // NO picture. Pictures go out on the frame clock alone
+        // ([`Self::pixel_frame`]): on dev2's first live turn the arena's
+        // per-pulse events each repainted a moved camera too, and the wire
+        // carried ~35 frames a second against a 20 Hz clock.
+        let mut bytes = self.paint_text();
+        // Doc 21 cut G.2: a repaint that wrote into a sixel picture's box (an
+        // overlay, a resize's clear) erased those pixels; the next tick sends
+        // the picture again.
+        if self.terminal.backend_mut().take_touched() {
+            self.app.pixel_text_touched();
+        }
+        // Doc 21 cut G.10: the sounds the events just painted rang, after
+        // the frame (a BEL or an OSC 440 moves no cursor and draws nothing).
+        bytes.extend(self.app.take_sound_bytes());
+        bytes
+    }
+
+    /// The text frame alone: the ratatui diff, plus what a picture taken off
+    /// screen since the last paint needs — a kitty image freed after it, a
+    /// sixel one wiped by repainting the whole frame over it.
+    fn paint_text(&mut self) -> Vec<u8> {
         // Keep the backend geometry in step with the app caps every frame so
         // a resize that arrived between paints is honored here.
         let caps = self.app.caps();
@@ -118,10 +145,141 @@ impl TuiSession {
             .backend_mut()
             .set_geometry(caps.width, caps.height, caps.color);
         let TuiSession { terminal, app } = self;
+        let closed = app.pixel_take_close();
+        // A sixel picture is pixels in the cell grid, not an image to free:
+        // a diff would leave every cell the next screen draws as a blank
+        // showing the old picture, so the whole frame is repainted.
+        if closed == Some(Encoder::Sixel) || app.pixel_take_wipe() {
+            let _ = terminal.clear();
+        }
+        terminal.backend_mut().set_watch(app.pixel_sixel_box());
+        // The kitty keyboard protocol's push (the view opened) or pop (it
+        // closed) goes ahead of the frame, so the next key already reads right.
+        let mut bytes = app.pixel_take_terminal_bytes();
         // The only error path is a backend write error; `SshBackend` writes
         // into a `Vec` and never errors, so a failure just yields no bytes.
         let _ = terminal.draw(|frame| app.draw(frame));
-        terminal.backend_mut().take_output()
+        bytes.extend(terminal.backend_mut().take_output());
+        if closed == Some(Encoder::Kitty) {
+            bytes.extend_from_slice(&mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
+        }
+        bytes
+    }
+
+    /// **One frame-clock tick's bytes** (pixel cockpit spike): the picture
+    /// when it changed, with the text frame refreshed under it (the HUD's
+    /// counters moved); NOTHING when it did not — not a cursor move, not a
+    /// cell. The frame clock runs twenty times a second, and a tick that
+    /// wrote even a few bytes would fill a stalled client's SSH window.
+    #[must_use]
+    pub fn pixel_frame(&mut self) -> Vec<u8> {
+        let picture = self.app.pixel_paint();
+        if picture.is_empty() {
+            return Vec::new();
+        }
+        let mut bytes = self.paint_text();
+        // The picture goes out after the text, so whatever this text paint
+        // wrote into its box is drawn over.
+        let _ = self.terminal.backend_mut().take_touched();
+        bytes.extend(picture);
+        bytes
+    }
+
+    /// The graphics capability probe (pixel cockpit spike; doc 21 cuts G.1,
+    /// G.2): the kitty query, the cell-size request and DA1, sent once right
+    /// after the first frame; starts the probe's clock.
+    #[must_use]
+    pub fn probe_bytes(&mut self) -> Vec<u8> {
+        self.app.pixel_probe_sent();
+        mush_pixel::caps::probe_bytes()
+    }
+
+    /// `@pixel/encoder <choice>` for this connection (doc 21 cut G.2).
+    /// `@sounds on|off` for this connection (doc 21 cut G.10).
+    pub fn set_sounds(&mut self, on: bool) {
+        self.app.set_sounds(on);
+    }
+
+    /// What `@sounds` reports: on or off, and the terminal's name if it gave
+    /// one and whether sounds go to it by name (doc 21 cut G.10).
+    #[must_use]
+    pub fn sounds_report(&self) -> (bool, Option<String>, bool) {
+        self.app.sounds_report()
+    }
+
+    pub fn set_pixel_choice(&mut self, choice: mush_pixel::caps::EncoderChoice) {
+        self.app.pixel_set_choice(choice);
+    }
+
+    /// `[pixel]`'s knobs for this connection's view (doc 21 G.1b).
+    pub fn set_pixel_config(&mut self, cfg: pixel::PixelConfig) {
+        self.app.pixel_set_config(cfg);
+    }
+
+    /// The pump's last picture write took `took`: the step-down's input
+    /// (doc 21 §3.4, G.1b).
+    pub fn pixel_write_took(&mut self, took: std::time::Duration) -> pixel::StepChange {
+        self.app.pixel_write_took(took)
+    }
+
+    /// The view's counters (G.1b: the pump reads the slow-write skips).
+    #[must_use]
+    pub fn pixel_stats(&self) -> pixel::Stats {
+        self.app.pixel_stats()
+    }
+
+    /// `@pixel/stats`'s lines for this connection (G.1b).
+    pub fn pixel_stats_lines(&mut self) -> Vec<String> {
+        self.app.pixel_stats_lines()
+    }
+
+    /// What the probe found, in words, and the encoder `^G` would draw in.
+    pub fn pixel_report(&mut self) -> (&'static str, Option<Encoder>) {
+        self.app.pixel_report()
+    }
+
+    /// Whether the pixel view is open (the pump then runs its frame clock).
+    #[must_use]
+    pub fn pixel_active(&self) -> bool {
+        self.app.pixel_active()
+    }
+
+    /// One frame-clock tick.
+    pub fn pixel_tick(&mut self) {
+        self.app.pixel_tick();
+    }
+
+    /// The frame clock's wait while the view is open (20 Hz, or uncapped).
+    #[must_use]
+    pub fn pixel_interval(&self) -> std::time::Duration {
+        self.app.pixel_interval()
+    }
+
+    /// The bytes that free the picture's image when the view is open — to
+    /// send before leaving the alternate screen.
+    #[must_use]
+    pub fn pixel_close_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if self.app.pixel_active() && self.app.pixel_shown() == Some(Encoder::Kitty) {
+            bytes.extend(mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
+        }
+        // Doc 21 cut G.4: never leave the terminal in the keyboard protocol.
+        if self.app.pixel_keyboard_pushed() {
+            bytes.extend_from_slice(b"\x1b[<u");
+        }
+        bytes
+    }
+
+    /// The view's helm orders since the last call (doc 21 cut G.4): what the
+    /// output pump sends to the world after a frame tick.
+    pub fn pixel_take_orders(&mut self) -> Vec<String> {
+        self.app.pixel_take_orders()
+    }
+
+    /// Leaving the TUI with the view open: the order that stops a turn in
+    /// progress, to send before the TUI is dropped.
+    pub fn pixel_leave_orders(&mut self) -> Vec<String> {
+        self.app.pixel_leave_orders()
     }
 
     /// Bytes that enter the alternate screen and hide the cursor.
@@ -164,7 +322,9 @@ pub fn frame_text(app: &mut TuiApp, w: u16, h: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_proto::{ClientKind, ColorDepth, NarrativeKind, ObjRef, RichText, WhoEntry};
+    use mush_proto::{
+        ClientKind, ColorDepth, NarrativeKind, ObjRef, PanelFrameKind, RichText, WhoEntry,
+    };
 
     fn caps() -> ClientCaps {
         ClientCaps {
@@ -301,5 +461,451 @@ mod tests {
         assert_eq!(text.lines().count(), 34);
         assert!(text.contains("hi there"));
         assert!(text.contains("rustmush"));
+    }
+
+    /// Pixel cockpit spike (2026-10-21): the probe goes out after `@tui`, its
+    /// answer comes back through the input path as marker keys, `^G` opens
+    /// the view only once the answer is OK, the painted bytes carry the HUD
+    /// and the kitty frame, an unchanged picture is not re-sent, a turn is,
+    /// and closing frees the image.
+    #[test]
+    fn the_probe_reply_opens_the_pixel_view_and_paint_carries_a_kitty_frame() {
+        let mut wide = caps();
+        wide.width = 120;
+        wide.height = 40;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let probe = sess.probe_bytes();
+        assert!(probe.starts_with(b"\x1b_Gi=31,"), "{probe:?}");
+        assert!(probe.ends_with(b"\x1b[c"));
+        // Before the answer, ^G does nothing.
+        sess.feed_input(b"\x07");
+        assert!(!sess.pixel_active());
+        // The terminal answers OK then DA1, in one burst, as kitty does; the
+        // markers ask for no repaint.
+        let r = sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        assert!(!r.redraw && r.submit.is_empty());
+        // A seated cockpit frame and the arena map (the canonical fixtures).
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let map: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("map fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.map".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: map,
+        });
+        let r = sess.feed_input(b"\x07");
+        assert!(r.redraw && sess.pixel_active());
+        // The key's repaint draws the HUD and no picture; the picture comes on
+        // the first frame-clock tick, with the text frame refreshed under it.
+        let hud = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(hud.contains("PIXEL"), "the HUD: {hud:?}");
+        assert!(
+            !hud.contains("\x1b_Ga=T"),
+            "no picture on a repaint: {hud:?}"
+        );
+        sess.pixel_tick();
+        let bytes = sess.pixel_frame();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=120,r=26,m="),
+            "the 640x276 frame scaled into the top two-thirds, 120 by 26 cells: {text:?}"
+        );
+        assert!(text.ends_with("\x1b[?2026l\x1b8"));
+        // The same picture is not sent twice — and an idle frame tick writes
+        // NOTHING, not even a cursor move: twenty small writes a second would
+        // fill a stalled client's SSH window (dev2's first live smoke).
+        sess.pixel_tick();
+        let again = sess.pixel_frame();
+        assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
+        let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            !repaint.contains("\x1b_Ga=T"),
+            "an event repaint re-sends no picture"
+        );
+        // A turn, a tick with time on the clock, a new picture.
+        sess.feed_input(b"\x1b[C");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        sess.pixel_tick();
+        let turned = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(turned.contains("\x1b_Ga=T"), "{turned:?}");
+        // Leaving the TUI with the view open frees the image first.
+        assert_eq!(
+            sess.pixel_close_bytes(),
+            b"\x1b_Ga=d,d=I,i=1,q=2;\x1b\\".to_vec()
+        );
+        // Esc closes it; the next paint carries the delete and no frame.
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
+        let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"),
+            "{closed:?}"
+        );
+        assert!(!closed.contains("\x1b_Ga=T"));
+        assert!(sess.pixel_close_bytes().is_empty());
+        // A terminal that answers DA1 first never opens the view.
+        let mut plain = TuiSession::new(caps(), TuiManifest::default());
+        let _ = plain.probe_bytes();
+        plain.feed_input(b"\x1b[?62;22c\x1b_Gi=31;OK\x1b\\");
+        plain.feed_input(b"\x07");
+        assert!(!plain.pixel_active());
+    }
+
+    /// **Doc 21 cut G.10**: a seated frame's notices go out as sounds with
+    /// the paint — BEL until the terminal says it is w11term, OSC 440 by
+    /// name after — and `@sounds off` silences them.
+    #[test]
+    fn a_seated_frames_notices_ring() {
+        let cockpit = |t_ms: i64| {
+            let mut frame: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+            ))
+            .expect("cockpit fixture");
+            frame["t_ms"] = t_ms.into();
+            OutputEvent::Panel {
+                feed: "arena.cockpit".into(),
+                kind: mush_proto::PanelFrameKind::Keyframe,
+                data: frame,
+            }
+        };
+        let mut sess = TuiSession::new(caps(), TuiManifest::default());
+        let _ = sess.probe_bytes();
+        // A plain terminal: the fixture's `acquired` rings the bell.
+        sess.apply_event(&cockpit(1_000));
+        let out = sess.paint();
+        assert!(out.contains(&0x07), "BEL for a contact gained");
+        // The probe names w11term: by name from now on (the fixture's two
+        // kinds, the bell's debounce not theirs).
+        sess.feed_input(b"\x1bP>|w11term 0.4.1\x1b\\");
+        sess.apply_event(&cockpit(2_000));
+        let out = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            out.contains("\x1b]440;1;play;target_section_lost\x1b\\"),
+            "{out:?}"
+        );
+        assert_eq!(
+            sess.sounds_report(),
+            (true, Some("w11term 0.4.1".into()), true)
+        );
+        // Off: nothing.
+        sess.set_sounds(false);
+        sess.apply_event(&cockpit(9_000));
+        let out = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            !out.contains("\x1b]440") && !out.contains('\x07'),
+            "{out:?}"
+        );
+    }
+
+    /// **Doc 21 cut G.8**: `^G` on screen 0 while a replay is its layout
+    /// draws the replay as a picture, opened at the panes' keyframe; `.`
+    /// steps the picture and the panes together, space plays, and `x` closes
+    /// the replay and its picture.
+    #[test]
+    fn ctrl_g_on_a_replay_draws_the_match() {
+        use mush_proto::PanelFrameKind as K;
+        let fixture = |text: &str| -> serde_json::Value {
+            serde_json::from_str(text).expect("replay fixture")
+        };
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        // SIM REPLAY's grid opens screen 0; the document and the ground answer.
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.replay".into(),
+            kind: K::Keyframe,
+            data: fixture(include_str!(
+                "../../../../web/src/lib/fixtures/replay/replay_window.json"
+            )),
+        });
+        let mut doc = fixture(include_str!(
+            "../../../../web/src/lib/fixtures/replay/replay.json"
+        ));
+        doc["schema"] = serde_json::json!({"id": "arena.replay", "version": 1, "shape": "replay"});
+        sess.apply_event(&OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Panel {
+                feed: "arena.replay".into(),
+                kind: K::Keyframe,
+                data: doc,
+            }),
+        });
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.map".into(),
+            kind: K::Keyframe,
+            data: fixture(include_str!(
+                "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+            )),
+        });
+        let opened_at = sess.app.picture().expect("the replay is open").at;
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        assert_eq!(sess.app.pixel_kind(), pixel::PictureKind::Replay);
+        let kf_t = [0, 5_000, 10_000];
+        assert_eq!(
+            sess.app.pixel_replay().t_ms,
+            kf_t[opened_at],
+            "opened at the panes' keyframe"
+        );
+        assert_eq!(sess.app.pixel_replay().end_ms, 10_000);
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            screen.contains("REPLAY") && screen.contains("MATCH") && screen.contains("SHOTS"),
+            "{screen:?}"
+        );
+        sess.pixel_tick();
+        let picture = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            picture.contains("\x1b_Ga=T"),
+            "the replay's picture, in kitty"
+        );
+        // `,` to the first keyframe, `.` to the next: picture and panes together.
+        sess.feed_input(b",,,");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (0, Some(0))
+        );
+        sess.feed_input(b".");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (5_000, Some(1))
+        );
+        // `]` ten seconds on: the end, the last keyframe's panes.
+        sess.feed_input(b"]");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (10_000, Some(2))
+        );
+        // Space at the end plays from the start again.
+        sess.feed_input(b" ");
+        assert!(sess.app.pixel_replay().playing);
+        assert_eq!(sess.app.pixel_replay().t_ms, 0);
+        // `u` moves the focus, as on screen 0.
+        let focus = sess.app.picture().map(|p| p.focus);
+        sess.feed_input(b"u");
+        assert_ne!(sess.app.picture().map(|p| p.focus), focus);
+        // `x` closes the replay, and its picture with it.
+        sess.feed_input(b"x");
+        assert!(sess.app.picture().is_none());
+        assert!(!sess.pixel_active());
+    }
+
+    /// **Doc 21 cut G.5b**: `^G` on the chart screen opens the orbital view,
+    /// asks for the chart, and sends its picture; the passages are text under
+    /// it.
+    #[test]
+    fn ctrl_g_on_the_chart_screen_draws_the_orbital_view() {
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        let sky: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/chart/sky_chart.json"
+        ))
+        .expect("chart fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "sky.chart".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: sky,
+        });
+        sess.feed_input(b"\x1bc"); // Alt-c: the chart screen
+        let r = sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        assert!(
+            r.queries.iter().any(|(name, _)| name == "sky.chart"),
+            "the chart asked for on opening: {:?}",
+            r.queries
+        );
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            screen.contains("SKY") && screen.contains("PASSAGES"),
+            "{screen:?}"
+        );
+        sess.pixel_tick();
+        let picture = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            picture.contains("\x1b_Ga=T"),
+            "the chart's picture, in kitty"
+        );
+    }
+
+    /// **The text cockpit** (2026-10-22): chat is read and sent while
+    /// flying. The comms show the scrollback's tail under the picture; Enter
+    /// opens the chat line and stops a turn in progress; typed letters never
+    /// steer; Enter sends the line as typed and flies again; Esc goes back to
+    /// flying with the draft kept (the view stays open) and the next Enter
+    /// brings it back; Esc while flying closes the view.
+    #[test]
+    fn the_text_cockpit_chats_while_flying() {
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        sess.apply_event(&OutputEvent::Narrative {
+            kind: NarrativeKind::Say,
+            actor: Some(ObjRef::new("#2", "Vasquez")),
+            text: RichText::plain("contact bearing ninety"),
+        });
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        for word in [
+            "ARMOUR", "WEAPONS", "CONTACTS", "COMMS", "Vasquez", "ninety", "READY",
+        ] {
+            assert!(screen.contains(word), "{word} under the picture");
+        }
+        sess.pixel_tick();
+        assert!(
+            !sess.pixel_frame().is_empty(),
+            "the picture, which the helm reads"
+        );
+
+        // Flying: `a` turns the tank.
+        let r = sess.feed_input(b"a");
+        assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
+        // Enter opens the chat line and stops the turn.
+        let r = sess.feed_input(b"\r");
+        assert_eq!(r.submit.len(), 1, "the stop order: {:?}", r.submit);
+        assert!(r.submit[0].starts_with("HEADING "));
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(screen.contains("send"), "the chat legend");
+        // Typing never steers.
+        let r = sess.feed_input(b"on my way ad");
+        assert!(r.submit.is_empty(), "{:?}", r.submit);
+        assert!(sess.pixel_active());
+        // Enter sends the line as typed and flies again.
+        let r = sess.feed_input(b"\r");
+        assert_eq!(r.submit, ["on my way ad"]);
+        let r = sess.feed_input(b"d");
+        assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
+        sess.feed_input(b" ");
+
+        // Esc goes back to flying with the draft kept; the view stays open.
+        sess.feed_input(b"\rhalf a tho");
+        sess.feed_input(b"\x1b");
+        assert!(
+            sess.pixel_active(),
+            "Esc in the chat line does not close the view"
+        );
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(screen.contains("(draft:"), "{screen:?}");
+        let r = sess.feed_input(b"xyz");
+        assert!(r.submit.is_empty(), "flying: those letters were keys");
+        let r = sess.feed_input(b"\r");
+        assert!(
+            r.submit.iter().all(|l| l.starts_with("HEADING ")),
+            "the draft is back on the line, nothing sent: {:?}",
+            r.submit
+        );
+        let r = sess.feed_input(b"!\r");
+        assert_eq!(r.submit, ["half a tho!"]);
+        // Esc while flying closes the view.
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
+    }
+
+    /// Doc 21 cut G.2, end to end through the session: a terminal that
+    /// answers as Windows Terminal does (a cell size, then DA1 with sixel and
+    /// no kitty answer) gets a sixel picture in its cell box; a resize clears
+    /// the screen, so the next tick sends the picture again; closing wipes it
+    /// with a full repaint and frees no kitty image.
+    #[test]
+    fn a_sixel_terminal_gets_a_sixel_picture_resent_after_a_clear_and_wiped_on_close() {
+        let mut wide = caps();
+        wide.width = 120;
+        wide.height = 40;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let probe = sess.probe_bytes();
+        assert!(
+            probe.ends_with(b"\x1b[16t\x1b[?u\x1b[>0q\x1b[c"),
+            "the cell size is asked before DA1: {probe:?}"
+        );
+        let r = sess.feed_input(b"\x1b[6;20;10t\x1b[?61;4;6;22c");
+        assert!(!r.redraw && r.submit.is_empty(), "markers, not keys");
+        assert_eq!(
+            sess.pixel_report(),
+            ("sixel graphics OK", Some(Encoder::Sixel))
+        );
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let map: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("map fixture");
+        for (feed, data) in [("arena.cockpit", cockpit), ("arena.map", map)] {
+            sess.apply_event(&OutputEvent::Panel {
+                feed: feed.into(),
+                kind: PanelFrameKind::Keyframe,
+                data,
+            });
+        }
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        let _ = sess.paint();
+        sess.pixel_tick();
+        let first = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;1200;517"),
+            "the 640x276 frame shown at 1200x517, filling the top two-thirds"
+        );
+        assert!(!first.contains("\x1b_G"), "no kitty bytes");
+        sess.pixel_tick();
+        assert!(sess.pixel_frame().is_empty(), "unchanged: nothing");
+        // A resize: the text repaint clears the screen, the picture goes again.
+        let mut wider = wide;
+        wider.width = 160;
+        sess.set_caps(wider);
+        let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(repaint.contains("\x1b[2J"), "the resize cleared the screen");
+        sess.pixel_tick();
+        let again = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(again.contains("\x1bP0;1;0q"), "resent after the clear");
+        // Leaving with a sixel picture frees nothing; closing wipes it.
+        assert!(sess.pixel_close_bytes().is_empty());
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
+        let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            closed.contains("\x1b[2J"),
+            "a full repaint over the picture"
+        );
+        assert!(!closed.contains("\x1b_G"), "no kitty delete");
     }
 }

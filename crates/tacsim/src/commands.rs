@@ -158,11 +158,28 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::port::chart::CHART_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["body", "map"].iter().copied().map(SmolStr::new).collect(),
+            switches: ["body", "map", "ground"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
             help: crate::port::chart::CHART_HELP.into(),
             ..CommandSpec::default()
         },
         Arc::new(crate::port::chart::chart_cmd),
+    )?;
+    // ---- Doc 20 cut SM.10 (§9; reviewer F5): `+registry <site>`, a pure read ----
+    //
+    // In the same ReadOnly bracket as `+credit` and `+chart`: a read of the site's sixteen
+    // `tacsim.claims` records — no document, no post, no submission.
+    reg.command(
+        CommandSpec {
+            name: crate::port::claims::REGISTRY_VERB.into(),
+            shape: ArgShape::Raw,
+            help: crate::port::claims::REGISTRY_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::claims::registry_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
@@ -206,7 +223,22 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // primary verb takes the ceiling class of its switches; `/lease`'s economy writes ride
     // the same lane, the `+ship/board` precedent). The class is declared before the
     // `reg.command` and the module default restored right after. The slot switches are
-    // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches.
+    // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches. Doc 20 cut SM.4a: `/scan` (`/survey`)
+    // and `/sound [quiet]` go stage exactly one `tacsim_surface_act`; `/forget … go` stages
+    // exactly one `tacsim_chart_forget`; `/quiet` writes one `tacsim:tvpref:` document (the
+    // `/lease` precedent) — all in the same bracket. Doc 20 cut SM.4b: `/drive … go` writes
+    // one RAM drive order (tacsim's own module slot, the `RigPointer` precedent) and stages
+    // exactly one `tacsim_surface_act` with `act drive`; `/recover` from afar carries its leg in
+    // the same one act; `/map` is a pure read. Doc 20 cut SM.7: `/mine … go` (alias `/drill`)
+    // writes one RAM act order (SM.4b's slot, generalised) and stages exactly one
+    // `tacsim_surface_act` with `act mine`; `/mine stop` stages exactly one with `act mine_stop`.
+    // Doc 20 cut SM.8: `/unload [<t>] go` writes one RAM act order (the same slot) and stages
+    // exactly one `tacsim_surface_act` with `act unload`; a recover's queued unload is the
+    // surface tick's start, as the operator. Doc 20 cut SM.11: `/plan <list> go` writes one RAM
+    // act order (the same slot) and stages exactly one `tacsim_surface_act` with `act plan_file`;
+    // `/plan clear` stages one with `act plan_clear` or `plan_strike`; `/plan show` (and the
+    // `/plan/show` switch form) is a pure read; a plan's steps, its end and the idle return are
+    // the surface tick's starts, as the author or the operator.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -215,7 +247,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             switches: crate::port::tv::SLOT_SWITCHES
                 .iter()
                 .copied()
-                .chain(["lease", "launch", "recover", "dump"])
+                .chain([
+                    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
+                    "quiet", "drive", "map", "mine", "drill", "unload", "plan", "show",
+                ])
                 .map(SmolStr::new)
                 .collect(),
             help: crate::port::tv::TV_HELP.into(),
@@ -224,6 +259,50 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::tv::tv_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 20 cut SM.10 (§9; D-20-12): `+claim`, the Registry's mining claims,
+    // Authoritative ----
+    //
+    // `+claim` and `+claim/list` are pure reads; a bare `/stake`, `/renew`, `/release` or
+    // `/contest` previews and writes nothing; `go` is the economy's own API (one Public fee
+    // contract offered and escrowed by the pilot after a funds check — none for a release),
+    // one bounded RAM claim order, and exactly ONE `industry_claim_tenure` submission as the
+    // actor, so the verb takes the `Authoritative` class (`+tv`'s rule). The class is declared
+    // before the `reg.command` and the module default restored right after.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: crate::port::claims::CLAIM_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["stake", "renew", "release", "contest", "list"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::claims::CLAIM_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::claims::claim_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 20 cut SM.5 (§9.1; D-20-12, Q-20-2): `+licence`, the Freeport Registry's
+    // prospecting licence ----
+    //
+    // Under the module's `LegacyPostImage` class: `+licence` and `+licence/show` are
+    // pure reads; `/buy` previews and writes nothing; `/buy go` is ONE command through
+    // the economy's own API (the pilot's entitlement account opened when absent, one
+    // Public fee contract offered, accepted by the pilot and by the Registry) plus
+    // tacsim's one `tacsim:licence:<gateway account>` document. No authoritative
+    // submission. Accepted from anywhere.
+    reg.command(
+        CommandSpec {
+            name: crate::port::licence::LICENCE_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["buy", "show"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::port::licence::LICENCE_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::licence::licence_cmd),
+    )?;
     // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
     // L9): `@coop/revoke`, staff ----
     //

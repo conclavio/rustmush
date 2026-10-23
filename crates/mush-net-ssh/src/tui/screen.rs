@@ -23,8 +23,10 @@ use super::render::{PaneRows, RenderCtx};
 ///
 /// **16b cut Q.4** took the tenth: nine screens spent `1`–`9`, and the cockpit
 /// doc 16 §5 asks for had nowhere to go. `0` is the digit a keyboard puts after
-/// `9`, and the tab strip reads `1 … 9 0` for that reason.
-pub const MAX_SCREENS: usize = 11;
+/// `9`, and the tab strip reads `1 … 9 0` for that reason. Doc 19 cut A.3b took
+/// the eleventh, the first lettered screen (`c`), and **doc 20 cut SM.9 took the
+/// twelfth, the second lettered screen** (`q`, the quarry).
+pub const MAX_SCREENS: usize = 12;
 /// The most panes one screen may declare.
 pub const MAX_PANES_PER_SCREEN: usize = 8;
 
@@ -108,6 +110,19 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
     "+chart",
     "+chart/map",
+    // Doc 20 cut SM.4b: the site map reads the ground, the rigs and your own chart; it
+    // writes and submits nothing.
+    "+tv/map",
+    // Doc 20 cut SM.9: the ground chart reads the Registry's survey, the planner and your own
+    // chart. Never `+tv`: a bare `+tv` would admit `+tv scan go` by its first word.
+    "+chart/ground",
+    // Doc 20 cut SM.10: the Registry's books and your own claims, pure reads. Never `+claim`:
+    // its first word would admit `+claim/stake go`.
+    "+registry",
+    "+claim/list",
+    // Doc 20 cut SM.11 (D11): a read of the rig's fill plan. The switch form, never `+tv/plan`,
+    // whose first word would admit `+tv/plan C117 go`.
+    "+tv/plan/show",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows
@@ -131,6 +146,15 @@ pub const COCKPIT_SCREEN: ScreenId = ScreenId(0);
 /// letter the active screen does not bind itself — and its [`ScreenId`] is the
 /// letter's byte, which the tab strip prints as the letter.
 pub const CHART_SCREEN: ScreenId = ScreenId(b'c');
+
+/// The damage screen (`8`): `^G` there draws the armour doll as a page (doc
+/// 21 cut G.6a).
+pub const DAMAGE_SCREEN: ScreenId = ScreenId(8);
+
+/// **The quarry screen** (doc 20 cut SM.9; §10, D-20-13): the second lettered screen, on `q`
+/// (Alt+q) — the hull's rigs, the site map or the body's ground chart, the viewer's own
+/// readings and the log, drawn from the `site.map` and `body.ground` frames.
+pub const QUARRY_SCREEN: ScreenId = ScreenId(b'q');
 
 /// A pane's stable name within its screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,6 +277,16 @@ pub enum LocalAction {
     /// **The picture's `x`** (16b cut I.2): close the replay, forget both
     /// feeds and mark the match dismissed.
     PictureClose,
+    /// **The quarry's `t`** (doc 20 cut SM.9; the brief's R-a): select the next of the
+    /// frame's rigs, in slot order, wrapping — the digits are global screen keys, so `1`/`2`
+    /// cannot. Re-asks the map around it.
+    QuarryRig,
+    /// **The quarry's `z`** (doc 20 cut SM.9; the brief's R-c): the next view — the drive
+    /// view, the whole site, the body's ground chart, then the drive view again.
+    QuarryZoom,
+    /// **The quarry's `l`** (doc 20 cut SM.9): the next ore family of the frame's `families`,
+    /// wrapping.
+    QuarryLayer,
 }
 
 /// What a bound key does (D-I-18).
@@ -267,6 +301,10 @@ pub enum KeyAction {
     PrefillRow(&'static str),
     /// Send now — read-only verbs only.
     Run(&'static str),
+    /// **Enter input mode with `+tv/<n> <act>`** (doc 20 cut SM.9) for the quarry's selected
+    /// rig `<n>` — the rig the screen highlights, else the frame's addressed one — or `+tv <act>`
+    /// with none; nothing is sent. The pilot adds the target and `go`.
+    PrefillRig(&'static str),
 }
 
 /// One legend entry.
@@ -358,9 +396,9 @@ impl Screen {
     }
 }
 
-/// The eleven built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
-/// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit, and (doc 19 cut A.3b) `c`
-/// chart on a letter.
+/// The twelve built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit, and on letters (doc 19 cut
+/// A.3b) `c` chart and (doc 20 cut SM.9) `q` quarry.
 ///
 /// Screens 8 and 9 read one feed, `tactics.unit`, and name nothing in it:
 /// every label, id and word on them comes out of the frame, so a ruleset that
@@ -374,13 +412,14 @@ impl Screen {
 #[must_use]
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
-        CHART_FEED, render_actions_rows, render_chart_rows, render_chart_table_rows,
-        render_cockpit_contacts_rows, render_cockpit_damage_rows, render_cockpit_map_rows,
-        render_cockpit_notices_rows, render_cockpit_status_rows, render_cockpit_weapons_rows,
-        render_intel_rows, render_mail_rows, render_map_rows, render_scene_rows,
-        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
-        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
-        render_view_rows,
+        BODY_GROUND_FEED, CHART_FEED, SITE_MAP_FEED, render_actions_rows, render_chart_rows,
+        render_chart_table_rows, render_cockpit_contacts_rows, render_cockpit_damage_rows,
+        render_cockpit_map_rows, render_cockpit_notices_rows, render_cockpit_status_rows,
+        render_cockpit_weapons_rows, render_intel_rows, render_mail_rows, render_map_rows,
+        render_quarry_map_rows, render_quarry_rigs_rows, render_quarry_side_rows,
+        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
+        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
+        render_unit_sections_rows, render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -971,6 +1010,110 @@ pub fn builtin_screens() -> Vec<Screen> {
             gate: Some(CHART_FEED),
             alt_keys: None,
         },
+        // **The quarry** (doc 20 cut SM.9; §10, D-20-13), on the letter `q`, after the chart and
+        // before the cockpit (the strip reads `… 9 unit c chart q quarry 0 cockpit`): Left the
+        // rigs' status (32), Main the map (58), Right the readings and the log (28) — 118 at the
+        // 120-column floor, the two spare columns the map's. Every pane reads `site.map`; in the
+        // ground view the map and the side pane read the held `body.ground` frame from the store
+        // (decision D15), so the gate is the one feed every tacsim world registers. The keys
+        // prefill `+tv/<n> …` and send nothing (lead ruling 6); `t` picks the rig (the digits
+        // are global), `z` steps the view, `l` the family, `r` asks again.
+        Screen {
+            id: QUARRY_SCREEN,
+            name: "quarry",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("rigs"),
+                    title: "rigs",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Panel {
+                        feed: SITE_MAP_FEED,
+                        render: render_quarry_rigs_rows,
+                    },
+                    min_w: 32,
+                    min_h: 6,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("map"),
+                    title: "map",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: SITE_MAP_FEED,
+                        render: render_quarry_map_rows,
+                    },
+                    min_w: 58,
+                    min_h: 10,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("readings"),
+                    title: "readings",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: SITE_MAP_FEED,
+                        render: render_quarry_side_rows,
+                    },
+                    min_w: 28,
+                    min_h: 6,
+                    selectable: false,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 's',
+                    label: "scan",
+                    action: KeyAction::PrefillRig("scan"),
+                },
+                KeyBinding {
+                    key: 'd',
+                    label: "drive",
+                    action: KeyAction::PrefillRig("drive "),
+                },
+                KeyBinding {
+                    key: 'x',
+                    label: "sound",
+                    action: KeyAction::PrefillRig("sound"),
+                },
+                KeyBinding {
+                    key: 'm',
+                    label: "mine",
+                    action: KeyAction::PrefillRig("mine"),
+                },
+                KeyBinding {
+                    key: 't',
+                    label: "rig",
+                    action: KeyAction::Local(LocalAction::QuarryRig),
+                },
+                KeyBinding {
+                    key: 'z',
+                    label: "zoom",
+                    action: KeyAction::Local(LocalAction::QuarryZoom),
+                },
+                KeyBinding {
+                    key: 'l',
+                    label: "layer",
+                    action: KeyAction::Local(LocalAction::QuarryLayer),
+                },
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+            ],
+            degrade: vec![PaneId("readings"), PaneId("rigs")],
+            exits_are_keys: false,
+            on_enter: vec![
+                (SITE_MAP_FEED, Value::Object(serde_json::Map::new())),
+                (BODY_GROUND_FEED, Value::Object(serde_json::Map::new())),
+            ],
+            right_shares_surplus: false,
+            gate: Some(SITE_MAP_FEED),
+            alt_keys: None,
+        },
         // 0 cockpit — doc 16 §5's full-screen surface (16b cut Q.4): the map
         // the pilot is flying over, what the platform is doing, what is left of
         // it, what it can shoot with and what it holds. Six panes over the one
@@ -1413,14 +1556,14 @@ mod tests {
     /// and no `Run` off the read-only list (`@unit` is staff-gated and
     /// mutating: it is only ever a prefill).
     #[test]
-    fn ten_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
+    fn twelve_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
         let screens = builtin_screens();
         assert_eq!(
             screens.len(),
-            11,
-            "ten digits and the lettered chart (doc 19 cut A.3b)"
+            12,
+            "ten digits, the lettered chart (doc 19 cut A.3b) and quarry (doc 20 cut SM.9)"
         );
-        validate_screens(&screens).expect("eleven built-ins are valid");
+        validate_screens(&screens).expect("twelve built-ins are valid");
         assert_eq!(
             screens.len(),
             MAX_SCREENS,
@@ -1566,8 +1709,9 @@ mod tests {
         assert_eq!(cockpit.name, "cockpit");
         assert_eq!(cockpit.gate, Some(COCKPIT_FEED));
         assert!(
-            screens.iter().filter(|s| s.gate.is_some()).count() == 2,
-            "the cockpit and the chart (doc 19 cut A.3b) are the gated screens"
+            screens.iter().filter(|s| s.gate.is_some()).count() == 3,
+            "the cockpit, the chart (doc 19 cut A.3b) and the quarry (doc 20 cut SM.9) are the \
+             gated screens"
         );
         assert_eq!(
             cockpit.on_enter,
@@ -1678,6 +1822,10 @@ mod tests {
                     "the cockpit's one local action is `p` pull: {:?} {action:?}",
                     binding.key
                 ),
+                // Doc 20 cut SM.9: the quarry's rig prefill is the quarry's alone.
+                KeyAction::PrefillRig(line) => {
+                    panic!("the cockpit binds no rig prefill: {line:?}")
+                }
             }
         }
         // …and `p` sits right after `m`, so the legend cut at the floor

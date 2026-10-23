@@ -1,0 +1,139 @@
+{
+  "files": [
+    {
+      "kind": "sound",
+      "name": "acquired",
+      "path": "sounds/acquired.wav",
+      "sha256": "728f4e18de9235dce5947c6f44a8581074e5e06f7dcbe67dd1e5755c5ad4fd3c",
+      "size": 8862
+    },
+    {
+      "kind": "sound",
+      "name": "blocked",
+      "path": "sounds/blocked.wav",
+      "sha256": "a377bbbb97f3d9f7c586f17d4a6c65a01b0ddc21cdc3934dcca8cb2d1822e01d",
+      "size": 9744
+    },
+    {
+      "kind": "sound",
+      "name": "classified",
+      "path": "sounds/classified.wav",
+      "sha256": "1f281c83e6732ee52947756c52e8bee12e92019cb68137c71d1783634616dfc1",
+      "size": 5774
+    },
+    {
+      "kind": "sound",
+      "name": "destroyed",
+      "path": "sounds/destroyed.wav",
+      "sha256": "f8a42b84ad0bc739e78f6e4f80656833609d216ae437efacf999f91baecc4033",
+      "size": 35324
+    },
+    {
+      "kind": "sound",
+      "name": "disabled",
+      "path": "sounds/disabled.wav",
+      "sha256": "70e6a4c57f2af52a9aa2365b5cbbfc92f0ece3254d9189e08de4cd7f721dd515",
+      "size": 22094
+    },
+    {
+      "kind": "sound",
+      "name": "drive_arrived",
+      "path": "sounds/drive_arrived.wav",
+      "sha256": "5d8f0934369b645124806a45bd412746997960f36c84da9c199aa9343c6a6dba",
+      "size": 10186
+    },
+    {
+      "kind": "sound",
+      "name": "hit",
+      "path": "sounds/hit.wav",
+      "sha256": "2fdbfc0f4442f3717032938faa7d6438605125bfd6a675551b2758ede3d529d1",
+      "size": 4012
+    },
+    {
+      "kind": "sound",
+      "name": "kill",
+      "path": "sounds/kill.wav",
+      "sha256": "46ec60a9b7ab9b8a9148552d7c8d2cac0f4efc13fbc0a0fc9e9534ceba2ab045",
+      "size": 19888
+    },
+    {
+      "kind": "sound",
+      "name": "lock_lost",
+      "path": "sounds/lock_lost.wav",
+      "sha256": "17a33e6937887069c957061d9e57da67a49547b40495e9cbd72f642a657beb5c",
+      "size": 11510
+    },
+    {
+      "kind": "sound",
+      "name": "locked",
+      "path": "sounds/locked.wav",
+      "sha256": "146481c643eba8d44b70cdcb462536bb084540de7725d56105bfd16d17f61b44",
+      "size": 6218
+    },
+    {
+      "kind": "sound",
+      "name": "lost",
+      "path": "sounds/lost.wav",
+      "sha256": "80cc6779397224c77c76f20093cc584f3f2ce2f6847fc43d84bed5b075c3f4c5",
+      "size": 8862
+    },
+    {
+      "kind": "sound",
+      "name": "miss",
+      "path": "sounds/miss.wav",
+      "sha256": "0b697d91f1da316a7826589f9cde451081753be129f4ce2f2d7ac878d4b44fd6",
+      "size": 5336
+    },
+    {
+      "kind": "sound",
+      "name": "overheat",
+      "path": "sounds/overheat.wav",
+      "sha256": "d1a44fa3403b112fed2cb1e6604d2b66995abc28be2fc06f6e7695aae151d2c3",
+      "size": 19886
+    },
+    {
+      "kind": "sound",
+      "name": "power_online",
+      "path": "sounds/power_online.wav",
+      "sha256": "2d2ceabf3433f4f20cb7c2f8ab2a70d9b0b71588e7f7e8318a5498c2f08e43a0",
+      "size": 20330
+    },
+    {
+      "kind": "sound",
+      "name": "receiver_degraded",
+      "path": "sounds/receiver_degraded.wav",
+      "sha256": "05fdf57a8f4e3659698b545331a847a396cedc007ede3a0130205d84c1bf6980",
+      "size": 13274
+    },
+    {
+      "kind": "sound",
+      "name": "refused",
+      "path": "sounds/refused.wav",
+      "sha256": "6f14fcdee918ee28fbd39c4af2d47ff257e54c5eb606605b97b56c243c5601ba",
+      "size": 7100
+    },
+    {
+      "kind": "sound",
+      "name": "section_lost",
+      "path": "sounds/section_lost.wav",
+      "sha256": "cf05ad3c9367e8672ba48b2376825eeff0a57d66a3b25f99053c00463de0c3e9",
+      "size": 15478
+    },
+    {
+      "kind": "sound",
+      "name": "struck",
+      "path": "sounds/struck.wav",
+      "sha256": "7f05eabd99273cc5602ed5b0176fd8ebe0fed1dc23385fe3a0aab3043fd519c0",
+      "size": 7100
+    },
+    {
+      "kind": "sound",
+      "name": "target_section_lost",
+      "path": "sounds/target_section_lost.wav",
+      "sha256": "deea3ea5e6aecaf6a70a7d4880fc246d5287ca48446931a52fa00116bdd3b216",
+      "size": 6658
+    }
+  ],
+  "pack_version": "pack_da2e01a3b6e0e328",
+  "version": 1
+}

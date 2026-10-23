@@ -57,7 +57,12 @@ use support::ground::{UNSIGNED, sign};
 /// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned`).
 /// Doc 20 cut SM.3a: v10, the programme's `refits` row and Occator's rig pool (was
 /// `cce73a4c…` at v9).
-const LANE_DIGEST: &str = "3f49d1764cf10ff5ac1b43f0f88b06d47ba9bd89d7633fa8808f95121b0156c1";
+/// Doc 20 cut SM.5: v11, the Ceres ore bids with their daily refresh, the programme's
+/// fixed `reference_minor`, Occator's appended raise and the Registry's licence block
+/// (was `3f49d176…` at v10).
+/// Doc 20 cut SM.10: v12, the claim fees beside the licence's, the Pallas Syndicate and Occator
+/// Rim's paper (was `c7239b0a…` at v11).
+const LANE_DIGEST: &str = "9108a455528b781bc3a010cf43cadbc001b7663e720e5cd19082f85bc63ca6c2";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -230,9 +235,9 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        10,
-        "lane v10 since doc 20 cut SM.3a (v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at \
-         A.4, v4 at A.1)"
+        12,
+        "lane v12 since doc 20 cut SM.10 (v11 at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 \
+         at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -1411,8 +1416,9 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
+            // Doc 20 cut SM.5: the sentence names the licence block too.
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles block; its pad is its gallery",
+             vehicles or licence block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;
@@ -1449,6 +1455,189 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
                     def.remove("vehicles");
                 }
                 doc["entries"]["stickney_port"]["def"]["vehicles"] = block;
+            }),
+        ),
+    ];
+    for (want, edit) in cases {
+        let got = decoded_variant(edit);
+        assert!(got.contains(want), "want {want:?}, got {got:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.10: the claim fees, the Syndicate and Occator Rim's paper (lane v12)
+// ---------------------------------------------------------------------------
+
+/// **Lane v12 carries the fees, the Syndicate and the paper** (doc 20 cut SM.10; lead rulings 3
+/// and 10): the licence block's claim fees are 2,000 and 2,000 beside the licence's own; one
+/// Pallas Syndicate org (Ceres's last); Occator Rim's twelve outer blocks papered under
+/// `occator_outer`, its four held blocks Occator's, none commons; the v11 shape `strip_claims`
+/// rebuilds is the published v11.
+#[test]
+fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
+    let pack = lane();
+    let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
+        panic!("ceres_port is a port entry");
+    };
+    let licence = ceres.licence.as_ref().expect("the licence block");
+    assert_eq!(
+        (
+            licence.fee_major,
+            licence.claim_stake_major,
+            licence.claim_term_major
+        ),
+        (2_500, 2_000, 2_000)
+    );
+    let syndicate: Vec<_> = pack
+        .entries()
+        .values()
+        .filter_map(|entry| match entry {
+            PackEntry::Port(port) => Some(port.orgs.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|org| org.id.as_str() == "pallas_syndicate")
+        .collect();
+    assert_eq!(syndicate.len(), 1, "one Syndicate");
+    assert_eq!(syndicate[0].name, "Pallas Syndicate");
+    assert_eq!(syndicate[0].capital_major, 50_000);
+    assert_eq!(syndicate[0].faction.as_str(), "syndicate");
+    assert_eq!(
+        ceres.orgs.last().map(|org| org.id.as_str()),
+        Some("pallas_syndicate"),
+        "appended last"
+    );
+    let Some(PackEntry::Port(occator)) = pack.entry(&cid("occator_port")) else {
+        panic!("occator_port is a port entry");
+    };
+    let site = occator.site.as_ref().expect("Occator Rim");
+    assert_eq!(
+        site.papers
+            .get(&cid("occator_outer"))
+            .map(|paper| paper.bond_major),
+        Some(5_000)
+    );
+    let mut papered = 0;
+    let mut held = 0;
+    for letter in tacsim::port::def::BLOCK_LETTERS {
+        let terms = site.block(letter);
+        let paper = site
+            .blocks
+            .get(letter.to_string().as_str())
+            .and_then(|row| row.paper.as_ref());
+        assert_ne!(terms.tenure, tacsim::port::def::Tenure::Commons, "{letter}");
+        match terms.tenure {
+            tacsim::port::def::Tenure::Held => {
+                held += 1;
+                assert!(paper.is_none(), "{letter}: a held block carries no paper");
+                assert_eq!(terms.holder.map(CanonicalId::as_str), Some("occator"));
+            }
+            _ => {
+                papered += 1;
+                let paper = paper.unwrap_or_else(|| panic!("{letter} is papered"));
+                assert_eq!(paper.issuer.as_str(), "pallas_syndicate");
+                assert_eq!(paper.contract.as_str(), "occator_outer");
+            }
+        }
+    }
+    assert_eq!((papered, held), (12, 4));
+    // The v11 shape is the published v11.
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = serde_json::json!(11);
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    support::claims::strip_claims(&mut doc);
+    let v11 = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    assert_eq!(
+        mush_content::parse_pack(&v11)
+            .expect(
+                "the v11 shape parses (its licence block predates the claim fees, so only its \
+                 bytes are compared)",
+            )
+            .manifest()
+            .digest()
+            .to_hex(),
+        "c7239b0ae61645657e9be2bb5dab56f9041e5a608c872f15c2865efb10668744",
+        "strip_claims rebuilds the published v11"
+    );
+}
+
+/// **A paper on a held or a commons block is refused** (doc 20 cut SM.10): the validator names
+/// the block.
+#[test]
+fn sm10_a_paper_on_a_held_or_commons_block_is_refused() {
+    use serde_json::json;
+    let paper = json!({ "issuer": "pallas_syndicate", "contract": "occator_outer" });
+    let on_held = paper.clone();
+    let got = decoded_variant(move |doc| {
+        doc["entries"]["occator_port"]["def"]["site"]["blocks"]["F"]["paper"] = on_held;
+    });
+    assert!(
+        got.contains("site: block F: a paper stands only over an open block"),
+        "{got}"
+    );
+    let on_commons = paper;
+    let got = decoded_variant(move |doc| {
+        doc["entries"]["occator_port"]["def"]["site"]["blocks"]["A"]["tenure"] = json!("commons");
+        doc["entries"]["occator_port"]["def"]["site"]["blocks"]["A"]["paper"] = on_commons;
+    });
+    assert!(
+        got.contains("site: block A: a paper stands only over an open block"),
+        "{got}"
+    );
+}
+
+/// **A paper naming no row, the site's own issuer or no org is refused; a row no block names is
+/// refused; a bond out of bounds is refused** (doc 20 cut SM.10).
+#[test]
+fn sm10_a_paper_naming_no_row_or_the_sites_own_issuer_is_refused() {
+    use serde_json::json;
+    let cases: Vec<(&str, Edit)> = vec![
+        (
+            "site: block A: paper contract nowhere is not a row of the site's papers",
+            Box::new(|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["blocks"]["A"]["paper"]["contract"] =
+                    json!("nowhere");
+            }),
+        ),
+        (
+            "site: block A: a paper's issuer is never the site's own issuer freeport_registry",
+            Box::new(|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["blocks"]["A"]["paper"]["issuer"] =
+                    json!("freeport_registry");
+            }),
+        ),
+        (
+            "site: block A: paper issuer nobody is not an org of any port of this pack",
+            Box::new(|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["blocks"]["A"]["paper"]["issuer"] =
+                    json!("nobody");
+            }),
+        ),
+        (
+            "site: papers row spare is named by no block",
+            Box::new(|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["papers"]["spare"] =
+                    json!({ "bond_major": 1 });
+            }),
+        ),
+        (
+            "site: papers row occator_outer: bond_major must be 1..=1000000, not 0",
+            Box::new(|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["papers"]["occator_outer"]["bond_major"] =
+                    json!(0);
+            }),
+        ),
+        (
+            "licence: claim_stake_major must be 1..=1000000, not 0",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["licence"]["claim_stake_major"] = json!(0);
+            }),
+        ),
+        (
+            "licence: claim_term_major must be 1..=1000000, not 1000001",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["licence"]["claim_term_major"] =
+                    json!(1_000_001);
             }),
         ),
     ];

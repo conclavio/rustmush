@@ -63,9 +63,9 @@ pub use module::{
     PackSource, is_staff, verify_sources,
 };
 pub use physics::{
-    BASE_LOCOMOTIONS, BASE_MEDIA, BASE_TAGS, BIPED, Cost, Cover, DEFAULT_PATH_MAX_CELLS,
-    Impassable, LOCOMOTION_JSON, LocomotionTable, Opacity, Path, PathOutcome, PhysicsError,
-    StepKind, SurfaceProps, move_cost, path, props, slope_pct,
+    BASE_LOCOMOTIONS, BASE_MEDIA, BASE_TAGS, BIPED, CLASS_COUNT, Cost, Cover,
+    DEFAULT_PATH_MAX_CELLS, Impassable, LOCOMOTION_JSON, LocomotionCosts, LocomotionTable, Opacity,
+    Path, PathOutcome, PhysicsError, StepKind, SurfaceProps, move_cost, path, props, slope_pct,
 };
 pub use place::{PlaceRef, chain_for_room, find_place};
 pub use record::{

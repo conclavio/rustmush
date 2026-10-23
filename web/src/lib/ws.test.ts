@@ -21,6 +21,7 @@ class MockWebSocket implements WebSocketLike {
   static instances: MockWebSocket[] = [];
 
   readyState = 0; // CONNECTING
+  binaryType?: string;
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: ((ev: { code: number; wasClean: boolean }) => void) | null = null;
@@ -457,5 +458,26 @@ describe("WsClient", () => {
     lastSocket().open();
     expect(client.sendLine("look")).toBe(true);
     expect(lastSocket().sentJson()).toEqual([{ t: "line", d: "look" }]);
+  });
+});
+
+describe("binary frames (doc 21 cut G.3c)", () => {
+  it("hands the picture's binary messages to onBinary and never dispatches them", () => {
+    const got: unknown[] = [];
+    const client = makeClient({ onBinary: (data) => got.push(data) });
+    const seen: unknown[] = [];
+    client.on("hello", (e) => seen.push(e));
+    client.connect("t", "1");
+    const ws = lastSocket();
+    ws.open();
+    expect(ws.binaryType).toBe("blob");
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer;
+    ws.deliverRaw(png);
+    ws.deliverRaw(new Blob([png], { type: "image/png" }));
+    ws.deliverRaw(42); // neither text nor binary: ignored
+    expect(got).toHaveLength(2);
+    expect(got[0]).toBe(png);
+    expect(got[1]).toBeInstanceOf(Blob);
+    expect(seen).toHaveLength(0);
   });
 });

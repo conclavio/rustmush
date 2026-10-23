@@ -1,7 +1,7 @@
 // Session — connection status, server hello (feature/panel gating), the
 // attached character, and the current input mode.
 
-import type { ObjRef, PromptSpec } from "../proto";
+import type { AssetPackInfo, ObjRef, PromptSpec } from "../proto";
 import type { ConnStatus } from "../ws";
 
 export class SessionStore {
@@ -12,6 +12,10 @@ export class SessionStore {
   serverName = $state("");
   features = $state<string[]>([]);
   panels = $state<string[]>([]);
+  /** The asset pack the hello named (doc 21 cut G.11), or `null`: what this
+   * client could fetch over the player's own SSH connection. Nothing on the
+   * web reads it yet. */
+  assetPack = $state<AssetPackInfo | null>(null);
   prompt = $state<PromptSpec | null>(null);
 
   /** `hello`-declared feature gate (e.g. hide Mail when "mail" is absent). */
@@ -88,10 +92,11 @@ export class SessionStore {
     return this.hasPanel("llm.dashboard");
   }
 
-  applyHello(d: { server: string; features: string[]; panels: string[] }): void {
+  applyHello(d: { server: string; features: string[]; panels: string[]; asset_pack?: AssetPackInfo }): void {
     this.serverName = d.server;
     this.features = d.features;
     this.panels = d.panels;
+    this.assetPack = d.asset_pack ?? null;
   }
 
   get masked(): boolean {

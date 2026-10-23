@@ -55,6 +55,88 @@ pub enum Key {
     PgDn,
     /// A function key, `F(1)`..=`F(12)`.
     F(u8),
+    /// **The kitty graphics probe answered OK** (pixel cockpit spike,
+    /// 2026-10-21): an APC `ESC _ G i=31…;OK ESC \` reply to the probe
+    /// image. Not a key a person pressed; the app feeds it to the probe's
+    /// state machine. Replies to other image ids are swallowed.
+    GraphicsOk,
+    /// The probe answered with an error (the terminal parsed the APC but
+    /// could not honour it).
+    GraphicsErr,
+    /// A primary device attributes reply (`CSI ? … c`), which every terminal
+    /// sends for `CSI c`: the probe's "no answer is the answer" marker, and
+    /// (doc 21 cut G.1) the attributes it lists, attribute `4` being sixel.
+    DeviceAttributes(mush_pixel::caps::DeviceAttributes),
+    /// The terminal's cell size in sixel pixels (`CSI 6 ; h ; w t`), its
+    /// answer to the probe's `CSI 16 t` (doc 21 cut G.2). Not a key either.
+    CellSize(mush_pixel::caps::CellSize),
+    /// The kitty keyboard protocol's flags (`CSI ? flags u`), the answer to
+    /// the probe's `CSI ? u` (doc 21 cut G.4): the terminal speaks the
+    /// protocol. Not a key.
+    KeyboardFlags(u16),
+    /// A cursor key held down (the kitty keyboard protocol's repeat event,
+    /// only while the pixel view has pushed it).
+    Repeat(Arrow),
+    /// A cursor key let go (the protocol's release event): what ends a
+    /// held turn.
+    Release(Arrow),
+    /// **The terminal's name and version** (doc 21 cut G.10): its DCS reply
+    /// `ESC P >| <text> ESC \` to the probe's `XTVERSION` (`CSI > 0 q`).
+    /// Not a key; the app hands it to the sounds.
+    TermVersion(TermVersion),
+}
+
+/// An `XTVERSION` reply's text, cut to [`TermVersion::CAP`] bytes of
+/// printable ASCII and kept inline so a [`Key`] stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermVersion {
+    bytes: [u8; TermVersion::CAP],
+    len: u8,
+}
+
+impl TermVersion {
+    /// The most bytes kept.
+    pub const CAP: usize = 48;
+
+    /// The reply's text, printable ASCII only, cut to [`Self::CAP`].
+    #[must_use]
+    pub fn new(text: &str) -> TermVersion {
+        let mut bytes = [0u8; TermVersion::CAP];
+        let mut len = 0usize;
+        for b in text.bytes().filter(|b| (0x20..0x7f).contains(b)) {
+            let Some(slot) = bytes.get_mut(len) else {
+                break;
+            };
+            *slot = b;
+            len += 1;
+        }
+        TermVersion {
+            bytes,
+            len: u8::try_from(len).unwrap_or(0),
+        }
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .get(..usize::from(self.len))
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("")
+    }
+}
+
+/// A cursor key, for the kitty keyboard protocol's repeat and release events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrow {
+    /// Up.
+    Up,
+    /// Down.
+    Down,
+    /// Left.
+    Left,
+    /// Right.
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +146,14 @@ enum EscState {
     Csi(String),
     /// After `ESC O`, waiting for the final byte.
     Ss3,
+    /// Inside `ESC _` (APC) or, `dcs`, `ESC P` (DCS, doc 21 cut G.10),
+    /// accumulating the payload until `ESC \` (ST). `esc` is true after the
+    /// `ESC` of a possible terminator.
+    Apc {
+        payload: String,
+        esc: bool,
+        dcs: bool,
+    },
 }
 
 /// The stateful byte decoder; one per TUI session.
@@ -121,6 +211,56 @@ impl KeyParser {
                         keys.push(k);
                     }
                 }
+                EscState::Apc {
+                    mut payload,
+                    esc,
+                    dcs,
+                } => {
+                    let whole = |payload: &str| {
+                        if dcs {
+                            dcs_key(payload)
+                        } else {
+                            apc_key(payload)
+                        }
+                    };
+                    if esc {
+                        if b == b'\\' {
+                            // ST: the sequence is whole.
+                            if let Some(k) = whole(&payload) {
+                                keys.push(k);
+                            }
+                        } else if i >= 2 && bytes[i - 2] == 0x1b {
+                            // `ESC` followed by anything else abandons the
+                            // APC; that `ESC` and this byte decode afresh.
+                            i -= 2;
+                        } else {
+                            // The `ESC` ended the previous burst: it is an
+                            // Esc, and this byte decodes afresh.
+                            i -= 1;
+                            keys.push(Key::Esc);
+                        }
+                    } else if b == 0x1b {
+                        self.esc = EscState::Apc {
+                            payload,
+                            esc: true,
+                            dcs,
+                        };
+                    } else if b == 0x07 {
+                        // BEL terminates too (some terminals end replies so).
+                        if let Some(k) = whole(&payload) {
+                            keys.push(k);
+                        }
+                    } else {
+                        if payload.len() < APC_CAP {
+                            payload.push(b as char);
+                        }
+                        self.esc = EscState::Apc {
+                            payload,
+                            esc: false,
+                            dcs,
+                        };
+                    }
+                }
                 EscState::Ground => {
                     if !self.pending.is_empty() {
                         if (0x80..0xC0).contains(&b) {
@@ -150,6 +290,25 @@ impl KeyParser {
                             }
                             Some(b'O') => {
                                 self.esc = EscState::Ss3;
+                                i += 1;
+                            }
+                            Some(b'_') => {
+                                self.esc = EscState::Apc {
+                                    payload: String::new(),
+                                    esc: false,
+                                    dcs: false,
+                                };
+                                i += 1;
+                            }
+                            // Doc 21 cut G.10: a DCS reply (`XTVERSION`'s) is
+                            // swallowed as an APC is. A burst that ends on
+                            // the `P` is Alt-P typed, not a reply.
+                            Some(b'P') if bytes.get(i + 1).is_some() => {
+                                self.esc = EscState::Apc {
+                                    payload: String::new(),
+                                    esc: false,
+                                    dcs: true,
+                                };
                                 i += 1;
                             }
                             Some(&n) if (0x20..=0x7e).contains(&n) => {
@@ -192,6 +351,37 @@ impl KeyParser {
     }
 }
 
+/// A whole DCS payload (between `ESC P` and `ESC \`) as a key, or nothing
+/// (doc 21 cut G.10): only the `XTVERSION` reply (`>|` and the terminal's
+/// name and version) is one; every other DCS is swallowed.
+fn dcs_key(payload: &str) -> Option<Key> {
+    let text = payload.strip_prefix(">|")?;
+    Some(Key::TermVersion(TermVersion::new(text.trim())))
+}
+
+/// The most payload bytes an APC keeps; a graphics reply is a few dozen.
+const APC_CAP: usize = 256;
+
+/// A whole APC payload (between `ESC _` and `ESC \`) as a key, or nothing:
+/// only the kitty graphics probe's reply is one (its image id is
+/// `mush_pixel::kitty::PROBE_IMAGE_ID`); every other APC is swallowed.
+fn apc_key(payload: &str) -> Option<Key> {
+    let keys = payload.strip_prefix('G')?;
+    let probe_id = format!("i={}", mush_pixel::kitty::PROBE_IMAGE_ID);
+    let names_the_probe = keys
+        .split(';')
+        .next()
+        .is_some_and(|kv| kv.split(',').any(|kv| kv == probe_id));
+    if !names_the_probe {
+        return None;
+    }
+    Some(if mush_pixel::kitty::is_probe_ok(payload) {
+        Key::GraphicsOk
+    } else {
+        Key::GraphicsErr
+    })
+}
+
 /// `0x01` → `'a'`, … `0x1a` → `'z'`, `0x1c` → `'\\'`, `0x1d` → `']'`,
 /// `0x1e` → `'^'`, `0x1f` → `'_'`, `0x00` → `'@'`.
 fn ctrl_letter(b: u8) -> char {
@@ -207,14 +397,43 @@ fn ctrl_letter(b: u8) -> char {
 
 fn csi_key(params: &str, fin: u8) -> Option<Key> {
     let first = params.split(';').next().unwrap_or("");
+    // The kitty keyboard protocol's event type, `CSI 1 ; <mods>:<event> D`:
+    // 1 press (also the default), 2 repeat, 3 release.
+    let event = params
+        .split(';')
+        .nth(1)
+        .and_then(|m| m.split(':').nth(1))
+        .unwrap_or("1");
+    let arrow = |a: Arrow, press: Key| match event {
+        "2" => Key::Repeat(a),
+        "3" => Key::Release(a),
+        _ => press,
+    };
+    // Another key's repeat is the key again; its release is nothing.
+    if event == "3" && !matches!(fin, b'A'..=b'D') {
+        return None;
+    }
     Some(match fin {
-        b'A' => Key::Up,
-        b'B' => Key::Down,
-        b'C' => Key::Right,
-        b'D' => Key::Left,
+        b'A' => arrow(Arrow::Up, Key::Up),
+        b'B' => arrow(Arrow::Down, Key::Down),
+        b'C' => arrow(Arrow::Right, Key::Right),
+        b'D' => arrow(Arrow::Left, Key::Left),
         b'H' => Key::Home,
         b'F' => Key::End,
         b'Z' => Key::BackTab,
+        // A primary device attributes reply, `CSI ? 6 2 ; … c` (a `CSI > … c`
+        // is DA2 and `CSI c` alone is a request, neither of which a terminal
+        // sends us unasked).
+        b'c' => Key::DeviceAttributes(mush_pixel::caps::DeviceAttributes::parse(params)?),
+        // A window report: only the cell size is asked for, and only it is a
+        // marker; every other `CSI … t` is swallowed.
+        b't' => Key::CellSize(mush_pixel::caps::CellSize::parse(params)?),
+        // The kitty keyboard protocol (doc 21 cut G.4): the flags reply, or a
+        // key in its `CSI <code>[;<mods>[:<event>]] u` form.
+        b'u' => match params.strip_prefix('?') {
+            Some(flags) => Key::KeyboardFlags(flags.parse().ok()?),
+            None => csi_u_key(params)?,
+        },
         b'~' => match first {
             "1" | "7" => Key::Home,
             "4" | "8" => Key::End,
@@ -235,6 +454,34 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
             "24" => Key::F(12),
             _ => return None,
         },
+        _ => return None,
+    })
+}
+
+/// A key in the kitty keyboard protocol's `CSI <code>[:<alts>][;<mods>[:<event>]] u`
+/// form, which the pixel view's pushed flags (disambiguate, report event
+/// types) make the terminal send for Esc and for Ctrl and Alt chords: Esc is
+/// `CSI 27 u`, `^]` is `CSI 93;5 u`. Mapped to the legacy key it stands for,
+/// so the view's Esc and the detach still work; a release is nothing.
+fn csi_u_key(params: &str) -> Option<Key> {
+    let mut fields = params.split(';');
+    let code: u32 = fields.next()?.split(':').next()?.parse().ok()?;
+    let mut mods_event = fields.next().unwrap_or("1").split(':');
+    let mods: u32 = mods_event.next().and_then(|m| m.parse().ok()).unwrap_or(1);
+    if mods_event.next() == Some("3") {
+        return None;
+    }
+    let bits = mods.saturating_sub(1);
+    let (alt, ctrl) = (bits & 2 != 0, bits & 4 != 0);
+    let c = char::from_u32(code)?;
+    Some(match code {
+        27 => Key::Esc,
+        13 => Key::Enter,
+        9 => Key::Tab,
+        127 | 8 => Key::Backspace,
+        _ if ctrl && c.is_ascii() => Key::Ctrl(c.to_ascii_lowercase()),
+        _ if alt && !c.is_control() => Key::Alt(c),
+        _ if !c.is_control() => Key::Char(c),
         _ => return None,
     })
 }
@@ -348,5 +595,128 @@ mod tests {
             "a stray continuation byte is dropped"
         );
         assert_eq!(keys(&[0xC3, b'x']), vec![Key::Char('x')]);
+    }
+
+    /// Pixel cockpit spike (2026-10-21): the kitty graphics probe's reply
+    /// and the DA1 reply decode as markers, every other APC vanishes, and a
+    /// reply split across bursts still assembles.
+    #[test]
+    fn graphics_replies_and_da1_are_markers_and_other_apcs_vanish() {
+        assert_eq!(keys(b"\x1b_Gi=31;OK\x1b\\"), vec![Key::GraphicsOk]);
+        assert_eq!(
+            keys(b"\x1b_Gi=31;ENOENT:unknown\x1b\\"),
+            vec![Key::GraphicsErr]
+        );
+        // A reply for a frame image (id 1) is not the probe's.
+        assert_eq!(keys(b"\x1b_Gi=1;OK\x1b\\"), vec![]);
+        // Another APC altogether.
+        assert_eq!(keys(b"\x1b_tmux;hello\x1b\\"), vec![]);
+        // DA1 reply, with its attributes; DA2 is not it; a request is not it.
+        let da1 = |p: &str| {
+            Key::DeviceAttributes(mush_pixel::caps::DeviceAttributes::parse(p).unwrap_or_default())
+        };
+        assert_eq!(keys(b"\x1b[?62;22c"), vec![da1("?62;22")]);
+        let wt = keys(b"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c");
+        assert!(
+            matches!(wt.as_slice(), [Key::DeviceAttributes(d)] if d.sixel() && d.level() == 61),
+            "{wt:?}"
+        );
+        assert_eq!(keys(b"\x1b[>1;10;0c"), vec![]);
+        assert_eq!(keys(b"\x1b[c"), vec![]);
+        // The cell-size report, and another window report that is not it.
+        assert_eq!(
+            keys(b"\x1b[6;20;10t"),
+            vec![Key::CellSize(mush_pixel::caps::CellSize {
+                width: 10,
+                height: 20
+            })]
+        );
+        assert_eq!(keys(b"\x1b[4;480;640t"), vec![]);
+        // The kitty keyboard protocol (doc 21 cut G.4): its flags reply; a
+        // cursor key's press, repeat and release; Esc and the Ctrl chords in
+        // the `CSI u` form, which must keep closing the view and detaching;
+        // another key's release is nothing.
+        assert_eq!(keys(b"\x1b[?0u"), vec![Key::KeyboardFlags(0)]);
+        assert_eq!(keys(b"\x1b[?3u"), vec![Key::KeyboardFlags(3)]);
+        assert_eq!(
+            keys(b"\x1b[D\x1b[1;1:2D\x1b[1;1:3D\x1b[1;1:1C"),
+            vec![
+                Key::Left,
+                Key::Repeat(Arrow::Left),
+                Key::Release(Arrow::Left),
+                Key::Right
+            ]
+        );
+        assert_eq!(
+            keys(b"\x1b[27u\x1b[93;5u\x1b[103;5u\x1b[120;3u\x1b[97u\x1b[97;1:3u"),
+            vec![
+                Key::Esc,
+                Key::Ctrl(']'),
+                Key::Ctrl('g'),
+                Key::Alt('x'),
+                Key::Char('a')
+            ]
+        );
+        assert_eq!(keys(b"\x1b[3;1:3~"), vec![], "a Delete release");
+        // The probe's two answers in one burst, in the order a kitty sends
+        // them, then a typed key.
+        assert_eq!(
+            keys(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;c1"),
+            vec![Key::GraphicsOk, da1("?62;"), Key::Char('1')]
+        );
+        // Split across bursts.
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1b_Gi=3"), vec![]);
+        assert_eq!(p.feed(b"1;OK\x1b"), vec![]);
+        assert_eq!(p.feed(b"\\"), vec![Key::GraphicsOk]);
+        // BEL ends one too, and an abandoned APC (ESC then not ST) does not
+        // eat what follows.
+        assert_eq!(keys(b"\x1b_Gi=31;OK\x07"), vec![Key::GraphicsOk]);
+        assert_eq!(
+            keys(b"\x1b_Gi=31;OK\x1b[A"),
+            vec![Key::Up],
+            "the abandoning ESC opens the CSI after it"
+        );
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1b_Gi=31;OK\x1b"), vec![]);
+        assert_eq!(
+            p.feed(b"x"),
+            vec![Key::Esc, Key::Char('x')],
+            "split: the ESC that ended the burst is an Esc"
+        );
+        // `ESC _` is never Alt+_.
+        assert!(!keys(b"\x1b_Gi=31;OK\x1b\\").contains(&Key::Alt('_')));
+    }
+
+    /// **Doc 21 cut G.10**: `XTVERSION`'s DCS reply decodes as the
+    /// terminal's name, whole or split, ST- or BEL-ended, beside the DA1
+    /// that follows it; any other DCS is swallowed; and none of it reaches
+    /// the input line as F1 and typed text. A burst that ends on `ESC P` is
+    /// Alt-P typed.
+    #[test]
+    fn a_dcs_reply_is_swallowed_and_xtversion_is_the_terminals_name() {
+        let named = |k: &[Key]| match k {
+            [Key::TermVersion(v), ..] => v.as_str().to_string(),
+            _ => String::new(),
+        };
+        let w11 = keys(b"\x1bP>|w11term 0.4.1\x1b\\");
+        assert_eq!(named(&w11), "w11term 0.4.1");
+        assert_eq!(w11.len(), 1);
+        let with_da1 = keys(b"\x1bP>|WezTerm 20240203\x1b\\\x1b[?62;22c");
+        assert_eq!(named(&with_da1), "WezTerm 20240203");
+        assert!(matches!(with_da1.as_slice(), [_, Key::DeviceAttributes(_)]));
+        assert_eq!(named(&keys(b"\x1bP>|kitty(0.36)\x07")), "kitty(0.36)");
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1bP>|w11t"), vec![]);
+        assert_eq!(named(&p.feed(b"erm 1\x1b\\")), "w11term 1");
+        // A DECRQSS answer, say: gone, and the key after it kept.
+        assert_eq!(keys(b"\x1bP1$r0m\x1b\\a"), vec![Key::Char('a')]);
+        // Never F1 and typed text.
+        assert!(!keys(b"\x1bP>|w11term 1\x1b\\").contains(&Key::F(1)));
+        // Alt-P alone is Alt-P.
+        assert_eq!(keys(b"\x1bP"), vec![Key::Alt('P')]);
+        // An over-long name is cut, never more than the cap.
+        let long = format!("\x1bP>|{}\x1b\\", "x".repeat(200));
+        assert_eq!(named(&keys(long.as_bytes())).len(), TermVersion::CAP);
     }
 }

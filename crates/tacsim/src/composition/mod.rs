@@ -58,6 +58,7 @@ pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
 pub mod industry_recipes;
+pub mod industry_seams;
 pub mod mind_commerce;
 pub mod salvage_source;
 pub mod seat_audit;
@@ -344,6 +345,10 @@ fn compose_server_modules<E>(
     // order it already fixes. `mush-inventory` fills it while registering;
     // `mush-industry`, composed after it, takes the handles out.
     let inventory_handles: mush_inventory::InventoryHandleCell = Arc::default();
+    // Doc 20 cut SM.6 (§3.4): `mush-industry`'s own cell, the same wire the other way round —
+    // industry fills it while registering, and the site opener composed onto it reads
+    // deposits through it.
+    let industry_handles: mush_industry::IndustryHandleCell = Arc::default();
     // Doc 18 cut IC5 (D-18-33; §4.4 "Offline execution" prerequisite): the
     // quantity delegates. `tacsim` joins only on a roster that composes the TacSim
     // layer ([`server_modules_with_tacsim`]): the state-family freeze refuses a
@@ -673,12 +678,28 @@ fn compose_server_modules<E>(
                 .with_inventory(Arc::clone(&inventory_handles))
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
-                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority));
+                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority))
+                // Doc 20 cut SM.5 (§9.1, D-20-12): the Freeport Registry's
+                // prospecting licence, `crate::economy::LICENCE_FREEPORT`, named to
+                // the industry authority so `mush_industry::extraction_authorized`'s
+                // licence half (`crates/mush-industry/src/licence.rs`) can at last
+                // answer Ok. Wired only on the roster that composes the TacSim
+                // layer, whose sheet module registers the instrument at boot; on
+                // every other roster industry still answers `NoLicenceInstrument`.
+                .with_licence_if(tacsim_delegate)
+                // Doc 20 cut SM.6 (§3.4): the handle cell, on every roster.
+                .with_handle_cell(Arc::clone(&industry_handles))
+                // Doc 20 cut SM.6 (§3.4, D-20-5, D1, D11, D13): on the roster that composes
+                // the TacSim layer, the site clerks' system opener, the surface draws the
+                // sweep reconciles each surface pool against, and the typed-state delegation
+                // to `tacsim` (the port tick and readiness read deposits).
+                .with_surface_seams_if(tacsim_delegate, &industry_handles);
             match launch {
                 Some(launch) => launch.roster.industry(module),
                 None => module,
             }
         }),
+
         // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
         // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
         // bond is an E4 hold on the economy's own carve-out lane, its `force.*`
@@ -844,6 +865,50 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
             self.with_venue_gate(Arc::new(crate::port::market::PortVenueGate))
                 .with_capacity_provider(Arc::new(crate::port::market::PortCapacity))
                 .with_proceeds_policy(Arc::new(crate::port::proceeds::CoopProceeds))
+        } else {
+            self
+        }
+    }
+}
+
+/// **Doc 20 cut SM.5's licence wiring, composed only where the TacSim layer is**
+/// (the [`PortMarketSeamsExt`] shape): the industry authority is told the
+/// prospecting-licence instrument ([`crate::economy::LICENCE_FREEPORT`]); the
+/// account in it is opened by `+licence/buy go` (`crate::port::licence`), and the
+/// term every licence-gated act reads first lives on tacsim's own record.
+trait IndustryLicenceExt: Sized {
+    fn with_licence_if(self, on: bool) -> Self;
+}
+
+impl IndustryLicenceExt for mush_industry::IndustryModule {
+    fn with_licence_if(self, on: bool) -> Self {
+        match (on, crate::economy::licence_instrument()) {
+            (true, Some(id)) => self.with_extraction_licence(id),
+            _ => self,
+        }
+    }
+}
+
+/// **Doc 20 cut SM.6's industry seams, composed only where the TacSim layer is** (the
+/// [`IndustryLicenceExt`] shape): [`industry_seams::SiteOpener`] as the system opener,
+/// [`industry_seams::SurfaceDraws`] as the external draws, (doc 20 cut SM.10)
+/// [`industry_seams::SurfaceTenure`] as the tenure authority, and the typed-state delegation of
+/// industry's families to `tacsim` (D1) — a capability to read deposits, which tacsim's source
+/// tripwire (`tests/deposits.rs`, D10) holds to reads. Unwired, `DepositOpen` stays staff-only,
+/// the delegation is absent, and a surface deposit (none exists there) would read
+/// `ExternalUnwired`.
+trait IndustrySurfaceExt: Sized {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self;
+}
+
+impl IndustrySurfaceExt for mush_industry::IndustryModule {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self {
+        if on {
+            self.with_system_opener(Arc::new(industry_seams::SiteOpener::new(Arc::clone(cell))))
+                .with_external_draws(Arc::new(industry_seams::SurfaceDraws))
+                // Doc 20 cut SM.10 (§9, D1/D2): the claim acts' composed authority.
+                .with_tenure_authority(Arc::new(industry_seams::SurfaceTenure::new()))
+                .with_state_delegates([crate::NS])
         } else {
             self
         }

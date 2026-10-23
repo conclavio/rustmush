@@ -767,7 +767,10 @@ async fn panel_query(ws: &mut Ws, id: u64, feed: &str) -> Value {
 async fn panel_query_seen(ws: &mut Ws, id: u64, feed: &str, seen: &mut String) -> Value {
     let request = ClientCommand::Req {
         id,
-        q: Query::PanelSubscribe { feed: feed.into() },
+        q: Query::PanelSubscribe {
+            feed: feed.into(),
+            params: None,
+        },
     };
     let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
     for _ in 0..RETRY_BUDGET {
@@ -2558,6 +2561,33 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
             .is_some_and(|rows| !rows.is_empty()),
         "but it IS the ground: {map}"
     );
+
+    // **Doc 21 cut G.7b**: the map carries the ground's heights, an encoded
+    // stream of the cells' elevations and nothing else — its three keys, the
+    // stream base64. It is set aside before the word scan below: a run of
+    // level ground encodes as `AAAA…`, which reads as a sixteen-digit id to a
+    // scan that is looking for words.
+    let elev = map
+        .get("elev")
+        .cloned()
+        .expect("the map carries the heights");
+    let keys: Vec<&str> = elev
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    assert_eq!(keys, ["data", "encoding", "unit_cm"], "{elev}");
+    assert!(
+        elev.get("data")
+            .and_then(Value::as_str)
+            .is_some_and(|data| data
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))),
+        "the heights are a base64 stream"
+    );
+    let mut map = map;
+    if let Some(object) = map.as_object_mut() {
+        object.remove("elev");
+    }
 
     // (c) Neither payload says one word about the tank she has not found: not
     // its object number, not its name, not its pilot's name, not its callsign.
@@ -4449,6 +4479,8 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         mush_sim::RulesValue::new(schema, serde_json::json!({})).expect("an empty posture");
     tacsim::arena::step::Frame {
         unit: mush_core::ObjId(101),
+        unit_type: "tacsim.unit.line_tank".into(),
+        sensor_height_cm: 150,
         callsign: tacsim::arena::state::Designator::Slot {
             team: tacsim::arena::state::Team::Red,
             slot: 1,
@@ -4648,6 +4680,7 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         aspect: tacsim::arena::perception::Aspect::Front,
         reads_dead: None,
         fatal: None,
+        unit_type: None,
     };
     let now = tacsim::arena::perception::FrameContact {
         designator: Designator::Provisional(2),

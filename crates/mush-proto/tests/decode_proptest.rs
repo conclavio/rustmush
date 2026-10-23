@@ -64,8 +64,11 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
                 limit,
             }
         ),
-        any::<String>().prop_map(|feed| Query::PanelSubscribe {
-            feed: SmolStr::new(&feed)
+        (any::<String>(), any::<Option<String>>()).prop_map(|(feed, word)| {
+            Query::PanelSubscribe {
+                feed: SmolStr::new(&feed),
+                params: word.map(|word| serde_json::json!({ "family": word })),
+            }
         }),
         (any::<Option<u64>>(), any::<u32>())
             .prop_map(|(before_seq, limit)| Query::NarrativeBacklog { before_seq, limit }),

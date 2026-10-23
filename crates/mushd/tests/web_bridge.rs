@@ -52,13 +52,22 @@ struct Rig {
 }
 
 async fn rig_with(config: SessionConfig) -> Rig {
+    rig_with_modules(config, Vec::new()).await
+}
+
+/// [`rig_with`] with `extra` modules composed after the real roster (doc 20 cut SM.9's echo).
+async fn rig_with_modules(
+    config: SessionConfig,
+    extra: Vec<Box<dyn mush_core::GameModule>>,
+) -> Rig {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let world = load_or_seed_world(&*store).await.expect("boot world");
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
-    let mut engine =
-        Engine::with_modules(world, registry, modules::server_modules()).expect("modules");
+    let mut roster = modules::server_modules();
+    roster.extend(extra);
+    let mut engine = Engine::with_modules(world, registry, roster).expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -670,6 +679,7 @@ async fn requests_round_trip_to_correlated_replies() {
             10,
             Query::PanelSubscribe {
                 feed: "comsys".into(),
+                params: None,
             },
         )
         .await;
@@ -697,6 +707,7 @@ async fn requests_round_trip_to_correlated_replies() {
             11,
             Query::PanelSubscribe {
                 feed: "tactics.map".into(),
+                params: None,
             },
         )
         .await;
@@ -715,6 +726,108 @@ async fn requests_round_trip_to_correlated_replies() {
 // ---------------------------------------------------------------------------
 // @newpassword end-to-end (staff command → store update → token revocation)
 // ---------------------------------------------------------------------------
+
+/// **A test-only pulled feed that answers with the arguments its query was given** (doc 20 cut
+/// SM.9): the bridge's forwarding seen from the handler's side. (`mushd`'s roster composes no
+/// game layer, so the real `site.map` is not here.)
+struct ParamsEcho;
+
+/// Its feed.
+const ECHO_FEED: &str = "sm9.echo";
+
+impl mush_core::QueryHandler for ParamsEcho {
+    fn query(
+        &self,
+        _w: &mush_core::World,
+        _actor: ObjId,
+        params: &serde_json::Value,
+    ) -> Result<OutputEvent, mush_proto::RichText> {
+        Ok(OutputEvent::Panel {
+            feed: ECHO_FEED.into(),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "args": params }),
+        })
+    }
+}
+
+impl mush_core::GameModule for ParamsEcho {
+    fn name(&self) -> &'static str {
+        "sm9echo"
+    }
+
+    fn register(
+        &mut self,
+        reg: &mut mush_core::module::Registrar<'_>,
+    ) -> Result<(), mush_core::module::ModError> {
+        drop(reg.panel_feed(ECHO_FEED)?);
+        reg.query_handler(ECHO_FEED, Arc::new(ParamsEcho))?;
+        Ok(())
+    }
+}
+
+/// **Doc 20 cut SM.9 (the brief's 3.8, decision D2)**: a `panel_subscribe`'s `params` reach the
+/// feed's query handler as its arguments, exactly; with none it gets `{}` as before; a
+/// non-object and a 600-byte object are refused with the bridge's line before anything is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn sm9_a_panel_subscribe_forwards_its_params() {
+    let rig = rig_with_modules(SessionConfig::default(), vec![Box::new(ParamsEcho)]).await;
+    let (token, key) = register(&rig, "quarry", "hunter42", "Quarry").await;
+    let (conn, mut rx) = web_conn(1_400, 2);
+    rig.bridge
+        .connect_character(conn, &token, key)
+        .await
+        .expect("connect");
+    expect_env(&mut rx, "Limbo(#0)").await;
+    for (id, params, args) in [
+        (
+            21_u64,
+            Some(serde_json::json!({ "view": "site", "rig": 1, "family": "ice" })),
+            serde_json::json!({ "view": "site", "rig": 1, "family": "ice" }),
+        ),
+        (24, None, serde_json::json!({})),
+    ] {
+        rig.bridge
+            .request(
+                1_400,
+                id,
+                Query::PanelSubscribe {
+                    feed: ECHO_FEED.into(),
+                    params,
+                },
+            )
+            .await;
+        let env = expect_env(&mut rx, &format!("[reply {id}]")).await;
+        let OutputEvent::Reply { event, .. } = &env.event else {
+            panic!("expected a reply, got {:?}", env.event);
+        };
+        let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+            panic!("expected the echo frame, got {event:?}");
+        };
+        assert_eq!(feed, ECHO_FEED);
+        assert_eq!(data["args"], args, "the handler got the params");
+    }
+    for (id, params) in [
+        (22_u64, serde_json::json!(["site"])),
+        (23, serde_json::json!({ "pad": "x".repeat(600) })),
+    ] {
+        rig.bridge
+            .request(
+                1_400,
+                id,
+                Query::PanelSubscribe {
+                    feed: ECHO_FEED.into(),
+                    params: Some(params),
+                },
+            )
+            .await;
+        let env = expect_env(&mut rx, &format!("[reply {id}]")).await;
+        assert!(
+            text_of(&env.event).contains("Panel parameters must be a small object."),
+            "{:?}",
+            env.event
+        );
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn newpassword_rehashes_and_revokes_web_sessions() {

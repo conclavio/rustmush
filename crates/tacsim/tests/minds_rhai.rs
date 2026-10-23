@@ -3492,27 +3492,38 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// and captured pending-think schedules replace the former fixed-card fold.
 /// Fresh Windows and Linux measurements agree on all four complete rows below;
 /// stopping times and the float probe's 369098751 bitmask are unchanged.
+///
+/// **Doc 21 cut G.7b's re-bless of the stock corpus** (the atlas's version 3,
+/// the showcase relief; captured on Windows, the Linux run CI's): the three
+/// stock rows fight on the proving ground, whose terrain digest the state
+/// hash folds and whose flanks now rise into hills, so each row's stop
+/// millisecond moved with the fight (168,250 / 184,500 / 166,500 → 170,250 /
+/// 192,500 / 170,000, the stock pool's record's three) and its state hash,
+/// substep digest and ledger digest with it. The float probe's row and its
+/// bitmask are unmoved. Were, by row: `4_167_350_372_244_564_158` /
+/// `304b5340…` / `1268fc5d…`, `1_964_900_014_152_180_428` / `91884ac2…` /
+/// `168c2998…`, `9_027_361_391_885_005_948` / `68516927…` / `5d1fa832…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        168250,
-        4167350372244564158,
-        "304b5340697f2b58dea363b4d01b67700630e82d9e05315265366897046dc826",
-        "1268fc5d180aebd43f2dc343b7526a4e935b66924fc880f3ffb8f1fae116ffd0",
+        170250,
+        12887324004819823052,
+        "e414b70d36d84512f4b8c8a9f897cd257f2350a05cc6079ec0dac23fae5d0e08",
+        "318da4b76ce446033b69b393dae49a81b107d81e182afdf76a3916e9d639a636",
     ),
     (
         2351,
-        184500,
-        1964900014152180428,
-        "91884ac2c5ebb2cea1d09cf143958dfac3e854016ace862c76fb7e3062cc1288",
-        "168c29986f50717c87d6ab955f784b1532ffe3edb2cfff9c793de7691b50fae0",
+        192500,
+        7649434552267006567,
+        "5f0bdda7d7a9a3494378c9d69dd567e35db3d9464a106aa4010e018522b61ccd",
+        "becdcb65121a60296e73b150cda382444d4cc73f5f3065f65a59506da3156f99",
     ),
     (
         2352,
-        166500,
-        9027361391885005948,
-        "68516927dac1017bb99d2338eef9ba67bd52dd337a9407c3e84a49909eeedd1c",
-        "5d1fa832060c94f91b55f8e7cfbd7027e2bf14bc6a3ad9a168c018abd527f635",
+        170000,
+        9329786118378962729,
+        "004bd63fcdcbc73885ed4fde7e5d2b96506bd4e3043e27edfc4c4310f1cbc104",
+        "8de6e16145685e46bde82b807ed847268f45de0e0684e9e385ad061a3c4231f2",
     ),
     (
         2350,

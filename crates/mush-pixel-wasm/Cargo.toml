@@ -1,0 +1,22 @@
+[package]
+name = "mush-pixel-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The graphics engine's cockpit picture as a WebAssembly module for the web client (doc 21 cut G.3b): plain exports, no wasm-bindgen"
+publish = false
+
+[lib]
+# `cdylib` is the `.wasm` the web loads; `rlib` lets the host run the tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pictures without the terminal encoders (no PNG, so no flate2): the page
+# draws the RGBA into a canvas. A path dependency because the workspace's
+# entry keeps the default features on for every other crate.
+mush-pixel = { path = "../mush-pixel", default-features = false }
+serde_json.workspace = true
+
+[lints]
+workspace = true

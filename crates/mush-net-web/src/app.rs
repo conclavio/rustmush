@@ -96,8 +96,13 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
 /// external asset hosts, so everything else stays same-origin-only).
 /// `connect-src` allows `ws:`/`wss:` explicitly for the game socket rather
 /// than relying on `'self'`'s scheme-upgrade matching.
+///
+/// `script-src` adds `'wasm-unsafe-eval'` (doc 21 cut G.3b): a browser
+/// compiles a WebAssembly module only under it, and the cockpit picture is
+/// one (the bundle's own, same-origin). It permits compiling WebAssembly and
+/// nothing else — not `eval`, not `new Function`, not an inline script.
 fn security_headers(router: Router<AppState>) -> Router<AppState> {
-    const CSP: &str = "default-src 'self'; script-src 'self'; \
+    const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
         style-src 'self' 'unsafe-inline'; img-src 'self'; \
         connect-src 'self' ws: wss:; base-uri 'none'; \
         frame-ancestors 'none'; object-src 'none'";

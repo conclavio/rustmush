@@ -90,6 +90,9 @@ fn mime_for(path: &str) -> &'static str {
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         Some("txt") => "text/plain; charset=utf-8",
+        // Doc 21 cut G.3b: the cockpit picture's module, which a browser
+        // streams and compiles only under this type.
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -111,6 +114,10 @@ mod tests {
         );
         assert_eq!(mime_for("assets/index.js.map"), "application/json");
         assert_eq!(mime_for("favicon.ico"), "image/x-icon");
+        assert_eq!(
+            mime_for("assets/mush_pixel-C3d4e5f6.wasm"),
+            "application/wasm"
+        );
         assert_eq!(mime_for("noextension"), "application/octet-stream");
     }
 }

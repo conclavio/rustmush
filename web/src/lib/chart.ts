@@ -318,6 +318,43 @@ export function orbitRadius(b: ChartBody, chart: ChartData, size: number): numbe
   return (size / 2) * 0.94 * radialFraction(b.r_au, chart.scale.au_max, chart.scale.r0_au);
 }
 
+/** One light-minute, AU (`mush_pixel::chart::AU_PER_LIGHT_MINUTE`). */
+export const AU_PER_LIGHT_MINUTE = 0.1202393;
+
+/** The light-lag rings about the viewer's body, light-minutes (doc 21 cut
+ * G.5c, the owner's default): doubling, which spaces evenly on the log
+ * scale, and the same four the terminal's picture draws. */
+export const LAG_RING_MINUTES = [3, 6, 12, 24] as const;
+
+/** A light-lag ring: the points `minutes` of light from the viewer's body
+ * (the chart's `here`), as picture points in a square `size` across — a
+ * circle about the body in space, sampled through the log scale, which bends
+ * it as it bends distance. Empty on a chart with no `here`. */
+export function lagRing(chart: ChartData, minutes: number, size: number, steps = 180): ChartPoint[] {
+  const here = chart.bodies.find((b) => b.here);
+  if (!here) return [];
+  const lon = (here.lon_deg * Math.PI) / 180;
+  const [hx, hy] = [here.r_au * Math.cos(lon), here.r_au * Math.sin(lon)];
+  const radius = minutes * AU_PER_LIGHT_MINUTE;
+  const half = size / 2;
+  const full = half * 0.94;
+  const out: ChartPoint[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const a = (2 * Math.PI * i) / steps;
+    const [wx, wy] = [hx + radius * Math.cos(a), hy + radius * Math.sin(a)];
+    const f = radialFraction(Math.hypot(wx, wy), chart.scale.au_max, chart.scale.r0_au);
+    const theta = Math.atan2(wy, wx);
+    out.push({ id: `${minutes}`, x: half + full * f * Math.cos(theta), y: half - full * f * Math.sin(theta) });
+  }
+  return out;
+}
+
+/** The picture's caption: the scale as drawn (logarithmic past the knee)
+ * and what the rings are. */
+export function scaleCaption(chart: ChartData): string {
+  return `scale: logarithmic past ${chart.scale.r0_au} AU, the edge at ${chart.scale.au_max.toFixed(1)} AU; rings: light-minutes from here`;
+}
+
 /** A route's polyline through its legs' bodies, as picture points; a leg
  * whose body is not on the chart is skipped. */
 export function routePolyline(route: ChartRoute, points: readonly ChartPoint[]): ChartPoint[] {

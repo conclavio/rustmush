@@ -404,7 +404,7 @@ pub fn project_cargo(
                 let held = slot.entry(good.clone()).or_insert(0);
                 *held = held.checked_add(add).ok_or(CoreError::Overflow)?;
             }
-            What::Depart { .. } | What::Stop => {}
+            What::Depart { .. } | What::Stop | What::AwaitTv { .. } => {}
         }
     }
     let mut cargo: BTreeMap<CanonicalId, u64> = BTreeMap::new();
@@ -883,7 +883,7 @@ pub(crate) fn later_cover(doc: &Orders, index: usize, good: &CanonicalId) -> Cov
                 Qty::Units(n) => units = units.saturating_add(*n),
                 Qty::All => {}
             },
-            What::Buy { .. } | What::Sell { .. } | What::Stop => {}
+            What::Buy { .. } | What::Sell { .. } | What::Stop | What::AwaitTv { .. } => {}
         }
     }
     Cover::Units(units)
@@ -1145,6 +1145,8 @@ pub(crate) fn plan_queue(
     let mut taken: BTreeMap<ListingId, u64> = BTreeMap::new();
     let mut after_depart: Vec<u32> = Vec::new();
     let mut depart_port: Option<String> = None;
+    // Doc 20 cut SM.11: an await before the depart narrows its bay gate.
+    let mut awaited: Option<crate::port::voyage::RigSkip> = None;
     for (index, order) in orders.orders.iter().enumerate().skip(start) {
         if !matches!(
             order.state,
@@ -1165,6 +1167,21 @@ pub(crate) fn plan_queue(
             What::Stop => {
                 lines.push(format!("  Order {id}, stop: the plan pauses here."));
                 break;
+            }
+            // Doc 20 cut SM.11 (the brief's 3.10, the reviewer's F4): the await, and the rigs a
+            // later depart's gate then reads.
+            What::AwaitTv { slot, until_ic_h } => {
+                let which = crate::port::orders::await_which(*slot);
+                lines.push(
+                    AWAIT_DRY_LINE
+                        .replace("{id}", &id.to_string())
+                        .replace("{which}", &which)
+                        .replace("{h}", &until_ic_h.to_string()),
+                );
+                awaited = Some(match slot {
+                    None => crate::port::voyage::RigSkip::All,
+                    Some(n) => crate::port::voyage::RigSkip::Slot(*n),
+                });
             }
             What::Sell {
                 good,
@@ -1372,10 +1389,21 @@ pub(crate) fn plan_queue(
                         continue;
                     }
                 };
-                // Doc 20 cut SM.3b (lead ruling 7): the filing's bay gate, read now.
-                if let Err(refused) = crate::port::voyage::bay_gate(ctx, view, &name) {
+                // Doc 20 cut SM.3b (lead ruling 7): the filing's bay gate, read now — doc 20 cut
+                // SM.11: behind an await, over the rigs the await does not wait for.
+                let note = if awaited.is_some() {
+                    AWAIT_DRY_NOTE
+                } else {
+                    ""
+                };
+                if let Err(refused) = crate::port::voyage::bay_gate_with(
+                    ctx,
+                    view,
+                    &name,
+                    awaited.unwrap_or(crate::port::voyage::RigSkip::None),
+                ) {
                     lines.push(format!(
-                        "  Order {id}, depart for {port}: it would hold: {}.",
+                        "  Order {id}, depart for {port}: it would hold: {}.{note}",
                         inline_reason(&refused.line)
                     ));
                     continue;
@@ -1420,7 +1448,7 @@ pub(crate) fn plan_queue(
                             }
                         };
                         lines.push(format!(
-                            "  Order {id}, depart for {port}: payload {} t, burn {} t, {} crew-days{hold}.",
+                            "  Order {id}, depart for {port}: payload {} t, burn {} t, {} crew-days{hold}.{note}",
                             tonnes_one_decimal(payload),
                             plan.burn_t,
                             plan.crew_days
@@ -1614,6 +1642,8 @@ enum ActKind {
     Sell,
     Depart,
     Stop,
+    /// Doc 20 cut SM.11: `await tv` stages no act.
+    Await,
 }
 
 fn act_kind(what: &What) -> ActKind {
@@ -1622,6 +1652,7 @@ fn act_kind(what: &What) -> ActKind {
         What::Sell { .. } => ActKind::Sell,
         What::Depart { .. } => ActKind::Depart,
         What::Stop => ActKind::Stop,
+        What::AwaitTv { .. } => ActKind::Await,
     }
 }
 
@@ -1801,7 +1832,7 @@ fn leg_verdict(w: &World, kind: ActKind, refs: &crate::port::orders::InflightRef
                 Verdict::Pending
             }
         }
-        ActKind::Depart | ActKind::Stop => Verdict::Pending,
+        ActKind::Depart | ActKind::Stop | ActKind::Await => Verdict::Pending,
     }
 }
 
@@ -1891,7 +1922,7 @@ fn verify_one(ctx: &mut Ctx<'_>, hull: ObjId) {
     let (verdict, ticket) = match kind {
         ActKind::Buy | ActKind::Sell => (leg_verdict(ctx.w, kind, &inflight.refs), None),
         ActKind::Depart => depart_verdict(ctx, hull, &inflight.refs),
-        ActKind::Stop => (Verdict::Dropped, None),
+        ActKind::Stop | ActKind::Await => (Verdict::Dropped, None),
     };
     let w: &World = ctx.w;
     let now = w.now();
@@ -1955,7 +1986,7 @@ fn verify_one(ctx: &mut Ctx<'_>, hull: ObjId) {
                         ));
                     }
                 }
-                (ActKind::Depart | ActKind::Stop, _) => return,
+                (ActKind::Depart | ActKind::Stop | ActKind::Await, _) => return,
                 (ActKind::Buy | ActKind::Sell, _) => {
                     let line = inflight
                         .line
@@ -2007,7 +2038,9 @@ fn verify_one(ctx: &mut Ctx<'_>, hull: ObjId) {
             }
             let port = match &order.what {
                 What::Depart { to, .. } => crate::port::voyage::venue_name(w, to),
-                What::Buy { .. } | What::Sell { .. } | What::Stop => String::new(),
+                What::Buy { .. } | What::Sell { .. } | What::Stop | What::AwaitTv { .. } => {
+                    String::new()
+                }
             };
             let reason = HELD_STOOD_DOWN.replace("{port}", &port);
             out.doc.stop_at(id, &reason, now);
@@ -2598,6 +2631,10 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
         out.log(w, id, &STOPPED.replace("{n}", &id.to_string()), true);
         return Plan::Write(Box::new(out));
     }
+    // Doc 20 cut SM.11 (the brief's 3.10; lead ruling 5): `await tv`, wherever the hull is.
+    if let What::AwaitTv { slot, until_ic_h } = order.what {
+        return await_rigs(ctx, doc, id, &order, slot, until_ic_h);
+    }
     let Berth::Docked { def, map } = berth_of(w, hull) else {
         return Plan::Idle;
     };
@@ -2612,7 +2649,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
     };
     let ic = w.world_ic_now().at;
     match order.what.clone() {
-        What::Stop => Plan::Idle,
+        What::Stop | What::AwaitTv { .. } => Plan::Idle,
         What::Sell {
             good,
             qty,
@@ -3079,6 +3116,143 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
     }
 }
 
+/// **The rigs an `await tv` waits for, and which are still out** (doc 20 cut SM.11; the brief's
+/// 3.10): the hull's rigs as the bay gate collects them (the bay's placements and the live lease
+/// records naming the hull), filtered to `slot`, each read through
+/// [`crate::port::tv::rig_parked`] over its record, its lessee, whether it stands in this hull's bay
+/// and its projection's state — an unreadable record never counts as parked (fail closed). The
+/// slots still out, ascending.
+fn rigs_out(ctx: &Ctx<'_>, hull: ObjId, slot: Option<u8>) -> Vec<u8> {
+    use crate::surface::act::{Where, where_is};
+    let w: &World = ctx.w;
+    let Some(view) = hull_view(w, hull) else {
+        return Vec::new();
+    };
+    let mut rigs: Vec<(u8, ObjId)> = crate::port::vehicle::rigs_in_bay(w, &view)
+        .iter()
+        .map(|rig| (rig.slot, rig.tv))
+        .collect();
+    for record in crate::port::tv::live_on_hull(w, hull) {
+        if !rigs.iter().any(|(_, tv)| *tv == record.tv) {
+            rigs.push((record.slot, record.tv));
+        }
+    }
+    let store = w.module_state::<TacsimStore>();
+    let handles = w.module_state::<crate::port::families::PortHandles>();
+    let mut out: Vec<u8> = Vec::new();
+    for (n, tv) in rigs {
+        if slot.is_some_and(|wanted| wanted != n) {
+            continue;
+        }
+        let record = match handles.map(|handles| {
+            ctx.action_state(
+                &handles.families.excursions,
+                &crate::surface::excursion::RigKey(tv),
+            )
+        }) {
+            Some(Ok(found)) => Ok(found.cloned()),
+            Some(Err(_)) | None => Err(()),
+        };
+        let lessee = store
+            .and_then(|store| store.tv_lease_on(tv))
+            .map(|lease| lease.pilot);
+        let projected = match store.and_then(|store| store.tv_rec(tv)) {
+            Some(crate::surface::excursion::TvRecState::Present(rec)) => Some(rec.state),
+            Some(crate::surface::excursion::TvRecState::Unreadable) | None => None,
+        };
+        let in_this_bay = where_is(w, tv) == (Where::Bay { hull });
+        let parked = match record {
+            Ok(record) => {
+                crate::port::tv::rig_parked(record.as_ref(), lessee, in_this_bay, projected)
+            }
+            Err(()) => false,
+        };
+        if !parked {
+            out.push(n);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// `{out}` of [`AWAIT_TIMED_OUT`]: `rig 1 is`, `rigs 1 and 2 are`.
+fn rigs_out_words(slots: &[u8]) -> String {
+    let words: Vec<String> = slots.iter().map(u8::to_string).collect();
+    match words.as_slice() {
+        [one] => format!("rig {one} is"),
+        [head @ .., last] => format!("rigs {} and {last} are", head.join(", ")),
+        [] => "no rig is".to_owned(),
+    }
+}
+
+/// A line with its first letter upper-cased.
+fn capitalised(line: &str) -> String {
+    let mut chars = line.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// **The `await tv` arm** (doc 20 cut SM.11; the brief's 3.10, lead ruling 5, the reviewer's F3
+/// and F19): the first fire the await is the cursor writes `awaited` (the IC instant, the depart's
+/// `reached` precedent); every rig parked → `Done` with `awaited` cleared in the same write and
+/// [`AWAIT_DONE`] logged and told; `until_ic_h` IC hours past `awaited` → `Done`, cleared,
+/// [`AWAIT_TIMED_OUT`] logged and told (the next depart then waits on `TV_OUT`/`TV_BUSY`); else a
+/// waiting note ([`AWAIT_WAITING`], told once a reason). No act is staged.
+fn await_rigs(
+    ctx: &Ctx<'_>,
+    doc: Orders,
+    id: u32,
+    order: &crate::port::orders::Order,
+    slot: Option<u8>,
+    until_ic_h: u16,
+) -> Plan {
+    let w: &World = ctx.w;
+    let now_ic = w.world_ic_now().at;
+    let which = crate::port::orders::await_which(slot);
+    let mut out = Outcome::new(doc);
+    let started = order.awaited.unwrap_or(now_ic);
+    let fresh = order.awaited.is_none();
+    if fresh && let Some(entry) = out.doc.order_mut(id) {
+        entry.awaited = Some(now_ic);
+    }
+    let still_out = rigs_out(ctx, out.doc.hull, slot);
+    let finish = |out: &mut Outcome, line: &str| {
+        if let Some(entry) = out.doc.order_mut(id) {
+            entry.state = OrderState::Done;
+            entry.refusals = 0;
+            entry.awaited = None;
+        }
+        out.doc.clear_hold_naming(id);
+        out.log(w, id, line, true);
+    };
+    if still_out.is_empty() {
+        finish(
+            &mut out,
+            &capitalised(&AWAIT_DONE.replace("{which}", &which)),
+        );
+        return Plan::Write(Box::new(out));
+    }
+    let bound = started.saturating_add(i64::from(until_ic_h).saturating_mul(3_600));
+    if now_ic >= bound {
+        finish(
+            &mut out,
+            &AWAIT_TIMED_OUT
+                .replace("{h}", &until_ic_h.to_string())
+                .replace("{which}", &which)
+                .replace("{out}", &rigs_out_words(&still_out)),
+        );
+        return Plan::Write(Box::new(out));
+    }
+    let noted = wait_with(w, &mut out, id, &AWAIT_WAITING.replace("{which}", &which));
+    if noted || fresh {
+        Plan::Write(Box::new(out))
+    } else {
+        Plan::Idle
+    }
+}
+
 /// **Why a queued sale takes nothing** (doc 18 cut IC11's skip reasons, factored by
 /// cut IC12 so each is pinned without a 4,000 t intake to exhaust): the bid under the
 /// order's floor (`UNDER_MIN`), else an exhausted bid (`INTAKE_TAKEN`), else a house
@@ -3150,6 +3324,21 @@ pub const SALE_SHORT: &str = " Short of {want} {unit}: {bounds}.";
 pub const DEPART_SET: &str = "Departure for {port} set for {hhmm} UTC.";
 /// A stop reached (owner item O5): `{n}`.
 pub const STOPPED: &str = "Stopped at order {n}, as filed; +ship/order resume runs the rest.";
+/// **Doc 20 cut SM.11**: the rigs parked — `{which}` (`every rig`, `rig {n}`), the line's first
+/// letter upper-cased.
+pub const AWAIT_DONE: &str = "{which} parked; the sailing plan runs on.";
+/// **Doc 20 cut SM.11**: the await's bound passed — `{h}`, `{which}`, `{out}` (`rig 1 is`, `rigs 1
+/// and 2 are`).
+pub const AWAIT_TIMED_OUT: &str =
+    "Waited {h} IC h for {which}; {out} still out. The sailing plan runs on.";
+/// **Doc 20 cut SM.11**: the await's waiting note — `{which}`.
+pub const AWAIT_WAITING: &str = "waiting for {which} to park";
+/// **Doc 20 cut SM.11**: the dry run's await line — `{id}`, `{which}`, `{h}`.
+pub const AWAIT_DRY_LINE: &str =
+    "  Order {id}, await {which}: the plan waits here until {which} parks, at most {h} IC h.";
+/// **Doc 20 cut SM.11**: appended to a dry-run depart behind an await.
+pub const AWAIT_DRY_NOTE: &str =
+    " (if the await times out with a rig still out, the departure waits for it.)";
 /// An order passed over: `{n}`, `{reason}`.
 pub const SKIP_LINE: &str = "Order {n} passed over: {reason}";
 /// A stopped hold: `{n}`, `{reason}`.
@@ -3953,6 +4142,7 @@ mod tests {
             announced: false,
             reached: None,
             what,
+            awaited: None,
         }
     }
 

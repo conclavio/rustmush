@@ -153,3 +153,18 @@ describe("a letter hotkey (doc 19 cut A.3b)", () => {
     expect(navIntent({ key: "C", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, unbound)).toBeNull();
   });
 });
+
+// Doc 20 cut SM.9: Alt+q is the quarry's hotkey where the active screen does not bind `q`.
+describe("the quarry's letter (doc 20 cut SM.9)", () => {
+  it("Alt+q unbound is a screenKey intent", () => {
+    const none = new Map<string, string>();
+    expect(navIntent({ key: "q", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, new Set())).toEqual({
+      kind: "screenKey",
+      key: "q",
+    });
+    expect(navIntent({ key: "q", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, new Set(["q"]))).toEqual({
+      kind: "binding",
+      key: "q",
+    });
+  });
+});

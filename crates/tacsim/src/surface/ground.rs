@@ -16,10 +16,29 @@
 //! input and the geology spec, so no input either build reads can change without changing the
 //! key — save the body's table and radius, which the one writer of tables
 //! (`crate::surface::install_body_geology`) answers by dropping that body's cached sites
-//! whenever it replaces one. [`site_ground_sync`] is the synchronous door (staff and tests); **the off-loop driver is
-//! SM.4's** (decision 6 narrows doc 20 §13's SM.1 row): the composite half needs no key (the
-//! atlas's own `CompositeJob`/`run_async` already runs it off-loop), the geology half needs the
-//! key, which a host-held runner keyed in `build_engine` can hold, never the JSON payload.
+//! whenever it replaces one. [`site_ground_sync`] is the synchronous door (staff and tests).
+//!
+//! **The revision is cached beside the ground** (doc 20 cut SM.4a's pre-commit round, item 1;
+//! the SM.4a brief's K14 STOP: the warm peek re-hashed the whole input on every `+tv` status,
+//! every scan command and every offer projection, 12 ms a peek in a debug build): each entry
+//! keeps the captured input and the spec its revision was computed over, so a peek whose fresh
+//! capture **equals** an entry's (structural equality, no serialise and no hash) is that entry —
+//! the hash is paid once, when an input is first seen (the build, on the tick). Equality of the
+//! whole input is the key rather than the atlas records' own `revision` stamps because those
+//! restart at 1 when a pack is retired and applied again (`mush_atlas::apply`'s
+//! `drop_pack_records`): a stamp list could match a changed ground. An input no entry captured
+//! falls back to the full [`site_revision`] lookup (a cold site, or an entry inserted by
+//! [`SiteGroundCache::insert`] without its capture).
+//!
+//! **Doc 20 cut SM.4a** (lead ruling 6, D11) keeps every build off the act's path rather than
+//! off the loop: [`site_ground_cached`] is the **non-building peek** the command, the start's
+//! offer and `+tv` status read (a miss answers "still being mapped" and asks for a warm), and
+//! the `tacsim.surface` tick warms at most one wanted site a fire through
+//! [`site_ground_sync`] (`crate::surface::warm_one`). The finish never needs the composite:
+//! the start freezes the stand, the footing and the fields the mast sees (cells are never
+//! edited, D-14-9). **Residual (SM.12's cost lane)**: a true off-loop build — a host-held keyed
+//! runner behind `Effect::ModuleAsync`, the composite half on the atlas's own
+//! `CompositeJob`/`run_async` — if the measured cold build asks for one.
 //!
 //! **Truth never serializes** (§16): [`SiteGeology`] and [`SiteGround`] derive no serde traits.
 
@@ -187,6 +206,42 @@ impl SiteGeology {
             }
         }
         digest_text(&hasher.finalize().into())
+    }
+}
+
+#[cfg(test)]
+impl SiteGeology {
+    /// **A synthetic table for unit tests** (doc 20 cut SM.6): every pocket barren and 0 t
+    /// except the listed `(site-local pocket, family, class, tonnes)` slots; fields blank.
+    /// What a pure consumer of the table (`crate::surface::opening::opening_plan`) reads,
+    /// with no key and no body.
+    pub(crate) fn for_test(ore: &[((i64, i64), OreFamily, Word, u8)]) -> Self {
+        let pocket_count = usize::try_from(SITE_POCKETS * SITE_POCKETS).unwrap_or(0);
+        let mut pockets = vec![[encode(Word::Barren, 0); 4]; pocket_count];
+        for ((px, py), family, class, tonnes) in ore {
+            let slot = OreFamily::ALL
+                .iter()
+                .position(|f| f == family)
+                .unwrap_or_else(|| panic!("a family"));
+            let index = local_index(*px, *py, SITE_POCKETS).unwrap_or_else(|| panic!("on site"));
+            if let Some(code) = pockets.get_mut(index).and_then(|row| row.get_mut(slot)) {
+                *code = encode(*class, *tonnes);
+            }
+        }
+        Self {
+            body: CanonicalId::new("ceres").unwrap_or_else(|_| panic!("an id")),
+            origin: (0, 0),
+            key_version: 1,
+            shifts: [0; 16],
+            fields: vec![
+                FieldCode {
+                    words: [Word::Barren; 4],
+                    counts: [0; 4],
+                };
+                64
+            ],
+            pockets,
+        }
     }
 }
 
@@ -366,24 +421,40 @@ pub fn build_site_ground(
     mac: &GeologyMac,
     key_version: u32,
 ) -> Result<SiteGround, String> {
+    let built = site_composite(input, &spec.body)?;
+    let geology = site_geology(mac, key_version, body, spec).map_err(|error| error.to_string())?;
+    Ok(SiteGround {
+        composite: Arc::new(built),
+        geology: Arc::new(geology),
+    })
+}
+
+/// **A site's terrain composite, shape-checked** — the one rule [`build_site_ground`] and
+/// [`site_terrain`] share (doc 20 cut SM.4b factored it out; one rule, never a copy): the
+/// captured region a surface of `body` (cut SM.2's lead override 4), then `composite()`, then a
+/// ground surface of 256 × 256 cells of 10 m.
+///
+/// # Errors
+///
+/// The region on another body or not a surface, the atlas's refusal, or another shape.
+fn site_composite(input: &CompositeInput, body: &CanonicalId) -> Result<Composite, String> {
     const WRONG_SHAPE: &str = "a site's ground is 256 by 256 cells of 10 m";
     // Doc 20 cut SM.2 (lead override 4): the captured region stands on the spec's body, or
     // the site's ground would read one body's terrain over another's geology.
     match &input.region.kind {
-        mush_atlas::record::RegionKind::Surface { body: on }
-            if on.as_str() == spec.body.as_str() => {}
+        mush_atlas::record::RegionKind::Surface { body: on } if on.as_str() == body.as_str() => {}
         mush_atlas::record::RegionKind::Surface { body: on } => {
             return Err(format!(
-                "the site names {}, but region {} is on {on}",
-                spec.body, input.region.key
+                "the site names {body}, but region {} is on {on}",
+                input.region.key
             ));
         }
         mush_atlas::record::RegionKind::Orbital { .. }
         | mush_atlas::record::RegionKind::System
         | mush_atlas::record::RegionKind::Interstellar => {
             return Err(format!(
-                "the site names {}, but region {} is not a surface",
-                spec.body, input.region.key
+                "the site names {body}, but region {} is not a surface",
+                input.region.key
             ));
         }
     }
@@ -397,18 +468,61 @@ pub fn build_site_ground(
     {
         return Err(WRONG_SHAPE.to_owned());
     }
-    let geology = site_geology(mac, key_version, body, spec).map_err(|error| error.to_string())?;
-    Ok(SiteGround {
-        composite: Arc::new(built),
-        geology: Arc::new(geology),
-    })
+    Ok(built)
+}
+
+/// **A lane site's terrain, keyless** (doc 20 cut SM.4b; the brief's reviewer resolution R3):
+/// the site's location through `crate::surface::chart::lane_sites` (no key read), its window
+/// (`chart::site_frame`), [`capture_site`] and `site_composite`'s one rule — **no geology key
+/// is read**, so a rig's way home is built even while the geology layer is dark. Its callers:
+/// the home field's warm when the site reads dark (`crate::surface::warm_one`) and the freeze
+/// census (`tests/driving.rs`). On-loop and as cheap as the warm's own composite half.
+///
+/// # Errors
+///
+/// Not a lane site, its window does not form, the capture's or the composite's refusal.
+pub fn site_terrain(w: &World, entry: &CanonicalId) -> Result<Composite, String> {
+    let site = crate::surface::chart::lane_sites(w)
+        .into_iter()
+        .find(|site| &site.entry == entry)
+        .ok_or_else(|| format!("{entry} is not a lane site"))?;
+    let frame = crate::surface::chart::site_frame(&site.location)
+        .ok_or_else(|| format!("{entry}'s window does not form"))?;
+    let input = capture_site(w, &frame)?;
+    site_composite(&input, &site.body)
+}
+
+/// One cached site: its key, its ground, what its revision was computed over (the captured input
+/// and the spec; `None` for an entry [`SiteGroundCache::insert`]ed without them) and its
+/// last-use tick.
+#[derive(Clone, Debug)]
+struct CachedSite {
+    key: SiteGroundKey,
+    ground: Arc<SiteGround>,
+    captured: Option<(Arc<CompositeInput>, SiteGeologySpec)>,
+    used: u64,
+}
+
+impl CachedSite {
+    /// Whether this entry's revision was computed over exactly `input` and `spec` under
+    /// `key_version` (the pre-commit round's item 1: structural equality, no serialise, no hash).
+    fn captured(&self, input: &CompositeInput, spec: &SiteGeologySpec, key_version: u32) -> bool {
+        self.key.key_version == key_version
+            && self.key.region == input.frame.region
+            && self
+                .captured
+                .as_ref()
+                .is_some_and(|(seen, seen_spec)| seen_spec == spec && **seen == *input)
+    }
 }
 
 /// The site ground LRU: at most [`SITE_CACHE_CAPACITY`] entries, each with its last-use tick on
-/// one `u64` clock. RAM only.
+/// one `u64` clock and — since cut SM.4a's pre-commit round (item 1) — the captured input and
+/// spec its [`site_revision`] was computed over, so a warm peek finds its entry by equality and
+/// never re-hashes. RAM only.
 #[derive(Clone, Debug, Default)]
 pub struct SiteGroundCache {
-    entries: Vec<(SiteGroundKey, Arc<SiteGround>, u64)>,
+    entries: Vec<CachedSite>,
     clock: u64,
 }
 
@@ -419,21 +533,112 @@ impl SiteGroundCache {
         self.clock
     }
 
+    /// **A hit without touching it** (doc 20 cut SM.4a, lead ruling 6): the read-only peek every
+    /// player path takes, so a `&World` reader never needs `&mut` and never builds.
+    #[must_use]
+    pub fn peek(&self, key: &SiteGroundKey) -> Option<Arc<SiteGround>> {
+        self.entries
+            .iter()
+            .find(|entry| entry.key == *key)
+            .map(|entry| Arc::clone(&entry.ground))
+    }
+
+    /// **The warm peek by capture** (doc 20 cut SM.4a's pre-commit round, item 1): the entry
+    /// whose revision was computed over exactly `input` and `spec` under `key_version`, without
+    /// touching it — no serialise and no hash, one structural comparison an entry of the region.
+    #[must_use]
+    pub fn peek_captured(
+        &self,
+        input: &CompositeInput,
+        spec: &SiteGeologySpec,
+        key_version: u32,
+    ) -> Option<Arc<SiteGround>> {
+        self.entries
+            .iter()
+            .find(|entry| entry.captured(input, spec, key_version))
+            .map(|entry| Arc::clone(&entry.ground))
+    }
+
+    /// **The revision of `input` and `spec`** (the pre-commit round's item 1): the cached one when
+    /// an entry was built over exactly them under `key_version` — computed once, when the input
+    /// was first seen — else [`site_revision`] in full.
+    ///
+    /// # Errors
+    ///
+    /// [`site_revision`]'s, on a miss.
+    pub fn revision_of(
+        &self,
+        input: &CompositeInput,
+        spec: &SiteGeologySpec,
+        key_version: u32,
+    ) -> Result<u64, String> {
+        match self
+            .entries
+            .iter()
+            .find(|entry| entry.captured(input, spec, key_version))
+        {
+            Some(entry) => Ok(entry.key.revision),
+            None => site_revision(input, spec),
+        }
+    }
+
     /// A hit (and touch it), or `None`.
     pub fn get(&mut self, key: &SiteGroundKey) -> Option<Arc<SiteGround>> {
         let now = self.tick();
-        let entry = self.entries.iter_mut().find(|(k, ..)| k == key)?;
-        entry.2 = now;
-        Some(Arc::clone(&entry.1))
+        let entry = self.entries.iter_mut().find(|entry| entry.key == *key)?;
+        entry.used = now;
+        Some(Arc::clone(&entry.ground))
     }
 
-    /// Insert (or replace) an entry, evicting the least recently used at capacity.
+    /// [`SiteGroundCache::peek_captured`]'s hit, touched.
+    fn get_captured(
+        &mut self,
+        input: &CompositeInput,
+        spec: &SiteGeologySpec,
+        key_version: u32,
+    ) -> Option<Arc<SiteGround>> {
+        let now = self.tick();
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.captured(input, spec, key_version))?;
+        entry.used = now;
+        Some(Arc::clone(&entry.ground))
+    }
+
+    /// Insert (or replace) an entry, evicting the least recently used at capacity. It remembers
+    /// no capture: only a lookup by `key` finds it ([`SiteGroundCache::insert_captured`] is the
+    /// build's).
     pub fn insert(&mut self, key: SiteGroundKey, ground: SiteGround) -> Arc<SiteGround> {
+        self.put(key, ground, None)
+    }
+
+    /// **Insert the build of `input` and `spec`** (the pre-commit round's item 1): as
+    /// [`SiteGroundCache::insert`], remembering what `key.revision` was computed over so the
+    /// next peek of the same capture finds it by equality.
+    pub fn insert_captured(
+        &mut self,
+        key: SiteGroundKey,
+        ground: SiteGround,
+        input: CompositeInput,
+        spec: SiteGeologySpec,
+    ) -> Arc<SiteGround> {
+        self.put(key, ground, Some((Arc::new(input), spec)))
+    }
+
+    /// The one insert.
+    fn put(
+        &mut self,
+        key: SiteGroundKey,
+        ground: SiteGround,
+        captured: Option<(Arc<CompositeInput>, SiteGeologySpec)>,
+    ) -> Arc<SiteGround> {
         let now = self.tick();
         let ground = Arc::new(ground);
-        if let Some(entry) = self.entries.iter_mut().find(|(k, ..)| *k == key) {
-            entry.1 = Arc::clone(&ground);
-            entry.2 = now;
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
+            entry.ground = Arc::clone(&ground);
+            entry.captured = captured;
+            entry.used = now;
             return ground;
         }
         if self.entries.len() >= SITE_CACHE_CAPACITY
@@ -441,12 +646,17 @@ impl SiteGroundCache {
                 .entries
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, (.., used))| *used)
+                .min_by_key(|(_, entry)| entry.used)
                 .map(|(at, _)| at)
         {
             self.entries.swap_remove(oldest);
         }
-        self.entries.push((key, Arc::clone(&ground), now));
+        self.entries.push(CachedSite {
+            key,
+            ground: Arc::clone(&ground),
+            captured,
+            used: now,
+        });
         ground
     }
 
@@ -456,7 +666,7 @@ impl SiteGroundCache {
     pub(crate) fn forget_body(&mut self, body: &CanonicalId) -> usize {
         let before = self.entries.len();
         self.entries
-            .retain(|(_, ground, _)| ground.geology.body() != body);
+            .retain(|entry| entry.ground.geology.body() != body);
         before.saturating_sub(self.entries.len())
     }
 
@@ -473,8 +683,43 @@ impl SiteGroundCache {
     }
 }
 
+/// **The non-building peek** (doc 20 cut SM.4a; lead ruling 6, D11): capture, key, look up —
+/// **never builds**. `Ok(None)` is a cold site (the caller asks for a warm,
+/// `crate::surface::want_site_ground`). The command, the start's offer and `+tv` status read
+/// the composite through this alone, at most once per site per call; the cost of the capture
+/// is measured by `tests/knowing.rs` (K14). **Since the pre-commit round's item 1 a warm peek
+/// pays the capture and one structural comparison, never [`site_revision`]'s serialise-and-hash**
+/// ([`SiteGroundCache::peek_captured`]); only a capture no entry was built over (a cold site)
+/// pays the full revision, to find an entry inserted without its capture.
+///
+/// # Errors
+///
+/// The disabled layer's reason, or the capture's refusal.
+pub fn site_ground_cached(
+    w: &World,
+    frame: &WindowFrame,
+    spec: &SiteGeologySpec,
+) -> Result<Option<Arc<SiteGround>>, String> {
+    let (_, key_version) = live(w).map_err(|disabled| disabled.reason())?;
+    let input = capture_site(w, frame)?;
+    let Some(state) = w.module_state::<GeologyState>() else {
+        return Ok(None);
+    };
+    if let Some(hit) = state.sites.peek_captured(&input, spec, key_version) {
+        return Ok(Some(hit));
+    }
+    let key = SiteGroundKey {
+        region: frame.region.clone(),
+        revision: site_revision(&input, spec)?,
+        key_version,
+    };
+    Ok(state.sites.peek(&key))
+}
+
 /// **The synchronous entry point** (lead ruling 4): capture, key, hit or build-and-insert.
-/// SM.4 moves player paths onto an off-loop driver; this stays the staff/test door.
+/// Since doc 20 cut SM.4a its only production caller is the surface tick's warm
+/// (`crate::surface::warm_one`, one site a fire, never on an act's path); staff and tests
+/// call it directly.
 ///
 /// # Errors
 ///
@@ -488,17 +733,24 @@ pub fn site_ground_sync(
     let body = body_geology(w, &spec.body)
         .ok_or_else(|| format!("No geology table is loaded for {}.", spec.body))?;
     let input = capture_site(w, frame)?;
+    let state = w
+        .module_state_mut::<GeologyState>()
+        .ok_or_else(|| "no geology state is composed".to_owned())?;
+    // The pre-commit round's item 1: an entry built over this very capture is a hit without
+    // the hash; otherwise the revision is computed once, here, and kept beside the build.
+    if let Some(hit) = state.sites.get_captured(&input, spec, key_version) {
+        return Ok(hit);
+    }
     let key = SiteGroundKey {
         region: frame.region.clone(),
         revision: site_revision(&input, spec)?,
         key_version,
     };
-    let state = w
-        .module_state_mut::<GeologyState>()
-        .ok_or_else(|| "no geology state is composed".to_owned())?;
     if let Some(hit) = state.sites.get(&key) {
         return Ok(hit);
     }
     let ground = build_site_ground(&input, spec, &body, &mac, key_version)?;
-    Ok(state.sites.insert(key, ground))
+    Ok(state
+        .sites
+        .insert_captured(key, ground, input, spec.clone()))
 }

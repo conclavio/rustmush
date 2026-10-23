@@ -18,7 +18,13 @@
 //!   payout must sum to the escrow when the contract is offered). Sold out, withdrawn,
 //!   or no reference entry for the good: the goods table's `reference_major`, logged
 //!   once and recorded on the ledger entry as the contract-name memo
-//!   [`BASELINE_MEMO`]. Never a zero reference ([`REFERENCE_DARK`]).
+//!   [`BASELINE_MEMO`]. Never a zero reference ([`REFERENCE_DARK`]). **Doc 20 cut SM.5**
+//!   (§7.4, Q-20-5, amending D-18-24 for a good no port asks): the programme's
+//!   `reference_minor` is read **first** — a fixed price in minor units, with no memo and
+//!   no warn — for ore, whose only listing is the bid itself, so the share would
+//!   otherwise be measured against the bid (zero) or fall to the baseline on every
+//!   sale ("the anomaly path would become the normal path"). The validator
+//!   (`crate::port::check_ports`) refuses a fixed reference for any good some port asks.
 //! - **The share** ([`share_of`]): 250‰ (the enrolment's frozen permille) of the
 //!   margin over reference, floored in minor units — the pilot's favour (decision 9).
 //!   Zero below or at reference, and then no payout row at all.
@@ -261,12 +267,25 @@ impl ProceedsPolicy for CoopProceeds {
         // the quote; the live ask can move before the settlement, so the share may
         // drift from it by at most one draw window. Re-reading it at settlement with a
         // remainder cut is the owner's open question Q-18-50.
-        let (reference, memo) = reference_of(
-            w,
-            port.programme.reference.get(sale.commodity),
-            sale.commodity,
-            &label,
-        )?;
+        //
+        // Doc 20 cut SM.5 (§7.4, Q-20-5): a fixed reference in minor units is read
+        // first — for a good no port of the lane asks (ore, at half its bid), which
+        // the validator holds — with no memo and no warn; else the live listing; else
+        // the goods table's baseline with the memo.
+        let fixed = port.programme.reference_minor.get(sale.commodity);
+        let (reference, memo) = match fixed {
+            Some(minor) => {
+                let minor = i64::try_from(*minor)
+                    .map_err(|_| refuse(REFERENCE_DARK.replace("{label}", &label)))?;
+                (Amount::from_minor(minor), None)
+            }
+            None => reference_of(
+                w,
+                port.programme.reference.get(sale.commodity),
+                sale.commodity,
+                &label,
+            )?,
+        };
         let Some((basis, share)) = share_of(sale.price, reference, sale.quantity, permille) else {
             return Err(refuse(REFERENCE_DARK.replace("{label}", &label)));
         };
@@ -361,6 +380,20 @@ mod tests {
 
     fn cr(major: i64) -> Amount {
         Amount::from_minor(major * 100)
+    }
+
+    /// Doc 20 cut SM.5 (§7.4): ore at 70.00 against the fixed 35.00, 10 t, 250‰:
+    /// the margin 350.00, the Trust's quarter 87.50 — 8.75 a tonne.
+    #[test]
+    fn sm5_a_fixed_reference_takes_a_quarter_of_the_upper_half() {
+        assert_eq!(
+            share_of(cr(70), Amount::from_minor(3_500), 10, 250),
+            Some((Amount::from_minor(35_000), Amount::from_minor(8_750)))
+        );
+        assert_eq!(
+            share_of(cr(70), Amount::from_minor(3_500), 1, 250),
+            Some((Amount::from_minor(3_500), Amount::from_minor(875)))
+        );
     }
 
     /// Doc 18 cut IC13 (lead ruling L10): the share stops at graduation.

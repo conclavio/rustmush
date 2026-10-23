@@ -54,4 +54,14 @@ choice: RespondChoice, } } | { "t": "pong", "d": {
 /**
  * The nonce from the server's ping.
  */
-nonce: number, } } | { "t": "caps", "d": ClientCaps };
+nonce: number, } } | { "t": "picture", "d": {
+/**
+ * Whether the picture is wanted.
+ */
+on: boolean,
+/**
+ * The look: the camera's offset from the tank's heading,
+ * millidegrees. A look, not a turn: turning the tank is a
+ * `HEADING` line like any other.
+ */
+look_mdeg: number, } } | { "t": "caps", "d": ClientCaps };

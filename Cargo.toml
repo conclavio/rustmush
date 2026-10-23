@@ -38,6 +38,9 @@ fred = { version = "10.1", features = ["i-config", "i-redis-json", "i-redisearch
 # default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+# Doc 21 cut G.11: the read-only `sftp` subsystem that serves the asset pack
+# over the player's own connection (protocol v3; w11term's client is on 3.0).
+russh-sftp = "3.0.1"
 # OpenSSH public-key parsing/normalization/fingerprinting for the server-side
 # `@sshkey` command (M19). Same crate (and pinned to the same version) russh
 # re-exports as `russh::keys::ssh_key`, so feature unification keeps one copy;
@@ -55,6 +58,10 @@ getrandom = "0.4"
 # already in-tree transitively.
 sha2 = "0.11"
 flate2 = "1"
+# Doc 21 cut G.3b: the picture's trigonometry in pure Rust, so a frame is the
+# same bytes on Windows, Linux and in the browser's wasm (each platform's own
+# libm differs in the last place, which moves pixels).
+libm = "0.2"
 hmac = "0.13"
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "set-header"] }
@@ -134,6 +141,9 @@ mush-ansi = { path = "crates/mush-ansi" }
 mush-store = { path = "crates/mush-store" }
 mush-session = { path = "crates/mush-session" }
 mush-net-ssh = { path = "crates/mush-net-ssh" }
+# 2026-10-21 pixel cockpit spike: the raycaster, the PNG encoder and the kitty
+# graphics framing the SSH TUI streams a first-person view with.
+mush-pixel = { path = "crates/mush-pixel" }
 mush-net-web = { path = "crates/mush-net-web" }
 mush-script = { path = "crates/mush-script" }
 # 17b cut M2.1 (doc 17 §7, D-UM-1): the game-neutral Rhai sandbox unit minds think in —

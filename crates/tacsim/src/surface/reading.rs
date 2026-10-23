@@ -8,7 +8,7 @@
 //! - **R1**, a scan, sharpened by the footing it was taken from: on **rock** each family's field
 //!   word exactly; on **regolith** a two-word band that never excludes the truth; on **ice** no
 //!   return. The band's side is one keyed draw per (field, family), so repeating a scan never
-//!   narrows it (SM.4's "You learn nothing new here.") and its position does not tell the truth,
+//!   narrows it (SM.4a's "You learn nothing new here.") and its position does not tell the truth,
 //!   the barren and rich edges excepted;
 //! - **R2**, a sounding or a core: the pocket's class per family.
 //!
@@ -72,6 +72,19 @@ impl Footing {
             Footing::Rock => "rock",
             Footing::Regolith => "regolith",
             Footing::Ice => "ice",
+        }
+    }
+
+    /// **How sharp a scan from this footing reads** (doc 20 cut SM.4a; §5 "footing sets
+    /// sharpness, never range"): ice 0 (no return), regolith 1 (a band), rock 2 (an exact
+    /// word). The one place the order lives: a chart row keeps its sharpest footing, and the
+    /// preview's better footing is a sharper one.
+    #[must_use]
+    pub fn sharpness(self) -> u8 {
+        match self {
+            Footing::Ice => 0,
+            Footing::Regolith => 1,
+            Footing::Rock => 2,
         }
     }
 }

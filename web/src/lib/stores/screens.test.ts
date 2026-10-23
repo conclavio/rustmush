@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_SCREENS,
   CHART_SCREEN,
+  QUARRY_SCREEN,
   RUN_ALLOWLIST,
   ScreensStore,
   UNIT_SCREEN,
@@ -411,5 +412,45 @@ describe("a letter-hotkey screen (doc 19 cut A.3b)", () => {
     // The unit screen's digit is untouched by a digitless neighbour.
     expect(store.registerFeedScreen(UNIT_SCREEN)).toBeNull();
     expect(store.freeDigit()).toBeNull();
+  });
+});
+
+// Doc 20 cut SM.9: the quarry, the second letter-hotkey screen.
+describe("the quarry screen (doc 20 cut SM.9)", () => {
+  const quarryServer: GateInput = { ...full, panels: [...full.panels, "sky.chart", "site.map"] };
+
+  it("validates beside the chart and the built-ins, on the letter q, with the TUI's eight keys", () => {
+    expect(validateScreens([...BUILTIN_SCREENS, CHART_SCREEN.def, QUARRY_SCREEN.def])).toBeNull();
+    expect(QUARRY_SCREEN.def.hotkey).toBe("q");
+    expect(QUARRY_SCREEN.suffix).toBe("site.map");
+    expect(QUARRY_SCREEN.def.keys.map((b) => [b.key, b.label])).toEqual([
+      ["s", "scan"],
+      ["d", "drive"],
+      ["x", "sound"],
+      ["m", "mine"],
+      ["t", "rig"],
+      ["z", "zoom"],
+      ["l", "layer"],
+      ["r", "refresh"],
+    ]);
+    expect(QUARRY_SCREEN.def.keys.every((b) => b.action.kind !== "run")).toBe(true);
+    const clash: ScreenDef = { ...QUARRY_SCREEN.def, id: "clash", hotkey: "c" };
+    expect(validateScreens([CHART_SCREEN.def, clash])).toMatch(/used twice/);
+  });
+
+  it("registers on a site.map feed and switches by Alt+q", () => {
+    const store = new ScreensStore();
+    expect(store.registerFeedScreen(CHART_SCREEN)).toBeNull();
+    expect(store.registerFeedScreen(QUARRY_SCREEN)).toBeNull();
+    expect(store.available(full).map((s) => s.id)).not.toContain("quarry");
+    const ids = store.available(quarryServer).map((s) => s.id);
+    expect(ids.slice(-2)).toEqual(["chart", "quarry"]);
+    expect(store.switchHotkey("q", quarryServer)).toBe(true);
+    expect(store.active).toBe("quarry");
+  });
+
+  it("puts +chart/ground on the allowlist and never +tv", () => {
+    expect(RUN_ALLOWLIST).toContain("+chart/ground");
+    expect(RUN_ALLOWLIST).not.toContain("+tv");
   });
 });

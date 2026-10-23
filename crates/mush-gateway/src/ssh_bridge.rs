@@ -75,6 +75,9 @@ pub struct SshBridge<A: AuthBackend + 'static> {
     /// to a throwaway registry (tests); the real server injects the shared one
     /// via [`SshBridge::with_metrics`].
     metrics: Arc<mush_net_web::Metrics>,
+    /// The terminal picture's knobs from `[pixel]` (doc 21 cut G.1b); the
+    /// built-in defaults until [`SshBridge::with_pixel`] sets them.
+    pixel: mush_net_ssh::PixelConfig,
 }
 
 impl<A: AuthBackend + 'static> SshBridge<A> {
@@ -101,6 +104,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         SshBridge {
             core: GameBridge::with_link(accounts, sessions, link, guard),
             metrics: Arc::new(mush_net_web::Metrics::new()),
+            pixel: mush_net_ssh::PixelConfig::default(),
         }
     }
 
@@ -109,6 +113,19 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<mush_net_web::Metrics>) -> SshBridge<A> {
         self.metrics = metrics;
+        self
+    }
+
+    /// The terminal picture's knobs, from `[pixel]` (doc 21 cut G.1b).
+    #[must_use]
+    pub fn with_pixel(mut self, cfg: &mush_config::config::PixelCfg) -> SshBridge<A> {
+        self.pixel = mush_net_ssh::PixelConfig::from_millis(
+            cfg.frame_interval_ms,
+            cfg.low_interval_ms,
+            cfg.step_down_after,
+            cfg.step_up_after_s,
+            cfg.diagnostics,
+        );
         self
     }
 
@@ -426,6 +443,20 @@ mod net {
 
         fn caps_changed(&self, conn: u64, caps: ClientCaps) {
             self.caps_changed(ConnId(conn), caps);
+        }
+
+        fn pixel_config(&self) -> net_ssh::PixelConfig {
+            self.pixel
+        }
+
+        fn pixel_event(&self, event: net_ssh::PixelEvent) {
+            match event {
+                net_ssh::PixelEvent::Opened => self.metrics.pixel_view(true),
+                net_ssh::PixelEvent::Closed => self.metrics.pixel_view(false),
+                net_ssh::PixelEvent::Sent(bytes) => self.metrics.pixel_frame_sent(bytes),
+                net_ssh::PixelEvent::SlowSkip => self.metrics.pixel_slow_skip(),
+                net_ssh::PixelEvent::SteppedDown => self.metrics.pixel_stepped_down(),
+            }
         }
     }
 }

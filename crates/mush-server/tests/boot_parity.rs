@@ -299,6 +299,13 @@ fn expected_panels() -> Vec<&'static str> {
     // Doc 19 cut A.3b: the sky chart's feed, registered by the tacsim layer with
     // its port verbs — before `arena_bridge::register` and so before the arena's.
     panels.push("sky.chart");
+    // Doc 20 cut SM.4b: the site map's pulled feed, registered right after the sky chart's.
+    panels.push("site.map");
+    // Doc 20 cut SM.9: the pushed rig-status feed (push only: the quarry screens' cue to pull
+    // the map again), registered right after the site map's...
+    panels.push("tv.status");
+    // ...and the ground chart's pulled feed, registered right after the site map's module.
+    panels.push("body.ground");
     // 16b cut T.2: the arena's cockpit frame feed, registered by the TacSim LAYER
     // (module `tacsim`) rather than by the sheet (module `pilot`) — hence after
     // `tacsim.sheet` in registration order. It is registered whether or not
@@ -816,9 +823,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 21,
-            "the twenty-one port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
-             A.8) and the Freeport Registry (doc 20 cut SM.2)"
+            orgs, 22,
+            "the twenty-two port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
+             A.8), the Freeport Registry (doc 20 cut SM.2) and the Pallas Syndicate (doc 20 cut \
+             SM.10)"
         );
         assert!(
             !store.test_world(),

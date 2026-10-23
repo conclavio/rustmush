@@ -551,6 +551,7 @@ async fn ssh_and_web_user_in_the_same_room() {
             id: 2,
             q: Query::PanelSubscribe {
                 feed: "comsys".into(),
+                params: None,
             },
         },
     )
@@ -1229,6 +1230,7 @@ async fn llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text() {
             id: 50,
             q: Query::PanelSubscribe {
                 feed: "llm.dashboard".into(),
+                params: None,
             },
         },
     )
@@ -1266,6 +1268,7 @@ async fn llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text() {
             id: 51,
             q: Query::PanelSubscribe {
                 feed: "llm.dashboard".into(),
+                params: None,
             },
         },
     )

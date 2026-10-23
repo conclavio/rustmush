@@ -173,6 +173,14 @@ pub fn may_take(world: &mush_core::World, actor: ObjId, endpoint: EndpointRef) -
 /// whatever survived, so past 64 vaults an actor silently lost endpoints they
 /// hold. [`endpoints_truncated`] says whether the cap was reached, and the
 /// command layer says so out loud rather than projecting a quiet omission.
+///
+/// Doc 20 cut SM.6: **a person's or an organization's vault is listed before a
+/// machine's** (`Vault::is_system_owned`: a hopper, a site's spoil or block vault,
+/// a faucet), each half in id order. Staff may take from every vault, and the
+/// lane lays sixteen system-owned block vaults a site before any hull's hold
+/// exists, so an id-ordered list put every hold made after the lane past the cap
+/// and out of a staff `@inv/move` or `@market/vendor stock` offer. Machine vaults
+/// still fill whatever room remains.
 #[must_use]
 pub fn live_endpoints(world: &mush_core::World, actor: ObjId) -> Vec<VaultId> {
     collect_live_endpoints(world, actor).0
@@ -188,21 +196,34 @@ fn collect_live_endpoints(world: &mush_core::World, actor: ObjId) -> (Vec<VaultI
     let Some(store) = world.module_state::<EconomyStore>() else {
         return (Vec::new(), false);
     };
+    // Two halves (the doc's SM.6 paragraph): held vaults first, machines after,
+    // each kept to one past the cap.
     let mut out = Vec::new();
+    let mut machines = Vec::new();
     for vault in store.snapshot().vaults() {
         // Bounded on records VISITED: one past the cap is all it takes to know
         // "there were more", and it is never an unbounded scan.
         if out.len() > MAX_ENDPOINT_CHOICES {
             break;
         }
+        let machine = vault.is_system_owned();
+        if machine && machines.len() > MAX_ENDPOINT_CHOICES {
+            continue;
+        }
         if !may_take(world, actor, EndpointRef(vault.id)) {
             continue;
         }
         if endpoint_state(world, vault.id).is_live() {
-            out.push(vault.id);
+            if machine {
+                machines.push(vault.id);
+            } else {
+                out.push(vault.id);
+            }
         }
     }
     out.sort_unstable();
+    machines.sort_unstable();
+    out.extend(machines);
     let truncated = out.len() > MAX_ENDPOINT_CHOICES;
     out.truncate(MAX_ENDPOINT_CHOICES);
     (out, truncated)

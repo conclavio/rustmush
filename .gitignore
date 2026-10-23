@@ -11,6 +11,8 @@ id_*
 # Node / web client
 node_modules/
 web/dist/
+# Doc 21 cut G.3b: built by web/scripts/build-wasm.mjs from crates/mush-pixel-wasm
+web/src/lib/pixel/mush_pixel.wasm
 
 # Secrets & local config
 .env

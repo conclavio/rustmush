@@ -4033,9 +4033,12 @@ pub fn status_line(
 /// The tab strip: `rustmush  1 scene  2 sheet  3 mail 2 …` with the active
 /// screen reversed and unread badges, then `right` flush right in `width`.
 ///
-/// Ten named tabs need 110 columns and nine 98, so at the 120-column floor
-/// (16b cut AB.1) every tab is named; the right-hand block is dropped beside
-/// ten tabs until 128 columns. When unread badges push the tabs alone past the
+/// Ten named tabs need 110 columns and nine 98, eleven (the chart beside the
+/// ten, doc 19 cut A.3b) 120, and twelve (doc 20 cut SM.9's quarry too) 131. So
+/// at the 120-column floor (16b cut AB.1) every tab is named up to eleven; with
+/// the chart, the quarry and the cockpit all present the strip elides its
+/// inactive names at the floor, as designed below. The right-hand block is
+/// dropped beside ten tabs until 128 columns. When unread badges push the tabs alone past the
 /// width the strip elides: every INACTIVE tab drops its name and
 /// keeps its digit (and its unread badge, which is the only place unread is
 /// shown at all), and the active tab keeps its name, since answering "where
@@ -4314,6 +4317,519 @@ pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if rows.is_empty() {
         return PaneRows::one("(the server sent no tables)");
     }
+    PaneRows { rows }
+}
+
+// ---- doc 20 cut SM.9: the quarry screen ------------------------------------------
+
+/// The `site.map` feed (`tacsim::port::site_map::SITE_MAP_FEED`).
+pub const SITE_MAP_FEED: &str = "site.map";
+/// The `body.ground` feed (`tacsim::port::ground_chart::BODY_GROUND_FEED`).
+pub const BODY_GROUND_FEED: &str = "body.ground";
+/// The pushed `tv.status` feed (`tacsim::port::site_map::TV_STATUS_FEED`): the quarry's cue to
+/// pull the map again.
+pub const TV_STATUS_FEED: &str = "tv.status";
+/// What the map pane says before any frame lands.
+pub const QUARRY_NO_MAP: &str = "(no map yet: r asks the server)";
+/// The second line under a site-map reason frame.
+pub const QUARRY_GROUND_HINT: &str = "z: the ground chart";
+
+fn quarry_i64(v: Option<&Value>) -> Option<i64> {
+    v.and_then(Value::as_i64)
+}
+
+/// **A position along a frozen leg at `t` seconds from its start** — the TUI's copy of
+/// `tacsim::port::site_map::leg_position` (doc 20 §8, "positions between are pure
+/// interpolation"; the SM.9 lead's 0z ruling 1), the same integer rule: the first waypoint
+/// before the leg, the last after it, linear between by `at_s`, each step truncated toward zero
+/// as the server's `i128` arithmetic is. `waypoints` are the frame's `{ x_cm, y_cm, at_s }`.
+#[must_use]
+pub fn quarry_leg_position(waypoints: &[Value], t: i64) -> Option<(i64, i64)> {
+    let point = |w: &Value| -> Option<(i64, i64, i64)> {
+        Some((
+            w.get("x_cm")?.as_i64()?,
+            w.get("y_cm")?.as_i64()?,
+            w.get("at_s")?.as_i64()?,
+        ))
+    };
+    let first = point(waypoints.first()?)?;
+    if t <= first.2 {
+        return Some((first.0, first.1));
+    }
+    for pair in waypoints.windows(2) {
+        let (Some(a), Some(b)) = (pair.first().and_then(point), pair.get(1).and_then(point)) else {
+            continue;
+        };
+        if t <= b.2 {
+            if b.2 <= a.2 {
+                return Some((b.0, b.1));
+            }
+            let lerp = |p: i64, q: i64| -> i64 {
+                let span = i128::from(b.2 - a.2);
+                let along = i128::from(t - a.2);
+                let delta = i128::from(q) - i128::from(p);
+                i64::try_from(i128::from(p) + delta * along / span).unwrap_or(q)
+            };
+            return Some((lerp(a.0, b.0), lerp(a.1, b.1)));
+        }
+    }
+    let last = point(waypoints.last()?)?;
+    Some((last.0, last.1))
+}
+
+/// **The world's IC instant now, as the client reckons it** (the 0z ruling 1): the frame's
+/// `site.clock.now_ic` plus the real seconds since the frame landed (`received`, `now` on the
+/// client's clock) times the world's rate. `None` when the frame carries no clock (nothing of
+/// the viewer's moves).
+#[must_use]
+pub fn quarry_ic_now(frame: &Value, received: i64, now: i64) -> Option<i64> {
+    let clock = frame.pointer("/site/clock")?;
+    let at = clock.get("now_ic")?.as_i64()?;
+    let rate = clock.get("rate")?.as_i64()?;
+    let elapsed = now.saturating_sub(received).max(0);
+    Some(at.saturating_add(elapsed.saturating_mul(rate)))
+}
+
+/// **The site map's whole grid with the viewer's own rigs placed at `ic_now`** (doc 20 cut
+/// SM.9; the 0z ruling 1), row 0 the south edge: the frame's rows through
+/// `mush_ansi::window_rows`; then, when `ic_now` is given, the glyphs the frame lists under the
+/// viewer's rigs (`site.under`) restored and each rig of `site.rigs` placed again — along its
+/// leg once the leg has begun, else at its frame `cell` — with its slot digit east of it when
+/// two or more stand on the ground inside the window (the server's own count: a rig past the
+/// window's edge is not on this map), and its `@`, compose's own order. At the frame's own
+/// instant that is the frame's rows exactly; no glyph is invented — every one is the frame's.
+#[must_use]
+pub fn quarry_grid(frame: &Value, ic_now: Option<i64>) -> Vec<Vec<char>> {
+    let width = chart_num(frame, "width");
+    let height = chart_num(frame, "height");
+    let empty = Vec::new();
+    let runs = frame
+        .get("rows")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let mut grid = mush_ansi::window_rows(runs, width, height, 0, 0, width, height);
+    let Some(ic_now) = ic_now else {
+        return grid;
+    };
+    let Some(site) = frame.get("site") else {
+        return grid;
+    };
+    let (Some(x0), Some(y0), Some(span), Some(cell_cm)) = (
+        quarry_i64(site.pointer("/grid/x0")),
+        quarry_i64(site.pointer("/grid/y0")),
+        quarry_i64(site.pointer("/grid/span")).filter(|s| *s > 0),
+        quarry_i64(site.pointer("/grid/cell_cm")).filter(|c| *c > 0),
+    ) else {
+        return grid;
+    };
+    let put = |grid: &mut Vec<Vec<char>>, (fx, fy): (i64, i64), glyph: char| {
+        if let (Ok(x), Ok(y)) = (usize::try_from(fx), usize::try_from(fy))
+            && let Some(cell) = grid.get_mut(y).and_then(|row| row.get_mut(x))
+        {
+            *cell = glyph;
+        }
+    };
+    for under in site
+        .get("under")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(fx), Some(fy), Some(glyph)) = (
+            quarry_i64(under.get(0)),
+            quarry_i64(under.get(1)),
+            under
+                .get(2)
+                .and_then(Value::as_str)
+                .and_then(|s| s.chars().next()),
+        ) else {
+            continue;
+        };
+        put(&mut grid, (fx, fy), glyph);
+    }
+    let frame_cell = |(sx, sy): (i64, i64)| -> (i64, i64) {
+        ((sx - x0).div_euclid(span), (sy - y0).div_euclid(span))
+    };
+    let inside = |(fx, fy): (i64, i64)| {
+        usize::try_from(fx).is_ok_and(|x| x < width)
+            && usize::try_from(fy).is_ok_and(|y| y < height)
+    };
+    let mut placed: Vec<(u8, (i64, i64))> = Vec::new();
+    for rig in site
+        .get("rigs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(slot) = rig
+            .get("slot")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+        else {
+            continue;
+        };
+        let along = rig.get("leg").filter(|leg| !leg.is_null()).and_then(|leg| {
+            let started = leg.get("started_ic")?.as_i64()?;
+            let waypoints = leg.get("waypoints")?.as_array()?;
+            (ic_now >= started)
+                .then(|| quarry_leg_position(waypoints, ic_now - started))
+                .flatten()
+                .map(|(x, y)| (x.div_euclid(cell_cm), y.div_euclid(cell_cm)))
+        });
+        let at = along.or_else(|| {
+            let cell = rig.get("cell")?;
+            Some((quarry_i64(cell.get(0))?, quarry_i64(cell.get(1))?))
+        });
+        // Only a rig inside the window counts, as the server's compose counts its own layer of
+        // the viewer's rigs (`layers.mine` holds only rigs with a frame cell): a rig on the
+        // ground past the window's edge draws no `@` here and lends no other rig a slot digit.
+        if let Some(at) = at
+            && inside(frame_cell(at))
+        {
+            placed.push((slot, at));
+        }
+    }
+    if placed.len() >= 2 {
+        for (slot, (sx, sy)) in &placed {
+            let east = frame_cell((sx.saturating_add(span), *sy));
+            if inside(frame_cell((*sx, *sy)))
+                && inside(east)
+                && let Some(digit) = char::from_digit(u32::from(*slot), 10)
+            {
+                put(&mut grid, east, digit);
+            }
+        }
+    }
+    for (_, at) in &placed {
+        let cell = frame_cell(*at);
+        if inside(cell) {
+            put(&mut grid, cell, '@');
+        }
+    }
+    grid
+}
+
+/// The frame cells `site.marks` (or nothing) lists, with the style each is drawn in: a block
+/// letter dim, the hull bold, a rig's slot digit reversed — the glyph itself untouched.
+fn quarry_marks(frame: &Value) -> HashMap<(usize, usize), (char, Style)> {
+    let mut marks: HashMap<(usize, usize), (char, Style)> = HashMap::new();
+    let cell = |v: &Value| -> Option<(usize, usize)> {
+        Some((
+            usize::try_from(v.get(0)?.as_u64()?).ok()?,
+            usize::try_from(v.get(1)?.as_u64()?).ok()?,
+        ))
+    };
+    let Some(block) = frame.pointer("/site/marks") else {
+        return marks;
+    };
+    for letter in block
+        .get("letters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(at), Some(glyph)) = (
+            cell(letter),
+            letter
+                .get(2)
+                .and_then(Value::as_str)
+                .and_then(|s| s.chars().next()),
+        ) {
+            marks.insert(at, (glyph, Style::default().add_modifier(Modifier::DIM)));
+        }
+    }
+    if let Some(at) = block.get("hull").and_then(cell) {
+        marks.insert(at, ('H', Style::default().add_modifier(Modifier::BOLD)));
+    }
+    for slot in block
+        .get("slots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(at), Some(digit)) = (
+            cell(slot),
+            slot.get(2)
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .and_then(|n| char::from_digit(n, 10)),
+        ) {
+            marks.insert(
+                at,
+                (digit, Style::default().add_modifier(Modifier::REVERSED)),
+            );
+        }
+    }
+    marks
+}
+
+/// The legend rows of a frame's `legend` pairs, `"{glyph} {label}"` joined by two spaces and
+/// wrapped at entry boundaries within `width` (`render_chart_rows`' layout): the TUI shows the
+/// frame's pairs, never a second string (the SM.9 lead's ruling 2).
+fn quarry_legend(frame: &Value, width: usize) -> Vec<String> {
+    let entries: Vec<String> = frame
+        .get("legend")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|pair| {
+                    Some(format!(
+                        "{} {}",
+                        pair.get(0)?.as_str()?,
+                        pair.get(1)?.as_str()?
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut rows: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = clean(&entry);
+        match rows.last_mut() {
+            Some(last) if last.chars().count() + 2 + entry.chars().count() <= width => {
+                last.push_str("  ");
+                last.push_str(&entry);
+            }
+            _ => rows.push(entry.chars().take(width).collect()),
+        }
+    }
+    rows
+}
+
+/// **The quarry's map pane** (doc 20 cut SM.9; §10, D-20-13): in the ground view the held
+/// `body.ground` frame, else `data` (the `site.map` frame; `Value::Null` before one lands). No
+/// frame: one dim sentence; a reason frame (no grid): its title — the cold, dark or
+/// not-on-a-site line — and, under a site-map reason, `z: the ground chart`. Otherwise the
+/// title, the grid windowed around `you` with each glyph repeated the frame's `cell_columns`
+/// times (the viewer's own rigs placed by [`quarry_grid`] at the client's reckoning of the IC
+/// instant), the `site.marks` styled, and the legend from the frame's pairs.
+pub fn render_quarry_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let view = ctx.store.quarry();
+    let ground = view.mode == super::panels::QuarryMode::Ground;
+    let frame = if ground {
+        ctx.store.get(BODY_GROUND_FEED)
+    } else {
+        (!data.is_null()).then_some(data)
+    };
+    let Some(frame) = frame else {
+        return PaneRows::one(QUARRY_NO_MAP);
+    };
+    let title = frame
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let width = chart_num(frame, "width");
+    let height = chart_num(frame, "height");
+    if width == 0 || height == 0 {
+        let mut rows = PaneRows::one(&clean(title));
+        if !ground {
+            rows.rows.push(PaneRow::plain(Line::from(dim_span_owned(
+                QUARRY_GROUND_HINT,
+            ))));
+        }
+        return rows;
+    }
+    let columns = chart_num(frame, "cell_columns").clamp(1, 4);
+    let (pane_w, pane_h) = match ctx.pane {
+        Some((w, h)) => (usize::from(w).max(8), usize::from(h).max(4)),
+        None => (width * columns, height + 4),
+    };
+    let legend = quarry_legend(frame, pane_w);
+    let grid_h = pane_h.saturating_sub(1 + legend.len()).max(1);
+    let ic_now = if ground {
+        None
+    } else {
+        let received = ctx
+            .store
+            .state(SITE_MAP_FEED)
+            .map_or(view.now, |state| state.updated_at);
+        quarry_ic_now(frame, received, view.now)
+    };
+    let grid = quarry_grid(frame, ic_now);
+    let you = chart_cell(frame.get("you"));
+    let (x0, y0, w, h) = mush_ansi::viewport(width, height, you, pane_w / columns, grid_h);
+    let marks = if ground {
+        HashMap::new()
+    } else {
+        quarry_marks(frame)
+    };
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        clean(title).chars().take(pane_w).collect::<String>(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    // North up: the grid's row 0 is the south edge.
+    for y in (y0..y0 + h).rev() {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for x in x0..x0 + w {
+            let glyph = grid
+                .get(y)
+                .and_then(|row| row.get(x))
+                .copied()
+                .unwrap_or(' ');
+            let text: String = std::iter::repeat_n(glyph, columns).collect();
+            match marks.get(&(x, y)) {
+                // A mark styles only the glyph it marked: a rig placed along its leg since
+                // may stand there now, or have left its digit behind.
+                Some((marked, style)) if *marked == glyph => {
+                    spans.push(Span::styled(text, *style));
+                }
+                _ => spans.push(Span::raw(text)),
+            }
+        }
+        rows.push(PaneRow::plain(Line::from(spans)));
+    }
+    for line in legend {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(&line))));
+    }
+    PaneRows { rows }
+}
+
+/// A frame's string at `pointer`, cleaned.
+fn quarry_text(frame: &Value, pointer: &str) -> Option<String> {
+    frame.pointer(pointer).and_then(Value::as_str).map(clean)
+}
+
+/// **The quarry's rigs pane** (doc 20 cut SM.9; §10's Left pane): each rig's line as the frame
+/// carries it (`site.rigs[].line`, the very line `+tv/map` prints) — the selected rig (`t`'s,
+/// else the frame's addressed one) led `> ` and bold — and under a drilling rig its run clause
+/// (`run.text`, from the operator's own projection), under a rig with an unload queued its queue
+/// line, under a rig working a plan its author's plan line (`plan.text`, doc 20 cut SM.11); then
+/// the hold's line, dim. No frame or a reason frame: a sentence.
+pub fn render_quarry_rigs_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if data.is_null() {
+        return PaneRows::one(QUARRY_NO_MAP);
+    }
+    if chart_num(data, "width") == 0 {
+        return PaneRows::one(&quarry_text(data, "/title").unwrap_or_default());
+    }
+    let selected = ctx.store.quarry().rig.or_else(|| {
+        data.pointer("/site/addressed")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+    });
+    let mut rows: Vec<PaneRow> = Vec::new();
+    for rig in data
+        .pointer("/site/rigs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let line = rig
+            .get("line")
+            .and_then(Value::as_str)
+            .map(clean)
+            .unwrap_or_default();
+        let slot = rig
+            .get("slot")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok());
+        if slot.is_some() && slot == selected {
+            rows.push(PaneRow::plain(Line::from(Span::styled(
+                format!("> {line}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ))));
+        } else {
+            rows.push(PaneRow::plain(Line::from(format!("  {line}"))));
+        }
+        if let Some(run) = quarry_text(rig, "/run/text") {
+            rows.push(PaneRow::plain(Line::from(format!("    {run}"))));
+        }
+        if let Some(queued) = rig.get("queued").and_then(Value::as_str) {
+            rows.push(PaneRow::plain(Line::from(format!("    {}", clean(queued)))));
+        }
+        // Doc 20 cut SM.11: the rig's fill plan, on its author's frame (step words and hours).
+        if let Some(plan) = quarry_text(rig, "/plan/text") {
+            rows.push(PaneRow::plain(Line::from(format!("    {plan}"))));
+        }
+    }
+    if rows.is_empty() {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned("(no rigs here)"))));
+    }
+    if let Some(hold) = quarry_text(data, "/site/hold/line") {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(&hold))));
+    }
+    PaneRows { rows }
+}
+
+/// **The quarry's side pane** (doc 20 cut SM.9; §10's Right pane): in the ground view the held
+/// `body.ground` frame's list (`ground.lines`); else the viewer's own readings in the family
+/// shown (`site.readings[].line`, or the frame's own `site.no_readings` sentence), the frame's
+/// `site.other_rigs` sentence, and the log (`site.log`, the viewer's own excursion's lines).
+pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    let system = ctx.tag("system");
+    let line_rows = |lines: &[String]| -> Vec<PaneRow> {
+        lines
+            .iter()
+            .map(|line| PaneRow::plain(Line::from(clean(line))))
+            .collect()
+    };
+    if ctx.store.quarry().mode == super::panels::QuarryMode::Ground {
+        let Some(frame) = ctx.store.get(BODY_GROUND_FEED) else {
+            return PaneRows::one("(no ground chart yet: r asks the server)");
+        };
+        if chart_num(frame, "width") == 0 {
+            return PaneRows::one(&quarry_text(frame, "/title").unwrap_or_default());
+        }
+        let lines: Vec<String> = frame
+            .pointer("/ground/lines")
+            .and_then(Value::as_array)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return PaneRows {
+            rows: line_rows(&lines),
+        };
+    }
+    if data.is_null() {
+        return PaneRows::one(QUARRY_NO_MAP);
+    }
+    if chart_num(data, "width") == 0 {
+        return PaneRows::one(&quarry_text(data, "/title").unwrap_or_default());
+    }
+    let family = quarry_text(data, "/site/family").unwrap_or_default();
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        format!("readings, {family}"),
+        system,
+    )))];
+    let readings: Vec<String> = data
+        .pointer("/site/readings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.get("line").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    if readings.is_empty() {
+        // The frame's own sentence for no readings (`site.no_readings`, `MAP_NO_READINGS`
+        // whole), never one written here and never one picked out of `site.lines`.
+        if let Some(line) = quarry_text(data, "/site/no_readings") {
+            rows.push(PaneRow::plain(Line::from(line)));
+        }
+    } else {
+        rows.extend(line_rows(&readings));
+    }
+    // The other-rigs sentence whole (`site.other_rigs`; `site.lines` holds it wrapped for line
+    // mode): one row, which the pane wraps at its own width.
+    if let Some(line) = quarry_text(data, "/site/other_rigs") {
+        rows.push(PaneRow::plain(Line::from(line)));
+    }
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        "log".to_owned(),
+        system,
+    ))));
+    let log: Vec<String> = data
+        .pointer("/site/log")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.get("text").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    rows.extend(line_rows(&log));
     PaneRows { rows }
 }
 

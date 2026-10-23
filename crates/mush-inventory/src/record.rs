@@ -937,7 +937,19 @@ impl PoolCensus {
     /// # Errors
     /// [`InventoryRecordError::EndpointPools`] past the cap.
     pub const fn checked_add(self) -> Result<Self, InventoryRecordError> {
-        let Some(pools) = self.0.checked_add(1) else {
+        self.checked_add_n(1)
+    }
+
+    /// `n` more pools at once (doc 20 cut SM.6, lead ruling 5): the count one
+    /// bundle that opens several new pools at one endpoint stages **once**,
+    /// because an `ActionTxn` mutates one census key once
+    /// ([`InventoryFamilies::transfer_many`](crate::InventoryFamilies::transfer_many)).
+    /// **Refuses past [`MAX_POOLS_PER_ENDPOINT`]**.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointPools`] past the cap.
+    pub const fn checked_add_n(self, n: u32) -> Result<Self, InventoryRecordError> {
+        let Some(pools) = self.0.checked_add(n) else {
             return Err(InventoryRecordError::EndpointPools {
                 max: MAX_POOLS_PER_ENDPOINT,
             });
@@ -1328,6 +1340,37 @@ impl MarkerRing {
             });
         }
         Ok((Self(entries.into_iter().collect()), evicted))
+    }
+
+    /// **Whether `n` more markers stamped `now_wall` would fit** (doc 20 cut SM.11, the lead's
+    /// pre-commit round, item 1): [`Self::push`]'s rule run over the entries' walls alone — each
+    /// push appended, then aged entries evicted from the front (past
+    /// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`], at least [`MARKER_RETENTION_SECS`] old at
+    /// `now_wall`, at most [`MAX_RING_EVICTIONS_PER_PUSH`] a push) — `false` exactly when one of
+    /// the `n` pushes would refuse [`InventoryRecordError::MarkerRingFull`]. A pure read: a caller
+    /// that must not stage a marker-writing move into a full ring (TacSim's queued unload start)
+    /// asks this first; the move itself still decides.
+    #[must_use]
+    pub fn admits(&self, n: usize, now_wall: i64) -> bool {
+        let mut walls: std::collections::VecDeque<i64> =
+            self.0.iter().map(|entry| entry.wall).collect();
+        for _ in 0..n {
+            walls.push_back(now_wall);
+            let mut evicted = 0_usize;
+            while walls.len() > MAX_RETAINED_MARKERS_PER_ENDPOINT
+                && evicted < MAX_RING_EVICTIONS_PER_PUSH
+                && walls
+                    .front()
+                    .is_some_and(|front| front.saturating_add(MARKER_RETENTION_SECS) <= now_wall)
+            {
+                walls.pop_front();
+                evicted = evicted.saturating_add(1);
+            }
+            if walls.len() > MAX_MARKER_RING {
+                return false;
+            }
+        }
+        true
     }
 }
 

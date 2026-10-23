@@ -851,6 +851,18 @@ pub struct Vault {
     pub revision: u64,
 }
 
+impl Vault {
+    /// Whether a **system** principal owns this vault — a machine's container (a
+    /// hopper, a site's spoil or block vault, a faucet), not a person's or an
+    /// organization's. A quantity authority's endpoint list orders these last so
+    /// a world with many machine vaults never pushes a held one out of a capped
+    /// offer (doc 20 cut SM.6).
+    #[must_use]
+    pub fn is_system_owned(&self) -> bool {
+        matches!(self.owner, PrincipalId::System(_))
+    }
+}
+
 /// Vault lifecycle (doc authority, like `AccountStatus`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VaultStatus {

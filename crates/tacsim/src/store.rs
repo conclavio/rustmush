@@ -15,6 +15,10 @@
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
 //! | `tacsim:tv:{tv}` | per-rig projection (doc 20 cut SM.3b: `crate::surface::excursion::TvRec`) — where a rig is, its open excursion, the act in flight, what the tick applied and told, a sixteen-line log | **skipped loudly, read unreadable, and it bars nothing**: the projection decides nothing (every decision reads the typed `tacsim.excursion` family), and the `tacsim.surface` tick's next write replaces it |
+//! | `tacsim:mined:{site}` | per-site ring of the last 64 mined cycles (doc 20 cut SM.7: `crate::surface::mined::MinedRing`) — the fact `tacsim.surface.mined`, written by the `tacsim.surface` tick's tell; read by nothing yet | **dropped loudly, and it bars nothing**: the ring reads unreadable, and the tick's next write replaces it |
+//! | `tacsim:claimlog:{site}` | per-site claim log (doc 20 cut SM.10: `crate::surface::claims::ClaimLog`) — the lapses the site clerk chronicled, the contest refunds it paid, the expired fees it paged and the paper's adjudication contract, written only by the clerk's claim steps | **dropped loudly (paged once at load), and it bars nothing**: a re-chronicle is then guarded by `mush_canon::records_for_source`, a refund is re-attempted only under its own idempotency key, and the paper contract is re-found by its issuer and name before any re-file; the clerk's next write replaces it |
+//! | `tacsim:tvpref:{character}` | per-character `+tv` preferences (doc 20 cut SM.4a: `crate::port::tv::TvPrefs`) — whether the character hears other rigs' soundings | **dropped loudly**: the character reads as not quiet (they hear soundings again) and the key bars nothing; the next `+tv/quiet` rewrites it |
+//! | `tacsim:licence:{account}` | per-gateway-account prospecting licence (doc 20 cut SM.5: `crate::port::licence`) — its holder, entitlement account, expiry, grace and last fee contract | **skipped loudly, and the key still bars the account**: that account's licence reads unreadable, so `+licence/buy` and every licence-gated act (`+tv/lease` now) refuse, and staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
@@ -325,6 +329,31 @@ pub struct TacsimStore {
     /// [`put_tv_rec`]; an unreadable body is [`crate::surface::excursion::TvRecState::Unreadable`]
     /// and bars nothing (the projection decides nothing; the tick's next write replaces it).
     pub(crate) tv_recs: BTreeMap<u32, crate::surface::excursion::TvRecState>,
+    /// **Doc 20 cut SM.7** (§6) — `tacsim:mined:{site}`: each site's ring of the last 64 mined
+    /// cycles ([`crate::surface::mined::MinedRing`]), keyed by the site entry. Written only by the
+    /// `tacsim.surface` tick's tell through [`put_mined`]; an unreadable body is
+    /// [`crate::surface::mined::MinedState::Unreadable`] and bars nothing.
+    pub(crate) mined: BTreeMap<CanonicalId, crate::surface::mined::MinedState>,
+    /// **Doc 20 cut SM.10** (§9) — `tacsim:claimlog:{site}`: each site's claim log
+    /// ([`crate::surface::claims::ClaimLog`]), keyed by the site entry. Written only by the site
+    /// clerk's claim steps through [`put_claim_log`]; an unreadable body is
+    /// [`crate::surface::claims::ClaimLogState::Unreadable`] and bars nothing.
+    pub(crate) claim_logs: BTreeMap<CanonicalId, crate::surface::claims::ClaimLogState>,
+    /// **Doc 20 cut SM.4a** (D10) — `tacsim:tvpref:{character}`: each character's `+tv`
+    /// preferences ([`crate::port::tv::TvPrefs`]), keyed by the character's id. Written only by
+    /// `+tv/quiet` through [`put_tv_prefs`]; an unreadable body is logged and read as not quiet
+    /// (it bars nothing, and the next `+tv/quiet` replaces it).
+    pub(crate) tv_prefs: BTreeMap<u32, crate::port::tv::TvPrefs>,
+    /// **Doc 20 cut SM.5** (§9.1, D-20-12) — `tacsim:licence:{account}`: each
+    /// gateway account's prospecting licence ([`crate::port::licence::Licence`]),
+    /// keyed by the immutable account id (one licence an account, the enrolment
+    /// pattern). Persisted through [`put_licence`]; read at every licence-gated act,
+    /// never written by a tick.
+    pub(crate) licences: BTreeMap<mush_core::AccountId, crate::port::licence::Licence>,
+    /// **Every `tacsim:licence:` key seen at load or written**, readable or not (the
+    /// R8 rule): a claimed key with no readable body is
+    /// [`crate::port::licence::LicenceState::Unreadable`] and bars that account.
+    pub(crate) licence_keys: BTreeSet<SmolStr>,
 }
 
 impl TacsimStore {
@@ -342,6 +371,23 @@ impl TacsimStore {
     #[doc(hidden)]
     pub fn replace_minds_config_for_tests(&mut self, minds: crate::config::MindsConfig) {
         self.cfg.minds = minds;
+    }
+
+    /// **Test hook** (doc 20 cut SM.6, review F3): drop one org's row from every RAM port
+    /// map of the lane — a port map that lost its issuer — so a test can prove a site whose
+    /// issuer does not resolve opens nothing. Persists nothing; the count of rows dropped.
+    /// Nothing in the shipped lane calls it.
+    #[doc(hidden)]
+    pub fn drop_lane_org_for_tests(&mut self, org: &CanonicalId) -> usize {
+        let mut dropped = 0_usize;
+        for map in self.port_maps.values_mut() {
+            if map.pack.as_str() == crate::definitions::content::LANE_PACK
+                && map.orgs.remove(org).is_some()
+            {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        dropped
     }
 
     /// Whether the layer is enabled at all.
@@ -499,11 +545,60 @@ impl TacsimStore {
         })
     }
 
+    /// **One gateway account's prospecting licence** (doc 20 cut SM.5): absent,
+    /// readable, or a key whose body did not read — the last bars that account's
+    /// `+licence/buy` and every licence-gated act.
+    #[must_use]
+    pub fn licence_state(
+        &self,
+        account: mush_core::AccountId,
+    ) -> crate::port::licence::LicenceState<'_> {
+        match self.licences.get(&account) {
+            Some(record) => crate::port::licence::LicenceState::Present(record),
+            None if self
+                .licence_keys
+                .contains(&crate::port::licence::licence_key(account)) =>
+            {
+                crate::port::licence::LicenceState::Unreadable
+            }
+            None => crate::port::licence::LicenceState::Absent,
+        }
+    }
+
+    /// The readable licence whose `holder` is `pilot` (a scan, bounded by the
+    /// licences): the fallback when no account oracle answers for the pilot.
+    #[must_use]
+    pub fn licence_of_holder(&self, pilot: ObjId) -> Option<&crate::port::licence::Licence> {
+        self.licences.values().find(|record| record.holder == pilot)
+    }
+
     /// **One rig's projection** (doc 20 cut SM.3b; §8): `tacsim:tv:{tv}` as the store
     /// holds it; `None` when no key claims it. It decides nothing.
     #[must_use]
     pub fn tv_rec(&self, tv: ObjId) -> Option<&crate::surface::excursion::TvRecState> {
         self.tv_recs.get(&tv.0)
+    }
+
+    /// **One site's mined ring** (doc 20 cut SM.7; §6): `tacsim:mined:{site}` as the store holds
+    /// it; `None` when no key claims it. Read by nothing in the game yet.
+    #[must_use]
+    pub fn mined(&self, site: &CanonicalId) -> Option<&crate::surface::mined::MinedState> {
+        self.mined.get(site)
+    }
+
+    /// **One site's claim log** (doc 20 cut SM.10): `tacsim:claimlog:{site}` as the store holds
+    /// it; `None` when no key claims it.
+    #[must_use]
+    pub fn claim_log(&self, site: &CanonicalId) -> Option<&crate::surface::claims::ClaimLogState> {
+        self.claim_logs.get(site)
+    }
+
+    /// **Whether `who` has asked not to hear other rigs' soundings** (doc 20 cut SM.4a; D10):
+    /// their `tacsim:tvpref:` document's `quiet`; absent or unreadable reads `false` (the
+    /// unreadable one was logged at load).
+    #[must_use]
+    pub fn tv_quiet(&self, who: ObjId) -> bool {
+        self.tv_prefs.get(&who.0).is_some_and(|prefs| prefs.quiet)
     }
 
     /// **One hull's sailing plan** (doc 18 cut IC9): absent, readable, or a key
@@ -1632,6 +1727,36 @@ pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment)
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a prospecting licence into RAM and queue its document** (doc 20 cut
+/// SM.5) — the single write path, [`put_enrolment`]'s exact pattern: the RAM
+/// install (the record and its key), then one whole-document `JsonSet`. The
+/// serialize failure is structurally unreachable; if it ever happened, it logs and
+/// writes a minimal `{schema, account}` body so **the key still exists** — which
+/// loads as unreadable and bars that account until staff repair it.
+pub(crate) fn put_licence(ctx: &mut Ctx<'_>, record: &crate::port::licence::Licence) {
+    let key = crate::port::licence::licence_key(record.account);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.licence_keys.insert(key.clone());
+        store.licences.insert(record.account, record.clone());
+    }
+    let value = match serde_json::to_value(record) {
+        Ok(value) => value,
+        Err(error) => {
+            // Never the key: its tail is the account's canonical hash.
+            tracing::error!(
+                holder = record.holder.0, %error,
+                "tacsim: a licence did not serialize; a minimal document is written so the key \
+                 still bars the account. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": record.schema,
+                "account": record.account,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// **Install a rig lease record into RAM and queue its document** (doc 20 cut
 /// SM.3a) — the single write path, [`put_enrolment`]'s exact pattern: the RAM
 /// install, then one whole-document `JsonSet`. The serialize failure is
@@ -1668,8 +1793,9 @@ pub(crate) fn put_tv_lease(ctx: &mut Ctx<'_>, record: &crate::port::tv::TvLease)
 /// one whole-document `JsonSet`. Only the `tacsim.surface` tick calls it, in its own outbox
 /// batch beside the placement. The serialize failure is structurally unreachable; if it ever
 /// happened it logs and writes nothing (the projection decides nothing, and the tick's next
-/// write replaces it).
-pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) {
+/// write replaces it). **Returns whether it wrote** (doc 20 cut SM.4a, D24: the tell's heard
+/// lines leave only after the projection that advances `told` is written).
+pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) -> bool {
     let value = match serde_json::to_value(rec) {
         Ok(value) => value,
         Err(error) => {
@@ -1677,7 +1803,7 @@ pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvR
                 tv = rec.tv.0, %error,
                 "tacsim: a rig projection did not serialize; nothing was written"
             );
-            return;
+            return false;
         }
     };
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
@@ -1690,6 +1816,106 @@ pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvR
         ctx.out,
         ModuleWrite::JsonSet {
             key: rec.key(),
+            value,
+        },
+    );
+    true
+}
+
+/// **Install a site's mined ring into RAM and queue its document** (doc 20 cut SM.7; §6) — the
+/// single write path, [`put_tv_rec`]'s shape: the RAM install, then one whole-document `JsonSet`.
+/// Only the `tacsim.surface` tick's tell calls it, after the projection's write landed. The
+/// serialize failure is structurally unreachable; if it ever happened it logs and writes nothing
+/// (the ring is read by nothing, and the next write replaces it). Returns whether it wrote.
+pub(crate) fn put_mined(ctx: &mut Ctx<'_>, ring: &crate::surface::mined::MinedRing) -> bool {
+    let value = match serde_json::to_value(ring) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                site = %ring.site, %error,
+                "tacsim: a mined ring did not serialize; nothing was written"
+            );
+            return false;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.mined.insert(
+            ring.site.clone(),
+            crate::surface::mined::MinedState::Present(ring.clone()),
+        );
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: ring.key(),
+            value,
+        },
+    );
+    true
+}
+
+/// **Install a site's claim log into RAM and queue its document** (doc 20 cut SM.10; §9) — the
+/// single write path, [`put_mined`]'s shape: the check, the RAM install, then one whole-document
+/// `JsonSet`. Only the site clerk's claim steps (`crate::port::site`) call it, in the same handler
+/// as the act it records. A log that fails its check or does not serialize logs and writes
+/// nothing. Returns whether it wrote.
+pub(crate) fn put_claim_log(ctx: &mut Ctx<'_>, log: &crate::surface::claims::ClaimLog) -> bool {
+    if let Err(error) = log.check() {
+        tracing::error!(
+            site = %log.site, %error,
+            "tacsim: a claim log failed its own check; nothing was written"
+        );
+        return false;
+    }
+    let value = match serde_json::to_value(log) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                site = %log.site, %error,
+                "tacsim: a claim log did not serialize; nothing was written"
+            );
+            return false;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.claim_logs.insert(
+            log.site.clone(),
+            crate::surface::claims::ClaimLogState::Present(log.clone()),
+        );
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new(log.key()),
+            value,
+        },
+    );
+    true
+}
+
+/// **Install a character's `+tv` preferences into RAM and queue their document** (doc 20 cut
+/// SM.4a; D10) — the single write path, [`put_tv_rec`]'s shape: the RAM install, then one
+/// whole-document `JsonSet`, from `+tv/quiet`'s handler (the `Authoritative` bracket, `/lease`'s
+/// precedent). The serialize failure is structurally unreachable; if it ever happened it logs and
+/// writes nothing.
+pub(crate) fn put_tv_prefs(ctx: &mut Ctx<'_>, prefs: &crate::port::tv::TvPrefs) {
+    let value = match serde_json::to_value(prefs) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                character = prefs.character.0, %error,
+                "tacsim: a +tv preference did not serialize; nothing was written"
+            );
+            return;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.tv_prefs.insert(prefs.character.0, prefs.clone());
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: prefs.key(),
             value,
         },
     );
@@ -1974,6 +2200,12 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // re-enrolment, and staff repair the document.
             store.enrolment_keys.insert(SmolStr::new(key));
             load_enrolment(&mut store, key, value);
+        } else if key.starts_with(crate::port::licence::LICENCE_PREFIX) {
+            // Doc 20 cut SM.5. The claim is the KEY's (the R8 rule): a licence that
+            // will not read still bars its account (its licence reads unreadable), and
+            // staff repair the document.
+            store.licence_keys.insert(SmolStr::new(key));
+            load_licence(&mut store, key, value);
         } else if let Some(rest) = key.strip_prefix(crate::port::tv::TV_LEASE_PREFIX) {
             // Doc 20 cut SM.3a. The claim is the KEY's (the R8 rule): a rig lease record
             // that will not read stays claimed as unreadable, which bars only its own
@@ -1983,6 +2215,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_tv_lease(&mut store, key, lease, value);
+        } else if key.starts_with(crate::port::tv::TV_PREF_PREFIX) {
+            // Doc 20 cut SM.4a (D10). Before the `tacsim:tv:` arm, though the prefixes differ at
+            // the first character after `tacsim:tv` and neither ever reads the other's keys. A
+            // preference that will not read is logged and dropped: it bars nothing, reads as not
+            // quiet, and the next `+tv/quiet` rewrites it.
+            let Some(character) = crate::port::tv::tv_pref_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a +tv preference has an unreadable key; skipped");
+                continue;
+            };
+            load_tv_prefs(&mut store, key, character, value);
         } else if key.starts_with(crate::surface::excursion::TV_REC_PREFIX) {
             // Doc 20 cut SM.3b. After the `tacsim:tvlease:` arm, though the prefixes differ at
             // the colon and neither ever reads the other's keys. A projection that will not
@@ -1993,6 +2235,26 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_tv_rec(&mut store, key, tv, value);
+        } else if key.starts_with(crate::surface::mined::MINED_PREFIX) {
+            // Doc 20 cut SM.7 (§6). Never a prefix of `tacsim:mindsrc:`'s keys nor they of it
+            // (they differ at the first character after `tacsim:min`). A ring that will not read
+            // is logged and read as unreadable: it bars nothing (nothing reads it yet), and the
+            // tick's next write replaces it.
+            let Some(site) = crate::surface::mined::mined_key_site(key) else {
+                tracing::warn!(%key, "tacsim: a mined ring has an unreadable key; skipped");
+                continue;
+            };
+            load_mined(&mut store, key, site, value);
+        } else if key.starts_with(crate::surface::claims::CLAIM_LOG_PREFIX) {
+            // Doc 20 cut SM.10 (§9). A log that will not read is dropped loudly (paged once,
+            // here) and read as unreadable: it bars nothing — the clerk's re-chronicle is
+            // guarded by the chronicle itself, a refund by its idempotency key, the paper
+            // contract by its re-find — and the clerk's next write replaces it.
+            let Some(site) = crate::surface::claims::claim_log_key_site(key) else {
+                tracing::warn!(%key, "tacsim: a claim log has an unreadable key; skipped");
+                continue;
+            };
+            load_claim_log(&mut store, key, site, value);
         } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
             // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
             // that character its queued notices and nothing else: the key bars
@@ -2218,6 +2480,34 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
     }
 }
 
+/// One `tacsim:licence:{account}` body (doc 20 cut SM.5): decoded strictly, checked,
+/// and held to the identity rule (`licence_key(record.account)` is its key). Any
+/// failure skips it loudly; its key, already recorded, keeps that account's licence
+/// `Unreadable`. **No warning names the key or the account** (the enrolment loader's
+/// rule: the key's tail is the account's canonical hash).
+fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
+    let record = serde_json::from_value::<crate::port::licence::Licence>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+        .and_then(|record| {
+            if crate::port::licence::licence_key(record.account) == key {
+                Ok(record)
+            } else {
+                Err("the licence disagrees with its own key".to_owned())
+            }
+        });
+    match record {
+        Ok(record) => {
+            store.licences.insert(record.account, record);
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "tacsim: a licence document is unreadable; skipped (its key still bars that \
+             account; repair the document by hand)"
+        ),
+    }
+}
+
 /// One `tacsim:tvlease:{lease}` body (doc 20 cut SM.3a): decoded strictly, checked,
 /// and held to the identity rule (`record.lease` is its key's). Any failure keeps the
 /// key claimed as unreadable, with whatever of its pilot, hull and TV the raw body
@@ -2264,6 +2554,27 @@ fn load_tv_lease(store: &mut TacsimStore, key: &str, lease: u64, value: &serde_j
     }
 }
 
+/// One `tacsim:tvpref:{character}` body (doc 20 cut SM.4a): decoded strictly, its schema and
+/// the identity rule (`prefs.character` is its key's) held. Any failure is logged and the
+/// document dropped (absent reads as not quiet).
+fn load_tv_prefs(store: &mut TacsimStore, key: &str, character: ObjId, value: &serde_json::Value) {
+    match serde_json::from_value::<crate::port::tv::TvPrefs>(value.clone()) {
+        Ok(prefs)
+            if prefs.schema == crate::port::tv::TV_PREF_SCHEMA && prefs.character == character =>
+        {
+            store.tv_prefs.insert(character.0, prefs);
+        }
+        Ok(_) => tracing::error!(
+            %key,
+            "tacsim: a +tv preference disagrees with its key or schema; it reads as not quiet"
+        ),
+        Err(error) => tracing::error!(
+            %key, %error,
+            "tacsim: a +tv preference is unreadable; it reads as not quiet"
+        ),
+    }
+}
+
 /// One `tacsim:tv:{tv}` body (doc 20 cut SM.3b): decoded strictly, checked, and held to the
 /// identity rule (`rec.tv` is its key's). Any failure is logged once and reads
 /// [`crate::surface::excursion::TvRecState::Unreadable`], which bars nothing.
@@ -2293,6 +2604,79 @@ fn load_tv_rec(store: &mut TacsimStore, key: &str, tv: ObjId, value: &serde_json
             store
                 .tv_recs
                 .insert(tv.0, crate::surface::excursion::TvRecState::Unreadable);
+        }
+    }
+}
+
+/// One `tacsim:claimlog:{site}` body (doc 20 cut SM.10): decoded strictly, checked, and held to
+/// the identity rule (`log.site` is its key's). Any failure is paged here, once a boot, and reads
+/// [`crate::surface::claims::ClaimLogState::Unreadable`], which bars nothing.
+fn load_claim_log(
+    store: &mut TacsimStore,
+    key: &str,
+    site: CanonicalId,
+    value: &serde_json::Value,
+) {
+    let log = serde_json::from_value::<crate::surface::claims::ClaimLog>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|log| log.check().map(|()| log))
+        .and_then(|log| {
+            if log.site == site {
+                Ok(log)
+            } else {
+                Err("the log disagrees with its own key".to_owned())
+            }
+        });
+    match log {
+        Ok(log) => {
+            store
+                .claim_logs
+                .insert(site, crate::surface::claims::ClaimLogState::Present(log));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                runbook = "doc 20 cut SM.10: the site clerk re-finds what the log recorded (the \
+                           chronicle, the refund's idempotency key, the paper contract by its \
+                           issuer and name) and its next write replaces the log",
+                "tacsim: a claim log is unreadable; it bars nothing"
+            );
+            store
+                .claim_logs
+                .insert(site, crate::surface::claims::ClaimLogState::Unreadable);
+        }
+    }
+}
+
+/// One `tacsim:mined:{site}` body (doc 20 cut SM.7): decoded strictly, checked, and held to the
+/// identity rule (`ring.site` is its key's). Any failure is logged once and reads
+/// [`crate::surface::mined::MinedState::Unreadable`], which bars nothing.
+fn load_mined(store: &mut TacsimStore, key: &str, site: CanonicalId, value: &serde_json::Value) {
+    let ring = serde_json::from_value::<crate::surface::mined::MinedRing>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|ring| ring.check().map(|()| ring))
+        .and_then(|ring| {
+            if ring.site == site {
+                Ok(ring)
+            } else {
+                Err("the ring disagrees with its own key".to_owned())
+            }
+        });
+    match ring {
+        Ok(ring) => {
+            store
+                .mined
+                .insert(site, crate::surface::mined::MinedState::Present(ring));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a mined ring is unreadable; it bars nothing and the surface tick's next \
+                 write replaces it"
+            );
+            store
+                .mined
+                .insert(site, crate::surface::mined::MinedState::Unreadable);
         }
     }
 }

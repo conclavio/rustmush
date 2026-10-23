@@ -404,19 +404,29 @@ fn location_label(place: &CanonicalId) -> String {
     }
 }
 
-/// The sum of every authored capital over the decoded lane, major units.
+/// The sum of every authored capital over the decoded lane, major units — each org's base
+/// with its raises (doc 20 cut SM.5: Occator's 250,000).
 fn total_capital() -> u64 {
     ports_of(LANE_JSON)
         .iter()
-        .flat_map(|(_, def)| def.orgs.iter().map(|org| org.capital_major))
+        .flat_map(|(_, def)| {
+            def.orgs
+                .iter()
+                .map(|org| org.capital_total().expect("the capital fits"))
+        })
         .sum()
 }
 
-/// The number of tranches the authored capital needs.
+/// The number of tranches the authored capital needs — the schedule with its raises
+/// (doc 20 cut SM.5).
 fn total_tranches() -> usize {
     ports_of(LANE_JSON)
         .iter()
-        .flat_map(|(_, def)| def.orgs.iter().map(|org| tranches(org.capital_major).len()))
+        .flat_map(|(_, def)| {
+            def.orgs
+                .iter()
+                .map(|org| tacsim::port::capital_schedule(org.capital_major, &org.raises).len())
+        })
         .sum()
 }
 
@@ -535,7 +545,8 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
             assert_eq!(Some(account.id.0), row.account);
             assert_eq!(account.scope.map(|s| s.0), Some(row.root_scope));
             assert_eq!(account.credit, mush_economy::CreditPolicy::forbid());
-            let want = tranches(org.capital_major);
+            // Doc 20 cut SM.5: the base's tranches and then each raise's.
+            let want = tacsim::port::capital_schedule(org.capital_major, &org.raises);
             assert_eq!(row.capital.len(), want.len(), "{}", org.id);
             for (tranche, major) in row.capital.iter().zip(&want) {
                 let o = snapshot
@@ -582,9 +593,10 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
             let account = snapshot
                 .account(AccountId(row.account.expect("an account")))
                 .expect("the account");
+            // Doc 20 cut SM.5: the base with its raises (Occator 300,000).
             assert_eq!(
                 account.posted_balance.minor(),
-                i64::try_from(org.capital_major).expect("fits") * 100,
+                i64::try_from(org.capital_total().expect("fits")).expect("fits") * 100,
                 "{}",
                 org.id
             );
@@ -600,9 +612,10 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100)
     );
     assert_eq!(
-        treasury_balance, -1_455_000_000,
-        "14,550,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8) and the \
-         Freeport Registry's 50,000 (doc 20 cut SM.2)"
+        treasury_balance, -1_485_000_000,
+        "14,850,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+         Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
+         SM.5) and the Pallas Syndicate's 50,000 (doc 20 cut SM.10)"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -653,8 +666,9 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     assert!(economy(&tw).snapshot().instrument(&credit()).is_some());
     let ceres = port_map(&tw, "ceres_port");
     let stickney = port_map(&tw, "stickney_port");
-    // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh.
-    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 10);
+    // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh. Doc 20 cut SM.10: the Pallas
+    // Syndicate, a Ceres lane org, its eighth.
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 11);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
     let treasury = snapshot
@@ -828,8 +842,14 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
         (
             // Doc 18 cut IC8 (fixer T15): a recorded bid is never retired by an update.
             "v4 (the Exchange's alloy bid dropped)",
+            // Doc 20 cut SM.5: only the alloy row goes; the Exchange's ore intakes stay,
+            // so the refusal still names the alloy bid.
             lane_v4(|doc| {
-                doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"] = serde_json::json!([]);
+                if let Some(bids) =
+                    doc["entries"]["ceres_port"]["def"]["vendors"][0]["bids"].as_array_mut()
+                {
+                    bids.retain(|bid| bid["good"] != "structural_alloys");
+                }
             }),
             [
                 "vendor freeport_exchange bid structural_alloys",
@@ -1690,8 +1710,11 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             map.domain.expect("a domain")
         ));
         if def.site.is_some() {
+            // Doc 20 cut SM.6 (D2, D3): the block vaults counted; this world's geology layer
+            // is dark, so nothing opens and the pad stays open.
             want.push(format!(
-                "  {entry} site: 16 block places, the site clerk and the spoil laid up. [ready]"
+                "  {entry} site: 16 block places, the site clerk, the spoil and 16 block vaults \
+                 laid up; no deposits while the geology layer is dark. [ready]"
             ));
         }
         for org in &def.orgs {
@@ -1703,8 +1726,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 org.name,
                 row.org,
                 row.account.expect("an account"),
-                org.capital_major,
-                tranches(org.capital_major).len()
+                // Doc 20 cut SM.5: the capital with its raises, and the schedule's
+                // tranches (Occator: 300000.00cr, 2 tranches).
+                org.capital_total().expect("the capital fits"),
+                tacsim::port::capital_schedule(org.capital_major, &org.raises).len()
             ));
         }
         if let Some(programme) = &def.programme {
@@ -1743,6 +1768,19 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                  0 leased. [ready]",
                 lessor.name,
                 pool = vehicles.pool
+            ));
+        }
+        // Doc 20 cut SM.5: the (ungated) licence line follows the rig pool's.
+        if let Some(licence) = &def.licence {
+            let issuer = def
+                .orgs
+                .iter()
+                .find(|o| o.id == licence.org)
+                .expect("the issuer org");
+            want.push(format!(
+                "  {entry} licence tacsim.licence.freeport: the {} issues it at {}.00cr for {} IC \
+                 days with {} IC days' grace; extraction reads it. [ready]",
+                issuer.name, licence.fee_major, licence.term_ic_days, licence.grace_ic_days
             ));
         }
         // Doc 18 cut IC8: before any tick, per vendor its pools line (nothing seeded),
@@ -1794,11 +1832,11 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         }
     }
     // Doc 19 cut A.8: one vendor, ask and bid line per authored row, pinned against
-    // the shipped lane (a count of report lines, not a vertex): Ceres 3 + 4 + 2,
-    // Stickney 3 + 4 + 2, Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The
-    // bid-only vendors' lines are counted though they read Ready.
+    // the shipped lane (a count of report lines, not a vertex): Ceres 3 + 4 + 6 (doc 20
+    // cut SM.5: the four ore intakes), Stickney 3 + 4 + 2, Luna 4 + 4 + 3, Deimos 2 + 2 +
+    // 4, Titan 3 + 4 + 2. The bid-only vendors' lines are counted though they read Ready.
     assert_eq!(
-        commerce_lines, 46,
+        commerce_lines, 50,
         "the shipped lane's vendor, ask and bid lines at the five ports"
     );
     let total = want.len();

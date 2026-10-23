@@ -736,6 +736,9 @@ pub const fn gated(binding: Binding) -> bool {
         // bay) is reported, never gated — mining content never closes the trade-run
         // desk (the SM.1/SM.2 rule).
         Binding::Vehicles => false,
+        // Doc 20 cut SM.5: the prospecting licence is reported, never gated — mining
+        // content never closes the trade-run desk (the SM.1–SM.3a rule).
+        Binding::Licence => false,
     }
 }
 
@@ -2001,7 +2004,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 19] = [
+        const EVERY: [Binding; 20] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -2022,6 +2025,8 @@ mod tests {
             Binding::Site,
             // Doc 20 cut SM.3a: reported, never gated.
             Binding::Vehicles,
+            // Doc 20 cut SM.5: reported, never gated.
+            Binding::Licence,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2046,6 +2051,7 @@ mod tests {
                     | Binding::Geology
                     | Binding::Site
                     | Binding::Vehicles
+                    | Binding::Licence
             );
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {

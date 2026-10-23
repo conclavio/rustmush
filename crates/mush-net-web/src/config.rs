@@ -66,6 +66,10 @@ pub struct WebConfig {
     /// proxy. It exposes only non-sensitive aggregates (never per-player data
     /// or keys). `/healthz` is always served.
     pub metrics_enabled: bool,
+    /// The asset pack the `hello` frame names (doc 21 cut G.11): filled by
+    /// the binary from the pack the SSH server serves, never from TOML.
+    #[serde(skip)]
+    pub asset_pack: Option<mush_proto::AssetPackInfo>,
 }
 
 impl Default for WebConfig {
@@ -85,6 +89,7 @@ impl Default for WebConfig {
             send_timeout_ms: 10_000,
             max_frame_bytes: mush_proto::MAX_INVOKE_BYTES,
             metrics_enabled: false,
+            asset_pack: None,
         }
     }
 }

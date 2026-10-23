@@ -88,6 +88,21 @@ Ceres with an empty cargo hold while the week is still unbroken. Any departure,
 by hand or from your plan, resets the week. The stake stays yours, and you are
 told the next time you are on watch.
 
+## The Registry's prospecting licence
+
+To work ore at the Freeport Registry's mining sites you need its prospecting
+licence. `+licence` (or `+licence/show`) reads yours, from anywhere: in force
+until when, or in its grace, or lapsed.
+
+`+licence/buy` says what a licence would cost and how long it would run, and
+buys nothing; `+licence/buy go` buys exactly that, from anywhere: 2500.00cr for
+168 IC days, then 3 IC days' grace, paid to the Registry as a public contract. The
+licence holds through its grace; bought while it still stands, in force or in
+grace, the new term runs on from the day the old one ends, and bought after it
+has lapsed, it runs from today. One licence an account: no other character on
+your account can hold one beside it. Occator leases its rigs only to a licensed
+prospector (`help ships`).
+
 ## What the share is, and is not
 
 The share is taken from **margin**, not from profit: for each sale, the price
@@ -95,6 +110,10 @@ you got over the Co-op's reference price for that good, times the tonnes. Sell
 at or under the reference price and the Co-op takes nothing. Your fuel, your
 stores and your buying costs are yours alone; the share does not come off them.
 The share is taken inside the sale: the sale line names it, and you receive the
-rest when the goods are in.
+rest when the goods are in. On ore, which no port sells, the Co-op's reference is
+fixed at half the bid, so the share is a quarter of the margin over half the bid
+(`help trade`). Ore you mine is cargo like any other once it is in the hold: it
+sells from there, and the Trust's quarter of the margin over half the bid comes off
+that sale (`help mining`).
 
-See also: `help trade`, `help ships`, `help ports`.
+See also: `help trade`, `help ships`, `help ports`, `help mining`.

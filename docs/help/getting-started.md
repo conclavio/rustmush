@@ -30,7 +30,9 @@ reads the terms; "help coop" covers signing, "help trade" the loop of buying at
 one port and selling at another, "help ships" the Dray, "help orders" the
 sailing plan that runs while you are away, and "help ports" the five ports.
 Cargo is real stock: every tonne you buy was seeded at a port, in lots, and is
-on record from the board to your hold.
+on record from the board to your hold. The second trade is mining: a Dray-P's
+rigs dig ore on the Registry's sites and the hold carries it home to sell at
+Ceres ("help mining").
 
 Getting help:
 

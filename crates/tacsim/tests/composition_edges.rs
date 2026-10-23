@@ -45,7 +45,10 @@ fn the_game_crate_depends_on_no_host_crate() {
 #[test]
 fn the_game_crates_workspace_edges_are_the_recorded_set() {
     // 17d M6.1: 32 -> 33, `mush-roll` (character draft/revision ownership).
-    const RECORDED: [&str; 33] = [
+    // Doc 20 cut SM.4b: 33 -> 34, `mush-ansi` (`+tv/map` reads its grid rows through
+    // `mush_ansi::panel::window_rows`, the TUI's own decoder — lead ruling 7).
+    const RECORDED: [&str; 34] = [
+        "mush-ansi",
         "mush-atlas",
         "mush-campaign",
         "mush-canon",

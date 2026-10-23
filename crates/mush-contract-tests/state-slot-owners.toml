@@ -134,6 +134,18 @@ precedent. The site refuses when the slot is absent.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/licence.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 20 cut SM.5, for the `port/coop.rs` row's reason: `+licence/buy go` takes the
+pilot's entitlement account id from `economy`'s allocator before
+`mush_economy::open_account` writes it through the economy module's own path —
+the `port/apply.rs` precedent. The site refuses when the slot is absent.
+"""
+
+[[site]]
 path = "crates/mush-server/src/boot.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -351,6 +363,165 @@ to a site's pad, and the enrolment rule is per gateway account and fails closed
 on an unmapped character. The oracle is boot-hydrated by the host from the
 store, which a `TestWorld` has none of, so the rig installs the fixed account map
 — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/knowing.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.4a, for the excursions.rs row's reason: the knowing tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases and the hop to a site's pad, and both rules
+fail closed on an unmapped character. The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/driving.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.4b, for the knowing.rs row's reason: the driving tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases and the hop to a site's pad, and both rules
+fail closed on an unmapped character. The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/mining.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.7, for the knowing.rs row's reason: the mining tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases and the hop to a site's pad, and both rules
+fail closed on an unmapped character (the `LICENCE_OTHER` case edits the
+stored licence document's holder to another pilot across a reboot; it maps no
+second character). The oracle is boot-hydrated by the host from the
+store, which a `TestWorld` has none of, so the rig installs the fixed account
+map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/unloading.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.8, for the mining.rs row's reason: the unloading tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases, the hop to a site's pad, the mining runs and
+the unloads, and both rules fail closed on an unmapped character. The rig maps
+one gateway account for every pilot it spawns: the usual pilot, the second
+pilot the rights case files a claim for, and the pilots of the port hulls the
+refusal and departure cases fly; the rights case also edits the stored licence
+document across a reboot. The oracle is boot-hydrated by the host from the
+store, which a `TestWorld` has none of, so the rig installs the fixed account
+map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/plans.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.11, for the unloading.rs row's reason: the plan tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases, the hop to a site's pad, the plans' runs and
+unloads and the captain's queue that lifts and sells, and both rules fail
+closed on an unmapped character. The rig maps one gateway account for every
+pilot it spawns: the usual pilot, the second pilot whose claim or own rig a
+case needs, and the pilots of the port hulls; the lapsed-licence case edits the
+stored licence document across a reboot. The oracle is boot-hydrated by the
+host from the store, which a `TestWorld` has none of, so the rig installs the
+fixed account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/quarry.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.9, for the mining.rs row's reason: the quarry tests charter their
+pilots through `+coop/enrol` and buy their licences per gateway account before
+the refit, the rig leases, the hop to a site's pad and back to the Freeport, the
+mining run whose projection the screens read and the lease return a second
+pilot leases the same rig after, and both rules fail closed on an unmapped
+character. The rig maps one gateway account for every pilot it spawns (the
+walker who reads the ground chart too). The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/support/claims.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.10, for the mining.rs row's reason: the claims tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the rig leases, the hop to a site's pad and the stake, and the claim
+rules (two live claims an account, the cooling term on the lapsed holder's
+account) read the account through the oracle and fail closed on an unmapped
+character. The shared `install_oracle` maps one gateway account for every
+pilot a rig spawns, and the cooling case remaps the lapsed holder onto
+another pilot's account to reach the account half of the rule (the licence
+is one holder an account, so no verb makes that alt). The oracle is
+boot-hydrated by the host from the store, which a `TestWorld` has none of,
+so the rig installs the fixed account map — the `match_lifecycle.rs`
+precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/deposits.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.6, for the knowing.rs row's reason: the deposits tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the extract refusal, the closed pad and the dark pad are tried, and both
+rules fail closed on an unmapped character. The oracle is boot-hydrated by the
+host from the store, which a `TestWorld` has none of, so the rig installs the
+fixed account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/plumbing.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.5, for the vehicles.rs row's reason: the plumbing tests buy
+prospecting licences and charter pilots per gateway account, and both rules fail
+closed on an unmapped character (`+licence/buy` answers that the Registry cannot
+match the pilot to an account). The oracle is boot-hydrated by the host from the
+store, which a `TestWorld` has none of, so the rig installs the fixed account map
+— the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/plumbing.rs"
+accessor = "World::module_state_mut"
+slot = "IndustryStore"
+owner = "industry"
+reason = """
+Doc 20 cut SM.5, the lead's pre-commit round (item 6(d)): the readiness Licence
+line's first two Missing variants — the industry layer names no extraction
+licence, or names another instrument — are states the composition root never
+builds (it names `tacsim.licence.freeport` wherever the TacSim layer composes), so
+the test sets `IndustryStore::set_licence` in RAM, reads the line, and restores
+the composed value. Test-only; production never writes the slot from tacsim.
 """
 
 [[site]]
@@ -652,6 +823,21 @@ site region (SM.2's lane packs author them). The test inserts its own 256 by 256
 test region into this world's atlas records (RAM only; nothing is persisted) so
 the synchronous door's capture, cache key, hit and refusals run on a composed
 world rather than on a hand-made `Records`.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/knowing.rs"
+accessor = "World::module_state_mut"
+slot = "AtlasState"
+owner = "atlas"
+reason = """
+Doc 20 cut SM.4a, for the definitions.rs and geology.rs rows' reasons: a site's
+footing and its build both read the composed atlas's records, and the only way to
+hand a rig a cell with no footing, a site whose build fails or a capture that
+fails is to change the ground it reads. The tests repaint the middle cell of
+Ahuna Flank's tiles as paved (a class with no footing), or strike its region record (RAM only;
+nothing is persisted), then assert the refusal, the dark site and the once-a-boot
+warning.
 """
 
 [[site]]

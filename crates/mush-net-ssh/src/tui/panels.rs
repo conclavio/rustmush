@@ -126,6 +126,47 @@ pub struct ChanMsg {
     pub line: String,
 }
 
+/// **The quarry screen's view** (doc 20 cut SM.9; §10): which picture its Main pane draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuarryMode {
+    /// The drive view around a rig (`site.map` `view: drive`).
+    #[default]
+    Drive,
+    /// The whole site (`site.map` `view: site`).
+    Site,
+    /// The body's ground chart (`body.ground`; the site view is pulled beside it).
+    Ground,
+}
+
+impl QuarryMode {
+    /// The next view `z` steps to (the brief's R-c): drive → site → ground → drive.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            QuarryMode::Drive => QuarryMode::Site,
+            QuarryMode::Site => QuarryMode::Ground,
+            QuarryMode::Ground => QuarryMode::Drive,
+        }
+    }
+}
+
+/// **The quarry screen's client state** (doc 20 cut SM.9; decision D12): kept in the store
+/// because `RenderCtx` already carries the store to every renderer. Nothing here is sent but
+/// the query arguments it shapes; kept across a re-hello.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuarryView {
+    /// The view the Main pane draws.
+    pub mode: QuarryMode,
+    /// The family word asked for (`None`: the server's default).
+    pub family: Option<SmolStr>,
+    /// The rig selected with `t` (`None`: the frame's addressed rig); cleared when a held
+    /// `site.map` frame no longer lists that slot (a reason frame lists none).
+    pub rig: Option<u8>,
+    /// **The client's clock at the paint** (Unix seconds; the 0z ruling 1): the quarry map
+    /// places the viewer's own moving rigs along their legs by it — `TuiApp::draw` sets it.
+    pub now: i64,
+}
+
 /// The store.
 #[derive(Debug, Default)]
 pub struct PanelStore {
@@ -146,6 +187,8 @@ pub struct PanelStore {
     /// The match the ring's lines belong to (16b cut B.3, `B-80`'s reset on
     /// the TUI): a frame of another match empties it before its own lines land.
     cockpit_notices_for: Option<i64>,
+    /// **The quarry screen's view** (doc 20 cut SM.9; decision D12).
+    quarry: QuarryView,
 }
 
 impl PanelStore {
@@ -153,6 +196,17 @@ impl PanelStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// **The quarry screen's view** (doc 20 cut SM.9).
+    #[must_use]
+    pub fn quarry(&self) -> &QuarryView {
+        &self.quarry
+    }
+
+    /// Replace the quarry screen's view (doc 20 cut SM.9).
+    pub fn set_quarry(&mut self, view: QuarryView) {
+        self.quarry = view;
     }
 
     /// The latest data of `feed`.
@@ -690,6 +744,15 @@ fn unit_object_id(frame: &Value) -> Option<String> {
 
 fn within_bounds(data: &Value) -> bool {
     serde_json::to_vec(data).is_ok_and(|b| b.len() <= MAX_VIEW_DATA_BYTES)
+}
+
+/// The pixel view's pictures read the same held keyframes the panes draw
+/// (doc 21 D-21-1): a picture can show nothing this connection's feeds do not
+/// carry.
+impl mush_pixel::picture::Feeds for PanelStore {
+    fn feed(&self, feed: &str) -> Option<&Value> {
+        self.get(feed)
+    }
 }
 
 #[cfg(test)]

@@ -1977,6 +1977,28 @@ fn ic10_the_lot_command_grammar() {
         format!("+market/sell {bid}=1 foo"),
         mush_market::SELL_USAGE,
     );
+    // Doc 20 cut SM.5 (§7.2): a bare listing previews and sells nothing; `=all` with a
+    // `from=` sells what the bid takes; an empty or non-numeric right side is the lot
+    // arm's usage line, its left side having named a viewable bid.
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {bid}"));
+    assert!(said.contains(" wants 97 more at "), "{said}");
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    let said = ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/sell {bid}=all from={hold}"),
+    );
+    assert!(said.contains("sold 47:"), "{said}");
+    land(&mut r.tw, 0xb3).expect("the leg lands");
+    for line in [
+        format!("+market/sell {bid}="),
+        format!("+market/sell {bid}=many"),
+    ] {
+        refused!(r, r.pat, line, mush_market::SELL_USAGE);
+    }
+    // No `=` at all with a `from=`: the left side is not bare digits, so the object arm.
+    let said = err(&mut r.tw, r.pat, &format!("+market/sell {bid} from={hold}"));
+    assert!(said.contains("No such asset."), "{said}");
     // A non-numeric left side: the object arm.
     let said = err(
         &mut r.tw,
@@ -2026,6 +2048,9 @@ fn ic10_the_lot_command_grammar() {
         .listing(ListingId(u64::from(thing.0)))
         .expect("an ask listing shares the thing's number");
     assert!(!same.source.is_wanted());
+    // Doc 20 cut SM.5: a bare viewable ask is the lot arm's "not a bid".
+    let said = err(&mut r.tw, r.pat, &format!("+market/sell {}", thing.0));
+    assert!(said.contains(mush_market::SELLS_NOT_BUYS), "{said}");
     let said = ok(
         &mut r.tw,
         r.pat,
@@ -2468,4 +2493,96 @@ fn ic14_staff_and_other_contracts_dispute_as_before() {
         20 * BID,
         "the escrow is frozen"
     );
+}
+
+// ---- doc 20 cut SM.5: the preview and `=all` ---------------------------------
+
+/// **A bare `+market/sell <listing>` previews the unfilled intake and commits nothing**
+/// (doc 20 §7.2; lead ruling 8): what the bid still wants, what the seller holds at the
+/// source a sale would default to, and what `=all` would sell; no quote, no contract, no
+/// submission, the bid and the pool unchanged.
+#[test]
+fn sm5_a_bare_sell_previews_the_unfilled_intake_and_commits_nothing() {
+    let mut r = rig();
+    let before = books(&r);
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}", r.bid));
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "{said}");
+    assert!(lines[0].starts_with(&format!("#{} ", r.bid)), "{said}");
+    assert!(lines[0].contains(" wants 100 more at "), "{said}");
+    assert!(lines[0].ends_with(" each; you hold 50 there."), "{said}");
+    assert!(
+        lines[1].starts_with(&format!("+market/sell {}=all sells 50 for ", r.bid)),
+        "{said}"
+    );
+    assert_eq!(books(&r), before, "a pure read");
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    assert_eq!(pool(&mut r.tw, &r.families.clone(), r.pat_hold), HELD);
+    // A bid with nothing to take reads so.
+    let mut r = rig_with(Opts {
+        house_funds: 0,
+        ..Opts::default()
+    });
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}", r.bid));
+    assert!(
+        said.lines()
+            .any(|l| l == format!("+market/sell {}=all would sell nothing now.", r.bid)),
+        "{said}"
+    );
+    no_settlement_pages(&r.tw);
+}
+
+/// **`=all` sells what the bid takes and leaves the rest** (doc 20 §7.2): held above the
+/// remaining intake, the remaining intake sells and the rest stays in the hold; held below
+/// it, everything held sells.
+#[test]
+fn sm5_sell_all_sells_what_the_bid_takes_and_leaves_the_rest() {
+    // Held 50 against an intake of 30: 30 sell, 20 stay.
+    let mut r = rig_with(Opts {
+        intake: 30,
+        ..Opts::default()
+    });
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}=all", r.bid));
+    assert!(said.contains("sold 30:"), "{said}");
+    assert_eq!(bid_qty(&r.tw, r.bid), Some(0));
+    land(&mut r.tw, 0xc1).expect("the leg lands");
+    assert_eq!(pool(&mut r.tw, &r.families.clone(), r.pat_hold), HELD - 30);
+    // Held 50 against an intake of 100: all 50 sell.
+    let mut r = rig();
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}=all", r.bid));
+    assert!(said.contains("sold 50:"), "{said}");
+    assert_eq!(bid_qty(&r.tw, r.bid), Some(INTAKE - 50));
+    land(&mut r.tw, 0xc2).expect("the leg lands");
+    assert_eq!(pool(&mut r.tw, &r.families.clone(), r.pat_hold), 0);
+    no_settlement_pages(&r.tw);
+}
+
+/// **`=all` with nothing held refuses before any contract** (doc 20 §7.2): the seller's
+/// pool spent, `=all` answers `SELL_NONE_HELD`; a house that cannot fund a unit answers
+/// `UNFUNDED`.
+#[test]
+fn sm5_sell_all_with_nothing_held_refuses() {
+    let mut r = rig();
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}=50", r.bid));
+    assert!(said.contains("sold 50:"), "{said}");
+    land(&mut r.tw, 0xc3).expect("the leg lands");
+    let bid = r.bid;
+    refused!(
+        r,
+        r.pat,
+        format!("+market/sell {bid}=all"),
+        mush_market::SELL_NONE_HELD,
+    );
+    let mut r = rig_with(Opts {
+        house_funds: 0,
+        ..Opts::default()
+    });
+    let bid = r.bid;
+    refused!(
+        r,
+        r.pat,
+        format!("+market/sell {bid}=all"),
+        mush_market::UNFUNDED,
+    );
+    no_settlement_pages(&r.tw);
 }

@@ -1,0 +1,253 @@
+{
+  "units": [
+    "unknown"
+  ],
+  "label": "Unknown contact",
+  "short": "??",
+  "sprites": {
+    "size": [
+      24,
+      14
+    ],
+    "size_cm": [
+      700,
+      350
+    ],
+    "anchor": [
+      12,
+      13
+    ],
+    "palette": {
+      "a": "team-dark",
+      "b": "team",
+      "c": "team-light",
+      "k": "black",
+      "s": "steel",
+      "p": "pale"
+    },
+    "facings": {
+      "front": {
+        "still": [
+          "........................",
+          "........................",
+          "........................",
+          "..kkkkkkkkkkkkkkkkkkkk..",
+          "..kcccccccccccccccccck..",
+          "..kbbbbbbbbppbbbbbbbbk..",
+          "..kbbbbbbbpbbpbbbbbbbk..",
+          "..kbbbbbbbbbpbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          "..kbbbbbbbbbbbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          ".kkkkkkkkkkkkkkkkkkkkkk.",
+          ".kksskssksskssksskssksk.",
+          ".kkkkkkkkkkkkkkkkkkkkkk."
+        ],
+        "moving": [
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kksskssksskssksskssksk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kskssksskssksskssksskk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kssksskssksskssksskssk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ]
+        ]
+      },
+      "rear": {
+        "still": [
+          "........................",
+          "........................",
+          "........................",
+          "..kkkkkkkkkkkkkkkkkkkk..",
+          "..kcccccccccccccccccck..",
+          "..kbbbbbbbbppbbbbbbbbk..",
+          "..kbbbbbbbpbbpbbbbbbbk..",
+          "..kbbbbbbbbbpbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          "..kbbbbbbbbbbbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          ".kkkkkkkkkkkkkkkkkkkkkk.",
+          ".kksskssksskssksskssksk.",
+          ".kkkkkkkkkkkkkkkkkkkkkk."
+        ],
+        "moving": [
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kksskssksskssksskssksk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kskssksskssksskssksskk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kssksskssksskssksskssk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ]
+        ]
+      },
+      "right": {
+        "still": [
+          "........................",
+          "........................",
+          "........................",
+          "..kkkkkkkkkkkkkkkkkkkk..",
+          "..kcccccccccccccccccck..",
+          "..kbbbbbbbbppbbbbbbbbk..",
+          "..kbbbbbbbpbbpbbbbbbbk..",
+          "..kbbbbbbbbbpbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          "..kbbbbbbbbbbbbbbbbbbk..",
+          "..kbbbbbbbbpbbbbbbbbbk..",
+          ".kkkkkkkkkkkkkkkkkkkkkk.",
+          ".kksskssksskssksskssksk.",
+          ".kkkkkkkkkkkkkkkkkkkkkk."
+        ],
+        "moving": [
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kksskssksskssksskssksk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kskssksskssksskssksskk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ],
+          [
+            "........................",
+            "........................",
+            "........................",
+            "..kkkkkkkkkkkkkkkkkkkk..",
+            "..kcccccccccccccccccck..",
+            "..kbbbbbbbbppbbbbbbbbk..",
+            "..kbbbbbbbpbbpbbbbbbbk..",
+            "..kbbbbbbbbbpbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            "..kbbbbbbbbbbbbbbbbbbk..",
+            "..kbbbbbbbbpbbbbbbbbbk..",
+            ".kkkkkkkkkkkkkkkkkkkkkk.",
+            ".kssksskssksskssksskssk.",
+            ".kkkkkkkkkkkkkkkkkkkkkk."
+          ]
+        ]
+      }
+    },
+    "wreck": [
+      [
+        "........................",
+        "........................",
+        "........................",
+        "..kkkkkkkkkkkkkkkkkkkk..",
+        "..kcccccccccccccccccck..",
+        "..kbbbbbbbbppbbbbbbbbk..",
+        "..kbbbbbbbpbbpbbbbbbbk..",
+        "..kbbbbbbbbbpbbbbbbbbk..",
+        "..kbbbbbbbbpbbbbbbbbbk..",
+        "..kbbbbbbbbbbbbbbbbbbk..",
+        "..kbbbbbbbbpbbbbbbbbbk..",
+        ".kkkkkkkkkkkkkkkkkkkkkk.",
+        ".kksskssksskssksskssksk.",
+        ".kkkkkkkkkkkkkkkkkkkkkk."
+      ]
+    ]
+  }
+}

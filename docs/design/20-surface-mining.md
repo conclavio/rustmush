@@ -1,5 +1,26 @@
 # 20. Surface mining — the quarry loop: a terrain vehicle on a body's ground
 
+**Draft 0.11 — "as built" through SM.10 (2026-10-22).** Thirteen build cuts have landed on `main`
+after SM.0 (the document, `11c50e84` and `f3df3205`): SM.1 `61324cba` (with its follow-up
+`6f797974`), SM.2 `bd718fb2`, SM.3a `96cc7303`, SM.3b `eb99c9be`, SM.5 `64cd1f8e`, SM.4a
+`354832bf`, SM.6 `70c2cd12`, SM.4b `d367bf3b`, SM.7 `dd48ed45`, AP `74c5801f` (the atlas path
+search's cost, an engine cut with no §13 row of its own, owed by SM.4b), SM.8 `9922c9c7`, SM.9
+`16b0ca4e` and SM.10 `fed09da2` (SM.5 was built before SM.4a by the lead's ruling; SM.6 then landed
+before SM.4b; §13; §18's "Landed").
+Each cut's record — what landed, what it deferred and why, the lead's rulings and the defaults it
+took for the owner — is its section of [20-cut-notes.md](20-cut-notes.md), and this draft folds the
+"Doc 20 amendments owed" of those thirteen sections in as **"As built (SM.*n*):"** notes (AP's as
+**"As built (AP):"**) beside the text they amend, in doc 18's manner: the Draft 0.4 sentence is kept
+and the note says what the tree does, or a stale label (a lane or goods version, a role word) is
+corrected in place. Draft 0.5 folded the first four cuts, Draft 0.6 SM.5's and SM.4a's, Draft 0.7
+SM.6's and SM.4b's, Draft 0.8 SM.7's, Draft 0.9 AP's and SM.8's, Draft 0.10 SM.9's, and Draft 0.11
+folds SM.10's; where
+a cut's fix round changed what its judge's amendment said, the note carries the round's truth and
+says the round did it. A note that
+records a lead ruling or an owner-critical default says so, and each such default stands as the
+lead's until the owner rules, as the Q-20 defaults did (§15). Draft 0.4's file:line cites stand as
+that draft read them; a note's cites are its cut's.
+
 **Draft 0.4 — 2026-10-19** (Drafts 0.1 to 0.3 the same day, each folded after a verification pass:
 119 findings, then 60; 0.4 folds the owner's review of eight findings, §19). The owner's ask,
 verbatim: *"once upon a time there was this game called Starflight ... you had a ship, you had a
@@ -49,6 +70,15 @@ C117.", "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."), the panel keyf
    bay and the hopper empty), and a second lease a second TV. Provisions for the stay go in the locker.
    The desk's `look` lists the verbs, as the Co-op desk lists `+coop/enrol`. Decision: is the licence
    worth it this week, one rig or two, and how long a stay to provision for.
+   **As built (SM.3a):** Occator's counter is the Ceres Exchange Hall (the lead's default, standing
+   until the owner rules); `+coop/refit` also refuses with provisions aboard, with a rig in the bay (or
+   a live lease record) and away from the desk; the term is re-debited at the pilot's next `+tv/lease`
+   act, not at the next dock (§4.3). `+licence/buy` is SM.5's.
+   **As built (SM.5):** `+licence/buy` previews and `+licence/buy go` buys, the pilot's own act
+   under the server-authored issuer `freeport_registry`, accepted from anywhere; "bought while
+   Active" reads "while in force or in its grace", and such a buy extends from the expiry (§9.1).
+   `+tv/lease` is refused without a licence in force or in its grace (§4.3). The desk's `look`
+   listing the verbs is not built (SM.3a's residual R4), and no cut's row owns it.
 2. **Pick a body, then a site** (one to two real minutes). `+chart` lists sites as destinations with
    their passage now and the Registry's survey word for each ("Rheasilvia: metals fair–rich, strategic
    lean (survey); passage 2 d 4 h; licence 4 d left"): Ceres's by a hop of minutes, Vesta's commons by
@@ -57,6 +87,22 @@ C117.", "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."), the panel keyf
    `+chart/ground ceres` lists the sites with their survey words first, their tenure (commons, open
    blocks, held blocks) and the viewer's own best reading at each. Decision: the worked-over commons
    next door, fresh open ground farther off, your own block, or Vesta when the sky favours it.
+   **As built (SM.2):** `+chart` prints each site as a destination, then a "Registry survey: …" line
+   and a "Tenure: …" line under it (`SURVEY_LINE`, `TENURE_LINE`); the survey reads "unavailable"
+   without a live geology key. The single-line form above is not what shipped; `+chart/ground` is
+   SM.9's.
+   **As built (SM.5):** the site line's "licence 4 d left" is not built, and no cut's row owns it;
+   `+licence` (or `+licence/show`) says whether the licence is in force, in its grace or lapsed.
+   **As built (SM.9):** `+chart/ground [<body>]` lists the body's sites — the survey words, the
+   tenure, the passage planned at the hull's load and the viewer's own best reading — and
+   `+chart/ground map [<body>] [<family>]` draws the body with one family's wash, the ports and the
+   sites by letter (§3.1). The site the hull stands at reads ", where you are." with no passage; from
+   a site's pad every other site reads "no passage from <site>", since site ports route only to the
+   Freeport (a question the owner holds, §15).
+   **As built (SM.10):** the "Tenure: …" line and `+chart/ground`'s tenure read the block records
+   (`tacsim.claims`), counting live claims with the word "{n} claimed" after the open blocks and
+   before the held groups (the fixer's reading of lead note 0a; the word is OC10, an owner-critical
+   default the lead accepted, standing until the owner rules).
 3. **Hop and settle** (four to five real minutes). `+ship/plan ahuna`, then `+ship/lift ahuna` (an
    alias of `+ship/undock`, docked or settled) files the hop like any passage; it burns a tonne and a
    crew-day a soul. Meanwhile `+registry ahuna` and the ground chart; the arrival line calls the pilot
@@ -68,21 +114,46 @@ C117.", "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."), the panel keyf
    craters, the hull as `H`, the TV as `@`, no ore anywhere yet; `+tv` reads "rig 1: block C (open,
    unclaimed), field C-NW, footing regolith — no readings here yet: +tv/scan reads the nine fields
    around you."
+   **As built (SM.4a):** `+tv/scan` and `+tv/sound` typed with the rig in the bay are one act that
+   prepends the launch (§4.3); `+tv/drive` and the site map are SM.4b's. A rig on the site's ground
+   gains its own line under its rig line in `+tv`: "Block K (open), field K-NW, footing regolith —
+   no readings here yet: +tv/scan reads the nine fields around you." The tenure word is the site's
+   authored one (commons, open, or held by {org name}; claims are SM.6's and SM.10's), and the
+   reading is the pocket's text if sounded, else the field's row if scanned. Two further states this
+   document does not name are the lead's owner-critical default (SM.4a's D25), standing until the
+   owner rules: "…; the ground here is still being mapped." (a cold site, which the surface tick
+   then warms) and "…; the instruments cannot read the ground here." (a dark layer, no body table,
+   or a site whose ground failed to build this boot).
+   **As built (SM.10):** the tenure word reads the block's `tacsim.claims` record — "held by {org}"
+   for a live org seed, "your claim" for the viewer's own, "claimed by {name}" for another
+   character's — and falls back to the authored word for a block with no record, or a claim lapsed
+   or past its term (R20: a lapsing claim reads open).
 5. **Scan** (600 IC s, 25 real seconds). `+tv/scan` reads the nine fields (320 m) around the TV's own
    — 48 cells on each axis — that the mast can see: which family and how rich, as barren, lean, fair
    or rich with the count of ore pockets the word stands for, each field by name (`C-NW`). Footing
    sets sharpness: from rock a single word, from regolith a two-word band ("fair–rich") that never
    excludes the truth, from ice "no return". Decision: sound here, or drive to rock and scan sharper.
+   **As built (SM.4a):** a field read as a band prints the union of the band's pocket counts, "C-NW
+   fair–rich metals (5–16 pockets)", so the count never excludes the truth (§5; the lead confirmed
+   it).
 6. **Sound** (1,200 IC s, 50 real seconds). `+tv/sound` reads every pocket (40 m) within sixteen cells
    on each axis — a whole field from its middle — as barren, lean, fair or rich per family, drawn as
    `.` `1` `2` `3` (the digit is the pocket's class: tonnes a cycle until the pocket is drawn), each
    with a site address (`C117`). Everyone on the site hears a sounding as a bearing and a range band;
    `+tv/sound quiet` reads eight cells and is heard by nobody. Decision: which pocket, and whether
    rivals may learn where you think the ground is good.
+   **As built (SM.4a):** the heard line reaches only the parties on the site connected at the time
+   and is never queued, at most once an IC hour per sounder on that site (§5; the lead's defaults,
+   standing until the owner rules).
 7. **Drive** (five IC s a cell on regolith: 500 m in ten real seconds). `+tv/drive C117` previews the
    path, the time, the charge it costs and the charge left after the trip home; `+tv/drive C117 go`
    commits a frozen leg (a block, a cell or a bearing and a distance are targets too, for exploring).
    The glyph moves along it; "Arrived at C117."
+   **As built (SM.4b):** `+tv/<n> drive <target> [go]` takes a pocket (`C117`), a field (`c-nw`), a
+   block letter, a site cell (`140,96`) or a bearing and metres (`ne 300`); typed from the bay it
+   implies the launch, as a scan does. A regolith kilometre is exactly 500 IC s and 2,250 cu. The
+   arrival line reads "Rig 1 arrives at C117.", the operator's own reading of the pocket in brackets
+   after the address when there is one (`ARRIVED`); `+tv/map` prints the drive view (§10).
 8. **Mine** (1,800 IC s a cycle, 75 real seconds; rock takes twice as long). Open ground is yours to
    work under your licence until someone stakes it. `+tv/mine` previews the run from your own reading
    of the pocket — "C117 fair metal ore: 4 cycles, 2/2/2/1 = 7 t, 5 min; hopper 0 → 7 of 12 t; hold
@@ -93,11 +164,29 @@ C117.", "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."), the panel keyf
    prints "No reading here: the first cycle will tell." and commits one cycle, whose core is the
    reading. While a run drills the pilot may scan or sound from the new stand, preview the next
    drive, read the registry, or work the second rig. Decision every pocket: work it out or move on.
+   **As built (SM.7):** `+tv[/<n>]/mine [family] [cycles] [go]` (alias `drill`, as a switch or a
+   first word, the family and the count in either order) and `+tv[/<n>]/mine stop`, which commits
+   with no `go` (R7, an owner-critical default the lead accepted, standing until the owner rules).
+   A rig in the bay is refused (`MINE_IN_BAY`): mining implies no launch. The cycle line above
+   ("Rig 1, cycle 2 of 4: …") and this beat's blind sentence are pinned byte for byte; every other
+   mining text is the planner's wording for the owner to see, `RUN_DARK` among them (§8). During a
+   run only a scan or a sounding may start on the drilling rig, and a drive previews but refuses
+   `go` (§6).
 9. **Hopper full, go home** (a minute). `+tv/recover` previews the trip to the ramp, the entry into the
    bay and the unload as one command ("home in 25 s; then 12 t metal ore into the hold, 62 t of
    room") and `+tv/recover go` files them; the hold always has room for what a hopper carries, because
    no cycle starts without it. The charge recovers in the bay. Decision: another trip, or enough for
    today.
+   **As built (SM.4b):** the trip to the ramp and the climb into the bay are one `Recover` act from
+   anywhere on the site's ground, its preview naming the drive to the ramp and the climb into the
+   hull's bay (`RECOVER_DRIVE_PREVIEW`, §4.3); the unload half is SM.8's.
+   **As built (SM.8):** the recover's preview ends with the unload it files, `RECOVER_THEN` — "…;
+   then it unloads 12 t of metal ore, run-of-mine into the hold, 74 t of room after" for a Dray-P's
+   86 t hold with nothing else aboard (the label goods v3's) — or `RECOVER_THEN_PART` and
+   `RECOVER_THEN_NONE` when the hold's room is short, and nothing for an empty hopper. The recover
+   lands and tells `RECOVERED_UNLOADING`, the queued unload starts on the next fire and tells
+   `UNLOADED` 600 IC s later; `+tv/1 unload [<t>] [go]` does it by hand (§7.1). An honest fill
+   always fits; a hold staff have shrunk unloads what fits and says what stays (§6).
 10. **Stake it, if the ground is good** (one real minute). From the TV standing in an open block,
     `+claim/stake` previews — "block C, your readings: C-NW sounded, C117 cored; soundings heard on
     this block since it last opened, before yours: 2; 2,000 cr now and 2,000 a term" — and
@@ -105,6 +194,16 @@ C117.", "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."), the panel keyf
     everyone's site map and only your rigs may mine it; rivals may still drive and sound. Renew it with
     `+claim/renew` (2,000 cr) once 50 t are worked in the term, or let it lapse and it reopens to
     everyone but you for a term.
+    **As built (SM.10):** `+claim/stake` is one act over the whole block from a rig standing in it,
+    with an optional declared family (the lead's ruling 1; OC7, OC8); its preview's fee reads
+    "2000.00cr now and 2000.00cr a term (4000.00cr today)" (lane v12 data, OC1), its heard count
+    reads "at least N" past a scan of 512 chart rows (OC12), and it prints the cooling line when one
+    binds. The fee is a Public contract escrowed by the pilot and accepted by the site clerk for the
+    Registry once the act lands (§9.3). The block's perimeter turns `#` on every site map (§10).
+    `+claim/renew` costs 2,000 cr against the worked floor (§9.2); `+claim/release` lets a claim go
+    at once, a lapse by choice with the same cooling (OC6); and the cooling binds the holder, anyone
+    who acts for it and every character of the holder's gateway account (OC15). OC1, OC6, OC7, OC8,
+    OC12 and OC15 are the owner-critical defaults the lead accepted, standing until the owner rules.
 11. **Leave it running** (one real minute). `+tv/plan C117,C118,D family=metal_ore` files a fill plan:
     work these pockets in order (a block letter sounds its four fields and mines every pocket of the
     family that reads fair or better, nearest first), recover and unload at every full hopper, park
@@ -185,20 +284,27 @@ presents it in the entry's gallery room (`port/apply.rs:591-611`); `plan_passage
 carrier journey, `Berth::Docked`, `+ship/undock`, the queue's `depart` and the recall arm all reach a
 site with no new travel record. The S change is a validator rule letting a `site` entry author zero
 orgs and only a pad room, with serde defaults for `rooms`, `treasury` and `orgs` (`PortDef` is
-`deny_unknown_fields`, `def.rs:86-110`). Each site has its own lane `location` (role `field`, `body`
+`deny_unknown_fields`, `def.rs:86-110`). Each site has its own lane `location` (role `extraction`, `body`
 the body, `lat_mdeg`/`lon_mdeg` on it, south negative) and routes both ways to its port; a route to a
 same-body site is a hop (§3.3), a route to another body an ordinary passage.
 
 ```
-"ahuna_flank": { "kind": "location", "def": { "label": "Ahuna Flank", "role": "field",
+"ahuna_flank": { "kind": "location", "def": { "label": "Ahuna Flank", "role": "extraction",
                  "body": "ceres", "lat_mdeg": -10500, "lon_mdeg": 316200 } },
 "ahuna_port":  { "kind": "port", "def": {
   "location": "ahuna_flank", "venue": "ahuna", "area": "neighborhood.ahuna_flank",
   "gallery": "neighborhood.ahuna_flank.room.pad", "routes": { "ceres": ["ahuna_ceres"] },
-  "site": { "issuer": "freeport_registry", "zone": "core", "geology": "ceres",
+  "site": { "name": "Ahuna Flank", "issuer": "freeport_registry", "zone": "core",
             "tenure": { "default": "open" },
             "blocks": { "A": { "tenure": "commons", "worked_permille": 400 } } } } }
 ```
+
+**As built (SM.2):** the role word is `extraction`, not `field`, in the prose and the example ("field"
+is the geology's R1 level; the lead's override 1). The `site` block carries a required `name` equal to
+the location's label and no `geology` key: the table lives on the body (the ground chart, below). The
+validator requires a site's body to author `surface_mg`, `radius_km` and `geology`, and a site's issuer
+and holders to be orgs of the pack. The example's block A exception shows the shape; Ahuna Flank's
+blocks are all open as built.
 
 The site's ground is an atlas region pack in the shape of `region.ceres_freeport.json`: **256 by 256
 cells at 10 m, 2.56 km** — exactly D-16-5's arena window, so a fight at a site later promotes the same
@@ -225,6 +331,21 @@ fields before the pocket pass, so a rim can be authored rich) and `worked_permil
 every pocket drawn into the site's spoil at opening, receipted, so a commons can open worked over with
 its pits showing, §3.4).
 
+**As built (SM.2, SM.3b):** the applier's part (g) lays the sixteen block place Things ("{site} block
+{L}") DARK in the lane place's host room, **owned by the applying actor**, each recorded in the port
+map as it is made; SM.6 makes `tacsim.sites` (`SITES_PRINCIPAL`, declared in SM.2) their industry
+owner. The site clerk Thing is laid up beside them, and SM.3b adds a DARK "{site} spoil" Thing and its
+vault (§4.3). Nothing is submitted; an update re-lays nothing recorded, and a recorded Thing gone
+refuses at preflight. Block letters run A–P from the north-west.
+
+**As built (SM.6):** SM.6 did not make `tacsim.sites` the block places' owner: the block place
+Things stay owned by the applying actor, and `tacsim.sites` owns the deposits' endpoints instead —
+the sixteen **block vaults** ("{site} block {L} ground", each backed by `Container(block place)`, no
+scope, Active, laid by the applier's part (g) and recorded in `SiteRow.vaults`) and the spoil vault
+(SM.6's D13; the lead confirmed it). A recorded block vault gone or not `tacsim.sites`'s refuses at
+preflight; a store laid up before SM.6 gains its block vaults on the next apply (an owner-critical
+default the lead accepted, standing until the owner rules).
+
 **Phase-1 content — D-20-14 (Q-20-10).** On **Ceres**: **Freeport Commons** (every block commons,
 next to the port, `worked_permille 400`), **Kerwan Floor** and **Ahuna Flank** (open blocks, metals and
 carbon), **Juling Shadow** (open, ice-rich, farther), and **Occator Rim** (Occator's: two inner blocks
@@ -241,6 +362,20 @@ exists (§17), amending doc 11 §5 (§18); under doc 10 5A no hostile action hap
 war, a sanctioned operation, a mutually accepted scene or an explicit crime, so a TV left out is never
 exposed. Phobos waits for a Republic issuer and a Stickney ore bid (phase 2).
 
+**As built (SM.2):** six vendor-less site ports `<venue>_port`, each under issuer `freeport_registry`
+(a Ceres org, 50,000 cr, faction freeport) and zone `core`, at coordinates as authored (the lead's
+default, standing until the owner rules): on Ceres, Freeport Commons 20.3 N 240.4 E, Kerwan Floor
+10.8 S 123.9 E, Ahuna Flank 10.5 S 316.2 E, Juling Shadow 35.9 S 168.6 E and Occator Rim **25.4 N**
+239.3 E, with the Freeport itself at 19.7 N 240.4 E (role `port`); on Vesta, Rheasilvia Commons
+75.0 S 301.0 E. Occator Rim was first authored at 21.3 N, which put its pad on the crater's floor
+12 km from the centre; the lead's fix round moved it to 25.4 N, on the northern rim about 46 km
+north of the crater's centre, before lane v9 latched anywhere. The Commons is sixteen commons blocks
+at `worked_permille` 400 (acted on in SM.6), Rheasilvia is all commons, and the other sites are open. At Occator Rim the inner blocks F, G, J and
+K are held by `occator`, with no distinction yet between the two its drones work and its reserve, and
+the outer twelve carry +1 `prospectivity`, the only authored shift (the lead's default, standing until
+the owner rules): "metals and carbon" at Kerwan and Ahuna and "ice-rich" at Juling are whatever the
+key and Ceres's table make them.
+
 **The ground chart.** `BodyDef` gains optional `surface_mg`, `radius_km` and a `geology` table name
 (skipped on the wire when absent; the lane digest moves once). **`+chart/ground <body>`** lists the
 body's sites with the Registry's survey word per family first; **`+chart/ground map <body>`** prints
@@ -253,6 +388,32 @@ and load, and the viewer's own best reading. A cell of a body Ceres's size is so
 equator, so a site is a point on it and the landing beat is the lettered sites this phase (the help
 says so); the chart decides by what it says of each site. Landing anywhere on the lattice
 (`Representation::Implicit` is declared and never read, `mush-atlas/src/record.rs:403-411`) is phase 2.
+
+**As built (SM.2):** `BodyDef.geology` is an inline table — SM.1's wire, checked at load — not a
+table name, and `radius_km` is required with it. Surface figures are authored on eight bodies: Ceres
+28 mg / 470 km, Vesta 25 / 263, Pallas 21 / 256, Luna 165 / 1,737, Mars 379 / 3,390, Titan 138 /
+2,575, and Phobos and Deimos ceiled to 1 mg (the lead's default, standing until the owner rules).
+`+chart/ground` and the `body.ground` feed are SM.9's.
+
+**As built (SM.9):** the ground chart landed. `+chart/ground [<body>]` lists the body's sites, each
+with its survey words, its tenure, its passage and the viewer's best reading, and `+chart/ground map
+[<body>] [<family>]` draws the grid: the wash of **one family** a print (metals by default) as `.`
+barren, `-` lean, `+` fair and `*` rich, the ports by the initial of their label's last word and the
+sites by their first free initial in entry-id order, a port keeping a shared cell and the hidden
+markers listed beside it ("Also at F: C Freeport Commons, O Occator Rim."). `body.ground` is a pulled
+grid feed at `cell_columns 1` (56 × 28, one province a cell, params `{ body, family }`), registered
+after `site.map` and `tv.status`; line mode prints the body map at one column a cell. The frame
+stores its rows **south-first**, like every grid frame (`sky.chart` included), and every renderer
+prints north up: the planner's north-first rule (its D17) was reversed at the judge, the lead
+accepting it. The passage is planned at the viewer's hull's load on every surface, `+chart/ground`
+and `body.ground` reading one `vantage_reading`, and planned empty, with the port's programme hull, for a walker without a charter; the site the hull stands
+at carries no passage and reads ", where you are."; and the best reading is computed from the keyed
+site context and the viewer's own row, never a warm site, so it prints after any restart, each site
+row carrying it whole as `best_line`. From a site's pad every other site reads "no passage from
+<site>" and the port line never shows the passage home, since site ports route only to the
+Freeport: a routing and text question the owner holds (§15). The glyphs, the marker letters, the
+shared-cell listing, the body map at one column a cell and every `GROUND_*` text are the lead's
+owner-critical defaults, standing until the owner rules.
 
 ### 3.2 Geology — D-20-4
 
@@ -274,6 +435,19 @@ A **fingerprint** of it is pinned in a world record at first use; a mismatch at 
 mining layer out loud on the readiness line rather than silently moving every reserve under the
 stored ones (Q-20-12). Only staff read truth, through `@geology <site> <addr>`.
 
+**As built (SM.1):** one HMAC-SHA256 per (level, cell, family) over `"rustmush.geology.v1\0" ‖ body ‖
+0x00 ‖ level u8 ‖ x i64 LE ‖ y i64 LE ‖ family u8`, read as four little-endian `u64`s; level 0 is the
+province, 1 the field, 2 the pocket and 3 the reading band's side (§5), and every coordinate is
+normalised by its own level's width before it enters the HMAC (x wraps, y never). The fingerprint is
+SHA-256 of the 32 key bytes, pinned with the key version in the tacsim module document
+`tacsim:geology` at the first boot that has a key (a boot-time module document, never a submission)
+and compared at every later boot. Five disabled reasons — no `[tacsim.geology].key_dir`, a key
+directory that did not load, `tacsim:geology` unreadable, a mismatch, the layer off — read on the
+readiness report's `geology:` line, reported and never gated; `[tacsim.geology].key_dir` has **no
+default**, and the key is loaded only when `[tacsim].enabled` (§15 Q-20-12). Staff read truth through
+`@geology <body> <x>,<y> [province|field|pocket]` over the body-fixed pocket lattice (no site shift
+applies); the site-address form waits for SM.4, which binds cells to pockets.
+
 Generation is **top-down, so readings nest**, and one word set — **barren, lean, fair, rich** —
 names richness on every surface (the code's P0–P3 and A–D never reach a player): a *province* (one
 cell of the body's 56-by-28 chart, 6.43°, 1,568 a body; the R0 level) carries per-family
@@ -289,6 +463,21 @@ of tonnes per family, most of them lean. Doc 10 4A's four raw families — metal
 feedstock, strategic elements — are all mined (the goods rows in §7.3); "what you get depends on where
 you are" is the body, the family, the field and the pocket, not a digit.
 
+**As built (SM.1):** the body-level pocket lattice this document left undefined is columns =
+⌊⌊radius_km × 1000 × 710 / 113⌋ / 320⌋ × 8 and rows = ⌊columns / 32⌋ × 16 — whole fields around the
+equator and on each side of it: Ceres (470 km) 73,824 × 36,912, Vesta (263 km) 41,304 × 20,640. A
+pocket's province is (x × 56 / columns, (y + rows/2) × 28 / rows); SM.2 maps a site's
+`lat_mdeg`/`lon_mdeg` onto the lattice and snaps its origin to a field corner. The authored
+`prospectivity` shift is one `i8` per block in −3..=3, applied to the field word before the count is
+drawn and saturating at barren and rich, and it is **never applied to a family whose province word is
+barren**: a rich-authored Ceres block never grows strategic ore, while a negative shift still lowers
+any family. That is the lead's technical ruling (SM.1's decision 13, read from §3.1's "the strategic
+shelf is Vesta's" and this section's Vesta and Ceres sentences, where this document does not say),
+standing until the owner rules; the table validator refuses a `field.barren` row that weights any ore
+word, so the rule holds for any lane table, and SM.2's tables author `field.barren = {barren: 1000}`.
+A pocket carries at most two families, placed by keyed rank in family order; the count and tonnes
+ranges are code constants, not table data.
+
 The site's terrain composite (background plus features) is built **off-loop** with the atlas's pure
 `capture()` and `composite()` (`mush-atlas/src/window.rs:201, 521-688`) from the region pack and
 held in a RAM LRU of sixteen (about 384 KiB a site); the site's geology table (4,096 pockets by four
@@ -298,6 +487,35 @@ re-derived at boot. One finding on the way: the composite casts background eleva
 which turns a low into a cliff, and background elevation is `datum_cm + noise` with `datum_cm` an
 unbounded `i32` (`background.rs:36`, `record.rs:306`); the recipe validator requires `datum_cm ±
 relief_cm` inside `i16` and the cast saturates symmetrically (SM.1).
+
+**As built (SM.1, SM.2):** the cache is keyed by (region, revision, key version), the revision
+digesting the whole captured `CompositeInput` and the site spec, and a replaced body table drops that
+body's cached sites (`install_body_geology`). SM.1 landed the in-RAM LRU of sixteen, the pure builds
+(`build_site_ground`, `site_geology`) and a synchronous door; the off-loop driver is SM.4's, its first
+consumer (§13). `RegionRec::validate` refuses `datum_cm ± relief_cm` outside −32,768..=32,767 cm — at
+the applier **and at the atlas boot load**, where a failing stored region is dropped loudly rather
+than clamped — and both elevation casts saturate symmetrically through one helper. SM.2's
+`build_site_ground` refuses a region that is not a surface of the spec's body, caching nothing.
+
+**As built (SM.5):** the body geology tables install at boot and wherever the definition applier
+creates or updates a `body` entry (`surface::body_geology_of`, the one builder `lane_geologies` and
+the applier share; RAM only, skip-equal, a failure warned), whatever else the lane version changes;
+the port applier's part (g) no longer installs them (SM.2's residual).
+
+**As built (SM.4a):** no act's path builds a site ground. The command, the start's offer and the
+`+tv` status read a non-building peek (`site_ground_cached`); a cold site answers that its ground is
+still being mapped and is wanted, and the surface tick warms at most one wanted site a fire (wanted
+at landing, at boot for every site with a programme hull docked, and on a cold peek). The judge
+measured the warm peek at about 12 ms in debug and 408 µs in release, a full serialise-and-hash of
+the composite on every `+tv`, scan command and offer projection; the lead's fix round made it a
+capture plus one equality check against the sixteen-entry cache, which now keeps each site's
+captured input beside its ground (57–71 µs in debug, 19 µs in release; a cold build about 85 ms in
+debug and 2–3 ms in release, and a cold peek still hashes once), so no per-region revision cache was
+needed. A build failure darkens the site for the boot with one warning (D25), and since the round a
+capture failure does too. A
+true off-loop keyed runner is SM.12's cost-lane call on these figures. SM.4a's `surface::address`
+binds cells to pockets, fields and blocks (the ramp cell is pocket `K1` in field `K-NW`); `@geology
+<site> <addr>` moves to SM.4b with the typed address parse.
 
 ### 3.3 Landing — D-20-3
 
@@ -326,6 +544,29 @@ as a departure for the seven-day recall (`port/recall.rs:27-29`), so a week of m
 dormancy recall. The berth line reads "settled on the pad at Ahuna Flank"; `Berth::Docked` is reused
 as is, and `+ship/lift <port>` is `+ship/undock`'s alias docked or settled.
 
+**As built (SM.2):** only a leg with a site end meets the law, and only a site end pays the ascent,
+√(g·R) ceiled (Ceres 360 m/s, Vesta 254): Ceres Freeport is a port, not a site, so no pinned port leg
+moved (the lead's ruling). At the rail Ceres reads 1,785 ‰ (Luna 303, Titan 362, Mars 131), and its
+band edge laden is exactly 672 ‰ of throttle; Phobos is authored at 1 mg, not 0.6. The hop is 5,322
+IC s and 1 t out at 86,580 kg and 6,893 s home for this paragraph's loads, 7,200 s at the rail.
+**Landed life support is charged at lift**, inside the pilot's own departure burn
+(`PassagePlan.landed_crew_days`): souls × whole IC days settled, capped so the locker keeps the leg
+home; the raw locker, the gauges and the manifest stay full while settled, and every stores line
+prints the effective figure. The once-per-stay notice is the arrival notice to an absent tenant, with
+its stores line; nothing fires at the instant the cap binds. The stores print on the arrival line,
+`+ship` and `+ship/plan`, and on `+tv` from SM.3a. Three rules are new: **a departure for a site
+holds back the leg home** — planned at the least lifting throttle, the worst of the next 30 IC days
+when it crosses bodies — refused with `SITE_TANK_SHORT` or `SITE_STORES_SHORT` and printed by
+`+ship/plan` as `SITE_HOME`, and `+ship/plan` and a refused departure for a site print a
+**reserve-aware throttle hint** (the highest throttle at or above the landing floor at which the
+outbound burn plus the reserve fit, else the first later IC day in `+chart`'s 365-day window on which
+the floor fits), while the queue's sailing-plan dry run reads the same site refusals the fire holds
+with; **nobody steps out onto a pad** (`LEAVE_PAD`); and **a site whose pad is not ready refuses
+departures** (`SITE_CLOSED`) and never gates `+coop/enrol` (the lead's override 3). The charge at
+lift, the arrival notice as the once-per-stay notice, the leg-home reserve and `LEAVE_PAD` are the
+lead's defaults (SM.2's decisions 4, 8, 7 and 10), standing until the owner rules; Rheasilvia's
+reach under the reserve is §15 Q-20-10's note.
+
 ### 3.4 Depletion — D-20-5
 
 The reserve is **one `OreDeposit` per (block, family)**, its commodity **the family's ore good**
@@ -351,6 +592,33 @@ so the invariant below holds from the first sweep and the matter is accounted fo
 spoil heaps are real). Up to four deposits per block place and 64 per site sit far inside
 `MAX_ORE_DEPOSITS_PER_PLACE` 8 and the 4,096-deposit walk.
 
+**As built (SM.6):** there is **no opener grant**: the composed `SiteOpener` admits exactly the live
+Thing recorded as `SiteRow.clerk` of a latched lane site, the clerk's identity its whole authority
+(D13; the lead confirmed it). The clerk acts on the port tick's own `Arm::Site`, not the stock arm,
+one act a fire through `Fire::as_principal`, the site clerks sharing `MAX_AGENTS_WORKED_PER_FIRE` 16
+with the other arms; an offer carries one row — the next pending row in plan order, its receipt
+`"{entry}/{letter}/{family}"` and the deposit id derived from it — never the whole site (D15).
+`tacsim.sites` owns the sixteen block vaults and the spoil vault, the deposits' endpoints; the block
+place Things, the deposits' place objects, stay the applying actor's (§3.1's note). A deposit opens
+only per (block, family) whose pockets hold that family's ore: **up to 64** a site, 48 on five of
+the six shipped sites and 64 at Kerwan. A deposit's existence at its public id is therefore a
+barren-ness bit, which SM.7's `+tv/mine [family]` and SM.10's stake must not echo: each answers a
+barren and an ore-bearing (block, family) with the same line and fee (D14, an owner-critical default
+the lead accepted, standing until the owner rules; opening all 64 with barren deposits at a reserve
+of 0 would need an industry record change). The gross reserve is read through the warm site ground
+(reading rule v1's pocket evaluation), never built on the tick. The worked share is per pocket:
+⌊t × ‰ / 1000⌋ of every ore pocket of the family, the summed share moved by one pool transfer
+(`inventory.transfer`) from the block vault to the spoil in the same bundle as the cursor insert,
+with one cursor row per pocket that gave at least a tonne (D6; no nearest-first). The readiness line reads "opening, {done} of {total}." until the last deposit exists, the pad closed
+meanwhile; after a boot a keyed site reads "opening: its ground is still being mapped." until the
+surface tick warms it, and a ground, plan or issuer that fails reads "opening: its ground could not
+be mapped (see the log).", paged once. With the geology layer dark nothing can open, so the line
+reads Ready ("no deposits while the geology layer is dark") and the pad stays open (D2, an
+owner-critical default the lead accepted, standing until the owner rules). A keyed site opens one
+deposit a port-tick fire, then works its worked share one transfer a fire: 49 fires for an unworked
+site, 65 at Kerwan, and about 97 for the worked Commons (some eight real minutes at 5 s a fire),
+once. Every deposit records its site's issuer as its jurisdiction (§9.6).
+
 A **pocket cursor sidecar** per deposit, `tacsim.pockets:<deposit>`, holds at most 64 rows
 `{pocket, drawn_t, lock}` — bounded by the 64-pockets-per-block construction, so the cap never binds
 on ordinary play — written in the same bundle as every cycle; **the lock's one home is the sidecar
@@ -366,6 +634,36 @@ left, which the mine preview says ("2, then 2/2/1") and the public **pits** show
 exhausted — an overlay derived from the cursor, never a cell edit and never a feature. A block whose
 every pocket is exhausted reads "worked out" on the chart for everyone; the reserve's figure stays
 staff-only.
+
+**As built (SM.6):** the sidecar is the strict family `tacsim.pockets`, its key text industry's
+deposit id as `{:016x}` and its pockets the block's 1..=256 address numbers (`PocketCursor`, at most
+64 `CursorRow { pocket, drawn_t ≤ 24, lock }`). The trait is `ExternalDraws::drawn(&self, ctx:
+&ModuleCtx<'_>, deposit: &OreDeposit) -> Option<u64>` (D11), the typed family readable only through
+a module context; tacsim's `SurfaceDraws` answers 0 for an absent cursor and the cursor's total for
+its own deposit's. A mismatch quarantines **every deposit sharing the place and the `external`
+name**, with three causes: `DrawsMismatch`, `DrawsUnanswered` (an unreadable pool family or a `None`
+answer) and `ExternalUnwired` (no seam composed). Industry's own `@extract/start` and
+`@extract/cycle` refuse a body whose `external` is set, closing SM.5's residual F12 (ii). The sweep
+reads `tacsim.pockets`, and the port tick and readiness read deposits, through two typed-state
+delegations on the TacSim roster only — industry → tacsim (the port tick and readiness read
+deposits) and tacsim → industry (the sweep reads `tacsim.pockets`) — each granting write as well and
+held to reads by `tests/deposits.rs`'s D10 source tripwire, a tripwire and not a
+proof (D1, an owner-critical default the lead accepted, standing until the owner rules). One bundle
+may now open any number of new pools at one endpoint: mush-inventory's `transfer_many` stages the
+endpoint's census once a bundle (SM.3b's round's F3, closed), and the dump runs on it too.
+
+**As built (SM.7):** the lock's home is the cursor row, `PocketLock { tv, ordinal }`, written by the
+start's bundle and released at the run's close, a row neither drawn nor locked removed; a start
+reads the pocket's rows and every other rig's run record (R4, §6's note), not the row alone. The
+preview never echoes the barren-ness bit above: a barren pocket answers byte for byte as an
+ore-bearing one the operator has not read (the lead's ruling 2). The pits stay derived from the
+cursor through the map's one `pit_at` rule; a pocket worked out in one family and untouched in the
+other reads `V` on every map until SM.9's two-family rule.
+
+**As built (SM.9):** the two-family rule stands as built, with no code changed: a pocket worked out
+in one family reads `V` on every map whatever its other family holds, pinned by
+`sm9_a_pit_worked_out_in_one_family_reads_v_whatever_else_it_holds` (SM.9's D9, the lead's
+owner-critical default, standing until the owner rules).
 
 ---
 
@@ -394,6 +692,12 @@ teleoperated** from the settled hull's bridge under the operator's control lease
 crewed cab open; it is the one place a Starflight veteran will feel the difference, and the engine's
 answer — a body in the cab, seat reach, a rescue rule — is a later cut, not a different TV).
 
+**As built (SM.3a, SM.3b):** the TV is fielded into the catalog — it binds and mints a
+`DefinitionRef` — but has no burn row, and a drive-less unit refuses a passage with `NO_DRIVE`. "The
+operator's control lease" is read as the live lessee (`TvLease.pilot`) aboard the settled hull: no
+mush-sim F3 lease is taken on the TV, and "aboard" gates launch, recover and dump alike (SM.3b's
+decision 14, the lead's default standing until the owner rules; §8 and §19 item 3 read the same way).
+
 **Tools** are a new content kind, `crates/tacsim/content/tools/*.json`, read by the surface engine
 now and lowered to `ComponentRole::Tool` at promotion: `drill_core_mk1 { cycle_s 1800, rock_factor
 2, energy_cu 2000, yield_t: { lean 1, fair 2, rich 3 } }` and `scanner_mk1 { scan_s 600,
@@ -409,6 +713,48 @@ after the act *and after the trip home*, and the act is refused when that would 
 charge is **reserved in the act's own authoritative start** (§8), so two acts can never both spend the
 same margin, and a TV cannot be stranded by its battery, by construction.
 
+**As built (SM.3a, SM.3b):** tools are strict typed documents pinned by digest (`tacsim.tools.v1`),
+not packs, and a third row, `battery_mk1`, carries the charge figures as data. "Read by the surface
+engine now" was not yet true in SM.3a, whose tools only their tests read; SM.3b's acts read the
+battery row (the one battery source), and the drill and scanner rows wait for SM.7 and SM.4. The
+reserve rule is enforced only in `tacsim_surface_act`'s prepare; a spend of zero (cost plus home
+equal to 0) always passes, so a recover or a dump is never refused by it, and a rig on the ground
+comes home and dumps even with its battery row unreadable. `reserved_total` reads only the act in
+flight until SM.7's cycle slot extends it.
+
+**As built (SM.4a):** the scan and the sounding read `scanner_mk1` (600 IC s and 1,000 cu; 1,200
+IC s and 2,000 cu; radii 48, 16 and 8), so only the drill row still waits, for SM.7. The reserve
+rule's trip home is `home_cu` 0 until SM.4b's drive. A scan or a sounding typed with the rig in the
+bay reads the bay's credit only up to `started_ic + LAUNCH_S` (§4.3). A scan or a sounding started
+from the ground whose battery row stops resolving still settles, subtracting its reservation
+(`settle_spent_out_of_bay`), where the judge found it retrying for ever; the lead's fix round did
+it, and an implied launch still in the bay fails closed as SM.3b's launch does.
+
+**As built (SM.4b):** the reserve rule's trip home is real, superseding the SM.4a note's `home_cu` 0:
+the exact least cost from the act's end stand to beside the ramp, read from a per-(site terrain,
+ramp cell) **home field** — a multi-source reverse Dijkstra from the beside-ramp cells over the
+atlas's own move costs, built once on the surface tick and cached (32 fields at most), keyless from
+the atlas terrain when the geology layer is dark (P14, an owner-critical default the lead accepted,
+standing until the owner rules). A drive to a stand with no way
+home is refused (`NO_WAY_HOME`); a scan or a sounding from a stand already occupied with no way home
+reserves the conservative bound (1,226 cost a cell on the shipped table). The 5 % floor is never
+applied to a recover: it is refused only when its out-of-bay charge cannot cover its own leg
+(`RECOVER_SHORT`), and it never reads the battery, so a recover with no readable battery row spends
+nothing for its leg (P6, an owner-critical default the lead accepted, standing until the owner
+rules; and the builder's decision 3, a default the lead accepted and the owner should see beside
+P6). Driving reads the unit's tracked `max_speed_cms` 300 and the
+battery row's 15 cu per nominal cell, no constant of its own (§11).
+
+**As built (SM.7):** the drill row is read: `drill_core_mk1`'s `cycle_s` and `rock_factor` set a
+cycle's pace (`mine::cycle_secs`: 1,800 IC s, 3,600 on rock), its yield row the tonnes, and the
+blind room is derived from it (§6). `reserved_total` is the act's reservation plus the run's
+remaining one, saturating (§8), and a run reserves its charge and its trip home at its start.
+
+**As built (SM.8):** an unload is `UNLOAD_S` 600 IC s, a code constant (no content digest moves),
+spent in the bay: it reserves nothing and reads no battery, and the bay regains 600 × 50,000 / 3,600
+= 8,333 cu over it, capped at the capacity (pinned by U11), where §4.1's Draft paragraph rounds it to
+8,300.
+
 ### 4.2 The hopper vault
 
 A single-room store interior anchored on the TV and a vault on it, laid up by the hull recipe
@@ -419,6 +765,11 @@ player passes `may_take` on it, so `live_endpoints` never offers it, `@inv/move`
 between hopper and hold, and doc 18's one-vault premise (D-18-37) survives without building P-H.
 Only two server-authenticated acts write it: the cycle's transfer in (§6) and the unload out (§7).
 Every quantity in it is a pool, so gauges, capacity and payload read it at once.
+
+**As built (SM.3a):** the hopper is laid up by the applier's part (h) in Occator's unanchored shed,
+not by the hull recipe nor by `create_vault` as `+coop/enrol` does: its vault id comes from the
+applier's allocator, owned by `System(tacsim.vehicles)` with scope None. Eight rigs, `OWP-TV-01..08`,
+stand in "Occator Vehicle Shed", each a Thing, a unit, a cab and a hopper space, titled to Occator. SM.3b's `+tv/dump` is a third act that writes it, out to the site's spoil (§4.3).
 
 ### 4.3 Riding the ship — D-20-7
 
@@ -442,6 +793,43 @@ without an Active licence or a free bay slot, laying the TV into the bay; `+tv/l
 the deposit with the TV in the bay and the hopper empty, and is refused elsewhere. Two leases are two
 TVs; the second is the lever that makes a live hour a juggling act.
 
+**As built (SM.3a, SM.3b):** `+coop/refit` re-binds the chartered hull's tactics unit in place
+(`mush_tactics::module::refit_unit`) rather than swapping it "as lane data"; the lane carries a
+`refits` row on the programme. The bay room, its space and its `rigs` compartment are laid on
+**every** programme hull at apply, standard Drays included — hidden, empty and exitless — and the
+egress is definition data (`EgressDef`); no `EgressSpec` is written. The refit also refuses with
+provisions in the hold, with a rig in the bay (or a live lease record) and away from the desk.
+Occator's counter is the Ceres Exchange Hall, its rigs `OWP-TV-01..08` in "Occator Vehicle Shed".
+The lease is an economy lease with a 1-minor Manual rent and one public post carrying the term fee and
+an engine-owned `tacsim.tv.deposit` hold (the first game namespace in mush-economy's frozen
+`ENGINE_OWNED_RESERVATIONS`, §18); the term is re-debited **at the pilot's next `+tv/lease` act**, not
+at the next dock (the at-dock hook is SM.3a's residual R1); a forfeit captures the whole deposit and
+the rig waits to be returned; the return is keyed on the lessee's own record, so a Revoked pilot can
+still hand a rig back. Until SM.5 the licence refusal is a seam that always answers Ok
+(`licence_seam`). The bay on every hull, the Exchange Hall counter and the rigs' names, the deposit's
+namespace and the re-debit at the next lease act are the lead's defaults (SM.3a's D1, D11/D17, D18
+and D8), standing until the owner rules. The slot switches are `/1` to `/4` (`MAX_BAY_ITEMS`), not
+"1 or 2": a slot past the hull's bay answers `NO_RIG`, and a bare act addresses the rig last named,
+else the only rig; the pointer is RAM, so after a restart a two-rig act with no number refuses
+(SM.3b).
+
+**As built (SM.5):** the seam is filled: `licence_seam` became `licence_check`, and `+tv/lease`
+(preview and `go`) is the one act besides mining, staking and renewal that reads the licence, at
+check 6 of `plan_take`, before the slot and before the term settle — refused `LEASE_LICENCE`, or
+`LICENCE_BOOKS_DARK` when the licence cannot be read; launch, recover and dump read none. A lapsed
+licence therefore refuses the lease before SM.3a's R1 term settle, so a lapsed pilot's past-term rig
+is neither re-debited nor forfeited until they relicense or R1's at-dock hook lands (SM.5's decision
+21, an owner-critical default the lead took, standing until the owner rules).
+
+**As built (SM.3a, SM.3b): a charter's end with rigs aboard.** `+coop/buyout` refuses with
+`BUYOUT_BAY` and `+coop/release` with `RECALL_BAY`, both failing closed when the hull's bay cannot be
+read; `@coop/revoke`, the dormancy recall and the return arm repossess every rig first. Each deposit
+settles before its lease ends: released within the paid term, captured whole past it, and the engine
+never debits a fee. A non-empty hopper, an unreadable or unlisted record, a deposit that will not
+settle, or a rig out or mid-act holds the hull and pages staff with `BAY_PAGE`; the rig is never
+stripped. The deposit rule (SM.3a's D16) and the hold-and-page (SM.3b's decision 13) are the lead's
+defaults, standing until the owner rules.
+
 `+tv/launch` is an egress to `Direct` on the site's passive domain at the ramp pose
 (`mush-sim/src/commands.rs:2060-2159`), legal only while the hull is settled at a site and the
 operator is aboard, and implied by the first `scan`, `sound` or `drive` from the bay; `+tv/recover`
@@ -452,6 +840,51 @@ to the site's **spoil** pool, a system vault per site — conserved, unrecoverab
 preview. An **excursion** runs from launch to park and is identified by `ExcursionId (tv,
 launch_ic)`: the sortie identity doc 17 needs (D-UM-45, a hangar to a hangar), the bay being the
 hangar.
+
+**As built (SM.3b):** the launch is the surface tick's `mush_sim::place` at `ramp_pose` — the pad
+centre (128,000, 128,000 cm, facing north) plus the bay's `EgressDef` offset, so the Dray-P's stern
+ramp is at (128,000, 124,500, 180,000) — not mush-sim's `egress_parent`, which folds the egress pose
+into a posture at the origin; it takes 300 IC s (`LAUNCH_S`). The implied launch is SM.4a's, which
+prepends `launch_plan`. `+tv/recover` is the placement half only: from the ramp's own cell or the next
+(Chebyshev), in 300 IC s (`RECOVER_S`); a rig further off is told about how far it is, and the drive
+home is SM.4b's. A third departure text, `TV_BUSY` (a rig mid-act), sits beside `TV_OUT` under the same
+`TvOut` kind, and `TV_AWAY` names staff as the remedy where `+tv/n recover` cannot work (a rig still
+logged out while the hull is away from a site's pad); all of them, and `HOPPER_LOADED`, refuse
+`+ship/plan`, `+ship/undock`, `+ship/lift` and the queued depart, and `HOPPER_LOADED`'s remedy names
+only the dump until SM.8 adds the unload. Each site's spoil is a DARK "{site} spoil" Thing in its host
+room backing a vault owned by `System(tacsim.sites)` with no scope (`CustodyRef::Container`), both
+laid by the applier's part (g) and named on the Site readiness line, so a missing spoil closes the pad;
+a dump takes no IC time (`DUMP_S` 0), moves each pool's `available` quantity, and is recorded refused
+(`SpoilGone`), nothing moved, when the spoil will not take the load. An excursion runs from a launch's
+start to a recover's `Done` (parking is SM.11's): a refused launch (`NeverLeft`) closes it, a recover
+from beside the ramp needs no open excursion, and a recover of a rig in the bay with one still open
+closes it. `RECOVER_S` 300, `DUMP_S` 0, a past-term Active lease that still launches (recover and dump
+are never lease-gated) and the launch's place at `ramp_pose` are the lead's defaults (SM.3b's decisions 9, 10,
+11 and 25), standing until the owner rules.
+
+**As built (SM.4a):** the implied launch landed. A scan or a sounding typed with the rig in the bay
+is one act whose plan prepends `launch_plan` (its refusal order unchanged), `LAUNCH_S` longer,
+opening the excursion at the start exactly as a launch. The bay credits charge only up to
+`started_ic + LAUNCH_S` (`charge_for_act`, `spent_after_launch`); the reserve and the preview's
+charge read that same instant, and `+tv` shows no later bay credit while the act is in flight
+(`charge_shown`). An implied launch whose rig never left the bay is refused `NeverLeft` with its
+excursion closed; one moved off its stand after leaving the bay settles its charge out of the bay at
+the launch half with nothing spent and keeps its excursion open (§8).
+
+**As built (SM.4b):** the drive home landed. `+tv/recover` from anywhere on the site's ground drives
+to beside the ramp and climbs aboard as **one** `Recover` act carrying a frozen leg (`secs` the leg's
+plus 300), placed back in the bay at the due instant, even while the geology layer is dark (its way
+home keyless, §4.1); `RECOVER_FAR` remains only for a cell with no way home at all, and
+`RECOVER_DARK` answers when the way home's terrain cannot be mapped this boot. A drive typed from
+the bay implies the launch as a scan does.
+
+**As built (SM.8):** the unload landed (§7.1), and `HOPPER_LOADED` names it first for a hull on a
+site's pad ("…: +tv/{n} unload moves it into the hold, or +tv/{n} dump empties it onto the
+spoil."), while `HOPPER_LOADED_AWAY` ("…: staff must empty it.") answers anywhere else, both under
+`DepartRefusalKind::HopperLoaded`: an unload works only on a site's pad, so at a port neither remedy
+works (R5, an owner-critical default the lead accepted, standing until the owner rules; if the owner
+allows unloading at a dock, the gate and the port line go away in one change). A queued unload is
+not busy to the departure gate.
 
 ---
 
@@ -465,6 +898,33 @@ the server refuses and `+tv/forget <site>|<body>` frees room. Readings are **re-
 from the cached geology under the row's pinned reading-rule version, so a reading never drifts from
 the ground and the store never holds truth. The `+tv` status line always says where each rig stands —
 block and its tenure, field, footing — so a scan's rows and a stake's block are never a guess.
+
+**As built (SM.4a):** the chart is the typed, authoritative family `tacsim.chart`, one `ChartRecord`
+per **(character, site)** keyed `{principal}/{site}`, not a document per (principal, body): a
+per-body row's worst case in canonical JSON runs past the family's 256 KiB cap (the lead's ruling
+3). A site's row holds at most 64 field rows and 16 pocket blocks by construction and encodes under
+its 64 KiB record cap; this document's per-body caps (1,024 field rows, 64 blocks) are enforced at
+the start over the principal's rows on the body (`body_admits`, refused `CHART_FULL`), never at the
+finish, so two concurrent rigs may overshoot by one act's worth. A field row carries its sharpest
+`footing` (a scan never dulls it), not a "fidelity". A pocket cell's byte holds its tier in the low
+two bits (`TIER_MASK`, `TIER_R2` 2) and in bit 2 `PIT_SEEN`, reserved for SM.7 and written by
+nobody, every other bit refused by the row's check: the judge found the readers comparing the whole
+byte, and the lead's fix round gave it this layout, so a pit bit survives a re-sounding. Each
+provenance ring holds the four newest stamps, oldest first, whatever order finishes land in (the
+round). `+tv/forget` writes by its own action, `tacsim_chart_forget`; it also prunes a coverage-free
+budget-keeper row (below) whose IC hour is over, a bare forget of a site with no coverage answers
+`FORGET_NOTHING` whatever the keeper's hour, and a row that cannot be read answers "Your chart of
+{what} cannot be read right now; nothing changes." (`CHART_UNREAD`) and is never forgotten blind
+(all three the round's). The status line is §1 beat 4's note.
+
+**As built (SM.7):** a core writes `PIT_SEEN`: `chart::write_core` sets the pocket's cell to
+`TIER_R2 | PIT_SEEN`, keeping its other bits, and the cell reads as sounded; a byte holding
+`PIT_SEEN` with no tier is refused by the row's check and never reads sounded (pinned by the fix
+round). The provenance enum gains `Instrument::Core` (serde `core`), stamped `Local { Core, at:
+due_ic, Hand }`; a core touches neither last stand, so it never feeds the same-cell repeat rule. The
+mine preview's blind default family is the one named, else the richest family of the operator's own
+R1 row of the field, else metals (R6, an owner-critical default the lead accepted, standing until
+the owner rules).
 
 Three tiers, each a pure quantisation of the geology, in the one word set:
 
@@ -486,6 +946,43 @@ Three tiers, each a pure quantisation of the geology, in the one word set:
   the lines). `+tv/sound quiet` reads eight cells and is heard by nobody, at the same cost — the
   decision beat 6 names. A scan is passive. Mining a pocket also writes its R2: the core is a reading.
 
+**As built (SM.1):** the reading rule carries a version, `READING_RULE_VERSION` 1, which SM.4a's chart
+rows pin. On regolith a barren field reads barren–lean and a rich one fair–rich; otherwise one keyed
+draw at level 3 per (field, family) chooses the band's side, so a repeat never narrows and the band's
+position does not tell the truth.
+
+**As built (SM.4a):** reading rule v1 is pinned literally by
+`tests/geology.rs::sm4a_reading_rule_v1_is_pinned_literally` (provinces, fields, pockets, the word
+ranges and the rule's legs, on a fixed test table), so a change to any literal is a new rule
+version, never a re-bless. **Reach**: a unit is in reach when its centre lies within the radius of
+the stand cell's centre on both axes (doubled cells), so a scan reaches exactly nine fields, a
+sounding 64 pockets and a quiet one 16, from any stand. **Sight**: a field is seen when the atlas
+line of sight from the 2.5 m mast to a mast's height over the field's centre cell is clear or
+partial, the stand's own field always seen; a scan from ice still costs and writes coverage (the
+lead's ruling 5). The scan preview also names the hidden count ("; 2 hidden from the mast") and,
+from regolith or ice, the nearest sharper footing within the scan's reach, by ring from the
+north-west. A field read as a band prints the union of the band's pocket counts ("C-NW fair–rich
+metals (5–16 pockets)"), so the count never excludes the truth (the lead confirmed it; §10).
+
+**As built (SM.4a): the heard sounding.** The budget is per (sounder, **site**), stamped on the
+sounder's chart row (`heard_ic`) by the finish and decided authoritatively, and it survives
+`+tv/forget` as a coverage-free budget-keeper row inside the hour. The listeners are the operators
+of every open excursion on the site and the helm holders of programme hulls docked on its pad, minus
+the sounder and anyone quiet, **connected now only, never queued**. The line is "A sounding thumps
+through the ground from the {bearing}, {band}.", the bands under 500 m, 500 m to 1 km and over 1 km,
+and "right under you" on the same cell; it is sent only once the in-memory projection write that
+advances `told` has succeeded, before that write is persisted, so a crash between the line and the
+persist may repeat one heard line once after a restart. The
+per-(sounder, site) budget surviving a forget (SM.4a's D7) and delivery to connected listeners only
+(D8) are the lead's owner-critical defaults, standing until the owner rules; the site map's
+transient mark is SM.4b's. `+tv/quiet [on|off]` is a preference document,
+`tacsim:tvpref:<character>`, written from `+tv`'s authoritative bracket: not an act, and with no
+`go`.
+
+**As built (SM.4b):** the site map's transient mark landed on its row of other rigs: it reads the
+other rig's last outcome only — a `Done` loud sounding on this site inside the IC hour — so the
+sounder's next act clears it before the hour ends.
+
 Repeating an instrument from the same cell is refused at no cost: "You learn nothing new here." —
 industry's "a re-survey cannot narrow" (`mush-industry/src/commands.rs:379-433`) turned into play; the
 only ways to narrow are a finer tier, better footing or a closer stand. **Provenance** is the chart's
@@ -501,6 +998,26 @@ use and never priority (§8). Selling or giving a chart is phase 2 (a market
 is its black box; salvaging it yields `Reported { via: Salvage }`: stolen knowledge, never stolen
 discovery. Knowledge needs no tenure: a rig may drive onto, scan and sound any block, claimed or not.
 
+**As built (SM.4a):** "You learn nothing new here." is refused when the same instrument class (a
+scan; a sounding, loud or quiet) was last used from this very cell by this principal on this site
+**and** the act would add nothing (D4); the same instrument from any other cell always runs, costs
+its charge and stamps fresh provenance, which SM.10's in-epoch contest evidence reads. Provenance is
+`ChartProvenance::Local { instrument: Scan | Sound | QuietSound, at, via: Hand | Plan }`, and only
+`Hand` is written (`via: Plan` is SM.11's; `Reported` is not built: the enum has only `Local`). The
+last stands the repeat
+rule reads follow whichever finish landed last, not the newest stamp (the round's N2, a residual: at
+worst an extra charged act that adds nothing, or a refusal at no cost). No licence and no tenure
+gate a scan, a sounding, a forget or `+tv/quiet` (the lead's ruling 9).
+
+**As built (SM.10):** the stake's evidence (`surface::tenure::evidence_at`) is the earliest
+hand-made stamp — `Scan`, `Sound`, `QuietSound` or `Core`, `via: Hand` — in the actor's own
+provenance rings for the block's four fields and its pocket block, plus each row's `first_local_at`
+while its ring holds no `Plan` entry, so the discovery survives the ring's four-entry eviction; a
+heard or plan-made reading never qualifies. The contest's evidence (`heard_before`) is the earliest
+loud `Sound` by hand in the pocket ring only, from the block's last opening to the holder's stamp
+(§9.4), so the ring's four entries can evict a challenger's early loud sounding (R3, §16). SM.11
+must revisit the `first_local_at` clause once `via: Plan` stamps exist (§13's SM.11 row).
+
 **Fog, by construction.** Every ore glyph on every surface is the viewer's own row. "You have no
 reading there." is byte-identical for unknown, uncovered and barren-but-unsounded (the posture of
 `commands.rs:52-56`). Nothing lists "nearest ore". Public facts are said plainly — "That block is
@@ -508,6 +1025,14 @@ under claim.", "Your licence lapsed at 05-21 14:00.", "The hopper holds 2 t more
 never said. Industry's `SurveyBands` (lifetime cap of eight surveyors per deposit, `record.rs:52`) are
 not used for cell knowledge; a block's `grade_class` and `reserve_class` are recorded at opening for
 the Registry's folio.
+
+**As built (SM.4a, SM.5):** "You have no reading there." (`NO_READING`) is byte-identical for an
+unknown site, a row of another site or rule, an uncovered field and a barren pocket never sounded.
+The licence line is `LICENCE_LAPSED`, "Your licence lapsed at {lapses}. +licence/buy takes a new one
+from today.", with `ic_stamp`'s `MM-DD HH:MM` (the licence's player-facing texts and the stamp's form
+are SM.5's decision 22, an owner-critical default the lead took, standing until the owner rules);
+the lapse instant is the expiry plus the grace (bought at `t0`: in force to `t0 + 168 d`, in grace to
+`t0 + 171 d`, lapsed from then, so IC day 172 refuses).
 
 ---
 
@@ -534,6 +1059,16 @@ across pockets, no auto-fire** for a seated pilot; `+tv/mine stop` lets the runn
 yield and drops the cycles after it at no cost. Repetition across pockets belongs to the plan (§8)
 and, in the drone phase, to sealed minds.
 
+**As built (SM.7):** the preview reads the operator's own row only: on a read pocket it names the
+family with the most tonnes left, then the richer class, and prints each cycle's tonnes from the
+cursor's remainder; on an unread one it is the blind core, "3 t of room needed to core an unread
+pocket" its only room line, the room `mine::blind_room_t` — the richest yield of the drill row, 3 t
+today — derived and never a constant. A public pit adds one clause to the blind preview
+(`PIT_WORKED`, `PIT_WORKED_OUT`, the map's own `pit_at` rule) and never refuses nor changes the run
+(R16); `+tv/mine stop` is committed without `go` (R7). Both are owner-critical defaults the lead
+accepted, standing until the owner rules; the blind core's family is §5's note. A count of one reads
+"1 cycle", and a rig in the bay is refused with no implied launch (`MINE_IN_BAY`).
+
 **The start** is an authoritative submission as the operator (`tacsim_surface_mine`), its
 `project_offer` holding the world and passing server-authored fixed parameters: the TV stands in the
 pocket and is idle; the operator's licence account is Active; **tenure allows it** — the block is
@@ -549,6 +1084,41 @@ clamped at completion; the charge covers the run and the trip home. It writes th
 row and, on the excursion's state family, the cycle `{pocket, family, k, cycles, yield, due_ic}` and
 the **charge reservation**, once each.
 
+**As built (SM.3b):** every act's start is the one action `tacsim_surface_act` (`act` a `Choice`)
+and every finish is `tacsim_surface_done`, submitted by the tick as the operator; mining becomes
+`act = mine` in SM.7, with no second start action (SM.3b's decision 25, the lead's default standing
+until the owner rules).
+
+**As built (SM.7):** the start is `act = mine` on `tacsim_surface_act`, and `+tv/mine stop` is
+`act = mine_stop` on the same action, keyed `…/{ordinal}/stop`: no third action, so SM.3b's decision
+25 stands. The preview is the command's `mine_plan`; `go` files a RAM mine order (SM.4b's drive orders
+generalised to `ActOrders`), which the offer re-plans at landing and requires equal
+(`MINE_CHANGED`), so `go` commits exactly the preview or nothing. The plan's gates run in order: the
+stand, the lease (`lease_gate`, shared with the launch), the pocket, its footing, the licence
+(`licence_gate`'s rule, in force or in grace, read through `licence_standing` by `mine_licence` so
+that the lapse instant is carried as a fixed parameter), the tenure (§9.2's note), the record and
+the lock (§6's and §3.4's notes), the operator's reading, then the fit. The fit is
+`mine::fit`, naming the count that fits in every measure — mass and packed volume, so §19 item 1's
+promise holds by volume too — against the hopper's room and `port::ship::hold_unreserved`, the one
+function the map's `hold.room_t` reads, now counting every outstanding cycle of every rig of the
+hull; since the fix round `mine::fits` calls `capacity::fits_in` rather than restating its rule. The
+start's prepare writes the run into the record's **cycle slot** (`RigRecord.run`, beside the act
+slot) and locks the pocket's cursor rows in one bundle, the run's charge and its trip home reserved;
+a forfeit or ended lease bars the start (R15, §8's note). The unreserved room is read by the mining
+plan and the map only: a market purchase still admits against the hold's limit less its load, so
+cargo bought mid-run can leave a hopper the hold cannot take, which SM.8 must answer.
+
+**As built (SM.8):** "`+tv/recover` always unloads everything" holds by construction for an honest
+fill, and SM.7's open question is answered at the unload, no other hold writer changed: the unload's
+own room is `hold_unreserved_with` — SM.7's one hold-room function, now over `capacity::{room_less,
+take_room}`, with the unloading rig left out — re-checked at its start, and the finish admits
+against the hold's limit less its load. A hopper the hold cannot take whole (a hold staff have
+shrunk, say) unloads what fits and says what stays (`UNLOAD_STAYS`), and the recover is never
+refused for it; a hold with no room at all makes the queued unload a 0 s act told once
+(`UNLOADED_NONE`; `UNLOADED_NONE_EMPTY`, since the lead's fix round, when the hopper read empty),
+never a stuck queue (R7, an owner-critical default the lead accepted, standing until the owner
+rules).
+
 **The completion** is the surface tick's one bundle at `due_ic`, as the operator:
 `inventory.transfer(block deposit pool → hopper pool, the family's ore good, yield)` on tacsim's
 delegated inventory families (`composition/mod.rs:510-515`; `mush-inventory/src/pool.rs:468-506`), the
@@ -563,16 +1133,45 @@ families, which no owner delegates; only inventory delegates, `tacsim/src/compos
 An `IndustryHandleCell` exported by `mush-industry` (the `InventoryHandleCell` shape) gives the
 composed provider read access to deposits and claim indexes; it writes none of them.
 
+**As built (SM.7):** each cycle lands at its own due through the one finish, `tacsim_surface_done`
+with its optional `cycle` parameter: one bundle moves the family's ore good from the block vault to
+the hopper by `InventoryFamilies::transfer`, adds the yield to the cursor's `drawn_t`, spends that
+cycle's charge, keeps or releases the lock, and re-arms the next cycle or closes the run. The
+receipt is the finish's idempotency key `tacsim.surface/{tv}/{ordinal}/cycle/{k}` over `(tv, run
+ordinal, k)`, not `(deposit, pocket, k)`: the run froze its deposit and pocket, and a second run of
+the same pocket restarts `k`; the prepare's `(ordinal, k)` check is the second guard. A short vault
+or a retried finish is refused `Unworked`, nothing staged, and closes the run. The chart's R2 row is
+written in the same bundle by `chart::write_core` (§5's note), which creates the operator's row with
+the run's body when they have none. The ring is `tacsim:mined:{site}` (`MinedRing`, 64 facts,
+inserted in `(at_ic, tv, ordinal, k)` order, never doubled), written by the tick's tell only after
+the projection's write and only for a cycle that moved at least a tonne — a barren core is never
+published — and read by nothing yet.
+
 **Yield** is the pocket's class — lean 1 t, fair 2 t, rich 3 t a cycle — until the pocket's tonnage
 is drawn, the last cycle yielding the remainder; it never rises, so D-E7-6 holds. Grade is spent here
 as tonnes (D-20-10): pools stay gradeless, no bid is graded, and the dissolve-then-crystallise
 laundering hole never opens. **Two rigs on one pocket**: the lock refuses the second with "Another rig
 is working that pocket." — a public fact, since units on the site are drawn for everyone.
 
+**As built (SM.7):** the lock is one cursor row per family with ore in the pocket, at most two
+(`MAX_LOCK_ROWS`), and the start also refuses while any other rig's run record stands on the pocket,
+so an all-barren pocket, which has no row, refuses "Another rig is working that pocket."
+byte-identically (R4). A lock is stale, and taken, unless its holder's record has a run of that
+ordinal on that site whose lock rows hold this very row (the deposit and the pocket): the fix round
+matched it by its row, where the judged tree matched the site and the pocket's number but not its block. Yield and pace are
+the drill row's (§4.1's note).
+
 **During a run** the TV is held to the pocket, and the pilot is not: a scan or a sounding from the
 new stand, the next drive's preview, the registry, the chart and the second rig are all legal. A
 45-minute session is some thirty cycles and a decision at every pocket, with the next one planned
 while the drill runs.
+
+**As built (SM.7):** during a run only a scan or a sounding may start on the drilling rig
+(`run_refusal`), and a drive previews but refuses `go`. Since the fix round a drilling rig is busy
+(`RigFlight::Drilling`) to the departure gate, the lease return and the repossession: a departure
+answers `TV_BUSY` "drilling C117" with `RUN_STOP_REMEDY` ("+tv/{n} mine stop ends the run after this
+cycle."), ahead of `TV_OUT` (§4.3). The lease return's `RIG_BUSY` names the running cycle's due as
+"done {when}", not the run's end (the round's N1, a residual).
 
 ---
 
@@ -594,6 +1193,34 @@ the sale predicate: `plan_of(&LogisticsDef)` (`port/market.rs:392-400`) and `cap
 hold refuse an overfill identically, while `governed_hold` (`market.rs:82-97`) stays the
 programme-hull predicate the sale rule and `CoopProceeds` read.
 
+**As built (SM.8):** "its own act" is `act = unload` on SM.3b's one start and one finish
+(`tacsim_surface_act`, `tacsim_surface_done`), no third action. A recover's `Done` with ore in the
+hopper writes a durable `RigRecord.queued` in its own bundle — a third slot beside the act and the
+run — and the surface tick starts it as the operator on a later fire, under
+`tacsim.surface/{tv}/{ordinal}/queued` with `how = queued`; `+tv[/<n>]/unload [<t>] [go]` files
+one by hand with `how = whole` (the whole hopper up to the hold's unreserved room) or `how = part`
+with `qty` (`<t>` tonnes, 1 to 99, of the first ore in id order: R10, the lead's ruling), bound to
+its RAM order (`ActOrder::Unload`) by `how` and `qty`, the queued start to the record's queue, each
+re-checked at the prepare (`UNLOAD_CHANGED`). A part past what can move is refused, never clamped,
+in three words since the lead's fix round: `UNLOAD_NO_FIT` when the hold's room binds,
+`UNLOAD_NO_STOCK` (`unload_no_stock`: "Rig {n}'s hopper holds only {fit} t of {ore}: …") when the
+hopper's own stock does, and `UNLOAD_NO_ROOM` for a fit of 0 (`REFUSAL_CODES` 56); `{ore}` is
+SM.7's `ore_words` ("ice ore"), not the commodity label. The finish is ONE inventory-owned
+`transfer_many_marked`, not `transfer_marked`, because two `transfer_marked` calls cannot share a
+bundle: one `inventory.transferred` marker a good, its id derived from `(tv, excursion|null,
+ordinal, good)` at the act's due, and the hopper vault's marker ring written once. A rig gone from
+the bay, a changed hopper, a full marker ring or a hold that will not take the load each refuse with
+their own code (`LeftBay`, `HopperChanged`, `MarkersFull`, `HoldRefused`) and move nothing:
+`HoldRefused` never overfills (R8). "`plan_of(&LogisticsDef)` … generalised" is `stowage_plan`,
+`plan_compartments`, `plan_goods` and `plan_check`, `PortCapacity::check` now deserialise +
+`plan_check`, while `PortCapacity::plan` and `governed_hold` are unchanged (R12), so a hopper never
+gets a market plan; the preview's room is `hold_unreserved_with`, not `max_more` over the plan.
+The unload works only on a site's pad (R5); the hand unload needs the operator aboard and the
+queued one does not, the recover's `go` having committed it aboard (R6). R5, R6 and
+R8 are owner-critical defaults the lead accepted, standing until the owner rules. A line naming
+several goods joins them with " and " since the lead's fix round ("8 t of ice ore, run-of-mine and
+4 t of metal ore, run-of-mine").
+
 ### 7.2 Ship to port
 
 Only the **governed hold** sells (`HOLD_ONLY_SOURCE`, `mush-market/src/trade.rs:1836-1844`): the
@@ -603,6 +1230,16 @@ principal). The Starflight shape — offload to the ship, then sell — is the l
 sell preview and `+market` print the bid's unfilled quantity, and `sell … all` sells what the bid
 takes and leaves the rest in the hold. The Co-op's share applies with one amendment (§7.4).
 
+**As built (SM.5):** `+market/sell <listing>` with no `=` is the preview — what the house's standing
+bid still wants and what you hold where the sale would come from, then on a second line what selling
+all of it would take and pay; it sells nothing — and `+market/sell <listing>=all` sells what the bid
+takes and leaves the rest, refused `NOT_BUYING` on an exhausted bid. The listing line's `wanted N ×`
+is the unfilled intake, pinned and not re-worded; the queued `sell <good> all` is unchanged.
+
+**As built (SM.8):** pinned as written, no market code changed: the hopper is refused at sale by
+`may_take` (`NO_SUCH_LISTING`) and by `HOLD_ONLY_SOURCE` (U12). The story on `build_engine` at rate
+24 sells the unloaded hold at the Exchange's bid with no staff act at all (§13's SM.8 row).
+
 ### 7.3 The ore goods — Q-20-1's default
 
 Mined matter is **raw ore, a good of its own per family**, bought only at Ceres and milled into the
@@ -610,9 +1247,9 @@ concentrate and water the trade run sells. The alternative — minting the exist
 `volatiles` rows — makes mine-then-haul-to-Kasei net about 17,000 cr a leg (21,600 less the share,
 the fuel and the stores) against the trader's 5,390 on the same passage (doc 18 §4.1), so every
 charter stops buying at the Exchange; that is the reason this fork was the owner's. Goods table
-**version 2** adds four rows under a new stowage tag `stow.ore` (the locker rule passes because four
-goods share the tag, `definitions/goods.rs:384-386`); each is the commodity of its family's block
-deposits:
+**version 3** (doc 20 cut SM.3a; doc 19's A.8 took version 2) adds four rows under a new stowage tag
+`stow.ore` (the locker rule passes because four goods share the tag, `definitions/goods.rs:384-386`);
+each is the commodity of its family's block deposits:
 
 | Good | Family | Per tonne | Hopper (12 t / 13.2 m³) | Ceres bid | Mill | Into |
 |---|---|---|---|---|---|---|
@@ -627,6 +1264,19 @@ rule. Kasei bids no ore: the refinery's feed is concentrate, and miners and trad
 professions joined at the Exchange's pool. No reach premium applies, because no port asks ore
 (`port/price.rs:130-177`). Occator's capital rises from 50,000 to 300,000 by tranche (lane data); the
 Exchange's 4,000,000 covers its intakes.
+
+**As built (SM.3a):** the four ore rows landed in goods v3 (twelve rows), each class `trade`, unit
+`t`, at the figures above with `reference_major` 70 / 35 / 50 / 600; their notes say "drilled from a
+Registry site", which covers Rheasilvia on Vesta as well as Ceres. They carry no listing, vendor or
+bid yet: those are SM.5's, on lane v11.
+
+**As built (SM.5):** lane **v11** carries the bids at the figures above, each posted under its
+house's own name: the Exchange's `metal_ore` 70 (standing cap 240 t, drip 40), `carbon_ore` 50 (120,
+20) and `strategic_ore` 600 (12, 2) after its alloy bid, and Occator's `ice_ore` 35 (240, 40); only
+Ceres bids ore. Occator's capital rises by one appended tranche, `PortOrgDef.raises: [250000]`,
+minted as its own tranche through `capital_schedule`: the base `capital_major` stays 50,000 and is
+never re-capitalized, and an edited, dropped or reordered raise is refused as drift. That amends
+D-18-27's "no top-ups" for Occator's appended raise alone (§18).
 
 **The intake drip.** The built clerk re-posts a bid only when its listing is gone *and* its recorded
 deadline has passed (`port/stock.rs:784-786`; `posts_afresh`, `port/vendor.rs:157-169`, also demands
@@ -643,6 +1293,20 @@ the bids a full drip costs the Exchange some 120,000 cr a real day of its 4,000,
 of its 300,000: the capital clause binds Occator in about nine real days and the Exchange in about a
 month unless the mill's resale refunds it, which is the point. The drip is the whole ore economy's
 size, an owner knob.
+
+**As built (SM.5):** the drip is `drip_step` on the port tick's stock arm, after the ask step and
+before `bid_step` (which skips refresh rows), one act a fire as the clerk: withdraw, then post
+through `wanted_spec`, rewriting the row's listing, `expires` and `posted_ic`. Beyond the boundary
+re-post it also renews a standing intake at its standing quantity once its deadline is within one
+real day (`DRIP_RENEW_SECS`), so an untouched intake never ages to the 90-day TTL; holds at most one
+banked drip for a row that waited at its cap (`posted_ic` not advanced); re-posts smaller when the
+house's funds bind and leaves the listing alone at a target of 0; brings a lapsed row back at one
+drip — a pack apply's re-post too, through the same `lapsed_drip` rule, since the lead's fix round;
+waits for the recorded deadline of a row withdrawn by hand; marks its own withdraw-then-refused post
+lapsed; and passes a row refused having moved nothing over for the rest of its IC day, so one
+house's standing refusal never stalls the other intakes. Every re-post churns the bid's listing id
+(`help trade` says so). The listing-id churn (SM.5's decision 19) and the lapsed row's return at one
+drip (decision 20) are the lead's owner-critical defaults, standing until the owner rules.
 
 **The mill** is P5's supply half (doc 18 §5's post-loop list): a receipted port arm turns the house's
 storefront ore pool into concentrate at the ratio and raises the ask's quantity by the proven
@@ -661,6 +1325,17 @@ entry may be a fixed price in minor units (`reference_minor`; port entries are i
 entry stays a listing (§18). The fixed references sit at **half the bid** — 3500 / 1750 / 2500 /
 30000 minor — so the Trust takes a quarter of the upper half: 8.75 cr a tonne of metal ore, 12.5 % of
 gross, beside the trader's 11 %.
+
+**As built (SM.5):** `reference_minor` is a second programme map beside `reference`, read first by
+`CoopProceeds` (no memo, no warning), so every reader of `reference` keeps its type; a good sits in
+at most one of the two, and the validator refuses a fixed reference for any good some vendor of any
+port of the pack asks. Lane v11 authors the four figures above: 10 t of metal ore sold at 70.00cr
+against the fixed 35.00cr gives the Trust 87.50cr.
+
+**As built (SM.8):** pinned as written: the story's sale of its 12 t pays the Trust
+`margin_and_share(price, reference_minor, 12, 250)`, a quarter of the margin over the fixed 35.00cr
+at whatever the bid reads at the sale (at the authored 70.00cr bid that is 105.00cr by arithmetic;
+the story reads the bid's price and asserts the share by the formula, never the figure).
 
 ---
 
@@ -683,6 +1358,57 @@ waypoints with cumulative IC seconds. The engine's submit queue (64 actors,
 a Dray-P carries two, so a live hour may be one TV and a 75 s rhythm, or two staggered TVs and a
 decision every forty seconds.
 
+**As built (SM.3b):** a fire reads the whole family (at most 1,024 records, in pages of 256) and also
+visits records whose last outcome is untold; candidates are ordered by `(due_ic or last.at_ic, tv)`,
+and an act in back-off is dropped from the window of 64 so it never starves newer acts. The caps
+count open excursions in the start's prepare, over every lessor pool's rigs.
+
+**As built (SM.4b):** the path is frozen to at most 32 waypoints **within a display tolerance of at
+most 80 m** — an integer Douglas–Peucker at 1, 2, 4 then 8 cells, the first keeping at most 32
+points winning — while the time and the charge are the exact path's, every kept waypoint carrying
+the exact path's cumulative seconds; a way needing more than 32 even at 80 m is refused
+(`TOO_WINDING`), never cut, and a recover's way home is never refused for its waypoints (P4, an
+owner-critical default the lead accepted, standing until the owner rules: the lane's per-cell
+terrain makes "corner points" refuse nearly every drive). The census over every lane site, from the
+ramp to all 64 field middles, refused none and froze every leg at the 1-cell tolerance, at most 24
+waypoints. Features are not obstacles: the atlas's `path` reads cells only, the lane's craters
+author `movement: false`, and `tests/driving.rs` fails the day a lane site authors a
+movement-blocking feature (P5). The A* runs once a command over the composite at 65,536 cells, and
+the command's whole planning measured about 30 ms in release on the worst case, corner to corner:
+the lead's 20 ms threshold was crossed, the cost inside the atlas's `path` (string-keyed
+per-neighbour lookups and a weak heuristic), and the lead accepted it for SM.4b with an atlas cut
+owed after SM.7 (§13's SM.12 row). A drive starts and finishes on the same two actions (`act =
+drive`), its leg in the act's params and projected into `tacsim:tv:<tv>` at the first fire after its
+start, the rig placed once, at the leg's end, at the due instant; the start's optional `to`
+parameter binds it to the drive's order, a RAM `DriveOrder` the offer fixes, so a restart loses an
+unlanded order ("not planned; preview it again").
+
+**As built (AP):** the atlas cut owed above landed as AP (`74c5801f`, an engine cut in `mush-atlas`
+with no §13 row of its own, between SM.7 and SM.8): `path` resolves its locomotion's rows once per
+search into a dense per-class row (`mush_atlas::LocomotionCosts`, one step rule with `move_cost`)
+and steers by the octile distance priced at the cheapest passable class present on the surface —
+admissible and consistent, so it returns the least cost, unchanged for every row whose passable
+classes all cost at least 100, the drive's tracked among them (`wheeled`, which no production
+caller searches, may now find a cheaper path the old `Chebyshev × 100` missed) — and the home field
+reads the same row. On Ahuna Flank in release, corner-to-corner planning went from 28.86 ms to 3.28
+ms (minimum of five; medians 29.57 → 3.46), the cached home field from 31.32 to 7.04 ms and the
+exhausted flood from 28.99 to 8.31 ms; in debug 151.97 / 193.59 / 156.14 → 22.21 / 84.63 / 65.47
+ms. `sm4b_the_drive_planner_is_measured` is a release gate (≤ 10 / 20 / 20 ms on the minimum of
+five); the debug pair 100 / 250 / 250 ms is asserted under `TACSIM_ASSERT=1` only, never in the
+push-triggered CI shard (D-H-8, D-16-19; an owner-critical default the lead accepted, standing
+until the owner rules). Every lane leg's cost is unchanged — the drive's tracked row, proven
+against a plain Dijkstra over `move_cost` on every lane site (`AP_SITE_LEG_COST_TOTALS`,
+`AP_AHUNA_CORNER_COST` 60,720); one equal-cost tie on Ahuna froze to a different waypoint count
+(the 64 ramp legs' spread 3/12/24 → 3/13/24, the most still 24). The RAM memo of the last planned
+leg was not built (SM.7's one-slot `ActOrders`). The cites `physics.rs:614-622` and `physics.rs:92`
+above are stale after AP: read them as `mush_atlas::physics::path` and `DEFAULT_PATH_MAX_CELLS`.
+
+**As built (SM.9):** "positions between are pure interpolation from the leg record" now holds on
+the clients too (the lead's 0z ruling, reversing the planner's timed re-pull): the TUI and the web
+place the viewer's own rigs along `site.map`'s `rigs[].leg` by SM.4b's `leg_position` rule, from
+`site.clock { now_ic, rate }` and `site.under` (the glyphs beneath them), re-pulling on `tv.status`
+only and on no timer (§10). The frame carries `rigs[].leg` only for an act on that very site.
+
 **Every act starts authoritatively.** A scan, a sounding, a drive, a mine run, a recover and an
 unload each begin as an authoritative submission as the operator, whose `ActionTxn` writes the
 excursion's **state family** `tacsim.excursion` — the current act `{kind, params, started_ic, due_ic}`,
@@ -699,11 +1425,91 @@ the act ordinal its idempotency key; it decides nothing. Nothing is RAM-only: a 
 the next fire, overdue acts applying at their own stamps, so the post-image after a restart equals an
 uninterrupted run (an acceptance test).
 
+**As built (SM.3b):** the launch and the dump also start this way. The state family holds one
+`RigRecord` per terrain vehicle, not per excursion: a monotonic act ordinal, the lazy charge
+`{value_cu, at_ic, in_bay}`, the act in flight with its `reserved_cu`, the open excursion and the last
+`Outcome`. The finish is itself an authoritative submission, `tacsim_surface_done`: it records `Done`,
+or `Refused` (`NeverLeft`, `NotBeside`, `HopperChanged`, `SpoilGone`), from the world its offer reads
+at landing, stamped at the act's own `due_ic`; a refused finish never spends charge, and the next fire
+tells the operator one line (`ACT_FAILED`). A finish that does not land is retried, with a page after
+8 attempts and a back-off of 60 fires. The projection reads `Bay` only with no excursion open and the
+rig aboard its hull's bay.
+
+**As built (SM.4a):** the scan and the sounding start and finish on the same two actions (the
+start's `act` words are `dump`, `launch`, `recover`, `scan`, `sound` and `sound_quiet`; the test
+world's Probe kind is retired). The chart row is written in `tacsim_surface_done`'s bundle beside
+the rig record, stamped at `due_ic`, with `ChartProvenance::Local { instrument, at, via: Hand }`
+only (`via: Plan` is SM.11's). A finish is also `Refused` with `Moved` — a scan or a sounding whose
+rig was not at its frozen stand at landing: no charge spent, no chart write — and an implied launch
+whose rig never left the bay is `NeverLeft` (§4.3). The finish's outcome carries `span`, what the
+act read, for the tell, which prints the reading block from the operator's row restricted to that
+span; a row gone, unreadable or under another rule tells `READINGS_GONE`, and a row that stands
+while the ground cannot be read tells `READINGS_DARK` (§10). `+tv/forget` and `+tv/quiet` are §5's.
+
+**As built (SM.7):** the current cycle is the record's **cycle slot**, `RigRecord.run`, beside the
+act slot. The `Run` also freezes the site, body, stand, number and letter, the deposit, the good,
+the block vault and hopper endpoints, `secs`, `cost_cu`, `reserve_t`, the true `class_t` and
+`pocket_t` (never projected), `stop`, `lapses_ic`, the lock rows, `due_ic` and the remaining
+`reserved_cu`, at most eight cycles (`MAX_RUN_CYCLES`); `reserved_total` is the act's plus the
+run's, and only a scan or a sounding started later may share the rig. The tick takes the earlier of
+the act's and the run's due, a tie to the run, keyed `(tv, ordinal, cycle)` with each key's back-off
+its own, and tells `CYCLE_DONE` with its end clause or `CORED` with the operator's new reading. The
+projection carries the run as `RunView { ordinal, k, cycles, due_ic }` — no pocket, family, yield or
+class, so a blind core cannot leak — and, since the fix round, from the first fire after its start
+lands rather than the first cycle's due. A landed mine order is skipped by the offer without a
+re-plan and pruned from `ActOrders` by the tick's complete scan (the round). The post-image after a
+restart equals an uninterrupted run, pinned for a run by M12 and M12b.
+
+**As built (SM.8):** "unload done" is the `Unload` arm of the one finish, and the unload starts on
+the same action (`act = unload`; §7.1), the finish's `transfer_many_marked` in place of the
+`transfer_marked` above. The tick gains a fourth candidate reason: a queued unload on an idle record
+outside its back-off, ordered by the queue's `at_ic` and submitted under its own attempts key `(tv,
+ordinal, QUEUED_CYCLE)`, never a finish's retry; it places nothing. "Nothing is RAM-only" holds for
+the queue — U7 and the story's restart pin the post-image after a `build_engine` restart equal to
+the straight run's — while a hand `+tv/unload go`'s order is RAM like a drive's ("that act was not
+planned; preview it again" after a restart). The finish's offer now also fixes the real second
+`wall` beside `now` and `clock` (the market lot offer's precedent), for the marker ring, so the
+finish's fixed parameters are no longer a pure function of IC time. Every start clears the queue.
+
+**As built (SM.9):** the projection is pushed, and carries more. `write_projection` pushes the
+operator's whole projection as the `tv.status` keyframe (`rig: TvRec`, retain latest) only when the
+store wrote (§10). The SM.7 note's `RunView` is reversed under the lead's ruling 4: it now carries
+`addr`, `good`, `stop` and `blind` — the operator's own choices — and never class, yield or tonnes,
+so a blind core still cannot leak its class; the screens read it, and `RigRecord.run` is read by no
+frame. `TvRec::check` bounds the address at `MAX_RUN_ADDR_BYTES` 8 with its own refusal, "a rig
+projection's run address is at most 8 bytes", apart from the cycle bound's (the lead's fix round).
+The projection is its current operator's (`projection_for`, SM.9's D16): a stored record another
+operator or another excursion wrote is carried with its log, leg and run cleared, so the log ring
+holds the open excursion only, and a recover's tell, which writes no excursion, starts a clean log
+at the bay (§16).
+
 **Rights are per act.** The licence and tenure gate **mining only** (and staking and renewal, §9);
 scanning, sounding, driving, recovering, unloading and dumping need the operator's control lease and
 the hull settled, nothing more. A licence that lapses or a claim that is lost stops the next cycle
 with a public line and never a rig's way home, an unload, or a sounding on anyone's block; a plan
 whose rights lapse skips its remaining mine steps, recovers, unloads, parks and says why.
+
+**As built (SM.3b):** "the operator's control lease" is read as the live lessee aboard the settled
+hull (§4.1's note; the lead's default standing until the owner rules).
+
+**As built (SM.5, SM.4a):** `+tv/lease` is the one act besides mining, staking and renewal that
+reads the licence (§4.3); a scan, a sounding, a forget and `+tv/quiet` read neither licence nor
+tenure.
+
+**As built (SM.7):** the licence, the tenure and the lease are judged for the next cycle, never the
+running one and never the way home. The licence is judged at the next cycle's own due against the
+lapse instant read at landing, whether the standing reads in force or already lapsed (R9), so a late
+landing after a restart decides as the uninterrupted world; the tenure and the lease are the offer's
+verdict at landing, since claims carry no instant to replay (R9's residual, as is its converse: a
+renewal during the gap reads in force). **A forfeit or ended lease also stops the next cycle** and
+bars a start, never a recover, a drive or a dump (R15, an owner-critical default the lead accepted,
+standing until the owner rules). The running cycle always yields; a refused cycle (`Moved`,
+`Unworked`) spends nothing, moves nothing and closes the run with its locks released. Since the fix
+round a registry read that fails at landing (an unresolved issuer, an unreadable deposit or claim, a
+missing site) ends the run as `RunEnd::Dark` with its own line, `RUN_DARK` (" The registry cannot be
+read here; the run at {addr} ends with this cycle."), never "That block is under claim.", and pages
+once; the owner rules on its wording. The end's precedence, the round adding `Dark` to the judged
+order, is `Refused > WorkedOut > Stopped > Dark > Licence > Claimed > Lease > Done`.
 
 **Leaving it running.** `+tv/plan <addr>[,<addr>|<block>…] [family=<good>]` files a **fill plan**:
 work these pockets in order — a block letter sounds its four fields and mines every pocket of the
@@ -752,6 +1558,29 @@ chronicle through the existing `CanonEvidenceBridge` (`composition/econ_canon.rs
 code. One instrument in phase 1 because every site is the Registry's; the Republic's instrument for
 Phobos is phase 2, and the predicate reads the claim's issuer when there are two.
 
+**As built (SM.5):** the licence's terms are lane data, `PortDef.licence { org, fee_major,
+term_ic_days, grace_ic_days }` on `ceres_port` (`{freeport_registry, 2500, 168, 3}`): one block a
+lane, and every site's issuer is its org. The record is `tacsim:licence:{gateway account}`, holding
+the `holder`, the `entitlement` account, `first_bought_ic`, `expires_ic`, `grace_secs`, `terms` and
+the `contract`. The fee is a Public E4 contract paying the Registry, whose `on_expiry` is `Forfeit`
+to the Registry; a forfeited fee is not chronicled, since `CanonEvidenceBridge` reads `Settled`
+only. The grace authorizes and a buy in the grace extends from the expiry, so "bought while Active"
+reads "while in force or in its grace" (SM.5's decision 16); one licence a gateway account, an alt
+refused (17); no cap on buying terms ahead (18) — these three and the forfeit to the Registry are
+the lead's owner-critical defaults, standing until the owner rules. **No unpaid entitlement is ever
+Active**: the buy opens the entitlement account Frozen and activates it only once the fee contract
+is live, so a refused buy leaves a Frozen account with no record, which the next buy reuses and
+activates (the judge found the account opened Active before the fee was taken; the lead's fix round
+did this). Staff must never unfreeze a Frozen entitlement that has no record (`@account/unfreeze`
+clears any Frozen account): it would recreate an unpaid Active licence, which industry's own
+`@extract` path accepts until SM.6 (the round's R1). The entitlement account is never closed on a
+lapse, so every licence-gated act calls `licence_gate` (Ok in force and in grace) before
+`extraction_authorized`: SM.7's mine start passes the record's `lapses_ic` as a fixed parameter its
+prepare re-compares with the world's IC now, and industry's own `@extract` path is closed for
+surface blocks only by SM.6. The instrument is registered create-only by `ensure_instruments` and
+also by the port applier for the licence-block entry, so a roster without the sheet module reads the
+Licence readiness line Ready (the builder's decision 1).
+
 ### 9.2 Blocks — Q-20-2's default, as reviewed
 
 The unit of tenure is the **640 m block** (16 a site), each with its tenure word (§3.1): `commons`
@@ -777,6 +1606,55 @@ acting for the same principal, may not stake that block again for one full term 
 the lapse, a fact the stake preview prints, so letting ground lapse and re-staking it with old
 evidence and another fee is not a way round the worked floor.
 
+**As built (SM.6):** the industry half landed; the player's acts are SM.10's. The tenure is one
+`TenureRecord` per block place, shared by the block's ≤ 4 Deposit-subject claims; its `TenureMark`
+(`Lapsed` or `Held { holder }`) records what opened the current epoch, so a lapse, a take-over or a
+seizure that transfers advances the epoch **once per block event**, however the claim writes are
+bundled, and two different tenure changes on one place in one bundle refuse. Epoch 0 is "since the
+block opened" and a first filing writes nothing; a renewal and a plain seizure do not advance it
+(D9, the brief's reading of the lead's ruling 6, which the lead confirmed). Because the mark records
+only the last event, SM.10 runs every tenure event over the whole block at one term. `ClaimRenew`
+extends a live claim in place (`ClaimLapsed`, `ClaimNotLive`, `TermNotLater`); a lapsed claim answers
+`ClaimExpired` at `extraction_authorized` whatever its term, and a lapsed exclusive claim still
+blocks a same-issuer exclusive filing with "that claim has lapsed: take it over"; the take-over refuses a live
+claim (`ClaimNotLapsed`) and a cooling holder (`Cooling { until }`). The cooling term is kept as at
+most four rows on the tenure record, one per holder (the later `until` kept, rows that ran out pruned
+on write, the soonest-ending other holder dropped past four and logged); its "anyone acting for the
+same principal" half is SM.10's. Industry's seams take durations as arguments, and the numbers' home
+is tacsim's `crates/tacsim/src/surface/tenure.rs`: `CLAIM_TERM_IC_SECS`, `WORKED_FLOOR_T` 50,
+`COOLING_TERM_IC_SECS`, `CONTEST_WINDOW_IC_SECS`, `MAX_LIVE_CLAIMS_PER_ACCOUNT` 2 and
+`REGISTRAR_WORKED_T` 100, with no fee constant (the claim fees are SM.10's).
+
+**As built (SM.7):** the mining gate reads tenure by block (`mine_tenure`), read only, calling
+`extraction_authorized` over the claim's own deposit: commons never reads claims, any contest state
+bars the block, its holder included, and a claim whose term cannot be compared counts as live, fail
+closed. Until SM.10 seeds Occator's claims an authored **held** block with no live claim refuses
+"That block is under claim." (R5, an owner-critical default the lead accepted, standing until the
+owner rules; a held block naming no holder reads open, as `block_tenure` counts it), and a claim
+past its term that nothing lapsed reads as open ground (R20, a residual for SM.10's lapse
+machinery). A dark registry read refuses the start and ends a run with its own line, never the
+claim line (§8's note).
+
+**As built (SM.10):** the player's acts landed. The block record `tacsim.claims` (`BlockTenure {
+claim, paper }`, keyed `{site}/{l}`) is the one public source of a block's tenure (D17), staged
+inside industry's own bundle by the composed `SurfaceTenure` authority (OC11), while the epoch and
+the cooling rows stay industry's `TenureRecord`; a deposit-less block moves them through industry's
+block-level `tenure_lapse` and `tenure_hold`. Surface claims are `Bound` — no title, no transfer and
+no pledge (OC4, D20) — so "Transferable and pledgeable as titled assets are" yields. Every tenure
+event is ONE `industry_claim_tenure` act over the whole block (the lead's ruling 1). A stake on a
+block whose claim lapsed takes it over (`take_over_claim` after a block-level `tenure_hold`, the
+epoch advanced once, a deposit-less block too) — its lapsed claims taken over, never re-filed, any deposit with no claim filed in the same act. The worked floor reads the
+cursors less the record's `worked_at_term_start` (the lead's ruling 4). The clerk lapses a due
+claim, one a fire, stamped at its term end (ruling 5), and `+claim/release` is a lapse by choice
+with the same cooling (ruling 6, OC6); the cooling term binds the lapsed holder, anyone who acts for
+it and every character of the holder's gateway account (OC15), staff refused too while a row is
+live. Seeding Occator's claims retires R5's stand-in for the lane's held blocks (§9.6; R5 stays the
+fallback for an unseeded held block), and the clerk's lapse closes R20, a lapsing claim reading open
+until the lapse lands. After industry's verdict the mining gate reads the block record: a live claim
+held by neither the actor nor someone the actor acts for refuses "That block is under claim." on a
+deposit-less block exactly as on an ore block, and an unreadable record is dark. OC4, OC6, OC11 and
+OC15 are the owner-critical defaults the lead accepted, standing until the owner rules.
+
 ### 9.3 Staking
 
 `+claim/stake` is filed **from the TV standing in the block** (the holder is the actor's own
@@ -794,6 +1672,25 @@ production to date (worked this term against the 50 t floor), contest state — 
 contract is public, so a stake and a renewal are chronicle entries; a lapse pays nothing, so SM.10
 commits its own canon draft for it.
 
+**As built (SM.10):** `+claim/stake` is one act over the whole block from a rig standing in it (the
+lead's ruling 1; the stake from the ground only, OC8), its holder the actor, with an optional
+declared family that is public on the registry (OC7); nothing printed reads the block's deposit
+count, so a barren and an ore-bearing (block, family) answer with the same line and fee (§3.4). It
+reads `licence_gate` first (in force or in grace). The fees are lane v12 data on the licence block
+(`claim_stake_major`, `claim_term_major`, 2,000 each; OC1), the preview reading "2000.00cr now and
+2000.00cr a term (4000.00cr today)": one Public fee contract in the licence's shape, escrowed by the
+pilot, accepted by the site clerk for the Registry once the act lands, and read by its whole terms
+(`fee_terms_hold`). The heard count scans at most 512 chart rows and reads "at least N" past them
+(OC12). The two-claim cap counts the account's live claims over the lane's sites × A–P plus its
+young `Offered` orders, re-counted inside the stage's bundle. `+registry [<site>]` lists each
+claim's block, holder, term, epoch, declared family, first reading, worked tonnes against the floor
+and the contest window, then the paper's rows — the issuer named once in the head, not per row — and
+a lapsing claim as "term ended …, lapsing". The lapse's canon line is the clerk's, "{holder}'s claim
+on block {L} at {site} lapsed." (`tacsim.claim.lapsed`, naming the holder, guarded by
+`records_for_source`), not a draft of the player's (OC10). A refused act's escrow is held up to an
+hour before it refunds (OC14). OC1, OC7, OC8, OC10, OC12 and OC14 are the owner-critical defaults
+the lead accepted, standing until the owner rules.
+
 ### 9.4 Trespass and contest
 
 In phase 1 a licensed rig **will not bite claimed ground**: the mining gate refuses, and the lore is
@@ -809,6 +1706,47 @@ fee on transfer and the loser's term fee is refunded (this needs the seize-trans
 former holder's own — counts for nothing, so a lapse closes the old book. Because soundings are
 heard, a staker knows the count before paying (§9.3). Pledge and transfer of claims are the economy's
 as built.
+
+**As built (SM.6):** the seize-transfers-tenure fix is built as the `seized` state's optional
+`holder` and `discovered` parameters (`IndustryFamilies::transfer_tenure`): the claim goes
+`Uncontested` under the new holder, its `discovered_at` the stamp passed or now (a later stamp
+refuses, as does a stamp without a holder or a holder with another state), and the epoch advances
+once for the block event; without a holder a seizure is exactly as before and the epoch stands. The
+fix round (its F1) declared the two parameters on the **staff** offer only, refused for any other
+actor, because an issuer's or a jurisdiction's agent could otherwise rewrite the holder with no
+title, transferability or pledge check (a lead-level narrowing of the brief, standing until the owner
+rules); SM.10's contest carries its challenger as a server-authored row of its own and passes the
+heard sounding's real stamp (D10). `@claim/seize` is unchanged.
+
+**As built (SM.10):** the contest is filed from aboard the hull on the site (OC8) as a
+server-authored row of its own, `TenureKind::Contest`, carrying the heard sounding's real stamp and
+the challenger's fresh term; the seizure's `holder` parameter stays staff-only. Its window runs from
+the block's last opening (`opened_ic`, the lapse the stake was made against; none for epoch 0) to
+the holder's discovery stamp, and a take-over's or a transfer's own epoch advance never narrows it:
+the window opens at the last opening, never at a take-over or a transfer (D18, OC17). The
+contester's fee is accepted by the clerk after the transfer lands, and the claim runs a fresh term
+from the transfer (`transfer_tenure_termed`); since the lead's fix round
+`ClaimRecord::transferred_termed` sets that term in the transfer's own post-image, so a contest
+moves the claim's revision by one like every other write. The loser's term fee is refunded by the
+clerk as a fresh idempotent post from the Registry's account, never minted, only once the loser's
+own fee settled (a second contest waits on it with `CLAIM_PENDING`); the contest reads the cooling
+term too. A landed claim whose fee is cancelled, amended back to a draft or re-offered on other
+terms is lapsed unpaid by the clerk with cooling (D19, OC16). The build let an expired fee stand and
+page (D19's second half, the judge's R1); the lead's fix round superseded that: a fee that expired
+unaccepted lapses the claim unpaid **without** cooling (kind `expired` under the same
+`tacsim.claim.unpaid/…` receipt, `EXPIRED_LAPSED` told once, industry's `on_lapse` writing no
+cooling row when `cooling_until` is not after the lapse, a cross-generation pair read as cooling),
+while a fee the Registry accepted that then expired across an outage is forfeit to the Registry and
+counts as paid everywhere — the claim stands, the refund pays and a contest's loser hears
+`CONTEST_LOST`. A lapse is told once, even after an unreadable claim log (the round). A re-stake
+after an expired lapse needs a fresh hand-made reading in the new epoch (§16). "Pledge and transfer
+of claims are the economy's as built" does not hold for surface claims, which are `Bound` (§9.2).
+The interlock is `[tacsim.surface] registry_interlock`, default `true`, explicit in every shipped
+config, and `false` is refused at boot (`TACSIM_INTERLOCK_REFUSED`, OC13); nothing in the game reads
+it. OC8, OC13, OC16 as the round amended it and OC17 are the owner-critical defaults the lead
+accepted, standing until the owner rules; whether a contest whose fee is withdrawn after the
+transfer landed should restore the loser's claim, and whether an expired-unaccepted renewal fee
+should lapse the claim or revert its term, are open for the owner (§15).
 
 ### 9.5 Zones
 
@@ -837,6 +1775,33 @@ Syndicate paper refused at Ceres advances a new **Outer Claims** front (proposed
 none, §18), and registered claim-holders are made Council members in `mush-faction`, which the
 `FactionStandingProvider`'s member predicate then reads (`mush-faction/src/standing.rs:33-58`).
 
+**As built (SM.6):** the jurisdiction row is a composed `JurisdictionAuthority` seam whose default,
+`ActsForJurisdiction` (`jurisdiction_claims`), adds to the contest offer every claim over a deposit
+whose recorded `OreDeposit.jurisdiction` the actor `acts_for`, so the Registry may suspend a foreign
+claim at its own sites and nowhere else; the fixed rows are re-checked in `contest()` before anything
+is read. It does not by itself carry the Registrar's rule inside the player's own renewal (a player
+does not act for the Registry): that is SM.10's own composed authority, or a server-authored row on
+its renewal offer (D8). Every surface deposit records its site's issuer, the Registry, as its
+jurisdiction at opening, and a site whose issuer has no lane org row opens nothing, fail closed: the
+step records the site failed and pages once, and the pad stays closed until the map is repaired,
+since a deposit is never re-opened (lead ruling 7, the fix round's F3, the lead's default standing
+until the owner rules).
+
+**As built (SM.10):** the paper is lane v12 data — `BlockDef.paper { issuer, contract }` and
+`SiteDef.papers { row: { bond_major } }`, Occator Rim's twelve outer blocks (A–E, H, I, L–P) under
+the row `occator_outer` with a 5,000 bond — and the Pallas Syndicate is a Ceres lane org (50,000,
+faction `syndicate`). The site clerk files the paper's adjudication contract (offered by the tick's
+GOD under the Syndicate's root scope, party and adjudicator the Registry, the bond never escrowed, a
+century's WorldIc deadline, never accepted or ruled), then seeds one block a fire from lane v12 (the
+lead's ruling 10): Occator's four held blocks as its Uncontested claims under the Registry for a
+century (OC3), and each papered block's paper on its block record once the contract is logged (OC2).
+A player's claim on a papered block is filed Uncontested from the start, "Contested" being the
+paper's state (D7, D20, OC5), so "the player's claim becomes Uncontested" yields. The Registrar's
+rule rides the player's own renewal as the `Renew` row's `suspend` and `by` lists (the lead's ruling
+11) — no Registry actor and no `JurisdictionAuthority` row — suspending the paper's claims and the
+block record's paper at 100 t or more worked in the term. OC2, OC3 and OC5 are the owner-critical
+defaults the lead accepted, standing until the owner rules.
+
 ---
 
 ## 10. Surfaces — D-20-13
@@ -850,10 +1815,46 @@ the three footings and the crater told apart, `H` the hull, `@` your rigs (`1`/`
 two are out), `o` other units, digits `1`–`3` for your own R2 readings in the chosen family (`+` where
 another family also reads), `.` sounded and barren, `v`/`V` the public pits, `#` a held block's edge;
 beside it the vector block with the readings list (`C117 fair metal 120 m NE 25 s`; `C-NW fair–rich
-metals (5–8 pockets) 300 m N`), the family shown, each rig's current leg for client interpolation,
+metals (5–16 pockets) 300 m N`), the family shown, each rig's current leg for client interpolation,
 hopper, charge and lock, and the hold's unreserved room — and **`body.ground`** (§3.1). A small pushed
 `tv.status` keyframe per act change carries the status line, and every completion prints its line
 (§1).
+
+**As built (SM.3b):** the pushed `tv.status` keyframe is not built (it is SM.9's); act changes reach
+the operator through the completion lines and `+tv`'s status. The leading slot runs `/1` to `/4`
+(§4.3).
+
+**As built (SM.4a):** the readings-list example reads `(5–16 pockets)`, corrected in place above
+from Draft 0.5's `(5–8 pockets)`, which would exclude the truth whenever the field is rich: the
+count is the union of the band's word ranges (the lead confirmed it). The scan's and the sounding's
+completion lines (`SCANNED`, `SOUNDED` and their ice and barren forms) print the reading block; a
+text beyond the brief's list, `READINGS_DARK` — "Rig {n} finished its {act}; its readings are on
+your chart, but the instruments cannot read the ground right now." — is told when the row stands but
+the site's ground cannot be read at the tell, and `READINGS_GONE` only for a row gone, unreadable or
+under another rule (D26, narrowed in the fixer round).
+
+**As built (SM.9):** the pushed `tv.status` keyframe landed, carrying the operator's whole
+projection, not a status line: `{ schema: { id, shape: status, version: 1, retain: "latest" }, rig:
+<TvRec> }` to the operator alone, pushed from `write_projection` only when the store wrote, kept in
+the session's per-feed slot and never the resume ring, silent in line mode. "Each rig's current leg
+for client interpolation" holds as built: the TUI and the web place the viewer's own rigs along
+`rigs[].leg` from `site.clock` and `site.under` by SM.4b's `leg_position` rule and re-pull on
+`tv.status` only, with no timer (the lead's 0z ruling); the TUI moves a rig on its own paints, about
+every 4 s, and the web repaints once a second while a leg is in flight. The projection's log is its
+current operator's excursion's (SM.9's D16): a recover's tell starts a clean log, so the log pane
+holds the open excursion only and empties when the rig comes home (a residual the owner should see,
+§16). `site.map` gains vector keys, no glyph, `print` or `lines` line moved: the legend pairs `v`,
+`V` and `#`; `site.addressed`; `site.family_word` and `site.families`; `site.grid { x0, y0, span,
+cell_cm }`; `site.marks { letters, hull, slots }`, listed where the composed grid shows that glyph;
+`site.under`; `site.clock { now_ic, rate }` only while a rig of the viewer's has a leg on the site;
+`site.log` (at most `MAP_LOG_LINES` 6); `readings[].target` and `.line`; `rigs[].line`, `rigs[].run`
+(from the projection, the viewer's own only, through `MAP_RUN_CLAUSE` or `MAP_CORE_CLAUSE`) and
+`rigs[].queued`; `hold.line`; and, from the lead's fix round, `site.no_readings` and
+`site.other_rigs`, each `string | null` — `MAP_NO_READINGS` whole, null with readings in view, and
+the other-rigs sentence whole and unwrapped, null with none in view — which `lines` still carries,
+wrapped for line mode, and which no client reads out of `lines`. The glyph collisions SM.4b left
+are resolved for the screens by `site.marks` (on the TUI the letters dim, the hull bold and the slot
+digits reversed; on the web labels, the ship and digits), while line mode keeps the glyphs.
 
 **Line mode** is the floor. `+tv/map [family]` prints the drive view windowed on the rig (the family
 with the most readings in view by default, named in the block); `+tv/map site [family]` the whole
@@ -869,6 +1870,59 @@ re-asks; no mutating verb on a bare key. **The web**: a `FeedScreen` on the `.si
 an SVG site picture and a 2:1 body picture, click-to-prefill. One blessed fixture renders
 byte-identically on all three.
 
+**As built (SM.4b):** `site.map` landed as a pulled grid feed, registered after `sky.chart`, and
+`+tv/map [site] [family]` prints its frame in line mode through the TUI's own row decoder (a new
+crate edge, tacsim → mush-ansi), so line mode, the TUI's and the web's decoders read the blessed
+fixtures alike; the TUI screen `q` and the web `FeedScreen` are SM.9's. The legend is 122 columns,
+past the 118-column cap, so line mode prints it over two lines broken at the last entry separator
+(`  # claim` the second), the two joined being the legend verbatim; the frame's `site.legend_line`
+holds the whole string (the owner may shorten the legend instead). The readings list holds at most
+12 rows, nearest first, and drops the example's trailing drive time ("25 s"), since no rule gives it
+without a path a row (P9, an owner-critical default the lead accepted, standing until the owner
+rules). The slot digits `1`/`2` share characters with the ore digits, and the block letters `H` and
+`O` read as the hull and the crater on the site view: collisions this section chose, left as
+amendment candidates for SM.9's screen. The drive view's frame carries `origin_cell` and `extent
+[256, 256]`, the site view `origin_cell [0, 0]` and `extent [32, 32]` (80 m cells), and
+`units[].cell` and `you` are window-relative frame cells. The hold's unreserved room, `hold.room_t`,
+is the `stow.ore` compartments' mass limit less their load less each of the hull's rigs' hopper load;
+SM.7 adds outstanding cycles to the same function. The pits `v`/`V` read SM.6's cursor, and `#` is a
+stub for SM.10. Line-mode grids rose to 118 by 32 (`GRID_MAX_COLUMNS`, `GRID_MAX_ROWS`),
+`docs/help/tui.md` is corrected, and `+tv/map` joined `RUN_ALLOWLIST` in three copies, not two
+(`screen.rs`, `run-allowlist.json` and `stores/screens.svelte.ts`). Neither `+tv` nor the map wants
+a cold home field — the map wants only a cold site — so SM.9 must not rely on the map to warm one.
+
+**As built (SM.9):** the TUI's screen `q` and the web's quarry `FeedScreen` landed. Screen `q` is
+the twelfth (`MAX_SCREENS` 12, the third gated), after the chart and before the cockpit: the rigs
+(32), the map (58) and the readings and the log (28), all on `site.map`. `z` steps drive → site →
+ground → drive, not a toggle; `l` the family layer; `t` picks the next rig, not `1`/`2`, since the
+digits are global screen keys on both clients; `s`/`d`/`x`/`m` prefill and `r` re-asks. The web's
+screen sits on the `site.map` feed (the Draft's `.site`), hotkey `q`, with the TUI's eight keys, an
+SVG site picture with click-to-prefill and a 2:1 ground picture with a flat toggle. A `site.map`
+keyframe that no longer lists the rig `t` picked clears the pick on both clients, a reason frame
+included, so the next ask names no rig (the lead's fix round); clearing on any frame that lists no
+rigs also drops the pick on a cold or dark frame (accepted), and a cleared pick does not re-ask by
+itself (SM.10's row). `PanelSubscribe` carries an optional `params` object (at most 512 bytes, an
+object only, else `PANEL_PARAMS_REFUSED` before anything is sent), which the gateway forwards as the
+query's args, so the web asks for a view, rig, family or body. A rig in the bay with a queued unload
+shows `QUEUED_LINE` under its line on both screens. The rig key `t`, `z`'s cycle, client
+interpolation with the TUI's ~4 s step and every new player-facing text (`MAP_RUN_CLAUSE`,
+`MAP_CORE_CLAUSE`, the legend labels "pit, worked", "pit, worked out" and "claim", the TUI's and
+the web's hints and headings) are the lead's owner-critical defaults, standing until the owner
+rules.
+
+**As built (SM.10):** the claims are on the map. `claim_edges` draws every live claim's block
+perimeter less its letter corner as `#` (never over a letter), the same for every viewer, so the
+SM.4b note's stub is gone; the frame's `site.claims` `[{letter, state: claimed|held, holder,
+yours}]` is a vector key, omitted when empty, so no blessed fixture moved, and the clients draw no
+more of it than the grid's `#`. The `+tv` ground line reads the record (§1 beat 4's note), and
+`+chart`'s `TENURE_LINE`, the `sky.chart` feed, `+chart/map`, `body.ground`'s
+`ground.sites[].tenure` and `+chart/ground` count live claims from the records with the word "{n}
+claimed" (§1 beat 2's note). SM.9's "a cleared pick does not re-ask by itself" is answered by the
+one-shot re-ask SM.10 inherited: a reason frame that clears the pick while the quarry is the screen
+is re-asked exactly once on both clients (`quarry_map_ask()`, `refreshQuarrySite()`); a frame that
+again lists nothing asks nothing more, a frame that drops the pick but lists rigs asks nothing, and
+off the quarry nothing is asked.
+
 **Verbs** (every `+tv/…` act previews bare and commits with `go`; an optional leading slot `1`/`2`
 names the rig): `+tv` (status per rig: block and tenure, field, footing, stores, the no-readings hint),
 `+tv/lease [take|return]`, `/launch`, `/scan` (alias `/survey`), `/sound [quiet]`, `/drive
@@ -881,7 +1935,50 @@ The cockpit's bare selectors (SCAN, DRIVE, MIND) stay the arena's; `+tv/mine` an
 with nothing (the m/mi/min rule applies to bare selectors only, `match_/cockpit.rs:204-215`). Reads
 join the `RUN_ALLOWLIST` (both copies). The help page `docs/help/mining.md` lands its outline — the
 twelve beats, their verbs, the `go` rule and the slot rule — with SM.0; `ships.md`, `trade.md`,
-`coop.md`, `getting-started.md` and `tui.md` gain lines.
+`coop.md`, `getting-started.md` and `tui.md` gain lines. (As built: the outline did not land with
+SM.0, and `docs/help/mining.md` does not exist at SM.3b; the lead's SM.4a carries the mining help.)
+
+**As built (SM.4a):** `docs/help/mining.md` landed with SM.4a — the twelve beats with their verbs,
+the `go` and slot rules, landing at the lettered sites, what a reading says and the heard sounding,
+the verbs still to come marked "(not yet)" — and `ships.md` points at `help mining`; SM.8 completes
+it. `+tv/quiet` takes `[on|off]`, and `+tv/forget <site>|<body>` previews bare and strikes with
+`go`; `RUN_ALLOWLIST` is untouched. `+tv`'s status gives a rig on the site's ground its own line
+under its rig line — block and its authored tenure word, field, footing and the reading or the
+no-readings hint — with a cold-site and a dark-layer form (§1 beat 4's note).
+
+**As built (SM.4b):** `+tv/<n> drive <target> [go]` takes a pocket, a field, a block letter, a site
+cell `x,y` or a bearing `<octant> <metres>` (`ne 300`, `northeast 300 m`); `+tv[/<n>]/map [site]
+[family]` is a pure read; and staff's `@geology <site> <pocket>|<field> [province|field|pocket]` names
+the site by name, location or entry and reads truth under its block's authored shift. `help mining`
+gains the map and its legend, the drive and the recover's drive home.
+
+**As built (SM.7):** `+tv`'s status prints `RUN_LINE` (with `RUN_STOP_CLAUSE`) or `CORE_LINE` under
+a drilling rig, the act's line after it; `TV_USAGE` and `TV_HELP` gain `+tv[/<n>]/mine [family]
+[cycles] [go]` (alias `drill`) and `+tv[/<n>]/mine stop`, and `help mining` builds beat 8. The map's
+`hold.room_t` now counts every outstanding cycle (§6's note); the map's lock and run fields and the
+two-family `V` are SM.9's.
+
+**As built (SM.8):** the unload verb is `+tv[/<n>]/unload [<t>] [go]`, or `unload` as a first word,
+`<t>` 1 to 99 tonnes and `go` last, else `UNLOAD_USAGE` — not `/unload [qty]`; `TV_USAGE` and
+`TV_HELP` gain it, and `+tv`'s status prints `QUEUED_LINE` ("Unloads its hopper into the hold
+next.") under a rig with a queued unload. `docs/help/mining.md` is complete — beat 9's recover with
+its unload and `+tv/<n> unload`, beat 12's sale, the reserve rule, the pits and the fog, every verb
+line — and `ships.md`, `trade.md` ("only the hold sells ore"), `coop.md` and `getting-started.md`
+gain their lines. The quarry screen's line for a queued unload is SM.9's.
+
+**As built (SM.9):** the ground chart's verbs are `+chart/ground [<body>]` and `+chart/ground map
+[<body>] [<family>]` (`+chart/body` untouched), and `+chart/ground` joined `RUN_ALLOWLIST` in all
+three copies. `docs/help/tui.md` gains the lettered screens `c` and `q`, `ships.md` the two
+`+chart/ground` lines, and `docs/help/mining.md` beat 2's two verb lines and "The quarry screen";
+its "Still to come" no longer lists the ground chart of a whole body (the lead's fix round). The
+quarry screen's line for a queued unload landed (above).
+
+**As built (SM.10):** `+claim/stake|renew|release|contest|list` (in the authoritative bracket) and
+`+registry [<site>]` (read-only, beside `+credit` and `+chart`) landed; `+registry` and
+`+claim/list` joined `RUN_ALLOWLIST` in all three copies; `docs/help/mining.md` builds beat 10, its
+"(not yet)" and "Still to come" staking clauses removed. Every new player-facing text — the brief's
+texts verbatim, `WHICH_RIG_STAKE`, `CLAIM_WHICH`, `TENURE_SUMMARY`, the lapse's canon line and "{n}
+claimed" — is OC10, the lead's owner-critical default, standing until the owner rules.
 
 ---
 
@@ -890,23 +1987,23 @@ twelve beats, their verbs, the `go` rule and the slot rule — with SM.0; `ships
 | Number | Value | Basis |
 |---|---|---|
 | Site | 256 × 256 cells at 10 m, 2.56 km; 16 blocks of 640 m; 4 named fields a block; 256 addressed pockets of 40 m a block; the pad at the centre (1.3 km to any pocket along an axis, 1.8 km straight across) | D-16-5's arena window and `MAX_TILE_CELLS`; a block as the tenure unit keeps a site from being three claims |
-| Geology | province one chart cell (6.43°); field 320 m (lean 1–4, fair 5–8, rich 9–16 ore pockets, shifted by an authored `prospectivity`); pocket 40 m (lean 3–6, fair 6–12, rich 12–24 t; up to two families) | ≤ 64 ore pockets a block a family by construction, so the cursor sidecar's cap never binds; a site is thousands of tonnes a family against the corridor's 4,000 t season |
-| Instruments | scan 48 cells each axis (nine fields), sound 16 (a field), quiet 8; footing sets sharpness | per-axis squares, so "a whole field from its middle" is exact |
-| Cycle | 1,800 IC s (75 real s); rock 3,600 | half `PRODUCTION_CADENCE_SECS` 3,600 (`workorder.rs:69`); four to six cycles a hopper keeps a trip under ten real minutes |
-| Yield | lean 1, fair 2, rich 3 t a cycle, integer, never rising; a blind cycle needs 3 t of room | goods are whole tonnes (`goods.json:13-15`); D-E7-6; fitting never tells the class |
+| Geology | province one chart cell (6.43°); field 320 m (lean 1–4, fair 5–8, rich 9–16 ore pockets, shifted by an authored `prospectivity`); pocket 40 m (lean 3–6, fair 6–12, rich 12–24 t; up to two families) | ≤ 64 ore pockets a block a family by construction, so the cursor sidecar's cap never binds; a site is thousands of tonnes a family against the corridor's 4,000 t season; as built (SM.1): at most two families a pocket, the ranges code constants |
+| Instruments | scan 48 cells each axis (nine fields), sound 16 (a field), quiet 8; footing sets sharpness | per-axis squares, so "a whole field from its middle" is exact; as built (SM.4a): reach by the doubled-cell centre rule (exactly nine fields, 64 pockets and 16 from any stand), sight by the atlas line of sight from the 2.5 m mast to a mast's height over the field's centre cell |
+| Cycle | 1,800 IC s (75 real s); rock 3,600 | half `PRODUCTION_CADENCE_SECS` 3,600 (`workorder.rs:69`); four to six cycles a hopper keeps a trip under ten real minutes; as built (SM.7): read from the drill row (`mine::cycle_secs`) |
+| Yield | lean 1, fair 2, rich 3 t a cycle, integer, never rising; a blind cycle needs 3 t of room | goods are whole tonnes (`goods.json:13-15`); D-E7-6; fitting never tells the class; as built (SM.7): the drill row's yield, the blind room `mine::blind_room_t` derived from its richest (3 t), never a constant |
 | Hopper | 12,000 kg / 13,200 L, `stow.ore`; a run fits the lesser of the hopper's room and the hold's unreserved room | seven hoppers and 2 t of an eighth fill a Dray-P's 86 t, and the eighth run stops at 2 t |
-| TV speed | tracked 300 cm/s: regolith 2.0 m/s (5 IC s a cell, 21 real s a km), rock 1.0, ice 1.5 | `locomotion.json` tracked row |
-| Charge | 100,000 cu; mine 2,000, scan 1,000, sound 2,000, drive 15 cu per cell-cost; bay recharge 50,000 cu per IC h, unloads included; reserved in each act's start | a hold's worth of cycles never drains it; the reserve rule binds long drives and plans and is enforced once |
-| Landing | TWR ≥ 1.2 at departure mass and the plan's throttle against `surface_mg`; Dray 206 kN: Ceres 1.79 laden, Luna 0.30, Titan 0.36, Mars 0.13 | `dray.json:83-92`, `passage.rs:76-80`; the ship map's table |
-| Hop | `base_s` 3,600 IC s through the laden step (≈ 5,300 out, ≈ 7,000 home with a full hold); burn ceil ≥ 1 t; crew-days by the existing rule; landed 1 crew-day a soul an IC day, floored at one leg home | `passage.rs:235-244, 699, 707-722`; `route.rs:837-846` |
-| Dray-P | cargo 86 t / 103.2 m³; a two-slot bay (12 t of TVs); 2.3 t of headroom at the maxima (178,680 kg) | `dray.json:84-92`; never re-rated |
+| TV speed | tracked 300 cm/s: regolith 2.0 m/s (5 IC s a cell, 21 real s a km), rock 1.0, ice 1.5 | `locomotion.json` tracked row; as built (SM.4b): the unit's `max_speed_cms` 300 and the battery row's 15 cu per nominal cell with the locomotion table's class costs, no constant in the surface crate; a regolith kilometre exactly 500 IC s and 2,250 cu (pinned), rock 1,000 s and 4,500 cu, ice 667 s and 3,000 cu |
+| Charge | 100,000 cu; mine 2,000, scan 1,000, sound 2,000, drive 15 cu per cell-cost; bay recharge 50,000 cu per IC h, unloads included; reserved in each act's start | a hold's worth of cycles never drains it; the reserve rule binds long drives and plans and is enforced once; as built (SM.8): `UNLOAD_S` 600 IC s a code constant, the bay regaining 8,333 cu over it (U11), capped at the capacity; the unload reserves nothing and reads no battery |
+| Landing | TWR ≥ 1.2 at departure mass and the plan's throttle against `surface_mg`; Dray 206 kN: Ceres 1.79 laden, Luna 0.30, Titan 0.36, Mars 0.13 | `dray.json:83-92`, `passage.rs:76-80`; the ship map's table; as built (SM.2): Ceres 1,785 ‰ at the rail and its band edge laden at exactly 672 ‰ of throttle, the ascent √(g·R) 360 m/s (Ceres) and 254 (Vesta) paid only at a site end, Phobos 1 mg |
+| Hop | `base_s` 3,600 IC s through the laden step (≈ 5,300 out, ≈ 7,000 home with a full hold); burn ceil ≥ 1 t; crew-days by the existing rule; landed 1 crew-day a soul an IC day, floored at one leg home | `passage.rs:235-244, 699, 707-722`; `route.rs:837-846`; as built (SM.2): 5,322 IC s out and 6,893 home for §3.3's loads, 7,200 at the rail; the stay charged at lift; a departure for a site holds back the leg home |
+| Dray-P | cargo 86 t / 103.2 m³; a two-slot bay (12 t of TVs); 2.3 t of headroom at the maxima (178,680 kg) | `dray.json:84-92`; never re-rated; as built (SM.3a): exactly 2,320 kg of headroom (178,680 of 181,000 with two occupants; 178,580 with one) |
 | Rights | commons and unclaimed open ground: licence only; a staked block: the holder's; knowledge, driving and recovery: no tenure at all | §8, §9 |
-| Tenure | licence 2,500 / 168 IC d + 3 IC d grace, extendable anywhere; lease 1,400 a term + 5,000 deposit; claim 2,000 + 2,000 a term; 50 t worked a term to renew; ≤ 2 live a account; renew or take over in place; a lapsed holder's cooling term 168 IC d; contest window 30 IC d inside the tenure epoch | the dormancy week, `lane:2171`; the claim index is add-only |
+| Tenure | licence 2,500 / 168 IC d + 3 IC d grace, extendable anywhere; lease 1,400 a term + 5,000 deposit; claim 2,000 + 2,000 a term; 50 t worked a term to renew; ≤ 2 live a account; renew or take over in place; a lapsed holder's cooling term 168 IC d; contest window 30 IC d inside the tenure epoch | the dormancy week, `lane:2171`; the claim index is add-only; as built (SM.5): the grace authorizes, a buy extends from the expiry while in force or in grace, one licence a gateway account, no cap on buying ahead (the lead's defaults); as built (SM.10): the claim fees lane v12 data (`claim_stake_major`, `claim_term_major`: 2,000 + 2,000 a stake, 2,000 a renewal, 4,000 a contest, the loser's 2,000 refunded), each a Public fee contract its pilot escrows for its real hour; the worked floor read from the cursors less the record's `worked_at_term_start`, 100 t on a papered block for the Registrar's rule; the cooling term binding the holder, anyone acting for it and the holder's gateway account, and none after a fee expired unaccepted (the lead's fix round); a seeded claim a century (OC1, OC3, OC15, the lead's defaults) |
 | Prices | `metal_ore` 70 (5:2 → 175 < 200), `ice_ore` 35 (5:2 → 87.5 < 100), `carbon_ore` 50, `strategic_ore` 600; references 3500 / 1750 / 2500 / 30000 minor | each under the finished good's ask so buy-and-mill never loses; D-18-24 amended for ore |
-| Drip | 40 / 40 / 20 / 2 t a good an IC day (960 / 960 / 480 / 48 a real day), standing caps 240 / 240 / 120 / 12 t, within capital | the clerk's 90-day re-post rule; a hold sells in one act; the knob sizes the ore economy |
+| Drip | 40 / 40 / 20 / 2 t a good an IC day (960 / 960 / 480 / 48 a real day), standing caps 240 / 240 / 120 / 12 t, within capital | the clerk's 90-day re-post rule; a hold sells in one act; the knob sizes the ore economy; as built (SM.5): a standing intake renewed within one real day of its deadline, at most one banked drip, a lapsed row back at one drip (the lead's default) |
 | Income | one TV on fair ground 4,900 cr gross an active hour (4,300 after the Trust's share), rich 6,700 (5,900), the hop round trip included; a second TV nearly doubles it; one landed hold a plan | §12 |
-| Tick | 1 s; visit 64, work 16; one act an operator a fire; ≤ 8 writes a completion, ≤ 3 for any other act | the journey tick; `pool.rs:497-506` |
-| Caps | 32 excursions a site; 1,024 world-wide; 4 an operator (2 a Dray-P); ≤ 1 notice a trip, ≤ 1 sounding line a sounder an IC hour; frames < 256 KiB | the Compact's span of control as an engine bound |
+| Tick | 1 s; visit 64, work 16; one act an operator a fire; ≤ 8 writes a completion, ≤ 3 for any other act | the journey tick; `pool.rs:497-506`; as built (SM.3b): `LAUNCH_S` and `RECOVER_S` 300 IC s and `DUMP_S` 0 (the lead's defaults), a finish retried 8 times, then paged and backed off 60 fires; the write bounds unmeasured until SM.12; as built (SM.7): a cycle's completion holds ≤ 8 writes by construction only (the record, at most two cursors, the chart; the ring is the tick's own document), unmeasured until SM.12; as built (SM.8): the unload finish measured 9–19 and pinned (10 one good into a fresh hold pool, 17 two goods, 9 an existing pool, 17 with 8 marker-ring evictions, 19 two goods with 3), over the row, nothing trimmed; SM.12's cost lane gates on it |
+| Caps | 32 excursions a site; 1,024 world-wide; 4 an operator (2 a Dray-P); ≤ 1 notice a trip, ≤ 1 sounding line a sounder an IC hour; frames < 256 KiB | the Compact's span of control as an engine bound; as built (SM.3b): counted over open excursions in the start's prepare, across every lessor pool's rigs; as built (SM.4a): the sounding line's budget per (sounder, site), kept across a forget, to connected listeners only (the lead's defaults); as built (SM.4b): a frame's readings list at most 12 rows, a leg at most 32 waypoints (frozen within 80 m), the home cache 32 fields (about 330 KiB each); as built (SM.7): a run at most eight cycles, two lock rows, a mined ring of 64 facts a site; as built (SM.10): the heard count's scan at most 512 chart rows ("at least N" past them, OC12), a claim order's life 3,600 IC s (`CLAIM_ORDER_TTL_IC_SECS`, 150 real s at rate 24), at most 4 claims a tenure act, the claim log's maps at most 16 rows each, two live claims an account counted over the lane's sites × A–P and its young orders |
 
 ---
 
@@ -945,7 +2042,8 @@ staked, contested — are where it is won.
 ### 12.3 Stock, prices and the NPC side
 
 Mined ore enters the finite economy only at Ceres, only through funded intakes (7A: Occator's
-capital raised by tranche as lane data; the Exchange's own), and leaves it only through the mill
+capital raised by tranche as lane data, as built (SM.5) one appended `raises` tranche of 250,000;
+the Exchange's own), and leaves it only through the mill
 into asks the trade run already sells from. Eight charter hulls at half a leg a day draw about 80 t of
 concentrate and 320 t of water; one fair miner's 70 t of ore an hour is 28 t of concentrate, so
 **three miner-hours replace the Exchange's daily draw** and the drip caps the rest at 960 t of each
@@ -955,6 +2053,10 @@ claims, run by a dispatcher principal on the same tick (bounded to four excursio
 through its own mill, never a cash mint), so "the corridor's deposit and extractor drones" of doc 11
 §4.1 become supply the ledger can see, and Occator's 9,600 t water seed lasts a season rather than a
 month. The Pallas Syndicate mines nothing on the corridor; its paper is pressure.
+
+**As built (SM.10):** the Pallas Syndicate is a Ceres lane org (50,000, faction `syndicate`,
+appended last at Ceres), whose paper is a filed, never-ruled adjudication contract over Occator
+Rim's twelve outer blocks (§9.6; OC2, the lead's default, standing until the owner rules).
 
 **Levers, all data**: the ore bids, the drip and its caps, the mill ratios, the hopper, the cycle, the
 yield table, the field and pocket distributions, the authored prospectivity and worked shares, the
@@ -968,21 +2070,66 @@ Each cut is one commit on `main` with the Fable trailer, pushed when green, with
 in **`docs/design/20-cut-notes.md`** (its own file; Q-20-13). Sizes as doc 18 §5: S a day, M a few
 days, L a week or more. One lane version per cut, as the A-cuts did. No deploy without the owner.
 
+**As built (SM.1–SM.3b):** SM.1 `61324cba` (with `6f797974`), SM.2 `bd718fb2`, SM.3a `96cc7303` and
+SM.3b `eb99c9be` have landed, each pushed with its section in the cut notes. The lead split **SM.3**
+into SM.3a, the definitions and assets (the vehicle and its carrier), and SM.3b, the clock (the
+excursion family, the tick and the acts); and **SM.4** into SM.4a, knowing (the chart documents,
+scan, sound, quiet, forget, the status line, the implied launch, reading rule v1 pinned, the mining
+help), and SM.4b, driving and the map. SM.1's off-loop driver and SM.2's `@geology <site> <addr>`
+were deferred to "SM.4" before that split; a bare "SM.4" elsewhere in this document means both
+halves. The version labels moved: doc 19's cut A.8 took lane v8 and goods v2, so SM.2 is lane
+**v9**, SM.3a lane **v10** and goods **v3** (the four ore rows, moved from SM.5 because the hopper and
+the Dray-P's cargo need `stow.ore`), SM.3b moved no version, and SM.5 is lane **v11** with no goods
+change.
+
+**As built (SM.5, SM.4a):** SM.5 `64cd1f8e` and SM.4a `354832bf` have landed too, each pushed with
+its section in the cut notes. SM.5 was built before SM.4a (the lead's ruling: its brief was ready
+first and it depends on nothing of SM.4's); SM.6 builds after SM.4a, since its brief leans on
+SM.4a's chart module, and SM.7 then needs SM.4b and SM.6. SM.5 is lane v11 as planned; SM.4a moved
+no lane, pack or digest.
+
+**As built (SM.6, SM.4b):** SM.6 `70c2cd12` and then SM.4b `d367bf3b` have landed, each pushed with
+its section in the cut notes; neither moved a lane, pack or digest (`LANE_VERSION` 11 stands). SM.4b
+crossed the lead's 20 ms planning threshold at about 30 ms in release, the cost inside the atlas's
+`path`, and the lead accepted it with an atlas cut owed after SM.7 (SM.12's row). **As built
+(AP):** that cut landed as AP `74c5801f` (an engine cut in `mush-atlas` with no row of its own; its
+cut note is `## AP` in `20-cut-notes.md`), between SM.7 and SM.8; it moved no lane, pack or digest
+(`LANE_VERSION` 11 stands).
+
+**As built (SM.7):** SM.7 `dd48ed45` has landed, pushed with its section in the cut notes after the
+lead's fix round; it moved no lane, pack or digest (`LANE_VERSION` 11 stands). The debts it hands on
+are on SM.8's, SM.9's, SM.10's and SM.12's rows.
+
+**As built (SM.8):** SM.8 `9922c9c7` has landed, pushed with its section in the cut notes after the
+lead's fix round; it moved no lane, pack or digest (`LANE_VERSION` 11 stands). The debts it hands on
+are on SM.9's, SM.11's and SM.12's rows.
+
+**As built (SM.9):** SM.9 `16b0ca4e` has landed, pushed with its section in the cut notes after the
+lead's fix round; it moved no lane, pack or digest (`LANE_VERSION` 11 stands). The debts it hands on
+are on SM.10's and SM.12's rows; SM.11 inherits nothing new from it.
+
+**As built (SM.10):** SM.10 `fed09da2` has landed, pushed with its section in the cut notes after
+the lead's fix round; it moved lane **v12** (the claim fees beside the licence's, the Pallas
+Syndicate org and Occator Rim's paper; digest `9108a455…`) and no goods table. The debts it hands on
+are on SM.11's and SM.12's rows.
+
 | Cut | What | Size | Depends on | Acceptance |
 |---|---|---|---|---|
-| **SM.0** | This document; the README row (and the 19 and 20 rows moved into numeric order); `20-cut-notes.md` started; `docs/help/mining.md`'s outline (the twelve beats, their verbs, the `go` and slot rules, landing at the lettered sites) | S | — | every Q-20-n carries a default; the README rows in numeric order |
-| **SM.1 the ground** | `tacsim::surface::geology` (HMAC over the fourth key family, the province/field/pocket passes with the authored `prospectivity` shift and two-family pockets, the reading rule with a version); the geology key family in `mush-config` and its fingerprint record; `@geology`; the off-loop site composite LRU and geology table; the `i16` validator rule on `datum ± relief` and the symmetric cast | M | SM.0 | a fixed test key gives pinned digests of a 256 × 256 site; a property test over 10⁶ lattice points shows every field's word is the honest summary of its pockets and ≤ 64 ore pockets a block a family; a wrong fingerprint disables the layer with the reason on the readiness line; `provider_rng_policy` green |
-| **SM.2 sites and landing** | lane **v8**: `BodyDef.surface_mg/radius_km/geology` and the Ceres and Vesta geology tables, `LocationDef.lat/lon`, the `site` block (per-block tenure, `prospectivity`, `worked_permille`, zone, issuer) with the zero-orgs rule and the serde defaults, the `freeport_registry` org and treasury, five Ceres sites and Rheasilvia Commons with routes; atlas region packs (recipe, the pad room at the centre with `port.dock`, craters); the sixteen block place Things and the site clerk Thing a site; the landing law at the plan's throttle; the hop leg with the ascent term and the 1 t floor; landed life support with the one-leg-home floor and the stores line; the berth and arrival lines; `+ship/lift` docked or settled; recall counts hops; `+chart` lists sites with their survey words | M | SM.1 | `+ship/plan ahuna` with a full tank, one TV aboard, a 120 crew-day locker and one soul plans ≈ 5,300 IC s and 1 t, frozen in the ticket; a Luna site refuses by TWR at planning; arrival settles on the pad and `+ship/lift ceres` works; a hull landed ten days still lifts; a week of hops trips no recall; the two old routes' pins unmoved; sixteen place objects and a clerk a site; land-and-leave survives a restart |
-| **SM.3 the TV and the tick** | `UnitClass::Vehicle`; `LogisticsDef.drive` optional; the tools content kind; `tv_prospector.json` and `dray_p.json` (a two-slot bay); lay-up (TV Thing, unit, cab, hopper store, the `tacsim.vehicles` vault); `payload_kg` counts the bay; the `tacsim.excursion` state family and the `tacsim:tv` projection; the `tacsim.surface` tick; every act's authoritative start with the charge reserved in it; the slot selector; `+coop/refit`, `+tv/lease [take|return]`, `+tv`, `+tv/launch` (and the implied launch), `+tv/recover` (the placement half), `+tv/dump`; `TV_OUT` and `HOPPER_LOADED`; the `go` rule | L | SM.2 | a Dray-P with two TVs aboard plans the same figures as a Dray at equal mass; a lease refused without a licence or a free slot and a return refused with the TV out; launch refused under way and at a port; recover from two cells refused; a restart mid-launch completes at the due instant; `live_endpoints` never lists a hopper for any player; departure refused with a TV out; a bare `+tv/<act>` commits nothing; two acts that each fit the reserve rule alone cannot both start when together they would not |
-| **SM.4 knowing and driving** | the chart documents (coverage, `ChartProvenance`, `+tv/forget`); `+tv/scan` (nine fields, sharpness by footing) and `+tv/sound [quiet]` (a field) as timed acts with the site-wide notice and its budget, `+tv/quiet`; `+tv/drive` with every target kind (A* over the composite at the site budget, the frozen leg, IC timing, charge, the reserve rule); no tenure on any knowledge or movement act; the `site.map` feed, `+tv/map` with the legend line and block letters, the completion lines; the grid caps raised to 118 by 32; fixtures | M | SM.3 | readings equal the quantiser for covered cells only; a second principal sees no ore glyph; a repeat from the same cell is refused byte-identically at no cost; a sounding reaches other parties as a bearing and band and nothing more, a quiet one reaches nobody, a tenth sounding in an IC hour prints no line; a sounding from a field's middle reads all 64 pockets and a scan from a field's middle reads all nine fields; a regolith scan prints bands that contain the truth; a rig without a licence drives, scans, sounds and recovers on a claimed block; 1 km of regolith arrives at exactly 500 IC s and 2,250 cu; an act that would strand the TV is refused; the arrival line prints over SSH; the observer-rule witness over SSH and web |
-| **SM.5 legal and market plumbing** | `with_extraction_licence` wired to `tacsim.licence.freeport`; lane **v9**: the Ceres ore bids with their drips and caps and Occator's tranche, the ore `reference_minor` rows; `+licence/buy|show` as the player's act under the server-authored issuer, the fee a public contract accepted anywhere, extension while Active; goods v2 (four ore rows, `stow.ore`; the Dray-P accepts it); the drip step on the stock arm with its own predicate; the fixed-reference variant with its validator rule; the sell preview's unfilled line; readiness lines | M | SM.2 | a licence makes `extraction_authorized` answer Ok over a staff-seeded claim; the lapse at IC day 172 refuses at the next act; a buy while Active extends the expiry; 10 t of ore staff-placed in a hold sells at the bid with the Trust's row at a quarter of the upper half; a filled intake posts afresh at `min(cap, unfilled + drip)` within the hour and never past capital, and an 86 t hold sells in one act against the cap; a fixed reference for a good some port asks is refused at load; the market-never-mints probe green |
-| **SM.6 the industry seams** | `IndustryHandleCell` (read access for composed providers); `with_system_opener` and the site clerk's opening on the port tick (one deposit a fire, receipted, the ore good as commodity, accessibility 100, the one-point curve; the `worked_permille` transfer to the spoil with its cursor rows; the "opening" readiness state); `OreDeposit.external`; the `ExternalDraws` trait and the sweep invariant; `ClaimRenew` in place, the Abandoned take-over, the tenure epoch and the cooling term; the seize-transfers-tenure fix; the contest offer's jurisdiction row; the pocket cursor sidecar as the lock's home | M | SM.1, SM.5 | two boots with the same key open identical reserves; each block's gross reserve equals the sum of its pockets and the spoil holds the worked share, with the invariant green on the first sweep; the applier submits nothing and a re-apply opens nothing twice; a site opens 64 deposits over 16 places and never attempts a ninth on one; `@extract/start` refuses a surface block; a forged pool debit quarantines the block; renewing nine times never reaches `MAX_CLAIMS_PER_SUBJECT`; a block staked, lapsed and re-staked ten times still accepts a stake; the lapsed holder is refused for a term and a stranger is not; the site's issuer may suspend a foreign claim at its site and nowhere else; every E7 industry suite green |
-| **SM.7 mining** | `+tv/mine [family] [cycles]` / `+tv/drill` and `stop`; the start's gates — tenure (commons, unclaimed open, own claim), the hopper and the hold's unreserved room, the 3 t blind headroom, the charge reservation — and the preview from the operator's own row (the one-cycle run on an unread pocket); the pocket lock on the sidecar; the completion bundle (transfer of the ore good, cursor, receipt, the charge spent) and the tick's log, chart row and line; the `tacsim.surface.mined` ring; terrain-scaled duration; pits on the map | L | SM.4, SM.6 | a fair 7 t pocket yields 2, 2, 2, 1 then "worked out"; `initial − pool == Σ drawn` after a 10,000-cycle soak; the hopper never exceeds 12 t and a hull's hoppers never hold more than its hold can take, with two rigs filling one hold; a named run that does not fit refuses and names the count that fits, and the bare form stops at the hopper or the hold's room; the preview on an unread pocket prints no class and commits one cycle, and with 2 t of room refuses the blind cycle whatever the class; `stop` lets the running cycle yield; a replayed completion is a HIT; a second rig on the pocket refuses with the public line; unclaimed open ground mines under a licence and refuses once staked by another; no licence, a lapsed licence and another's block each refuse with their public line while the rig still recovers and unloads; pits render for everyone; the cycle line prints over SSH |
-| **SM.8 unload, sell, the story** | the unload half of `+tv/recover` and `+tv/unload [qty]` with `max_more`; the hold plan generalised to any stowage block while `governed_hold` stays programme-hull-only; the story test on `build_engine` at rate 24 (kit up with all three desk verbs, plan, lift, scan, sound, mine open ground to full, recover, lift home, sell; a restart inside); `docs/help/mining.md` complete; the help tripwires | M | SM.7 | the story is green on the production composition with one staff act (the rate); unload refuses under way and with the TV out and never leaves ore behind after an honest fill; the hopper is refused at sale by `HOLD_ONLY_SOURCE` and by `may_take`; T-45 and the legacy-handler tripwires green |
-| **SM.9 the quarry screen and the ground chart** | `body.ground` (`+chart/ground`, `+chart/ground map`; `+chart/body` untouched); TUI screen `q` (`MAX_SCREENS` 12) with the rig keys; the web `FeedScreen` and pictures; keys; `RUN_ALLOWLIST`; the boot-parity manifest; fixtures | M | SM.4 | one fixture renders byte-identically in line mode, the TUI and the web at 120 columns; `+chart/body ceres` still prints the elements; the wash is identical for two viewers and a best reading appears only to its viewer; screen-count tests updated; no mutating verb on a bare key |
-| **SM.10 claims** | `+claim/stake|renew|release|contest|list`, `+registry`; Deposit-subject claims over a block's deposits as the player's act under the site's issuer; the hand-made evidence rule, the stake preview's heard-soundings and cooling lines; the 50 t worked floor, lapse to `Abandoned` with its canon draft and epoch advance, the take-over on re-stake, the cooling term; the interlock lever; discovery-priority contest on a heard sounding inside the epoch with the contester's fees; the seeded Occator holdings and Syndicate paper with their adjudication contract; the Registrar's worked-claim rule inside the renew act; the two-claim cap; claims on the site map | L | SM.7, SM.9 | staking with a gifted, bought or plan-made reading or none is refused and a hand-made core suffices; a second stake on a block held under the site's issuer refuses and a Syndicate paper bars nothing; a self-issued claim from a player org authorises nothing at a Registry site; a claim worked one cycle is not renewed and the block reopens to a stranger at once and to its lapsed holder after a term; a sounding from before the block last opened defeats nothing and one inside the epoch does; a Syndicate block worked 100 t shows the paper suspended after the player's renewal, one worked less is not renewed, and no Registry actor submits anything; the stake reaches the chronicle through the bridge and the lapse through its draft |
-| **SM.11 plans and offline** | `+tv/plan <addr>[,…] [family=<good>]` with the block rule and the frozen family, `show`, `clear` (the compiled vocabulary, one landed hold by the unreserved-room rule, 288 IC h, knowledge-gated, no re-arm, rights lapse skipping to park); `await tv [<slot>|all]` to 288 IC h; the `depart` refusal while any rig is out; idle return-and-park; the notice budget; span of control 4; `via: Plan` on plan-made readings; the offline story across a restart | M | SM.8, SM.10 | a logged-off player's plan fills the hold and parks with every hopper empty, the queue lifts, flies and sells, the notices read on reconnect; two rigs' plans fill one hold and neither strands ore; a plan whose licence lapses recovers, unloads and parks with its reason; the plan does not re-arm; killing the server midway changes nothing in the final post-image; a fifth excursion for one operator refuses; a plan-made reading does not qualify a stake |
-| **SM.12 the mill, the drones, the cost lane** | the Exchange's and Occator's mill arms with receipts and `restock_ask`; Occator's dispatcher excursions on Occator Rim; a harness cohort (64 TVs over 8 sites, every act cycling; tick p99, writes an act, composite churn; the Vesta passage included) beside the arena baseline; a `mush-bot` cohort playing the whole loop over SSH | L | SM.11 | over a simulated IC month the Exchange's concentrate ask rises only by milled ore with conservation asserted; NPC excursions never exceed their caps nor sell into player intakes; tick p99 < 5 ms a fire, ≤ 8 writes a completion and ≤ 3 for any other act; the bot cohort completes the loop in line mode (doc 14 P10) |
+| **SM.0** (**landed**, `11c50e84`, `f3df3205`) | This document; the README row (and the 19 and 20 rows moved into numeric order); `20-cut-notes.md` started; `docs/help/mining.md`'s outline (the twelve beats, their verbs, the `go` and slot rules, landing at the lettered sites). **As built:** `docs/help/mining.md` was not landed and does not exist at SM.3b (SM.3b's cut note); the lead's SM.4a carries the mining help. **As built (SM.4a):** its outline landed with SM.4a (`354832bf`); SM.8 completes it | S | — | every Q-20-n carries a default; the README rows in numeric order |
+| **SM.1 the ground** (**landed**, `61324cba` + `6f797974`) | `tacsim::surface::geology` (HMAC over the fourth key family, the province/field/pocket passes with the authored `prospectivity` shift and two-family pockets, the reading rule with a version); the geology key family in `mush-config` and its fingerprint record; `@geology`; the off-loop site composite LRU and geology table; the `i16` validator rule on `datum ± relief` and the symmetric cast. **As built:** the in-RAM LRU of sixteen, the pure builds and a synchronous door landed, and the off-loop driver is SM.4's, its first consumer (the lead's ruling); `@geology` reads the body-fixed lattice (`@geology <body> <x>,<y>` with an optional level), the site-address form with SM.4. **As built (SM.4a):** no act's path builds a site ground — the surface tick warms one wanted site a fire behind a non-building peek, and a true off-loop runner is SM.12's cost-lane call (§3.2) — and the site-address form moves to SM.4b | M | SM.0 | a fixed test key gives pinned digests of a 256 × 256 site; a property test over 10⁶ lattice points shows every field's word is the honest summary of its pockets and ≤ 64 ore pockets a block a family; a wrong fingerprint disables the layer with the reason on the readiness line; `provider_rng_policy` green. **As built:** the 10⁶ lattice points read as ≥ 10⁶ pocket evaluations grouped by field and block (1,000,192), beside the pinned whole-site digest |
+| **SM.2 sites and landing** (**landed**, `bd718fb2`) | lane **v9** (doc 19's A.8 took v8): `BodyDef.surface_mg/radius_km/geology` and the Ceres and Vesta geology tables, `LocationDef.lat/lon`, the `site` block (per-block tenure, `prospectivity`, `worked_permille`, zone, issuer) with the zero-orgs rule and the serde defaults, the `freeport_registry` org and treasury, five Ceres sites and Rheasilvia Commons with routes; atlas region packs (recipe, the pad room at the centre with `port.dock`, craters); the sixteen block place Things and the site clerk Thing a site; the landing law at the plan's throttle; the hop leg with the ascent term and the 1 t floor; landed life support with the one-leg-home floor and the stores line; the berth and arrival lines; `+ship/lift` docked or settled; recall counts hops; `+chart` lists sites with their survey words. **As built:** the location role `extraction`; the body tables inline on `BodyDef`; six sites over twelve atlas packs; the stay charged at lift; the leg-home reserve with a reserve-aware throttle hint, `SITE_CLOSED` and `LEAVE_PAD` added; `build_site_ground` refuses a region whose body is not the spec's (SM.1's residual), and the lane's tables author `field.barren = {barren: 1000}` | M | SM.1 | `+ship/plan ahuna` with a full tank, one TV aboard, a 120 crew-day locker and one soul plans ≈ 5,300 IC s and 1 t (as built: 5,322 IC s), frozen in the ticket; a Luna site refuses by TWR at planning; arrival settles on the pad and `+ship/lift ceres` works; a hull landed ten days still lifts; a week of hops trips no recall; the two old routes' pins unmoved; sixteen place objects and a clerk a site; land-and-leave survives a restart |
+| **SM.3a the vehicle and its carrier** (**landed**, `96cc7303`; SM.3's first half, split by the lead) | goods **v3** (the four ore rows under `stow.ore`, moved here from SM.5); `UnitClass::Vehicle`; `LogisticsDef.drive` optional; the tools content kind (drill, scanner and a battery row); `tv_prospector.json` and `dray_p.json` (a two-slot bay); lane **v10** (the programme's `refits` row, Occator's rig lessor); lay-up (eight rigs in Occator's shed, each a TV Thing, unit, cab, hopper store and `tacsim.vehicles` vault; a hidden bay on every programme hull); `payload_kg` counts the bay; `+coop/refit` (re-binding the hull's unit in place); `+tv` (status) and `+tv/lease [take|return]` with the engine-owned deposit; a charter's end with rigs aboard (`RECALL_BAY`, `BUYOUT_BAY`, repossession) | L (SM.3's, split) | SM.2 | a Dray-P with two TVs aboard plans the same figures as a Dray at equal mass; a lease refused without a free slot (**as built:** the licence refusal is a seam SM.5 fills; it landed in SM.5, which refuses a lease without a licence in force or in its grace, `LEASE_LICENCE`); `live_endpoints` never lists a hopper for any player |
+| **SM.3b the clock** (**landed**, `eb99c9be`; SM.3's second half) | the `tacsim.excursion` state family (one `RigRecord` a TV) and the `tacsim:tv` projection; the `tacsim.surface` tick; every act's authoritative start (`tacsim_surface_act`) with the charge reserved in it, and its finish (`tacsim_surface_done`); the slot selector (`/1`–`/4`); `+tv/launch`, `+tv/recover` (the placement half, from beside the ramp; the drive home is SM.4b's), `+tv/dump` onto each site's spoil vault; `TV_OUT`, `TV_BUSY`, `TV_AWAY` and `HOPPER_LOADED`; the `go` rule; `+tv` authoritative; no lane, pack or digest moved. The implied launch moved to SM.4a | L (SM.3's, split) | SM.3a | launch refused under way and at a port; recover from two cells refused; a restart mid-launch completes at the due instant; a return refused with the TV out; departure refused with a TV out; a bare `+tv/<act>` commits nothing; two acts that each fit the reserve rule alone cannot both start when together they would not (**as built:** through the one act slot and the ordinal; SM.7 proves `reserved_total` in the world; since SM.4a the test runs on scan and sound, the test world's Probe kind retired) |
+| **SM.4a knowing** (**landed**, `354832bf`; SM.4's first half, split by the lead) | the chart documents (coverage, `ChartProvenance`, `+tv/forget`); `+tv/scan` (nine fields, sharpness by footing) and `+tv/sound [quiet]` (a field) as timed acts with the site-wide notice and its budget, `+tv/quiet`; the `+tv` status line (block and tenure, field, footing); the implied launch (prepending SM.3b's `launch_plan`); reading rule v1 pinned literally; the mining help (`docs/help/mining.md`); no tenure on any knowledge act. **As built:** the chart the typed family `tacsim.chart`, one record per (character, site), the per-body caps enforced at the start (the lead's ruling; §5); the heard budget per (sounder, site), kept across a forget, to connected listeners only, and the ground line's cold and dark states (the lead's owner-critical defaults); `+tv/quiet` a preference document; the site ground warmed on the surface tick one site a fire, its warm peek a capture plus one equality check (the fix round); the pocket byte's tier mask and reserved pit-seen bit and the stamp-ordered provenance ring (the fix round); `READINGS_DARK` and `CHART_UNREAD` | M (SM.4's, split) | SM.3b | readings equal the quantiser for covered cells only; a second principal sees no ore glyph; a repeat from the same cell is refused byte-identically at no cost; a sounding reaches other parties as a bearing and band and nothing more, a quiet one reaches nobody, a tenth sounding in an IC hour prints no line; a sounding from a field's middle reads all 64 pockets and a scan from a field's middle reads all nine fields; a regolith scan prints bands that contain the truth; a rig without a licence scans and sounds on a claimed block. **As built:** K1–K14, seven more, and the fix round's fallback and guard tests (32 in `tests/knowing.rs`), each through the real verb, land path and tick, with reading rule v1 pinned by `tests/geology.rs::sm4a_reading_rule_v1_is_pinned_literally`; the 1,024-field cap is unreachable on the lane, so the 64-block cap is tested end to end and the field cap by a unit test |
+| **SM.4b driving and the map** (**landed**, `d367bf3b`; SM.4's second half) | `+tv/drive` with every target kind (A* over the composite at the site budget, the frozen leg in `TvRec.leg`, IC timing, charge, the reserve rule with a real trip home); the drive home `+tv/recover` lacks; no tenure on any movement act; the `site.map` feed, `+tv/map` with the legend line and block letters, the completion lines; the grid caps raised to 118 by 32; fixtures. **Inherits (SM.4a):** `@geology <site> <addr>` with the typed address parse (SM.1's and SM.2's deferral), the real `home_cu` for the reserve rule, `want_site_ground` at the drive's arrival, and the site map's transient heard mark. **As built:** all four inherited items landed; one A* a command and the leg frozen for display within 80 m (§8; the owner-critical default); the per-site home field, keyless while dark, a recover held only to its own leg and never reading the battery (§4.1; the owner-critical defaults); the far recover as one `Recover` act (§4.3); the legend over two lines and the readings rows without a drive time (§10); `@geology`'s site form; the D14 planning threshold crossed at about 30 ms in release and accepted with an atlas cut owed (SM.12's row) (discharged by AP `74c5801f`: 3.3 ms); a new crate edge tacsim → mush-ansi | M (SM.4's, split) | SM.4a | a rig without a licence drives and recovers on a claimed block; 1 km of regolith arrives at exactly 500 IC s and 2,250 cu; an act that would strand the TV is refused; the arrival line prints over SSH; the observer-rule witness over SSH and web. **As built:** met — the first by D8 (a lapsed licence drives into Occator's held block F and recovers), the second by the unit test and D3, the third by D4, the fourth by the loopback test, the fifth by D12/D13 and the TUI and web fixture tests; the freeze census accepted 64 of 64 field middles on every lane site, all at the 1-cell tolerance, at most 24 waypoints (cap 32), path cells 17–140 |
+| **SM.5 legal and market plumbing** (**landed**, `64cd1f8e`) | `with_extraction_licence` wired to `tacsim.licence.freeport`; lane **v11** (SM.2 took v9, SM.3a v10): the Ceres ore bids with their drips and caps and Occator's tranche, the ore `reference_minor` rows; `+licence/buy|show` as the player's act under the server-authored issuer, the fee a public contract accepted anywhere, extension while Active, behind SM.3a's `licence_seam`; the ore goods (**as built:** goods v3's four ore rows under `stow.ore`, which the Dray-P accepts, landed in SM.3a; SM.5 changes no goods); the drip step on the stock arm with its own predicate; the fixed-reference variant with its validator rule; the sell preview's unfilled line; readiness lines. **As built:** the sell preview is the bare `+market/sell <listing>` (two lines) and `=all`, with `listing_line`'s `wanted N ×` pinned as the unfilled intake, not re-worded; Occator's tranche an appended `raises` list (D-18-27 amended for it); the licence's terms a lane `licence` block on `ceres_port`; the entitlement opened Frozen and activated with the fee contract (the fix round); `+tv/lease` reads the licence; the body geology tables installed by the definition applier (SM.2's residual); a Licence readiness line | M | SM.2, SM.3a | a licence makes `extraction_authorized` answer Ok over a staff-seeded claim; the lapse at IC day 172 refuses at the next act; a buy while Active extends the expiry; 10 t of ore staff-placed in a hold sells at the bid with the Trust's row at a quarter of the upper half; a filled intake posts afresh at `min(cap, unfilled + drip)` within the hour and never past capital, and an 86 t hold sells in one act against the cap; a fixed reference for a good some port asks is refused at load; the market-never-mints probe green |
+| **SM.6 the industry seams** (**landed**, `70c2cd12`) | `IndustryHandleCell` (read access for composed providers); `with_system_opener` and the site clerk's opening on the port tick (one deposit a fire, receipted, the ore good as commodity, accessibility 100, the one-point curve; the `worked_permille` transfer to the spoil with its cursor rows; the "opening" readiness state); `OreDeposit.external`; the `ExternalDraws` trait and the sweep invariant; `ClaimRenew` in place, the Abandoned take-over, the tenure epoch and the cooling term; the seize-transfers-tenure fix; the contest offer's jurisdiction row; the pocket cursor sidecar as the lock's home. **Inherits (SM.5):** closing industry's own `@extract/start` and `@extract/cycle` for surface blocks also closes the licence's two residues there — a staff-seeded surface claim extracting after a lapse (reviewer F12 (ii)) and a refused buy's Frozen entitlement unfrozen by hand (§9.1). **As built:** no opener grant (the clerk's identity in `SiteRow.clerk` is its authority), the clerk on its own `Arm::Site`, one row an offer; `tacsim.sites` owns the sixteen block vaults and the spoil while the block place Things stay the applying actor's (§3.1, §3.4); only ore-bearing (block, family) rows open, up to 64 a site (the barren-ness bit an owner-critical default); the pad open with the layer dark; a site whose issuer has no lane org row opens nothing (the lead's default); the typed-state delegations both ways on the TacSim roster held to reads by a tripwire; `transfer_many` (SM.3b's F3, closed here); the `TenureRecord` per block place, its epoch advanced once per block event, the cooling rows (§9.2); the seize-with-holder path staff-only (the fix round, §9.4); the `JurisdictionAuthority` seam (§9.6); held vaults listed before machine vaults in staff endpoint offers; F12 (ii) closed by the refusal of a surface block, and with it the Frozen-entitlement residue the row's Inherits names | M | SM.1, SM.5 | two boots with the same key open identical reserves; each block's gross reserve equals the sum of its pockets and the spoil holds the worked share, with the invariant green on the first sweep; the applier submits nothing and a re-apply opens nothing twice; a site opens up to 64 deposits over 16 places (64 on an all-families table; only its ore-bearing rows on the real tables) and never attempts a ninth on one; `@extract/start` refuses a surface block; a forged pool debit quarantines the block; renewing nine times never reaches `MAX_CLAIMS_PER_SUBJECT`; a block staked, lapsed and re-staked ten times still accepts a stake; the lapsed holder is refused for a term and a stranger is not; the site's issuer may suspend a foreign claim at its site and nowhere else; a seizure that names a holder transfers the tenure (staff-only until SM.10); every E7 industry suite green. **As built:** pinned by `tests/deposits.rs` (14), mush-industry's `tests/sm6.rs` (15) and mush-inventory's (4), with every E7 suite green; measured on the shipped tables, Ahuna, Juling, Occator and Rheasilvia open 48 deposits in 49 port fires, Kerwan 64 in 65 and the worked Commons 48 in 97 |
+| **SM.7 mining** (**landed**, `dd48ed45`) | `+tv/mine [family] [cycles]` / `+tv/drill` and `stop`; the start's gates — tenure (commons, unclaimed open, own claim), the hopper and the hold's unreserved room, the 3 t blind headroom, the charge reservation — and the preview from the operator's own row (the one-cycle run on an unread pocket); the pocket lock on the sidecar; the completion bundle (transfer of the ore good, cursor, receipt, the charge spent) and the tick's log, chart row and line; the `tacsim.surface.mined` ring; terrain-scaled duration; pits on the map. **Owed first (SM.3b's F3):** a dump or a cycle that opens two or more new pools on one endpoint must land — mush-inventory's `add_pool` writes the endpoint's census once per new pool, so such a bundle always refuses today; the census must be written once a bundle (an inventory-owned `transfer_many` or a mush-core re-stage). **Landed (SM.6):** as mush-inventory's `transfer_many`, which stages the endpoint's census once a bundle; the dump already runs on it. **Inherits (SM.5):** the mine start calls `licence_gate` before `extraction_authorized` and passes the record's `lapses_ic` as a fixed parameter its prepare re-compares with the world's IC now. **Inherits (SM.4a):** the chart's `PIT_SEEN` bit (bit 2 of a pocket's byte) is SM.7's to write; the readers already mask the tier. **Inherits (SM.6):** a pocket of two families has two lock homes, one per deposit's cursor, so SM.7 writes two lock rows (or accepts per-family locks) and says which; a lock row on a pocket with no ore of that family could push a fully drawn 64-row cursor to 65, so SM.7 locks only that family's ore pockets or raises `MAX_CURSOR_ROWS`; `PIT_SEEN` and the pits derive from the cursor; and `+tv/mine [family]` answers a barren and an ore-bearing (block, family) with the same line, since a deposit's existence is a barren-ness bit (§3.4). **Inherits (SM.4b):** the map's pit layer already renders the cursor's `v`/`V`; `geology::family_of_word` accepts `carbon_feedstock` and `strategic_elements` beyond the brief's list; `port::ship::hold_unreserved_kg` is the one function to extend with outstanding cycles. **As built:** every owed and inherited item landed — the census once a bundle (SM.6's `transfer_many`), `licence_gate`'s rule with the frozen `lapses_ic`, `PIT_SEEN` written by the core, one lock row per family with ore and the barren-ness bit never echoed, `hold_unreserved` counting outstanding cycles in every measure; the run in the record's cycle slot on the one start action (`act = mine`, `mine_stop`), each cycle landing at its own due keyed `…/cycle/{k}` (§6, §8); the lock rows plus the other rigs' run records, a stale lock matched by its row (§3.4, §6); the licence judged at the next cycle's due, the tenure and the lease at landing (§8); `RunEnd::Dark` with its own line and a drilling rig busy to the departure gate, the lease return and the repossession (the fix round; §6, §8); `stop` without `go`, no mining under a forfeit or ended lease, the public pit as one preview clause, an authored held block refusing before SM.10 and the blind core's family from the operator's own R1 row (the owner-critical defaults the lead accepted; §5, §6, §8, §9.2) | L | SM.4b, SM.6 | a fair 7 t pocket yields 2, 2, 2, 1 then "worked out"; `initial − pool == Σ drawn` after a 10,000-cycle soak; the hopper never exceeds 12 t and a hull's hoppers never hold more than its hold can take, with two rigs filling one hold; a named run that does not fit refuses and names the count that fits, and the bare form stops at the hopper or the hold's room; the preview on an unread pocket prints no class and commits one cycle, and with 2 t of room refuses the blind cycle whatever the class; `stop` lets the running cycle yield; a replayed completion is a HIT; a second rig on the pocket refuses with the public line; unclaimed open ground mines under a licence and refuses once staked by another; no licence, a lapsed licence and another's block each refuse with their public line while the rig still recovers and unloads; pits render for everyone; the cycle line prints over SSH. **As built:** pinned by `tests/mining.rs` (23 tests after the fix round) and the loopback test `sm7_the_cycle_line_prints_over_ssh`; the "unloads" half of "recovers and unloads" is SM.8's; the 10,000-cycle soak is the arithmetic half (`mine.rs`), the bundle's conservation M2's sweep after a read run, a blind ore core and a blind barren core |
+| **SM.8 unload, sell, the story** (**landed**, `9922c9c7`) | the unload half of `+tv/recover` and `+tv/unload [qty]` with `max_more`; the hold plan generalised to any stowage block while `governed_hold` stays programme-hull-only; the story test on `build_engine` at rate 24 (kit up with all three desk verbs, plan, lift, scan, sound, mine open ground to full, recover, lift home, sell; a restart inside); `docs/help/mining.md` complete; the help tripwires. **Inherits (SM.7):** the "unloads" half of SM.7's acceptance ("recovers and unloads") and `HOPPER_LOADED`'s remedy; what a hopper the hold cannot take does — the hold's unreserved room is read by mining and the map only, while market purchases and other hold writers admit against the hold's limit less its load, so cargo bought mid-run can leave a hopper the hold cannot take: the unload must say what happens, or every hold-admitting writer reads `hold_unreserved`. **As built:** every inherited item landed — the unload as `act = unload` on the one start and finish, queued durably on the record (`RigRecord.queued`) by a `Done` recover and started by the tick as the operator, or filed by hand with `how = whole` or `part` and `qty` (§7.1, §8); the finish one inventory-owned `transfer_many_marked` (§7.1); `HOPPER_LOADED`'s unload remedy on a site's pad and `HOPPER_LOADED_AWAY` elsewhere (§4.3); the answer for a hopper the hold cannot take — the unload's own room `hold_unreserved_with`, no other hold writer changed, what fits unloaded and what stays said (§6); the plan generalised as `stowage_plan`/`plan_check` with `PortCapacity::plan` and `governed_hold` unchanged (§7.1); the story in `mush-server/tests/sm_story.rs`, twin arms over one fixed geology key with a `build_engine` restart inside the mining run; `docs/help/mining.md` complete (§10); an unload only on a site's pad, the queued unload not gated on the operator aboard, the 0 s `UNLOADED_NONE` act and a refused finish never overfilling (R5–R8, the owner-critical defaults the lead accepted; §6, §7.1); `UNLOAD_NO_STOCK`, `UNLOADED_NONE_EMPTY` and the " and " join of multi-good lines (the lead's fix round) | M | SM.7 | the story is green on the production composition with one staff act (the rate); unload refuses under way and with the TV out and never leaves ore behind after an honest fill; the hopper is refused at sale by `HOLD_ONLY_SOURCE` and by `may_take`; T-45 and the legacy-handler tripwires green. **As built:** met — pinned by `tests/unloading.rs` (18: U1–U12, U4b, U9b, A3, the `how`/`qty` rule, the finish's refusals and the counted writes), `mush-inventory/tests/sm8.rs` (5) and `mush-server/tests/sm_story.rs` (2: A1, whose straight and restarted arms run in one test, and the check that the story's shared start is never in the past); the story on `build_engine` at rate 24 sells the unloaded hold at the Exchange's bid with the Trust's share and needs no staff act at all (the rate is the boot's `[game].ic_ratio`; its only GOD use the `@tacsim/port status` reads); its bunkers carry the gaps measured over doc 18's planner (§18's Doc 18 item); the help and legacy-handler gates green |
+| **SM.9 the quarry screen and the ground chart** (**landed**, `16b0ca4e`) | `body.ground` (`+chart/ground`, `+chart/ground map`; `+chart/body` untouched); the pushed `tv.status` keyframe per act change (deferred from SM.3b); TUI screen `q` (`MAX_SCREENS` 12) with the rig keys; the web `FeedScreen` and pictures; keys; `RUN_ALLOWLIST`; the boot-parity manifest; fixtures. **Inherits (SM.4b):** the `site.map` frame's keys as built (the site view's `extent [32, 32]` with `origin_cell [0, 0]`, read in 80 m cells; window-relative unit cells; §10); the glyph collisions (`H`/`O` block letters against the hull and the crater, slot digits against ore digits) as amendment candidates for the screen; neither `+tv` nor the map wants a cold home field, so the screen must not rely on the map to warm one. **Inherits (SM.7):** the two-family `V` rule (a pocket worked out in one family and untouched in the other reads `V` on every map); the map's lock and run fields; the run's pocket and family read from the record-backed reads (`+tv`, `site.map`), never the projection, whose `RunView` carries no pocket, family, yield or class (the lead's ruling on the fix round's N4). **Inherits (SM.8):** the queued unload's line on the quarry screen (`+tv` prints `QUEUED_LINE` under a rig with a queue). **As built:** the inherited items landed as follows — the `site.map` keys read as built, now with vector keys of their own (§10); the glyph collisions resolved for the screens by `site.marks` while line mode keeps the glyphs (§10); the two-family `V` standing as built, pinned by a unit test with no code change (§3.4); the run on the map as `rigs[].run` and the queued unload as `rigs[].queued`, `QUEUED_LINE` on both screens. The cut note records no disposition of SM.4b's cold-home-field inherit or of SM.7's lock field (the frame carries no lock key of its own). The SM.7 inherit's "never the projection, whose `RunView` carries no pocket, family, yield or class" is reversed under the lead's ruling 4: the screens read the projection's `RunView`, which now carries `addr`, `good`, `stop` and `blind` (the operator's own choices) and never class, yield or tonnes, `RigRecord.run` is read by no frame, and `TvRec::check` bounds `RunView.addr` at `MAX_RUN_ADDR_BYTES` 8 with its own refusal, "a rig projection's run address is at most 8 bytes", apart from the cycle bound's (the lead's fix round; §8). The clients interpolate the viewer's own rigs along `rigs[].leg` from `site.clock` and `site.under`, re-pulling on `tv.status` only, no timer (the lead's 0z ruling; §8, §10); `tv.status` pushes the operator's whole projection (`rig: TvRec`) from `write_projection` only when the store wrote, and the projection's log is its current operator's excursion's (D16); `site.map`'s vector keys (§10), with `site.no_readings` and `site.other_rigs` added and the stale rig pick cleared on both clients when a held frame no longer lists the slot in the lead's fix round; `PanelSubscribe.params` (≤ 512 bytes, an object only); screen `q` the twelfth, `z` stepping drive → site → ground, `t` the next rig (§10); the ground frame's rows south-first (§3.1). The rig key `t`, the two-family `V`, the ground chart's glyphs and shared-cell listing, `z`'s cycle, client interpolation with the TUI's ~4 s step, the line-mode body map at one column a cell and every new player-facing text are the owner-critical defaults the lead accepted (§3.1, §10, §15) | M | SM.4b | one fixture renders byte-identically in line mode, the TUI and the web at 120 columns; `+chart/body ceres` still prints the elements; the wash is identical for two viewers and a best reading appears only to its viewer; screen-count tests updated; no mutating verb on a bare key. **As built:** met — pinned by `tacsim/tests/quarry.rs` (Q1–Q11: the wash cell by cell, two viewers' frames equal and one byte-identical across the other's sounding, `+chart/body` untouched, the blessed ground fixture, the `tv.status` pushes, a second lessee seeing none of the first's log), `mush-net-ssh/tests/quarry_screen.rs` (11: the twelfth screen, no key submitting, the three fixtures byte-identical at 120 columns, the status re-pull with no timed pull), the screen-count tests at 12 and the web's quarry, screen and game tests; Q8's release timing of the ground frame was not run (SM.12c's, on SM.12's row); the tab strip pinned exactly at the 120-column floor beside the 140-column case (the lead's fix round) |
+| **SM.10 claims** (**landed**, `fed09da2`) | `+claim/stake|renew|release|contest|list`, `+registry`; Deposit-subject claims over a block's deposits as the player's act under the site's issuer; the hand-made evidence rule, the stake preview's heard-soundings and cooling lines; the 50 t worked floor, lapse to `Abandoned` with its canon draft and epoch advance, the take-over on re-stake, the cooling term; the interlock lever; discovery-priority contest on a heard sounding inside the epoch with the contester's fees; the seeded Occator holdings and Syndicate paper with their adjudication contract; the Registrar's worked-claim rule inside the renew act; the two-claim cap; claims on the site map. **Inherits (SM.5):** the stake and the renewal call `licence_gate` before `extraction_authorized` (a Frozen entitlement with no record, a refused buy's residue, reads unlicensed there). **Inherits (SM.4a):** contest evidence reads the stamp-ordered provenance ring, never the chart's last stands. **Inherits (SM.6):** every tenure event — stake, lapse, take-over — covers the whole block at one term, since the `TenureMark` records only the last event; the cooling term's `acts_for` half; `block_tenure`'s word computed from `claims_over(Deposit{..})` and `IndustryFamilies::tenure(place)`, falling back to the authored word for an unclaimed block; the claim fees (no constant in `surface::tenure`); the contest's challenger as a server-authored row of its own (the seizure's `holder` parameter stays staff-only), passing the heard sounding's real stamp (§9.4); the Registrar's rule carried by its own composed `JurisdictionAuthority` or a server-authored row on the renewal offer (§9.6); the stake answering a barren and an ore-bearing (block, family) with the same line and fee (§3.4). **Inherits (SM.7):** mining reads tenure by block, so a claim is a whole-block claim; seeding Occator's claims replaces R5's stand-in refusal (an authored held block with no live claim) with real claims; the lapse of a term-expired claim, which reads as open ground until then (R20); and the claim fees (§9.2). **Inherits (SM.9):** a one-shot re-ask, on both clients, when the rig pick clears on a reason frame while the quarry screen is active — a stale ask's `MAP_NO_RIG` frame otherwise stays on screen until the next `tv.status` push or `r` — weighed against its hiding the reason a deliberate `t` onto an Away rig earns (a structured reason key on reason frames is a later cut's); and the claims on the site map as `site.map` vector keys the screens read, never a prefix of `site.lines`, as SM.9's `site.no_readings` and `site.other_rigs` are (`claim_edges` is still the stub, `#` is in the legend pairs and no claim mark is in `site.marks`). **As built:** every inherited item landed — `licence_gate` read first by the stake and the renewal; the contest's evidence read from the stamp-ordered provenance ring (the pocket ring only, R3); every tenure event one `industry_claim_tenure` act over the whole block at one term; the cooling term's `acts_for` half, with a gateway-account half beside it (OC15); `block_tenure`'s word read from the block record `tacsim.claims`, not `claims_over` plus `tenure(place)`, falling back to the authored word; the claim fees lane v12 data, no constant in `surface::tenure`; the contest's challenger row `TenureKind::Contest` carrying the heard sounding's real stamp, the seizure's `holder` still staff-only; the Registrar's rule as the renewal's `Renew` row (`suspend`, `by`), not a `JurisdictionAuthority`; the stake answering barren and ore-bearing ground alike, nothing printed reading the deposit count; R5's stand-in replaced by Occator's seeded claims and R20 closed by the clerk's lapse; SM.9's one-shot re-ask on both clients, and `site.claims` a vector key with `claim_edges` drawn (§10). The block record staged in industry's bundle (D17), `Bound` claims and filed Uncontested (D20), the fees as Public contracts the clerk accepts after landing, the clerk's lapses, release with cooling, the take-over, the window at the last opening (D18), the unpaid-fee lapse (D19), the Syndicate and its paper, the interlock refused at boot, and the lead's fix round (an expired-unaccepted fee lapsing without cooling, a fee forfeit to the Registry paid everywhere, a contest moving the revision by one, a lapse told once after a lost claim log) are §9's notes; OC1–OC17 are the owner-critical defaults the lead accepted (§15) | L | SM.7, SM.9 | staking with a gifted, bought or plan-made reading or none is refused and a hand-made core suffices; a second stake on a block held under the site's issuer refuses and a Syndicate paper bars nothing; a self-issued claim from a player org authorises nothing at a Registry site; a claim worked one cycle is not renewed and the block reopens to a stranger at once and to its lapsed holder after a term; a sounding from before the block last opened defeats nothing and one inside the epoch does; a Syndicate block worked 100 t shows the paper suspended after the player's renewal, one worked less is not renewed, and no Registry actor submits anything; the stake reaches the chronicle through the bridge and the lapse through its draft. **As built:** met — pinned by `tacsim/tests/claims.rs` (35 after the lead's fix round, among them C1–C23, C11b, the fixer's six, C20b–C20d and the lost-log test, each through the real verb, the offer route, the land path and the ticks) and `tacsim/tests/lane.rs` (v12's contents, the v11 rebuild, the paper validator's refusals), with mush-industry's `tests/sm10.rs` (16); a gifted or bought reading cannot exist yet (`Reported` is not built) and a plan-made one waits for SM.11's `via: Plan`; the lapse reaches the chronicle as the clerk's canon line, not a draft (§9.3) |
+| **SM.11 plans and offline** | `+tv/plan <addr>[,…] [family=<good>]` with the block rule and the frozen family, `show`, `clear` (the compiled vocabulary, one landed hold by the unreserved-room rule, 288 IC h, knowledge-gated, no re-arm, rights lapse skipping to park); `await tv [<slot>|all]` to 288 IC h; the `depart` refusal while any rig is out; idle return-and-park; the notice budget; span of control 4; `via: Plan` on plan-made readings; the offline story across a restart. **Inherits (SM.4a):** heard lines are never queued, so reconnect notices are this cut's. **Inherits (SM.4b):** a recover's `LegShort` must read as "parked where it stands" for idle return-and-park; a `DriveOrder` is RAM, so a restart loses an unlanded one ("not planned; preview it again"). **Inherits (SM.8):** `MarkersFull` at an unload's finish is a wait with the record's back-off, never a park, and is named in the reconnect summary — the hopper vault's marker ring keeps 128 markers younger than a real day (about 64 two-ore unloads; at rate 24 a plan unloading one ore more often than every four to five IC hours, or two ores more often than every nine, can fill it) and is the vault's, so it carries across lessees — and this cut's builder measures the ring's headroom at the story's cadence; if the cap binds, the lead's ruling is to make the ring's window the act's retry horizon rather than a real day; a queued unload whose operator lost the helm or the charter is refused at every attempt until any start lands on the rig, so the plan chain, which reuses `Queued`, drops an orphaned queue with a page. **Inherits (SM.10):** `evidence_at`'s `first_local_at` clause trusts a ring with no `Plan` entry, so it is revisited once `via: Plan` stamps exist (a plan-made reading never qualifies a stake), while `heard_count` and `heard_before` read the pocket ring only; and the plan on the map as a `rigs[].plan` vector key (the lead's ruling at the SM.10 fold) | M | SM.8, SM.10 | a logged-off player's plan fills the hold and parks with every hopper empty, the queue lifts, flies and sells, the notices read on reconnect; two rigs' plans fill one hold and neither strands ore; a plan whose licence lapses recovers, unloads and parks with its reason; the plan does not re-arm; killing the server midway changes nothing in the final post-image; a fifth excursion for one operator refuses; a plan-made reading does not qualify a stake |
+| **SM.12 the mill, the drones, the cost lane** | the Exchange's and Occator's mill arms with receipts and `restock_ask`; Occator's dispatcher excursions on Occator Rim; a harness cohort (64 TVs over 8 sites, every act cycling; tick p99, writes an act, composite churn; the Vesta passage included) beside the arena baseline; a `mush-bot` cohort playing the whole loop over SSH. **Inherits (SM.4a):** a true off-loop keyed site-ground runner behind `Effect::ModuleAsync`, decided on the cost lane's measurements (§3.2). **Owed first (SM.4b):** an atlas cut, after SM.7 and before this cut's cost lane, hoisting a per-class cost and slope table out of `mush_atlas::physics::path`'s inner loop (and, if the lead prefers, a per-(rig, target, ground) memo so `go` after a preview does not search again), since a drive's planning measured about 30 ms in release on the worst case against the lead's 20 ms threshold (§8); SM.4b's planner measurement is informational until it lands. **Landed (AP, `74c5801f`):** the dense row and the heuristic (§8's note); the measurement is a release gate, this cut's baseline 3.3 / 7.0 / 8.3 ms on the build box; the memo was not built (it would be a third kind of entry in SM.7's one-slot `ActOrders`), to be reopened here on the cost lane's measurements if they ask. **Inherits (SM.7):** the write-count measurement — a cycle's completion holds ≤ 8 writes by construction only (§11). **Inherits (SM.8):** the unload finish's writes, measured and pinned at 9 to 19 against §11's ≤ 8 (the brief forbade trimming the inventory's writes), which this cut's cost lane gates on; a staff tool to clear a hopper vault's marker ring, or a per-lease ring, if wanted. **Inherits (SM.9), SM.12c's:** Q8's release timing of the `body.ground` frame — the Ceres frame with Ahuna's rows measured in debug at least 20.59 ms, median 21.98 ms, the release run not made — on the cost lane that measures the feeds. **Inherits (SM.10), SM.12c's:** the claims suite's cost — about 65 s on CI's critical path (three-world boots in C2, C16 and C23; 100 t of real cycles in C14a), deterministic and with no wall clock. **Split (the lead's ruling):** this row is built as three cuts — SM.12a the mill (the mill arms with their receipts and `restock_ask`), SM.12b Occator's drones (the dispatcher excursions on Occator Rim) and SM.12c the cost lane (the harness and bot cohorts and the measurements above) — in the order SM.10 → SM.11 → SM.12a → SM.12b → SM.12c | L | SM.11 | over a simulated IC month the Exchange's concentrate ask rises only by milled ore with conservation asserted; NPC excursions never exceed their caps nor sell into player intakes; tick p99 < 5 ms a fire, ≤ 8 writes a completion and ≤ 3 for any other act; the bot cohort completes the loop in line mode (doc 14 P10) |
 
 **Phase 2** (own cuts, after the owner's rulings): the second jurisdiction (Phobos under a Republic
 lands office at Stickney with its own licence instrument and a Stickney ore bid; a new `microgravity`
@@ -1001,19 +2148,19 @@ and operator agreements.
 | # | Decision | Where |
 |---|---|---|
 | D-20-1 | The surface loop runs world-side on the IC clock, every act with an IC due instant applied by the 1 s `tacsim.surface` pull tick; never the arena, never an atlas window, never a per-excursion schedule for players. The arena hosts fights, not chores | §2 |
-| D-20-2 | A site is a vendor-less port entry with a `site` block over a 256 × 256 atlas region at 10 m (the arena window), 16 blocks of 640 m with per-block tenure, authored prospectivity and worked share, a place object each, four named fields and 256 addressed pockets a block, the pad at the centre; phase 1 is five Ceres sites and a Vesta commons with its own geology | §3.1 |
-| D-20-3 | The landing law: TWR ≥ 1.2 at departure mass and the plan's throttle against `BodyDef.surface_mg`; a hop's `base_s` 3,600 IC s through the laden step with an ascent term ceiled to a tonne; crew-days by the existing rule and an IC day landed, floored at one leg home and printed | §3.3 |
-| D-20-4 | Geology is a pure HMAC-keyed function under a fourth durable key family with a fingerprint pinned in the world; province, field, pocket in one word set; the four raw families; readings nest; no RNG | §3.2 |
-| D-20-5 | One conserved `OreDeposit` pool per (block, family) in the family's ore good, opened at the gross reserve by a site clerk on the port tick through a composed system opener (never the applier), an authored worked share transferred to the spoil with its cursor rows; a bounded pocket cursor sidecar that is the lock's home; every cycle a pool transfer; the invariant through a composed `ExternalDraws` trait on the reconcile sweep; `OreDeposit.external`; a pocket's class fixed, its remainder shown by preview and pits | §3.4 |
-| D-20-6 | The TV is a full `UnitSpec` of a new unfieldable `Vehicle` class with stowage-only logistics and a two-room interior, teleoperated in phase 1; tools are a content kind with per-axis radii; charge bounds a run, reserved in each act's authoritative start under one reserve rule | §4.1 |
-| D-20-7 | The Dray-P carries up to two TVs in a bay counted in `payload_kg` under the 181 t rail, never a re-rate, each named by its slot; `+coop/refit` swaps it; `+tv/lease` is the player's act under Occator as lessor; `TV_OUT` and `HOPPER_LOADED` refuse departure as backstops; a hopper vault is the system principal's | §4.2–4.3 |
-| D-20-8 | Knowledge is coverage plus its own provenance enum per principal, re-derived at render; R0 public, R1 the nine-field scan sharpened by footing, R2 the field sounding heard site-wide with a quiet form; only a hand-made reading counts as discovery and only a heard sounding inside the tenure epoch as contest evidence; knowledge needs no tenure; fog lines byte-identical | §5 |
-| D-20-9 | Every `+tv/…` act previews bare and commits with `go`; `+tv/mine` previews from the operator's own row (one blind cycle on an unread pocket, needing 3 t of room), names its family, commits a run bounded by the pocket, the hopper and the hold's unreserved room across every rig and outstanding cycle of the hull, refuses a named count that does not fit and names the one that does, never clamps; yield by pocket class, never rising; a pocket lock; knowledge acts legal during a run; no `until=full` across pockets for a seated pilot | §6 |
-| D-20-10 | Grade is spent at the drill as tonnes; mined matter is raw ore goods under `stow.ore` bought only at Ceres; the hopper never sells; the capacity plan, not the sale predicate, is generalised; the mill is P5's supply half; intakes refresh by a drip step of their own to a standing cap; the Co-op's reference for ore is a fixed minor-unit price at half the bid, amending D-18-24 for goods no port asks | §7 |
-| D-20-11 | Every act starts as an authoritative submission writing the excursion's state family and completes on the tick, the normal-lane document a projection; rights are per act — licence and tenure gate mining, staking and renewal only; a fill plan is one landed hold by the unreserved-room rule, 288 IC hours, a closed knowledge-gated vocabulary compiled from a pocket and block list with a frozen family, one a TV, never re-armed, parking when its rights lapse; `await tv [<slot>|all]`; four excursions an operator, two a Dray-P; idle return after 24 IC h; Q-18-22 extended and T13 read as owned-asset production and the character's own instruments on a dispatched sortie, plan-made readings never discovery | §8 |
-| D-20-12 | One licence instrument per issuer, bought and extended anywhere as a public contract; unclaimed open ground is workable under a licence until staked (changed on the owner's review from "stakeable" alone); blocks as Deposit-subject claims filed by the player's own act under a server-authored issuer; renew in place and take over an Abandoned record on re-stake, advancing the block's tenure epoch; 50 t worked a term to renew; a lapsed holder's cooling term; two live a account; contest by a heard sounding's priority inside the epoch with the contester's fees; jurisdiction is the site's issuer, on the mining gate, the staking refusal and the contest offer, carried inside the player's own acts; the interlock in phase 1 | §9 |
-| D-20-13 | Two pulled grid feeds on the `atlas.map` shape (`site.map`, `body.ground`; `+chart/body` untouched); `+tv/…` verbs with `scan` and `mine` as the words, `go` as the commit and a slot number as the rig; screen `q`; line-mode grids 118 by 32 with a legend line; every completion a printed line | §10 |
-| D-20-14 | Phase 1 is Ceres and a Vesta commons, every block core (amending doc 11 §5's margins), no surface combat; D-16-3 stands; promotion is phase 3 behind an IC-crossing ruling | §3.1, §17 |
+| D-20-2 | A site is a vendor-less port entry with a `site` block over a 256 × 256 atlas region at 10 m (the arena window), 16 blocks of 640 m with per-block tenure, authored prospectivity and worked share, a place object each, four named fields and 256 addressed pockets a block, the pad at the centre; phase 1 is five Ceres sites and a Vesta commons with its own geology. **As built (SM.2, SM.3b):** the site location's role is `extraction`; Occator Rim at 25.4 N; the block places are laid DARK by the applier, owned by the applying actor until SM.6 makes `tacsim.sites` their industry owner, beside a site clerk Thing and a spoil Thing and vault. **As built (SM.6):** the block place Things stay the applying actor's; `tacsim.sites` owns the sixteen block vaults (`Container`-backed by the block places, recorded in `SiteRow.vaults`) and the spoil vault, the deposits' endpoints | §3.1 |
+| D-20-3 | The landing law: TWR ≥ 1.2 at departure mass and the plan's throttle against `BodyDef.surface_mg`; a hop's `base_s` 3,600 IC s through the laden step with an ascent term ceiled to a tonne; crew-days by the existing rule and an IC day landed, floored at one leg home and printed. **As built (SM.2):** only a leg with a site end meets the law and pays the ascent; the stay is charged at lift; a departure for a site holds back the leg home, with a reserve-aware throttle hint; `SITE_CLOSED` and `LEAVE_PAD` — the stay charged at lift, the leg-home reserve and `LEAVE_PAD` being the lead's defaults (SM.2's decisions 4, 7 and 10), standing until the owner rules | §3.3 |
+| D-20-4 | Geology is a pure HMAC-keyed function under a fourth durable key family with a fingerprint pinned in the world; province, field, pocket in one word set; the four raw families; readings nest; no RNG. **As built (SM.1):** one HMAC per (level, cell, family) under `rustmush.geology.v1`; the fingerprint pinned in `tacsim:geology` at the first keyed boot, a missing or mismatched key a disabled layer on the readiness line, never a refused boot; an authored shift never lifts a province-barren family (the lead's ruling, standing until the owner rules). **As built (SM.5, SM.4a):** the body tables install at the definition applier; no act builds a site ground, the surface tick warming one site a fire | §3.2 |
+| D-20-5 | One conserved `OreDeposit` pool per (block, family) in the family's ore good, opened at the gross reserve by a site clerk on the port tick through a composed system opener (never the applier), an authored worked share transferred to the spoil with its cursor rows; a bounded pocket cursor sidecar that is the lock's home; every cycle a pool transfer; the invariant through a composed `ExternalDraws` trait on the reconcile sweep; `OreDeposit.external`; a pocket's class fixed, its remainder shown by preview and pits. **As built (SM.6):** no opener grant, the clerk's identity in `SiteRow.clerk` its authority, on its own port-tick arm, one row an offer; a deposit only per ore-bearing (block, family), up to 64 a site, its existence a barren-ness bit SM.7 and SM.10 must not echo; the worked share ⌊t × ‰ / 1000⌋ a pocket, summed and moved by one pool transfer; the pad open with the layer dark, and nothing opened for an issuer with no lane org row; a mismatch quarantines every deposit of the place and provider; the typed-state delegations held to reads by a tripwire (the owner-critical defaults and the lead's, standing until the owner rules). **As built (SM.7):** every cycle one `InventoryFamilies::transfer` from the block vault to the hopper with the cursor's `drawn_t` in the same bundle; `ExternalDraws` green on M2's sweep | §3.4 |
+| D-20-6 | The TV is a full `UnitSpec` of a new unfieldable `Vehicle` class with stowage-only logistics and a two-room interior, teleoperated in phase 1; tools are a content kind with per-axis radii; charge bounds a run, reserved in each act's authoritative start under one reserve rule. **As built (SM.3a, SM.3b):** tools are typed documents pinned by digest, with a battery row; the TV is fielded but has no burn row; the control lease is read as the live lessee aboard the settled hull (the lead's default, standing until the owner rules); a zero spend always passes the reserve rule; **as built (SM.4a):** an implied launch's charge reads the bay only to `started_ic + LAUNCH_S`, and a reading on the ground settles without its battery row (the fix round); **as built (SM.4b):** the reserve rule's trip home is real (the per-site home field, keyless while dark), a recover never held to the floor and never reading the battery (P6, an owner-critical default the lead accepted, standing until the owner rules), one with no readable battery row spending nothing for its leg (the builder's decision 3, a default the lead accepted and the owner should see beside P6) | §4.1 |
+| D-20-7 | The Dray-P carries up to two TVs in a bay counted in `payload_kg` under the 181 t rail, never a re-rate, each named by its slot; `+coop/refit` swaps it; `+tv/lease` is the player's act under Occator as lessor; `TV_OUT` and `HOPPER_LOADED` refuse departure as backstops; a hopper vault is the system principal's. **As built (SM.3a, SM.3b):** the refit re-binds the hull's unit in place and every programme hull carries a hidden bay; the lease is signed at the Exchange Hall and re-debited at the next `+tv/lease` act; slots `/1`–`/4`; `TV_BUSY` and `TV_AWAY` beside `TV_OUT`; a charter's end with rigs aboard refuses or repossesses and holds the hull while a rig is out (the lead's defaults, standing until the owner rules); **as built (SM.5):** the lease reads the licence (`LEASE_LICENCE`) before the term settle (the lead's default); **as built (SM.8):** the departure's two hopper lines — `HOPPER_LOADED` naming `+tv/{n} unload` first and the dump beside it on a site's pad, `HOPPER_LOADED_AWAY` ("staff must empty it") anywhere else, since an unload works only on a site's pad (R5, the lead's owner-critical default, standing until the owner rules); a queued unload is not busy to the gate | §4.2–4.3 |
+| D-20-8 | Knowledge is coverage plus its own provenance enum per principal, re-derived at render; R0 public, R1 the nine-field scan sharpened by footing, R2 the field sounding heard site-wide with a quiet form; only a hand-made reading counts as discovery and only a heard sounding inside the tenure epoch as contest evidence; knowledge needs no tenure; fog lines byte-identical. **As built (SM.1):** the reading rule is versioned (v1) and the regolith band's side is a keyed draw. **As built (SM.4a):** one chart record per (character, site), the per-body caps enforced at the start (the lead's ruling); reach by the doubled-cell rule, sight by the atlas line of sight; a banded field row prints the union of its counts; the heard budget per (sounder, site), kept across a forget, to connected listeners only (the lead's defaults, standing until the owner rules); the repeat rule per instrument class, cell and site | §5 |
+| D-20-9 | Every `+tv/…` act previews bare and commits with `go`; `+tv/mine` previews from the operator's own row (one blind cycle on an unread pocket, needing 3 t of room), names its family, commits a run bounded by the pocket, the hopper and the hold's unreserved room across every rig and outstanding cycle of the hull, refuses a named count that does not fit and names the one that does, never clamps; yield by pocket class, never rising; a pocket lock; knowledge acts legal during a run; no `until=full` across pockets for a seated pilot. **As built (SM.7):** the run in the record's cycle slot on the one start action, each cycle keyed per cycle; the lock per family row plus the run-record check; the blind room derived from the drill row; `stop` without `go`, the public pit as one clause, the blind family from the operator's own R1 row, and the lease bar on mining (the lead's owner-critical defaults, standing until the owner rules); a stale lock matched by its row, a drilling rig busy to the departure gate, the lease return and the repossession, and `mine::fits` on `capacity::fits_in` (the fix round) | §6 |
+| D-20-10 | Grade is spent at the drill as tonnes; mined matter is raw ore goods under `stow.ore` bought only at Ceres; the hopper never sells; the capacity plan, not the sale predicate, is generalised; the mill is P5's supply half; intakes refresh by a drip step of their own to a standing cap; the Co-op's reference for ore is a fixed minor-unit price at half the bid, amending D-18-24 for goods no port asks. **As built (SM.3a):** the four ore goods landed as goods v3. **As built (SM.5):** lane v11 carries the four Ceres bids and their drips; the drip renews before the TTL, banks one drip and brings a lapsed row back at one drip (the lead's default); Occator's capital rises by an appended raise (D-18-27 amended for it); `reference_minor` is a second programme map. **As built (SM.8):** the capacity plan over any stowage block (`stowage_plan`/`plan_check`), the hopper refused at sale twice and never planned by the market (`PortCapacity::plan` and `governed_hold` unchanged) | §7 |
+| D-20-11 | Every act starts as an authoritative submission writing the excursion's state family and completes on the tick, the normal-lane document a projection; rights are per act — licence and tenure gate mining, staking and renewal only; a fill plan is one landed hold by the unreserved-room rule, 288 IC hours, a closed knowledge-gated vocabulary compiled from a pocket and block list with a frozen family, one a TV, never re-armed, parking when its rights lapse; `await tv [<slot>|all]`; four excursions an operator, two a Dray-P; idle return after 24 IC h; Q-18-22 extended and T13 read as owned-asset production and the character's own instruments on a dispatched sortie, plan-made readings never discovery. **As built (SM.3b):** the state family is one `RigRecord` a TV; the launch and the dump start authoritatively too; every start is `tacsim_surface_act` and every finish `tacsim_surface_done`, mining joining as `act = mine`; "the control lease" is read as the lessee aboard (the lead's defaults, standing until the owner rules). **As built (SM.4a):** the scan and the sounding are acts on the same two actions, a finish off its stand refused `Moved`. **As built (SM.4b):** a drive is another kind on the same two actions (`act = drive`), its leg in the act's params, projected into `tacsim:tv:<tv>` at the first fire after its start and placed once at the due instant; a far recover carries its leg in the one `Recover` act; the start's `to` parameter binds a drive to its RAM order; the leg is frozen for display within 80 m, time and charge the exact path's (the owner-critical default the lead accepted). **As built (SM.7):** the run in the record's cycle slot (`RigRecord.run`) beside the act slot, each cycle finishing at its own due under `…/cycle/{k}`; rights judged at the next cycle's due (the licence) and at landing (tenure, lease); since the fix round a run projected from the first fire after its start, and a dark registry read ending it as `RunEnd::Dark` with its own line, never the claim line. **As built (SM.8):** the unload as `act = unload` on the one start and finish, queued durably on the record (`RigRecord.queued`) by a `Done` recover and started by the tick as the operator; the start's `how`/`qty` bind it to its source as `to` binds a drive; the queued unload not gated on the operator being aboard and a hold with no room a 0 s act told once (R6 and R7, the lead's owner-critical defaults, standing until the owner rules). **As built (SM.9):** the projection's `RunView` names the pocket address and the good and never class, yield or tonnes (the lead's ruling 4, reversing SM.7's); the projection is its current operator's, its log the open excursion's (D16); it is pushed as `tv.status` only when the store wrote; and the clients interpolate a rig's position along its leg (the lead's 0z ruling) | §8 |
+| D-20-12 | One licence instrument per issuer, bought and extended anywhere as a public contract; unclaimed open ground is workable under a licence until staked (changed on the owner's review from "stakeable" alone); blocks as Deposit-subject claims filed by the player's own act under a server-authored issuer; renew in place and take over an Abandoned record on re-stake, advancing the block's tenure epoch; 50 t worked a term to renew; a lapsed holder's cooling term; two live a account; contest by a heard sounding's priority inside the epoch with the contester's fees; jurisdiction is the site's issuer, on the mining gate, the staking refusal and the contest offer, carried inside the player's own acts; the interlock in phase 1. **As built (SM.5):** the licence's terms a lane block; the grace authorizes and a buy extends from the expiry in force or in grace, one a gateway account, no cap ahead, the fee forfeit to the Registry (the lead's defaults, standing until the owner rules); the entitlement opens Frozen and activates with the fee contract, and every gated act reads `licence_gate` first. **As built (SM.6):** the industry seams — `ClaimRenew` in place, the Abandoned take-over, one `TenureRecord` a block place whose epoch a lapse, a take-over or a transferring seizure advances once per block event, at most four cooling rows one a holder, the seize-transfers-tenure fix on the staff offer only (the fix round), and the contest offer's jurisdiction row as a composed `JurisdictionAuthority` — with the player's acts, the cooling term's `acts_for` half and the Registrar's carriage SM.10's. **As built (SM.10):** stake, renew, release and contest are each ONE `industry_claim_tenure` act over the whole block under the site's issuer through the composed `SurfaceTenure` authority; the block record `tacsim.claims` is the one public source of tenure, staged in industry's bundle (D17, OC11); the contest window opens at the block's last opening, never at a take-over or a transfer (D18, OC17); a fee withdrawn after landing lapses the claim with cooling (D19, OC16), the lead's fix round superseding D19's "an expired one stands": a fee that expired unaccepted lapses it without cooling, and a fee forfeit to the Registry counts as paid; claims are `Bound` and a papered block's claim is filed Uncontested (D20, OC4, OC5); the fees lane v12 data, the Syndicate's never-ruled paper and Occator's century claims seeded by the clerk, the Registrar's rule as the renewal's `Renew` row, the cooling term over the holder's gateway account and the interlock's `false` refused at boot — OC1–OC17, the lead's owner-critical defaults, standing until the owner rules | §9 |
+| D-20-13 | Two pulled grid feeds on the `atlas.map` shape (`site.map`, `body.ground`; `+chart/body` untouched); `+tv/…` verbs with `scan` and `mine` as the words, `go` as the commit and a slot number as the rig; screen `q`; line-mode grids 118 by 32 with a legend line; every completion a printed line. **As built (SM.3b):** a slot switch `/1`–`/4` names the rig; the `tv.status` keyframe is SM.9's. **As built (SM.4a):** `+tv/quiet` a preference, `+tv/forget` its own action; the mining help's outline landed. **As built (SM.4b):** `site.map` landed as a pulled grid feed with `+tv/map [site] [family]`; line mode 118 by 32 landed; the legend prints over two lines and the readings rows carry no drive time (the owner-critical default the lead accepted). **As built (SM.9):** `body.ground` landed as a pulled grid feed at `cell_columns 1`, its rows south-first like every grid frame, with `+chart/ground [<body>]` and `+chart/ground map [<body>] [<family>]`; `tv.status` landed as a pushed keyframe carrying the operator's whole projection (`rig: TvRec`), retain latest, pushed only when the store wrote; screen `q` is the twelfth screen, `MAX_SCREENS` 12, with the rig key `t` (the digits are global screen keys) and `z` stepping drive → site → ground; the clients interpolate the viewer's own rigs along `rigs[].leg` (the lead's 0z ruling); `PanelSubscribe.params` lets the web ask for a view, rig, family or body; the rig key, `z`'s cycle, client interpolation, the ground chart's glyphs and every new player-facing text are the lead's owner-critical defaults (the full list in §15), standing until the owner rules | §10 |
+| D-20-14 | Phase 1 is Ceres and a Vesta commons, every block core (amending doc 11 §5's margins), no surface combat; D-16-3 stands; promotion is phase 3 behind an IC-crossing ruling. **As built (SM.2):** the six sites at their authored coordinates; only Occator Rim's outer twelve blocks carry a shift (the lead's defaults, standing until the owner rules) | §3.1, §17 |
 
 ---
 
@@ -1023,6 +2170,67 @@ and operator agreements.
 One default moved afterwards on the owner's own review (§19): Q-20-2's `open` block is now workable
 under a licence until staked, not only stakeable (D-20-12); the owner may put it back by a word.
 
+**As built (SM.1–SM.3b, SM.5, SM.4a, SM.6, SM.4b, SM.7, AP, SM.8, SM.9, SM.10):** where this document
+was silent the cuts took further defaults — the lead's rulings and the owner-critical defaults listed
+under each cut's "Deferred, and why" in
+[20-cut-notes.md](20-cut-notes.md) — and each stands as the lead's default until the owner rules; the
+"As built" notes name them where they land.
+
+**As built (AP, SM.8):** AP's one owner-critical default is that the debug planning timings never
+gate the push-triggered CI shard (§8). SM.8's, standing until the owner rules: R5, an unload only on
+a site's pad (so a port departure with a loaded hopper reads "staff must empty it"); R6, the queued
+unload not gated on the operator being aboard; R7, a queued unload the hold cannot take at all a 0 s
+act told once; R8, a refused finish never overfilling (§6, §7.1). SM.8's new player-facing texts
+await the owner's review — `RECOVER_THEN`, `RECOVER_THEN_PART`, `RECOVER_THEN_NONE`,
+`UNLOAD_PREVIEW`, `UNLOAD_STAYS`, `UNLOAD_FILED`, `UNLOADED`, `UNLOADED_NONE`,
+`RECOVERED_UNLOADING`, `UNLOAD_UNDER_WAY`, `UNLOAD_NOT_SITE`, `UNLOAD_OUT`, `UNLOAD_NO_ROOM`,
+`UNLOAD_NO_FIT`, `UNLOAD_CHANGED`, `UNLOAD_USAGE`, `WHY_LEFT_BAY`, `WHY_HOLD_REFUSED`,
+`WHY_MARKERS_FULL` (the fix round's), `QUEUED_LINE`, the reworded `HOPPER_LOADED`,
+`HOPPER_LOADED_AWAY`, the `+tv` and recover help lines, the act offer's presentation text
+("…bring it in, unload its hopper into the hold, or empty it onto the spoil."), and from the
+lead's fix round `UNLOADED_NONE_EMPTY` and `UNLOAD_NO_STOCK` — beside the `{ore}` word (SM.7's
+`ore_words`, not the label) and the multi-good lines, which the lead's round joined with " and "
+where the build joined them with commas.
+
+**As built (SM.9):** SM.9's owner-critical defaults, standing until the owner rules: the rig key `t`
+(the digits are global screen keys); the two-family `V`; the ground chart's glyphs `.` `-` `+` `*`,
+the marker letters and the shared-cell "Also at F: …" listing; `z` cycling drive → site → ground;
+client interpolation, with the TUI's ~4 s step; the line-mode body map at one column a cell; and
+every new player-facing text — the `GROUND_*` texts, `GROUND_SITE_LINE_UNPLANNED`,
+`MAP_RUN_CLAUSE`, `MAP_CORE_CLAUSE`, the legend labels, the TUI's and the web's hints and headings
+(§3.1, §10). **Open for the owner: the passage home from a site's pad.** From a site's pad
+`+chart/ground` reads "no passage from <site>" for every other site and never shows the passage
+home on the port line, because site ports route only to the Freeport: a routing and text decision
+the owner holds — show the Freeport leg on the port line, or route site to site. Nothing is wrong in
+the data; the line is what the routes say (§1 beat 2, §3.1).
+
+**As built (SM.10):** SM.10's owner-critical defaults, standing until the owner rules: OC1 the fee
+arithmetic (stake 4,000 = 2,000 + 2,000; renewal 2,000; contest 4,000; refund 2,000); OC2 the Pallas
+Syndicate (a Ceres lane org, 50,000, faction `syndicate`) and its paper's adjudication contract
+(offered by the tick's GOD under the Syndicate's scope, adjudicated by the Registry, a 5,000 bond
+never escrowed, a century's deadline, never accepted or ruled); OC3 seeded claims run a century; OC4
+surface claims `Bound`, no title; OC5 a papered block's player claim filed Uncontested; OC6 release
+a lapse by choice with cooling; OC7 the declared family an optional word, public on the registry;
+OC8 the stake from the ground only, the contest from aboard the hull on the site; OC9 renewal at any
+time while live, from the term end; OC10 every new player-facing text (the brief's texts verbatim,
+`WHICH_RIG_STAKE`, `CLAIM_WHICH`, `TENURE_SUMMARY`, the canon line "{holder}'s claim on block {L} at
+{site} lapsed." naming the holder, and the tenure word "{n} claimed", the fixer's reading of lead
+note 0a); OC11 tacsim's record staged inside industry's bundle; OC12 the heard count's 512-row bound
+and "at least"; OC13 the interlock's `false` refused at boot; OC14 a refused act's escrow held up to
+an hour; OC15 the cooling term binding the holder, anyone who acts for it and the holder's whole
+gateway account (staff refused too while a row is live); OC16 a fee cancelled, amended or re-offered
+after landing lapsing the claim with cooling — the lead's fix round replaced its "an expired one
+stands and pages": a fee that expired unaccepted lapses the claim unpaid without cooling
+(`EXPIRED_LAPSED`), and a fee forfeit to the Registry after an outage counts as paid; OC17 the
+contest window opening at the block's last opening, never at a take-over or a transfer (§9). **Open
+for the owner:** (a) whether a contest whose fee is withdrawn after the transfer landed should
+restore the loser's claim — as built the block lapses, the contester cools, the loser is told
+`CONTEST_LOST` and refunded, and the block reopens; (b) whether an expired-unaccepted **renewal**
+fee should lapse the whole claim — as built it does, without cooling, though the earlier fee had
+paid for the rest of the term — or revert the term to the paid term's end and leave the claim
+standing (a small claims follow-up pins the renewal case either way); (c) the exact per-block heard
+log, D12's alternative, against the built 512-row scan.
+
 - **Q-20-1 What the drill produces.** Default: raw ore goods milled at Ceres (§7.3). Alternative: the
   existing concentrate and water, grade folded into tonnes — simpler, but it makes mine-then-haul the
   dominant play on every charter and bypasses the Exchange's purchase price. This also supplies P5's
@@ -1031,6 +2239,11 @@ under a licence until staked, not only stakeable (D-20-12); the owner may put it
   workable until staked, hand-made own-reading evidence to stake, 50 t worked a term to renew, a
   cooling term after a lapse, two live claims a account. Alternatives: whole-site claims (three stakes
   lock Ceres), shared per-pilot permits, a frontier free-for-all with tenure only for permanent rigs.
+  **As built (SM.6):** the cooling term is one row per holder on the block's tenure record, at most
+  four (§9.2); its "anyone acting for the same principal" half is SM.10's.
+  **As built (SM.10):** that half landed with a gateway-account half beside it: the cooling binds
+  the holder, anyone who acts for it and every character of the holder's gateway account (OC15, the
+  lead's default, standing until the owner rules).
 - **Q-20-3 The offline bound.** Default: one landed hold a plan, 288 IC hours, never re-armed, with
   `await tv`. Alternatives: live-only mining; at most eight closed steps and no launch; a plan that may
   cycle to N holds (re-rules Q-18-22 and risks the economy).
@@ -1041,6 +2254,7 @@ under a licence until staked, not only stakeable (D-20-12); the owner may put it
   amending D-18-24 for goods no port asks. Alternatives: as built (250 ‰ over the goods table's
   `reference_major`, the logged baseline path; zero only if that is authored at the bid); a flat
   royalty a tonne by a separate contract; exempt.
+  **As built (SM.5):** the default landed as the programme's `reference_minor` map (§7.4).
 - **Q-20-6 Where the TV comes from, and how many.** Default: Occator leases them (`+tv/lease`, 1,400 a
   term, 5,000 deposit), the Co-op refits the charter onto a Dray-P (`+coop/refit`) with a two-slot bay.
   Alternatives: one slot (a 75 s rhythm and nothing between cycles); the Co-op supplies the TV with the
@@ -1050,17 +2264,41 @@ under a licence until staked, not only stakeable (D-20-12); the owner may put it
   Alternative: none while landed, as today.
 - **Q-20-8 The words.** Default `+tv/mine` (alias `drill`), `+tv/scan` (alias `survey`), and `go` as
   the commit word on every `+tv/…` act.
+  **As built (SM.7):** `+tv/mine` with the alias `drill`, `go` the commit; `+tv/mine stop` is the
+  one form that commits without `go` (R7, an owner-critical default the lead accepted, standing
+  until the owner rules).
 - **Q-20-9 Soundings observable to rivals.** Default: yes, as a bearing and a range band (one line a
   sounder an IC hour), with a quiet half-radius sounding nobody hears.
+  **As built (SM.4a):** the budget is one line an IC hour per (sounder, site), kept across
+  `+tv/forget`, and the line reaches only connected listeners — the operators with an open excursion
+  on the site and the helm holders of hulls docked there — never queued (SM.4a's D7 and D8, the
+  lead's owner-critical defaults until the owner rules); the quiet sounding reads eight cells, as
+  proposed.
 - **Q-20-10 The second body in phase 1.** Default: a Vesta commons under the Freeport Registry
   (Rheasilvia Commons) with richer metals and the strategic shelf, reached by a seasonal passage, so
   "choose a planet" is a real choice from the first cut. Alternatives: Ceres alone; Phobos first (needs
   a Republic issuer and a Stickney ore bid, phase 2's shape).
+  **As built (SM.2):** Rheasilvia is reachable only throttled and in season. A full-tank, empty-hold
+  departure plus the leg-home reserve fits the 80 t tank on 0 of 365 days at full throttle and on 191
+  at the landing floor, throttle 457 (at the epoch, 64 t out and 37 t held back: 101 t). The lead's
+  fix round made the throttle hint reserve-aware, so a pilot at Ceres is told the first day the floor
+  fits (123 IC days on, at the epoch); whether the reserve should be cheaper or the site changed is
+  the owner's (SM.2's decision 7, the lead's default until then).
+  **As built (SM.4b):** nothing new for the question; the Vesta commons (Rheasilvia) passed the
+  drive-freeze census like the Ceres sites, 64 of 64.
 - **Q-20-11 Prices, the drip and its caps.** Default: `metal_ore` 70, `ice_ore` 35, `carbon_ore` 50,
   `strategic_ore` 600; drips 40 / 40 / 20 / 2 t a good an IC day to standing caps of 240 / 240 / 120 /
   12 t. Lane data.
+  **As built (SM.5):** lane v11 at these figures; every drip re-post churns the bid's listing id and
+  a lapsed intake returns at one drip (SM.5's decisions 19 and 20, the lead's owner-critical
+  defaults until the owner rules).
 - **Q-20-12 The key.** Default: a fourth durable key family on disk with a fingerprint record and a
   loud disable on mismatch. Alternative: a config seed (silently moves every reserve if it changes).
+  **As built (SM.1):** the key is loaded without `?` — a key that will not load is a disabled layer,
+  never a refused boot — and only when `[tacsim].enabled`; `[tacsim.geology].key_dir` has no default.
+  The shipped template and both dev1 deploy scripts provision `__DATA_DIR__/geology-keys` at mode
+  0700, and `docs/ops.md` tells the operator to back it up with the store (the lead's default; whether
+  the production box's protected backups include the directory is the owner's operational call).
 - **Q-20-13 Cut notes.** Default: `docs/design/20-cut-notes.md`, its own file.
 
 ---
@@ -1072,11 +2310,12 @@ surface act now starts there; SM.12's cost lane measures both under load before 
 The composite LRU can spike CPU when many sites are active; builds stay off-loop and the lane bounds
 them. Interpolated TV positions mean a client and the server disagree about an intermediate pose for
 up to one fire; harmless while nothing interacts mid-leg, and the promotion phase must derive the
-true pose from the leg record. Lane v8 and v9, goods v2, the Dray-P, a new unit class, a new content
-kind, two new feeds, a new screen and the grid caps all move pins; each cut re-blesses, and a kept
-world needs an operator plan and apply. The geology key is a new operational secret: it is backed up
-with its key directory, and a lost key is a disabled layer, not a corrupted one. Tenure fees are
-minutes of mining; the worked floor, the cooling term and the finite rich pockets are the conflict,
+true pose from the leg record. Lanes v9 to v11 (doc 19's A.8 took v8), goods v3, the Dray-P, a new
+unit class, a new content kind, two new feeds, a new screen and the grid caps all move pins; each cut
+re-blesses, and a kept world needs an operator plan and apply. The geology key is a new operational
+secret: it is backed up with its key directory, and a lost key is a disabled layer, not a corrupted
+one (as built, SM.1: it is never loaded with `?`, and its directory is provisioned 0700 and backed up
+with the store; §15 Q-20-12). Tenure fees are minutes of mining; the worked floor, the cooling term and the finite rich pockets are the conflict,
 not the fees. Open ground that is workable without a stake may leave the Registry's fees unpaid by
 miners who move on; the stake's value is exclusivity over found ground and the levers are the floor
 and the fee. A second TV nearly doubles a pilot's tonnes; the drip's cap, the hold and the lease are
@@ -1085,6 +2324,39 @@ are knobs the owner tunes on dev1. The Registry interlock is a lore shortcut tha
 to replace with enforcement play. The Vesta commons is the first site reached by a passage rather
 than a hop: its hull is away for days, which the queue's `await tv`, the plan's 288-hour bound and
 the licence's anywhere-renewal were sized for, and the cost lane must include it.
+
+**As built (SM.8):** two risks the unload adds. A hopper vault's marker ring holds 128 markers
+younger than 86,400 real seconds (about 64 two-ore unloads a real day) before `MarkersFull` refuses
+an unload until they age, and the ring is the vault's, so it carries across lessees (SM.11's and
+SM.12's rows). A queued unload whose operator lost the helm or the charter is refused at every
+attempt — eight tries, one page a boot, then a retry every 60 fires — until any start lands on the
+rig; only staff can bring it about, since the repossession and the lease return refuse a loaded
+hopper (SM.11's row).
+
+**As built (SM.9):** the clients interpolate (§10), and three residuals the owner should see. The
+log pane holds the open excursion only and empties when the rig comes home, since a recover's tell
+starts a clean log (D16; the owner may want the last excursion's log kept until the next start, and
+SM.11's reconnect summary carries what a sleeping pilot missed either way). The TUI moves a rig only
+on its own paints, about every 4 s, so it steps rather than glides; a smoother repaint needs a frame
+clock in `server.rs`, the owner's file. The server's gate emitting `rigs[].leg` only for an act on
+that site is untested, a rig of the docked hull with an act on another site being unreachable in
+the test rig.
+
+**As built (SM.10):** one risk closed, and the residuals handed on. An issuer may amend an Offered
+fee back to a draft or re-offer it on other terms; the claim's acts and the clerk read the fee
+contract by its whole terms (`fee_terms_hold`), so an altered fee is unpaid and lapses the claim,
+never passes for a paid one. The judge's R1 — a landed claim whose fee expired unaccepted standing
+free for its term with every reader on `CLAIM_PENDING` — is closed by the lead's fix round (§9.4).
+Still open: the heard count's 512-row scan ("at least N", R2); the provenance ring's four entries,
+which can evict a challenger's early loud sounding (R3: `heard_before` reads the ring only, while
+the holder's discovery survives by `first_local_at`); the paper contract's re-find scanning every
+contract in the economy while the claim log lacks its row (R4); a claim order's life,
+`CLAIM_ORDER_TTL_IC_SECS`, 3,600 IC seconds or 150 real seconds at rate 24, so an order the world
+task does not land in that window is never offered and its fee waits out its hour to refund, and a
+`go` after an engine back-pressure drop can escrow a second fee while the first is held (the
+licence's behaviour); the claims suite's ~65 s on CI's critical path (SM.12c's row); and a re-stake
+after an expired lapse needs a fresh hand-made reading in the new epoch, so `EXPIRED_LAPSED`'s "you
+may stake it again" holds only after one. Lane v12 moved the lane's pins.
 
 **Refuses.** No RNG anywhere: variety is place, uncertainty is time. No auto-fire and no repeating
 loops for a seated pilot. No world-changing bare keys. No arena, window or snapshot on the surface
@@ -1125,29 +2397,91 @@ to be promoted.
 
 ## 18. Amendments owed (made by the cuts that land them)
 
+**Landed.** SM.1 `61324cba` (with its follow-up `6f797974`), SM.2 `bd718fb2`, SM.3a `96cc7303`,
+SM.3b `eb99c9be`, SM.5 `64cd1f8e`, SM.4a `354832bf`, SM.6 `70c2cd12`, SM.4b `d367bf3b`, SM.7
+`dd48ed45`, AP `74c5801f` (the atlas path search's cost, an engine cut in `mush-atlas` with no §13
+row of its own), SM.8 `9922c9c7`, SM.9 `16b0ca4e` and SM.10 `fed09da2`; each cut's full as-built
+record is its section of [20-cut-notes.md](20-cut-notes.md), and Drafts 0.5 to 0.11 fold their
+amendments to this document in as the "As built (SM.*n*)" notes above. None of the thirteen edited
+another design document (they touched `docs/help/ships.md`, `travel.md`, `coop.md`, `trade.md`, the
+new `mining.md` — complete since SM.8, its "Still to come" no longer listing the ground chart since
+SM.9, its beat 10 built and its staking clauses gone since SM.10 — `getting-started.md` (SM.8),
+`docs/ops.md` and, in SM.4b and SM.9, `tui.md`; AP touched no document), so no item below is closed
+yet but the `docs/help/tui.md` item, its "80 columns" half struck below as done by SM.4b and its
+lettered screens as done by SM.9, and SM.7, AP, SM.8 and SM.10 closed none: an "As built" line under an
+item says what the cuts landed in code toward it; the Doc 10b §15.5 item is new (SM.3a), and so are
+the Doc 18 item's D-18-27 clause (SM.5) and its planner clause (SM.8).
+
 - **README**: the doc 20 row, and the doc 19 and 20 rows moved into numeric order after 18a (SM.0);
   rows for `09a/09b/09c`, `11-tacsim-setting`, `16c`, `17e`, `17f` and `18-cut-notes` are missing today
-  (SM.0, a drive-by).
+  (SM.0, a drive-by). **As built (SM.0):** the doc 20 row and the numeric order landed; the missing
+  rows are still owed.
 - **Doc 10 §5** — the loop gains its surface arm: scan → sound → stake → mine → haul → mill.
 - **10b §3.3 / §15** — the cut-3 handoffs this document builds (a cadence, a system opener, read
   handles, `ClaimRenew` and the Abandoned take-over, the tenure epoch, `OreDeposit.external`, the
   `ExternalDraws` trait, the contest offer's jurisdiction row, the pocket sidecar) recorded as E7
   residue closed (SM.6).
+  **As built (SM.6):** every handoff landed in code — the system opener, the read handles
+  (`IndustryHandleCell`), `ClaimRenew` in place, the Abandoned take-over, the tenure epoch,
+  `OreDeposit.external`, `ExternalDraws`, the jurisdiction row and the pocket sidecar — as E7 residue
+  closed, and the cadence stands as the 5 s port tick; doc 10b's text is still owed.
+- **Doc 10b §15.5** — `tacsim.tv.deposit` is the
+  first game namespace compiled into mush-economy's frozen `ENGINE_OWNED_RESERVATIONS`, for the
+  reasons the `mush-economy/src/api.rs` paragraph gives (SM.3a's D18, the lead's default until the
+  owner rules).
 - **Doc 11 §4.1, §4.12, §5, §6, §7** — Occator's terrain-vehicle lease beside its drone lease and its
   drone blocks, the Exchange's and Occator's ore intakes, the Freeport Registry as an org with a
   treasury, the Occator claims' margins ruled core until the fight, the Syndicate paper on every outer
   block, the proposed Outer Claims front, Vesta's commons under the Registry (SM.2, SM.5, SM.10).
+  **As built:** the Freeport Registry is a Ceres org (50,000 cr, faction freeport) and the issuer of
+  all six sites, Rheasilvia included, and Occator holds Occator Rim's inner blocks F, G, J and K
+  (SM.2); Occator's terrain-vehicle lease runs eight rigs, `OWP-TV-01..08`, at 1,400 a term and a
+  5,000 deposit (SM.3a; doc 11 §7); the Exchange's ore intakes (`metal_ore`, `carbon_ore`,
+  `strategic_ore`) and Occator's (`ice_ore`), and Occator's capital raised to 300,000 by an appended
+  tranche, landed in lane v11 (SM.5). Doc 11's text is still owed.
+  **As built (SM.10):** the Pallas Syndicate is a Ceres lane org (50,000, faction `syndicate`) whose
+  paper is seeded on Occator Rim's twelve outer blocks (`occator_outer`, lane v12), and Occator's
+  four held blocks are its Uncontested claims under the Registry for a century; the proposed Outer
+  Claims front is not built. Doc 11's text is still owed.
 - **Doc 17 §12, §22** — the sortie seal at a bay; the `mining` role reserved (phase 3).
-- **Doc 18 §4.1 / D-18-24, §4.2, §4.4, §5, §8** — the fixed-reference variant for goods no port asks
-  (SM.5); the Dray-P beside the Dray; `await tv` and `+ship/lift`; P5's supply half lands here (the
-  mill, SM.12); Q-18-22 extended by D-20-11; a site clerk beside the stock clerk on the port tick.
+- **Doc 18 §4.1 / D-18-24, D-18-27, §4.2, §4.4, §5, §8** — the fixed-reference variant for goods
+  no port asks (SM.5); D-18-27's "no top-ups" amended for Occator's appended capital raise (SM.5);
+  the Dray-P beside the Dray; `await tv` and `+ship/lift`; P5's supply half lands here (the mill,
+  SM.12); Q-18-22 extended by D-20-11; a site clerk beside the stock clerk on the port tick.
+  **As built:** `+ship/lift`, the settled berth texts, `LegPlan.ascent_mps` and
+  `PassagePlan.landed_crew_days` (SM.2; §4.4), and the Dray-P beside the Dray, `+coop/refit`,
+  `RECALL_BAY` and `BUYOUT_BAY` and every programme hull's hidden bay room (SM.3a; §4.1/§4.2's recall
+  and buyout paragraphs) landed in code, and so did `reference_minor` and Occator's appended `raises`
+  tranche (SM.5; §7.3, §7.4), and the site clerk on the port tick, on an arm of its own beside the
+  stock clerk's (SM.6; §3.4). Doc 18's text is still owed.
+  **Owed (SM.8): the planner's cargo mass.** Doc 18's planner prices a passage as laden at
+  departure, so the leg home with a mined hold aboard and the pad days fall outside its figures: a
+  mining captain who bunkers to the planner's line is a crew-day short for the way home. The SM.8
+  story's bunkers carry the gaps measured against the planner's own lines and asserted exactly,
+  `STORY_EXTRA_BURN_T` 0 and `STORY_EXTRA_CREW_DAYS` 1 (the laden leg home from Ahuna's pad priced
+  at 2 crew-days against the planner's 1; the lead's fix round replaced the build's +2 t and +3
+  crew-days). The planner should take an expected cargo mass — an amendment owed to doc 18's
+  planner, not to this document.
 - **Doc 19 §3** — `BodyDef.surface_mg`, `radius_km`, `geology`; `LocationDef.lat/lon`; sites as
   chart destinations with their survey words; `+chart/ground` beside `+chart/body` (SM.2, SM.9).
+  **As built (SM.2):** `BodyDef.surface_mg`, `radius_km` and an inline `geology` table,
+  `LocationDef.lat_mdeg`/`lon_mdeg`, and the sites' survey and tenure lines on `+chart` landed in code;
+  doc 19's text is still owed, and `+chart/ground` is SM.9's.
+  **As built (SM.9):** `+chart/ground [<body>]` and `+chart/ground map [<body>] [<family>]` landed
+  in code beside `+chart/body`, which is untouched, over the `body.ground` feed (§3.1); doc 19's
+  text is still owed.
 - **Doc 14** — a region placed on its body by `lat/lon` (`mush-atlas/src/apply.rs:427-447` forces
   `parent None` today); the `i16` validator rule and cast; the grid caps (SM.1, SM.4).
+  **As built (SM.1):** the `i16` rule landed in `RegionRec::validate` and tightens the boot-load
+  contract as well as the apply contract — an out-of-range stored region is refused at load, not
+  clamped — which doc 14 should say; the grid caps are SM.4b's. Doc 14's text is still owed.
+  **As built (SM.4b):** the grid caps landed in mush-ansi (`GRID_MAX_COLUMNS` 118, `GRID_MAX_ROWS`
+  32); doc 14's text is still owed.
 - **Doc 16** — nothing changes; §12 gains a note that D-20-1 keeps the arena to fights and that the
   promotion phase will bring the IC-crossing ruling.
-- **`docs/help/tui.md`** — the lettered screens `c` and `q`; "drawn for 80 columns" corrected.
+- **`docs/help/tui.md`** — ~~the lettered screens `c` and `q`~~ (done, SM.9: the intro and the
+  `c chart` and `q quarry` entries); ~~"drawn for 80 columns" corrected~~ (done, SM.4b: line mode
+  reads "drawn for 120 columns", a map at most 118 columns by 32 rows).
 
 ---
 
@@ -1159,7 +2493,11 @@ Eight findings, all confirmed against the tree and the text, folded in Draft 0.4
    the TV and `HOPPER_LOADED` refused the lift. Now no cycle starts without room for its yield in the
    hold's **unreserved share** — the hold's room less every hopper aboard and every outstanding cycle
    of every rig — so a recover always unloads everything and the plan parks when no cycle fits (§6,
-   §7.1, §8, D-20-9).
+   §7.1, §8, D-20-9). As built (SM.4b): the unreserved room is the `site.map` frame's `hold.room_t`,
+   the hoppers' loads counted and the outstanding cycles SM.7's (§10). As built (SM.7):
+   `hold_unreserved` counts every outstanding cycle of every rig of the hull, in every measure (§6).
+   As built (SM.8): a recover does unload everything after an honest fill; a hold staff have shrunk
+   unloads what fits and says what stays, and the departure names the unload (§6, §4.3).
 2. **A pre-worked commons failed the invariant at once.** The opener credits exactly the initial
    reserve, so a `worked_permille` recorded as drawn quarantined the block on the first sweep. Now the
    reserve is opened gross and the worked share is a receipted transfer into the site's spoil with its
@@ -1170,7 +2508,8 @@ Eight findings, all confirmed against the tree and the text, folded in Draft 0.4
    loaded rig and contradicted "knowledge is free". Rights are now **per act**: licence and tenure
    gate mining, staking and renewal only; driving, scanning, sounding, recovering, unloading and
    dumping need the control lease and the settled hull; a plan whose rights lapse recovers, unloads
-   and parks with its reason (§8, D-20-11).
+   and parks with its reason (§8, D-20-11). As built (SM.3b): the control lease is read as the live
+   lessee aboard the settled hull (§4.1; the lead's default, standing until the owner rules).
 4. **Charge was committed apart from the work.** The mine start reserved its lock and cycle
    authoritatively but the charge was a later tick write, so a scan could spend the same margin. Now
    **every act starts as an authoritative submission** that reserves its charge on the excursion's
@@ -1188,4 +2527,6 @@ Eight findings, all confirmed against the tree and the text, folded in Draft 0.4
 8. **Lapsed claims had two ways round the worked floor.** A lapsed holder may not re-stake the block
    for one full term (the cooling term), and contest evidence must be a heard sounding stamped inside
    the block's **current tenure epoch**, which every lapse and take-over advances (§9.2–9.4, D-20-12,
-   SM.10).
+   SM.10). As built (SM.6): every lapse, take-over and transferring seizure advances it, once per
+   block event (§9.2). As built (SM.10): the contest window runs from the block's last opening
+   (`opened_ic`), and a take-over's or a transfer's own epoch advance never narrows it (D18, §9.4).

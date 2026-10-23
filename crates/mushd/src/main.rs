@@ -485,7 +485,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             world.clone(),
             Arc::clone(&guard),
         )
-        .with_metrics(Arc::clone(&metrics)),
+        .with_metrics(Arc::clone(&metrics))
+        .with_pixel(&config.pixel),
     );
     let listener = start_listener(listen, &data_dir, banner(&config.server.name), bridge)
         .await
@@ -504,6 +505,9 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     );
     web_config.features = features;
     web_config.panels = panels.clone();
+    // Doc 21 cut G.11: the hello names the pack the SSH side serves.
+    web_config.asset_pack =
+        mush_net_ssh::assets::AssetPack::shipped().map(mush_net_ssh::assets::AssetPack::hello_info);
     let web_listen = web_config.listen;
     let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(
         WebBridge::new(
