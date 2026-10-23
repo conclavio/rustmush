@@ -25,8 +25,8 @@ use crate::scene::{Anchor, Item, Scene, Shape, Transform, Viewport};
 /// The sky chart's feed.
 pub const SKY_CHART_FEED: &str = "sky.chart";
 
-/// One light-minute, AU (299,792,458 m/s x 60 s over 149,597,870.7 km).
-pub const AU_PER_LIGHT_MINUTE: f64 = 0.120_241_7;
+/// One light-minute, AU: 299,792,458 m/s for 60 s, over 149,597,870,700 m.
+pub const AU_PER_LIGHT_MINUTE: f64 = 0.120_239_3;
 
 /// The light-lag rings, light-minutes: doubling, which spaces evenly on the
 /// chart's log scale.

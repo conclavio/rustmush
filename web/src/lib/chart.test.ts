@@ -11,15 +11,19 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  AU_PER_LIGHT_MINUTE,
+  LAG_RING_MINUTES,
   SKY_CHART_FEED,
   bodyLines,
   bodyPoints,
   chartHeading,
+  lagRing,
   orbitRadius,
   parseChartFrame,
   radialFraction,
   routeLines,
   routePolyline,
+  scaleCaption,
   windowLines,
 } from "./chart";
 
@@ -234,5 +238,49 @@ describe("the tables", () => {
 
   it("names the feed the server registers", () => {
     expect(SKY_CHART_FEED).toBe("sky.chart");
+  });
+});
+
+// Doc 21 cut G.5c: the light-lag rings about the viewer's body, as the
+// terminal's picture draws them, and the caption that names the scale drawn.
+describe("the light-lag rings", () => {
+  const fixture = () => {
+    const f = parseChartFrame(
+      JSON.parse(readFileSync(resolve(process.cwd(), "src/lib/fixtures/chart/sky_chart.json"), "utf8")),
+    );
+    expect(f).not.toBeNull();
+    return f!.chart;
+  };
+
+  it("are 3, 6, 12 and 24 light-minutes, a light-minute 0.1202 AU", () => {
+    expect([...LAG_RING_MINUTES]).toEqual([3, 6, 12, 24]);
+    expect(AU_PER_LIGHT_MINUTE).toBeCloseTo((299_792_458 * 60) / 149_597_870_700, 6);
+  });
+
+  it("are closed curves about the viewer's body, widening with the minutes", () => {
+    const chart = fixture();
+    const here = bodyPoints(chart, 640).find((p) => chart.bodies.find((b) => b.id === p.id)?.here)!;
+    const spread = (minutes: number) => {
+      const ring = lagRing(chart, minutes, 640);
+      expect(ring).toHaveLength(181);
+      const [first, last] = [ring[0]!, ring[ring.length - 1]!];
+      expect(Math.hypot(first.x - last.x, first.y - last.y)).toBeLessThan(1e-6);
+      return ring.reduce((sum, p) => sum + Math.hypot(p.x - here.x, p.y - here.y), 0) / ring.length;
+    };
+    const [a, b, c, d] = [spread(3), spread(6), spread(12), spread(24)];
+    expect(a).toBeLessThan(b);
+    expect(b).toBeLessThan(c);
+    expect(c).toBeLessThan(d);
+  });
+
+  it("are none on a chart with nowhere to stand", () => {
+    const chart = fixture();
+    expect(lagRing({ ...chart, bodies: chart.bodies.map((b) => ({ ...b, here: false })) }, 3, 640)).toEqual([]);
+  });
+
+  it("are named in a caption that says the scale is logarithmic", () => {
+    expect(scaleCaption(fixture())).toBe(
+      "scale: logarithmic past 0.3 AU, the edge at 10.3 AU; rings: light-minutes from here",
+    );
   });
 });

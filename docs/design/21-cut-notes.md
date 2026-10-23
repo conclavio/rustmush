@@ -255,3 +255,14 @@ The orbital view in the TUI: bucket B's first picture.
 
 **Verified.** `mush-pixel` (the fixture chart: the Sun at the centre, orbits, the viewer ringed at Ceres, the passages, the lag rings and the labels drawn and inside the palette; a refusal a card, no feed nothing), `mush-net-ssh` (the chart mode's clock, its refresh on opening, at a minute and on `r`, deaf to the helm, drawn once and not again unchanged, closed by Esc and back to the cockpit after; drawn in sixel too; and through the session: `^G` after Alt-c asks for `sky.chart`, the screen shows the strip and `PASSAGES`, and the picture goes out in kitty), clippy, rustdoc. Not smoked live.
 
+## G.5c
+
+The web's chart tab, which keeps its own SVG (the owner's default: sharper, any size, no gateway cost) and gains what the terminal's picture draws:
+
+- **The light-lag rings** (`lagRing` in `web/src/lib/chart.ts`): 3, 6, 12 and 24 light-minutes about the chart's `here` body, each a circle in space sampled into 181 points through the same `radialFraction` the orbits and bodies use, dashed, labelled `N min` at its northmost point; none on a chart with nowhere to stand.
+- **The caption** names the scale drawn — `scale: logarithmic past 0.3 AU, the edge at 10.3 AU; rings: light-minutes from here` (`scaleCaption`) — where it had said "square root of r", a leftover from before A.3b's log scale (the component's header comment too).
+- **A correction to G.5b**: a light-minute is 0.1202393 AU (299,792,458 m/s for 60 s over 149,597,870,700 m); G.5b's `AU_PER_LIGHT_MINUTE` read 0.1202417, and the web test that pins the constant to its arithmetic caught it. Both sides now carry the right figure.
+- **Amendments made**: doc 21 §2's orbital-view row (the feed is pulled, never pushed), its G.5 row (landed), Draft 0.15; doc 19 §5 records the chart as a picture.
+
+**Verified.** vitest (676: the four rings and the light-minute's arithmetic, each ring closed and wider than the last, none without a `here`, the caption), `svelte-check` with no errors or warnings, `mush-pixel`'s chart tests on the corrected constant. Not smoked in a browser yet.
+
