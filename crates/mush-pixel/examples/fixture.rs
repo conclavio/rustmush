@@ -296,6 +296,46 @@ fn main() {
             );
         }
     }
+    // Doc 21 cut G.8: the replay fixture over its ground, a second after the
+    // first hit and after the wreck — `replay.png` and `replay43.png`.
+    {
+        use mush_pixel::cockpit::ARENA_MAP_FEED;
+        use mush_pixel::replay::{REPLAY_CURSOR_FEED, REPLAY_FEED, ReplayPicture};
+        let mut doc: Value = serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/replay/replay.json"
+        ))
+        .unwrap_or_default();
+        doc["schema"] = serde_json::json!({"id": REPLAY_FEED, "version": 1, "shape": "replay"});
+        let map: Value = serde_json::from_str(include_str!(
+            "../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .unwrap_or_default();
+        for (name, w, h, t_ms) in [("replay", 640, 256, 6_400), ("replay43", 640, 480, 8_200)] {
+            let feeds: HashMap<String, Value> = [
+                (REPLAY_FEED.to_string(), doc.clone()),
+                (ARENA_MAP_FEED.to_string(), map.clone()),
+                (
+                    REPLAY_CURSOR_FEED.to_string(),
+                    serde_json::json!({"match": 7, "t_ms": t_ms, "focus": 2}),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            let mut f = Frame::new(w, h);
+            let t = Instant::now();
+            ReplayPicture::new().draw(&mut f, &feeds, &Look::default());
+            let us = t.elapsed().as_micros();
+            let bytes = png::encode(&f);
+            if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
+                eprintln!("{name}.png: {err}");
+            }
+            println!(
+                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                f.count_colours(300),
+                bytes.len()
+            );
+        }
+    }
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
     for (ow, oh) in [(1013, 760), (1717, 1288)] {

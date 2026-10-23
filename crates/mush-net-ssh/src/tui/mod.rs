@@ -545,6 +545,111 @@ mod tests {
         assert!(!plain.pixel_active());
     }
 
+    /// **Doc 21 cut G.8**: `^G` on screen 0 while a replay is its layout
+    /// draws the replay as a picture, opened at the panes' keyframe; `.`
+    /// steps the picture and the panes together, space plays, and `x` closes
+    /// the replay and its picture.
+    #[test]
+    fn ctrl_g_on_a_replay_draws_the_match() {
+        use mush_proto::PanelFrameKind as K;
+        let fixture = |text: &str| -> serde_json::Value {
+            serde_json::from_str(text).expect("replay fixture")
+        };
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        // SIM REPLAY's grid opens screen 0; the document and the ground answer.
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.replay".into(),
+            kind: K::Keyframe,
+            data: fixture(include_str!(
+                "../../../../web/src/lib/fixtures/replay/replay_window.json"
+            )),
+        });
+        let mut doc = fixture(include_str!(
+            "../../../../web/src/lib/fixtures/replay/replay.json"
+        ));
+        doc["schema"] = serde_json::json!({"id": "arena.replay", "version": 1, "shape": "replay"});
+        sess.apply_event(&OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Panel {
+                feed: "arena.replay".into(),
+                kind: K::Keyframe,
+                data: doc,
+            }),
+        });
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.map".into(),
+            kind: K::Keyframe,
+            data: fixture(include_str!(
+                "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+            )),
+        });
+        let opened_at = sess.app.picture().expect("the replay is open").at;
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        assert_eq!(sess.app.pixel_kind(), pixel::PictureKind::Replay);
+        let kf_t = [0, 5_000, 10_000];
+        assert_eq!(
+            sess.app.pixel_replay().t_ms,
+            kf_t[opened_at],
+            "opened at the panes' keyframe"
+        );
+        assert_eq!(sess.app.pixel_replay().end_ms, 10_000);
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            screen.contains("REPLAY") && screen.contains("MATCH") && screen.contains("SHOTS"),
+            "{screen:?}"
+        );
+        sess.pixel_tick();
+        let picture = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            picture.contains("\x1b_Ga=T"),
+            "the replay's picture, in kitty"
+        );
+        // `,` to the first keyframe, `.` to the next: picture and panes together.
+        sess.feed_input(b",,,");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (0, Some(0))
+        );
+        sess.feed_input(b".");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (5_000, Some(1))
+        );
+        // `]` ten seconds on: the end, the last keyframe's panes.
+        sess.feed_input(b"]");
+        assert_eq!(
+            (
+                sess.app.pixel_replay().t_ms,
+                sess.app.picture().map(|p| p.at)
+            ),
+            (10_000, Some(2))
+        );
+        // Space at the end plays from the start again.
+        sess.feed_input(b" ");
+        assert!(sess.app.pixel_replay().playing);
+        assert_eq!(sess.app.pixel_replay().t_ms, 0);
+        // `u` moves the focus, as on screen 0.
+        let focus = sess.app.picture().map(|p| p.focus);
+        sess.feed_input(b"u");
+        assert_ne!(sess.app.picture().map(|p| p.focus), focus);
+        // `x` closes the replay, and its picture with it.
+        sess.feed_input(b"x");
+        assert!(sess.app.picture().is_none());
+        assert!(!sess.pixel_active());
+    }
+
     /// **Doc 21 cut G.5b**: `^G` on the chart screen opens the orbital view,
     /// asks for the chart, and sends its picture; the passages are text under
     /// it.

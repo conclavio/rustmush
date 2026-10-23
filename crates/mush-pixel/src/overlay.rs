@@ -130,14 +130,14 @@ pub(crate) const WARN: Rgb = [230, 180, 50];
 pub(crate) const BAD: Rgb = [220, 60, 50];
 pub(crate) const GONE: Rgb = [60, 60, 66];
 pub(crate) const YOU: Rgb = [255, 255, 255];
-const RED_TEAM: Rgb = [230, 70, 60];
-const BLUE_TEAM: Rgb = [90, 150, 240];
+pub(crate) const RED_TEAM: Rgb = [230, 70, 60];
+pub(crate) const BLUE_TEAM: Rgb = [90, 150, 240];
 const UNKNOWN: Rgb = [170, 170, 162];
 /// The lock's box and label: a marker, never a team's colour.
 const LOCK: Rgb = [240, 200, 60];
-const WRECK: Rgb = [110, 100, 90];
+pub(crate) const WRECK: Rgb = [110, 100, 90];
 
-fn ground_rgb(ground: Ground) -> Rgb {
+pub(crate) fn ground_rgb(ground: Ground) -> Rgb {
     match ground {
         Ground::Grass => [60, 100, 44],
         Ground::Water => [40, 70, 120],

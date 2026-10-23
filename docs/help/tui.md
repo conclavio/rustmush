@@ -109,7 +109,8 @@ From either mode:
   Ctrl-G       In a tank's seat, open or close the first-person picture of
                the arena, on a terminal that can show one, with your armour,
                weapons, contacts and the comms as text under it; Enter there
-               opens a chat line (`help cockpit`, "The picture").
+               opens a chat line (`help cockpit`, "The picture"). On the
+               chart screen it draws the sky, and on a replay the match.
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it
@@ -237,6 +238,18 @@ reads the scene back, and is not taken as the line you were composing.
              arena's own, every 5 s, and the TUI draws nothing between them.
              Sitting in a tank closes the replay; a replay never opens over
              a cockpit you are flying.
+             On a terminal that shows pictures, Ctrl-G on a replay draws
+             the match: the whole ground, both sides in their team's colour
+             with their headings and trails, each shot as a line for a
+             moment after it is fired (yellow a hit, grey dashed a miss),
+             the wrecks in grey, the tank in focus ringed, and under it a
+             timeline of the whole match with every shot and wreck marked
+             on it. Space plays it at the arena's own speed (`f` faster:
+             four times, sixteen times), `,` and `.` step a keyframe, `[`
+             and `]` move ten seconds, `u` and `x` work as above, Esc goes
+             back to the panes. Between keyframes the picture moves each
+             tank in a straight line and says under the timeline that it
+             drew them; the panes under it stay on the keyframe before.
              Staff who `@arena/watch` a running match see it live on the
              same screen (`Watching 12 - 1:30 (live)`), every tank with its
              object number, at most once an arena second; only `u` and `p`

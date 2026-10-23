@@ -202,6 +202,48 @@ pub fn draw_chart_panel(
     );
 }
 
+/// One titled pane of [`draw_replay_panel`]: its title and its rows at a
+/// width and height.
+pub type TitledPane<'a> = (&'a str, &'a dyn Fn(u16, u16) -> PaneRows);
+
+/// **The replay's panel** (doc 21 cut G.8): under the replay picture, the
+/// replay's own panes as screen 0 draws them at the keyframe the picture
+/// stands at or after — the match's sentences, the shots, the wrecks — and
+/// the comms.
+pub fn draw_replay_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    panes: &[TitledPane<'_>],
+    comms: &dyn Fn(usize) -> Vec<Line<'static>>,
+) {
+    if area.height < 2 {
+        return;
+    }
+    let [left, right] = Layout::horizontal([Constraint::Fill(8), Constraint::Fill(3)])
+        .spacing(1)
+        .areas(area);
+    let cols = Layout::horizontal(panes.iter().map(|_| Constraint::Fill(1)))
+        .spacing(1)
+        .split(left);
+    for ((title, rows), col) in panes.iter().zip(cols.iter()) {
+        let lines: Vec<Line<'static>> = rows(col.width, col.height.saturating_sub(1))
+            .rows
+            .into_iter()
+            .map(|r| r.line)
+            .collect();
+        column(frame, *col, title, lines, false);
+    }
+    let block = header("COMMS");
+    let inner = block.inner(right);
+    frame.render_widget(block, right);
+    let lines = comms(usize::from(inner.width));
+    let skip = lines.len().saturating_sub(usize::from(inner.height));
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
+}
+
 /// The chat line in `area`: while chatting, the prompt, the line and the
 /// cursor (`cursor` characters in); flying, how to open it and any draft
 /// Esc kept.

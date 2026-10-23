@@ -49,6 +49,7 @@ use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graph
 use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
+use mush_pixel::replay::ReplayPicture;
 use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
@@ -150,6 +151,64 @@ pub enum PictureKind {
     /// The orbital view (bucket B): the `sky.chart` drawn as a scene,
     /// fetched again every [`CHART_REFRESH`] while open, `r` at once.
     Chart,
+    /// The replay (bucket B, doc 21 cut G.8): the held `arena.replay`
+    /// document drawn as a scene at the view's own cursor, which space plays
+    /// at the arena's own clock (or faster, `f`).
+    Replay,
+}
+
+/// The replay picture's clock while it plays: a frame a tenth of a second,
+/// so a unit moving between keyframes moves smoothly; paused, it is bucket
+/// B's and draws on change.
+pub const REPLAY_PLAY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The replay's speeds, cycled by `f`: the arena's own clock, then faster.
+pub const REPLAY_SPEEDS: [i64; 3] = [1, 4, 16];
+
+/// How far `[` and `]` move the replay's cursor, arena ms.
+pub const REPLAY_SEEK_MS: i64 = 10_000;
+
+/// **The replay's cursor** (G.8): where the picture stands in the match,
+/// whether it plays, how fast, and where the match ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplayClock {
+    /// The arena millisecond drawn.
+    pub t_ms: i64,
+    /// Whether it plays.
+    pub playing: bool,
+    /// The index into [`REPLAY_SPEEDS`].
+    pub speed: usize,
+    /// When the match ended (the cursor's end), as the document says.
+    pub end_ms: i64,
+}
+
+impl ReplayClock {
+    /// The speed, times the arena's clock.
+    #[must_use]
+    pub fn speed(&self) -> i64 {
+        REPLAY_SPEEDS.get(self.speed).copied().unwrap_or(1)
+    }
+}
+
+/// **Feeds with one more** (G.8): the held feeds and a client-local one —
+/// the replay's cursor — that no server sends.
+pub struct WithFeed<'a> {
+    /// The held feeds.
+    pub base: &'a dyn Feeds,
+    /// The extra feed's name.
+    pub name: &'static str,
+    /// Its value.
+    pub value: Value,
+}
+
+impl Feeds for WithFeed<'_> {
+    fn feed(&self, feed: &str) -> Option<&Value> {
+        if feed == self.name {
+            Some(&self.value)
+        } else {
+            self.base.feed(feed)
+        }
+    }
 }
 
 /// How often an open chart picture asks for the chart again: the planets
@@ -268,6 +327,8 @@ pub struct PixelView {
     /// When the chart was last asked for while its picture was open, or
     /// `None` when it is due now (G.5b).
     chart_asked: Option<Instant>,
+    /// The replay's cursor (G.8).
+    replay: ReplayClock,
     /// The view closed: what was on screen, for the caller to free or wipe.
     closed: Option<Encoder>,
     /// `u`: the frame clock runs as fast as it can instead of 20 Hz.
@@ -323,6 +384,7 @@ impl PixelView {
             picture: Box::new(CockpitPicture::new()),
             kind: PictureKind::Cockpit,
             chart_asked: None,
+            replay: ReplayClock::default(),
             closed: None,
             uncapped: false,
             cfg: PixelConfig::default(),
@@ -341,7 +403,9 @@ impl PixelView {
     pub fn interval(&self) -> Duration {
         if self.uncapped {
             FRAME_INTERVAL_UNCAPPED
-        } else if self.kind == PictureKind::Chart {
+        } else if self.kind == PictureKind::Replay && self.replay.playing {
+            REPLAY_PLAY_INTERVAL
+        } else if matches!(self.kind, PictureKind::Chart | PictureKind::Replay) {
             // Bucket B's clock: a diagram, redrawn on change.
             self.picture.interval()
         } else if self.stepped_down {
@@ -571,11 +635,40 @@ impl PixelView {
             self.picture = match kind {
                 PictureKind::Cockpit => Box::new(CockpitPicture::new()),
                 PictureKind::Chart => Box::new(ChartPicture::new()),
+                PictureKind::Replay => Box::new(ReplayPicture::new()),
             };
             self.last_sent = None;
         }
         self.chart_asked = None;
         self.toggle(now)
+    }
+
+    /// Close the view if it is open on `kind` (G.8: the replay closed under
+    /// its picture).
+    pub fn close_kind(&mut self, kind: PictureKind) {
+        if self.active && self.kind == kind {
+            self.close();
+        }
+    }
+
+    /// The replay's cursor (G.8).
+    #[must_use]
+    pub fn replay(&self) -> ReplayClock {
+        self.replay
+    }
+
+    /// Put the replay's cursor at `t_ms` (clamped to the match) and pause it:
+    /// a step, a seek, or the picture opening on the panes' keyframe.
+    pub fn replay_seek(&mut self, t_ms: i64) {
+        self.replay.t_ms = t_ms.clamp(0, self.replay.end_ms.max(0));
+        self.replay.playing = false;
+    }
+
+    /// Where the replay's match ends (the held document's `end_ms`), the
+    /// cursor kept inside it.
+    pub fn replay_set_end(&mut self, end_ms: i64) {
+        self.replay.end_ms = end_ms.max(0);
+        self.replay.t_ms = self.replay.t_ms.clamp(0, self.replay.end_ms);
     }
 
     /// Whether an open chart picture is due to ask for the chart again — on
@@ -705,6 +798,26 @@ impl PixelView {
     /// Every other key is swallowed: the view is modal. Enter, which opens
     /// the chat line, never reaches here (the app routes it).
     pub fn key(&mut self, key: Key, now: Instant) {
+        // The replay's own keys (G.8): space plays and pauses (from the start
+        // again at the end), `f` the speed; the steps, the focus and the close
+        // need the document and are the app's.
+        if self.kind == PictureKind::Replay {
+            match key {
+                Key::Char(' ') => {
+                    if !self.replay.playing && self.replay.t_ms >= self.replay.end_ms {
+                        self.replay.t_ms = 0;
+                    }
+                    self.replay.playing = !self.replay.playing;
+                    self.last_tick = Some(now);
+                }
+                Key::Char('f') => {
+                    self.replay.speed = (self.replay.speed + 1) % REPLAY_SPEEDS.len();
+                }
+                Key::Esc | Key::Char('q') => self.close(),
+                _ => {}
+            }
+            return;
+        }
         // The chart's keys (G.5b): `r` fetches it again, Esc and `q` close.
         if self.kind == PictureKind::Chart {
             match key {
@@ -791,6 +904,14 @@ impl PixelView {
             .last_tick
             .map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
         self.last_tick = Some(now);
+        if self.kind == PictureKind::Replay && self.replay.playing {
+            let ms = i64::try_from(dt.as_millis()).unwrap_or(0).min(1_000);
+            self.replay.t_ms += ms * self.replay.speed();
+            if self.replay.t_ms >= self.replay.end_ms {
+                self.replay.t_ms = self.replay.end_ms;
+                self.replay.playing = false;
+            }
+        }
         if self.look_turn != 0 {
             let ms = i64::try_from(dt.as_millis()).unwrap_or(0).min(1_000);
             self.look_mdeg += i64::from(self.look_turn) * TURN_MDEG_PER_S * ms / 1_000;
@@ -916,6 +1037,9 @@ impl PixelView {
         if self.kind == PictureKind::Chart {
             return self.chart_hud(now);
         }
+        if self.kind == PictureKind::Replay {
+            return self.replay_hud(now);
+        }
         let heading = cockpit
             .and_then(|c| c.get("heading_mdeg"))
             .and_then(Value::as_i64)
@@ -1007,6 +1131,22 @@ impl PixelView {
 
 impl PixelView {
     /// The chart picture's two lines (G.5b).
+    fn replay_hud(&mut self, now: Instant) -> (String, String) {
+        let probe = self.probe_words(now);
+        let drawing = self
+            .current_encoder()
+            .map_or("nothing".to_string(), |e| e.name().to_string());
+        let r = self.replay;
+        let state = if r.playing {
+            format!("playing x{}", r.speed())
+        } else {
+            format!("paused (x{})", r.speed())
+        };
+        let top = format!("REPLAY  {state}  |  {probe}, drawing {drawing}");
+        let bottom = ", .: keyframe   [ ]: 10 s   space: play   f: speed   u: focus   x: close the replay   Enter: chat   Esc/q: back".to_string();
+        (top, bottom)
+    }
+
     fn chart_hud(&mut self, now: Instant) -> (String, String) {
         let probe = self.probe_words(now);
         let drawing = self
@@ -1789,6 +1929,55 @@ mod tests {
         assert!(wt.toggle_for(PictureKind::Chart, t0));
         let bytes = String::from_utf8_lossy(&wt.paint(&feeds, 160, 50, t0)).into_owned();
         assert!(bytes.contains("\x1bP0;1;0q"), "a sixel chart");
+    }
+
+    /// **Doc 21 cut G.8**: the replay's clock — paused on bucket B's clock,
+    /// a tenth of a second while it plays, at the arena's own speed and then
+    /// `f` faster, stopping at the end and playing from the start again.
+    #[test]
+    fn the_replay_clock_plays_seeks_and_stops_at_the_end() {
+        let t0 = Instant::now();
+        let mut v = supported(t0);
+        assert!(v.toggle_for(PictureKind::Replay, t0));
+        assert_eq!(v.kind(), PictureKind::Replay);
+        v.replay_set_end(10_000);
+        v.replay_seek(5_000);
+        assert_eq!(v.replay().t_ms, 5_000);
+        assert_eq!(v.interval(), mush_pixel::picture::BUCKET_B_INTERVAL);
+        v.key(Key::Char(' '), t0);
+        assert!(v.replay().playing);
+        assert_eq!(v.interval(), REPLAY_PLAY_INTERVAL);
+        v.tick(t0 + Duration::from_millis(500));
+        assert_eq!(v.replay().t_ms, 5_500, "the arena's own clock");
+        v.key(Key::Char('f'), t0);
+        assert_eq!(v.replay().speed(), 4);
+        v.tick(t0 + Duration::from_millis(1_000));
+        assert_eq!(v.replay().t_ms, 7_500, "four times");
+        v.tick(t0 + Duration::from_millis(2_000));
+        assert_eq!(v.replay().t_ms, 10_000, "held at the end");
+        assert!(!v.replay().playing, "and stopped");
+        v.key(Key::Char(' '), t0 + Duration::from_millis(2_000));
+        assert_eq!(
+            (v.replay().t_ms, v.replay().playing),
+            (0, true),
+            "from the start again"
+        );
+        // A seek pauses; the end bounds it.
+        v.replay_seek(99_000);
+        assert_eq!((v.replay().t_ms, v.replay().playing), (10_000, false));
+        // The helm's keys order nothing here.
+        v.key(Key::Right, t0);
+        assert!(v.take_orders().is_empty());
+        let (top, bottom) = v.hud(None, t0);
+        assert!(
+            top.starts_with("REPLAY") && bottom.contains("space: play"),
+            "{top} / {bottom}"
+        );
+        // The replay closed under it closes the view.
+        v.close_kind(PictureKind::Chart);
+        assert!(v.is_active());
+        v.close_kind(PictureKind::Replay);
+        assert!(!v.is_active());
     }
 
     /// `[pixel]`'s numbers are held to sane bounds.

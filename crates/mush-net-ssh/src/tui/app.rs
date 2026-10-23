@@ -1768,6 +1768,8 @@ impl TuiApp {
         }
         self.replay_asked_at = None;
         self.picture_switched = None;
+        // Doc 21 cut G.8: the replay's picture goes with it.
+        self.pixel.close_kind(super::pixel::PictureKind::Replay);
     }
 
     /// Switch to the cockpit screen, answering its hydration queries. Nothing
@@ -2467,12 +2469,21 @@ impl TuiApp {
                 // view on the chart screen, the cockpit elsewhere. The view
                 // opens flying: a line being typed is kept as the draft its
                 // chat line brings back.
+                // Doc 21 cut G.8: and the replay on screen 0 while a replay
+                // (not a live picture) is its layout, opened at the panes'
+                // keyframe.
                 let kind = if self.active == CHART_SCREEN {
                     super::pixel::PictureKind::Chart
+                } else if self.picture_layout() && self.picture.is_some_and(|p| !p.live) {
+                    super::pixel::PictureKind::Replay
                 } else {
                     super::pixel::PictureKind::Cockpit
                 };
-                if self.pixel.toggle_for(kind, Instant::now()) && self.mode == Mode::Input {
+                let opened = self.pixel.toggle_for(kind, Instant::now());
+                if opened && kind == super::pixel::PictureKind::Replay {
+                    self.pixel_replay_follow(true);
+                }
+                if opened && self.mode == Mode::Input {
                     self.leave_input(true);
                 }
                 r.submit.extend(self.pixel.take_orders());
@@ -2622,9 +2633,96 @@ impl TuiApp {
             }
             return;
         }
+        if self.pixel.kind() == super::pixel::PictureKind::Replay && self.pixel_replay_key(key, r) {
+            return;
+        }
         self.pixel.key(key, Instant::now());
         r.submit.extend(self.pixel.take_orders());
         self.pixel_chart_ask(&mut r.queries);
+    }
+
+    /// **The replay picture's keys that need the document** (doc 21 cut
+    /// G.8): `,` and `.` step to the keyframe before or after the cursor,
+    /// `[` and `]` move it ten seconds, each pausing it and putting the
+    /// panes on the keyframe at or before it; `u` moves the focus and `x`
+    /// closes the replay, as on screen 0. Whether the key was one of these.
+    fn pixel_replay_key(&mut self, key: Key, r: &mut InputResult) -> bool {
+        let Some(picture) = self.picture.filter(|p| !p.live) else {
+            return false;
+        };
+        let times: Vec<i64> = self
+            .replay_document(picture.match_id)
+            .map(|doc| {
+                (0..doc.keyframe_count())
+                    .map(|i| doc.keyframe_t(i))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let t = self.pixel.replay().t_ms;
+        match key {
+            Key::Char(',') | Key::Char('.') => {
+                let at = if key == Key::Char(',') {
+                    times.iter().rposition(|k| *k < t).unwrap_or(0)
+                } else {
+                    times
+                        .iter()
+                        .position(|k| *k > t)
+                        .unwrap_or(times.len().saturating_sub(1))
+                };
+                if let Some(kt) = times.get(at) {
+                    self.pixel.replay_seek(*kt);
+                }
+                if let Some(p) = self.picture.as_mut() {
+                    p.at = at;
+                }
+            }
+            Key::Char('[') | Key::Char(']') => {
+                let step = if key == Key::Char('[') {
+                    -super::pixel::REPLAY_SEEK_MS
+                } else {
+                    super::pixel::REPLAY_SEEK_MS
+                };
+                self.pixel.replay_seek(t.saturating_add(step));
+                self.pixel_replay_follow(false);
+            }
+            Key::Char('u') => self.local_action(LocalAction::PictureFocus, r),
+            Key::Char('x') => self.local_action(LocalAction::PictureClose, r),
+            _ => return false,
+        }
+        true
+    }
+
+    /// **The replay picture follows the document** (doc 21 cut G.8): the
+    /// cursor kept inside the match the held document ends at, and the
+    /// panes put on the keyframe at or before the cursor — or, `seek`, the
+    /// cursor put on the panes' keyframe (the picture opening).
+    fn pixel_replay_follow(&mut self, seek: bool) {
+        if self.pixel.kind() != super::pixel::PictureKind::Replay || !self.pixel.is_active() {
+            return;
+        }
+        let Some(picture) = self.picture.filter(|p| !p.live) else {
+            return;
+        };
+        let Some((end, times)) = self.replay_document(picture.match_id).map(|doc| {
+            let times: Vec<i64> = (0..doc.keyframe_count())
+                .map(|i| doc.keyframe_t(i))
+                .collect();
+            (doc.end_ms().max(times.last().copied().unwrap_or(0)), times)
+        }) else {
+            return;
+        };
+        self.pixel.replay_set_end(end);
+        if seek {
+            if let Some(kt) = times.get(picture.at) {
+                self.pixel.replay_seek(*kt);
+            }
+            return;
+        }
+        let t = self.pixel.replay().t_ms;
+        let at = times.iter().rposition(|k| *k <= t).unwrap_or(0);
+        if let Some(p) = self.picture.as_mut() {
+            p.at = at;
+        }
     }
 
     /// Ask for the chart again when an open chart picture is due (doc 21 cut
@@ -3921,7 +4019,29 @@ impl TuiApp {
         );
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
-        if self.pixel.kind() == super::pixel::PictureKind::Chart {
+        if self.pixel.kind() == super::pixel::PictureKind::Replay {
+            // Doc 21 cut G.8: the replay's own panes under its picture.
+            let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
+                move |w: u16, h: u16| {
+                    f(&RenderCtx {
+                        pane: Some((w, h)),
+                        ..ctx
+                    })
+                    .unwrap_or_default()
+                }
+            };
+            let (status, shots, wrecks) = (
+                pane(super::replay::status_rows),
+                pane(super::replay::weapons_rows),
+                pane(super::replay::damage_rows),
+            );
+            cockpit_text::draw_replay_panel(
+                frame,
+                areas.panel,
+                &[("MATCH", &status), ("SHOTS", &shots), ("WRECKS", &wrecks)],
+                &|w| self.scrollback_rows(w),
+            );
+        } else if self.pixel.kind() == super::pixel::PictureKind::Chart {
             let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
             cockpit_text::draw_chart_panel(
                 frame,
@@ -3995,9 +4115,23 @@ impl TuiApp {
         self.pixel.probe_sent(Instant::now());
     }
 
+    /// Which picture the view draws (doc 21 cut G.5b).
+    #[must_use]
+    pub fn pixel_kind(&self) -> super::pixel::PictureKind {
+        self.pixel.kind()
+    }
+
+    /// The replay picture's cursor (doc 21 cut G.8).
+    #[must_use]
+    pub fn pixel_replay(&self) -> super::pixel::ReplayClock {
+        self.pixel.replay()
+    }
+
     /// One frame-clock tick: advance the camera.
     pub fn pixel_tick(&mut self) {
         self.pixel.tick(Instant::now());
+        // Doc 21 cut G.8: a playing replay moves the panes with it.
+        self.pixel_replay_follow(false);
     }
 
     /// The frame clock's wait (20 Hz, or ~1 ms when `u` uncapped it).
@@ -4076,7 +4210,27 @@ impl TuiApp {
     /// picture reads its feeds from the panel store, as every pane does.
     pub fn pixel_paint(&mut self) -> Vec<u8> {
         let (w, h) = (self.caps.width, self.caps.height);
-        let TuiApp { pixel, panels, .. } = self;
+        let TuiApp {
+            pixel,
+            panels,
+            picture,
+            ..
+        } = self;
+        // Doc 21 cut G.8: the replay's cursor is the view's, and reaches the
+        // picture as a client-local feed beside the held ones.
+        if pixel.kind() == super::pixel::PictureKind::Replay {
+            let cursor = serde_json::json!({
+                "match": picture.map_or(0, |p| p.match_id),
+                "t_ms": pixel.replay().t_ms,
+                "focus": picture.map_or(0, |p| p.focus),
+            });
+            let feeds = super::pixel::WithFeed {
+                base: &*panels,
+                name: mush_pixel::replay::REPLAY_CURSOR_FEED,
+                value: cursor,
+            };
+            return pixel.paint(&feeds, w, h, Instant::now());
+        }
         pixel.paint(&*panels, w, h, Instant::now())
     }
 

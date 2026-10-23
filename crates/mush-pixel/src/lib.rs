@@ -20,6 +20,8 @@
 //! - [`heightfield`]: the voxel-space producer for ground with relief
 //!   (G.7a), beside the raycaster.
 //! - [`chart`]: the orbital view, `sky.chart` drawn as a scene (G.5b).
+//! - [`replay`]: a finished match's `arena.replay` drawn as a scene over its
+//!   ground, with a timeline (G.8).
 //! - [`scene`]: bucket B's retained 2D scene and its one rasteriser (G.5).
 //! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
 //!   terminals that draw sixel and not kitty — Windows Terminal above all.
@@ -62,6 +64,7 @@ pub mod overlay;
 pub mod picture;
 pub mod png;
 pub mod raycast;
+pub mod replay;
 pub mod scene;
 pub mod sixel;
 
