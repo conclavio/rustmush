@@ -109,6 +109,7 @@ fn preflight(
     id: &CanonicalId,
     entry: &RawEntry,
 ) -> Result<NetworkDef, String> {
+    mush_sim::relay::check_installer(ctx)?;
     let def = definition(ctx, entry)?;
     let store = ctx
         .w

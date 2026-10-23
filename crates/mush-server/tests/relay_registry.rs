@@ -24,11 +24,13 @@ impl Drop for Rig {
 }
 impl Rig {
     async fn new(enabled: bool) -> Self {
+        static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut cfg = Config::default();
         cfg.store.store = "memory".into();
         cfg.server.data_dir = std::env::temp_dir().join(format!(
-            "mush-r1-{}-{}",
+            "mush-r1-{}-{}-{}",
             std::process::id(),
+            NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -43,6 +45,14 @@ impl Rig {
             .await
             .unwrap()
             .engine;
+        assert!(
+            engine.world.refused_namespace_writes().is_empty(),
+            "{:?}",
+            engine.world.refused_namespace_writes()
+        );
+        if enabled {
+            assert!(store.module_json_get("sim", KEY).await.unwrap().is_some());
+        }
         let mut rig = Self {
             cfg,
             store,
@@ -108,6 +118,8 @@ fn cid(s: &str) -> CanonicalId {
 async fn r1_real_seed_availability_and_reapply_survive_restart() {
     let mut rig = Rig::new(true).await;
     let original = rig.registry();
+    rig.restart().await.unwrap();
+    assert_eq!(rig.registry(), original);
     assert_eq!((original.nodes.len(), original.pairs.len()), (2, 1));
     assert_eq!(original.pairs[&cid("luna_ceres")].state(), LinkState::Live);
     assert_eq!(original.nodes[&cid("malapert")].coverage.len(), 12);

@@ -279,6 +279,18 @@ both write the atlas's site and request records.
 """
 
 [[delegation]]
+writer = "content"
+ns = "sim"
+declared_by = "sim"
+reason = "R1 content boot installs the relay catalog through mush_sim::relay::install, with its objects and content latch in the same boot batch."
+
+[[delegation]]
+writer = "atlas"
+ns = "sim"
+declared_by = "sim"
+reason = "R1 staff @atlas/pack apply uses the same relay installer; reapplication preserves identities and availability."
+
+[[delegation]]
 writer = "tacsim"
 ns = "content"
 declared_by = "tacsim"

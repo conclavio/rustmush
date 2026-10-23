@@ -244,6 +244,7 @@ impl RelayStore {
 
 /// Install only a reconciled post-image. Caller owns content creation/authority.
 pub fn install(ctx: &mut Ctx<'_>, registry: RelayRegistry) -> Result<(), String> {
+    check_installer(ctx)?;
     registry.reconcile(ctx.w)?;
     let value = serde_json::to_value(&registry).map_err(|e| e.to_string())?;
     let store = ctx
@@ -535,7 +536,23 @@ impl DetachGate for InstalledGate {
     }
 }
 
+/// Check before a content applier creates anything, not after it has made objects.
+pub fn check_installer(ctx: &Ctx<'_>) -> Result<(), String> {
+    if ctx
+        .module
+        .as_ref()
+        .is_some_and(|m| m != "sim" && ctx.reg.persist_delegation(m, "sim").is_none())
+    {
+        Err("relay: installer has no declared sim persistence delegation".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    for writer in ["content", "atlas"] {
+        reg.persist_delegation(writer, "sim", "R1 relay content installs its bounded sim catalog during boot or staff @atlas/pack apply")?;
+    }
     reg.state(RelayStore::default());
     reg.hook(HookPoint::CarryAttempt, Arc::new(InstalledGate));
     reg.hook(HookPoint::MoveAttempt, Arc::new(InstalledGate));
