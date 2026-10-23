@@ -13,7 +13,11 @@ assert(target === 'https://conclav.io:6790' && redisPort === '6788', 'dev1 only'
 assert.equal(realpathSync(output), '/opt/rustmush/dev1/r5-evidence');
 const credentials = JSON.parse(readFileSync(credentialsPath, 'utf8'));
 mkdirSync(output, { recursive: true });
-const evidence = { target, at: new Date().toISOString(), checks: [], milestones: [] };
+const resuming=process.env.R5_RESUME==='1';
+const evidence = resuming ? JSON.parse(readFileSync(join(output,'live.json'),'utf8'))
+  : { target, at: new Date().toISOString(), checks: [], milestones: [] };
+const done = name => evidence.milestones.some(m=>m.test===name);
+if(resuming) { delete evidence.passed; delete evidence.error; }
 const sockets = [];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const shell = (cmd, args) => execFileSync(cmd, args, {encoding:'utf8',timeout:30000}).trim();
@@ -148,6 +152,10 @@ async function advance(ic) {
     await rate(3600);
     await until(()=>nowIc()>=ic-7200,'accelerated passage progress',1800);
   }
+  if(ic-nowIc()>720) {
+    await rate(360);
+    await until(()=>nowIc()>=ic-720,'approach to passage checkpoint',120);
+  }
   await rate(24);
   await until(()=>nowIc()>=ic,'passage checkpoint',420);
 }
@@ -158,7 +166,10 @@ async function arrive(id) {
   return until(()=>{const e=envelope(id);return e?.state==='delivered'&&e;},'radio arrival '+id,180);
 }
 async function exchange(label, options={}) {
-  const body='R5-'+label;
+  const body='R5-'+label+'-'+randomBytes(3).toString('hex');
+  // A first-leg relay flight can be only a few IC seconds. Give the crash
+  // proof a real longer fallback flight so it remains in flight during reboot.
+  if(options.crash) await command(staff,'@relay/disable luna_ceres.luna');
   const id=await issue(staff,pilot.object,body);
   const frozen=await radioFlight(id);
   assert(frozen.seconds>0 && frozen.basis.startsWith('ship.v1:'),'real ship metric');
@@ -177,6 +188,8 @@ async function exchange(label, options={}) {
     assert.equal(flight.due.at,frozen.due.at,'rate preserves IC due');
     assert.equal(flight.basis,frozen.basis,'rate preserves metric inputs');
     milestone('world-rate-change',{before,after:nowIc(),flight});
+    await command(staff,'@relay/enable luna_ceres.luna');
+    assert.equal(envelope(id).transit.flight.due.at,frozen.due.at,'repair cannot accelerate a frozen ship flight');
     await rate(24);
   }
   const delivered=await arrive(id);
@@ -205,13 +218,23 @@ function listing(good, vendor) {
   return row.id;
 }
 try {
+  let hull, ticketKey, ticketRecord, ticket, plan;
+  if(resuming) {
+    assert(done('real-trade-departure'),'resume requires a recorded real departure');
+    await reconnect();
+    hull=evidence.hull;
+    ticketKey='mod:tacsim:action-state/v1/tacsim.ticket/'+hull+':1';
+    ticketRecord=redis(ticketKey); ticket=ticketRecord.value; plan=ticket.plan;
+  } else {
   staffLogin=await auth('login',credentials); staff=await connect(staffLogin);
   await rate(24);
   const pc={account:'r5p'+randomBytes(4).toString('hex'),password:randomBytes(24).toString('hex'),char_name:'R5Pilot'+randomBytes(3).toString('hex')};
   save('pilot-credentials.json',pc);
   pilotLogin=await auth('register',pc); pilot=await connect(pilotLogin);
   const beforeMap=portMap();
-  await command(staff,'@tacsim/port status','Ready:');
+  // Site geology can still be mapping. Enrolment and departure enforce the
+  // readiness of this actual station trade path themselves.
+  await command(staff,'@tacsim/port status');
   await command(pilot,'c'); await command(pilot,'registry');
   const name='Relay Dray '+randomBytes(3).toString('hex');
   await command(pilot,'+coop/enrol '+name,'now the '+name);
@@ -221,7 +244,7 @@ try {
     const o=redis('obj:'+r.hull); return o && JSON.stringify(o).includes(name);
   });
   assert(hullRow,'chartered hull');
-  const hull=hullRow.hull;
+  hull=hullRow.hull;
   evidence.hull=hull;
   for(const move of ['out','concourse','exchange']) await command(pilot,move);
   await command(pilot,'+market/list');
@@ -245,16 +268,18 @@ try {
   await command(staff,'@relay/enable luna_ceres.luna');
   await command(staff,'@relay/enable luna_ceres.ceres');
   await command(pilot,'+ship/undock stickney','Clearance filed');
-  const ticketKey='mod:tacsim:action-state/v1/tacsim.ticket/'+hull+':1';
-  const ticketRecord=await until(()=>redis(ticketKey),'real burned ticket',90);
-  const ticket=ticketRecord.value;
-  const plan=ticket.plan;
+  ticketKey='mod:tacsim:action-state/v1/tacsim.ticket/'+hull+':1';
+  ticketRecord=await until(()=>redis(ticketKey),'real burned ticket',90);
+  ticket=ticketRecord.value;
+  plan=ticket.plan;
   await until(()=>journey(hull)?.state?.state==='Cruising','actual carrier departure',90);
   milestone('real-trade-departure',{hull,ticket,journey:journey(hull)});
   await command(pilot,'+ship','IC seconds one way');
-  await exchange('departure');
+  }
+  if(!done('departure')) await exchange('departure');
 
   const first=plan.legs[0];
+  if(!done('mid-leg')) {
   await advance(first.t0+Math.floor(first.secs/4));
   // OOC channel delivery stays immediate while IC traffic has minutes of lag.
   const channel='R5OOC'+randomBytes(3).toString('hex');
@@ -265,7 +290,9 @@ try {
   await wait(pilot,f=>text(f.d).includes('R5-immediate-OOC'),frame);
   milestone('ooc-immediate',{wallMs:Math.round(performance.now()-start)});
   await exchange('mid-leg',{crash:true});
+  }
 
+  if(!done('missing-ticket-recovery')) {
   // Deliberately remove ONLY this fixture's ticket with dev1 stopped. A finally
   // block restores it if any assertion fails. All other records are retained.
   ticketBackup={key:ticketKey,value:ticketRecord}; save('ticket-backup.json',ticketBackup);
@@ -283,12 +310,18 @@ try {
   shell('systemctl',['start','dev1mush-gateway']); await ready(); await reconnect();
   await arrive(unknown);
   milestone('missing-ticket-recovery',{unknown,delivered:envelope(unknown)});
+  }
 
+  if(!done('nearer-end-changed')) {
   await advance(first.t0+Math.floor(first.secs*3/4));
   await exchange('nearer-end-changed');
+  }
+  if(!done('leg-boundary')) {
   await advance(first.t1+240);
   await until(()=>journey(hull).cursor>=1,'actual leg boundary',30);
   await exchange('leg-boundary');
+  }
+  if(!done('docking-and-forwarding')) {
   const arrival=plan.depart_ic+plan.total_s;
   await advance(arrival-100);
   const landing=await issue(staff,pilot.object,'R5-dock-and-forward');
@@ -301,6 +334,19 @@ try {
   assert.equal(landed.transit.forwardings,1,'disembarking forwards from hull to berth');
   await command(pilot,'+orders','R5-dock-and-forward');
   milestone('docking-and-forwarding',{landing,landingFlight,landed,journey:journey(hull)});
+  }
+  if(!done('docking-return-ack')) {
+    const landing=evidence.milestones.find(m=>m.test==='docking-and-forwarding').landing;
+    const reply=await command(pilot,'+orders/ack '+landing,'Acknowledgement queued');
+    const ackId=Number(reply.match(/envelope #(\d+)/)[1]);
+    const ackFlight=await radioFlight(ackId);
+    assert(ackFlight.seconds>0,'docked return ACK has physical lag');
+    assert.equal(envelope(landing).state,'delivered','docked ACK not known at submission');
+    const delivered=await arrive(ackId);
+    assert(delivered.advanced.at>=ackFlight.due.at,'no early docked return ACK');
+    await until(()=>envelope(landing).state==='acknowledged','docked return ACK settlement');
+    milestone('docking-return-ack',{landing,ackId,ackFlight,delivered});
+  }
   await command(staff,'@relay/check','Bindings OK');
   await rate(24);
   evidence.dev2Pid=Number(shell('systemctl',['show','dev2mush-gateway','-p','MainPID','--value']));

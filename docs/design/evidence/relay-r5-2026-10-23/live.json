@@ -1,0 +1,1998 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-23T20:27:51.858Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 53,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/port status",
+      "reply": "Port readiness:\nlane: tacsim.lane.ceres_phobos@12 applied; this server ships @12. [ready]\nsky: moving (rate 1000, real motion), kepler, epoch 2351-05-13, rev 900ddcd59ba0 [ready]\ngeology: key v1, fingerprint 60c753875fbe, pinned; reading rule v1. [ready]\nworld rate: 24 IC seconds per real second. [ready]\ntreasury: system:tacsim.treasury, account #0. [ready]\nmarket facts: answered, so drawn sales can settle. [ready]\ninventory facts: answered, so sales into bids can settle. [ready]\nmarkers: 0 of 4096 applied markers held. [ready]\n  ahuna_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  ahuna_port domain: #1 on Ahuna Flank, presents in Ahuna Flank Pad. [ready]\n  ahuna_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 47 deposits open. [ready]\n  ceres_port rooms: 8 of 8 resolved; the gallery carries port.dock. [ready]\n  ceres_port domain: #2 on Ceres Freeport, presents in Visiting Berth Gallery. [ready]\n  ceres_port org ceres_clearing: Ceres Clearing, org #0, account #1, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  ceres_port org coop: Belt Carriers' Cooperative, org #1, account #2, capital 3100000.00cr: 4 of 4 tranches settled. [ready]\n  ceres_port org coop_trust: Co-op First Captain Trust, org #2, account #3, capital 250000.00cr: 1 of 1 tranches settled. [ready]\n  ceres_port org freeport_exchange: Freeport Exchange, org #3, account #4, capital 4000000.00cr: 5 of 5 tranches settled. [ready]\n  ceres_port org occator: Occator Water & Propellant, org #4, account #5, capital 300000.00cr: 2 of 2 tranches settled. [ready]\n  ceres_port org tycho_mutual: Tycho Mutual Assurance & Salvage, org #5, account #6, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  ceres_port org freeport_registry: Freeport Registry, org #6, account #7, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  ceres_port org pallas_syndicate: Pallas Syndicate, org #7, account #8, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  ceres_port programme coop.first_captain: Co-op First Captain Trust, account #3, floor 50000.00cr, stake 25000.00cr for each of 8 hulls. [ready]\n  ceres_port hulls: 8 of 8 made, titled to Co-op First Captain Trust and laid up. [ready]\n  ceres_port vehicles: 8 of 8 made and titled to Occator Water & Propellant; 8 in the shed, 0 leased. [ready]\n  ceres_port licence tacsim.licence.freeport: the Freeport Registry issues it at 2500.00cr for 168 IC days with 3 IC days' grace; extraction reads it. [ready]\n  ceres_port vendor freeport_exchange: Freeport Exchange, storefront vault #17; 1 of 1 stock rows seeded. [ready]\n  ceres_port vendor occator: Occator Water & Propellant, storefront vault #18; 2 of 2 stock rows seeded. [ready]\n  ceres_port vendor coop: Belt Carriers' Cooperative, storefront vault #19; 1 of 1 stock rows seeded. [ready]\n  ceres_port ask freeport_exchange metals: listing #19 at 200.00cr/t, 4000 t listed; the storefront holds 4000 t. [ready]\n  ceres_port ask occator volatiles: listing #23 at 100.00cr/t, 9600 t listed; the storefront holds 9600 t. [ready]\n  ceres_port ask occator propellant: listing #27 at 40.00cr/t, 5000 t listed; the storefront holds 5000 t. [ready]\n  ceres_port ask coop provisions: listing #31 at 10.00cr/crew-days, 2600 crew-days listed; the storefront holds 2600 crew-days. [ready]\n  ceres_port bid freeport_exchange structural_alloys: listing #0 at 520.00cr/t, 7000 of 7000 t wanted. [ready]\n  ceres_port bid freeport_exchange metal_ore: listing #1 at 70.00cr/t, 240 of 240 t wanted; 40 t more each IC day. [ready]\n  ceres_port bid freeport_exchange carbon_ore: listing #2 at 50.00cr/t, 120 of 120 t wanted; 20 t more each IC day. [ready]\n  ceres_port bid freeport_exchange strategic_ore: listing #3 at 600.00cr/t, 12 of 12 t wanted; 2 t more each IC day. [ready]\n  ceres_port bid occator ice_ore: listing #4 at 35.00cr/t, 240 of 240 t wanted; 40 t more each IC day. [ready]\n  ceres_port bid coop industrial_parts: listing #5 at 560.00cr/t, 5400 of 5400 t wanted. [ready]\n  commons_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  commons_port domain: #3 on Freeport Commons, presents in Freeport Commons Pad. [ready]\n  commons_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 48 deposits open. [ready]\n  deimos_port rooms: 7 of 7 resolved; the gallery carries port.dock. [ready]\n  deimos_port domain: #4 on Voltaire Anchorage, presents in Visiting Berth Gallery. [ready]\n  deimos_port org voltaire_bond: Voltaire Bond Authority, org #8, account #9, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  deimos_port org strategic_reserve: Republic Strategic Reserve, org #9, account #10, capital 300000.00cr: 1 of 1 tranches settled. [ready]\n  deimos_port org syrtis_bonded: Syrtis Bonded Imports, org #10, account #11, capital 3100000.00cr: 4 of 4 tranches settled. [ready]\n  deimos_port vendor strategic_reserve: Republic Strategic Reserve, storefront vault #45; 2 of 2 stock rows seeded. [ready]\n  deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #46; 0 of 0 stock rows seeded. [ready]\n  deimos_port ask strategic_reserve propellant: listing #17 at 60.00cr/t, 5000 t listed; the storefront holds 5000 t. [ready]\n  deimos_port ask strategic_reserve provisions: listing #18 at 10.00cr/crew-days, 2600 crew-days listed; the storefront holds 2600 crew-days. [ready]\n  deimos_port bid strategic_reserve volatiles: listing #6 at 190.00cr/t, 900 of 900 t wanted. [ready]\n  deimos_port bid strategic_reserve carbon_feedstock: listing #7 at 380.00cr/t, 300 of 300 t wanted. [ready]\n  deimos_port bid syrtis_bonded structural_alloys: listing #8 at 460.00cr/t, 2400 of 2400 t wanted. [ready]\n  deimos_port bid syrtis_bonded instrument_boards: listing #9 at 1100.00cr/t, 1600 of 1600 t wanted. [ready]\n  juling_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  juling_port domain: #5 on Juling Shadow, presents in Juling Shadow Pad. [ready]\n  juling_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 48 deposits open. [ready]\n  kerwan_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  kerwan_port domain: #6 on Kerwan Floor, presents in Kerwan Floor Pad. [ready]\n  kerwan_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 48 deposits open. [ready]\n  luna_port rooms: 9 of 9 resolved; the gallery carries port.dock. [ready]\n  luna_port domain: #7 on Aitken Highport, presents in Visiting Berth Gallery. [ready]\n  luna_port org orbital_access: Concord Orbital Access, org #11, account #12, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  luna_port org cabeus_works: Cabeus Works, org #12, account #13, capital 250000.00cr: 1 of 1 tranches settled. [ready]\n  luna_port org habitat_board: Lunar Habitat Board, org #13, account #14, capital 1000000.00cr: 2 of 2 tranches settled. [ready]\n  luna_port org crisium_instruments: Crisium Instruments, org #14, account #15, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  luna_port org highport_victualling: Highport Victualling Office, org #15, account #16, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  luna_port vendor cabeus_works: Cabeus Works, storefront vault #81; 1 of 1 stock rows seeded. [ready]\n  luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #82; 0 of 0 stock rows seeded. [ready]\n  luna_port vendor crisium_instruments: Crisium Instruments, storefront vault #83; 1 of 1 stock rows seeded. [ready]\n  luna_port vendor highport_victualling: Highport Victualling Office, storefront vault #84; 2 of 2 stock rows seeded. [ready]\n  luna_port ask cabeus_works structural_alloys: listing #20 at 400.00cr/t, 3120 t listed; the storefront holds 3120 t. [ready]\n  luna_port ask crisium_instruments instrument_boards: listing #24 at 900.00cr/t, 2080 t listed; the storefront holds 2080 t. [ready]\n  luna_port ask highport_victualling propellant: listing #28 at 60.00cr/t, 5000 t listed; the storefront holds 5000 t. [ready]\n  luna_port ask highport_victualling provisions: listing #32 at 10.00cr/crew-days, 2600 crew-days listed; the storefront holds 2600 crew-days. [ready]\n  luna_port bid cabeus_works metals: listing #10 at 270.00cr/t, 800 of 800 t wanted. [ready]\n  luna_port bid habitat_board volatiles: listing #11 at 195.00cr/t, 4100 of 4100 t wanted. [ready]\n  luna_port bid habitat_board carbon_feedstock: listing #12 at 380.00cr/t, 300 of 300 t wanted. [ready]\n  occator_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  occator_port domain: #8 on Occator Rim, presents in Occator Rim Pad. [ready]\n  occator_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 48 deposits open. [ready]\n  rheasilvia_port rooms: 1 of 1 resolved; the gallery carries port.dock. [ready]\n  rheasilvia_port domain: #9 on Rheasilvia Commons, presents in Rheasilvia Commons Pad. [ready]\n  rheasilvia_port site: 16 block places, the site clerk, the spoil and 16 block vaults laid up; 47 deposits open. [ready]\n  stickney_port rooms: 8 of 8 resolved; the gallery carries port.dock. [ready]\n  stickney_port domain: #10 on Stickney Yards, presents in Visiting Berth Gallery. [ready]\n  stickney_port org kasei: Kasei Metals, org #16, account #17, capital 600000.00cr: 1 of 1 tranches settled. [ready]\n  stickney_port org stickney_yards: Stickney Yards, org #17, account #18, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  stickney_port org yard_commissary: Yard Commissary, org #18, account #19, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  stickney_port vendor kasei: Kasei Metals, storefront vault #119; 2 of 2 stock rows seeded. [ready]\n  stickney_port vendor stickney_yards: Stickney Yards, storefront vault #120; 1 of 1 stock rows seeded. [ready]\n  stickney_port vendor yard_commissary: Yard Commissary, storefront vault #121; 1 of 1 stock rows seeded. [ready]\n  stickney_port ask kasei structural_alloys: listing #21 at 400.00cr/t, 7000 t listed; the storefront holds 7000 t. [ready]\n  stickney_port ask kasei propellant: listing #25 at 60.00cr/t, 5000 t listed; the storefront holds 5000 t. [ready]\n  stickney_port ask stickney_yards industrial_parts: listing #29 at 400.00cr/t, 5400 t listed; the storefront holds 5400 t. [ready]\n  stickney_port ask yard_commissary provisions: listing #33 at 10.00cr/crew-days, 2600 crew-days listed; the storefront holds 2600 crew-days. [ready]\n  stickney_port bid kasei metals: listing #13 at 280.00cr/t, 4000 of 4000 t wanted. [ready]\n  stickney_port bid kasei volatiles: listing #14 at 200.00cr/t, 9600 of 9600 t wanted. [ready]\n  titan_port rooms: 8 of 8 resolved; the gallery carries port.dock. [ready]\n  titan_port domain: #11 on Ligeia Terminal, presents in Visiting Berth Gallery. [ready]\n  titan_port org titan_concession: Titan Concession Company, org #19, account #20, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  titan_port org concession_stores: Concession Stores, org #20, account #21, capital 50000.00cr: 1 of 1 tranches settled. [ready]\n  titan_port org selk_townships: Selk Townships Board, org #21, account #22, capital 1350000.00cr: 2 of 2 tranches settled. [ready]\n  titan_port vendor titan_concession: Titan Concession Company, storefront vault #122; 3 of 3 stock rows seeded. [ready]\n  titan_port vendor concession_stores: Concession Stores, storefront vault #123; 1 of 1 stock rows seeded. [ready]\n  titan_port vendor selk_townships: Selk Townships Board, storefront vault #124; 0 of 0 stock rows seeded. [ready]\n  titan_port ask titan_concession carbon_feedstock: listing #22 at 250.00cr/t, 600 t listed; the storefront holds 600 t. [ready]\n  titan_port ask titan_concession volatiles: listing #26 at 40.00cr/t, 1800 t listed; the storefront holds 1800 t. [ready]\n  titan_port ask titan_concession propellant: listing #30 at 30.00cr/t, 5000 t listed; the storefront holds 5000 t. [ready]\n  titan_port ask concession_stores provisions: listing #34 at 20.00cr/crew-days, 2600 crew-days listed; the storefront holds 2600 crew-days. [ready]\n  titan_port bid selk_townships structural_alloys: listing #15 at 760.00cr/t, 720 of 720 t wanted. [ready]\n  titan_port bid selk_townships instrument_boards: listing #16 at 1500.00cr/t, 480 of 480 t wanted. [ready]\nReady: every binding above is in place.",
+      "wallMs": 26,
+      "replyBytes": 12326
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "c",
+      "reply": "Port Watch Arrivals #103 A hall built to process people and not quite wide enough to do it. A customs counter runs along the north wall under the Port Watch's crest, a rayed circle over a wave, with a brass rail polished by elbows. Across from it a notice wall carries the port's rules in Freeport Council type and, around and over them, cooperative notices three layers deep. The light is warm and a little yellow, the only warm light on the deck. The air smells of printer heat and the coffee on the counter's far end. Voices carry; a stair behind a glass door goes down to the freight deck, and the concourse opens east. Pressure Lobby <S> ssouthlobbyberthsConcourse <E> eeastconcourseRegistry <N> nnorthregistrydeskDown <D> ddownstairdockmasterLimbo <X> xlimboooc autumn afternoon",
+      "wallMs": 26,
+      "replyBytes": 784
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "registry",
+      "reply": "Registry & Co-op Desk #105 Two counters share one room and do not share a style. The Registry's half is dark wood over steel, a brass plate reading REGISTRY OF CLAIMS, BELT MIRROR, and a glass case of forms in numbered pigeonholes; a ledger screen glows green behind it. The Co-op's half is a folding table that became permanent, under a banner of the cooperative's linked-hands mark and a board headed FIRST CAPTAINS' LAY. The room is quiet enough to hear the ledger screen's fan and smells of paper, toner and the wood polish somebody applies to the Registry side only. A frosted door in the back wall is marked AUTHORITY. Arrivals is south. #120 Matthias Kalu#123 Ilse Oduya-Brandt Arrivals <S> ssoutharrivalsoutUp <U> uupladderauthority autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 757
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+coop/enrol Relay Dray 671834",
+      "reply": "Lease #1 has been offered to you (@contract/show #1, @contract/accept #1).\nContract #1 is active: every party has accepted.\nCeres Clearing opens account #23 in your name.\nThe Co-op charters you FPC-D-0401, laid up as the Slack Water, now the Relay Dray 671834, cradled at the Visiting Berth Gallery.\n25000.00cr staked to you. Buyout 90000.00cr. Ilse Oduya-Brandt countersigns.",
+      "wallMs": 50,
+      "replyBytes": 376
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship",
+      "reply": "Relay Dray 671834 (Dray): docked Ceres Freeport, Visiting Berth Gallery.\nHold: cargo 0/100 t · 0.0/120 m³ · tank 0/80 t · locker 0/120 crew-days.\nProgramme: 0 sales; buyout 90000.00cr.",
+      "wallMs": 51,
+      "replyBytes": 188
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "out",
+      "reply": "Port Watch Arrivals #103 A hall built to process people and not quite wide enough to do it. A customs counter runs along the north wall under the Port Watch's crest, a rayed circle over a wave, with a brass rail polished by elbows. Across from it a notice wall carries the port's rules in Freeport Council type and, around and over them, cooperative notices three layers deep. The light is warm and a little yellow, the only warm light on the deck. The air smells of printer heat and the coffee on the counter's far end. Voices carry; a stair behind a glass door goes down to the freight deck, and the concourse opens east. Pressure Lobby <S> ssouthlobbyberthsConcourse <E> eeastconcourseRegistry <N> nnorthregistrydeskDown <D> ddownstairdockmasterLimbo <X> xlimboooc autumn afternoon",
+      "wallMs": 51,
+      "replyBytes": 784
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "concourse",
+      "reply": "Freeport Concourse #104 The widest space on the deck and the loudest: boots on plate, a tannoy that clears its throat every few minutes, the Exchange ticker crawling along the east arch. Overhead the lighting is bright, bluish and new, bolted to a ceiling that is neither. A backlit map of the port stands in the middle on a pedestal with a directory under it, and benches around it hold crews waiting for clearances, for pay, for each other. The air smells of too many people and the sweet-metal tang of recycled water. Doors lead north to the Clearing and south to the Slack Line; Arrivals is west, the Exchange east. Arrivals <W> wwestarrivalsClearing <N> nnorthclearingbankExchange <X> xexchangeeasteSlack Line <S> ssouthslackbarcommons autumn afternoon",
+      "wallMs": 51,
+      "replyBytes": 757
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "exchange",
+      "reply": "Exchange Hall #107 A long hall under a price board that fills the whole north wall, white figures on black: metal concentrate by the tonne under the Exchange's mark, volatiles and reaction mass under the Occator drop-and-flame, an alloy bid in a column of its own, and a line of dashes where a Pallas consignment used to be. A counter runs the length of the hall below it, brass-railed, with the factor's stamp pads and manifest slots at intervals. The floor is damp near the east end, where a sample tap drips into a grating, and the whole room smells of wet steel and the faint sweetness of electrolysed water. A roller door at that end is stencilled FREIGHT STAIR, BERTH HOLDERS, and is shut. Doors lead north to Tycho and south to the chandlery; the concourse is west. #126 Rosalind Qureshi-Mbeki#127 Margit Søndergaard-Achebe Concourse <W> wwestconcourseChandlery <S> ssouthchandlerystoresTycho <N> nnorthtychoagency autumn afternoon\nThe board:\n  metal concentrate: 200.00cr/t, 4,000 t left (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  water ice: 100.00cr/t, 9,600 t left (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).\n  reaction mass: 40.00cr/t, 5,000 t left (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).\n  wanted, structural alloy stock: 520.00cr/t, 7,000 t more (Freeport Works; signed Margit Søndergaard-Achebe).\n  wanted, metal ore, run-of-mine: 70.00cr/t, 240 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, carbon ore, run-of-mine: 50.00cr/t, 120 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, strategic ore, run-of-mine: 600.00cr/t, 12 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, ice ore, run-of-mine: 35.00cr/t, 240 t more (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).",
+      "wallMs": 52,
+      "replyBytes": 1821
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/list",
+      "reply": "#31 voyage provisions — 2600 × 10.00cr [ceres] at Belt Carriers' Cooperative\n#27 reaction mass — 5000 × 40.00cr [ceres] at Occator Water & Propellant\n#23 water ice — 9600 × 100.00cr [ceres] at Occator Water & Propellant\n#19 metal concentrate — 4000 × 200.00cr [ceres] at Freeport Exchange\n#5 yard fittings, crated — wanted 5400 × 560.00cr [ceres] by Belt Carriers' Cooperative\n#4 ice ore, run-of-mine — wanted 240 × 35.00cr [ceres] by Occator Water & Propellant\n#3 strategic ore, run-of-mine — wanted 12 × 600.00cr [ceres] by Freeport Exchange\n#2 carbon ore, run-of-mine — wanted 120 × 50.00cr [ceres] by Freeport Exchange\n#1 metal ore, run-of-mine — wanted 240 × 70.00cr [ceres] by Freeport Exchange\n#0 structural alloy stock — wanted 7000 × 520.00cr [ceres] by Freeport Exchange",
+      "wallMs": 51,
+      "replyBytes": 810
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #19=10",
+      "reply": "Quote #0: 10 × 200.00cr = 2000.00cr — good until 1792790873 (real time). It reserves nothing; take it up with +market/accept #0.",
+      "wallMs": 26,
+      "replyBytes": 131
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #0",
+      "reply": "Queued.\nContract #2 has been offered to you (@contract/show #2).\nContract #2 is active: every party has accepted.\nAgreed. Contract #2 carries it; your payment is escrowed and settles when the terms are met. Margit Søndergaard-Achebe signs for Freeport Exchange.\nDone.",
+      "wallMs": 52,
+      "replyBytes": 268
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "chandlery",
+      "reply": "Co-op Chandlery #108 Shelving to the ceiling on three sides, stacked with grey cases stencilled PROVISIONS / 10 CREW-DAYS and the Co-op's linked hands, and a cage at the back where the counted stock lives. The light is the harsh white of a stockroom and the air smells of cardboard, sealant and the vanilla note of ration bars. A counter at the front has a chit reader and a clipboard of loading schedules; in the corner, under a drop-and-flame sign, a second, smaller counter handles reaction mass with a schedule board and no hoses at all, because the hoses are at the berth. A handwritten sign reads TWO ABOARD, TWICE THE DAYS. The Exchange is north. #117 Dov Akintola Exchange <N> nnorthexchangeout autumn afternoon\nThe board:\n  wanted, yard fittings, crated: 560.00cr/t, 5,400 t more (Belt Carriers' Cooperative; signed Dov Akintola).",
+      "wallMs": 26,
+      "replyBytes": 839
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards, by way of Kirkwood Depot:\nCargo: 10/100 t · 4.0/120 m³ — 90 t free and 116.0 m³ free.\nRoom on this board: metal concentrate 90 t (mass), water ice 82 t (packed volume), reaction mass 80 t (mass), voyage provisions 120 crew-days (mass and packed volume).\nPayload 10.1 t of 181 t.\nBurn 48 t (tank 0 t; 48 t short). Flip and burn at 0.83 m/s² (50 milli-g rated, throttle 1000‰): Δv 1277 km/s, peak 548 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 19 crew-days (locker 0; 19 short).\nPassage 17.9 IC days ≈ 17 h 54 min real; arrives about 14:22 UTC tomorrow.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 77,
+      "replyBytes": 684
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #27=48",
+      "reply": "Quote #1: 48 × 40.00cr = 1920.00cr — good until 1792790874 (real time). It reserves nothing; take it up with +market/accept #1.",
+      "wallMs": 25,
+      "replyBytes": 130
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #1",
+      "reply": "Queued.\nContract #3 has been offered to you (@contract/show #3).\nContract #3 is active: every party has accepted.\nAgreed. Contract #3 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 273
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #31=19",
+      "reply": "Quote #2: 19 × 10.00cr = 190.00cr — good until 1792790875 (real time). It reserves nothing; take it up with +market/accept #2.",
+      "wallMs": 26,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #2",
+      "reply": "Queued.\nContract #4 has been offered to you (@contract/show #4).\nContract #4 is active: every party has accepted.\nAgreed. Contract #4 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 52,
+      "replyBytes": 263
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards, by way of Kirkwood Depot:\nCargo: 10/100 t · 4.0/120 m³ — 90 t free and 116.0 m³ free.\nRoom on this board: metal concentrate 90 t (mass), water ice 82 t (packed volume), reaction mass 32 t (mass), voyage provisions 101 crew-days (mass and packed volume).\nPayload 58.2 t of 181 t.\nBurn 53 t (tank 48 t; 5 t short). Flip and burn at 0.69 m/s² (50 milli-g rated, throttle 1000‰): Δv 1172 km/s, peak 504 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 20 crew-days (locker 19; 1 short).\nPassage 19.5 IC days ≈ 19 h 35 min real; arrives about 16:03 UTC tomorrow.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 25,
+      "replyBytes": 684
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #27=5",
+      "reply": "Quote #3: 5 × 40.00cr = 200.00cr — good until 1792790877 (real time). It reserves nothing; take it up with +market/accept #3.",
+      "wallMs": 26,
+      "replyBytes": 128
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #3",
+      "reply": "Queued.\nContract #5 has been offered to you (@contract/show #5).\nContract #5 is active: every party has accepted.\nAgreed. Contract #5 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 53,
+      "replyBytes": 273
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #31=1",
+      "reply": "Quote #4: 1 × 10.00cr = 10.00cr — good until 1792790878 (real time). It reserves nothing; take it up with +market/accept #4.",
+      "wallMs": 25,
+      "replyBytes": 127
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #4",
+      "reply": "Queued.\nContract #6 has been offered to you (@contract/show #6).\nContract #6 is active: every party has accepted.\nAgreed. Contract #6 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 50,
+      "replyBytes": 263
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards, by way of Kirkwood Depot:\nCargo: 10/100 t · 4.0/120 m³ — 90 t free and 116.0 m³ free.\nRoom on this board: metal concentrate 90 t (mass), water ice 82 t (packed volume), reaction mass 27 t (mass), voyage provisions 100 crew-days (mass and packed volume).\nPayload 63.2 t of 181 t.\nBurn 54 t (tank 53 t; 1 t short). Flip and burn at 0.68 m/s² (50 milli-g rated, throttle 1000‰): Δv 1163 km/s, peak 500 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 20; 1 short).\nPassage 19.7 IC days ≈ 19 h 45 min real; arrives about 16:13 UTC tomorrow.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 25,
+      "replyBytes": 684
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #27=1",
+      "reply": "Contract #2 has settled.\nContract #3 has settled.\nContract #4 has settled.\nContract #5 has settled.\nContract #6 has settled.\nQuote #5: 1 × 40.00cr = 40.00cr — good until 1792790880 (real time). It reserves nothing; take it up with +market/accept #5.",
+      "wallMs": 26,
+      "replyBytes": 252
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #5",
+      "reply": "Queued.\nContract #7 has been offered to you (@contract/show #7).\nContract #7 is active: every party has accepted.\nAgreed. Contract #7 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 273
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/quote #31=1",
+      "reply": "Quote #6: 1 × 10.00cr = 10.00cr — good until 1792790882 (real time). It reserves nothing; take it up with +market/accept #6.",
+      "wallMs": 27,
+      "replyBytes": 127
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+market/accept #6",
+      "reply": "Queued.\nContract #8 has been offered to you (@contract/show #8).\nContract #8 is active: every party has accepted.\nAgreed. Contract #8 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 53,
+      "replyBytes": 263
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards, by way of Kirkwood Depot:\nCargo: 10/100 t · 4.0/120 m³ — 90 t free and 116.0 m³ free.\nRoom on this board: metal concentrate 90 t (mass), water ice 82 t (packed volume), reaction mass 26 t (mass), voyage provisions 99 crew-days (mass and packed volume).\nPayload 64.2 t of 181 t.\nBurn 54 t (tank 54 t; 0 t left). Flip and burn at 0.68 m/s² (50 milli-g rated, throttle 1000‰): Δv 1161 km/s, peak 500 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 21; 0 left).\nPassage 19.7 IC days ≈ 19 h 47 min real; arrives about 16:15 UTC tomorrow.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 681
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/hold",
+      "reply": "Hold of the Relay Dray 671834 (FPC-D-0401):\n  HOLD\n    metal concentrate: 10 t · 4.0 m³\n    water ice: 0 t · 0.0 m³\n    structural alloy stock: 0 t · 0.0 m³\n    yard fittings, crated: 0 t · 0.0 m³\n    instrument boards, crated: 0 t · 0.0 m³\n    carbon billet, pressed: 0 t · 0.0 m³\n    TOTAL: 10 t · 4.0 m³\n    LIMIT: 100 t · 120 m³\n  TANKAGE reaction mass, 54 of 80 t\n  STORES voyage provisions, 21 of 120 crew-days",
+      "wallMs": 51,
+      "replyBytes": 432
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "exchange",
+      "reply": "Exchange Hall #107 A long hall under a price board that fills the whole north wall, white figures on black: metal concentrate by the tonne under the Exchange's mark, volatiles and reaction mass under the Occator drop-and-flame, an alloy bid in a column of its own, and a line of dashes where a Pallas consignment used to be. A counter runs the length of the hall below it, brass-railed, with the factor's stamp pads and manifest slots at intervals. The floor is damp near the east end, where a sample tap drips into a grating, and the whole room smells of wet steel and the faint sweetness of electrolysed water. A roller door at that end is stencilled FREIGHT STAIR, BERTH HOLDERS, and is shut. Doors lead north to Tycho and south to the chandlery; the concourse is west. #126 Rosalind Qureshi-Mbeki#127 Margit Søndergaard-Achebe Concourse <W> wwestconcourseChandlery <S> ssouthchandlerystoresTycho <N> nnorthtychoagency autumn afternoon\nThe board:\n  metal concentrate: 200.00cr/t, 3,990 t left (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  water ice: 100.00cr/t, 9,600 t left (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).\n  reaction mass: 40.00cr/t, 4,946 t left (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).\n  wanted, structural alloy stock: 520.00cr/t, 7,000 t more (Freeport Works; signed Margit Søndergaard-Achebe).\n  wanted, metal ore, run-of-mine: 70.00cr/t, 240 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, carbon ore, run-of-mine: 50.00cr/t, 120 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, strategic ore, run-of-mine: 600.00cr/t, 12 t more (Freeport Exchange; signed Margit Søndergaard-Achebe).\n  wanted, ice ore, run-of-mine: 35.00cr/t, 240 t more (Occator Water & Propellant; signed Rosalind Qureshi-Mbeki).",
+      "wallMs": 53,
+      "replyBytes": 1821
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "concourse",
+      "reply": "Freeport Concourse #104 The widest space on the deck and the loudest: boots on plate, a tannoy that clears its throat every few minutes, the Exchange ticker crawling along the east arch. Overhead the lighting is bright, bluish and new, bolted to a ceiling that is neither. A backlit map of the port stands in the middle on a pedestal with a directory under it, and benches around it hold crews waiting for clearances, for pay, for each other. The air smells of too many people and the sweet-metal tang of recycled water. Doors lead north to the Clearing and south to the Slack Line; Arrivals is west, the Exchange east. Arrivals <W> wwestarrivalsClearing <N> nnorthclearingbankExchange <X> xexchangeeasteSlack Line <S> ssouthslackbarcommons autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 757
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "arrivals",
+      "reply": "Port Watch Arrivals #103 A hall built to process people and not quite wide enough to do it. A customs counter runs along the north wall under the Port Watch's crest, a rayed circle over a wave, with a brass rail polished by elbows. Across from it a notice wall carries the port's rules in Freeport Council type and, around and over them, cooperative notices three layers deep. The light is warm and a little yellow, the only warm light on the deck. The air smells of printer heat and the coffee on the counter's far end. Voices carry; a stair behind a glass door goes down to the freight deck, and the concourse opens east. Pressure Lobby <S> ssouthlobbyberthsConcourse <E> eeastconcourseRegistry <N> nnorthregistrydeskDown <D> ddownstairdockmasterLimbo <X> xlimboooc autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 784
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "lobby",
+      "reply": "Pressure Lobby #102 A square of scuffed deck between two sets of pressure doors, lit flat and white, with nothing in it that would matter if the doors had to close. The south doors carry the stencil VISITING BERTHS and a ladder of inspection stickers going back years; the north doors say PORT and have the newer ones. Between them the air smells of nothing, which is the scrubbers working, and the only sound is the tick of the door interlocks and, under it, the pumps. A line painted across the deck marks where the station's pressure ends and the berths' begins. There are no side doors. There is nowhere to sit. Berth Gallery <S> ssouthgalleryberthsArrivals <N> nnortharrivalsport autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 701
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "gallery",
+      "reply": "Visiting Berth Gallery #101 The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby. #393 Relay Dray 671834#412 Cold Comfort#431 Ninth Ledger#450 Patience Wen#469 Kirkwood Lamp#488 Long Division#507 Dry Season#526 Tally Ho Pressure Lobby <N> nnorthlobbydoors autumn afternoon",
+      "wallMs": 51,
+      "replyBytes": 844
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the Relay Dray 671834.\nAirlock #394 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage autumn afternoon\nAboard the Relay Dray 671834 (FPC-D-0401), docked at Ceres Freeport.",
+      "wallMs": 51,
+      "replyBytes": 646
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn afternoon",
+      "wallMs": 50,
+      "replyBytes": 665
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.ceres",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/undock stickney",
+      "reply": "Queued.\nClearance filed for Stickney Yards: the plan burns 54 t of reaction mass and 21 crew-days; arrival in 19.7 IC days, about 16:16 UTC tomorrow.\nDone.",
+      "wallMs": 26,
+      "replyBytes": 155
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship",
+      "reply": "Relay Dray 671834 (Dray): under way for Stickney Yards, leg 1 of 2; arrives in 19.7 IC days, about 16:16 UTC tomorrow.\nHold: cargo 10/100 t · 4.0/120 m³ · tank 0/80 t · locker 0/120 crew-days.\nRadio: about 1 IC seconds one way to an Exchange endpoint; queue time and returning acknowledgements are additional.\nProgramme: 0 sales; buyout 90000.00cr.",
+      "wallMs": 25,
+      "replyBytes": 352
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-departure",
+      "reply": "Queued revision 1 to R5Pilotdf22fa as envelope #143. It is not their order until it arrives.",
+      "wallMs": 26,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "<- #143 rev 1 Delivered hops 1/4 age 48s from an unidentified sender  \"R5-departure\"\nStanding order: revision 1 — \"R5-departure\"  (from an unidentified sender)",
+      "wallMs": 26,
+      "replyBytes": 161
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders/ack 143",
+      "reply": "Acknowledgement queued as envelope #144. Your commander learns nothing until it arrives.",
+      "wallMs": 52,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=360",
+      "reply": "World time generation 4 opens at 360 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4092 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 5 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4091 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create R5OOC9b023f",
+      "reply": "Channel R5OOC9b023f created (id 4).  Join it with: addcom <alias>=R5OOC9b023f",
+      "wallMs": 26,
+      "replyBytes": 77
+    },
+    {
+      "actor": "God",
+      "line": "addcom r5ooc=R5OOC9b023f",
+      "reply": "[R5OOC9b023f] God has joined this channel.\nChannel R5OOC9b023f added with alias 'r5ooc'.",
+      "wallMs": 51,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "addcom r5ooc=R5OOC9b023f",
+      "reply": "[R5OOC9b023f] R5Pilotdf22fa has joined this channel.\nChannel R5OOC9b023f added with alias 'r5ooc'.",
+      "wallMs": 26,
+      "replyBytes": 98
+    },
+    {
+      "actor": "God",
+      "line": "r5ooc R5-immediate-OOC",
+      "reply": "R5OOC9b023f #1 God say R5-immediate-OOC",
+      "wallMs": 52,
+      "replyBytes": 39
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-mid-leg",
+      "reply": "Queued revision 1 to R5Pilotdf22fa as envelope #145. It is not their order until it arrives.",
+      "wallMs": 52,
+      "replyBytes": 92
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 26,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create R5OOC06ebc0",
+      "reply": "Channel R5OOC06ebc0 created (id 5).  Join it with: addcom <alias>=R5OOC06ebc0",
+      "wallMs": 26,
+      "replyBytes": 77
+    },
+    {
+      "actor": "God",
+      "line": "addcom r5ooc=R5OOC06ebc0",
+      "reply": "You already use the alias 'r5ooc' for another channel.",
+      "wallMs": 52,
+      "replyBytes": 54
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "addcom r5ooc=R5OOC06ebc0",
+      "reply": "You already use the alias 'r5ooc' for another channel.",
+      "wallMs": 26,
+      "replyBytes": 54
+    },
+    {
+      "actor": "God",
+      "line": "r5ooc R5-immediate-OOC",
+      "reply": "R5OOC9b023f #1 God say R5-immediate-OOC",
+      "wallMs": 52,
+      "replyBytes": 39
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 26.",
+      "wallMs": 52,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-mid-leg-9b1056",
+      "reply": "Queued revision 2 to R5Pilotdf22fa as envelope #146. It is not their order until it arrives.",
+      "wallMs": 52,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 60912s from R5Pilotdf22fa  \"ack 143\"\n<- #145 rev 1 Delivered hops 1/4 age 1488s from an unidentified sender  \"R5-mid-leg\"\nStanding order: revision 1 — \"R5-mid-leg\"  (from an unidentified sender)",
+      "wallMs": 24,
+      "replyBytes": 226
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "in",
+      "reply": "Central Passage #395 The Dray's spine: a narrow pressurised run of grab-rails and cable trays, with a ladder well up to the bridge and a deck hatch down to the hold, the crew compartment's hatch aft and the lock forward. Cargo tie-points stud the deck along the whole length. The hum of the drive is felt through the handrails more than heard, and the air moves with a steady draught from the scrubbers. A manifest slate is clipped by the bridge ladder, its figures the hold's own. Airlock <A> airlockforwardBridge <U> bridgeupuCrew Compartment <C> crewgalleybunksaftCargo Hold <H> holddownd autumn morning\nAboard the Relay Dray 671834 (FPC-D-0401), under way, leg 1 of 2, ETA 15:39 UTC.\nManifest slate:\n  HOLD 10 t metal concentrate; 10/100 t · 4.0/120 m³\n  TANKAGE 0/80 t\n  STORES 0/120 crew-days",
+      "wallMs": 52,
+      "replyBytes": 800
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=12",
+      "reply": "World time generation 6 opens at 12 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4090 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: enable=true; revision 27.",
+      "wallMs": 26,
+      "replyBytes": 53
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 7 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4089 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 62004s from R5Pilotdf22fa  \"ack 143\"\n<- #145 rev 1 Superseded hops 1/4 age 2580s from an unidentified sender  \"R5-mid-leg\"\n<- #146 rev 2 Delivered hops 0/4 age 1092s from an unidentified sender  \"R5-mid-leg-9b1056\"\nStanding order: revision 2 — \"R5-mid-leg-9b1056\"  (from an unidentified sender)",
+      "wallMs": 51,
+      "replyBytes": 326
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders/ack 146",
+      "reply": "Acknowledgement queued as envelope #147. Your commander learns nothing until it arrives.",
+      "wallMs": 51,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship",
+      "reply": "Relay Dray 671834 (Dray): under way for Stickney Yards, leg 1 of 2; arrives in 19.0 IC days, about 15:39 UTC tomorrow.\nHold: cargo 10/100 t · 4.0/120 m³ · tank 0/80 t · locker 0/120 crew-days.\nRadio: physical lag unavailable; traffic waits for a known endpoint.\nProgramme: 0 sales; buyout 90000.00cr.",
+      "wallMs": 52,
+      "replyBytes": 304
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-missing-ticket",
+      "reply": "Queued revision 3 to R5Pilotdf22fa as envelope #148. It is not their order until it arrives.",
+      "wallMs": 26,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 62172s from R5Pilotdf22fa  \"ack 143\"\n<- #145 rev 1 Superseded hops 1/4 age 2748s from an unidentified sender  \"R5-mid-leg\"\n<- #146 rev 2 Acknowledged hops 0/4 age 1260s from an unidentified sender  \"R5-mid-leg-9b1056\"\n-> #147 rev 2 Transmitted age 168s from R5Pilotdf22fa  \"ack 146\"\nStanding order: revision 2 — \"R5-mid-leg-9b1056\"  (from an unidentified sender)",
+      "wallMs": 25,
+      "replyBytes": 394
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 8 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4088 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 856
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=360",
+      "reply": "World time generation 9 opens at 360 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4087 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 10 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4086 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-nearer-end-changed-a83c1d",
+      "reply": "Queued revision 4 to R5Pilotdf22fa as envelope #149. It is not their order until it arrives.",
+      "wallMs": 50,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 178452s from R5Pilotdf22fa  \"ack 143\"\n-> #147 rev 2 Transmitted age 116448s from R5Pilotdf22fa  \"ack 146\"\n<- #148 rev 3 Delivered hops 1/4 age 116328s from an unidentified sender  \"R5-missing-ticket\"\nStanding order: revision 3 — \"R5-missing-ticket\"  (from an unidentified sender)",
+      "wallMs": 51,
+      "replyBytes": 311
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 178524s from R5Pilotdf22fa  \"ack 143\"\n-> #147 rev 2 Transmitted age 116520s from R5Pilotdf22fa  \"ack 146\"\n<- #148 rev 3 Superseded hops 1/4 age 116400s from an unidentified sender  \"R5-missing-ticket\"\n<- #149 rev 4 Delivered hops 1/4 age 96s from an unidentified sender  \"R5-nearer-end-changed-a83c1d\"\nStanding order: revision 4 — \"R5-nearer-end-changed-a83c1d\"  (from an unidentified sender)",
+      "wallMs": 25,
+      "replyBytes": 424
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders/ack 149",
+      "reply": "Acknowledgement queued as envelope #150. Your commander learns nothing until it arrives.",
+      "wallMs": 51,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 11 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4085 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 52,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=360",
+      "reply": "World time generation 12 opens at 360 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4084 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 856
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 13 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4083 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-leg-boundary-055b0b",
+      "reply": "Queued revision 1 to R5Pilotdf22fa as envelope #151. It is not their order until it arrives.",
+      "wallMs": 52,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 238260s from R5Pilotdf22fa  \"ack 143\"\n-> #147 rev 2 Transmitted age 176256s from R5Pilotdf22fa  \"ack 146\"\n-> #150 rev 4 Transmitted age 59736s from R5Pilotdf22fa  \"ack 149\"\n<- #151 rev 1 Delivered hops 1/4 age 96s from an unidentified sender  \"R5-leg-boundary-055b0b\"\nStanding order: revision 1 — \"R5-leg-boundary-055b0b\"  (from an unidentified sender)",
+      "wallMs": 51,
+      "replyBytes": 384
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders/ack 151",
+      "reply": "Acknowledgement queued as envelope #152. Your commander learns nothing until it arrives.",
+      "wallMs": 51,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 14 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4082 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=360",
+      "reply": "World time generation 15 opens at 360 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4081 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 856
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 16 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4080 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "+order #676=R5-dock-and-forward",
+      "reply": "Queued revision 1 to R5Pilotdf22fa as envelope #153. It is not their order until it arrives.",
+      "wallMs": 52,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "airlock",
+      "reply": "Airlock #394 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage autumn afternoon\nAboard the Relay Dray 671834 (FPC-D-0401), docked at Stickney Yards.",
+      "wallMs": 25,
+      "replyBytes": 599
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+ship/leave",
+      "reply": "You cycle the lock out into the Visiting Berth Gallery.\nVisiting Berth Gallery #156 The gallery runs the length of the visiting berths behind a wall of thick ports, each framing a cradle, a boarding tube and the stencilled number of the berth beyond. Handlines are strung the full length at shoulder height; Phobos holds nothing down, and the deck is a convention painted in yellow arrows. The air carries the cold-metal tang of a lock that has just cycled and a faint ozone of welders somewhere out in the crater. A berth board lists what sits in each cradle, who it answers to and what it owes. The pressure lobby is inward, and everything else is through the lobby. #393 Relay Dray 671834 Pressure Lobby <PL> pllobbyin autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 738
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders",
+      "reply": "-> #144 rev 1 Transmitted age 1710444s from R5Pilotdf22fa  \"ack 143\"\n-> #147 rev 2 Transmitted age 1648440s from R5Pilotdf22fa  \"ack 146\"\n-> #150 rev 4 Transmitted age 1531920s from R5Pilotdf22fa  \"ack 149\"\n-> #152 rev 1 Transmitted age 1472184s from R5Pilotdf22fa  \"ack 151\"\n<- #153 rev 1 Delivered hops 0/4 age 240s from an unidentified sender  \"R5-dock-and-forward\"\nStanding order: revision 1 — \"R5-dock-and-forward\"  (from an unidentified sender)",
+      "wallMs": 25,
+      "replyBytes": 452
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 27: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange",
+      "wallMs": 26,
+      "replyBytes": 160
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 52,
+      "replyBytes": 56
+    },
+    {
+      "actor": "R5Pilotdf22fa",
+      "line": "+orders/ack 153",
+      "reply": "Acknowledgement queued as envelope #154. Your commander learns nothing until it arrives.",
+      "wallMs": 53,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 27: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange",
+      "wallMs": 26,
+      "replyBytes": 160
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 51,
+      "replyBytes": 56
+    }
+  ],
+  "milestones": [
+    {
+      "test": "real-trade-departure",
+      "hull": 393,
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74162367552,
+        "hull": 393,
+        "manifest": {
+          "cargo": {
+            "metals": 10
+          },
+          "locker": 21,
+          "occupants": 1,
+          "tank": 54
+        },
+        "order": null,
+        "payload_kg": 64184,
+        "plan": {
+          "burn_t": 54,
+          "crew_days": 21,
+          "depart_ic": 74162367552,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "kirkwood",
+              "dist_km": 9611267,
+              "secs": 238014,
+              "t0": 74162367552,
+              "t1": 74162605566,
+              "to": "kirkwood_depot"
+            },
+            {
+              "body": "phobos",
+              "dist_km": 367803475,
+              "secs": 1472380,
+              "t0": 74162605566,
+              "t1": 74164077946,
+              "to": "stickney_yards"
+            }
+          ],
+          "route": "ceres_stickney",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 1710394
+        },
+        "route": "ceres_stickney",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 12,
+        "seq": 1,
+        "unit_definition": "02a78274ff9abf728a444622bffa07f1a3e71922e92ae5f02e3271acd907377f"
+      },
+      "journey": {
+        "advanced_at": {
+          "at": 74162367600,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "anomaly": null,
+        "applied_revision": 0,
+        "cursor": 0,
+        "departed": {
+          "at": 74162367552,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "destination": {
+          "domain": 10,
+          "kind": "Direct",
+          "pose": {
+            "heading_mdeg": 0,
+            "posture": {
+              "data": null,
+              "schema": {
+                "digest": "7363baccd21c4729e8faf98c2b6479a0c33ce97f3d5a6487e57c5a0c4ac76afe",
+                "key": {
+                  "id": "passive",
+                  "kind": "schema",
+                  "owner": "sim"
+                },
+                "version": 1
+              }
+            },
+            "x_cm": 0,
+            "y_cm": 0,
+            "z_cm": 0
+          }
+        },
+        "journey": 0,
+        "leg_s": [
+          238014,
+          1472380
+        ],
+        "root": 393,
+        "route": {
+          "bodies": [
+            "ceres",
+            "phobos"
+          ],
+          "distance_km": 215272559,
+          "drive_class": "coast_hauler",
+          "endpoints": [
+            364,
+            372
+          ],
+          "id": "ceres_stickney",
+          "legs": [
+            {
+              "base_s": 61776,
+              "to": 368
+            },
+            {
+              "base_s": 942997,
+              "to": 372
+            }
+          ],
+          "propellant": 0
+        },
+        "state": {
+          "state": "Cruising"
+        }
+      }
+    },
+    {
+      "test": "departure",
+      "id": 143,
+      "ackId": 144,
+      "frozen": {
+        "basis": "ship.v1:86a0cd1e241f12f4736d82d0485886e66deb47ffa09d039e830ea8d451dda302",
+        "due": {
+          "at": 74162367625,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1,
+        "started": {
+          "at": 74162367624,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "ackFlight": {
+        "basis": "ship.v1:751c3efc68229b0ab973b37944172b5fa0d90abbaf91d87b3e196da86b290775",
+        "due": {
+          "at": 74162367673,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1,
+        "started": {
+          "at": 74162367672,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "delivered": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74162367648,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "id": 143,
+        "issued": {
+          "at": 74162367600,
+          "clock": {
+            "generation": 1,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [
+          {
+            "at": {
+              "at": 74162367624,
+              "clock": {
+                "generation": 1,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 664
+          }
+        ],
+        "payload": "R5-departure",
+        "recipient": 676,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 393,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74162367600,
+                "clock": {
+                  "generation": 1,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74162367600,
+                  "clock": {
+                    "generation": 1,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74162367600,
+                  "clock": {
+                    "generation": 1,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 213
+              }
+            },
+            {
+              "arrived": {
+                "at": 74162367648,
+                "clock": {
+                  "generation": 1,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:86a0cd1e241f12f4736d82d0485886e66deb47ffa09d039e830ea8d451dda302",
+                "due": {
+                  "at": 74162367625,
+                  "clock": {
+                    "generation": 1,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 1,
+                "started": {
+                  "at": 74162367624,
+                  "clock": {
+                    "generation": 1,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 112,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 213
+            },
+            {
+              "from": 213,
+              "pair": "luna_ceres",
+              "relay": 664,
+              "to": 112
+            },
+            {
+              "from": 112,
+              "pair": null,
+              "relay": null,
+              "to": 393
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 393,
+          "queued_at": null,
+          "registry_revision": 25,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "ooc-immediate",
+      "wallMs": 53
+    },
+    {
+      "test": "mid-passage-radio-flight",
+      "signal": "SIGKILL",
+      "gateway": 615493,
+      "old": 615512,
+      "fresh": 618850
+    },
+    {
+      "test": "ooc-immediate",
+      "wallMs": 52
+    },
+    {
+      "test": "mid-passage-radio-flight",
+      "signal": "SIGKILL",
+      "gateway": 615493,
+      "old": 618850,
+      "fresh": 619090
+    },
+    {
+      "test": "world-rate-change",
+      "before": 74162428632,
+      "after": 74162428644,
+      "flight": {
+        "basis": "ship.v1:5388ed965d90870b001ce6897b5a52557dbe92e33ad73407aede61e1c6851843",
+        "due": {
+          "at": 74162429647,
+          "clock": {
+            "generation": 5,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1087,
+        "started": {
+          "at": 74162428560,
+          "clock": {
+            "generation": 5,
+            "kind": "world_ic"
+          }
+        }
+      }
+    },
+    {
+      "test": "mid-leg",
+      "id": 146,
+      "ackId": 147,
+      "frozen": {
+        "basis": "ship.v1:5388ed965d90870b001ce6897b5a52557dbe92e33ad73407aede61e1c6851843",
+        "due": {
+          "at": 74162429647,
+          "clock": {
+            "generation": 5,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1087,
+        "started": {
+          "at": 74162428560,
+          "clock": {
+            "generation": 5,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "ackFlight": {
+        "basis": "ship.v1:67f7e82f93f24f18e2a460bb3324ba50c6b6e6ac9a2aec2629ff30b1b069e351",
+        "due": {
+          "at": 74162429685,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 9,
+        "started": {
+          "at": 74162429676,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "delivered": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74162429652,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        },
+        "id": 146,
+        "issued": {
+          "at": 74162428560,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [],
+        "payload": "R5-mid-leg-9b1056",
+        "recipient": 676,
+        "revision": 2,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 393,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74162429652,
+                "clock": {
+                  "generation": 7,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:5388ed965d90870b001ce6897b5a52557dbe92e33ad73407aede61e1c6851843",
+                "due": {
+                  "at": 74162429647,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 1087,
+                "started": {
+                  "at": 74162428560,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            },
+            {
+              "arrived": {
+                "at": 74162429652,
+                "clock": {
+                  "generation": 7,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:2032e9e963ce8637a180690dc01007a5e78a13bacad0fa88203fd64ab2922451",
+                "due": {
+                  "at": 74162429652,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74162429652,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 393,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 393,
+              "pair": null,
+              "relay": null,
+              "to": 393
+            }
+          ],
+          "next": 1,
+          "physical_legs": 2,
+          "position": 393,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "missing-ticket-recovery",
+      "unknown": 148,
+      "delivered": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74162429892,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        },
+        "id": 148,
+        "issued": {
+          "at": 74162429772,
+          "clock": {
+            "generation": 7,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [
+          {
+            "at": {
+              "at": 74162429868,
+              "clock": {
+                "generation": 7,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 664
+          }
+        ],
+        "payload": "R5-missing-ticket",
+        "recipient": 676,
+        "revision": 3,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 393,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74162429844,
+                "clock": {
+                  "generation": 7,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74162429844,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74162429844,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 213
+              }
+            },
+            {
+              "arrived": {
+                "at": 74162429892,
+                "clock": {
+                  "generation": 7,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:7f8cc6fdc5fa49d980a4550a4058b7a6d98dae4375adf6775d98729451078f6d",
+                "due": {
+                  "at": 74162429877,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 9,
+                "started": {
+                  "at": 74162429868,
+                  "clock": {
+                    "generation": 7,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 112,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 213
+            },
+            {
+              "from": 213,
+              "pair": "luna_ceres",
+              "relay": 664,
+              "to": 112
+            },
+            {
+              "from": 112,
+              "pair": null,
+              "relay": null,
+              "to": 393
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 393,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "nearer-end-changed",
+      "id": 149,
+      "ackId": 150,
+      "frozen": {
+        "basis": "ship.v1:47098369886ee3ed9c0b8d6fa51a084b72b124ad0b3a6a3f04fb3416693514b8",
+        "due": {
+          "at": 74162546154,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 54,
+        "started": {
+          "at": 74162546100,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "ackFlight": {
+        "basis": "ship.v1:f3b38776a6b31e239cf2491fd07748b6a50b24509652eea4d78a2e92fd4cfb28",
+        "due": {
+          "at": 74162546250,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 54,
+        "started": {
+          "at": 74162546196,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "delivered": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74162546172,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        },
+        "id": 149,
+        "issued": {
+          "at": 74162546076,
+          "clock": {
+            "generation": 10,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [
+          {
+            "at": {
+              "at": 74162546100,
+              "clock": {
+                "generation": 10,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 664
+          }
+        ],
+        "payload": "R5-nearer-end-changed-a83c1d",
+        "recipient": 676,
+        "revision": 4,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 393,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74162546076,
+                "clock": {
+                  "generation": 10,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74162546076,
+                  "clock": {
+                    "generation": 10,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74162546076,
+                  "clock": {
+                    "generation": 10,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 213
+              }
+            },
+            {
+              "arrived": {
+                "at": 74162546172,
+                "clock": {
+                  "generation": 10,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:47098369886ee3ed9c0b8d6fa51a084b72b124ad0b3a6a3f04fb3416693514b8",
+                "due": {
+                  "at": 74162546154,
+                  "clock": {
+                    "generation": 10,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 54,
+                "started": {
+                  "at": 74162546100,
+                  "clock": {
+                    "generation": 10,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 112,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 213
+            },
+            {
+              "from": 213,
+              "pair": "luna_ceres",
+              "relay": 664,
+              "to": 112
+            },
+            {
+              "from": 112,
+              "pair": null,
+              "relay": null,
+              "to": 393
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 393,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "leg-boundary",
+      "id": 151,
+      "ackId": 152,
+      "frozen": {
+        "basis": "ship.v1:ca00b028d6d8f10f927bfc00e1144af409d2f4047eb0c4fc4e42bd3187e3fab8",
+        "due": {
+          "at": 74162605882,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 46,
+        "started": {
+          "at": 74162605836,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "ackFlight": {
+        "basis": "ship.v1:4272f16b186160f9082476415a93960146797ea9eb16f3e3de7789ee00fb6273",
+        "due": {
+          "at": 74162605954,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 46,
+        "started": {
+          "at": 74162605908,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "delivered": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74162605884,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        },
+        "id": 151,
+        "issued": {
+          "at": 74162605812,
+          "clock": {
+            "generation": 13,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [
+          {
+            "at": {
+              "at": 74162605836,
+              "clock": {
+                "generation": 13,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 664
+          }
+        ],
+        "payload": "R5-leg-boundary-055b0b",
+        "recipient": 676,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 393,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74162605812,
+                "clock": {
+                  "generation": 13,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74162605812,
+                  "clock": {
+                    "generation": 13,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74162605812,
+                  "clock": {
+                    "generation": 13,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 213
+              }
+            },
+            {
+              "arrived": {
+                "at": 74162605884,
+                "clock": {
+                  "generation": 13,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:ca00b028d6d8f10f927bfc00e1144af409d2f4047eb0c4fc4e42bd3187e3fab8",
+                "due": {
+                  "at": 74162605882,
+                  "clock": {
+                    "generation": 13,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 46,
+                "started": {
+                  "at": 74162605836,
+                  "clock": {
+                    "generation": 13,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 112,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 213
+            },
+            {
+              "from": 213,
+              "pair": "luna_ceres",
+              "relay": 664,
+              "to": 112
+            },
+            {
+              "from": 112,
+              "pair": null,
+              "relay": null,
+              "to": 393
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 393,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "docking-and-forwarding",
+      "landing": 153,
+      "landingFlight": {
+        "basis": "ship.v1:90b222735b728cd4b53fc011a8a5c5834a30df2fe7fb7defb81aa991be923691",
+        "due": {
+          "at": 74164078051,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 199,
+        "started": {
+          "at": 74164077852,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "landed": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74164078092,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "id": 153,
+        "issued": {
+          "at": 74164077852,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [],
+        "payload": "R5-dock-and-forward",
+        "recipient": 676,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 156,
+          "flight": null,
+          "forwardings": 1,
+          "history": [
+            {
+              "arrived": {
+                "at": 74164078068,
+                "clock": {
+                  "generation": 16,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:90b222735b728cd4b53fc011a8a5c5834a30df2fe7fb7defb81aa991be923691",
+                "due": {
+                  "at": 74164078051,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 199,
+                "started": {
+                  "at": 74164077852,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 393
+              }
+            },
+            {
+              "arrived": {
+                "at": 74164078092,
+                "clock": {
+                  "generation": 16,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "ship.v1:46e66e5a515bf461c358083def5b3d33f1415d615a8a03ab86473f9b383eb240",
+                "due": {
+                  "at": 74164078069,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 1,
+                "started": {
+                  "at": 74164078068,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 393,
+                "pair": null,
+                "relay": null,
+                "to": 156
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 393,
+              "pair": null,
+              "relay": null,
+              "to": 156
+            }
+          ],
+          "next": 1,
+          "physical_legs": 2,
+          "position": 156,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      },
+      "journey": {
+        "advanced_at": {
+          "at": 74164077948,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "anomaly": null,
+        "applied_revision": 3,
+        "cursor": 2,
+        "departed": {
+          "at": 74162367552,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "destination": {
+          "domain": 10,
+          "kind": "Direct",
+          "pose": {
+            "heading_mdeg": 0,
+            "posture": {
+              "data": null,
+              "schema": {
+                "digest": "7363baccd21c4729e8faf98c2b6479a0c33ce97f3d5a6487e57c5a0c4ac76afe",
+                "key": {
+                  "id": "passive",
+                  "kind": "schema",
+                  "owner": "sim"
+                },
+                "version": 1
+              }
+            },
+            "x_cm": 0,
+            "y_cm": 0,
+            "z_cm": 0
+          }
+        },
+        "journey": 0,
+        "leg_s": [
+          238014,
+          1472380
+        ],
+        "root": 393,
+        "route": {
+          "bodies": [
+            "ceres",
+            "phobos"
+          ],
+          "distance_km": 215272559,
+          "drive_class": "coast_hauler",
+          "endpoints": [
+            364,
+            372
+          ],
+          "id": "ceres_stickney",
+          "legs": [
+            {
+              "base_s": 61776,
+              "to": 368
+            },
+            {
+              "base_s": 942997,
+              "to": 372
+            }
+          ],
+          "propellant": 0
+        },
+        "state": {
+          "state": "Arrived"
+        }
+      }
+    },
+    {
+      "test": "docking-return-ack",
+      "landing": 153,
+      "ackId": 154,
+      "ackFlight": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:phobos:luna:74164080996",
+        "due": {
+          "at": 74164081195,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 199,
+        "started": {
+          "at": 74164080996,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "delivered": {
+        "ack_of": 153,
+        "advanced": {
+          "at": 74164081212,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "id": 154,
+        "issued": {
+          "at": 74164080972,
+          "clock": {
+            "generation": 16,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 676,
+        "kind": "acknowledgement",
+        "path": [],
+        "payload": "ack 153",
+        "recipient": 1,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 202,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74164081212,
+                "clock": {
+                  "generation": 16,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:phobos:luna:74164080996",
+                "due": {
+                  "at": 74164081195,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 199,
+                "started": {
+                  "at": 74164080996,
+                  "clock": {
+                    "generation": 16,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 156,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 156,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            }
+          ],
+          "next": 1,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 27,
+          "version": 1
+        }
+      }
+    }
+  ],
+  "hull": 393,
+  "dev2Pid": 539467,
+  "passed": true
+}

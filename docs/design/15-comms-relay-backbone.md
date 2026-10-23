@@ -5,7 +5,8 @@ in §10 are answered. **All mail is IC and must transit; there is no OOC mail mo
 R1's registry and R2's routed orders, reports and returning ACKs are implemented
 and deployed on dev1. Their live integration checks passed. The owner authorized
 Gate 3 / R5 after the CI repair's dev1 rerun and is monitoring the long CI run.
-[15b](15b-comms-relay-cut-notes.md) records the evidence and current R5 gate.
+R5 is implemented and its real dev1 passage gate passed. Work is paused before R6a.
+[15b](15b-comms-relay-cut-notes.md) records the evidence and outstanding CI criterion.
 [15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
 mandatory integration stop after every milestone. Mail transit remains R6a.
 
@@ -129,9 +130,9 @@ positions.
 ta, b, tb)` (cut A.1; one-way, whole seconds up, over the Kepler positions) and `+chart`'s lag column
 (cut A.3: every lane body's light lag from the port you stand at, e.g. Pallas from Ceres), so the
 "fallback" column's ranges are now read off the moving sky rather than authored. R1 now records
-installed nodes, pairs and coverage, but routing, queues and node hops remain unimplemented.
-When R5 is built it reads a ship's lag from `light_lag_s` at the end bodies and the ticket's
-frozen legs, as D-15-11 says, and nothing in doc 19 forecloses it.
+installed nodes, pairs and coverage. R2 now routes stationary traffic through those
+nodes with bounded FIFO capacity and timed fallback. R5 reads a ship's lag from the
+sky at the end bodies and the ticket's frozen legs, as D-15-11 says.
 
 ## 4. Topology at world start: the Luna star (D-15-6)
 
@@ -306,7 +307,7 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (R1–R2 implemented; R5 in integration)
+## 8. Engine backlog (R1, R2 and R5 implemented)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
@@ -330,6 +331,14 @@ typed dispatch kinds keep messages out of standing-order supersession. Staff
 inspect routes with `@prop/route`. The dev1 live gate passed; full CI status and
 limits are recorded in 15b. The owner continued to R5 after the corrective dev1
 rerun. Mail/channels, service classes and billing remain later cuts.
+
+**R5 as built (2026-10-23):** the metric adapter reads the real typed passage ticket
+and journey cursor, interpolates the frozen leg distance to its nearer endpoint,
+and freezes each physical radio flight. Hull membership covers passengers and
+nested rooms; disembarkation uses bounded forwarding. Missing tickets wait.
+An aboard-only `+ship` estimate states one-way physical lag. A real Dray completed
+the Ceres–Kirkwood–Stickney passage on dev1 with delayed traffic and ACKs, restart,
+rate-change, ticket-loss and docking checks. See 15b for evidence and CI status.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

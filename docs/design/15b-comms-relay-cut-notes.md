@@ -179,7 +179,8 @@ job as accepted.
 **Deployed code candidate:** `1182c36f3c890aa9b0a06fd84c659e73f56b03a2`.
 Subsequent changes add test automation, CI inventory and evidence only.
 **Status:** implementation, focused checks and the deployed dev1 live gate pass.
-Full §5 acceptance remains pending normal candidate CI. **Stop before R5.**
+Full §5 acceptance remains pending normal candidate CI. The initial stop before
+R5 was subsequently released by the owner after the corrective dev1 rerun below.
 
 ### Implemented boundary and ownership
 
@@ -366,7 +367,14 @@ station upgrade test also passed. The rerunnable client now checks the specific
 outgoing row (old ACK history may legitimately say Delivered), reuses gateway
 sessions across child restarts and respects login throttling.
 
-## Gate 3 — R5: ticketed ships underway (candidate)
+## Gate 3 — R5: ticketed ships underway (2026-10-23)
+
+**Base:** CI repair `7bed1a2aabf3a34f3e0c8adcc734bd1bcd17da3e`.
+**Deployed code candidate:** `a401e7e49e5c818864bb1ed589f3647d009ad377`.
+Subsequent changes refine the live runner and record evidence; deployed Rust code
+is unchanged. **Status:** implementation and deployed integration gate passed.
+Full §5 acceptance is **not yet declared**: normal candidate CI remains required,
+and the owner is monitoring it. **Paused before R6a.**
 
 ### Implementation and compatibility
 
@@ -417,8 +425,75 @@ selection, a real leg boundary, docking/disembarkation forwarding, ticket loss a
 recovery, saved-flight restart, rate changes, hull-room movement and delayed ACKs.
 The existing six ship story tests and ten relay integration tests also pass.
 
-Real dev1 acceptance is pending on the final candidate. `scripts/relay-r5-live.mjs`
-uses authenticated WebSocket clients, normal trade/departure commands, the real
-IC clock, a verified dev1-child SIGKILL, and a reversible missing-ticket fault while
-dev1 is stopped. Its evidence and final results will be recorded here before the
-gate is closed. **Stop after R5; R6a is not authorized by this continuation.**
+The final code candidate passed these checks, with no failures or ignored tests
+in the selected suites:
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p mush-propagation` | 111 passed |
+| `cargo test -p mush-server --test ic_slice_loop --test relay_registry` | 17 passed: seven ship stories and ten registry tests |
+| `cargo test -p mush-contract-tests --test panic_budget` | 8 passed; no budget increases |
+| `cargo clippy -p tacsim -p mush-propagation -p mush-server --lib --tests -j4 -- -D warnings` | Passed |
+| `cargo fmt -p tacsim -p mush-propagation -p mush-server --check` | Passed |
+| `cargo test -p mush-server --test ic_slice_loop r5_real_dray_radio_freezes_forwards_and_recovers -- --exact --nocapture` on dev1 | 1 passed, 0 failed/ignored, six filtered; 55.22 seconds |
+
+The Linux story output is preserved in
+[story-test.log](evidence/relay-r5-2026-10-23/story-test.log). The release server and
+gateway were built from the named candidate on the VPS, including matching web
+assets. The upgrade retained the exact registry and all **675** existing objects.
+No content pack or durable schema changed.
+
+### Deployed live evidence
+
+The live gate used authenticated TLS WebSocket clients against the split dev1
+gateway/server at `conclav.io:6790`, with Redis on 6788. Certificate verification
+remained enabled. A newly enrolled pilot bought the real cargo, fuel and provisions,
+boarded Dray **#393**, and departed through ordinary clearance. Its frozen ticket
+ran Ceres → Kirkwood → Stickney for **1,710,394 IC seconds**. Accelerating the real
+IC clock between checkpoints did not substitute for journey transitions.
+
+| Check | Observed result |
+| --- | --- |
+| Departure | Ship radio flight and returning ACK each froze at **1 IC second**. |
+| Mid-leg crash and rate change | A **1,087 IC second** conventional flight survived verified server-child SIGKILL exactly. Rate changes 24→12→24 retained its due instant and metric basis. Repairing the pair did not accelerate it. The payload stayed hidden until due; its returning ACK had **9 IC seconds** of physical lag. |
+| Hull movement | Walking between hull rooms spent zero forwarding hops. |
+| Missing ticket | With dev1 stopped, removing only the fixture's typed ticket made lag unavailable and left a new order queued with no route or recipient payload. Restoring the exact ticket and restarting resumed delivery. No injected fault remains. |
+| Nearer end and leg boundary | At the later first-leg checkpoint, traffic and ACK each had **54 IC seconds** of physical lag. After the real cursor advanced to the second leg, each had **46 IC seconds**. Exact nearest-end arithmetic is also asserted by the Rust story. |
+| Docking and forwarding | A **199 IC second** radio flight spanned actual docking at **74,164,077,948**. After the pilot disembarked, the order forwarded exactly once from hull to berth; it arrived at **74,164,078,092**, after its original due instant **74,164,078,051**. The docked return ACK also took **199 IC seconds**, arriving at **74,164,081,212** after its due instant **74,164,081,195**. |
+| OOC | Messages arrived in **52–53 ms** during the passage. |
+| Final health | Relay bindings valid, gateway and Redis active, world rate restored to **24**, all original objects present, and dev2 gateway PID **539467** unchanged. |
+
+The **93-command** transcript, frozen flights, arrivals, ticket and journey snapshots,
+and crash PIDs are in [live.json](evidence/relay-r5-2026-10-23/live.json).
+[environment.json](evidence/relay-r5-2026-10-23/environment.json) records source,
+runner and binary hashes, service PIDs, object counts and command timing. Credentials
+and database/binary backups remain root-only on the VPS and are not committed.
+Client command latency was median **51 ms**, maximum **77 ms**; the largest reply
+was **12,326 bytes**. These measurements describe this instance, not CI thresholds.
+
+Reproduce on this explicitly disposable instance with Node 22:
+
+```sh
+export NODE_EXTRA_CA_CERTS=/opt/rustmush/dev1/tls/cert.pem
+/opt/rustmush/dev1/r1-tools/node_modules/node/bin/node scripts/relay-r5-live.mjs \
+  https://conclav.io:6790 /opt/rustmush/dev1/r1-evidence/credentials.json \
+  /opt/rustmush/dev1/r5-evidence 6788
+```
+
+The runner deliberately creates traffic, changes the IC rate and kills only the
+verified dev1 child. It removes the fixture ticket only with dev1 stopped and
+restores it in its cleanup path. `R5_RESUME=1` continues the same recorded voyage
+and skips completed checkpoints, using its existing root-only pilot credentials.
+
+Two harness assumptions were corrected during this gate. Global port status can
+remain unready while unrelated mining sites map; the real enrolment and departure
+commands enforce this trade path's readiness. A short nine-second radio flight
+also arrived normally during the first restart attempt, so it could not prove
+in-flight retention. The successful crash check disables the pair first to obtain
+the longer real fallback flight, then repairs it to test frozen-flight behavior.
+The transcript retains both SIGKILL events; only the longer flight establishes
+retention. Client resumption kept the actual ship and ticket, and unique payloads
+prevent matching older traffic. No server behavior was relaxed to pass the gate.
+
+**Stop after R5.** R6a and later implementation remain unstarted. GitHub CI is the
+remaining acceptance criterion, with monitoring handed to the owner as requested.

@@ -8,8 +8,9 @@ and evidence record. R1 is pushed to main. The owner authorized R2 after that
 push; R2 is implemented and its dev1 live checks passed. Normal candidate CI is
 still required for full acceptance under §5. After the CI repair's dev1 rerun
 passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
-CI run. R5 is in progress; its real-server gate remains mandatory. Stop after
-R5, before R6a; all later milestones remain unstarted.
+CI run. R5 is implemented and its real-server gate passed; 15b records the results.
+Full acceptance still requires normal candidate CI. Work is paused after R5,
+before R6a; all later milestones remain unstarted.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -478,6 +479,7 @@ continues.
 
 The initial action was R1 only: registry, minimal Luna–Ceres seed, diagnostics,
 real Redis/client testing and an owner review. The owner subsequently authorized
-the R1 push and R2 implementation. **Current stop: after R2, before R5.** Complete
-and report R2's evidence and any outstanding CI result before asking the owner
-to continue to another milestone.
+the R1 push and R2 implementation, then Gate 3 / R5 after the corrective dev1
+rerun. **Current stop: after R5, before R6a.** R5's deployed integration gate passed
+and its evidence is recorded in 15b. The owner is monitoring GitHub CI; the next
+implementation milestone needs a new continuation.

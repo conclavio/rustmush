@@ -1,0 +1,21 @@
+{
+  "candidate": "a401e7e49e5c818864bb1ed589f3647d009ad377",
+  "sourceArchiveSha256": "ac1dbf390ffd252c9984fcfa2f5a7627c1194a8474c654d1e3baadf9c7eb32b5",
+  "liveRunnerSha256": "dedc6210f437e120ca81b635114d973947a3a8e92184d7dad5406d24226b4213",
+  "binaries": {
+    "mush-server": "4cec4b41e782b18d9eb26337d924398f919faea9c518642719703f7407b016c7",
+    "mush-gateway": "020070c6a02d2caad807dcc897d49edb1a3f5c056f1c60f89c553f69046bc0e0"
+  },
+  "gatewayPid": 619405,
+  "serverPid": 619417,
+  "dev2": "MainPID=539467",
+  "worldRate": 24,
+  "originalObjectsPreserved": 675,
+  "finalObjects": 677,
+  "commands": 93,
+  "medianCommandMs": 51,
+  "maxCommandMs": 77,
+  "maxReplyBytes": 12326,
+  "linuxStoryPassed": true,
+  "livePassed": true
+}
