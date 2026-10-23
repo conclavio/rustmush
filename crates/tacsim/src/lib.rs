@@ -101,7 +101,6 @@ pub mod commands;
 pub mod composition;
 pub mod config;
 pub mod content;
-pub mod relay_content;
 /// 16b cut C.2 (C1, C3, C4): **the game's typed definitions and the content it
 /// ships** (doc 16 §3.3, §3.5, §3.6, §4, §7).
 ///
@@ -143,6 +142,7 @@ pub mod pack;
 pub mod port;
 pub mod port_tick;
 pub mod record;
+pub mod relay_content;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
 /// facts of doc 10 §17–§19, `+sheet`/`+chargen`/`+stat`/`+roll` over

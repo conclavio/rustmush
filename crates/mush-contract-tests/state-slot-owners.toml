@@ -99,6 +99,13 @@ through the economy module's own path.
 """
 
 [[site]]
+path = "crates/tacsim/src/relay_content.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = "R1 takes the Malapert operator and root-scope IDs from org's monotonic allocators, then creates both through mush_org::submit. Same allocator-only access as the port content applier; missing composition refuses before mutation."
+
+[[site]]
 path = "crates/tacsim/src/port/apply.rs"
 accessor = "World::module_state_mut"
 slot = "OrgStore"

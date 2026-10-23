@@ -102,8 +102,8 @@ pub struct RelayRegistry {
 impl RelayRegistry {
     /// Shape checks run before any reference walk or insertion.
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.revision == 0 || self.operator.0 == 0 {
-            return Err("unsupported version, zero revision or missing operator".into());
+        if self.version != 1 || self.revision == 0 {
+            return Err("unsupported version or zero revision".into());
         }
         if self.nodes.is_empty()
             || self.nodes.len() > MAX_NODES
