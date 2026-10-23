@@ -14,6 +14,14 @@
   // (held) — `HEADING` orders, sent as the SSH TUI's view sends them, the one
   // place the cockpit tab sends an order rather than prefilling one — `,` and
   // `.` swing the look (again to stop), `c` centres it, space stops both.
+  //
+  // **Drawn here** (doc 21 cut G.3b): where the browser can (WebAssembly and
+  // `ImageData`), the picture is drawn in it, by the engine's own renderer
+  // built to wasm, from the keyframes this connection already holds — the
+  // gateway is not asked and draws nothing. The server's picture is the
+  // fallback (a module that will not load or that traps) and a choice the
+  // header offers, remembered in this browser. Drawn here, the look is the
+  // store's alone and nothing is sent for it.
   import type { GameApp } from "$lib/game.svelte";
   import {
     HELM_REPEAT_MS,
@@ -23,6 +31,15 @@
     pictureKey,
     swingLook,
   } from "$lib/picture";
+  import {
+    FRAME_H,
+    FRAME_W,
+    LOCAL_FRAME_MS,
+    LocalPicture,
+    PICTURE_SOURCE_KEY,
+    localCapable,
+    pixelModule,
+  } from "$lib/pixel/local";
   import { storageGet, storageSet } from "$lib/storage";
   import { untrack } from "svelte";
 
@@ -36,6 +53,42 @@
   /** The held turn: `-1` left, `0` none, `1` right. */
   let turning = $state<-1 | 0 | 1>(0);
 
+  /** Drawn here or by the server, as this browser chose (here by default,
+   * where it can be). */
+  let source = $state<"here" | "server">(
+    storageGet(PICTURE_SOURCE_KEY) === "server" || !localCapable() ? "server" : "here",
+  );
+  /** Why the picture could not be drawn here, once it could not. */
+  let localFailed = $state<string | null>(null);
+  let local = $state.raw<LocalPicture | null>(null);
+  /** A frame has been drawn here. */
+  let drawnHere = $state(false);
+  const here = $derived(source === "here" && localFailed === null);
+  /** Whether the picture is up: drawn here while wanted and visible, or the
+   * server's while asked for. */
+  const active = $derived(here ? wanted && visible : app.picture.on);
+
+  function toggleSource(): void {
+    source = source === "here" ? "server" : "here";
+    storageSet(PICTURE_SOURCE_KEY, source);
+    localFailed = null;
+  }
+
+  /** The look, in millidegrees: the store's alone while drawn here, asked of
+   * the server otherwise. */
+  function lookTo(mdeg: number): void {
+    if (here) {
+      app.picture.lookMdeg = mdeg;
+    } else {
+      app.setPicture(true, mdeg);
+    }
+  }
+
+  function fail(err: unknown): void {
+    localFailed = err instanceof Error ? err.message : String(err);
+    local = null;
+  }
+
   // The latest heading, for the helm's repeats (a prop read inside a timer).
   let heading = 0;
   $effect(() => {
@@ -47,10 +100,10 @@
     storageSet(PICTURE_PREF_KEY, wanted ? "on" : "off");
   }
 
-  // Asked for while wanted and visible; stopped when either goes, and when
-  // the view is torn down.
+  // The server's picture: asked for while wanted and visible and not drawn
+  // here; stopped when any of those goes, and when the view is torn down.
   $effect(() => {
-    const want = wanted && visible;
+    const want = wanted && visible && !here;
     untrack(() => app.setPicture(want, want ? app.picture.lookMdeg : 0));
     return () => untrack(() => app.setPicture(false, 0));
   });
@@ -63,7 +116,55 @@
     return () => document.removeEventListener("visibilitychange", onVisibility);
   });
 
-  // Each frame drawn as it arrives, at its own size; CSS scales the canvas.
+  // Drawn here: the module loaded once, while wanted.
+  $effect(() => {
+    if (!(wanted && here) || local !== null) return;
+    let live = true;
+    pixelModule().then(
+      (m) => {
+        if (live) local = new LocalPicture(m);
+      },
+      (err: unknown) => {
+        if (live) fail(err);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
+
+  // Drawn here: a frame at most every `LOCAL_FRAME_MS` while wanted and
+  // visible, put on the canvas only when it changed.
+  $effect(() => {
+    const l = local;
+    const c = canvas;
+    if (!l || !c || !(wanted && visible && here)) return;
+    let raf = 0;
+    let last = -Infinity;
+    const tick = (t: number): void => {
+      raf = requestAnimationFrame(tick);
+      if (t - last < LOCAL_FRAME_MS) return;
+      last = t;
+      try {
+        if (l.draw(app.picture.cockpitData, app.picture.mapData, app.picture.lookMdeg)) {
+          if (c.width !== FRAME_W || c.height !== FRAME_H) {
+            c.width = FRAME_W;
+            c.height = FRAME_H;
+          }
+          c.getContext("2d")?.putImageData(l.image(), 0, 0);
+          drawnHere = true;
+        }
+      } catch (err) {
+        cancelAnimationFrame(raf);
+        fail(err);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  });
+
+  // The server's frames drawn as they arrive, at their own size; CSS scales
+  // the canvas.
   $effect(() => {
     const blob = app.picture.frame;
     const c = canvas;
@@ -87,7 +188,7 @@
     const dir = lookTurn;
     if (dir === 0) return;
     const timer = setInterval(() => {
-      app.setPicture(true, swingLook(app.picture.lookMdeg, dir, LOOK_STEP_MS));
+      lookTo(swingLook(app.picture.lookMdeg, dir, LOOK_STEP_MS));
     }, LOOK_STEP_MS);
     return () => clearInterval(timer);
   });
@@ -110,7 +211,7 @@
 
   function onKeyDown(ev: KeyboardEvent): void {
     const key = pictureKey(ev.key);
-    if (key === null || !app.picture.on) return;
+    if (key === null || !active) return;
     ev.preventDefault();
     switch (key.kind) {
       case "turn":
@@ -121,7 +222,7 @@
         break;
       case "centre":
         lookTurn = 0;
-        app.setPicture(true, 0);
+        lookTo(0);
         break;
       case "stop":
         lookTurn = 0;
@@ -143,8 +244,18 @@
   <header>
     <strong>picture</strong>
     <span class="grow"></span>
-    {#if wanted && app.picture.on}
+    {#if wanted && active}
       <span class="dim">arrows turn · , . look · c centre · space stop</span>
+    {/if}
+    {#if wanted}
+      <button
+        type="button"
+        class="toggle"
+        onclick={toggleSource}
+        title={localFailed ?? (here ? "drawn by this browser" : "drawn by the server")}
+      >
+        {here ? "drawn here" : localFailed ? "drawn by the server (could not draw here)" : "drawn by the server"}
+      </button>
     {/if}
     <button type="button" class="toggle" onclick={toggle}>
       {wanted ? "Hide the picture" : "Show the picture"}
@@ -166,7 +277,7 @@
       }}
     >
       <canvas bind:this={canvas} aria-hidden="true"></canvas>
-      {#if app.picture.frame === null}
+      {#if here ? !drawnHere : app.picture.frame === null}
         <p class="muted waiting">Waiting for the first picture…</p>
       {/if}
     </div>

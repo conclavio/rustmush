@@ -1012,11 +1012,14 @@ export class GameApp {
       // keyframe — a `VIEW` composite too, which is the same payload with a
       // grid this client does not read — so there is no delta arm.
       if (d.kind === "keyframe") {
+        // Doc 21 cut G.3b: and the picture drawn here reads it.
+        this.picture.observeCockpit(d.data);
         this.#followTheCockpit(d.data);
       }
     } else if (d.feed === ARENA_MAP_FEED) {
       // The terrain under it: pulled, never pushed, one per match.
       if (d.kind === "keyframe") {
+        this.picture.observeMap(d.data);
         if (this.cockpit.seated && decodeArenaMap(d.data)?.seated === false) {
           // The world answered a map ask `seated: false` while a seated frame
           // is held (16b cut B.2): the seat is gone and nothing said so. A

@@ -761,7 +761,10 @@ up for ten seconds. `r` picks the narrower picture yourself.
 
 **In the web client** the cockpit tab has the same picture above its map:
 `Show the picture` asks for it (the browser remembers your choice), and it
-stops while the tab is hidden or you leave the seat. Click the picture to give
+stops while the tab is hidden or you leave the seat. Your browser draws it
+itself, from what the game already sends you, so it costs the game nothing; the
+button beside it (`drawn here`) switches to a picture drawn by the game
+instead, which is also what you get if your browser cannot draw it. Click the picture to give
 it the keys: the arrows turn the tank (hold), `,` and `.` swing your look (again
 to stop), `c` centres it, space stops both. The map, the panes and the orders
 below it work as before, and the damage pane opens with the same small picture

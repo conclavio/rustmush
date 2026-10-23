@@ -72,3 +72,18 @@ describe("the picture store", () => {
     expect(store.received).toBe(0);
   });
 });
+
+describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () => {
+  it("keeps the latest cockpit and map, and drops the cockpit when the seat goes", () => {
+    const store = new PictureStore();
+    const cockpit = { match: 7, seated: true };
+    const map = { match: 7, width: 96 };
+    store.observeCockpit(cockpit);
+    store.observeMap(map);
+    expect(store.cockpitData).toBe(cockpit);
+    expect(store.mapData).toBe(map);
+    store.observeCockpit({ seated: false });
+    expect(store.cockpitData).toBeNull();
+    expect(store.mapData).toBe(map);
+  });
+});

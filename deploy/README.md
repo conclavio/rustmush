@@ -170,6 +170,13 @@ missing or its `web/dist/.commit` differs from the source commit, and names the 
 built on the box (`cd …/build/web && npm ci && npm run build`, Node 22) or
 shipped as above.
 
+Since doc 21 cut G.3b `npm run build` first builds the cockpit picture's
+WebAssembly module (`web/scripts/build-wasm.mjs`, `crates/mush-pixel-wasm`),
+which needs the Rust toolchain's `wasm32-unknown-unknown` target wherever the
+bundle is built: `rustup target add wasm32-unknown-unknown` once (no
+wasm-bindgen, nothing else). Shipping the bundle as above keeps the box free of
+both Node and that target; building it on the box needs both.
+
 A commit that moved the **gateway half** — `web/`, `mush-gateway`,
 `mush-net-*`, `mush-session`, `mush-ansi`, `mush-proto`, `mush-ipc` — needs a
 full restart, because SIGHUP restarts only the server child and the gateway

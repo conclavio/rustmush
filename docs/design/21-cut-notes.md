@@ -346,3 +346,17 @@ The picture as a WebAssembly module, and the proof that it draws what the native
 
 **Verified.** `mush-pixel-wasm` (natively: the golden's three hashes through the same functions the exports call, opaque RGBA, the refusals), clippy on the host and on wasm32, rustdoc; vitest 679 (the parity test among them) and `svelte-check` clean; the whole contract suite.
 
+## G.3b.3
+
+The browser draws the cockpit picture itself.
+
+- **`web/src/lib/pixel/local.ts`**: `localCapable` (WebAssembly, `ImageData` and animation frames), `pixelModule()` (the module loaded once a page, from the bundle's fingerprinted `?url`; a failure stays failed until a reload), and `LocalPicture`, which hands the module a keyframe only when it is a new object (the map once a match, the cockpit once a pulse), draws a 640x480 frame for the look, and says whether it differs from the last one shown.
+- **The picture store** keeps the connection's raw `arena.cockpit` and `arena.map` keyframes (`observeCockpit` drops the cockpit when it says the seat went), fed by `GameApp`'s two feed arms.
+- **`PictureView.svelte`**: drawn here by default where the browser can; the gateway is then never asked (`setPicture(false)`), the look is the store's alone, and a frame at most every 50 ms while wanted and visible is put on the canvas only when its hash moved. The server's picture (G.3c) is the fallback — a module that will not load (an older gateway's CSP refuses to compile it) or that traps — and a choice: the header's `drawn here` / `drawn by the server` button, remembered in this browser (`rustmush.picture.source`), names why when it fell back. The keys are the same in both. The page's whitelist probe is unchanged: the view still reaches only `picture`, `setPicture` and `helm`.
+- **The gateway**: the CSP's `script-src` gains `'wasm-unsafe-eval'` (compiling WebAssembly and nothing else — no `eval`, no `new Function`; the HTTP test pins both), and `.wasm` is served as `application/wasm` (so the browser streams and compiles it as it arrives). A gateway-half change: deploy with `GATEWAY_RESTART=1`.
+- **The build**: `npm run build` puts the module in `dist/assets` (348 KB, 115 KB gzipped). Wherever the bundle is built needs `rustup target add wasm32-unknown-unknown` (deploy/README says so); the box needs nothing while the bundle is shipped.
+
+**Measured in a real browser** (the app's own Chromium over Vite's dev server, a throwaway page drawing the fixture): the module served as `application/wasm` and streamed, the three golden frames MATCH hash for hash, 2.57 ms a 640x480 frame (200 frames averaged) against 1.2 ms native, and the frame on the canvas (horizon, the heading tape, BA's lock, the speed bar).
+
+**Verified.** vitest 682 (the module's parity, `LocalPicture` feeding once and drawing for the look, the store's keyframes), `svelte-check` clean, `npm run build` whole; `mush-net-web` (the CSP and the type), clippy, rustdoc. Not smoked against a live gateway: that is the dev2 deploy (`GATEWAY_RESTART=1`), where `@pixel/stats`' box counters (`mush_pixel_viewers`) should stay at zero while a browser draws.
+
