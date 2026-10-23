@@ -1002,6 +1002,10 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(lane) => shelf.extend(lane),
         Err(error) => tracing::error!(%error, "atlas: the lane pack did not load"),
     }
+    match crate::relay_content::packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "relay shelf pack refused"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -1058,6 +1062,7 @@ pub fn boot_pack_list(
         packs.extend(crate::definitions::content::boot_packs()?);
         packs.extend(crate::definitions::content::station_packs()?);
         packs.extend(crate::definitions::content::lane_packs()?);
+        packs.extend(crate::relay_content::packs()?);
     }
     Ok(packs)
 }

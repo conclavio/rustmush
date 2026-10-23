@@ -80,6 +80,7 @@ const DEFINITION_KINDS: [&str; 12] = [
 ///
 /// A kind another owner already claimed.
 pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
+    appliers.register(crate::NS, Arc::new(crate::relay_content::RelayApplier))?;
     appliers.register(crate::NS, Arc::new(PlaceApplier))?;
     appliers.register(crate::NS, Arc::new(RouteApplier))?;
     appliers.register(crate::NS, Arc::new(ArenaApplier))?;

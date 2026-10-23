@@ -101,6 +101,7 @@ pub mod commands;
 pub mod composition;
 pub mod config;
 pub mod content;
+pub mod relay_content;
 /// 16b cut C.2 (C1, C3, C4): **the game's typed definitions and the content it
 /// ships** (doc 16 §3.3, §3.5, §3.6, §4, §7).
 ///

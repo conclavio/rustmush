@@ -36,6 +36,7 @@ mod handoff;
 pub mod journey;
 pub mod links;
 pub mod route;
+pub mod relay;
 pub mod seat;
 pub mod station;
 pub mod tick;
@@ -1047,6 +1048,7 @@ impl GameModule for SimulationModule {
             Arc::new(tick::maintenance_tick),
         )?;
         commands::register(reg)?;
+        relay::register(reg)?;
         Ok(())
     }
 
@@ -1055,6 +1057,7 @@ impl GameModule for SimulationModule {
         ctx: &mut ModuleCtx<'_>,
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
+        relay::load(ctx, &mut data)?;
         let carriers = journey::extract_carrier_journeys(&mut data);
         let workflow = domain::extract_domain_workflow(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
