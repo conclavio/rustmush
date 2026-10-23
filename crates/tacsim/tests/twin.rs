@@ -1158,28 +1158,32 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// M5r re-records the pool after requested-goal arrival and formation continuity.
 /// Every native/Rhai answer still matches; these behavior changes move match ends,
 /// shots and core-loss counts, so this is not a hash-only update.
+/// Doc 21 cut G.7b re-records it on the showcase relief (the atlas's version
+/// 3): the road's corridor is version 2's ground, but the pool's flanks drive
+/// and see over the new hills, so match ends and shot counts move a few per
+/// cent while every winner, the 14–1 split and `first_divergence_ms` stand.
 const M4_5_POOLED_RECORD: [&str; 21] = [
-    "twin_match: seed=2350 end=elimination_red t_ms=168250",
-    "twin_match: seed=2351 end=elimination_red t_ms=184500",
-    "twin_match: seed=2352 end=elimination_red t_ms=166500",
-    "twin_match: seed=2353 end=elimination_red t_ms=188000",
-    "twin_match: seed=2354 end=elimination_red t_ms=195750",
-    "twin_match: seed=2355 end=elimination_red t_ms=174500",
-    "twin_match: seed=2356 end=elimination_red t_ms=174750",
+    "twin_match: seed=2350 end=elimination_red t_ms=170250",
+    "twin_match: seed=2351 end=elimination_red t_ms=192500",
+    "twin_match: seed=2352 end=elimination_red t_ms=170000",
+    "twin_match: seed=2353 end=elimination_red t_ms=181000",
+    "twin_match: seed=2354 end=elimination_red t_ms=205750",
+    "twin_match: seed=2355 end=elimination_red t_ms=175500",
+    "twin_match: seed=2356 end=elimination_red t_ms=175750",
     "twin_match: seed=2357 end=elimination_red t_ms=175750",
-    "twin_match: seed=2358 end=elimination_red t_ms=172000",
-    "twin_match: seed=2359 end=elimination_red t_ms=181500",
-    "twin_match: seed=2360 end=elimination_blue t_ms=214750",
-    "twin_match: seed=2361 end=elimination_red t_ms=211000",
-    "twin_match: seed=2362 end=elimination_red t_ms=174000",
-    "twin_match: seed=2363 end=elimination_red t_ms=182000",
-    "twin_match: seed=2364 end=elimination_red t_ms=178750",
+    "twin_match: seed=2358 end=elimination_red t_ms=181000",
+    "twin_match: seed=2359 end=elimination_red t_ms=175000",
+    "twin_match: seed=2360 end=elimination_blue t_ms=208750",
+    "twin_match: seed=2361 end=elimination_red t_ms=193000",
+    "twin_match: seed=2362 end=elimination_red t_ms=169000",
+    "twin_match: seed=2363 end=elimination_red t_ms=176000",
+    "twin_match: seed=2364 end=elimination_red t_ms=174750",
     "twin_pooled: n=15 red_wins=14 blue_wins=1 draws=0",
-    "twin_divergences: tiebreak=101 line=0 reads_dead=0 landing=10298 no_line=0 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2496 cond_stale=8 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=407 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=10298 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=1601 shots_per_min=35.033 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=3,approach=0,engage=21,withdraw=0,disabled=6] wrecked=6 cond_shots=1544 parallel=254",
-    "twin_gate_b: side=blue shots=988 shots_per_min=21.619 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=0,engage=12,withdraw=0,disabled=18] wrecked=18 cond_shots=952 parallel=153",
-    "twin_gate_b_pool: path_queries=596 corner_refusals=0",
+    "twin_divergences: tiebreak=79 line=0 reads_dead=0 landing=10281 no_line=0 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2395 cond_stale=12 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=396 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=10281 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=1549 shots_per_min=34.119 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=4,approach=0,engage=20,withdraw=0,disabled=6] wrecked=6 cond_shots=1492 parallel=249",
+    "twin_gate_b: side=blue shots=940 shots_per_min=20.705 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=0,engage=10,withdraw=0,disabled=20] wrecked=20 cond_shots=903 parallel=147",
+    "twin_gate_b_pool: path_queries=608 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1730,15 +1734,23 @@ impl Coverage {
 /// (twelve enemies within Class I's twelve rows; the ROM's stand-in thinks,
 /// at eight rows, measured unmoved too); every figure it prints,
 /// per seed and in total, reads the same with the seat and without it.
+///
+/// **Doc 21 cut G.7b's re-bless of `pooled` and `mixed`** (the atlas's
+/// version 3, the showcase relief): both lanes fight on the proving ground,
+/// whose flanks now rise into hills that block sight and slow the climb, so
+/// the fights move and with them the counts — `pooled` 10,042 / 256 →
+/// 10,008 / 273 and [`POOLED_MATCHES_WITH_STAND_IN`] 12 → 11, `mixed`
+/// 12,492 / 310 → 13,220 / 502 — with no divergence on any lane. `lance`
+/// fights on its own authored field and is unmoved.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (10_042, 256)),
-    ("mixed", (12_492, 310)),
+    ("pooled", (10_008, 273)),
+    ("mixed", (13_220, 502)),
     ("lance", (6_054, 154)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
 /// reason at [`COVERAGE`]): the matches whose record line may move.
-const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
+const POOLED_MATCHES_WITH_STAND_IN: usize = 11;
 
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",

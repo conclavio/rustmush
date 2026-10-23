@@ -194,12 +194,14 @@ fn j1_sight_only_is_the_walk_on_the_proving_ground() {
     }
     assert_eq!(pairs, 256_000);
     // The ground is worth testing over: all three answers, often. The partial
-    // bound is two thousand and not five: the proving ground's light woods are a
-    // few belts, and this stream crosses one and stops short of a hundred on
-    // 2,904 of its pairs (against 204,048 clear and 49,048 blocked).
+    // bound is fifteen hundred and not five thousand: the proving ground's light
+    // woods are a few belts, and this stream crosses one and stops short of a
+    // hundred on 1,852 of its pairs (against 116,596 clear and 137,552 blocked
+    // since doc 21 cut G.7b's hills; 2,904 against 204,048 and 49,048 on the
+    // flatter version 2).
     let [clear, partial, blocked] = counts;
     assert!(
-        clear > 5_000 && partial > 2_000 && blocked > 5_000,
+        clear > 5_000 && partial > 1_500 && blocked > 5_000,
         "{clear} clear, {partial} partial, {blocked} blocked"
     );
     // 16b cut J.2: the index read fewer cells than `sight_only` on at least a

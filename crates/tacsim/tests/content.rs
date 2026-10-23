@@ -41,7 +41,8 @@ mod support;
 // generator's output (version 2, with The Bluff), byte for byte.
 use support::ground::{
     BLUFF_RAMP, BLUFF_TOP, BLUFF_TOP_CM, BUILDINGS, FORD, RIVER, ROAD_EW, ROAD_NS, SIDE, UNSIGNED,
-    atlas_pack_at, class_at, elev_at, sign, within,
+    V3_BLUFF_KEEP, V3_CORRIDOR, V3_SIGNAL_HILL, atlas_pack_at, atlas_pack_v3, class_at, elev_at,
+    elev_v3, sign, within,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ const DIGESTS: [(&str, &str); 10] = [
     ),
     (
         "tacsim.proving_ground",
-        "9be6c634353c82e576be61395ef2228a927ab3d47ae952708b174e4e6f41097d",
+        "c7202e25766303689c252737a58a97240159d95b1df9967645a4f674151d3b4c",
     ),
 ];
 
@@ -146,7 +147,8 @@ const DIGESTS: [(&str, &str); 10] = [
 
 #[test]
 fn the_shipped_atlas_pack_is_this_generators_output() {
-    pin_file("atlas/proving_ground.json", &atlas_pack_at(true));
+    // Doc 21 cut G.7b: version 3, the showcase landscape.
+    pin_file("atlas/proving_ground.json", &atlas_pack_v3());
 }
 
 #[test]
@@ -1699,6 +1701,163 @@ fn in_bluff_box(cell: (u16, u16)) -> bool {
 /// the fifth key spot at (144, 111), lettered off `SPOT_LETTERS`, on grass with
 /// a way out for every row; the atlas at version 2 and the arena at 5, the note
 /// under its bound and carrying its own sentence.
+/// **The showcase relief** (doc 21 cut G.7b, version 3 of the atlas pack):
+/// the shipped ground is the generator's, cell for cell; the fought-over
+/// ground — the corridor, the north-south road, The Bluff — is version 2's to
+/// the centimetre; no passable edge off The Bluff is steeper than a tank's 45
+/// per cent; a tank reaches every key spot, every waypoint and the other
+/// muster from its own, and a car drives the road from muster to muster
+/// through the crossroads and the ford; the landscape spans at least 30
+/// metres; and the map frame with its heights stays inside its bound.
+#[test]
+fn g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged() {
+    use std::collections::VecDeque;
+    use tacsim::arena::CostRow;
+    use tacsim::arena::slope::{steepness_pct, step_kind};
+
+    let tw = support::booted_world();
+    let definition =
+        tacsim::match_::definition_for(tw.world(), &smol_str::SmolStr::new(PROVING_GROUND_ARENA))
+            .expect("the proving ground's ground builds")
+            .expect("the proving ground is shipped");
+    let terrain = &definition.terrain;
+    let cell_cm = u32::from(terrain.cell_cm());
+    let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
+
+    let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let e = elev(x, y);
+            assert_eq!(e, Some(elev_v3(x, y)), "({x}, {y}) is the generator's");
+            let in_corridor = (V3_CORRIDOR.0..=V3_CORRIDOR.1).contains(&y);
+            let on_road = (ROAD_NS.0..=ROAD_NS.1).contains(&x);
+            if in_corridor || on_road || within(x, y, V3_BLUFF_KEEP) {
+                assert_eq!(e, Some(elev_at(true, x, y)), "({x}, {y}) is version 2's");
+            }
+            let e = e.unwrap_or(0);
+            lo = lo.min(e);
+            hi = hi.max(e);
+        }
+    }
+    assert!(
+        i32::from(hi) - i32::from(lo) >= 3_000,
+        "the landscape spans {lo}..{hi} cm"
+    );
+    assert!(
+        elev(V3_SIGNAL_HILL.0 as u16, V3_SIGNAL_HILL.1 as u16).unwrap_or(0) >= 3_000,
+        "Signal Hill stands"
+    );
+
+    // Off The Bluff, nothing a tank may stand on is too steep for it.
+    let in_keep = |(x, y): (u16, u16)| within(x, y, V3_BLUFF_KEEP);
+    let mut steepest = 0;
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let Some(here) = terrain.get(x, y).filter(|cell| cell.passable()) else {
+                continue;
+            };
+            for (dx, dy) in [(1_i32, 0_i32), (0, 1), (1, 1), (1, -1)] {
+                let (Some(nx), Some(ny)) = (
+                    u16::try_from(i32::from(x) + dx).ok(),
+                    u16::try_from(i32::from(y) + dy).ok(),
+                ) else {
+                    continue;
+                };
+                let Some(there) = terrain.get(nx, ny).filter(|cell| cell.passable()) else {
+                    continue;
+                };
+                let Some(kind) = step_kind((x, y), (nx, ny)) else {
+                    continue;
+                };
+                if in_keep((x, y)) || in_keep((nx, ny)) {
+                    continue;
+                }
+                let steepness = steepness_pct(here, there, kind, cell_cm);
+                steepest = steepest.max(steepness);
+                assert!(
+                    steepness <= 45,
+                    "({x}, {y}) -> ({nx}, {ny}) is {steepness} per cent"
+                );
+            }
+        }
+    }
+    println!("g7b: relief {lo}..{hi} cm, steepest off The Bluff {steepest} per cent");
+
+    // Who reaches what: an orthogonal flood within a row's slope limit.
+    let flood = |row: CostRow, limit: u32, from: (u16, u16)| -> BTreeSet<(u16, u16)> {
+        let mut seen = BTreeSet::from([from]);
+        let mut queue = VecDeque::from([from]);
+        while let Some((x, y)) = queue.pop_front() {
+            let Some(here) = terrain.get(x, y) else {
+                continue;
+            };
+            for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+                let (Some(nx), Some(ny)) = (
+                    u16::try_from(i32::from(x) + dx).ok(),
+                    u16::try_from(i32::from(y) + dy).ok(),
+                ) else {
+                    continue;
+                };
+                if seen.contains(&(nx, ny)) || !terrain.passable_for(row, nx, ny) {
+                    continue;
+                }
+                let (Some(there), Some(kind)) = (terrain.get(nx, ny), step_kind((x, y), (nx, ny)))
+                else {
+                    continue;
+                };
+                if steepness_pct(here, there, kind, cell_cm) > limit {
+                    continue;
+                }
+                seen.insert((nx, ny));
+                queue.push_back((nx, ny));
+            }
+        }
+        seen
+    };
+    let (red, blue) = ((6_u16, 97_u16), (249_u16, 97_u16));
+    let tank = flood(CostRow::Tracked, 45, red);
+    assert!(tank.contains(&blue), "a tank drives muster to muster");
+    for spot in &definition.key_spots {
+        assert!(
+            tank.contains(&(spot.x, spot.y)),
+            "a tank reaches {}",
+            spot.name
+        );
+    }
+    for node in definition.waypoints.nodes() {
+        assert!(
+            tank.contains(&(node.x, node.y)),
+            "a tank reaches waypoint {}",
+            node.id
+        );
+    }
+    let car = flood(CostRow::Wheeled, 25, red);
+    for (name, cell) in [
+        ("the ford", (64, 97)),
+        ("the crossroads", (129, 97)),
+        ("blue's muster", blue),
+    ] {
+        assert!(car.contains(&cell), "a car reaches {name}");
+    }
+
+    // The map frame, heights and all, inside its bound.
+    let frame = tacsim::match_::cockpit::map_frame(
+        tacsim::arena_task::MatchId(u64::MAX),
+        PROVING_GROUND_ARENA,
+        terrain,
+        &definition.key_spots,
+    );
+    let bytes = serde_json::to_vec(&frame).expect("the frame encodes").len();
+    println!("g7b: the map frame is {bytes} bytes");
+    assert!(
+        bytes <= tacsim::match_::cockpit::MAP_MAX_BYTES,
+        "{bytes} bytes"
+    );
+    if let Ok(path) = std::env::var("RELIEF_PREVIEW") {
+        std::fs::write(path, serde_json::to_string(&frame).expect("json")).expect("the preview");
+    }
+}
+
 #[test]
 fn ae1_the_bluff_is_where_and_what_the_note_says() {
     use tacsim::arena::CostRow;
@@ -1713,10 +1872,12 @@ fn ae1_the_bluff_is_where_and_what_the_note_says() {
     let cell_cm = u32::from(terrain.cell_cm());
     let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
 
-    // The file is the generator, cell for cell, and the mesa is grass.
+    // The file is the generator, cell for cell (version 3 since doc 21 cut
+    // G.7b, which keeps The Bluff's box at version 2's heights), and the mesa
+    // is grass.
     for y in 0..SIDE {
         for x in 0..SIDE {
-            assert_eq!(elev(x, y), Some(elev_at(true, x, y)), "({x}, {y})");
+            assert_eq!(elev(x, y), Some(elev_v3(x, y)), "({x}, {y})");
         }
     }
     for y in BLUFF_TOP.2..=BLUFF_TOP.3 {
@@ -1785,10 +1946,12 @@ fn ae1_the_bluff_is_where_and_what_the_note_says() {
         ],
         "the 107: row 119's two flanks, the rims (36 orthogonal and 68 diagonal) and the corner"
     );
+    // Doc 21 cut G.7b: version 3's landscape is steeper than version 2's
+    // terraces, and nowhere off The Bluff past a tank's 45 per cent.
     assert_eq!(
         (off_orthogonal, off_diagonal),
-        (20, 21),
-        "off The Bluff the steepest passable edge is still 20 orthogonal and 21 diagonal"
+        (41, 34),
+        "off The Bluff the steepest passable edge is 41 orthogonal and 34 diagonal"
     );
 
     // The figures the note and the help quote, edge by edge.
@@ -1900,7 +2063,12 @@ fn ae1_the_bluff_is_where_and_what_the_note_says() {
     // The versions, and the note.
     let atlas = mush_content::load_pack(content::PROVING_GROUND_ATLAS_JSON)
         .expect("the shipped atlas pack verifies");
-    assert_eq!(atlas.manifest().version(), 2, "the atlas with The Bluff");
+    // Doc 21 cut G.7b: version 3 keeps The Bluff under its landscape.
+    assert_eq!(
+        atlas.manifest().version(),
+        3,
+        "the atlas with The Bluff and the landscape"
+    );
     let pack = tacsim::pack::load_pack(content::PROVING_GROUND_JSON).expect("the arena verifies");
     assert_eq!(
         pack.manifest().version(),

@@ -5842,9 +5842,11 @@ async fn o3_a_range_every_shooter_left_ends_itself_after_the_interval() {
 /// lettered `F` — `VIEW`'s legend and its off-window line, rendered from that
 /// definition by the cockpit's own functions, both name `F The Bluff` — over
 /// flat ground, because the ground is the atlas pack's.
-/// Then, with the centre idle, the atlas plan for `tacsim.proving_ground` is one
-/// update and nothing else — `field.q1_0`, the quadrant the bluff stands in —
-/// and its apply replaces that heightfield in place; the arena plan is one
+/// Then, with the centre idle, the atlas plan for `tacsim.proving_ground` is the
+/// shelf's version — 3 since doc 21 cut G.7b, the showcase relief, so the plan
+/// is the four heightfield quadrants and nothing else (at AE.1 it was version
+/// 2's one, `field.q1_0`, the quadrant the bluff stands in) — and its apply
+/// replaces them in place; the arena plan is one
 /// update, and its apply moves the latch to 5 and adopts the twelve standing
 /// tanks by roster, remaking none (each slot's object is the one it had, and
 /// the world still carries twelve units). The definition the next start builds stands
@@ -5971,25 +5973,25 @@ async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
     };
     assert_eq!(units(&rig), 12, "twelve tanks and no other unit");
 
-    // The ground first: one update, the quadrant the bluff stands in.
+    // The ground first: the shelf's version 3 (doc 21 cut G.7b), the four
+    // heightfield quadrants and nothing else.
     let (planned, applied) = support::take_from_shelf(&mut rig.tw, GOD, atlas_pack);
     assert!(
-        planned.contains(AE1_ATLAS_PLAN_LINE),
-        "the atlas plan is one update: {planned}"
+        planned.contains(G7B_ATLAS_PLAN_LINE),
+        "the atlas plan is the four quadrants: {planned}"
     );
-    assert!(
-        planned.contains(" update   field.q1_0 (heightfield)"),
-        "{planned}"
-    );
-    for quadrant in ["field.q0_0", "field.q0_1", "field.q1_1"] {
-        assert!(!planned.contains(quadrant), "{quadrant} moved: {planned}");
+    for quadrant in ["field.q0_0", "field.q0_1", "field.q1_0", "field.q1_1"] {
+        assert!(
+            planned.contains(&format!(" update   {quadrant} (heightfield)")),
+            "{quadrant}: {planned}"
+        );
     }
     assert!(
-        applied.contains(&format!("Applied {atlas_pack}@2")),
+        applied.contains(&format!("Applied {atlas_pack}@3")),
         "{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(latch(&rig, atlas_pack), Some(2));
+    assert_eq!(latch(&rig, atlas_pack), Some(3));
 
     // Then the arena: one update, the latch to 5, the twelve adopted.
     let (planned, applied) = support::take_from_shelf(&mut rig.tw, GOD, arena_pack);
@@ -6038,9 +6040,10 @@ async fn ae1_a_version_four_world_takes_the_bluff_from_the_shelf() {
     );
 }
 
-/// The atlas plan line `deploy/README.md` quotes (16b cut AE.1).
-const AE1_ATLAS_PLAN_LINE: &str =
-    "Plan for tacsim.proving_ground@2: 0 create, 1 update, 0 retire, 5 unchanged";
+/// The atlas plan line `deploy/README.md` quotes (doc 21 cut G.7b; at 16b cut
+/// AE.1 it was version 2's `0 create, 1 update, 0 retire, 5 unchanged`).
+const G7B_ATLAS_PLAN_LINE: &str =
+    "Plan for tacsim.proving_ground@3: 0 create, 4 update, 0 retire, 2 unchanged";
 
 // ---------------------------------------------------------------------------
 // 16b cut AE.3 — a side needs a gun

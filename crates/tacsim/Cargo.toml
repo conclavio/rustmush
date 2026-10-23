@@ -108,6 +108,10 @@ tracing.workspace = true
 fault-injection = []
 
 [dev-dependencies]
+# Doc 21 cut G.7b: the proving ground's version 3 generator (tests/support)
+# computes its landscape with libm, so the pinned pack is the same bytes on
+# every host.
+libm.workspace = true
 mush-testkit.workspace = true
 mush-proto.workspace = true
 # 16b cut D.1: `tests/arena_task.rs` pins the clock on `ArenaOut::Frames` at all

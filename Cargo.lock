@@ -4672,6 +4672,7 @@ name = "tacsim"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libm",
  "memory-stats",
  "mush-ansi",
  "mush-atlas",

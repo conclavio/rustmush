@@ -504,6 +504,31 @@ fights on the bluff, since the arena definition is rebuilt from the records at
 every start. The three new chassis (`scout_mk1`, `heavy_mk1`, `biped_mk2`) and
 the per-row ground prices are compiled in: they need the restart and no apply.
 
+**The showcase relief: the atlas 2 → 3 (doc 21 cut G.7b).** The atlas pack
+`tacsim.proving_ground` is version 3: the same classes, The Bluff and the
+fought-over ground (the road's corridor, rows 86 to 108, and the north-south
+road) at version 2's heights to the centimetre, and a landscape everywhere
+else — the northern highlands and Signal Hill, The Bowl, the river's valley,
+The Spine and The Shelf. The arena pack is unchanged (still 5). A world that
+holds version 2 logs the newer-pack notice at boot and fights on the old ground
+until staff take it, with the centre idle (the atlas apply is not guarded by a
+running match):
+
+```
+@atlas/pack plan tacsim.proving_ground
+@atlas/pack apply <fingerprint>
+```
+
+The plan reads `Plan for tacsim.proving_ground@3: 0 create, 4 update, 0
+retire, 2 unchanged` — the four heightfield quadrants — and the next `SIM
+START` fights on the new ground, since the arena definition is rebuilt from the
+records at every start. **Replays recorded on version 2 lose their map once the
+new ground is taken** (`The ground of match N is not the ground loaded on this
+server.`), as at AE.1. A fresh store (the reset) boots version 3 directly. The
+picture draws the relief only from a gateway at doc 21 cut G.7b or later: the
+map feed carries the heights from then (`elev`), so deploy with
+`GATEWAY_RESTART=1`.
+
 **Replays (16b cut I.1).** Every match that ends writes one more document in its
 result's own batch, `tacsim:replay:<match>` — both sides' positions every 5 s,
 the shots and the wrecks, at most 256 KiB — and the result says `"replay": true`.

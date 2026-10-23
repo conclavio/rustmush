@@ -3783,9 +3783,11 @@ fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
 ///
 /// The first half is the import: `from_pack` copies `elev_cm` straight off the
 /// tile, so the levels the proving ground's generator writes are the levels the
-/// window holds, at the cells that hold them — the relief's nine, a hundred
-/// centimetres apart, and since 16b cut AE.1 The Bluff's three: its top at 500
-/// and its ramp at 270 and 40.
+/// window holds, at the cells that hold them — since doc 21 cut G.7b the
+/// showcase relief's, every one on a ten-centimetre step from −1,200 to
+/// 10,050 (before it, nine levels a hundred centimetres apart), among them
+/// The Bluff's three of 16b cut AE.1: its top at 500 and its ramp at 270 and
+/// 40.
 ///
 /// The second half is why A1 does not move, and what 16b cut AE.1 changed about
 /// it. X.6 pinned that the steepest edge between two cells a tank may stand on
@@ -3793,7 +3795,9 @@ fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
 /// the slope refusal, the search's shoulder rule and the follower's cliff test
 /// ran only in fixtures (16c `T-18`). Off The Bluff that is still so: measured
 /// with the bluff's box (`x 140..=148, y 104..=121`) left out, the steepest is
-/// 20 and 21. And every edge past 45 on the whole map is one of The Bluff's 107
+/// 41 orthogonal and 34 diagonal since doc 21 cut G.7b's hills (The Shelf's
+/// western edge, at (212, 23)); 20 and 21 before them. And every edge past 45
+/// on the whole map is one of The Bluff's 107
 /// — its rims, its corner and row 119's two flanks — so nothing A1 drives is
 /// touched: row 97 and every muster slot's straight run meet no edge past 45.
 /// (The 30 per cent 16c's `T-18` row names is the grass-to-deep-water bank at
@@ -3822,15 +3826,22 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     let levels: std::collections::BTreeSet<i16> =
         terrain.cells().iter().map(|cell| cell.elev_cm).collect();
     assert_eq!(
-        levels.iter().copied().collect::<Vec<i16>>(),
-        vec![-400, -300, -200, -100, 0, 40, 100, 200, 270, 300, 400, 500],
-        "the authored relief is nine levels a hundred centimetres apart, and The Bluff's three"
+        (levels.first().copied(), levels.last().copied()),
+        (Some(-1_200), Some(10_050)),
+        "the showcase relief's span: The Bowl's floor and the river's valley to Signal Hill"
     );
+    assert!(
+        levels.iter().all(|level| level % 10 == 0),
+        "every level is on a ten-centimetre step"
+    );
+    for bluff in [40, 270, 500] {
+        assert!(levels.contains(&bluff), "The Bluff's {bluff}");
+    }
     let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
     assert_eq!(
         elev(208, 148),
-        Some(-400),
-        "the floor of the south-east bowl"
+        Some(2_890),
+        "the East Compound's floor, on its pad over the eastern hill's shoulder"
     );
     assert_eq!(elev(56, 97), Some(300), "the crest west of the ford");
     assert_eq!(
@@ -3900,7 +3911,7 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     );
     assert_eq!(
         (orthogonal, diagonal),
-        (20, 21),
+        (41, 34),
         "the steepest passable edge off The Bluff moved"
     );
     assert_eq!(
