@@ -1,107 +1,121 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-## Current status — stopping checkpoint, 2026-10-20
+## Current status — green integration, 2026-10-22 (runs completed 2026-10-23 00:21 UTC)
 
-**M6 is merged. M7 has no clean full integration run. New feature work remains
-paused; this commit is a resumable stabilization checkpoint, not acceptance.**
+**M7's integration is green on one commit.** At `1e26aee6` (branch
+`codex/unit-minds-through-m6`, main merged in at `ba360da5`) a single run, on
+the Linux host CI mirrors, passed with zero failures:
 
-What is verified:
+- the workspace test sweep (`cargo nextest run --workspace --exclude mush-bot`,
+  then `-p mush-bot`, the split CI's `Test` step uses so `mush-bot`'s
+  `serde_json/arbitrary_precision` never unifies into the worldgen tests):
+  `9,478` + `718` tests, 0 failed, 0 timed out;
+- the four `#[ignore]` commerce stories, exactly one test each, serial
+  (`ci.yml` job `mind-commerce-acceptance`): the author/buyer lifecycle
+  (`2,938` s), server persistence and uncertain acknowledgement
+  (`7,644` s), Conduct and qualified coverage (`1,338` s), the
+  named launch catalogue (`6,465` s);
+- the eight Redis scopes of the `redis-faults` job, against a private Redis 8
+  with `rejson` and `redisearch`;
+- `cargo fmt --all --check`, the `M7 memory-size limits` clippy step, `cargo doc
+  --workspace --no-deps --document-private-items` and the doctests.
 
-- All six M7 crates and all targets report zero warnings for the four requested
-  size lints at 64 KiB per frame and 16 KiB per future (V18). The diagnostic used
-  `--cap-lints warn`; 1,714 other warnings remain. Standard workspace Clippy/CI
-  is not green.
-- Actual Tacsim and server test binaries build with their compile-time future
-  bounds. That build executed no tests.
-- The last full run (N111) compiled and passed 29 commerce/boot tests, then
-  stack-aborted in purchase fixture setup. It left 73 stages and all eight Redis
-  scopes unrun. Later focused results do not replace a full run.
+The stories are now scheduled (daily cron, or `workflow_dispatch`), not
+push-time: the server story alone paces a Registry lease through real
+maintenance ticks at roughly three seconds each (about two hours).
 
-The V18 purchase story now clears the earlier paired-recovery refusal but fails
-at `actual HouseV2 public offer` (103.377 seconds, no stack abort). Source review
-found that its policy names the private `fixture` venue while the shared IC
-fixture installs the production port-room gate. The existing room-bound test
-adapter is the likely correction; it has not been changed or tested.
+### What it took (2026-10-21 → 22)
 
-The V18 Conduct story also clears its earlier paid-purchase recovery failure,
-but now refuses the actual `conduct_trial_admit` action (294.512 seconds, no
-stack abort). Its generic provider refusal does not establish which admission
-proof failed. A targeted admission trace is the next step; no cause or repair
-is claimed. Both V18 stories failed, and their copied sessions are quiescent.
+Codex's checkpoint of 2026-10-20 had never completed a full run; the stories had
+never run past their first failing phase, so each run only ever showed the next
+one. The campaign ran the purchase story about thirty times on the host,
+fixing one or two phases a run, until a side-branch filter and a
+record-and-continue collector (both test-only, both since removed) let one run
+list everything left. Of what it found:
 
-Both earlier V17 server/launch pacing observations stopped intentionally at
-600 seconds, without stack aborts; both are **incomplete**, not passes. The
-first 32 launch leases showed short worker handling separated by repeated
-acknowledgment/retry waits. A reviewed successful-progress wakeup change is now
-included locally (canonical 614), with one new regression test, but is **not
-covered by V18's lint/build/runtime evidence** and still needs validation.
+- **Production defects (fixed on this branch):**
+  - `roll_mind_lapse_occurrences` had no `valid_key` shape, so no lapse
+    occurrence could be read or recorded and every scoped `licence.lapsed`
+    fact attachment was refused (`families.rs`).
+  - Economy booted over a renewal **service closure** without the service-close
+    action in its composition — proof it could not audit; it now refuses, for
+    personal and House renewals alike.
+  - Paid resale of a licence born from a **legacy original-purchase quote**
+    read the live quote that funding had already retired; it now reads the
+    quote retained on the purchase operation (the licence's birth).
+  - The legacy purchase **boot audit** refused any world after a resale,
+    comparing the current pointer with the original holder; it now checks the
+    birth form and proves the holder chain, as the entitlement audit did.
+  - IC claim **reconstruction** restored `next_transition` but not
+    `generation`, so a reboot after any claim left an observation the paid
+    resale and pending-charter checks refuse.
+  - `offer_contract` asserted an allocator preflight; it refuses instead (the
+    crate denies `panic_in_result_fn`).
+  - Outside M7: the arena **hydrate-sample validation** (`arena/runtime.rs`)
+    rejects valid samples — the same code is on `main` and dev1.
+  - mush-core gained **read-only state-family grants** (`grant_state_family_read`)
+    so Market can audit Roll families it may not write; the Roll root-anchor
+    allow-list became an exhaustive match.
+- **Test-side contradictions of production rules**, each fixed in the test:
+  market actions need the actor in ROOM (#0) while a fresh boot seats everyone
+  in the lobby (#9), and SIM commands need the lobby; core admits one pending
+  commit per engine, so a second action under a prepared or staged one must be
+  asserted refused, never landed; contracts settle only in the 30 s Economy
+  sweep; generations and ids are decimal strings in JSON; single-row helpers
+  after a second row exists; a refused staff command is asserted, not
+  propagated; a Follow owner licence reads no source after withdrawal;
+  `/filed` lists owner licences only (owner ruling — the paid-holdings listing
+  is a follow-up); a staged action refuses to share a step with legacy object
+  mutations, so fixture seat changes drain `take_dirty()`; `bench_eval_ops`
+  defaults to its maximum.
+- **The size-lint step** failed on none of the four size lints: the six crates'
+  pre-M7 `#![deny(clippy::panic_in_result_fn, …)]` roots (WS01-S12) forbid
+  `assert!` in `-> Result` functions, which M7's new tests used throughout.
+  Those tests now return early `Err`s through per-crate test-only `check!`
+  macros (no `allow` anywhere; `restriction_lints` forbids them), and the
+  production `indexing_slicing`/`unreachable!` sites in Roll's charter-pending,
+  charter-transfer, recall and revocation code became checked accesses that
+  refuse. `5,853` sites across `five crates (mush-economy, mush-roll, mush-industry, mush-market, tacsim)`.
 
-The branch is also behind three available surface-system commits on main
-(`bd718fb2`, `96cc7303`, `eb99c9be`). They have not been merged into this tested
-candidate. Integrate latest main and repeat the exact-candidate checks before a
-final completion claim. N112 has not been generated.
+No balance, hold, escrow or ledger assertion failed at any point: every defect
+was in the per-product commerce glue, none in the economy core.
 
-Paid Follow consumers, the original-major producer/story, scoped House author
-updates/attestation/source access, and remaining House/dependent major variants
-stay parked until the included baseline passes. Even a green 76-stage plus
-8-scope Redis baseline is distinct from M7 acceptance: uncapped lint/CI,
-frontend and cross-host checks remain. The ignored M6 24-Class-III/900-second
-scale-replay test is outside that roster and remains a separate check.
+### Outside "integration green" (unchanged, explicit)
 
-## Resume from this checkpoint
+- Standard workspace `cargo clippy -- -D warnings` is still red (about 1,700
+  warnings, mostly unused imports and complexity in M7 crates).
+- Web/frontend checks, the cross-host (Windows) lane and the separate M6
+  24-mind scale replay were not run.
+- The branch is **not merged into main** and not deployed (dev1 stays at
+  `8c648527`; dev2 at main). The arena hydrate fix is the one commit `main`
+  needs regardless.
 
-1. Preserve the frozen V17/V18 evidence under `target/m7-registry-pacing-*` and
-   `target/m7-size-clippy-v18-*`; do not label a 600-second observation cutoff
-   as success. Repair the diagnosed House fixture venue mismatch without
-   bypassing the actual public offer, custody or recovery checks. Resolve the
-   Conduct result recorded above before expanding scope.
-2. Validate the included wakeup change and the fixture repair on one newly
-   frozen source: selected four-lint inventory, actual two-package codegen,
-   then the three ordinary service/scheduler regressions and genuine cases below. Keep the
-   normal stack, unchanged simulation/workload/guards and serial test threads.
-   These commands are targeted checks, not the full baseline:
+### Follow-ups the campaign surfaced
 
-   ```sh
-   export CARGO_BUILD_JOBS=8
-   cargo test -p tacsim --lib minds::bulk::registry_service::tests::absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selector -- --exact --test-threads=1 --nocapture
-   cargo test -p tacsim --lib minds::bulk::registry_service::tests::two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement -- --exact --test-threads=1 --nocapture
-   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::registry_scheduling_tests::new_progress_wakes_registered_continuations_without_duplicate_paid_work -- --exact --test-threads=1 --nocapture
-   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::original_purchase::genuine_registry_original_purchase_grant_refund_and_paired_recovery -- --ignored --exact --test-threads=1 --nocapture
-   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::original_purchase::ic_tests::conduct::genuine_safe_conduct_service_result_and_complete_cold_inverse -- --ignored --exact --test-threads=1 --nocapture
-   cargo test -p mush-server --lib world_task::submission_disposition::tests::paid_purchase::genuine_registry_purchase_writer_unknown_expiry_and_recovery -- --ignored --exact --test-threads=1 --nocapture
-   cargo test -p tacsim --lib hardware::flow::launch::story::named_coprates_real_save_rate_house_sale_and_membership_fences -- --ignored --exact --test-threads=1 --nocapture
-   ```
+- A paid-holdings listing for `/filed` (owner: keep original-owner only for now).
+- `registry_recall::notice::tick` aborts a whole notice round when one
+  connected holder's holding fails to read; skipping that holder is arguably
+  right.
+- Server Registry pacing: about 3–7 s per lease, about two hours per rating.
+- M7 implements "a sale" six separate ways (legacy original, entitlement,
+  House, paid resale, charter transfer, personal/House renewal), each with its
+  own records, boot audit and lifecycle copy; two of the defects above were one
+  copy lagging another. A shared instrument lifecycle (birth, holder chain,
+  terms, renewal, audit written once and configured per product) is the right
+  next design conversation before another feature needs sales or transfers.
 
-   Expect exactly one executed test per command. The three ordinary tests do
-   not use `--ignored`. The current copied-runtime helper supports only ignored
-   stories, not the new ordinary scheduler scenario; no helper extension has
-   been prepared. Keep all raw output private.
+### Rerunning the exact checks
 
-3. Integrate latest main after obtaining feedback on these repairs. The read-only
-   overlap report is `target/m7-prep-main-overlap/README.md`; preserve both the
-   surface changes and the M7 order/storage fixes. Rerun compilation and the
-   affected size/runtime checks on the merged candidate.
-4. Freeze the next full candidate and generate N112 from N111 using
-   `target/prepare-m7-inherited-runner.py 112 111` only after the new input and
-   tree exist. Apply/review the retained early-story transformation in
-   `target/m7-prep-early-stories-runner` and eight-build-job transformation in
-   `target/m7-prep-next-jobs8` against that generated script. Recheck all 76
-   exact commands, 99 full-scope flags and 149 evidence predicates; account
-   honestly for the added regression count. No focused flag, skipped/missing
-   stage, zero-test pass or mixed-candidate evidence can satisfy the baseline.
-   Run all eight owned Redis scopes only after that complete baseline is green,
-   against its identical source/census. Reconciliation alone is not a green
-   verdict. Lint, frontend, cross-host and the separate M6 scale replay remain
-   explicit follow-up gates.
-
-The Linux lane is rooted persistently at `/var/tmp/rustmush-unit-minds-gate-20261017`
-with the prior `/tmp` alias. Builds use eight jobs; tests remain serial. Runtime
-and raw diagnostic output stay private. Exact-copy stack aborts require GDB on
-the preserved binary/source before rebuilding; stop cleanly and record any
-unrun work rather than inventing a pass.
+The commands are CI's own (`.github/workflows/ci.yml`): the `Test` step's split
+sweep, the `mind-commerce-acceptance` matrix (one `cargo test --locked -p
+<package> --lib <test> -- --ignored --exact --test-threads=1` per story), the
+`redis-faults` job's eight commands with `REDIS_URL` set, and the `Format`,
+`M7 memory-size limits` and documentation steps. Expect exactly one executed
+test per story command. Keep the normal stack size; nothing here needs
+`RUST_MIN_STACK`.
 
 <details>
-<summary>Historical checkpoints and evidence — not current completion status</summary>
+<summary>Historical checkpoints and evidence (Codex, N35–V18) — superseded by the status above</summary>
 
 ### N111 full-run checkpoint
 
