@@ -267,9 +267,16 @@ impl PropagationContext {
 /// way **waits** (store-and-forward) rather than being delivered.
 #[must_use]
 pub fn place_of(state: &SpatialState, world: &World, obj: ObjId) -> Option<ObjId> {
-    let place = match graph::project(state, world, obj) {
-        Some(place) => place,
-        None => world.get(obj).and_then(|object| object.location)?,
+    let place = if world
+        .get(obj)
+        .is_some_and(|o| o.kind == mush_core::ObjKind::Room)
+    {
+        obj
+    } else {
+        match graph::project(state, world, obj) {
+            Some(place) => place,
+            None => world.get(obj).and_then(|object| object.location)?,
+        }
     };
     (place != state.recovery_room && place != state.in_transit_room).then_some(place)
 }

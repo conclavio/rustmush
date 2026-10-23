@@ -334,7 +334,10 @@ fn compose_server_modules(
         // before propagation's boot. It registers NO contact family and NO
         // contact guard validator — `mush-tactics` is the sole `ContactState`
         // authority (08i answer 1, D-E7-36).
-        Box::new(mush_propagation::PropagationModule::new()),
+        Box::new(
+            mush_propagation::PropagationModule::new()
+                .with_metric(Arc::new(crate::relay_metric::RelayMetric)),
+        ),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container

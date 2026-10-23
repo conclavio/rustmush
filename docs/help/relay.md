@@ -1,7 +1,9 @@
 # Relay topology (staff)
 
-R1 installs the first Luna–Ceres relay pair. It does not route messages yet;
-mail, channels, orders and reports keep their existing delivery behavior.
+The Luna–Ceres pair carries orders, contact reports and returning acknowledgements.
+Conventional legs wait for their physical travel time. A disabled pair uses the
+conventional route when positions are known; an unknown endpoint waits until it
+can be located or the message expires. Mail and channels are not connected yet.
 
 `@relay` and `@relay/check` inspect the bounded registry and validate its object
 bindings. `@relay/show luna_ceres` shows both half IDs, installed objects, host
@@ -26,7 +28,15 @@ Repeated settings make no change. Successful mutations persist before confirmati
 The seed pack is `tacsim.relay.luna_ceres`. Reapplying it preserves IDs and settings.
 Its Malapert Exchange endpoints occupy the Aitken service spine on Luna and the
 Ceres maintenance room; coverage is the explicit room list shown by `/show`.
-The 8 units/IC-second capacity is catalog metadata until R2 defines byte accounting.
+The pair shares 8 units/IC-second in both directions, with one unit per started
+128 payload bytes. Its FIFO admits at most 64 pending messages; total pending
+transport is capped at 128. Overload is refused before acceptance. A message larger
+than a link's one-second capacity uses conventional delivery.
+
+`@prop/route <envelope id>` shows the staff-only itinerary, frozen due time, FIFO
+ticket and route-work counts. Players receive an order only after arrival, and its
+issuer learns delivery only when the receiver's `+orders/ack <id>` returns.
+Link repairs and sky changes cannot accelerate an already transmitted leg.
 
 Installed hardware cannot be carried, teleported, destroyed or have its referenced
 behavior removed through ordinary commands. If the registry is corrupt, missing

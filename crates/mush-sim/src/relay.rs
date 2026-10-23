@@ -1,4 +1,4 @@
-//! R1: bounded relay topology and operator availability; no message routing.
+//! Bounded relay topology and operator availability. Propagation owns routing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -352,7 +352,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::commands::info(
                 ctx,
                 format!(
-                    "Relay registry v{} revision {}: {} nodes, {} pairs, {} halves; operator #{}. Bindings OK. R1 topology only; routing not active.",
+                    "Relay registry v{} revision {}: {} nodes, {} pairs, {} halves; operator #{}. Bindings OK.",
                     registry.version,
                     registry.revision,
                     registry.nodes.len(),
@@ -578,7 +578,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(CommandSpec {
         name: "@relay".into(), shape: ArgShape::EqPair,
         switches: ["list", "check", "show", "enable", "disable", "power", "staff"].into_iter().map(SmolStr::new).collect(),
-        help: "@relay (staff): /list, /check, /show <pair>; /enable|disable <half>; /power|staff <half>=on|off. R1 topology only; no routing.".into(),
+        help: "@relay (staff): /list, /check, /show <pair>; /enable|disable <half>; /power|staff <half>=on|off. Route diagnostics: @prop/route <envelope id>.".into(),
         ..CommandSpec::default()
     }, Arc::new(command))
 }

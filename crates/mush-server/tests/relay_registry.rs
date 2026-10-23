@@ -84,11 +84,13 @@ impl Rig {
         self.serial += 1;
     }
     async fn restart(&mut self) -> Result<(), String> {
+        let previous_now = self.tw.world().now();
         let engine = boot::build_engine(&self.cfg, &self.store, &self.spool)
             .await
             .map_err(|e| e.to_string())?
             .engine;
         self.tw = TestWorld::from_engine(engine);
+        self.tw.set_now(previous_now);
         Ok(())
     }
     async fn replace_document(&mut self, value: serde_json::Value) {
@@ -109,6 +111,259 @@ impl Rig {
             .unwrap();
         self.serial += 1;
     }
+}
+
+impl Rig {
+    fn envelope(&self, id: u64) -> mush_propagation::Envelope {
+        self.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .envelope(id)
+            .unwrap()
+            .clone()
+    }
+
+    fn last_envelope(&self) -> mush_propagation::Envelope {
+        self.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .envelopes()
+            .last()
+            .unwrap()
+            .clone()
+    }
+
+    fn endpoints(&mut self) -> mush_core::ObjId {
+        let receiver = self.tw.spawn_player("RelayReceiver");
+        let catalog = self.registry();
+        let luna = catalog.nodes[&cid("malapert")].coverage[0];
+        let ceres = catalog.nodes[&cid("ceres")].coverage[0];
+        assert!(
+            !self
+                .run(GOD, &format!("@teleport me={luna}"))
+                .contains("cannot")
+        );
+        assert!(
+            !self
+                .run(GOD, &format!("@teleport {receiver}={ceres}"))
+                .contains("cannot")
+        );
+        receiver
+    }
+
+    fn pass(&mut self) {
+        self.run(GOD, "@prop/pass");
+    }
+
+    fn advance_ic_to(&mut self, at: i64) {
+        assert_eq!(self.tw.world().world_timeline().current().rate, 1);
+        let delta = at - self.tw.world().world_ic_now().at;
+        assert!(delta >= 0);
+        self.tw.set_now(self.tw.world().now() + delta);
+    }
+}
+
+#[tokio::test]
+async fn r2_pair_delivery_and_ack_are_durable_and_arrival_gated() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let reply = rig.run(GOD, &format!("+order {receiver}=R2-private-order"));
+    assert!(reply.contains("Queued revision"), "{reply}");
+    let issued = rig.last_envelope();
+    assert_eq!(issued.transit().unwrap().legs.len(), 3);
+    assert!(!rig.run(receiver, "+orders").contains("R2-private-order"));
+    assert!(
+        !rig.run(receiver, &format!("@prop/envelopes {receiver}"))
+            .contains("R2-private-order")
+    );
+    assert!(
+        rig.run(receiver, &format!("@prop/route {}", issued.id()))
+            .contains("Permission denied")
+    );
+    rig.pass();
+    assert!(
+        rig.envelope(issued.id())
+            .transit()
+            .unwrap()
+            .queued_at
+            .is_some()
+    );
+    rig.flush().await;
+    let queued = rig.envelope(issued.id());
+    rig.restart().await.unwrap();
+    assert_eq!(rig.envelope(issued.id()), queued);
+    rig.pass();
+    let delivered = rig.envelope(issued.id());
+    assert_eq!(delivered.state(), EnvelopeState::Delivered);
+    assert_eq!(delivered.path().len(), 1);
+    assert_eq!(delivered.transit().unwrap().history.len(), 2);
+    assert!(
+        rig.run(receiver, "+orders")
+            .contains("Standing order: revision 1")
+    );
+    assert!(!rig.run(GOD, "+orders").contains("Delivered"));
+    for _ in 0..3 {
+        rig.pass();
+    }
+    assert_eq!(
+        rig.envelope(issued.id()),
+        delivered,
+        "arrival must not run again"
+    );
+    assert!(
+        rig.run(receiver, &format!("+orders/ack {}", issued.id()))
+            .contains("Acknowledgement queued")
+    );
+    let ack = rig.last_envelope();
+    rig.pass();
+    assert_eq!(rig.envelope(issued.id()).state(), EnvelopeState::Delivered);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    assert_eq!(
+        rig.envelope(issued.id()).state(),
+        EnvelopeState::Acknowledged
+    );
+    assert_eq!(rig.envelope(ack.id()).path().len(), 1);
+    assert!(rig.run(GOD, "+orders").contains("Acknowledged"));
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.envelope(issued.id()).state(),
+        EnvelopeState::Acknowledged
+    );
+}
+
+#[tokio::test]
+async fn r2_conventional_fallback_freezes_sky_lag_across_restart_and_link_repair() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=R2-timed-order"))
+            .contains("Queued")
+    );
+    let id = rig.last_envelope().id();
+    rig.pass();
+    let in_flight = rig.envelope(id);
+    let flight = in_flight.transit().unwrap().flight.clone().unwrap();
+    assert!(flight.seconds > 60, "astronomical lag, not abstract range");
+    assert!(flight.basis.starts_with("sky.v1:"));
+    rig.run(GOD, "@relay/enable luna_ceres.luna");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.envelope(id), in_flight);
+    rig.advance_ic_to(flight.due.at - 1);
+    rig.pass();
+    assert_eq!(rig.envelope(id).state(), EnvelopeState::Transmitted);
+    assert!(!rig.run(receiver, "+orders").contains("R2-timed-order"));
+    rig.advance_ic_to(flight.due.at);
+    rig.pass();
+    assert_eq!(rig.envelope(id).state(), EnvelopeState::Delivered);
+    let after = rig.envelope(id);
+    assert_eq!(after.transit().unwrap().history[0].flight, flight);
+    assert!(
+        after.path().is_empty(),
+        "repair cannot replay an already transmitted leg through a relay"
+    );
+    assert!(rig.run(receiver, "+orders").contains("R2-timed-order"));
+}
+
+#[tokio::test]
+async fn r2_fifo_bandwidth_survives_restart_and_rejects_full_link_queue() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let mut ids = vec![];
+    for _ in 0..3 {
+        assert!(
+            rig.run(GOD, &format!("+order {receiver}={}", "x".repeat(512)))
+                .contains("Queued")
+        );
+        ids.push(rig.last_envelope().id());
+    }
+    rig.pass();
+    rig.pass();
+    assert_eq!(rig.envelope(ids[0]).path().len(), 1);
+    assert_eq!(rig.envelope(ids[1]).path().len(), 1);
+    assert_eq!(rig.envelope(ids[2]).path().len(), 0);
+    assert_eq!(rig.envelope(ids[2]).state(), EnvelopeState::Transmitted);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    assert_eq!(
+        rig.envelope(ids[2]).path().len(),
+        0,
+        "same second cannot spend the link budget twice"
+    );
+    rig.advance_ic_to(rig.tw.world().world_ic_now().at + 1);
+    rig.pass();
+    assert_eq!(rig.envelope(ids[2]).state(), EnvelopeState::Delivered);
+    for i in 0..mush_propagation::routing::MAX_LINK_QUEUE {
+        let reply = rig.run(GOD, &format!("+order {receiver}=pending-{i}"));
+        assert!(reply.contains("Queued"), "{i}: {reply}");
+    }
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=overload"))
+            .contains("link queue is full")
+    );
+    assert!(!rig.run(receiver, "+orders").contains("pending-"));
+}
+
+#[tokio::test]
+async fn r2_moving_recipient_requires_another_physical_leg() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.run(GOD, &format!("+order {receiver}=forward-this"));
+    let id = rig.last_envelope().id();
+    rig.pass();
+    let first = rig.envelope(id).transit().unwrap().flight.clone().unwrap();
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    rig.run(GOD, &format!("@teleport {receiver}={luna}"));
+    rig.advance_ic_to(first.due.at);
+    rig.pass();
+    let forwarded = rig.envelope(id);
+    assert_eq!(forwarded.state(), EnvelopeState::Transmitted);
+    let transit = forwarded.transit().unwrap();
+    assert_eq!(transit.forwardings, 1);
+    let due = transit.flight.as_ref().unwrap().due.at;
+    assert!(due > first.due.at);
+    assert!(!rig.run(receiver, "+orders").contains("forward-this"));
+    rig.advance_ic_to(due);
+    rig.pass();
+    assert_eq!(rig.envelope(id).state(), EnvelopeState::Delivered);
+}
+
+#[tokio::test]
+async fn r2_unknown_endpoints_wait_with_bounded_admission_and_expiry() {
+    use mush_propagation::{EnvelopeState, record::ENVELOPE_TTL_SECS, routing::MAX_PENDING_ROUTES};
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    rig.run(GOD, &format!("@teleport {receiver}={LIMBO}"));
+    for i in 0..MAX_PENDING_ROUTES {
+        let reply = rig.run(GOD, &format!("+order {receiver}=waiting-{i}"));
+        assert!(reply.contains("Queued"), "{reply}");
+    }
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=overflow"))
+            .contains("pending queue is full")
+    );
+    let last = rig.last_envelope();
+    rig.pass();
+    rig.pass();
+    assert_eq!(rig.envelope(last.id()).state(), EnvelopeState::Queued);
+    assert!(rig.envelope(last.id()).transit().is_none());
+    assert!(!rig.run(receiver, "+orders").contains("waiting-"));
+    rig.advance_ic_to(last.issued().at + ENVELOPE_TTL_SECS);
+    rig.pass();
+    rig.pass();
+    assert_eq!(rig.envelope(last.id()).state(), EnvelopeState::Expired);
 }
 fn cid(s: &str) -> CanonicalId {
     CanonicalId::new(s).unwrap()

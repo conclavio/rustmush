@@ -128,6 +128,8 @@ impl Reaped {
 /// recipient.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DeliveryReport {
+    /// Persisted itinerary or queue transitions, including unchanged public state.
+    pub routed: Vec<u64>,
     /// Envelopes that took a relay hop.
     pub relayed: Vec<u64>,
     /// Envelopes that arrived.
@@ -159,6 +161,7 @@ impl DeliveryReport {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.relayed.is_empty()
+            && self.routed.is_empty()
             && self.delivered.is_empty()
             && self.acknowledged.is_empty()
             && self.expired.is_empty()
@@ -172,6 +175,7 @@ impl DeliveryReport {
         let mut ids: Vec<u64> = self
             .relayed
             .iter()
+            .chain(&self.routed)
             .chain(&self.delivered)
             .chain(&self.acknowledged)
             .chain(&self.expired)
@@ -258,6 +262,7 @@ pub fn delivery_pass(
     // jamming map is snapshotted — a full store clone was up to three deep
     // copies of every book per fire (fold B16).
     let jamming_view = store.jamming_map();
+    let mut router = crate::routing::Pass::new(world, state, store, now);
     let cursor = store.envelope_scan_cursor();
     let mut ordered: Vec<u64> = store
         .envelopes()
@@ -287,7 +292,32 @@ pub fn delivery_pass(
         if envelope.state().is_terminal() {
             continue;
         }
-        let next = step_envelope(&envelope, &jamming_view, state, world, now, &mut report);
+        let next = if matches!(envelope.state(), EnvelopeState::Delivered)
+            && envelope.age(now) < ENVELOPE_TTL_SECS
+        {
+            // Arrival is a one-time transition, not repeated every delivery fire.
+            None
+        } else if envelope.age(now) < ENVELOPE_TTL_SECS
+            && !is_gone(world, envelope.recipient())
+            && (router.is_some() || envelope.transit().is_some())
+        {
+            let next = router.as_mut().and_then(|r| r.step(store, &envelope, now));
+            if let Some(next) = &next {
+                report.routed.push(envelope.id());
+                if next.path().len() > envelope.path().len() {
+                    report.relayed.push(envelope.id());
+                }
+                if next.state() == EnvelopeState::Delivered {
+                    report.delivered.push(envelope.id());
+                }
+                if next.state() == EnvelopeState::Expired {
+                    report.expired.push(envelope.id());
+                }
+            }
+            next
+        } else {
+            step_envelope(&envelope, &jamming_view, state, world, now, &mut report)
+        };
         let Some(next) = next else { continue };
         if let Err(error) = store.put_envelope(next.clone()) {
             report.anomalies.push(format!(
@@ -504,6 +534,9 @@ fn settle_arrival(
         }
         return;
     }
+    if arrived.kind() != crate::record::DispatchKind::Order {
+        return;
+    }
     // Newest-valid-revision-wins, in both directions, **per issuer** — the same
     // scope `active_order` reads and `next_revision` allocates in, so the three
     // agree by construction (fold K8).
@@ -513,7 +546,7 @@ fn settle_arrival(
             peer.id() != arrived.id()
                 && peer.issuer() == arrived.issuer()
                 && peer.recipient() == arrived.recipient()
-                && peer.ack_of().is_none()
+                && peer.kind() == crate::record::DispatchKind::Order
                 && matches!(
                     peer.state(),
                     EnvelopeState::Delivered | EnvelopeState::Acknowledged
@@ -571,7 +604,7 @@ pub fn standing_orders(store: &PropagationStore, recipient: ObjId) -> Vec<&Envel
 
 fn is_standing(envelope: &Envelope, recipient: ObjId) -> bool {
     envelope.recipient() == recipient
-        && envelope.ack_of().is_none()
+        && envelope.kind() == crate::record::DispatchKind::Order
         && matches!(
             envelope.state(),
             EnvelopeState::Delivered | EnvelopeState::Acknowledged
@@ -1149,7 +1182,10 @@ fn share_delivered(
         let Some(contact) = envelope.shares() else {
             continue;
         };
-        if envelope.state() != EnvelopeState::Delivered {
+        if !matches!(
+            envelope.state(),
+            EnvelopeState::Delivered | EnvelopeState::Acknowledged
+        ) {
             continue;
         }
         if is_gone(world, envelope.issuer()) || is_gone(world, envelope.recipient()) {

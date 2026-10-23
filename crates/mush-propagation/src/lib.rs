@@ -64,6 +64,7 @@ pub mod panel;
 pub mod pass;
 pub mod policy;
 pub mod record;
+pub mod routing;
 
 pub use commands::{
     ContactCells, NO_SUCH_CONTACT, NO_SUCH_ENVELOPE, UNAVAILABLE, contact_cells, render_contact,
@@ -144,13 +145,21 @@ pub const MAX_DOMAINS_PER_DETECTION_FIRE: usize = 8;
 
 /// The propagation module.
 #[derive(Debug, Default)]
-pub struct PropagationModule;
+pub struct PropagationModule {
+    metric: Option<Arc<dyn routing::MetricProvider>>,
+}
 
 impl PropagationModule {
     /// A module with default configuration.
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self { metric: None }
+    }
+
+    #[must_use]
+    pub fn with_metric(mut self, metric: Arc<dyn routing::MetricProvider>) -> Self {
+        self.metric = Some(metric);
+        self
     }
 }
 
@@ -163,6 +172,9 @@ impl GameModule for PropagationModule {
         // K8.5: the module's lane is declared BEFORE any command registers.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(record::PropagationStore::default());
+        if let Some(metric) = &self.metric {
+            reg.state(routing::RoutingServices(Arc::clone(metric)));
+        }
         // The coarse delivery pass. It writes only propagation's own exempt
         // documents; it never touches a contact, and it stages no action.
         reg.tick(
@@ -194,7 +206,16 @@ impl GameModule for PropagationModule {
         let mut store = record::PropagationStore::default();
         let mut held = 0_usize;
         let mut dropped = 0_usize;
+        let mut transport_loaded = false;
         for (key, value) in data.kv {
+            if key.as_str() == routing::STATE_KEY {
+                let transport: routing::TransportState = serde_json::from_value(value)
+                    .map_err(|e| ModError::msg(format!("relay transport held: {e}")))?;
+                transport.validate().map_err(ModError::msg)?;
+                store.transport = transport;
+                transport_loaded = true;
+                continue;
+            }
             let decoded = if key.starts_with("envelope:") {
                 serde_json::from_value::<record::Envelope>(value.clone())
                     .map(|record| store.put_envelope(record).map_err(|e| e.to_string()))
@@ -239,6 +260,11 @@ impl GameModule for PropagationModule {
                 debug_assert!(dropped <= held);
             }
         }
+        if !transport_loaded && store.envelopes().any(|e| e.transit().is_some()) {
+            return Err(ModError::msg(
+                "relay_transport missing beside routed envelopes; restore the committed capacity record",
+            ));
+        }
         store.reconcile_allocators();
         if held > 0 {
             // **Paged, not logged** (E4c V6): `@prop/held` is the verb that can
@@ -281,6 +307,7 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let Some(mut book) = ctx.w.module_state::<record::PropagationStore>().cloned() else {
         return;
     };
+    let old_allocator = book.allocator();
     // **Re-anchor propagation's OWN records first** (fold D5(a)(ii)). A world
     // rate change opens a new `WorldIc` generation whose IC scalar is continuous
     // with the old one; without this an `Envelope::age` answered 0 for ever and
@@ -288,6 +315,25 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // false contact ever received its `Loss`.
     let reanchored = reanchor(&mut book, &at);
     let report = pass::delivery_pass(&mut book, &state, ctx.w, &ledger, &at, None);
+    let allocator = book.allocator();
+    if allocator != old_allocator {
+        ctx.persist(ModuleOp {
+            ns: NS.into(),
+            op: ModuleWrite::JsonSet {
+                key: record::ALLOCATOR_KEY.into(),
+                value: allocator,
+            },
+        });
+    }
+    if !report.routed.is_empty() {
+        ctx.persist(ModuleOp {
+            ns: NS.into(),
+            op: ModuleWrite::JsonSet {
+                key: routing::STATE_KEY.into(),
+                value: serde_json::to_value(&book.transport).expect("transport wire"),
+            },
+        });
+    }
     // The report is NEVER dropped: the bound, the anomalies and the compaction
     // are paged into the store's own notice queue, which `@prop/pass` and
     // `@prop/held` drain (fold B3).
