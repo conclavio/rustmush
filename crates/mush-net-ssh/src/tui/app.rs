@@ -6014,6 +6014,7 @@ mod tests {
                     "tactics.unit".to_string(),
                     "tactics.contacts".to_string(),
                 ],
+                asset_pack: None,
             })
             .into_iter()
             .map(|(n, _)| n)
@@ -6028,6 +6029,7 @@ mod tests {
                 server: "rustmush 0.1".into(),
                 features: vec![],
                 panels: vec!["wod.vitals".to_string()],
+                asset_pack: None,
             })
             .into_iter()
             .map(|(n, _)| n)
@@ -6825,6 +6827,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         let after = app.feed_input(b"g");
         assert_eq!(after.queries.len(), 1, "the latch cleared");
@@ -7032,6 +7035,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         assert!(app.requests.is_empty(), "the queue is empty");
         assert!(app.answering.is_none(), "and nothing is being answered");
@@ -7281,6 +7285,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels: vec!["mail".into()],
+            asset_pack: None,
         });
         assert_eq!(left.active_screen(), ScreenId(1));
     }
@@ -7535,6 +7540,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels,
+            asset_pack: None,
         };
         let cockpit_asks = |queries: &[(String, Value)]| -> usize {
             queries.iter().filter(|(n, _)| n == COCKPIT_FEED).count()
@@ -8724,6 +8730,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels: arena_manifest().panels,
+            asset_pack: None,
         });
         assert_eq!(count(&q, REPLAY_FEED), 1, "{q:?}");
         assert!(app.replay_document(7).is_none(), "the old one is dropped");
@@ -9176,6 +9183,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         assert_eq!(count(&q, OBSERVER_FEED), 1, "{q:?}");
         assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");

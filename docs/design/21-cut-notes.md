@@ -396,3 +396,9 @@ The armour doll as a page: G.6's first half; the fitting paper doll (hardpoints,
 
 **Verified.** `mush-pixel` (the fixture tank drawn, a whole part green, a hurt turret moving the picture, both sizes; no seat a card; an unknown unit the legend), `mush-net-ssh` (bucket B's clock, deaf to the helm, drawn on change only, its HUD, closed by Esc). Not smoked live.
 
+## G.11 follow-up: the web Hello's `asset_pack`
+
+The field w11term's protocol defines for the game's own Hello: `OutputEvent::Hello` gains `asset_pack: Option<AssetPackInfo>` (`{version, pack_version, manifest}`; mush-proto, exported to TypeScript as an optional field), skipped on the wire when absent, so a hello that names no pack is the same bytes as before (the golden pins both). `WebConfig.asset_pack` (never read from TOML) carries it to the web's hello; the gateway and `mushd` fill it from `AssetPack::shipped().hello_info()` (schema 1, the shipped version, `/assets/manifest.json`). The web keeps it as `SessionStore.assetPack`; nothing on the web reads it yet. The SSH TUI's announcement (OSC 440 `pack`) is unchanged.
+
+**Verified.** The wire goldens (absent and present, round trip), the web socket's hello with and without a configured pack, the shipped pack's hello info, the session store (kept, then dropped by a hello naming none), the regenerated bindings, the workspace's every target compiling.
+

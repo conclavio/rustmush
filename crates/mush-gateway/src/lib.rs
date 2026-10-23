@@ -2634,6 +2634,9 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 );
                 web_config.features = features;
                 web_config.panels = panels.clone();
+                // Doc 21 cut G.11: the hello names the pack the SSH side serves.
+                web_config.asset_pack = mush_net_ssh::assets::AssetPack::shipped()
+                    .map(mush_net_ssh::assets::AssetPack::hello_info);
                 let web_bridge: Arc<dyn WebHooks> = Arc::new(
                     WebBridge::with_link(
                         Arc::clone(&accounts),

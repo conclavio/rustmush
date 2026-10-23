@@ -86,12 +86,34 @@ fn expect_hello(env: &Envelope) {
             server,
             features,
             panels,
+            asset_pack,
         } => {
             assert_eq!(*proto, mush_proto::PROTO_VERSION);
             assert!(server.starts_with("rustmush"));
             assert_eq!(features, &["mail".to_string(), "channels".to_string()]);
             assert_eq!(panels, &["wod.sheet".to_string()]);
+            // Doc 21 cut G.11: the test config names no pack.
+            assert_eq!(asset_pack, &None);
         }
+        other => panic!("expected hello, got {other:?}"),
+    }
+}
+
+/// Doc 21 cut G.11: a config that names the asset pack puts it in the hello.
+#[tokio::test]
+async fn hello_names_the_asset_pack_when_one_is_configured() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let pack = mush_proto::AssetPackInfo {
+        version: 1,
+        pack_version: "pack_0123456789abcdef".into(),
+        manifest: "/assets/manifest.json".into(),
+    };
+    let mut cfg = test_config();
+    cfg.asset_pack = Some(pack.clone());
+    let addr = spawn_server(hooks, cfg).await;
+    let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
+    match recv_env(&mut ws).await.event {
+        OutputEvent::Hello { asset_pack, .. } => assert_eq!(asset_pack, Some(pack)),
         other => panic!("expected hello, got {other:?}"),
     }
 }

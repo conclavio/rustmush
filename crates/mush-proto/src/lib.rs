@@ -51,13 +51,13 @@ pub use caps::{ClientCaps, ClientKind, ColorDepth};
 pub use client::{ClientCommand, Query};
 pub use envelope::Envelope;
 pub use event::{
-    AtlasMapDelta, AtlasMapFrame, ExitRef, InputMode, MAX_NOTICE_TEXT_BYTES, MAX_REQUEST_OPTIONS,
-    MAX_REQUEST_PROMPT_BYTES, MAX_REQUEST_TEXT_BYTES, MAX_VIEW_COMMIT_BYTES, MAX_VIEW_DATA_BYTES,
-    MAX_VIEW_ID_BYTES, MAX_VIEW_WIRE_INTEGER, MAX_VITAL_DETAIL_BYTES, MAX_VITAL_NAME_BYTES,
-    MAX_VITALS_PER_FEED, MapSchema, MapUnit, NarrativeKind, NoticeAction, NoticeSeverity, ObjRef,
-    OutputEvent, PanelFrameKind, PromptSpec, RequestKind, RequestOption, RespondChoice, RoomView,
-    ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition, Vital, VitalRole,
-    VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
+    AssetPackInfo, AtlasMapDelta, AtlasMapFrame, ExitRef, InputMode, MAX_NOTICE_TEXT_BYTES,
+    MAX_REQUEST_OPTIONS, MAX_REQUEST_PROMPT_BYTES, MAX_REQUEST_TEXT_BYTES, MAX_VIEW_COMMIT_BYTES,
+    MAX_VIEW_DATA_BYTES, MAX_VIEW_ID_BYTES, MAX_VIEW_WIRE_INTEGER, MAX_VITAL_DETAIL_BYTES,
+    MAX_VITAL_NAME_BYTES, MAX_VITALS_PER_FEED, MapSchema, MapUnit, NarrativeKind, NoticeAction,
+    NoticeSeverity, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RequestKind, RequestOption,
+    RespondChoice, RoomView, ViewCursor, ViewEnvelope, ViewEnvelopeError, ViewFrameDisposition,
+    Vital, VitalRole, VitalState, VitalValue, VitalsFrame, VitalsFrameError, WhoEntry,
 };
 pub use invoke::{
     InvokeRequest, InvokeResult, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MIND_ENVELOPE_BYTES,

@@ -443,6 +443,7 @@ async fn pump(
         server: cfg.server_name.clone(),
         features: cfg.features.clone(),
         panels: cfg.panels.clone(),
+        asset_pack: cfg.asset_pack.clone(),
     });
     if !send_env(socket, &hello, send_timeout).await {
         return;

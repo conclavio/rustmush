@@ -151,6 +151,7 @@ fn roundtrip_every_output_event_variant() {
             server: "rustmush 0.1".into(),
             features: vec!["mail".into(), "channels".into(), "wod".into()],
             panels: vec!["wod.roll".into(), "wod.sheet".into()],
+            asset_pack: None,
         },
         OutputEvent::SessionInfo {
             character: wizard(),
@@ -487,11 +488,35 @@ fn golden_hello() {
         server: "rustmush 0.1".into(),
         features: vec!["mail".into(), "channels".into()],
         panels: vec!["wod.roll".into()],
+        asset_pack: None,
     };
     assert_eq!(
         serde_json::to_string(&ev).unwrap(),
         r#"{"t":"hello","d":{"proto":1,"server":"rustmush 0.1","features":["mail","channels"],"panels":["wod.roll"]}}"#
     );
+}
+
+/// Doc 21 cut G.11: a hello naming the asset pack carries it; one naming
+/// none (above) carries no key at all, so older clients see the same bytes.
+#[test]
+fn golden_hello_with_asset_pack() {
+    let ev = OutputEvent::Hello {
+        proto: PROTO_VERSION,
+        server: "rustmush 0.1".into(),
+        features: vec![],
+        panels: vec![],
+        asset_pack: Some(mush_proto::AssetPackInfo {
+            version: 1,
+            pack_version: "pack_0123456789abcdef".into(),
+            manifest: "/assets/manifest.json".into(),
+        }),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    assert_eq!(
+        json,
+        r#"{"t":"hello","d":{"proto":1,"server":"rustmush 0.1","features":[],"panels":[],"asset_pack":{"version":1,"pack_version":"pack_0123456789abcdef","manifest":"/assets/manifest.json"}}}"#
+    );
+    assert_eq!(serde_json::from_str::<OutputEvent>(&json).unwrap(), ev);
 }
 
 #[test]

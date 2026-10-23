@@ -80,3 +80,15 @@ describe("SessionStore.llmDashboardAvailable", () => {
     expect(s.llmDashboardAvailable).toBe(false);
   });
 });
+
+describe("SessionStore.assetPack (doc 21 cut G.11)", () => {
+  it("keeps the pack the hello names, and drops it when a later hello names none", () => {
+    const s = new SessionStore();
+    expect(s.assetPack).toBeNull();
+    const pack = { version: 1, pack_version: "pack_0123456789abcdef", manifest: "/assets/manifest.json" };
+    s.applyHello({ server: "rustmush", features: [], panels: [], asset_pack: pack });
+    expect(s.assetPack).toEqual(pack);
+    s.applyHello({ server: "rustmush", features: [], panels: [] });
+    expect(s.assetPack).toBeNull();
+  });
+});

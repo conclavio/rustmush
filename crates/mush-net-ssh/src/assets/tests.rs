@@ -459,6 +459,17 @@ async fn the_tree_is_served_read_only() {
     assert!(sftp.metadata("/assets/sounds/nothing.wav").await.is_err());
 }
 
+/// The hello's pack (the web's, through `WebConfig`): schema 1, the shipped
+/// version, the manifest's path in the sftp tree.
+#[test]
+fn the_hello_names_the_shipped_pack() {
+    let pack = AssetPack::shipped().expect("pack");
+    let info = pack.hello_info();
+    assert_eq!(info.version, 1);
+    assert_eq!(info.pack_version, pack.pack_version());
+    assert_eq!(info.manifest, "/assets/manifest.json");
+}
+
 #[test]
 fn paths_normalise_and_never_climb() {
     assert_eq!(normalise(".").as_deref(), Some(ROOT));

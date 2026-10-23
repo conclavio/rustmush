@@ -288,6 +288,18 @@ impl AssetPack {
         &self.pack_version
     }
 
+    /// What a client's `hello` names (the web's, through `WebConfig`): the
+    /// manifest's schema version, this pack's version and the manifest's
+    /// path in the `sftp` tree.
+    #[must_use]
+    pub fn hello_info(&self) -> mush_proto::AssetPackInfo {
+        mush_proto::AssetPackInfo {
+            version: 1,
+            pack_version: self.pack_version.clone(),
+            manifest: format!("{ROOT}/{MANIFEST}"),
+        }
+    }
+
     /// The pack's sound names (the manifest's `name` of each `sound`): what a
     /// w11term can play from it, and so all it is sent (`tui::sound`).
     #[must_use]

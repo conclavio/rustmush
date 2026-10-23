@@ -747,6 +747,7 @@ fn hello_session_info_reply_golden() {
         server: "rustmush 0.1".into(),
         features: vec!["channels".into()],
         panels: vec![],
+        asset_pack: None,
     };
     assert_eq!(
         rendered_str(&hello, ColorDepth::None, 0),
@@ -897,6 +898,7 @@ fn all_variant_events() -> Vec<OutputEvent> {
             server: "rustmush 0.1".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         },
         OutputEvent::SessionInfo {
             character: nick(),
