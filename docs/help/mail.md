@@ -2,6 +2,10 @@
 
 @mail is the in-game letter system: persistent private messages that
 wait for their recipient, unlike a page which is live-only.
+All mail is in character and must transit. Sending queues a durable letter;
+it does not put it in the recipient's inbox immediately. There is no OOC mail.
+Your Sent copy shows queued/awaiting confirmation until a delivery or failure
+report travels back. Reading your Sent copy does not reveal remote delivery.
 
 Reading:
 
@@ -38,6 +42,13 @@ Managing:
 Notes:
 
 - New mail is announced when it arrives and when you connect.
+- Replies, reply-all, forwards and self-mail use the same transport. Offline
+  recipients receive at their persisted world location. Unknown locations wait.
+- Letters up to 1,024 UTF-8 bytes (subject plus body) can use relay pairs.
+  Larger letters travel by conventional radio and become readable as a whole.
+- Locks, ignore policy and available inbox space are checked at arrival. A
+  refusal travels back; the sender cannot inspect a distant mailbox instantly.
+- Deleting a Sent copy does not cancel a letter already queued for transit.
 - Quotas apply: staff configure how much mail one player may store.
   Trashed messages do not count — delete then purge always frees space.
 - One message may address at most 32 recipients and contain at most 512 body

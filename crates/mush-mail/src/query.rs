@@ -105,6 +105,7 @@ impl QueryHandler for ListQuery {
                     "status": status,
                     "sent_at": m.sent_at,
                     "reply_to": m.reply_to,
+                    "delivery": st.delivery_text(actor, id),
                 })
             })
             .collect();

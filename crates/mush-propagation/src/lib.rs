@@ -60,6 +60,7 @@ use smol_str::SmolStr;
 
 pub mod commands;
 pub mod context;
+pub mod dispatch;
 pub mod panel;
 pub mod pass;
 pub mod policy;
@@ -147,18 +148,28 @@ pub const MAX_DOMAINS_PER_DETECTION_FIRE: usize = 8;
 #[derive(Debug, Default)]
 pub struct PropagationModule {
     metric: Option<Arc<dyn routing::MetricProvider>>,
+    sources: Option<Arc<dyn dispatch::Sources>>,
 }
 
 impl PropagationModule {
     /// A module with default configuration.
     #[must_use]
     pub const fn new() -> Self {
-        Self { metric: None }
+        Self {
+            metric: None,
+            sources: None,
+        }
     }
 
     #[must_use]
     pub fn with_metric(mut self, metric: Arc<dyn routing::MetricProvider>) -> Self {
         self.metric = Some(metric);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_sources(mut self, sources: Arc<dyn dispatch::Sources>) -> Self {
+        self.sources = Some(sources);
         self
     }
 }
@@ -172,6 +183,9 @@ impl GameModule for PropagationModule {
         // K8.5: the module's lane is declared BEFORE any command registers.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(record::PropagationStore::default());
+        if let Some(sources) = &self.sources {
+            reg.state(dispatch::Services(Arc::clone(sources)));
+        }
         if let Some(metric) = &self.metric {
             reg.state(routing::RoutingServices(Arc::clone(metric)));
         }
@@ -243,6 +257,16 @@ impl GameModule for PropagationModule {
                 Ok(Err(error)) | Err(error) => Some(error),
             };
             if let Some(error) = failed {
+                if value.get("dispatch").is_some_and(|v| !v.is_null())
+                    || value
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|k| matches!(k, "mail" | "channel"))
+                {
+                    return Err(ModError::msg(format!(
+                        "message handoff {key} is unreadable: {error}"
+                    )));
+                }
                 // **Skipped loudly, and HELD — never deleted** (cut 6's R3: a
                 // document that will not decode is the only copy of the fact it
                 // carries, and a boot that deletes it destroys it). The RAM copy
@@ -266,6 +290,11 @@ impl GameModule for PropagationModule {
             ));
         }
         store.reconcile_allocators();
+        let dispatches: Vec<_> = store.envelopes().filter_map(|e| e.dispatch_ref()).collect();
+        let keys: std::collections::BTreeSet<_> = dispatches.iter().map(|d| &d.key).collect();
+        if dispatches.len() > dispatch::MAX_DISPATCHES || keys.len() != dispatches.len() {
+            return Err(ModError::msg("invalid or duplicate dispatch handoffs"));
+        }
         if held > 0 {
             // **Paged, not logged** (E4c V6): `@prop/held` is the verb that can
             // actually show them, and it names the key and the decode error.
@@ -295,6 +324,7 @@ impl GameModule for PropagationModule {
 /// report and `@prop/pass` prints it, so the operator is told rather than a log
 /// line being written into the dark.
 fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    dispatch::reconcile(ctx);
     let at = ctx.w.world_ic_now();
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         return;

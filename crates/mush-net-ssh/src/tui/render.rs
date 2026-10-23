@@ -785,6 +785,12 @@ pub fn render_mail_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                 Span::raw(format!("{index:>3}{marker} ")),
                 Span::styled(format!("{:<12} ", truncate_chars(&clean(from), 12)), player),
                 Span::raw(truncate_chars(&clean(subject), 60)),
+                Span::styled(
+                    e.get("delivery")
+                        .and_then(Value::as_str)
+                        .map_or_else(String::new, |s| format!(" [{}]", clean(s))),
+                    system,
+                ),
             ]),
             format!("@mail {index}"),
             index.to_string(),

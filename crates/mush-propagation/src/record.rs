@@ -363,6 +363,8 @@ pub struct Envelope {
     kind: DispatchKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     transit: Option<crate::routing::Transit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch: Option<crate::dispatch::DispatchRef>,
 }
 
 #[derive(Deserialize)]
@@ -385,6 +387,8 @@ struct EnvelopeWire {
     kind: Option<DispatchKind>,
     #[serde(default)]
     transit: Option<crate::routing::Transit>,
+    #[serde(default)]
+    dispatch: Option<crate::dispatch::DispatchRef>,
 }
 
 impl<'de> Deserialize<'de> for Envelope {
@@ -405,6 +409,7 @@ impl<'de> Deserialize<'de> for Envelope {
             wire.advanced,
             wire.ack_of,
             wire.shares,
+            matches!(wire.kind, Some(DispatchKind::Mail | DispatchKind::Channel)),
         )
         .map_err(serde::de::Error::custom)?;
         if let Some(kind) = wire.kind {
@@ -416,6 +421,18 @@ impl<'de> Deserialize<'de> for Envelope {
                 ));
             }
             envelope.kind = kind;
+        }
+        if let Some(reference) = wire.dispatch {
+            if !reference.valid()
+                || !matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel)
+            {
+                return Err(serde::de::Error::custom("invalid dispatch reference"));
+            }
+            envelope.dispatch = Some(reference);
+        } else if matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel) {
+            return Err(serde::de::Error::custom(
+                "message dispatch reference missing",
+            ));
         }
         if let Some(transit) = wire.transit {
             transit.validate().map_err(serde::de::Error::custom)?;
@@ -477,6 +494,7 @@ impl Envelope {
             issued,
             None,
             None,
+            false,
         )
     }
 
@@ -505,6 +523,7 @@ impl Envelope {
             issued,
             None,
             Some(contact),
+            false,
         )
     }
 
@@ -526,6 +545,7 @@ impl Envelope {
             at,
             Some(original.id),
             None,
+            false,
         )
     }
 
@@ -542,6 +562,7 @@ impl Envelope {
         advanced: ClockStamp,
         ack_of: Option<u64>,
         shares: Option<mush_core::ContactId>,
+        allow_self: bool,
     ) -> Result<Self, RecordError> {
         if payload.is_empty() || payload.len() > MAX_ENVELOPE_PAYLOAD_BYTES {
             return Err(RecordError::Payload {
@@ -552,7 +573,7 @@ impl Envelope {
         if revision == 0 {
             return Err(RecordError::ZeroRevision);
         }
-        if issuer == recipient {
+        if issuer == recipient && !allow_self {
             return Err(RecordError::SelfAddressed);
         }
         if path.len() > usize::from(MAX_ENVELOPE_HOPS) {
@@ -588,7 +609,44 @@ impl Envelope {
                 DispatchKind::Order
             },
             transit: None,
+            dispatch: None,
         })
+    }
+
+    /// A source-owned message reference; self-mail is a legitimate local route.
+    pub fn dispatch(
+        id: u64,
+        issuer: ObjId,
+        recipient: ObjId,
+        kind: DispatchKind,
+        reference: crate::dispatch::DispatchRef,
+        issued: ClockStamp,
+    ) -> Result<Self, RecordError> {
+        if !reference.valid() || !matches!(kind, DispatchKind::Mail | DispatchKind::Channel) {
+            return Err(RecordError::DispatchReference);
+        }
+        let mut envelope = Self::from_parts(
+            id,
+            issuer,
+            recipient,
+            reference.key.clone(),
+            1,
+            EnvelopeState::Queued,
+            Vec::new(),
+            issued.clone(),
+            issued,
+            None,
+            None,
+            true,
+        )?;
+        envelope.kind = kind;
+        envelope.dispatch = Some(reference);
+        Ok(envelope)
+    }
+
+    #[must_use]
+    pub fn dispatch_ref(&self) -> Option<&crate::dispatch::DispatchRef> {
+        self.dispatch.as_ref()
     }
 
     /// The id.
@@ -725,10 +783,12 @@ impl Envelope {
             at,
             self.ack_of,
             self.shares,
+            self.dispatch.is_some(),
         )
         .map(|mut next| {
             next.kind = self.kind;
             next.transit = self.transit.clone();
+            next.dispatch = self.dispatch.clone();
             next
         })
     }
@@ -1060,6 +1120,8 @@ fn fold_digest(
 /// A record that will not construct or will not load.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RecordError {
+    #[error("invalid message dispatch reference")]
+    DispatchReference,
     #[error("a phantom id is at most {max} bytes")]
     PhantomId { max: usize },
     #[error("a phantom's holder set size {actual} is outside 1..={max}")]

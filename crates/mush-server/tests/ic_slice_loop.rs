@@ -2932,6 +2932,96 @@ async fn r5_real_dray_radio_freezes_forwards_and_recovers() {
     radio_arrive(&mut rig, far).await;
     run(&mut rig, GOD, "@relay/enable luna_ceres.luna").await;
 
+    // R6a: the same real underway hull receives a letter only after its physical
+    // flight, and sender knowledge waits for a returning receipt.
+    let sent = run(
+        &mut rig,
+        GOD,
+        &format!("@mail/quick {pilot}=Underway letter/private cargo note"),
+    )
+    .await;
+    assert!(sent.contains("queued for IC transit"), "{sent}");
+    let mail_id = rig
+        .tw
+        .world()
+        .module_state::<mush_mail::MailState>()
+        .unwrap()
+        .next_id()
+        - 1;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_mail::MailState>()
+            .unwrap()
+            .entry(pilot, mail_id)
+            .is_none()
+    );
+    sweep(&mut rig, 1).await;
+    let key = format!("mail:v1:{mail_id}:{}:out", pilot.0);
+    let mailed = mush_propagation::dispatch::find(rig.tw.world(), &key)
+        .unwrap()
+        .clone();
+    let flight = mailed.transit().unwrap().flight.clone().unwrap();
+    assert!(flight.seconds > 0 && flight.basis.starts_with("ship.v1:"));
+    assert!(
+        !run(&mut rig, pilot, "@mail")
+            .await
+            .contains("Underway letter")
+    );
+    restart(&mut rig, |tw| ticket(tw, hull, 1).is_some()).await;
+    assert_eq!(
+        mush_propagation::dispatch::find(rig.tw.world(), &key)
+            .unwrap()
+            .transit()
+            .unwrap()
+            .flight
+            .as_ref(),
+        Some(&flight)
+    );
+    radio_arrive(&mut rig, mailed.id()).await;
+    sweep(&mut rig, 1).await;
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_mail::MailState>()
+            .unwrap()
+            .entry(pilot, mail_id)
+            .is_some()
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_mail::MailState>()
+            .unwrap()
+            .message(mail_id)
+            .unwrap()
+            .delivery
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
+    sweep(&mut rig, 1).await;
+    let returning = mush_propagation::dispatch::find(
+        rig.tw.world(),
+        &format!("mail:v1:{mail_id}:{}:return", pilot.0),
+    )
+    .unwrap()
+    .id();
+    radio_arrive(&mut rig, returning).await;
+    sweep(&mut rig, 1).await;
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_mail::MailState>()
+            .unwrap()
+            .message(mail_id)
+            .unwrap()
+            .delivery
+            .as_ref()
+            .unwrap()[&pilot],
+        mush_mail::transit::Outcome::Delivered
+    );
+
     // Missing typed ticket is a bounded wait, including a ship-local room.
     let handles = handles(&rig.tw);
     let mut txn = rig

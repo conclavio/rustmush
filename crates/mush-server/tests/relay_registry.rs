@@ -23,6 +23,73 @@ impl Drop for Rig {
     }
 }
 impl Rig {
+    fn mail(&self) -> &mush_mail::MailState {
+        self.tw.world().module_state().unwrap()
+    }
+    fn mail_tick(&mut self) -> Vec<(mush_core::Audience, mush_proto::OutputEvent)> {
+        let due = self.tw.engine_mut().sched.next_due().unwrap_or(0);
+        self.tw
+            .set_now((self.tw.world().now() + 1).max(due.div_euclid(1000) + 1));
+        self.tw.fire_due(self.tw.world().now() * 1000)
+    }
+    fn mail_route(
+        &self,
+        id: u64,
+        recipient: mush_core::ObjId,
+        returning: bool,
+    ) -> Option<mush_propagation::Envelope> {
+        mush_propagation::dispatch::find(
+            self.tw.world(),
+            &format!(
+                "mail:v1:{id}:{}:{}",
+                recipient.0,
+                if returning { "return" } else { "out" }
+            ),
+        )
+        .cloned()
+    }
+    fn mail_hidden(&mut self, actor: mush_core::ObjId, secret: &str) {
+        use mush_core::QueryHandler;
+        let panel = mush_mail::ListQuery
+            .query(self.tw.world(), actor, &serde_json::json!({}))
+            .unwrap();
+        assert!(!serde_json::to_string(&panel).unwrap().contains(secret));
+        assert!(!self.run(actor, "@mail").contains(secret));
+        assert!(!self.run(actor, "@mail 1").contains(secret));
+        assert!(!self.run(actor, "+orders").contains("mail:v1"));
+        assert_eq!(self.mail().unread_counts(actor).0, 0);
+    }
+    fn finish_mail(&mut self, id: u64) {
+        // Advance only to actual frozen flight deadlines; never manufacture arrival.
+        for _ in 0..80 {
+            if mush_mail::transit::intents(self.tw.world())
+                .unwrap()
+                .iter()
+                .all(|r| !r.key.starts_with(&format!("mail:v1:{id}:")))
+            {
+                return;
+            }
+            self.mail_tick();
+            let next = self
+                .tw
+                .world()
+                .module_state::<mush_propagation::PropagationStore>()
+                .unwrap()
+                .envelopes()
+                .filter(|e| {
+                    e.dispatch_ref()
+                        .is_some_and(|r| r.key.starts_with(&format!("mail:v1:{id}:")))
+                })
+                .filter_map(|e| e.transit()?.flight.as_ref().map(|f| f.due.at))
+                .min();
+            if let Some(at) = next
+                && at > self.tw.world().world_ic_now().at
+            {
+                self.advance_ic_to(at);
+            }
+        }
+        panic!("mail {id} did not settle");
+    }
     async fn new(enabled: bool) -> Self {
         static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut cfg = Config::default();
@@ -571,4 +638,381 @@ async fn r1_bounds_and_terminal_state_are_enforced() {
     assert_eq!(pair.state(), LinkState::Dead);
     pair.halves[1].powered = false;
     assert_eq!(pair.state(), LinkState::Dead);
+}
+
+#[tokio::test]
+async fn r6a_mail_handoffs_gate_visibility_and_survive_each_restart() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let stickney = rig
+        .tw
+        .world()
+        .iter()
+        .find(|o| o.name == "Kasei Receiving Office")
+        .unwrap()
+        .id;
+    rig.run(GOD, &format!("@teleport {bob}={stickney}"));
+    // Source intent and Sent copy are durable; no destination entry exists yet.
+    assert!(
+        rig.run(GOD, &format!("@mail/quick {bob}=R6a-secret/first body"))
+            .contains("queued for IC transit")
+    );
+    let id = rig.mail().next_id() - 1;
+    assert!(rig.mail_route(id, bob, false).is_none());
+    rig.mail_hidden(bob, "R6a-secret");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.mail_hidden(bob, "R6a-secret");
+    rig.mail_tick();
+    let outbound = rig.mail_route(id, bob, false).unwrap();
+    let flight = outbound.transit().unwrap().flight.clone().unwrap();
+    assert!(flight.seconds > 0);
+    // Transport acceptance/in-flight crash: exact frozen itinerary survives.
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.mail_route(id, bob, false).unwrap(), outbound);
+    rig.mail_hidden(bob, "R6a-secret");
+    // Sender deletion cannot reap a payload still needed by its recipient.
+    rig.run(GOD, "@mail/folder sent");
+    rig.run(GOD, "@mail/delete 1");
+    rig.run(GOD, "@mail/purge");
+    assert!(rig.mail().message(id).is_some());
+    rig.advance_ic_to(flight.due.at - 1);
+    rig.pass();
+    rig.mail_hidden(bob, "R6a-secret");
+    rig.advance_ic_to(flight.due.at);
+    rig.pass();
+    assert_eq!(
+        rig.mail_route(id, bob, false).unwrap().state(),
+        EnvelopeState::Delivered
+    );
+    // Receipt has committed, but the mail owner has not applied it yet.
+    rig.mail_hidden(bob, "R6a-secret");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    let events = rig.mail_tick();
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |(a, e)| matches!(a,mush_core::Audience::Actor(x) if *x==bob)
+                    && matches!(e,mush_proto::OutputEvent::MailNotice{ id: n,.. } if *n==id)
+            )
+            .count(),
+        1
+    );
+    assert_eq!(rig.mail().unread_counts(bob).0, 1);
+    assert!(
+        rig.mail()
+            .message(id)
+            .unwrap()
+            .delivery
+            .as_ref()
+            .unwrap()
+            .is_empty(),
+        "no instant success knowledge"
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.mail().unread_counts(bob).0, 1);
+    for _ in 0..3 {
+        let events = rig.mail_tick();
+        assert!(
+            !events
+                .iter()
+                .any(|(_, e)| matches!(e,mush_proto::OutputEvent::MailNotice{ id:n,..} if *n==id))
+        );
+    }
+    let returning = rig.mail_route(id, bob, true).unwrap();
+    let return_flight = returning.transit().unwrap().flight.as_ref().unwrap();
+    assert!(return_flight.seconds > 0);
+    assert!(
+        rig.mail()
+            .message(id)
+            .unwrap()
+            .delivery
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
+    rig.finish_mail(id);
+    assert_eq!(
+        rig.mail().message(id).unwrap().delivery.as_ref().unwrap()[&bob],
+        mush_mail::transit::Outcome::Delivered
+    );
+    assert!(rig.run(bob, "@mail 1").contains("first body"));
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.mail().folder_ids(bob, "inbox"), vec![id]);
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
+
+#[tokio::test]
+async fn r6a_all_send_paths_bulk_self_and_old_mail_use_the_right_boundary() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    // Legacy records are already delivered and never acquire new dispatches.
+    rig.flush().await;
+    let old = serde_json::json!({"id":99,"from":GOD,"to":[bob],"subject":"legacy","body":"old body","sent_at":42});
+    let entry = serde_json::json!({"owner":bob,"msg":99,"folder":"inbox","status":"read"});
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![
+                ModuleOp {
+                    ns: "mail".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "msg:99".into(),
+                        value: old,
+                    },
+                },
+                ModuleOp {
+                    ns: "mail".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: format!("box:{}:99", bob.0).into(),
+                        value: entry,
+                    },
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert!(rig.run(bob, "@mail 1").contains("old body"));
+    assert!(
+        mush_mail::transit::intents(rig.tw.world())
+            .unwrap()
+            .is_empty()
+    );
+    // Reply compose, reply-all and forward each generate a new source dispatch.
+    for command in ["@mail/reply 1".to_string(), "@mail/replyall 1".to_string()] {
+        rig.run(bob, &command);
+        rig.run(bob, "reply body");
+        assert!(rig.run(bob, "--").contains("queued for IC transit"));
+        let id = rig.mail().next_id() - 1;
+        assert!(rig.mail().entry(GOD, id).is_none());
+        rig.finish_mail(id);
+        assert!(rig.mail().entry(GOD, id).is_some());
+    }
+    assert!(
+        rig.run(bob, "@mail/fwd 1=#1")
+            .contains("queued for IC transit")
+    );
+    let id = rig.mail().next_id() - 1;
+    rig.finish_mail(id);
+    assert!(rig.mail().message(id).unwrap().body.contains("old body"));
+    assert!(
+        rig.run(bob, &format!("@mail/quick {bob}=self/local note"))
+            .contains("queued for IC transit")
+    );
+    let id = rig.mail().next_id() - 1;
+    assert_eq!(rig.mail().entry(bob, id).unwrap().folder.as_str(), "sent");
+    rig.finish_mail(id);
+    assert_eq!(rig.mail().entry(bob, id).unwrap().folder.as_str(), "inbox");
+    // The full supported body stays with mail. Actual bytes select bulk fallback.
+    let body = "x".repeat(mush_mail::MAX_MAIL_BODY_BYTES);
+    // Programmatic/compose ingress still reaches the same bounded submit function;
+    // use 512 valid compose lines to avoid the connection's individual line cap.
+    rig.run(GOD, &format!("@mail/send {bob}=bulk"));
+    for _ in 0..511 {
+        rig.run(GOD, &"x".repeat(127));
+    }
+    rig.run(GOD, &"x".repeat(128));
+    assert!(rig.run(GOD, "--").contains("queued for IC transit"));
+    let id = rig.mail().next_id() - 1;
+    assert_eq!(rig.mail().message(id).unwrap().body.len(), body.len());
+    rig.mail_tick();
+    let outbound = rig.mail_route(id, bob, false).unwrap();
+    assert_eq!(outbound.dispatch_ref().unwrap().bytes, 65_540);
+    assert!(
+        outbound
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.is_none())
+    );
+    assert!(rig.mail().entry(bob, id).is_none());
+    rig.finish_mail(id);
+    assert_eq!(rig.mail().message(id).unwrap().body.len(), 65_536);
+    assert!(rig.mail().entry(bob, id).is_some());
+}
+
+#[tokio::test]
+async fn r6a_refusals_wait_for_arrival_and_a_physical_return() {
+    use mush_mail::transit::Outcome;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    let alice = rig.tw.spawn_player("MailAlice");
+    let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
+    rig.run(GOD, &format!("@teleport {alice}={luna}"));
+    rig.tw.world_mut().set_connected(bob, false);
+    for expected in [Outcome::Refused, Outcome::Full, Outcome::Unavailable] {
+        rig.tw
+            .world_mut()
+            .module_state_mut::<mush_mail::MailState>()
+            .unwrap()
+            .set_quota(300);
+        rig.run(alice, &format!("@mail/quick {bob}=policy/private"));
+        let id = rig.mail().next_id() - 1;
+        rig.mail_tick();
+        let outbound = rig.mail_route(id, bob, false).unwrap();
+        assert!(
+            rig.mail()
+                .message(id)
+                .unwrap()
+                .delivery
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        match expected {
+            Outcome::Refused => {
+                rig.tw
+                    .world_mut()
+                    .get_mut(bob)
+                    .unwrap()
+                    .locks
+                    .insert(mush_core::LockType::Mail, mush_core::LockExpr::Const(false));
+            }
+            Outcome::Full => {
+                rig.tw.world_mut().get_mut(bob).unwrap().locks.clear();
+                rig.tw
+                    .world_mut()
+                    .module_state_mut::<mush_mail::MailState>()
+                    .unwrap()
+                    .set_quota(0);
+            }
+            Outcome::Unavailable => {
+                rig.tw
+                    .world_mut()
+                    .module_state_mut::<mush_mail::MailState>()
+                    .unwrap()
+                    .set_quota(300);
+                rig.tw
+                    .world_mut()
+                    .set_flag(bob, mush_core::Flags::GOING, true)
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let due = outbound.transit().unwrap().flight.as_ref().unwrap().due.at;
+        rig.advance_ic_to(due);
+        rig.pass();
+        rig.mail_tick();
+        assert!(rig.mail().entry(bob, id).is_none());
+        assert!(
+            rig.mail()
+                .message(id)
+                .unwrap()
+                .delivery
+                .as_ref()
+                .unwrap()
+                .is_empty(),
+            "failure must return physically"
+        );
+        rig.finish_mail(id);
+        assert_eq!(
+            rig.mail().message(id).unwrap().delivery.as_ref().unwrap()[&bob],
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn r6a_pending_capacity_expiry_and_deleted_sent_payload_are_bounded() {
+    let mut rig = Rig::new(true).await;
+    rig.endpoints();
+    let targets: Vec<_> = (0..32)
+        .map(|i| rig.tw.spawn_player(&format!("UnplacedMail{i}")))
+        .collect();
+    let names = targets
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    for i in 0..4 {
+        assert!(
+            rig.run(GOD, &format!("@mail/quick {names}=waiting{i}/secret"))
+                .contains("queued for IC transit")
+        );
+    }
+    let next = rig.mail().next_id();
+    assert!(
+        rig.run(GOD, &format!("@mail/quick {names}=overload/x"))
+            .contains("queue is full")
+    );
+    assert_eq!(rig.mail().next_id(), next, "refusal allocates nothing");
+    assert_eq!(
+        mush_mail::transit::intents(rig.tw.world()).unwrap().len(),
+        128
+    );
+    let first = next - 4;
+    for _ in 0..10 {
+        rig.mail_tick();
+    }
+    assert!(
+        rig.mail_route(first, targets[0], false)
+            .unwrap()
+            .transit()
+            .is_none()
+    );
+    for target in &targets {
+        assert_eq!(rig.mail().unread_counts(*target).0, 0);
+    }
+    rig.run(GOD, "@mail/folder sent");
+    for _ in 0..4 {
+        rig.run(GOD, "@mail/delete 1");
+    }
+    rig.run(GOD, "@mail/purge");
+    assert!(
+        rig.mail().message(first).is_some(),
+        "pending copies retain their payload"
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    let expiry = rig
+        .mail_route(first, targets[0], false)
+        .unwrap()
+        .issued()
+        .at
+        + mush_propagation::ENVELOPE_TTL_SECS;
+    rig.advance_ic_to(expiry);
+    rig.pass();
+    rig.pass();
+    for id in first..next {
+        rig.finish_mail(id);
+    }
+    for _ in 0..3 {
+        rig.mail_tick();
+    }
+    assert!(
+        rig.mail().message(first).is_none(),
+        "completed orphan payload is reaped"
+    );
+    assert!(
+        mush_mail::transit::intents(rig.tw.world())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .envelopes()
+            .all(|e| e.dispatch_ref().is_none())
+    );
+    assert!(
+        rig.run(
+            GOD,
+            &format!("@mail/quick {}=capacity returned/x", targets[0])
+        )
+        .contains("queued for IC transit")
+    );
 }

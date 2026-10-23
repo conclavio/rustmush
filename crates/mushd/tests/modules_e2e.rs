@@ -268,6 +268,18 @@ async fn m3_cross_module_journey() {
     alice.expect_after(mark, "-- End of recall --").await;
 
     // ================= mail =================
+    // Limbo is the unplaced/recovery address. Give this small, non-strategic
+    // client fixture a real shared room: the production local transport path
+    // still queues and consumes durable receipts on separate ticks.
+    let mark = god.mark();
+    god.send_line("@dig Local Post Office").await;
+    god.expect_after(mark, "created with room number").await;
+    let room = support::parse_id_after(&strip_ansi(&god.seen[mark..]), "room number #");
+    for actor in ["Alice", "Bob", "me"] {
+        let mark = god.mark();
+        god.send_line(&format!("@teleport {actor}=#{room}")).await;
+        god.expect_after(mark, "Teleported.").await;
+    }
     // Compose over the real SSH line editor: prompt, multi-line body,
     // preview, "--" sends.
     alice.send_line("@mail/send Bob=Test flight").await;
@@ -283,13 +295,13 @@ async fn m3_cross_module_journey() {
     alice.expect_after(mark, "MAIL: To: Bob").await;
     alice.expect_after(mark, "First line of body.").await;
     alice.send_line("--").await;
-    alice.expect("MAIL: Message 1 sent to Bob.").await;
+    alice.expect("MAIL: Message 1 queued for IC transit.").await;
 
     // Regression (prompt-clear fix): popping compose must CLEAR the stored
     // prompt — output after the pop must never redraw a stale "Mail>".
     let mark = alice.mark();
     alice.send_line("look").await;
-    alice.expect_after(mark, "Limbo #0").await;
+    alice.expect_after(mark, "Local Post Office").await;
     assert!(
         !strip_ansi(&alice.seen[mark..]).contains("Mail>"),
         "stale Mail> prompt redrawn after compose popped:\n{}",
@@ -341,8 +353,9 @@ async fn m3_cross_module_journey() {
     alice
         .send_line("@mail/quick Bob=While you were out/Missed you.")
         .await;
-    alice.expect("MAIL: Message 2 sent to Bob.").await;
+    alice.expect("MAIL: Message 2 queued for IC transit.").await;
 
+    alice.expect("MAIL: Message 2 to").await; // returning local delivery receipt
     let (_bob2_handle, mut bob2) = play_client(addr).await;
     bob2.send_line("connect Bob hunter42").await;
     bob2.expect("Connected as Bob").await;
@@ -361,7 +374,8 @@ async fn m3_cross_module_journey() {
         alice.send_line(&format!("bulk line {i}")).await;
     }
     alice.send_line("--").await;
-    alice.expect("MAIL: Message 3 sent to Bob.").await;
+    alice.expect("MAIL: Message 3 queued for IC transit.").await;
+    bob2.expect("MAIL: New message (3)").await;
     let mark = bob2.mark();
     bob2.send_line("@mail 3").await;
     bob2.expect_after(mark, "bulk line 1").await;

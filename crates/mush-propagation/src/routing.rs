@@ -562,15 +562,17 @@ pub fn prepare_with(
         world,
         state,
         metric,
-        metric.endpoint(
-            world,
-            state,
-            envelope
-                .path()
-                .last()
-                .map_or(envelope.issuer(), |h| h.relay),
-        )?,
-        metric.endpoint(world, state, envelope.recipient())?,
+        envelope.dispatch_ref().and_then(|d| d.origin).or_else(|| {
+            metric.endpoint(
+                world,
+                state,
+                envelope
+                    .path()
+                    .last()
+                    .map_or(envelope.issuer(), |h| h.relay),
+            )
+        })?,
+        destination(metric, world, state, envelope)?,
         now,
         envelope.path().len(),
         message_units(envelope),
@@ -579,7 +581,28 @@ pub fn prepare_with(
 }
 
 fn message_units(envelope: &Envelope) -> u32 {
-    envelope.payload().len().div_ceil(BYTES_PER_UNIT) as u32
+    match envelope.dispatch_ref() {
+        // Version 1 bulk policy: no pair is eligible. The reference's small size
+        // must never let a large letter ride the short-message service.
+        Some(d) if d.bytes > crate::dispatch::SHORT_MESSAGE_BYTES => u32::MAX,
+        Some(d) => d.bytes.div_ceil(BYTES_PER_UNIT as u32),
+        None => envelope.payload().len().div_ceil(BYTES_PER_UNIT) as u32,
+    }
+}
+
+fn destination(
+    metric: &dyn Metric,
+    world: &World,
+    state: &SpatialState,
+    envelope: &Envelope,
+) -> Option<ObjId> {
+    if world
+        .get(envelope.recipient())
+        .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING))
+    {
+        return envelope.dispatch_ref().and_then(|d| d.fallback);
+    }
+    metric.endpoint(world, state, envelope.recipient())
 }
 
 pub struct Pass<'a> {
@@ -679,17 +702,17 @@ impl<'a> Pass<'a> {
         let mut route = match envelope.transit() {
             Some(route) => route.clone(),
             None => {
-                let from = self.metric.endpoint(
-                    self.world,
-                    self.state,
-                    envelope
-                        .path()
-                        .last()
-                        .map_or(envelope.issuer(), |h| h.relay),
-                )?;
-                let to = self
-                    .metric
-                    .endpoint(self.world, self.state, envelope.recipient())?;
+                let from = envelope.dispatch_ref().and_then(|d| d.origin).or_else(|| {
+                    self.metric.endpoint(
+                        self.world,
+                        self.state,
+                        envelope
+                            .path()
+                            .last()
+                            .map_or(envelope.issuer(), |h| h.relay),
+                    )
+                })?;
+                let to = destination(self.metric.as_ref(), self.world, self.state, envelope)?;
                 let route = plan(
                     self.world,
                     self.state,
@@ -727,9 +750,7 @@ impl<'a> Pass<'a> {
             route.flight = None;
             return Some(envelope.with_transit(route));
         }
-        let destination = self
-            .metric
-            .endpoint(self.world, self.state, envelope.recipient())?;
+        let destination = destination(self.metric.as_ref(), self.world, self.state, envelope)?;
         if route.destination != destination || route.registry_revision != catalog.revision {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
@@ -1040,6 +1061,7 @@ mod tests {
         let mut mail = serde_json::to_value(&order).unwrap();
         mail["id"] = 2.into();
         mail["kind"] = "mail".into();
+        mail["dispatch"] = serde_json::json!({"version":1,"key":"mail:v1:1:3:out","bytes":10,"origin":null,"fallback":null});
         mail["revision"] = 99.into();
         let mail: Envelope = serde_json::from_value(mail).unwrap();
         let mut store = PropagationStore::default();

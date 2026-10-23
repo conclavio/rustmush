@@ -9,8 +9,9 @@ push; R2 is implemented and its dev1 live checks passed. Normal candidate CI is
 still required for full acceptance under §5. After the CI repair's dev1 rerun
 passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
-Full acceptance still requires normal candidate CI. Work is paused after R5,
-before R6a; all later milestones remain unstarted.
+Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
+R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
+being integrated; R6b and later milestones remain unstarted.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -38,7 +39,11 @@ when the owner continues. Do not accumulate dependent implementation while a gat
 is failed, skipped or awaiting its live test. Routine implementation choices inside
 a milestone can be resolved and recorded without reopening the seven decisions.
 
-Every split milestone below has its own stop. If another split becomes necessary,
+The owner subsequently authorized automatic continuation from R6a to R6b, after
+R6a's integration gate, commit and push. This changes that stop only; failed gates
+still block dependent implementation, and work stops after R6b before R3.
+
+Every other split milestone below has its own stop. If another split becomes necessary,
 each new part must still end in an observable, integrated result. A library, record
 schema or mocked consumer alone is not an accepted milestone.
 

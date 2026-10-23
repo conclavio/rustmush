@@ -307,12 +307,12 @@ pub fn delivery_pass_with_metric(
             continue;
         }
         let next = if matches!(envelope.state(), EnvelopeState::Delivered)
-            && envelope.age(now) < ENVELOPE_TTL_SECS
+            && (envelope.dispatch_ref().is_some() || envelope.age(now) < ENVELOPE_TTL_SECS)
         {
             // Arrival is a one-time transition, not repeated every delivery fire.
             None
         } else if envelope.age(now) < ENVELOPE_TTL_SECS
-            && !is_gone(world, envelope.recipient())
+            && (envelope.dispatch_ref().is_some() || !is_gone(world, envelope.recipient()))
             && (router.is_some() || envelope.transit().is_some())
         {
             let next = router.as_mut().and_then(|r| r.step(store, &envelope, now));
@@ -376,6 +376,7 @@ fn reap(
         .envelopes()
         .filter(|envelope| {
             envelope.state().is_terminal()
+                && envelope.dispatch_ref().is_none()
                 && envelope
                     .checked_age(now)
                     .is_none_or(|age| age >= ENVELOPE_TTL_SECS)
@@ -468,7 +469,7 @@ fn step_envelope(
     // A recipient that was destroyed mid-flight: expire and attribute, never
     // retry forever. `GOING` counts as gone, because the object is on its way
     // out and a delivery to it would arrive nowhere.
-    if is_gone(world, envelope.recipient()) {
+    if envelope.dispatch_ref().is_none() && is_gone(world, envelope.recipient()) {
         report.expired.push(envelope.id());
         report.anomalies.push(format!(
             "envelope {} expired: its recipient #{} is gone",
@@ -476,6 +477,17 @@ fn step_envelope(
             envelope.recipient().0
         ));
         return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
+    }
+    // External messages without the strategic adapter may settle only a local
+    // physical endpoint. Never substitute the old abstract remote path.
+    if envelope.dispatch_ref().is_some() {
+        let from = crate::context::place_of(state, world, envelope.issuer());
+        let to = crate::context::place_of(state, world, envelope.recipient());
+        if from.is_some() && from == to {
+            report.delivered.push(envelope.id());
+            return Some(envelope.in_state(EnvelopeState::Delivered, now.clone()));
+        }
+        return None;
     }
     let from = envelope
         .path()

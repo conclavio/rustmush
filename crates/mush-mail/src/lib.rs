@@ -49,6 +49,7 @@ mod cmds;
 pub mod data;
 pub mod date;
 pub mod query;
+pub mod transit;
 
 pub use data::{
     ARCHIVE, DEFAULT_QUOTA, INBOX, MAX_FOLDER_NAME, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES,
@@ -63,6 +64,34 @@ pub use query::ListQuery;
 #[derive(Debug, Default)]
 pub struct MailModule;
 
+impl MailModule {
+    #[must_use]
+    pub fn with_transport(self, transport: Arc<dyn transit::Transport>) -> TransportMailModule {
+        TransportMailModule { transport }
+    }
+}
+#[derive(Debug)]
+pub struct TransportMailModule {
+    transport: Arc<dyn transit::Transport>,
+}
+impl GameModule for TransportMailModule {
+    fn name(&self) -> &'static str {
+        NS
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        MailModule.register(reg)?;
+        reg.state(transit::Services(Arc::clone(&self.transport)));
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        MailModule.on_world_loaded(ctx, data)
+    }
+}
+
 impl GameModule for MailModule {
     fn name(&self) -> &'static str {
         NS
@@ -71,6 +100,11 @@ impl GameModule for MailModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(MailState::default());
+        reg.tick(
+            transit::TICK,
+            mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(1)),
+            Arc::new(transit::settle),
+        )?;
         reg.hook(HookPoint::Connected, Arc::new(ConnectNotice));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         // M4 web hydration: the "mail" panel feed plus the read-only
@@ -106,7 +140,8 @@ impl GameModule for MailModule {
                        /delete <n> soft-deletes to the trash; /purge empties the trash \
                        for good; /unread <n> flips a message back to unread. Recipients' \
                        @lock/mail and mailbox quotas are honored (trash doesn't count \
-                       against quota); refusals are reported to you."
+                       against quota). All mail is IC and queues for transit. Inbox \
+                       delivery and returned confirmations take physical time."
                     .into(),
                 ..CommandSpec::default()
             },

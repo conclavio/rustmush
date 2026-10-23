@@ -58,6 +58,7 @@ pub mod econ_canon;
 pub mod econ_inbox;
 pub mod industry_recipes;
 pub mod industry_seams;
+pub mod mail_transport;
 pub mod salvage_source;
 pub mod seat_audit;
 pub mod sim_routes;
@@ -336,6 +337,7 @@ fn compose_server_modules(
         // authority (08i answer 1, D-E7-36).
         Box::new(
             mush_propagation::PropagationModule::new()
+                .with_dispatch_sources(Arc::new(mail_transport::MailTransport))
                 .with_metric(Arc::new(crate::relay_metric::RelayMetric)),
         ),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
@@ -597,7 +599,7 @@ fn compose_server_modules(
                 // the disabled default — fail closed.
                 .with_recovery(recovery),
         ),
-        Box::new(mush_mail::MailModule),
+        Box::new(mush_mail::MailModule.with_transport(Arc::new(mail_transport::MailTransport))),
         Box::new(mush_jobs::JobsModule::new()),
         // E5: housing boots after `{org, sim, tactics, economy, jobs}` (08a decision
         // 19, 08d §2). `on_world_loaded` runs in list order and housing's boot

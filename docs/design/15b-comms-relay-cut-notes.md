@@ -495,5 +495,51 @@ The transcript retains both SIGKILL events; only the longer flight establishes
 retention. Client resumption kept the actual ship and ticket, and unique payloads
 prevent matching older traffic. No server behavior was relaxed to pass the gate.
 
-**Stop after R5.** R6a and later implementation remain unstarted. GitHub CI is the
-remaining acceptance criterion, with monitoring handed to the owner as requested.
+The owner subsequently authorized R6a, followed automatically by R6b after R6a's
+live gate and push. GitHub CI monitoring remains with the owner as requested.
+
+## R6a — All mail over transport (integration in progress)
+
+All compose, quick, reply, reply-all and forward paths now persist mail-owned
+content, a Sent copy and a bounded dispatch intent. Submission says queued, not
+delivered. Recipient inboxes, line commands, web queries, unread counts and notices
+are populated only when the transport receipt is consumed. The sender learns
+delivery/refusal only when the return dispatch reaches their current endpoint.
+Self mail follows the same local settlement. Legacy messages have no dispatch and
+remain already delivered, with unchanged stored message encoding.
+
+### Ownership and recovery
+
+| Record | Owner / writer / readers | Compatibility and durable boundary |
+|---|---|---|
+| `mail:dispatch:<id>` v1 | Mail submits/settles; composition reads intents | New, fail-closed boot validation; source intent and content/Sent are one durable batch. Up to 64 letters / 128 recipient copies. |
+| `mail:handoff_cursor` | Mail settlement | New scalar continuation, 16 letters per fire; absent starts at zero. |
+| `mail:msg:<id>.delivery` | Mail settlement; sender's projections | Additive optional map of returned knowledge. Absent means legacy delivered; empty means awaiting confirmation. Never a remote truth query. |
+| `propagation:envelope:<id>.dispatch` v1 | Propagation accepts/routes/reaps; composition reads receipts | New bounded reference, stable `mail:v1:<id>:<recipient>:out/return` key. No body or authority to read it. Duplicate/corrupt external identities fail boot. Existing order/report records retain their behavior. |
+
+Composition injects read-only adapters into both owners. The existing propagation
+tick reconciles the complete bounded source snapshot, accepts each stable key once,
+and retains terminal receipts until the source durably withdraws the intent. Mail
+consumes receipts only on a later coarse step, after transport's receipt has been
+committed. Inbox insertion and outgoing return intent are one mail-owned batch;
+return completion and source cleanup are another. No cross-owner write delegation,
+new dependency edge, or second router is introduced.
+
+Propagation accepts at most 16 external intents per fire, retains at most 256
+external envelopes, and shares the existing 128 pending-route / 4096 envelope caps.
+Admission includes source intents not yet accepted by transport. Existing expiry
+and route work limits apply. Terminal external receipts cannot age out before
+consumption. Mail retains content while any mailbox or pending handoff references
+it, including after Sent purge; it reclaims the final orphan after completion.
+
+Version 1 counts actual UTF-8 subject plus body bytes, in 128-byte message units.
+Letters at most 1024 bytes can use a pair; larger letters take the conventional
+path. The existing 512-byte subject, 64 KiB body and 32-recipient limits remain.
+There is no partial body visibility or fragmentation. Destination lock, ignore,
+destruction and quota checks occur at arrival; return failure/expiry never exposes
+remote truth before transport. Unknown endpoints wait and expire. SSH and web Sent
+rows distinguish queued mail from returned delivery knowledge.
+
+The live gate is still in progress. The pre-upgrade dev1 fixture has delivered an
+actual legacy letter with the previous binary; the candidate must preserve it.
+No claim of completed R6a acceptance or R6b implementation is made here yet.

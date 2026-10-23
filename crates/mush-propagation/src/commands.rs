@@ -635,6 +635,7 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `MAX_ENVELOPES` and no compaction behind it.
     let mut traffic: Vec<&Envelope> = store
         .envelopes()
+        .filter(|envelope| envelope.dispatch_ref().is_none())
         .filter(|envelope| {
             envelope.issuer() == actor
                 || (envelope.recipient() == actor
@@ -720,6 +721,7 @@ fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // An order the actor did not receive, and one that does not exist, are the
     // same refusal.
     if original.recipient() != actor
+        || original.dispatch_ref().is_some()
         || original.state() != EnvelopeState::Delivered
         || original.kind() == crate::record::DispatchKind::Acknowledgement
     {
