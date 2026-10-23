@@ -5,10 +5,12 @@ in §10 are answered. **All mail is IC and must transit; there is no OOC mail mo
 R1's registry and R2's routed orders, reports and returning ACKs are implemented
 and deployed on dev1. Their live integration checks passed. The owner authorized
 Gate 3 / R5 after the CI repair's dev1 rerun and is monitoring the long CI run.
-R5 is implemented and its real dev1 passage gate passed. Work is paused before R6a.
+R5 and R6a are implemented and their real dev1 gates passed. All mail now transits;
+the owner authorized automatic continuation to R6b after the R6a push.
 [15b](15b-comms-relay-cut-notes.md) records the evidence and outstanding CI criterion.
 [15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
-mandatory integration stop after every milestone. Mail transit remains R6a.
+mandatory integration gate after every milestone. The next owner stop is after
+R6b, before R3.
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require

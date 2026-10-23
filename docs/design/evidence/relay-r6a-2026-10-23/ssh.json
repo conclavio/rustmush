@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "transport": "SSH :6789, play front door, in-band login",
+  "read": 85,
+  "self": 87,
+  "checks": [
+    {
+      "command": "@mail/folder inbox",
+      "reply": "@mail/folder inbox\r\nMAIL: Current folder is now inbox.\r\n__R6A_SSH_DONE__\r\n"
+    },
+    {
+      "command": "@mail 8",
+      "reply": "@mail 8\r\nMAIL: Message 8 in inbox (id 85)\r\nFrom:    R6alice41b953\r\nTo:      R6bob1b16df\r\nDate:    Oct 23 2026 22:43 UTC\r\nSubject: Re: R6a shore to moving Dray\r\nIn-Reply-To: message id 84\r\n----\r\nReply from an actual underway Dray.\r\n----\r\n__R6A_SSH_DONE__\r\n"
+    },
+    {
+      "command": "@mail/quick #678=R6a SSH self/Accepted through the real SSH front door.",
+      "reply": "@mail/quick #678=R6a SSH self/Accepted through the real SSH front door.\r\nMAIL: Message 87 queued for IC transit. Delivery is not yet confirmed.\r\n__R6A_SSH_DONE__\r\n"
+    },
+    {
+      "command": "@mail 9",
+      "reply": "MAIL: New message (87) from R6bob1b16df: R6a SSH self (7 unread)\r\n@mail 9\r\nMAIL: Message 9 in inbox (id 87)\r\nFrom:    R6bob1b16df\r\nTo:      R6bob1b16df\r\nDate:    Oct 23 2026 22:44 UTC\r\nSubject: R6a SSH self\r\nTransit: #678: queued / awaiting confirmation\r\n----\r\nAccepted through the real SSH front door.\r\n----\r\n__R6A_SSH_DONE__\r\n"
+    }
+  ]
+}

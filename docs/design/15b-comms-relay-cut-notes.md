@@ -498,7 +498,7 @@ prevent matching older traffic. No server behavior was relaxed to pass the gate.
 The owner subsequently authorized R6a, followed automatically by R6b after R6a's
 live gate and push. GitHub CI monitoring remains with the owner as requested.
 
-## R6a — All mail over transport (integration in progress)
+## R6a — All mail over transport (dev1 gate passed)
 
 All compose, quick, reply, reply-all and forward paths now persist mail-owned
 content, a Sent copy and a bounded dispatch intent. Submission says queued, not
@@ -540,15 +540,16 @@ destruction and quota checks occur at arrival; return failure/expiry never expos
 remote truth before transport. Unknown endpoints wait and expire. SSH and web Sent
 rows distinguish queued mail from returned delivery knowledge.
 
-The live gate is still in progress. The pre-upgrade dev1 fixture has delivered an
-actual legacy letter with the previous binary; the candidate must preserve it.
-No claim of completed R6a acceptance or R6b implementation is made here yet.
+The live gate passed. An actual legacy letter delivered by the previous binary
+remained readable after upgrade and was not resent. All 680 world objects and the
+existing relay registry were retained.
 
 ### Automated validation
 
-The candidate's 227 targeted Rust tests passed: 146 mail/propagation tests, 21
-production relay and passage stories, 12 real SSH/WebSocket client tests, and 48
-kernel/lifecycle, scheduling, panic-budget and CI-inventory contracts. The 21
+The candidate's 298 targeted Rust tests passed: 146 mail/propagation tests, 21
+production relay and passage stories, 12 real SSH/WebSocket client tests, 48
+kernel/lifecycle, scheduling, panic-budget and CI-inventory contracts, and 71 core
+command tests. The 21
 production stories also passed on Linux on the VPS. Seven web mail-store tests,
 Svelte checking (zero errors/warnings), formatting and targeted Clippy with
 warnings denied passed. Normal GitHub CI remains separate and owner-monitored.
@@ -564,4 +565,66 @@ the documented `/mail` lock type. R6a enables it on `@lock` and `@unlock`, retai
 the normal ownership checks, and changes the production refusal story to set the
 lock through that public command rather than inserting it into fixture state.
 The core command suite's 71 tests pass, including a normal player's set/remove
-regression. The corrected binary must pass the live gate before this cut closes.
+regression. The corrected command passed on dev1: the destination refused the
+letter, no inbox entry appeared, and the sender learned refusal only after the
+return dispatch arrived.
+
+### Real server evidence and provenance
+
+Base: `6cbec90181af6217bf1dc10e974f43803dd27632`. Transport candidate:
+`8fa63f371c1fc871102dad42139e522c7adf2dfa`. Corrected code candidate:
+`5f3955ca8f82abb68cc0ab5a93c4185066423769`. The transport/crash/expiry/ship cases ran
+on 8fa63f37; the public lock and final SSH cases ran on 5f3955ca. The only production
+delta is the accepted mail-lock switch. All 21 production stories were rerun on
+Linux on 5f3955ca. This records the staged run explicitly rather than attributing
+earlier live checks to the later binary.
+
+Authenticated TLS WebSocket clients used the actual split gateway/server at
+`conclav.io:6790`, Redis 6788, with certificate verification enabled. Normal
+players sent, replied, replied-all, forwarded, and mailed themselves. A full
+65,536-byte body used conventional transport and reached an offline recipient.
+Before arrival, inbox queries, line reads, unread counts and reconnect revealed
+no letter. Sent deletion retained the pending payload.
+
+Verified server-child SIGKILLs exercised source acceptance, transport acceptance,
+arrival receipt and mailbox insertion. The frozen flight survived exactly; the
+recipient got one entry and one unread increment. Changed ignore/lock, quota and
+recipient destruction refused at arrival and returned failure physically. The
+quota and object-loss cases were controlled faults with dev1 stopped; the exact
+configuration and synthetic object were restored afterward. They are not claims
+about ordinary player destruction commands.
+
+The queue accepted 64 letters and refused the 65th without allocating an ID.
+Unplaced addresses expired at the existing **30 IC day** transport TTL. All 64
+handoffs completed without recipient entries; the payload with its Sent copy
+purged was reclaimed after the return handoff finished. The real world clock was
+accelerated for this test and restored to 24.
+
+Pilot #677 enrolled and provisioned Dray #412 through the registry, market and
+ship commands, then departed Ceres for Stickney through Kirkwood on a real frozen
+ticket. At the first-leg checkpoint, shore letter #84 and reply #85 each included
+a positive **9 IC second** ship flight. Both arrived and returned confirmation.
+The final SSH client read the arrived reply and sent/read a new self-letter.
+
+The [live transcript](evidence/relay-r6a-2026-10-23/live.json) contains 726 checks;
+[SSH evidence](evidence/relay-r6a-2026-10-23/ssh.json) contains four checks.
+[Environment](evidence/relay-r6a-2026-10-23/environment.json) records binary/runner
+hashes, runtime provenance and timings (median 26 ms, maximum 785 ms, largest
+reply 14,310 bytes; observations, not performance thresholds). Linux stories,
+core lock tests and Clippy logs are beside them. Credentials and database/config
+backups remain root-only on the VPS. Final services are healthy, relay bindings
+valid, rate 24, and dev2 gateway PID 539467 unchanged.
+
+Reproduce using `scripts/relay-r6a-live.mjs` with the same four arguments as R5,
+substituting `/opt/rustmush/dev1/r6a-evidence`, then run `relay-r6a-ssh.py` on the
+VPS. `R6A_PREPARE=1` establishes the legacy fixture before upgrading;
+`R6A_RESUME=1` resumes completed milestones. `R6A_DEFER_LOCK=1` was used only while
+the command correction built and cannot mark the gate passed. Harness fixes
+closed old sockets on reconnect, distinguished old replies sharing a subject,
+read the actual 30-day TTL, and checked the ship leg of a multi-leg route instead
+of requiring the first shore-to-relay leg to use the ship metric. No transport
+limit or physical lag was relaxed.
+
+**Live milestone gate passed; full acceptance still awaits normal candidate CI.**
+The owner monitors GitHub and authorized continuation to R6b after commit/push.
+R6b must finish its own live gate; the next owner stop is before R3.

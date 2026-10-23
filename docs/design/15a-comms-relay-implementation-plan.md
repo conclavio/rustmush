@@ -11,7 +11,7 @@ passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
 Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
 R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-being integrated; R6b and later milestones remain unstarted.
+implemented and its dev1 gate passed; R6b is the next authorized milestone.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -283,6 +283,13 @@ once, with one unread increment. Test offline recipient, full mailbox, changed l
 destroyed recipient, transport saturation, expired payload and delayed failure reply.
 Upgrade a store with existing mail; old inboxes remain readable and are not resent.
 Run real SSH and web mail clients against the server. **Stop.**
+
+**Result (2026-10-23):** live gate passed, including upgrade, four durable crash
+boundaries, all send paths, full-sized/offline mail, arrival refusals, saturation,
+30-IC-day expiry and a real Dray exchange. The gate found and repaired the missing
+public `@lock/mail` switch. [15b](15b-comms-relay-cut-notes.md) records candidate
+provenance and results. The owner authorized automatic continuation to R6b after
+this push; normal GitHub CI remains owner-monitored.
 
 ### Gate 5 — R6b: IC channels and bridge boundaries
 

@@ -16,12 +16,17 @@ mkdirSync(output, { recursive: true });
 const resuming=process.env.R6A_RESUME==='1';
 const evidence = resuming ? JSON.parse(readFileSync(join(output,'live.json'),'utf8'))
   : { target, at: new Date().toISOString(), checks: [], milestones: [] };
-evidence.candidate=readFileSync('/opt/rustmush/dev1/build/.source-commit','utf8').trim();
+delete evidence.candidate; // The source tree may be rebuilding beside a live process.
 const done = name => evidence.milestones.some(m=>m.test===name);
 if(resuming) { delete evidence.passed; delete evidence.error; }
 const sockets = [];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const shell = (cmd, args) => execFileSync(cmd, args, {encoding:'utf8',timeout:30000}).trim();
+const gatewayPid=Number(shell('systemctl',['show','dev1mush-gateway','-p','MainPID','--value']));
+const serverPid=Number(shell('pgrep',['-P',String(gatewayPid),'-x','mush-server']));
+evidence.runs??=[];
+evidence.runs.push({at:new Date().toISOString(),gatewayPid,serverPid,
+  serverSha256:shell('sha256sum',['/proc/'+serverPid+'/exe']).split(' ')[0]});
 const redis = key => JSON.parse(shell('redis-cli',['-p',redisPort,'--raw','JSON.GET',key]) || 'null');
 const envelope = id => redis('mod:propagation:envelope:' + id);
 const registry = () => redis('mod:sim:relay:registry');
@@ -150,6 +155,15 @@ function envelopes() {
   return shell('redis-cli',['-p',redisPort,'--raw','JSON.MGET',...keys,'.']).split('\n').filter(Boolean).map(JSON.parse).filter(Boolean);
 }
 const dispatch=(id,to,returning=false)=>envelopes().find(e=>e.dispatch?.key===`mail:v1:${id}:${objectId(to)}:${returning?'return':'out'}`);
+async function shipFlight(id, to) {
+  // A shore sender may first reach a relay before the physical ship leg.
+  // Include completed legs so a short flight remains observable after arrival.
+  return until(()=>{
+    const transit=dispatch(id,to)?.transit;
+    return [transit?.flight,...(transit?.history??[]).map(h=>h.flight)]
+      .find(f=>f?.seconds>0&&f.basis.startsWith('ship.v1:'));
+  },'physical ship flight '+id);
+}
 let queryId=6000, staff, staffLogin, accounts, clients={}, logins={}, restoreFault=null;
 async function panel(client,folder='inbox') {
   const id=++queryId, start=client.frames.length;
@@ -382,21 +396,29 @@ try {
     }
     if(!done('saturation-expiry')) {
       await command(staff,`@teleport ${clients.carol.object}=#0`);
-      const ids=[];
+      const ids=shell('redis-cli',['-p',redisPort,'--scan','--pattern','mod:mail:dispatch:*'])
+        .split('\n').filter(Boolean).map(k=>Number(k.split(':').at(-1)))
+        .filter(id=>mail(id)?.subject.startsWith('R6a expiry ')).sort((a,b)=>a-b);
+      assert(ids.length<=64,'bounded resumed expiry fixture');
       // The source's 64-letter bound is enforced before transport acknowledgement.
-      for(let i=0;i<64;i++) ids.push(await queued(clients.alice,[clients.carol],'R6a expiry '+i));
+      for(let i=ids.length;i<64;i++) ids.push(await queued(clients.alice,[clients.carol],'R6a expiry '+i));
       const before=redis('mod:mail:next_id');
       await command(clients.alice,`@mail/quick ${clients.carol.object}=overload/no payload`,'queue is full');
       assert.equal(redis('mod:mail:next_id'),before,'overload allocates nothing');
       const first=ids[0];
       const sent=await panel(clients.alice,'sent');
-      const ordinal=sent.entries.find(e=>e.id===first).index;
-      await command(clients.alice,'@mail/folder sent'); await command(clients.alice,'@mail/delete '+ordinal); await command(clients.alice,'@mail/purge');
+      const entry=sent.entries.find(e=>e.id===first);
+      await command(clients.alice,'@mail/folder sent');
+      if(entry) { await command(clients.alice,'@mail/delete '+entry.index); await command(clients.alice,'@mail/purge'); }
       await command(clients.alice,'@mail/folder inbox');
       assert(mail(first));
-      const expiry=pending(first).at.at+7*86400+120;
+      const ttlSource=readFileSync('/opt/rustmush/dev1/build/crates/mush-propagation/src/record.rs','utf8');
+      const days=Number(ttlSource.match(/ENVELOPE_TTL_DAYS: i64 = (\d+);/)[1]);
+      assert(days>0&&days<=365);
+      const expiry=pending(first).at.at+days*86400+120;
+      evidence.saturation={ids,first,expiry,ttlDays:days}; save('live.json',evidence);
       await command(staff,'@tacsim/time rate=3600');
-      await until(()=>nowIc()>=expiry,'real IC expiry',240);
+      await until(()=>nowIc()>=expiry,'real IC expiry',1200);
       await command(staff,'@tacsim/time rate=24');
       await until(()=>ids.every(id=>!pending(id)),'all expiry receipts settled',180);
       assert.equal(mail(first),null,'orphan payload reaped after handoffs finish');
@@ -469,8 +491,7 @@ try {
       await until(()=>nowIc()>=checkpoint,'quarter-leg checkpoint',420);
       const inbound=await queued(clients.bob,[pilot],'R6a shore to moving Dray');
       await hidden(pilot,inbound,'R6a shore to moving Dray');
-      const flight=(await until(()=>dispatch(inbound,pilot)?.transit?.flight&&dispatch(inbound,pilot),'moving mail flight')).transit.flight;
-      assert(flight.seconds>0 && flight.basis.startsWith('ship.v1:'),'real moving endpoint metric');
+      const flight=await shipFlight(inbound,pilot);
       await received(inbound,pilot); await confirmed(inbound,pilot);
       const inbox=await panel(pilot), ordinal=inbox.entries.find(e=>e.id===inbound).index;
       await command(pilot,'@mail/reply '+ordinal,'Composing');
@@ -478,8 +499,7 @@ try {
       const sent=await command(pilot,'--','queued for IC transit');
       const outbound=Number(sent.match(/Message (\d+) queued/)[1]);
       await hidden(clients.bob,outbound,'Re: R6a shore to moving Dray');
-      const replyFlight=(await until(()=>dispatch(outbound,clients.bob)?.transit?.flight&&dispatch(outbound,clients.bob),'moving reply flight')).transit.flight;
-      assert(replyFlight.seconds>0&&replyFlight.basis.startsWith('ship.v1:'));
+      const replyFlight=await shipFlight(outbound,clients.bob);
       await received(outbound,clients.bob); await confirmed(outbound,clients.bob);
       milestone('moving-hull',{hull:row.hull,ticket,inbound,outbound,flight,replyFlight});
     }
