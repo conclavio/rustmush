@@ -381,3 +381,7 @@ The dev2 smoke's finding, fixed: w11term drops a sound within 40 ms of the last 
 
 **Verified.** `mush-net-ssh`: the burst (`slot_fired`, `hit`, `target_section_lost`, `kill`) sounds `kill` alone, a lone `slot_fired` sounds nothing, a debounced kill gives way to the hit, a bell is one for the frame, and the shipped pack's names are the ones a new `Sounds` sends; the alarm outranks a contact and a miss; the session test unchanged. `help cockpit` says so.
 
+## G.5b fix: labels clear of dots and each other
+
+The dev2 smoke's chart had EARTH's word over MARS's dot and the light-lag rings' labels on the bodies'. The de-clutter checked a label only against the labels placed before it and had one spot to offer. Now (`chart_scene`): every body's dot, the Sun and the viewer's ring are obstacles from the start; a body's label tries above-right, below-right, above-left and below-left of its dot, inside the chart, the viewer's first and then outward, and is left out only where none is free; the ring labels come last, at each ring's north or south point where they fit. Pinned by a test that moves Mars beside Earth and checks, at 640x230, 640x480 and 320x220, that no text covers a dot or another text and that both labels are drawn. On the fixture, PALLAS (dropped beside the vantage before) now sits below-right of its dot.
+

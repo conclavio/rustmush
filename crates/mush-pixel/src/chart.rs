@@ -156,14 +156,6 @@ pub fn chart_scene(frame: &Frame, sky: &Value) -> Option<Scene> {
                 colour: LAG,
                 dash: Some((2, 3)),
             });
-            scene.push(Item::Text {
-                at: (at.0, at.1 + radius),
-                offset: (0, -4 * s),
-                anchor: Anchor::Centre,
-                text: format!("{minutes}M"),
-                colour: LAG,
-                scale: s as usize,
-            });
         }
     }
 
@@ -222,13 +214,38 @@ pub fn chart_scene(frame: &Frame, sky: &Value) -> Option<Scene> {
         }
     }
 
-    // The labels: the viewer's first, then the rest outward; a label that
-    // would cover one already placed is left out (an asteroid beside the
-    // viewer's own reads as the viewer's).
+    // The labels (the live smoke of 2026-10-23 found MARS's dot under
+    // EARTH's word and the ring labels on the bodies'): every body's dot, the
+    // Sun and the viewer's ring are obstacles from the start; a body's label
+    // tries above-right, below-right, above-left and below-left of its dot,
+    // inside the chart, the viewer's first and then the rest outward, and is
+    // left out where none is free (an asteroid beside the viewer's own reads
+    // as the viewer's); the light-lag rings' labels last, at each ring's
+    // north or south point, where they fit.
     let vp = scene.viewport;
+    let mut placed: Vec<(i64, i64, i64, i64)> = Vec::new();
+    let dot = |at: (f64, f64), half: i64| {
+        let (x, y) = vp.to_px(at);
+        (x - half - 1, y - half - 1, 2 * half + 3, 2 * half + 3)
+    };
+    placed.push(dot((0.0, 0.0), 3 * s));
+    for b in &bodies {
+        placed.push(dot(b.at, if b.here { 4 * s } else { s + 1 }));
+    }
+    let clear = |rect: (i64, i64, i64, i64), placed: &[(i64, i64, i64, i64)]| {
+        rect.0 >= 0
+            && rect.1 >= strip
+            && rect.0 + rect.2 <= w
+            && rect.1 + rect.3 <= h - strip
+            && !placed.iter().any(|p| {
+                rect.0 < p.0 + p.2
+                    && p.0 < rect.0 + rect.2
+                    && rect.1 < p.1 + p.3
+                    && p.1 < rect.1 + rect.3
+            })
+    };
     let mut order: Vec<&Body<'_>> = bodies.iter().collect();
     order.sort_by(|a, b| b.here.cmp(&a.here).then(a.r_au.total_cmp(&b.r_au)));
-    let mut placed: Vec<(i64, i64, i64, i64)> = Vec::new();
     for b in order {
         let words = if b.here {
             format!("{} - YOU", b.label)
@@ -236,26 +253,54 @@ pub fn chart_scene(frame: &Frame, sky: &Value) -> Option<Scene> {
             b.label.to_string()
         };
         let (x, y) = vp.to_px(b.at);
-        let (tw, th) = (words.chars().count() as i64 * 6 * s, 7 * s);
-        let rect = (x + 3 * s, y - 3 * s - th, tw, th);
-        let clash = placed.iter().any(|p| {
-            rect.0 < p.0 + p.2
-                && p.0 < rect.0 + rect.2
-                && rect.1 < p.1 + p.3
-                && p.1 < rect.1 + rect.3
-        });
-        if clash {
+        let (tw, th) = (words.chars().count() as i64 * 6 * s - s, 7 * s);
+        let gap = if b.here { 5 * s } else { 3 * s };
+        let spots = [
+            (gap, -gap - th),
+            (gap, gap),
+            (-gap - tw, -gap - th),
+            (-gap - tw, gap),
+        ];
+        let Some(offset) = spots
+            .into_iter()
+            .find(|(dx, dy)| clear((x + dx, y + dy, tw, th), &placed))
+        else {
             continue;
-        }
-        placed.push(rect);
+        };
+        placed.push((x + offset.0, y + offset.1, tw, th));
         scene.push(Item::Text {
             at: b.at,
-            offset: (3 * s, -3 * s - th),
+            offset,
             anchor: Anchor::TopLeft,
             text: words,
             colour: if b.here { HERE } else { TEXT },
             scale: s as usize,
         });
+    }
+    if let Some(at) = here {
+        for minutes in LAG_RING_MINUTES {
+            let radius = f64::from(minutes) * AU_PER_LIGHT_MINUTE;
+            let words = format!("{minutes}M");
+            let (tw, th) = (words.chars().count() as i64 * 6 * s - s, 7 * s);
+            let spot = [(at.0, at.1 + radius), (at.0, at.1 - radius)]
+                .into_iter()
+                .map(|p| {
+                    let (x, y) = vp.to_px(p);
+                    (p, (x - tw / 2, y - th / 2, tw, th))
+                })
+                .find(|(_, rect)| clear(*rect, &placed));
+            if let Some((p, rect)) = spot {
+                placed.push(rect);
+                scene.push(Item::Text {
+                    at: p,
+                    offset: (0, 0),
+                    anchor: Anchor::Centre,
+                    text: words,
+                    colour: LAG,
+                    scale: s as usize,
+                });
+            }
+        }
     }
 
     // The title strip above and the scale's words below, each cut to the
@@ -307,6 +352,72 @@ mod tests {
             .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
             .filter(|&(x, y)| f.get(x, y) == px)
             .count()
+    }
+
+    /// **No label covers a dot or another label** (the dev2 smoke, 2026-10-23:
+    /// EARTH's word over MARS's dot): with Mars moved beside Earth, every
+    /// text drawn keeps clear of every body's dot and of every other text,
+    /// and both labels are still drawn.
+    #[test]
+    fn labels_keep_clear_of_dots_and_each_other() {
+        let mut sky = sky();
+        let bodies = sky["chart"]["bodies"].as_array_mut().unwrap();
+        let earth = bodies
+            .iter()
+            .find(|b| b["label"] == "earth")
+            .cloned()
+            .unwrap();
+        for b in bodies.iter_mut().filter(|b| b["label"] == "mars") {
+            b["x_au"] = (earth["x_au"].as_f64().unwrap() + 0.05).into();
+            b["y_au"] = (earth["y_au"].as_f64().unwrap() + 0.08).into();
+        }
+        for (w, h) in [(640, 230), (640, 480), (320, 220)] {
+            let frame = Frame::new(w, h);
+            let scene = chart_scene(&frame, &sky).unwrap();
+            let vp = scene.viewport;
+            let s = if w.min(h) >= 360 { 2 } else { 1 };
+            let mut texts = Vec::new();
+            let mut dots = Vec::new();
+            for item in scene.layers.iter().flat_map(|l| &l.items) {
+                match item {
+                    Item::Text {
+                        at,
+                        offset,
+                        anchor,
+                        text,
+                        ..
+                    } => {
+                        let (x, y) = vp.to_px(*at);
+                        let (tw, th) = (text.chars().count() as i64 * 6 * s - s, 7 * s);
+                        let (mut tx, mut ty) = (x + offset.0, y + offset.1);
+                        if *anchor == Anchor::Centre {
+                            tx -= tw / 2;
+                            ty -= th / 2;
+                        }
+                        texts.push((text.clone(), (tx, ty, tw, th)));
+                    }
+                    Item::Marker { at, half, .. } => {
+                        let (x, y) = vp.to_px(*at);
+                        dots.push((x - half, y - half, 2 * half + 1, 2 * half + 1));
+                    }
+                    _ => {}
+                }
+            }
+            let hit = |a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)| {
+                a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+            };
+            for (i, (word, r)) in texts.iter().enumerate() {
+                for d in &dots {
+                    assert!(!hit(*r, *d), "{w}x{h}: {word} covers a dot");
+                }
+                for (other, o) in texts.iter().skip(i + 1) {
+                    assert!(!hit(*r, *o), "{w}x{h}: {word} covers {other}");
+                }
+            }
+            let words: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+            assert!(words.contains(&"earth"), "{w}x{h}: {words:?}");
+            assert!(words.contains(&"mars"), "{w}x{h}: {words:?}");
+        }
     }
 
     /// The fixture chart drawn: the Sun at the centre, orbits, the viewer's
