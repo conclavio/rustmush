@@ -398,7 +398,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install
+      # Doc 21 cut G.3b: the SPA carries the cockpit picture's wasm module.
+      - run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -856,6 +859,15 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      # Doc 21 cut G.3b: `npm test` and `npm run build` build the cockpit
+      # picture's WebAssembly module first (web/scripts/build-wasm.mjs), so
+      # this job needs the pinned toolchain and its wasm32 target.
+      - name: Rust toolchain (pinned by rust-toolchain.toml) and the wasm target
+        working-directory: .
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

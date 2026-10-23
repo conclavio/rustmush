@@ -148,6 +148,12 @@ struct Allowed {
 /// easy to read.
 const ALLOWED: &[Allowed] = &[
     Allowed {
+        package: "mush-pixel",
+        feature: "encode",
+        reason: "a member of `default`, so every workspace job compiles it; its off state                  is the browser's build, which the `web` job compiles through                  web/scripts/build-wasm.mjs (`mush-pixel-wasm`, doc 21 cut G.3b)",
+        dev_dep_activated: false,
+    },
+    Allowed {
         package: "mush-llm",
         feature: "anthropic",
         reason: "a member of `default`, so every workspace job compiles it; only a \
@@ -220,6 +226,7 @@ const CENSUS: &[&str] = &[
     "mush-llm/mock",
     "mush-llm/openai",
     "mush-net-web/tls",
+    "mush-pixel/encode",
     "mush-proto/ts",
     "mush-server/fault-injection",
     "mush-sim/debug-checks",
@@ -292,8 +299,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (13, 10),
-        "11 toggleable features across 8 crates at the WS24-S4 fold, plus mush-testkit/toy-ruleset \n         (16b cut R-b): {declared:?}"
+        (14, 11),
+        "11 toggleable features across 8 crates at the WS24-S4 fold, plus mush-testkit/toy-ruleset \n         (16b cut R-b) and mush-pixel/encode (doc 21 cut G.3b): {declared:?}"
     );
 }
 

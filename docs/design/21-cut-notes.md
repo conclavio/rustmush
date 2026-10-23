@@ -333,3 +333,16 @@ The first of G.3b's three cuts (the WebAssembly render, planned 2026-10-22 on ra
 
 **Verified.** `mush-pixel` (64 + 2 + the golden; the maths agree with the platform's to a few last places; no platform call outside `math.rs`), built for `wasm32-unknown-unknown` without `encode`, clippy both ways; `mush-net-ssh` and `mush-net-web` unchanged; the sight-heights, restriction-lints and panic-budget contracts; rustdoc.
 
+## G.3b.2
+
+The picture as a WebAssembly module, and the proof that it draws what the native renderer does.
+
+- **`crates/mush-pixel-wasm`** (`cdylib` + `rlib`): `CockpitPicture` over `mush-pixel` without `encode`, with plain exports and no wasm-bindgen — `mp_abi`, `mp_input(len)` (a buffer the caller writes a feed's JSON into), `mp_feed(feed, len)` (`1` cockpit, `2` map; empty forgets; an unseated cockpit forgets the held one, as the gateway's picture does), `mp_render(w, h, look, hull, ordered, has_ordered)` (at most 2048 a side), `mp_pixels` (RGBA, for an `ImageData` over the module's memory), `mp_hash_hi`/`mp_hash_lo` and `mp_reset`. It imports nothing. The workspace's `unsafe_code = "deny"` is allowed in this crate for `#[unsafe(no_mangle)]` alone: no pointer is dereferenced, the caller writes into and reads from `Vec`s the module owns. Born with the six restriction lints denied (the contract's table gains its row). Release build: 348 KB.
+- **`web/scripts/build-wasm.mjs`** (`npm run wasm`): `cargo build --release --locked --target wasm32-unknown-unknown -p mush-pixel-wasm`, copied to `web/src/lib/pixel/mush_pixel.wasm` (gitignored; Vite fingerprints it into the bundle). `npm run build` and `npm test` (as `pretest`) run it first, so the bundle built on the owner's machine carries the module and the box needs neither Node nor the wasm target.
+- **`web/src/lib/pixel/wasm.ts`**: `PixelModule` over an instance (refuses another ABI or a missing export), `feed`, `render`, `image` (an `ImageData` over the module's memory, no copy), `pixels`, `hash`, `reset`; `loadPixelModule(url)` streams and compiles where the server says `application/wasm`, else fetches whole.
+- **The parity test** (`web/src/lib/pixel/pixel.test.ts`): in Node, the module draws the cockpit fixture at the web golden's 640x480 and three looks, and each frame's hash is the one the native renderer pinned in G.3b.1 — "the fixture renders pixel-equal in the browser and the TUI". A missing module fails the test, it never skips. Measured in Node: about 3 ms a 640x480 frame warm (6.5 ms the first).
+- **CI**: the `web` job installs the pinned toolchain and the wasm32 target (and the Rust cache) before `npm test`; the `release` job adds the target before building the SPA. Neither names a Rust version (the toolchain-pin contract).
+- **A fix to G.3b.1**: `encode` is a toggleable feature, so `feature_matrix_inventory` failed on main from G.3b.1 until this commit: the census and its count name it, and its allowance says its off state is the browser build the `web` job compiles.
+
+**Verified.** `mush-pixel-wasm` (natively: the golden's three hashes through the same functions the exports call, opaque RGBA, the refusals), clippy on the host and on wasm32, rustdoc; vitest 679 (the parity test among them) and `svelte-check` clean; the whole contract suite.
+

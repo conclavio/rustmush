@@ -2640,6 +2640,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-pixel-wasm"
+version = "0.1.0"
+dependencies = [
+ "mush-pixel",
+ "serde_json",
+]
+
+[[package]]
 name = "mush-privileges"
 version = "0.1.0"
 dependencies = [
