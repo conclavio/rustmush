@@ -16,10 +16,15 @@
 //! `440;file` form is not w11term's and is never sent. Kitty's OSC 99 would
 //! pop a desktop notification with every sound, so kitty gets BEL too.)
 //!
-//! **Debounced here, not there.** w11term plays serially, 40 ms apart, from
-//! a 16-deep queue, so the gateway sends at most one sound a kind every two
-//! seconds; an alarm is the same name sent again on that cadence, which is
-//! what a frame that still says `overheated` does.
+//! **One sound a frame** (the dev2 smoke of 2026-10-23): w11term drops a
+//! sound that comes within 40 ms of the one before (`rate-limited`) rather
+//! than queueing it, so a frame's kinds sent back to back played the first
+//! alone — and when that first was `slot_fired`, a name with no file, nothing
+//! played at all. A frame now sounds **one** name: the most important of its
+//! kinds ([`PRIORITY`]) that the terminal can play — a name the shipped pack
+//! has, for a w11term; a [`BELL_KINDS`] kind, for a bell — and that has not
+//! sounded within [`DEBOUNCE`]. An alarm is the same name sent again on that
+//! cadence, which is what a frame that still says `overheated` does.
 //!
 //! `@sounds on|off` (the transport's own, per connection) mutes it all.
 //!
@@ -52,6 +57,40 @@ pub fn osc440_pack(version: &str) -> Vec<u8> {
 /// The overheat alarm's name: not a notice kind but the frame's own verdict
 /// (`heat.overheated`), said while it stands.
 pub const OVERHEAT: &str = "overheat";
+
+/// **What sounds first** when a frame has several kinds: the tank lost or
+/// crippled, a kill, the tank hurt, the overheat alarm, the target hurt, the
+/// lock lost, a hit, the power up, a new contact, a lock, and the rest after.
+/// A kind not listed comes after every listed one, in the frame's order.
+pub const PRIORITY: &[&str] = &[
+    "destroyed",
+    "disabled",
+    "kill",
+    "section_lost",
+    "struck",
+    OVERHEAT,
+    "target_section_lost",
+    "lock_lost",
+    "hit",
+    "power_online",
+    "acquired",
+    "locked",
+    "unidentified",
+    "lost",
+    "miss",
+    "struck_spent",
+    "classified",
+    "refused",
+    "blocked",
+    "receiver_degraded",
+    "receiver_clear",
+    "drive_no_route",
+    "drive_arrived",
+    "emcon_on",
+    "emcon_off",
+    "slot_fired",
+    "slot_held",
+];
 
 /// The kinds that ring a plain terminal's bell: a contact gained, the lock
 /// lost, the tank struck or losing a section, the power up, a kill, the tank
@@ -107,6 +146,9 @@ pub struct Sounds {
     out: Vec<u8>,
     /// The asset pack's version, when one is served (G.11).
     pack: Option<String>,
+    /// The pack's sound names: the only names a w11term is sent, so none is
+    /// spent on a name with no file. `None` sends any (no pack served).
+    names: Option<std::collections::BTreeSet<String>>,
     /// When the pack was last announced.
     announced: Option<Instant>,
 }
@@ -122,7 +164,10 @@ impl Sounds {
     /// shipped asset pack the one announced.
     #[must_use]
     pub fn new() -> Sounds {
-        Sounds::with_pack(crate::assets::AssetPack::shipped().map(|p| p.pack_version().to_string()))
+        let pack = crate::assets::AssetPack::shipped();
+        let mut sounds = Sounds::with_pack(pack.map(|p| p.pack_version().to_string()));
+        sounds.names = pack.map(|p| p.sound_names().clone());
+        sounds
     }
 
     /// [`Sounds::new`] announcing `pack` (or none).
@@ -136,8 +181,17 @@ impl Sounds {
             last_bell: None,
             out: Vec::new(),
             pack: pack.filter(|v| valid_name(v)),
+            names: None,
             announced: None,
         }
+    }
+
+    /// [`Sounds::with_pack`] that sends a w11term only `names`.
+    #[must_use]
+    pub fn with_pack_names(pack: Option<String>, names: &[&str]) -> Sounds {
+        let mut sounds = Sounds::with_pack(pack);
+        sounds.names = Some(names.iter().map(|n| (*n).to_string()).collect());
+        sounds
     }
 
     /// `@sounds on|off`.
@@ -189,8 +243,8 @@ impl Sounds {
         self.w11term
     }
 
-    /// A seated cockpit frame: a sound for each of its notices' kinds, and
-    /// the overheat alarm while the frame says so.
+    /// A seated cockpit frame: one sound for its notices' kinds and the
+    /// overheat alarm while the frame says so (see [`Sounds::play_one`]).
     pub fn frame(&mut self, frame: &Value, now: Instant) {
         let kinds = frame
             .get("notices")
@@ -203,29 +257,62 @@ impl Sounds {
             .map(str::to_string)
             .chain(overheated.then(|| OVERHEAT.to_string()))
             .collect();
-        for kind in kinds {
-            self.play(&kind, now);
-        }
+        let names: Vec<&str> = kinds.iter().map(String::as_str).collect();
+        self.play_one(&names, now);
     }
 
-    /// Sound `name`, if sounds are on, the name is one, and that kind has not
-    /// sounded within [`DEBOUNCE`]: by name to a w11term, BEL (for
-    /// [`BELL_KINDS`], one a [`DEBOUNCE`] whatever the kind) to anything else.
+    /// Sound `name` alone (see [`Sounds::play_one`]).
     pub fn play(&mut self, name: &str, now: Instant) {
-        if !self.on || !valid_name(name) {
+        self.play_one(&[name], now);
+    }
+
+    /// **Sound one of `names`**, if sounds are on: the first in [`PRIORITY`]
+    /// order that is a name, that the terminal can play — one the pack has,
+    /// for a w11term; a [`BELL_KINDS`] kind, for a bell — and that has not
+    /// sounded within [`DEBOUNCE`]; by name to a w11term, as BEL (one a
+    /// [`DEBOUNCE`] whatever the kind) to anything else. One at most: w11term
+    /// drops a sound within 40 ms of the last.
+    pub fn play_one(&mut self, names: &[&str], now: Instant) {
+        if !self.on {
             return;
         }
+        let rank = |name: &str| {
+            PRIORITY
+                .iter()
+                .position(|p| *p == name)
+                .unwrap_or(PRIORITY.len())
+        };
+        let mut ranked: Vec<&str> = Vec::new();
+        for name in names {
+            if !ranked.contains(name) {
+                ranked.push(name);
+            }
+        }
+        ranked.sort_by_key(|name| rank(name));
         let recent = |at: Option<&Instant>| {
             at.is_some_and(|at| now.saturating_duration_since(*at) < DEBOUNCE)
         };
-        if recent(self.last.get(name)) {
+        if !self.w11term && recent(self.last_bell.as_ref()) {
             return;
         }
+        let pick = ranked.into_iter().find(|name| {
+            valid_name(name)
+                && !recent(self.last.get(*name))
+                && if self.w11term {
+                    self.names
+                        .as_ref()
+                        .is_none_or(|names| names.contains(*name))
+                } else {
+                    BELL_KINDS.contains(name)
+                }
+        });
+        let Some(name) = pick else {
+            return;
+        };
+        self.last.insert(name.to_string(), now);
         if self.w11term {
-            self.last.insert(name.to_string(), now);
             self.out.extend(osc440_play(name));
-        } else if BELL_KINDS.contains(&name) && !recent(self.last_bell.as_ref()) {
-            self.last.insert(name.to_string(), now);
+        } else {
             self.last_bell = Some(now);
             self.out.push(0x07);
         }
@@ -282,13 +369,17 @@ mod tests {
         s.set_terminal("w11term 0.4.1");
         assert!(s.by_name());
         s.frame(&frame(&["acquired", "miss"], true), t0);
-        let out = String::from_utf8(s.take_bytes()).unwrap();
         assert_eq!(
-            out,
-            "\x1b]440;1;play;acquired\x1b\\\x1b]440;1;play;miss\x1b\\\x1b]440;1;play;overheat\x1b\\"
+            s.take_bytes(),
+            osc440_play("overheat"),
+            "one sound a frame: the alarm outranks a contact and a miss"
         );
         s.frame(&frame(&["miss"], true), t0 + Duration::from_secs(1));
-        assert!(s.take_bytes().is_empty(), "debounced");
+        assert_eq!(
+            s.take_bytes(),
+            osc440_play("miss"),
+            "the alarm debounced, the next kind sounds"
+        );
         s.frame(&frame(&[], true), t0 + DEBOUNCE);
         assert_eq!(
             String::from_utf8(s.take_bytes()).unwrap(),
@@ -320,6 +411,42 @@ mod tests {
         assert!(!names_w11term("WezTerm 20240203"));
         assert!(!names_w11term("mintty 3.7.0"));
         assert!(!names_w11term(""));
+    }
+
+    /// **The dev2 smoke's burst** (2026-10-23): a frame with a slot's shot,
+    /// a hit, a section lost and a kill sounds the kill alone — never a name
+    /// the pack has no file for — and the next frame's best undebounced kind
+    /// after it.
+    #[test]
+    fn a_burst_sounds_its_most_important_name_the_pack_has() {
+        let t0 = Instant::now();
+        let mut s = Sounds::with_pack_names(None, &["hit", "kill", "target_section_lost"]);
+        s.set_terminal("w11term 0.4.1");
+        s.frame(
+            &frame(&["slot_fired", "hit", "target_section_lost", "kill"], false),
+            t0,
+        );
+        assert_eq!(s.take_bytes(), osc440_play("kill"));
+        s.frame(&frame(&["slot_fired"], false), t0);
+        assert!(s.take_bytes().is_empty(), "no file, no sound");
+        s.frame(
+            &frame(&["kill", "hit"], false),
+            t0 + Duration::from_millis(500),
+        );
+        assert_eq!(s.take_bytes(), osc440_play("hit"), "the kill debounced");
+        // A plain terminal: one bell for the frame, the bell kind found among
+        // the rest.
+        let mut plain = Sounds::with_pack(None);
+        plain.frame(&frame(&["slot_fired", "hit", "kill"], false), t0);
+        assert_eq!(plain.take_bytes(), vec![0x07]);
+        // The shipped pack's names are the ones a new Sounds sends.
+        let shipped = Sounds::new();
+        assert!(
+            shipped
+                .names
+                .as_ref()
+                .is_some_and(|n| n.contains("kill") && !n.contains("slot_fired"))
+        );
     }
 
     /// **Doc 21 cut G.11**: a w11term is told the pack the moment it says

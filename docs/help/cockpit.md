@@ -785,8 +785,10 @@ seconds while you run hot. The bell rings once at most every two seconds,
 however much happens.
 
 In w11term each notice has its own sound by name (a hit, a miss, a lock, a
-contact lost, and the rest), played from the game's sound pack or your own
-sounds folder; a name with no sound there is silent. The game knows w11term
+contact lost, and the rest), played from the game's sound pack. When several
+notices land at once you hear the one that matters most — your tank hit
+before a kill, a kill before a hit, a hit before a new contact — and the
+others are not queued up after it. The game knows w11term
 because it asks your terminal its name when you enter `@tui`, and then tells
 it which sound pack is current: w11term fetches whatever it does not already
 have over your own connection (nothing to install, no second login) and plays

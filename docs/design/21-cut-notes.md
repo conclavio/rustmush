@@ -372,3 +372,12 @@ dev2 redeployed at 5fd41392 (gateway half only, store kept, `GATEWAY_RESTART=1`)
 - **G.3b, the web render**: in Chrome the cockpit tab drew the picture itself (`drawn here`; the module streamed from the gateway, 348 KB in 186 ms; a 640x480 canvas), and the look keys turned it (a `.` swing to 139°). The gateway's CPU over 10 s: **5 ticks drawn in the browser** (its idle), **73 ticks drawn by the server** for the same view. U.4's doll was in the damage pane.
 - **Unexplained**: in w11term, a line sent a moment after Enter (meant for the picture's chat line) arrived as flying keys once and as a line once; not reproduced, worth a look with the key log.
 
+## G.10 fix: one sound a frame
+
+The dev2 smoke's finding, fixed: w11term drops a sound within 40 ms of the last (`rate-limited`, no queue), and the server sent every kind of a frame back to back, so a frame with several notices played its first name alone — nothing, when that name was `slot_fired` (no file in the pack).
+
+- **One name a frame** (`Sounds::play_one`): the frame's kinds and the overheat alarm ranked by `PRIORITY` (the tank destroyed or disabled, a kill, a section lost, struck, the alarm, the target's section lost, the lock lost, a hit, the power up, a new contact, a lock, then the rest; an unlisted kind after them all, in the frame's order), and the first that the terminal can play and that is not inside its two-second debounce is sent — for a w11term, a name the shipped pack has (`AssetPack::sound_names`), so none is spent on a name with no file; for a bell, a `BELL_KINDS` kind, one bell a debounce as before.
+- A debounced top kind lets the next one sound: a second kill inside two seconds sounds the frame's hit.
+
+**Verified.** `mush-net-ssh`: the burst (`slot_fired`, `hit`, `target_section_lost`, `kill`) sounds `kill` alone, a lone `slot_fired` sounds nothing, a debounced kill gives way to the hit, a bell is one for the frame, and the shipped pack's names are the ones a new `Sounds` sends; the alarm outranks a contact and a miss; the session test unchanged. `help cockpit` says so.
+

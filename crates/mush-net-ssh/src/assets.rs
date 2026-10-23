@@ -150,6 +150,7 @@ pub struct AssetPack {
     pack_version: String,
     files: HashMap<String, &'static [u8]>,
     dirs: BTreeSet<String>,
+    sounds: BTreeSet<String>,
 }
 
 impl AssetPack {
@@ -207,6 +208,7 @@ impl AssetPack {
             return Err("more than 256 files".into());
         }
         let (mut names, mut paths, mut total) = (BTreeSet::new(), BTreeSet::new(), 0usize);
+        let mut sounds = BTreeSet::new();
         for entry in entries {
             let e = entry.as_object().ok_or("a file entry is not an object")?;
             only_keys(
@@ -225,6 +227,9 @@ impl AssetPack {
             }
             if kind == "sound" && (name == "system" || name == "off" || !path.ends_with(".wav")) {
                 return Err(format!("{name}: a sound is a .wav and never system or off"));
+            }
+            if kind == "sound" {
+                sounds.insert(name.to_string());
             }
             if !valid_path(path) || !paths.insert(path.to_string()) {
                 return Err(format!(
@@ -273,6 +278,7 @@ impl AssetPack {
             pack_version,
             files: by_path,
             dirs,
+            sounds,
         })
     }
 
@@ -280,6 +286,13 @@ impl AssetPack {
     #[must_use]
     pub fn pack_version(&self) -> &str {
         &self.pack_version
+    }
+
+    /// The pack's sound names (the manifest's `name` of each `sound`): what a
+    /// w11term can play from it, and so all it is sent (`tui::sound`).
+    #[must_use]
+    pub fn sound_names(&self) -> &BTreeSet<String> {
+        &self.sounds
     }
 
     /// A file's bytes, by its path under [`ROOT`].
