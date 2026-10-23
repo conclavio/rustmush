@@ -806,10 +806,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 22,
-            "the twenty-two port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
+            orgs, 23,
+            "the twenty-three institutions: the corridor's nine, the moons' eleven (doc 19 cut \
              A.8), the Freeport Registry (doc 20 cut SM.2) and the Pallas Syndicate (doc 20 cut \
-             SM.10)"
+             SM.10), plus the Malapert Exchange (doc 15 cut R1)"
         );
         assert!(
             !store.test_world(),
@@ -891,10 +891,11 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     for (pack, _) in SITE_SOURCES {
         assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(1));
     assert_eq!(
         after.len(),
-        28,
-        "five, ten station packs, the twelve site packs (doc 20 cut SM.2) and the lane"
+        29,
+        "five, ten station packs, twelve site packs, the lane and the R1 relay pack"
     );
     lane_resolves(&on.engine);
     let atlas = on
