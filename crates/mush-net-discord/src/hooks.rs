@@ -8,6 +8,8 @@ use crate::api::InteractionReply;
 /// A component click or a modal submission, as the bridge routes it (D3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Interaction {
+    /// Provider interaction identity, distinct from the message being answered.
+    pub interaction_id: u64,
     /// The routing key (`d:req:<id>:<opt>`, `d:act:<nonce>`, `d:oncall:…`).
     pub custom_id: String,
     /// A select's picked values (one), empty for a button or a modal.

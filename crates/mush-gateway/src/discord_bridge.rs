@@ -1075,7 +1075,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         if line.is_empty() {
             return InteractionReply::Ephemeral("Nothing to send.".to_string());
         }
-        match self.dm_line(user_id, &line).await {
+        match self.dm_message(user_id, ix.interaction_id, &line).await {
             LineOutcome::Accepted => InteractionReply::Ephemeral("Sent.".to_string()),
             LineOutcome::Closed => InteractionReply::Ephemeral("Detached.".to_string()),
             LineOutcome::NotFollowing => InteractionReply::Ephemeral(
@@ -1918,7 +1918,9 @@ mod tests {
                         ServiceResp::DiscordInteraction(Ok(reply))
                     }
                     ServiceReq::RelaySpeak(req) => {
-                        let result = if req.text == "gag me" {
+                        let result = if req.dm_conn.is_some() {
+                            Err(mush_ipc::RelayError::NotChannelAlias)
+                        } else if req.text == "gag me" {
                             Err(mush_ipc::RelayError::Refused("you are gagged".to_string()))
                         } else {
                             Ok(())
@@ -2586,6 +2588,7 @@ mod tests {
 
     fn click(custom_id: &str, values: &[&str]) -> Interaction {
         Interaction {
+            interaction_id: 1000,
             custom_id: custom_id.to_string(),
             values: values.iter().map(|v| (*v).to_string()).collect(),
             fields: Vec::new(),
@@ -2676,6 +2679,7 @@ mod tests {
             b.interaction(
                 USER,
                 Interaction {
+                    interaction_id: 1001,
                     custom_id: "d:reqm:12".into(),
                     values: vec![],
                     fields: vec![("answer".into(), "the north door".into())],
@@ -2723,6 +2727,7 @@ mod tests {
             b.interaction(
                 USER,
                 Interaction {
+                    interaction_id: 1001,
                     custom_id: format!("d:actm:{nonce}"),
                     values: vec![],
                     fields: vec![("line".into(), "page Wiz=on my way".into())],

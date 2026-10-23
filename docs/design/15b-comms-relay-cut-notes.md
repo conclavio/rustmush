@@ -667,7 +667,8 @@ accounting, 1 KiB pair limit and 30 IC day TTL remain in force. Wizard-only
 ordinary player queries do not expose transport internals.
 
 Discord guild ingress and IC alias commands in followed DMs retain the provider's
-message ID. Authentication still binds the linked account, selected actor and
+message ID. Slash commands and notice reply modals also retain their interaction
+ID, so a retried modal cannot bypass channel deduplication. Authentication still binds the linked account, selected actor and
 physical endpoint. A repeated ID with identical content is an accepted no-op;
 changed content or a retired ID is refused. Acceptance waits for the real writer
 barrier. The direct service path now drains deferred module persistence before

@@ -373,7 +373,7 @@ async fn handle_event(
                         "look" => "look".to_string(),
                         _ => "+scene".to_string(),
                     };
-                    match hooks.dm_line(user_id, &line).await {
+                    match hooks.dm_message(user_id, handle.id, &line).await {
                         LineOutcome::Accepted => reply(api, &handle, "Sent.").await,
                         LineOutcome::Closed => reply(api, &handle, "Detached.").await,
                         LineOutcome::NotFollowing => reply(api, &handle, NOT_FOLLOWING).await,
@@ -404,6 +404,7 @@ async fn handle_event(
                 .interaction(
                     user_id,
                     Interaction {
+                        interaction_id: handle.id,
                         custom_id,
                         values,
                         fields: Vec::new(),
@@ -428,6 +429,7 @@ async fn handle_event(
                 .interaction(
                     user_id,
                     Interaction {
+                        interaction_id: handle.id,
                         custom_id,
                         values: Vec::new(),
                         fields,

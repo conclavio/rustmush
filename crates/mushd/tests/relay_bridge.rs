@@ -3,7 +3,8 @@
 use mush_core::{GOD, Inbound, ObjId};
 use mush_gateway::{accounts::Accounts, controls::GatewayControls, discord_bridge::DiscordBridge};
 use mush_net_discord::{
-    DiscordConfig, DiscordHooks, FollowOutcome, LineOutcome, RelayLineOutcome, RelayMap,
+    DiscordConfig, DiscordHooks, FollowOutcome, Interaction, InteractionReply, LineOutcome,
+    RelayLineOutcome, RelayMap,
     testing::{Call, FakeApi},
 };
 use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, InMemoryStore, ObjectStore};
@@ -108,11 +109,14 @@ async fn r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_pro
         assert_eq!(bridge.dm_message(42,901,"radio private alias line").await,LineOutcome::Accepted);
         assert_eq!(store.module_json_get("comsys",&format!("chan:{}",channel.0)).await.unwrap().unwrap()["seq"],2);
         assert!(!dm_contains(&api,bob_dm,"private alias line"));
+        let modal=Interaction {interaction_id:903,custom_id:"d:actm:1".into(),values:vec![],fields:vec![("line".into(),"radio private modal line".into())],channel_id:None,message_id:None};
+        for _ in 0..2 { assert!(matches!(bridge.interaction(42,modal.clone()).await,InteractionReply::Ephemeral(text) if text=="Sent.")); }
+        assert_eq!(store.module_json_get("comsys",&format!("chan:{}",channel.0)).await.unwrap().unwrap()["seq"],3);
         bridge.dm_message(42,902,"pub OOC bridge works").await;
         handles.handle.barrier_result().await.unwrap();
         eprintln!("IC accepted, waiting for observer arrival");
         let deadline=tokio::time::Instant::now()+Duration::from_secs(60);
-        while !dm_contains(&api,bob_dm,"provider private line") || !dm_contains(&api,bob_dm,"private alias line") {
+        while !dm_contains(&api,bob_dm,"provider private line") || !dm_contains(&api,bob_dm,"private alias line") || !dm_contains(&api,bob_dm,"private modal line") {
             if tokio::time::Instant::now()>deadline {
                 eprintln!("source {:?}",store.module_json_get("comsys",&format!("ic:msg:{}:1",channel.0)).await);
                 eprintln!("calls {:?}",api.calls());
@@ -124,7 +128,7 @@ async fn r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_pro
         assert!(!calls.iter().any(|c|matches!(c,Call::WebhookSend{channel_id:4242,..}|Call::Send{channel_id:4242,..})),"shared IC mirror stays disabled");
         assert!(calls.iter().any(|c|matches!(c,Call::WebhookSend{channel_id:4243,content,..} if content.contains("OOC bridge works"))),"OOC relay still mirrors");
         let count=|text:&str|calls.iter().filter_map(|c|match c {Call::Send{channel_id,msg} if *channel_id==bob_dm=>Some(msg.content.matches(text).count()),_=>None}).sum::<usize>();
-        assert_eq!(count("provider private line"),1);assert_eq!(count("private alias line"),1);
+        assert_eq!(count("provider private line"),1);assert_eq!(count("private alias line"),1);assert_eq!(count("private modal line"),1);
         bridge.detach(42).await;bridge.detach(43).await;
         handles.handle.inbound(Inbound::Control(mush_core::ControlMsg::Shutdown)).await;
         handles.world_join.await.unwrap();handles.writer_join.await.unwrap();handles.outbox_join.abort();
