@@ -6,6 +6,10 @@
 // picture is drawn by the server here (jsdom cannot draw it), asked for the
 // moment the view mounts wanting it. Fake timers drive the helm's repeats
 // and the look's steps.
+//
+// And (doc 21a `X-04`) the picture drawn here, with the engine's module
+// faked — a frame that never changes — and animation frames as timers: a
+// fresh canvas gets that frame whether or not the picture changed.
 
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
@@ -14,8 +18,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PictureView from "./PictureView.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import { HELM_REPEAT_MS, LOOK_STEP_MS, PICTURE_PREF_KEY, swingLook } from "$lib/picture";
-import { PICTURE_SOURCE_KEY } from "$lib/pixel/local";
+import { LOCAL_FRAME_MS, PICTURE_SOURCE_KEY } from "$lib/pixel/local";
 import { PictureStore } from "$lib/stores/picture.svelte";
+
+/** The engine's module, faked: every render succeeds and hashes the same,
+ * as an unchanged scene does. */
+const fake = vi.hoisted(() => ({
+  module: {
+    feed: () => true,
+    render: () => true,
+    hash: () => "the same frame",
+    image: () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }),
+    pixels: () => new Uint8Array(0),
+    reset: () => {},
+  },
+}));
+
+vi.mock("$lib/pixel/local", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("$lib/pixel/local")>();
+  return {
+    ...orig,
+    localCapable: () => true,
+    pixelModule: () => Promise.resolve(fake.module),
+  };
+});
 
 /** The fixture tank's heading, so a turn is `HEADING 15` or `75`, and a stop
  * `HEADING 45`. */
@@ -26,6 +52,7 @@ function mount(): {
   setPicture: ReturnType<typeof vi.fn>;
   helm: ReturnType<typeof vi.fn>;
   frame: HTMLElement;
+  unmount: () => void;
 } {
   const picture = new PictureStore();
   const setPicture = vi.fn((on: boolean, look: number) => {
@@ -34,8 +61,8 @@ function mount(): {
   });
   const helm = vi.fn();
   const app = { picture, setPicture, helm } as unknown as GameApp;
-  render(PictureView, { props: { app, headingDeg: HEADING } });
-  return { picture, setPicture, helm, frame: screen.getByRole("application") };
+  const { unmount } = render(PictureView, { props: { app, headingDeg: HEADING } });
+  return { picture, setPicture, helm, frame: screen.getByRole("application"), unmount };
 }
 
 /** The page's visibility, as the view reads it, and the event that says it
@@ -52,6 +79,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The stubs first (they were put over the fake timers' own globals), the
+  // real timers after, so nothing of the fake clock is left behind.
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   localStorage.removeItem(PICTURE_PREF_KEY);
   localStorage.removeItem(PICTURE_SOURCE_KEY);
@@ -117,5 +147,77 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     const asked = setPicture.mock.calls.length;
     vi.advanceTimersByTime(LOOK_STEP_MS * 5);
     expect(setPicture.mock.calls).toHaveLength(asked);
+  });
+});
+
+describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
+  /** Every canvas's 2D context, recording the frames put on it. */
+  let paints: Map<HTMLCanvasElement, number>;
+  let getContext: typeof HTMLCanvasElement.prototype.getContext;
+
+  beforeEach(() => {
+    localStorage.setItem(PICTURE_SOURCE_KEY, "here");
+    paints = new Map();
+    getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      return {
+        putImageData: () => {
+          paints.set(this, (paints.get(this) ?? 0) + 1);
+        },
+      };
+    } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    // Animation frames as (fake) timers, stamped with the (fake) clock.
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(Date.now()), 16),
+    );
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  });
+
+  afterEach(() => {
+    HTMLCanvasElement.prototype.getContext = getContext;
+  });
+
+  /** The module's promise settled and the effects it wakes run. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    await tick();
+  }
+
+  /** A frame's worth of (fake) time, and the effects a paint wakes. */
+  async function frameTime(): Promise<void> {
+    vi.advanceTimersByTime(LOCAL_FRAME_MS + 16);
+    await tick();
+  }
+
+  it("paints the first frame, and the same frame again onto the canvas a hide and show makes", async () => {
+    const { setPicture, unmount } = mount();
+    await settle();
+    // Drawn here: the server is never asked.
+    expect(setPicture.mock.calls.filter((c) => c[0] === true)).toHaveLength(0);
+    const first = document.querySelector("canvas");
+    expect(first).not.toBeNull();
+    expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
+    await frameTime();
+    expect(paints.get(first as HTMLCanvasElement)).toBe(1);
+    expect(screen.queryByText("Waiting for the first picture…")).toBeNull();
+    // Unchanged: no further paint.
+    await frameTime();
+    expect(paints.get(first as HTMLCanvasElement)).toBe(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Hide the picture" }));
+    expect(document.querySelector("canvas")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Show the picture" }));
+    const second = document.querySelector("canvas");
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    // Nothing is on the new canvas yet: it says so, and the unchanged frame
+    // is painted onto it at the next tick all the same.
+    expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
+    await frameTime();
+    expect(paints.get(second as HTMLCanvasElement)).toBe(1);
+    expect(screen.queryByText("Waiting for the first picture…")).toBeNull();
+    // Torn down while the stubs stand: its animation frame is cancelled by
+    // the stub that made it.
+    unmount();
   });
 });

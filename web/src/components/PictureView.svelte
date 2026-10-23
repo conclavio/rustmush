@@ -65,8 +65,13 @@
   /** Why the picture could not be drawn here, once it could not. */
   let localFailed = $state<string | null>(null);
   let local = $state.raw<LocalPicture | null>(null);
-  /** A frame has been drawn here. */
-  let drawnHere = $state(false);
+  /** The canvas the picture was last painted on. A fresh one — the picture
+   * hidden and shown again makes a new element — has nothing on it whatever
+   * the renderer last drew, so the first frame goes onto it whether or not
+   * the picture changed (doc 21a `X-04`). */
+  let painted = $state.raw<HTMLCanvasElement | null>(null);
+  /** A frame has been drawn here, on the canvas that is up. */
+  const drawnHere = $derived(painted !== null && painted === canvas);
   const here = $derived(source === "here" && localFailed === null);
   /** Whether the picture is up: drawn here while wanted and visible, or the
    * server's while asked for. */
@@ -146,11 +151,13 @@
   });
 
   // Drawn here: a frame at most every `LOCAL_FRAME_MS` while wanted and
-  // visible, put on the canvas only when it changed.
+  // visible, put on the canvas only when it changed — or when the canvas is
+  // one nothing has been painted on yet.
   $effect(() => {
     const l = local;
     const c = canvas;
     if (!l || !c || !(wanted && visible && here)) return;
+    if (untrack(() => painted) !== c) l.forget();
     let raf = 0;
     let last = -Infinity;
     const tick = (t: number): void => {
@@ -164,7 +171,7 @@
             c.height = FRAME_H;
           }
           c.getContext("2d")?.putImageData(l.image(), 0, 0);
-          drawnHere = true;
+          painted = c;
         }
       } catch (err) {
         cancelAnimationFrame(raf);

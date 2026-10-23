@@ -76,4 +76,13 @@ export class LocalPicture {
   image(): ImageData {
     return this.#m.image();
   }
+
+  /** Forget what was shown: the next {@link draw} reports its frame as new
+   * whether or not the picture changed — for a canvas with nothing on it
+   * yet (the picture hidden and shown again makes a fresh element; doc 21a
+   * `X-04`: an unchanged scene was never painted onto it until something
+   * moved). */
+  forget(): void {
+    this.#shown = null;
+  }
 }

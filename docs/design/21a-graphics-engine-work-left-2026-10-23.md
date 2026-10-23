@@ -20,6 +20,7 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
   - crates/mush-pixel/src/cockpit.rs:423 places the lock box with raycast::project (flat ground, stock eye) while the sprites under it are drawn by heightfield::render from the unit's real eye over the terrain; there is no terrain-aware projection in heightfield.rs. On a slope the box sits well off the target (~148 px reproduced). Fix: one projection for both, from the Terrain and the eye the producer used.
 - **X-04** [P2, S, web] Hide and show can leave the local picture blank
   - web/src/components/PictureView.svelte:264 puts the canvas inside the `wanted` block, so showing the picture again creates a fresh canvas, while the LocalPicture object survives with its last hash (web/src/lib/pixel/local.ts:69 returns false on an unchanged hash). An unchanged scene is never painted onto the new canvas until something moves. Fix: forget the shown hash when the canvas is (re)created.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): the view keeps the canvas it last painted on and has the picture `forget()` its shown frame when the draw loop starts on a canvas it has not painted; pinned by `local.test.ts` and `PictureView.test.ts`.
 
 ## Engine (crates/mush-pixel) (21)
 
