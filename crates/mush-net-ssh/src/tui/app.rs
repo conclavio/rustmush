@@ -1457,6 +1457,8 @@ impl TuiApp {
     pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
         self.pixel_chart_ask(&mut queries);
+        // Doc 21 cut G.11: a w11term is told the asset pack again, slowly.
+        self.sounds.tick(Instant::now());
         if self.picture.is_some_and(|p| p.live) {
             let aged = |at: Option<i64>| {
                 at.is_none_or(|at| !(0..LIVE_STALE_S).contains(&now.saturating_sub(at)))

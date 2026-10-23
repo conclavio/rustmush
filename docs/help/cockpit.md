@@ -784,7 +784,10 @@ however much happens.
 In w11term each notice has its own sound by name (a hit, a miss, a lock, a
 contact lost, and the rest), played from the game's sound pack or your own
 sounds folder; a name with no sound there is silent. The game knows w11term
-because it asks your terminal its name when you enter `@tui`.
+because it asks your terminal its name when you enter `@tui`, and then tells
+it which sound pack is current: w11term fetches whatever it does not already
+have over your own connection (nothing to install, no second login) and plays
+from it once every file has arrived and checked out.
 
 `@sounds off` silences this connection, `@sounds on` brings them back, and
 `@sounds` says which it is and how your terminal hears them. It lasts until you

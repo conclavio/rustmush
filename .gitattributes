@@ -3,4 +3,5 @@
 *.jpg binary
 *.ico binary
 *.woff2 binary
+*.wav binary
 .source-commit export-subst

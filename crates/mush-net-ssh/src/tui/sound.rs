@@ -22,6 +22,14 @@
 //! what a frame that still says `overheated` does.
 //!
 //! `@sounds on|off` (the transport's own, per connection) mutes it all.
+//!
+//! **The pack** (doc 21 cut G.11): a w11term is also told the asset pack's
+//! version — OSC 440's `pack` verb, `ESC ] 440 ; 1 ; pack ; <version> ESC \`
+//! — the moment its `XTVERSION` names it, and again every [`REANNOUNCE`]
+//! (w11term drops an announcement that lands during a sync, so a slow repeat
+//! is how a failed one is retried; never with a frame). It then fetches what
+//! changed over `sftp` on this same connection, and its OSC 440 names resolve
+//! from that pack first.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -31,6 +39,15 @@ use serde_json::Value;
 /// One sound a kind at most this often (w11term's queue is 16 deep and 40 ms
 /// a sound; an alarm repeats on this cadence).
 pub const DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// How often a w11term is told the pack's version again (G.11).
+pub const REANNOUNCE: Duration = Duration::from_secs(600);
+
+/// w11term's OSC 440 `pack` announcement (wire version 1, ST-terminated).
+#[must_use]
+pub fn osc440_pack(version: &str) -> Vec<u8> {
+    format!("\x1b]440;1;pack;{version}\x1b\\").into_bytes()
+}
 
 /// The overheat alarm's name: not a notice kind but the frame's own verdict
 /// (`heat.overheated`), said while it stands.
@@ -88,6 +105,10 @@ pub struct Sounds {
     last: HashMap<String, Instant>,
     last_bell: Option<Instant>,
     out: Vec<u8>,
+    /// The asset pack's version, when one is served (G.11).
+    pack: Option<String>,
+    /// When the pack was last announced.
+    announced: Option<Instant>,
 }
 
 impl Default for Sounds {
@@ -97,9 +118,16 @@ impl Default for Sounds {
 }
 
 impl Sounds {
-    /// Sounds on, the terminal not yet known (so BEL until it says).
+    /// Sounds on, the terminal not yet known (so BEL until it says), the
+    /// shipped asset pack the one announced.
     #[must_use]
     pub fn new() -> Sounds {
+        Sounds::with_pack(crate::assets::AssetPack::shipped().map(|p| p.pack_version().to_string()))
+    }
+
+    /// [`Sounds::new`] announcing `pack` (or none).
+    #[must_use]
+    pub fn with_pack(pack: Option<String>) -> Sounds {
         Sounds {
             on: true,
             w11term: false,
@@ -107,6 +135,8 @@ impl Sounds {
             last: HashMap::new(),
             last_bell: None,
             out: Vec::new(),
+            pack: pack.filter(|v| valid_name(v)),
+            announced: None,
         }
     }
 
@@ -124,10 +154,27 @@ impl Sounds {
         self.on
     }
 
-    /// The terminal's `XTVERSION` reply (the text after `>|`).
+    /// The terminal's `XTVERSION` reply (the text after `>|`); a w11term is
+    /// told the pack at once (G.11).
     pub fn set_terminal(&mut self, version: &str) {
         self.w11term = names_w11term(version);
         self.terminal = Some(version.chars().take(64).collect());
+        self.announced = None;
+        self.tick(Instant::now());
+    }
+
+    /// Announce the pack to a w11term not told within [`REANNOUNCE`] (G.11).
+    pub fn tick(&mut self, now: Instant) {
+        let Some(pack) = self.pack.as_deref().filter(|_| self.w11term) else {
+            return;
+        };
+        if self
+            .announced
+            .is_none_or(|at| now.saturating_duration_since(at) >= REANNOUNCE)
+        {
+            self.announced = Some(now);
+            self.out.extend(osc440_pack(pack));
+        }
     }
 
     /// The terminal's name and version as it gave them, if it did.
@@ -190,6 +237,15 @@ impl Sounds {
     }
 }
 
+/// The pack a [`Sounds`] announces, for `@sounds`' answer.
+impl Sounds {
+    /// The pack's version, when one is served.
+    #[must_use]
+    pub fn pack(&self) -> Option<&str> {
+        self.pack.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +262,7 @@ mod tests {
     #[test]
     fn a_plain_terminal_rings_its_bell_for_the_kinds_that_matter() {
         let t0 = Instant::now();
-        let mut s = Sounds::new();
+        let mut s = Sounds::with_pack(Some("pack_1".into()));
         s.frame(&frame(&["acquired", "miss", "struck"], false), t0);
         assert_eq!(s.take_bytes(), vec![0x07], "one bell for the frame");
         s.frame(&frame(&["miss", "classified"], false), t0);
@@ -222,7 +278,7 @@ mod tests {
     #[test]
     fn a_w11term_hears_every_kind_by_name_and_the_alarm_repeats() {
         let t0 = Instant::now();
-        let mut s = Sounds::new();
+        let mut s = Sounds::with_pack(None);
         s.set_terminal("w11term 0.4.1");
         assert!(s.by_name());
         s.frame(&frame(&["acquired", "miss"], true), t0);
@@ -248,7 +304,7 @@ mod tests {
     #[test]
     fn off_is_silent_and_names_are_checked() {
         let t0 = Instant::now();
-        let mut s = Sounds::new();
+        let mut s = Sounds::with_pack(None);
         s.set_terminal("w11term 1");
         s.play("hit", t0);
         s.set_on(false);
@@ -264,5 +320,36 @@ mod tests {
         assert!(!names_w11term("WezTerm 20240203"));
         assert!(!names_w11term("mintty 3.7.0"));
         assert!(!names_w11term(""));
+    }
+
+    /// **Doc 21 cut G.11**: a w11term is told the pack the moment it says
+    /// what it is, and again every ten minutes, never sooner; a plain
+    /// terminal never is.
+    #[test]
+    fn a_w11term_is_told_the_pack_and_told_again_slowly() {
+        let mut plain = Sounds::with_pack(Some("pack_abc".into()));
+        plain.set_terminal("WezTerm 1");
+        plain.tick(Instant::now() + REANNOUNCE * 2);
+        assert!(plain.take_bytes().is_empty());
+        let mut s = Sounds::with_pack(Some("pack_abc".into()));
+        s.set_terminal("w11term 0.4.1");
+        assert_eq!(
+            String::from_utf8(s.take_bytes()).unwrap(),
+            "\x1b]440;1;pack;pack_abc\x1b\\"
+        );
+        let t0 = Instant::now();
+        s.tick(t0 + Duration::from_secs(5));
+        assert!(s.take_bytes().is_empty(), "not with every tick");
+        s.tick(t0 + REANNOUNCE + Duration::from_secs(1));
+        assert_eq!(s.take_bytes(), osc440_pack("pack_abc"));
+        // A version that is not a token is never announced.
+        let mut bad = Sounds::with_pack(Some("../x".into()));
+        bad.set_terminal("w11term 1");
+        assert!(bad.take_bytes().is_empty());
+        // The shipped pack is the one a new Sounds announces.
+        assert_eq!(
+            Sounds::new().pack(),
+            crate::assets::AssetPack::shipped().map(|p| p.pack_version())
+        );
     }
 }

@@ -38,6 +38,9 @@ fred = { version = "10.1", features = ["i-config", "i-redis-json", "i-redisearch
 # default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+# Doc 21 cut G.11: the read-only `sftp` subsystem that serves the asset pack
+# over the player's own connection (protocol v3; w11term's client is on 3.0).
+russh-sftp = "3.0.1"
 # OpenSSH public-key parsing/normalization/fingerprinting for the server-side
 # `@sshkey` command (M19). Same crate (and pinned to the same version) russh
 # re-exports as `russh::keys::ssh_key`, so feature unification keeps one copy;

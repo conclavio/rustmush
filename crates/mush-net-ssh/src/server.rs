@@ -312,6 +312,8 @@ impl russh::server::Server for Ingress {
             exec_input: None,
             exec_submitted: false,
             channel: None,
+            sftp: None,
+            sftp_started: false,
             pty_seen: false,
             shell_started: false,
             connected: Arc::new(AtomicBool::new(false)),
@@ -461,6 +463,13 @@ struct ConnHandler {
     channel: Option<ChannelId>,
     pty_seen: bool,
     shell_started: bool,
+    /// **The asset pack's channel** (doc 21 cut G.11): a second session
+    /// channel, opened by a client in game, held until it asks for the
+    /// `sftp` subsystem — the one thing it may ask for.
+    sftp: Option<Channel<Msg>>,
+    /// The pack's `sftp` session has started on this connection (one a
+    /// connection).
+    sftp_started: bool,
     /// Set just before `connect_character` is attempted (cleared again on
     /// refusal); gates the `disconnected` hook (fired exactly once, from
     /// `Drop`). Armed *before* the await so a handler future dropped
@@ -1719,9 +1728,20 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel.is_some() {
-            // One session channel per connection; dropping the handle
-            // rejects the request.
-            drop(reply);
+            // One session channel per connection — and (doc 21 cut G.11)
+            // one more, for the asset pack's `sftp`, once the connection is
+            // in game and the pack is served. Dropping the handle rejects
+            // the request.
+            if self.connected.load(Ordering::SeqCst)
+                && self.sftp.is_none()
+                && !self.sftp_started
+                && crate::assets::AssetPack::shipped().is_some()
+            {
+                self.sftp = Some(channel);
+                reply.accept().await;
+            } else {
+                drop(reply);
+            }
             return Ok(());
         }
         self.channel = Some(channel.id());
@@ -1921,13 +1941,34 @@ impl Handler for ConnHandler {
         Ok(())
     }
 
+    /// **`sftp` on the asset pack's channel** (doc 21 cut G.11): the pack's
+    /// read-only tree, served from memory ([`crate::assets::AssetsSftp`]).
+    /// Any other subsystem, or `sftp` on the game's own channel, is refused.
     async fn subsystem_request(
         &mut self,
         channel: ChannelId,
-        _name: &str,
+        name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_failure(channel)?;
+        let ours = self.sftp.as_ref().is_some_and(|c| c.id() == channel);
+        let pack = crate::assets::AssetPack::shipped();
+        match (name, ours, pack) {
+            ("sftp", true, Some(pack)) if self.connected.load(Ordering::SeqCst) => {
+                if let Some(chan) = self.sftp.take() {
+                    self.sftp_started = true;
+                    session.channel_success(channel)?;
+                    tracing::info!(conn = self.conn_id, "asset pack sftp session started");
+                    russh_sftp::server::run(
+                        crate::assets::EndOnError(chan.into_stream()),
+                        crate::assets::AssetsSftp::new(pack),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                session.channel_failure(channel)?;
+            }
+            _ => session.channel_failure(channel)?,
+        }
         Ok(())
     }
 

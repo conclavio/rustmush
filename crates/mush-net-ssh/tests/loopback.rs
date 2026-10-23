@@ -2309,3 +2309,88 @@ async fn sm7_the_cycle_line_prints_over_ssh() {
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
 }
+
+/// **Doc 21 cut G.11**: a player in game opens a second channel on the same
+/// connection, asks for `sftp`, and reads the asset pack's manifest — the
+/// bytes the gateway ships, its pack version the one the TUI announces. A
+/// connection still at the welcome screen is refused the second channel, and
+/// a third channel (or a second `sftp`) is refused too.
+#[tokio::test]
+async fn the_asset_pack_is_served_over_sftp_to_a_player_in_game() {
+    use tokio::io::AsyncReadExt;
+
+    // At the welcome screen: no second channel.
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("sftp-early", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+    let mut early = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        early
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut welcome = Term {
+        channel: open_shell_on(&early).await,
+        seen: String::new(),
+    };
+    welcome.expect("Welcome to rustmush!").await;
+    assert!(
+        early.channel_open_session().await.is_err(),
+        "no second channel before the game"
+    );
+    let _ = early
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+
+    // In game: the pack.
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sftp", &hooks).await;
+    let channel = handle
+        .channel_open_session()
+        .await
+        .expect("a second channel");
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .expect("the sftp subsystem");
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await
+        .expect("an sftp session");
+    let mut manifest = Vec::new();
+    sftp.open("/assets/manifest.json")
+        .await
+        .expect("open the manifest")
+        .read_to_end(&mut manifest)
+        .await
+        .expect("read it");
+    let pack = mush_net_ssh::assets::AssetPack::shipped().expect("the shipped pack");
+    assert_eq!(Some(manifest.as_slice()), pack.file("manifest.json"));
+    let doc: serde_json::Value = serde_json::from_slice(&manifest).expect("json");
+    assert_eq!(doc["pack_version"].as_str(), Some(pack.pack_version()));
+    assert!(
+        sftp.open_with_flags(
+            "/assets/manifest.json",
+            russh_sftp::protocol::OpenFlags::WRITE
+        )
+        .await
+        .is_err(),
+        "read-only"
+    );
+    // One pack channel a connection.
+    assert!(
+        handle.channel_open_session().await.is_err(),
+        "no third channel"
+    );
+    // The game's own channel still answers.
+    term.send_line("say still here").await;
+    term.expect("Nick says, \"still here\"").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
