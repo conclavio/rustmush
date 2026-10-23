@@ -1924,6 +1924,47 @@ bytes on the wire), `mush_pixel_slow_skips_total`, `mush_pixel_step_downs_total`
 A viewer costs about 100 KB/s at 640 wide and 20 Hz, and a fifth of a vCPU at
 most (doc 21 §5); a box whose step-downs climb is short of uplink, not CPU.
 
+**The web client draws its own picture** (doc 21 G.3b): the cockpit tab runs
+the same renderer compiled to WebAssembly (`crates/mush-pixel-wasm`, in the
+bundle as `assets/mush_pixel-*.wasm`) from the keyframes the browser already
+holds, so a web viewer costs the gateway nothing (measured on dev2: 5 CPU
+ticks in 10 s drawn in the browser against 73 drawn by the server). The
+gateway's PNG picture stays as the fallback and as a per-browser choice. The
+CSP's `script-src` carries `'wasm-unsafe-eval'` for it (WebAssembly only) and
+`.wasm` is served as `application/wasm`. Whoever builds `web/dist` needs
+`rustup target add wasm32-unknown-unknown`; the box does not, while the
+bundle is shipped (`deploy/README.md`).
+
+## Sounds and the asset pack (doc 21 G.10, G.11)
+
+**Sounds.** In `@tui` each seated cockpit frame sounds one name: the most
+important of its notice kinds (or `overheat` while the frame says so) that
+the terminal can play and that has not sounded in the last two seconds. A
+terminal whose `XTVERSION` names w11term is sent w11term's OSC 440 by name;
+every other terminal gets BEL for the few kinds a pilot must hear. Players
+turn it off per connection with `@sounds off`. Nothing to configure.
+
+**The pack is compiled into the gateway.** The repository's `assets/`
+(`manifest.json` and `sounds/<kind>.wav`) is embedded by
+`mush_net_ssh::assets::SHIPPED` and checked against w11term's manifest rules
+the first time it is used; a pack that fails is not served and the gateway
+logs `the shipped asset pack fails its manifest` once. So there is no assets
+directory on the box and nothing for `deploy.sh` to ship: a new pack is a new
+gateway build, deployed with `GATEWAY_RESTART=1`, and every w11term is told
+its version when it next enters `@tui`. To replace a sound, put the WAV in
+under the same name (RIFF/WAVE PCM, at most five seconds), run
+`ASSETS_BLESS=1 cargo test -p mush-net-ssh --lib assets::tests::bless` to
+write the manifest, and commit both.
+
+**The `sftp` subsystem.** The SSH server accepts one more session channel on
+a connection that is in game, for the `sftp` subsystem only (logged as
+`asset pack sftp session started`), and serves the pack read-only from memory
+(SFTP v3): open-for-read, read, close, opendir, readdir, stat, lstat, fstat
+and realpath; every write, create, rename, remove and link refused, and no
+path ever reaches the box's filesystem. Its caps: 64 KiB a read, 1 MiB a
+second a session, 32 open handles, one pack session a connection. A third
+channel, a shell or exec on the second, and any other subsystem are refused.
+
 ## Forked gateway/server split: `[ipc]`
 
 The **default deploy is still the all-in-one `mushd`** binary (gateway + world

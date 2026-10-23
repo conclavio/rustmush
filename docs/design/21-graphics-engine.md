@@ -582,12 +582,18 @@ superseded its default (D-21-23).
   web; the instruments as drawn (G.1). *Made by G.1a, in doc 16 §11.*
 - **Doc 19 §5** (`+chart`): the chart as a picture (G.5). *Made at G.5c.*
 - **Doc 20 §4** (the vehicle) and **§5** (knowing): the windscreen and the survey chart as pictures;
-  the first map with height (G.7, Q-21-5).
+  the first map with height (G.7, Q-21-5). *Not made yet: it lands with G.7b, after the mining
+  train, which owns doc 20.*
 - **Doc 17 §6** (the field pilot): the leash and the helm order (G.4). *Not made: doc 17's §6 is
   the due-event scheduling section, not the field pilot; G.4 is recorded here and in the cut notes
   until the owner names the section it belongs in (17e, the field pilot's acceptance, is a
-  candidate).*
+  candidate). Still open on 2026-10-23; the helm as built is in the G.4 cut notes and in doc 02
+  §5.6 (the keyboard protocol).*
 - **`docs/ops.md`**: `[pixel]`, `@pixel/stats`, the budget per viewer (G.1); the `assets/`
-  directory deploy.sh ships and the sftp caps (G.11).
+  directory deploy.sh ships and the sftp caps (G.11). *Made by G.1b and on 2026-10-23: as built
+  the pack is compiled into the gateway, so deploy.sh ships nothing; ops.md's "Sounds and the
+  asset pack" says how a sound is replaced and the subsystem's caps, and its `[pixel]` section the
+  browser's own render (G.3b).*
 - **Doc 02 §5** (the SSH server): the `sftp` subsystem as the one subsystem the front door
-  accepts, read-only, and the `XTVERSION` reply in the capability record (G.10, G.11).
+  accepts, read-only, and the `XTVERSION` reply in the capability record (G.10, G.11). *Made on
+  2026-10-23, in §5.6 (with G.4's keyboard-protocol probe).*
