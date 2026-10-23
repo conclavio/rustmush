@@ -1,0 +1,109 @@
+{
+  "mode": "verify",
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-23T16:59:56.963Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 16: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/show luna_ceres",
+      "reply": "luna_ceres: Degraded; revision 16\nhalf luna_ceres.luna #666 node malapert #665 (Malapert relay endpoint) place #213 coverage [#202, #203, #212, #209, #213, #204, #205, #206, #207, #208, #210, #211]; enabled=false powered=true staffed=true destroyed=false\nhalf luna_ceres.ceres #667 node ceres #664 (Ceres relay endpoint) place #112 coverage [#101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112, #113]; enabled=true powered=true staffed=true destroyed=false"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 16: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: enable=true; revision 17."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 17: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    }
+  ],
+  "finalRegistry": {
+    "nodes": {
+      "ceres": {
+        "coverage": [
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113
+        ],
+        "label": "Ceres relay endpoint",
+        "object": 664,
+        "operator": 22,
+        "place": 112
+      },
+      "malapert": {
+        "coverage": [
+          202,
+          203,
+          212,
+          209,
+          213,
+          204,
+          205,
+          206,
+          207,
+          208,
+          210,
+          211
+        ],
+        "label": "Malapert relay endpoint",
+        "object": 665,
+        "operator": 22,
+        "place": 213
+      }
+    },
+    "operator": 22,
+    "pairs": {
+      "luna_ceres": {
+        "capacity_units_per_ic_second": 8,
+        "class_policy": "exchange",
+        "halves": [
+          {
+            "destroyed": false,
+            "enabled": true,
+            "id": "luna_ceres.luna",
+            "node": "malapert",
+            "object": 666,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "destroyed": false,
+            "enabled": true,
+            "id": "luna_ceres.ceres",
+            "node": "ceres",
+            "object": 667,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    "revision": 17,
+    "source_entry": "network",
+    "source_pack": "tacsim.relay.luna_ceres",
+    "version": 1
+  },
+  "passed": true
+}

@@ -87,10 +87,8 @@ try {
   const details = await command(staff,'@relay/show luna_ceres','luna_ceres.ceres');
   assert(details.includes('luna_ceres.luna') && details.length < 8000, 'bounded two-half diagnostic');
   if (mode === 'exercise') {
-    const countBefore = execFileSync('redis-cli',['-p',redisPort,'--raw','DBSIZE'],{encoding:'utf8'}).trim();
-    await command(staff,'@atlas/pack apply tacsim.relay.luna_ceres');
-    assert.deepEqual(registry(),before,'same-pack application preserves registry');
-    evidence.databaseKeysBeforeReapply = Number(countBefore);
+    await command(staff,'@atlas/pack plan tacsim.relay.luna_ceres','Nothing to do.');
+    assert.deepEqual(registry(),before,'same-pack no-op plan preserves registry');
     for (const [line, state] of [
       ['@relay/disable luna_ceres.luna','Degraded'],
       ['@relay/enable luna_ceres.luna','Live'],

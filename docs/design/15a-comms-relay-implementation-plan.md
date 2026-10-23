@@ -1,10 +1,12 @@
 # 15a — Relay backbone implementation plan
 
-**Draft 0.1 — 2026-10-23.** Grounded against `origin/main` at
+**Draft 0.2 — 2026-10-23.** Grounded against `origin/main` at
 `7c886408c1a1d4d0283b886bdd62fbbe2f8fe7af`.
 Parent: [15 — Communications](15-comms-relay-backbone.md).
-This is an implementation plan, not an as-built record. No R milestone is implemented
-or accepted by this document.
+This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
+and evidence record. R1 is implemented and its dev1 live checks passed. Normal
+workspace CI remains outstanding, so full acceptance under §5 is not yet claimed.
+Work is paused before R2; all later milestones remain unstarted.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -221,6 +223,12 @@ halves, contradictory bindings and corrupt records are refused or held with an
 actionable diagnostic, never silently reseeded. Verify bounded inspection and no
 traffic regression. **Stop after recording this evidence.**
 
+**Result (2026-10-23):** implemented at `916e8fee`; 262 targeted tests passed,
+plus real dev1 upgrade/fresh boot, TLS WebSocket and SSH commands, confirmed-write
+SIGKILL recovery, and four bad-record boot refusals. The pair is restored to Live.
+See [15b](15b-comms-relay-cut-notes.md) for transcripts, deployed binary hashes and
+the normal-CI gap. **Paused here; R2 has not started.**
+
 ### Gate 2 — R2: one complete routed delivery
 
 Add durable itinerary/due-time state, bounded graph lookup, the stationary strategic
@@ -433,13 +441,15 @@ not acceptance.
    incomplete**, not accepted with integration deferred.
 
 Reuse a small cumulative relay story suite rather than copy a large harness for
-each cut. Proposed homes are `crates/mush-server/tests/relay_backbone.rs` for
-production-composition stories and `crates/mushd/tests/relay_backbone_e2e.rs` for
-real-process tests, with split-process coverage in the existing gateway test
-infrastructure. These targets do not exist yet; establish them in R1/R2 and record
-the exact runnable commands with each result. Keep test support separate from
-shipping paths and deterministic clock advancement separate from real-process
-durability proof.
+each cut. R1 established `crates/mush-server/tests/relay_registry.rs` for production
+boot, command and persistence contracts, and `scripts/relay-r1-live.mjs` for real
+TLS WebSocket acceptance against the split gateway/server. Its VPS fault and SSH
+procedures are recorded in 15b. The Rust target is part of the normal workspace
+test discovery; the live script is an explicit manual gate, not a Redis-gated test
+that silently passes without a server. R2 must add its routed-delivery stories and
+automated real-process fault tests to the applicable CI inventory. Keep test
+support separate from shipping paths and deterministic clock advancement separate
+from real-process durability proof.
 
 Each milestone's evidence record must name:
 

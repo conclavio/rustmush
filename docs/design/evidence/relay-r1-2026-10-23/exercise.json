@@ -1,0 +1,255 @@
+{
+  "mode": "exercise",
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-23T16:59:52.691Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 9: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/show luna_ceres",
+      "reply": "luna_ceres: Live; revision 9\nhalf luna_ceres.luna #666 node malapert #665 (Malapert relay endpoint) place #213 coverage [#202, #203, #212, #209, #213, #204, #205, #206, #207, #208, #210, #211]; enabled=true powered=true staffed=true destroyed=false\nhalf luna_ceres.ceres #667 node ceres #664 (Ceres relay endpoint) place #112 coverage [#101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112, #113]; enabled=true powered=true staffed=true destroyed=false"
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.relay.luna_ceres",
+      "reply": "Plan for tacsim.relay.luna_ceres@1: 0 create, 0 update, 0 retire, 1 unchanged\n validator: no findings\n Nothing to do."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 10."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 10: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: enable=true; revision 11."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 11: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/power luna_ceres.ceres=off",
+      "reply": "Relay half luna_ceres.ceres: power=false; revision 12."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 12: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/power luna_ceres.ceres=on",
+      "reply": "Relay half luna_ceres.ceres: power=true; revision 13."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 13: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/staff luna_ceres.ceres=off",
+      "reply": "Relay half luna_ceres.ceres: staff=false; revision 14."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 14: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/staff luna_ceres.ceres=on",
+      "reply": "Relay half luna_ceres.ceres: staff=true; revision 15."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 15: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 16."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay availability already matches; no change."
+    },
+    {
+      "actor": "R1Visitor7cd784",
+      "line": "@relay/show luna_ceres",
+      "reply": "Permission denied."
+    },
+    {
+      "actor": "R1Visitor7cd784",
+      "line": "@relay/show nonexistent",
+      "reply": "Permission denied."
+    },
+    {
+      "actor": "R1Visitor7cd784",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Permission denied."
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #666=#0",
+      "reply": "Installed relay hardware cannot be moved."
+    },
+    {
+      "actor": "God",
+      "line": "@behavior/remove #666=sim.relay_half",
+      "reply": "Installed relay binding is still referenced by relay:registry."
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 16: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK. R1 topology only; routing not active.\nluna_ceres: Degraded; malapert <-> ceres; capacity 8 units/IC-second; Exchange"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#0",
+      "reply": "Limbo #0 You see nothing special. #669 R1Visitor7cd784 OOC Area <O> ooocStaff <S> sstaffCeres Freeport <C> cceres summer night"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport R1Visitor7cd784=#0",
+      "reply": "emit R1Visitor7cd784 has left.\nemit R1Visitor7cd784 has arrived.\nTeleported."
+    },
+    {
+      "actor": "God",
+      "line": "say R1-live-speech",
+      "reply": "say #1 God R1-live-speech"
+    },
+    {
+      "actor": "God",
+      "line": "page R1Visitor7cd784=R1-live-page",
+      "reply": "You paged R1Visitor7cd784 with 'R1-live-page'."
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create R1Gate",
+      "reply": "A channel by that name already exists."
+    },
+    {
+      "actor": "God",
+      "line": "addcom r1=R1Gate",
+      "reply": "Alias for channel R1Gate is now 'r1'."
+    },
+    {
+      "actor": "R1Visitor7cd784",
+      "line": "addcom r1=R1Gate",
+      "reply": "[R1Gate] R1Visitor7cd784 has joined this channel.\nChannel R1Gate added with alias 'r1'."
+    },
+    {
+      "actor": "God",
+      "line": "r1 R1-live-channel",
+      "reply": "R1Gate #1 God say R1-live-channel"
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick R1Visitor7cd784=R1-live-mail/R1-live-body",
+      "reply": "MAIL: Message 2 sent to R1Visitor7cd784."
+    },
+    {
+      "actor": "R1Visitor7cd784",
+      "line": "@mail 1",
+      "reply": "MAIL: Message 1 in inbox (id 2)\nFrom:    God\nTo:      R1Visitor7cd784\nDate:    Oct 23 2026 16:59 UTC\nSubject: R1-live-mail\n----\nR1-live-body\n----"
+    }
+  ],
+  "traffic": [
+    "room speech",
+    "page",
+    "channel",
+    "mail notice and body"
+  ],
+  "finalRegistry": {
+    "nodes": {
+      "ceres": {
+        "coverage": [
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113
+        ],
+        "label": "Ceres relay endpoint",
+        "object": 664,
+        "operator": 22,
+        "place": 112
+      },
+      "malapert": {
+        "coverage": [
+          202,
+          203,
+          212,
+          209,
+          213,
+          204,
+          205,
+          206,
+          207,
+          208,
+          210,
+          211
+        ],
+        "label": "Malapert relay endpoint",
+        "object": 665,
+        "operator": 22,
+        "place": 213
+      }
+    },
+    "operator": 22,
+    "pairs": {
+      "luna_ceres": {
+        "capacity_units_per_ic_second": 8,
+        "class_policy": "exchange",
+        "halves": [
+          {
+            "destroyed": false,
+            "enabled": false,
+            "id": "luna_ceres.luna",
+            "node": "malapert",
+            "object": 666,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "destroyed": false,
+            "enabled": true,
+            "id": "luna_ceres.ceres",
+            "node": "ceres",
+            "object": 667,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    "revision": 16,
+    "source_entry": "network",
+    "source_pack": "tacsim.relay.luna_ceres",
+    "version": 1
+  },
+  "passed": true
+}

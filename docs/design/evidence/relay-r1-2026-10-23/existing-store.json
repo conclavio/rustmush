@@ -1,0 +1,82 @@
+{
+  "passed": true,
+  "old_objects_preserved": 351,
+  "source_commit": "916e8feec5d87e27a4be869c6fcdde7ebc98f1ee",
+  "registry": {
+    "nodes": {
+      "ceres": {
+        "coverage": [
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113
+        ],
+        "label": "Ceres relay endpoint",
+        "object": 511,
+        "operator": 9,
+        "place": 112
+      },
+      "malapert": {
+        "coverage": [
+          351,
+          352,
+          361,
+          358,
+          362,
+          353,
+          354,
+          355,
+          356,
+          357,
+          359,
+          360
+        ],
+        "label": "Malapert relay endpoint",
+        "object": 512,
+        "operator": 9,
+        "place": 362
+      }
+    },
+    "operator": 9,
+    "pairs": {
+      "luna_ceres": {
+        "capacity_units_per_ic_second": 8,
+        "class_policy": "exchange",
+        "halves": [
+          {
+            "destroyed": false,
+            "enabled": true,
+            "id": "luna_ceres.luna",
+            "node": "malapert",
+            "object": 513,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "destroyed": false,
+            "enabled": true,
+            "id": "luna_ceres.ceres",
+            "node": "ceres",
+            "object": 514,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    "revision": 1,
+    "source_entry": "network",
+    "source_pack": "tacsim.relay.luna_ceres",
+    "version": 1
+  },
+  "restart_identical": true
+}

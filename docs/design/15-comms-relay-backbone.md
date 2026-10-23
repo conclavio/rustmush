@@ -1,10 +1,13 @@
 # 15 — Communications: the relay backbone and the Malapert Exchange
 
-**Draft 0.2, 2026-10-23.** The owner decisions in §9 are binding and all seven questions
+**Draft 0.3, 2026-10-23.** The owner decisions in §9 are binding and all seven questions
 in §10 are answered. **All mail is IC and must transit; there is no OOC mail mode.**
-The engine backlog R1–R10 is not started. [15a](15a-comms-relay-implementation-plan.md)
-now defines the implementation sequence and a mandatory integration stop after every
-milestone. These documentation changes do not change shipped behavior.
+R1's registry, Luna–Ceres seed and operator diagnostics are implemented and deployed
+on dev1. Its live integration checks passed; normal workspace CI remains outstanding.
+[15b](15b-comms-relay-cut-notes.md) records the evidence and pause before R2.
+[15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
+mandatory integration stop after every milestone. Routing and mail transit are not
+implemented by R1.
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require
@@ -125,10 +128,10 @@ positions.
 **As built (doc 19 cut A.5, 2026-10-18):** the sky side of this table is live — `Sky::light_lag_s(a,
 ta, b, tb)` (cut A.1; one-way, whole seconds up, over the Kepler positions) and `+chart`'s lag column
 (cut A.3: every lane body's light lag from the port you stand at, e.g. Pallas from Ceres), so the
-"fallback" column's ranges are now read off the moving sky rather than authored. The backbone itself
-(R1–R10, the coverage, queues and node hops of the "in coverage" column) is not started; when R5 is
-built it reads a ship's lag from `light_lag_s` at the end bodies and the ticket's frozen legs, as
-D-15-11 says, and nothing in doc 19 forecloses it.
+"fallback" column's ranges are now read off the moving sky rather than authored. R1 now records
+installed nodes, pairs and coverage, but routing, queues and node hops remain unimplemented.
+When R5 is built it reads a ship's lag from `light_lag_s` at the end bodies and the ticket's
+frozen legs, as D-15-11 says, and nothing in doc 19 forecloses it.
 
 ## 4. Topology at world start: the Luna star (D-15-6)
 
@@ -170,8 +173,8 @@ Consequences that fall out of the star:
 - **Future pairs may bypass Luna.** A Phobos–Ceres pair, whoever makes it, is the strategic
   transformation of §7.1. The Concord treats that prospect the way it treats Registry divergence.
 
-**As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19; lore only — the backbone, R1–R10,
-is not started):** three trade-run ports stand on the moons, and the star covers two of them.
+**As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19; coverage promises below remain
+lore until routing is built):** three trade-run ports stand on the moons, and the star covers two of them.
 **Aitken Highport**, the Concord's drum in low polar orbit over the South Pole–Aitken basin, lies
 under **Malapert's** coverage — instant to Phobos, Ceres and Kirkwood through the hub, 67–92
 light-minutes to Titan (§3.5). **Voltaire Anchorage** on Deimos lies inside the **Phobos half's**
@@ -303,13 +306,22 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (not started)
+## 8. Engine backlog (R1 implemented; paused before R2)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
 R8a → R8b → R9a → R9b → R10. Every cut has a mandatory integration stop.
 R2 pulls forward stationary light-time from R5; R10 content is introduced alongside
 its first consumers, beginning with a real Luna–Ceres pair in R1.
+
+**R1 as built (2026-10-23):** `mush_sim::relay` owns the versioned, bounded
+`relay:registry` document. `tacsim.relay.luna_ceres@1` installs the Exchange,
+Malapert's endpoint in Aitken's service spine and Ceres's endpoint in its maintenance
+room, with two physical halves and explicit room coverage. `@relay` provides staff
+inspection and availability controls. Startup reconciles records against the real
+objects and refuses contradictory evidence. The full Malapert compound and star
+remain R10. See [15b](15b-comms-relay-cut-notes.md) for implementation, test results
+and the outstanding normal-CI criterion. R2 and later milestones have not started.
 
 | # | Item | Home | Shape |
 |---|---|---|---|
@@ -350,7 +362,8 @@ forward stationary strategic light-time; R5 adds ships from their frozen passage
 ## 10. Owner answers (2026-10-23; all seven questions closed)
 
 The owner accepted every recommended default except Q4, which received a new ruling.
-These are design decisions; R1–R10 implementation has not started.
+These are design decisions. R1 now implements topology only; later cuts implement
+the transport, commercial and world-content consequences.
 
 | Question | Binding answer |
 |---|---|

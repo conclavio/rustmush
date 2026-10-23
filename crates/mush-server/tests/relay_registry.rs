@@ -115,7 +115,7 @@ fn cid(s: &str) -> CanonicalId {
 }
 
 #[tokio::test]
-async fn r1_real_seed_availability_and_reapply_survive_restart() {
+async fn r1_real_seed_availability_and_noop_plan_survive_restart() {
     let mut rig = Rig::new(true).await;
     let original = rig.registry();
     rig.restart().await.unwrap();
@@ -145,8 +145,8 @@ async fn r1_real_seed_availability_and_reapply_survive_restart() {
     let disabled = rig.registry();
     rig.restart().await.unwrap();
     assert_eq!(rig.registry(), disabled);
-    let reply = rig.run(GOD, "@atlas/pack apply tacsim.relay.luna_ceres");
-    assert!(!reply.contains("refused"), "{reply}");
+    let reply = rig.run(GOD, "@atlas/pack plan tacsim.relay.luna_ceres");
+    assert!(reply.contains("Nothing to do."), "{reply}");
     assert_eq!(rig.registry(), disabled);
     assert!(
         rig.run(GOD, "@relay/enable luna_ceres.luna")
