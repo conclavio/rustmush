@@ -134,6 +134,17 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     expect(helm.mock.calls).toHaveLength(2);
   });
 
+  it("lets go when torn down mid-turn, as a blur would", async () => {
+    const { helm, frame, unmount } = mount();
+    await tick();
+    await fireEvent.keyDown(frame, { key: "ArrowLeft" });
+    expect(helm.mock.calls).toEqual([["HEADING 15"]]);
+    unmount();
+    expect(helm.mock.calls).toEqual([["HEADING 15"], ["HEADING 45"]]);
+    vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
+    expect(helm.mock.calls).toHaveLength(2);
+  });
+
   it("stops the look's swing when the page goes hidden", async () => {
     const { setPicture, frame } = mount();
     await tick();
@@ -151,18 +162,24 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
 });
 
 describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
-  /** Every canvas's 2D context, recording the frames put on it. */
+  /** Every canvas's 2D context, recording the frames put on it by the
+   * picture drawn here (`paints`) and by the server's bitmaps (`draws`). */
   let paints: Map<HTMLCanvasElement, number>;
+  let draws: Map<HTMLCanvasElement, number>;
   let getContext: typeof HTMLCanvasElement.prototype.getContext;
 
   beforeEach(() => {
     localStorage.setItem(PICTURE_SOURCE_KEY, "here");
     paints = new Map();
+    draws = new Map();
     getContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
       return {
         putImageData: () => {
           paints.set(this, (paints.get(this) ?? 0) + 1);
+        },
+        drawImage: () => {
+          draws.set(this, (draws.get(this) ?? 0) + 1);
         },
       };
     } as unknown as typeof HTMLCanvasElement.prototype.getContext;
@@ -218,6 +235,33 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     expect(screen.queryByText("Waiting for the first picture…")).toBeNull();
     // Torn down while the stubs stand: its animation frame is cancelled by
     // the stub that made it.
+    unmount();
+  });
+
+  it("paints the unchanged frame again over a server frame once drawn here again", async () => {
+    // The server's frames are drawn through createImageBitmap, which jsdom
+    // lacks: a bitmap of the frame's size.
+    vi.stubGlobal("createImageBitmap", () =>
+      Promise.resolve({ width: 640, height: 480, close: () => {} }),
+    );
+    const { picture, unmount } = mount();
+    await settle();
+    await frameTime();
+    const c = document.querySelector("canvas") as HTMLCanvasElement;
+    expect(paints.get(c)).toBe(1);
+    // The viewer chooses the server's picture; its frame lands on the same
+    // canvas.
+    await fireEvent.click(screen.getByRole("button", { name: "drawn here" }));
+    expect(picture.on).toBe(true);
+    picture.receive(new Blob([new Uint8Array([0x89, 0x50])], { type: "image/png" }));
+    await settle();
+    expect(draws.get(c)).toBe(1);
+    // Back to drawn here: the picture's frame is unchanged, and goes over
+    // the server's all the same.
+    await fireEvent.click(screen.getByRole("button", { name: "drawn by the server" }));
+    await settle();
+    await frameTime();
+    expect(paints.get(c)).toBe(2);
     unmount();
   });
 });

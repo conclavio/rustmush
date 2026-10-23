@@ -120,6 +120,10 @@
   // The page's visibility, and the two ways a key's release can go unseen:
   // the page hidden (the keys' events stop: the tab switched, the window
   // minimised) and the window blurred (another window took the keys).
+  // And the view torn down (the screen changed, the seat went) with a key
+  // still held: let go as a blur would — not every browser blurs an element
+  // it removes.
+  $effect(() => () => release());
   $effect(() => {
     const onVisibility = (): void => {
       visible = document.visibilityState === "visible";
@@ -194,6 +198,10 @@
         c.width = bmp.width;
         c.height = bmp.height;
         c.getContext("2d")?.drawImage(bmp, 0, 0);
+        // The canvas now holds the server's frame: whatever the picture
+        // drawn here last painted on it is gone, and its loop paints again
+        // when it next runs here.
+        painted = null;
       }
       bmp.close();
     });
