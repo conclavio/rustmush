@@ -155,7 +155,7 @@ fn scratch_dir(tag: &str) -> PathBuf {
 /// **Write a fixed geology key into `dir`** in the `DurableKeyStore` layout, by hand (the
 /// `geology_keys.rs` tests' way): `geology-key-0000000001.hex` holding the 32 bytes as 64
 /// lowercase hex digits and a newline, and `geology-ring-0000000001.json` naming it current; both
-/// mode 0600 on unix (the reader refuses a wider file).
+/// mode 0600 and the directory 0700 on unix (the reader refuses a wider file or directory).
 fn write_fixed_key(dir: &Path, key: [u8; 32]) {
     use std::fmt::Write as _;
     std::fs::create_dir_all(dir).expect("the key directory");
@@ -179,6 +179,10 @@ fn write_fixed_key(dir: &Path, key: [u8; 32]) {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
                 .expect("private key files");
         }
+        // The durable key path itself must be 0700 (the store refuses a wider
+        // directory); `create_dir_all` leaves it at the umask's 0755.
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .expect("a private key directory");
     }
 }
 
