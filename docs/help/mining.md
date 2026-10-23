@@ -3,7 +3,6 @@
 Surface mining is the trade run's other trade: you take a Dray-P down onto a
 mining site's pad, send its terrain vehicles out, learn where the ore lies, dig
 it, and carry it home to sell at Ceres. This page walks the loop beat by beat.
-Leaving rigs running is not built yet; that beat says "(not yet)".
 
 ## Two rules every rig act follows
 
@@ -232,7 +231,58 @@ four blocks around the pad.
   +claim/list                           your claims and their worked tonnes
   +registry [<site>]                    every claim and paper at a site
 
-**11. Leave it running.** (not yet) Fill plans, and awaiting a rig from the order queue.
+**11. Leave it running.** A fill plan works a rig while you sleep aboard.
+`+tv/1 plan C117,C118,D family=metal_ore` names pockets and whole blocks in the
+order you want them worked and shows what the rig would do, step by step with
+its IC hours; nothing is filed until you add `go`. A pocket is mined where it
+stands (the drive there is the plan's); a block letter sounds the block's four
+fields from each field's middle, nearest first, then mines every pocket of the
+plan's ore that reads fair or better, nearest first. The ore is the one you name
+with `family=`, or the best your first address reads; it never changes while the
+plan runs. A plan names only places you have read yourself and may mine: a
+pocket or block you have no reading of answers "You have no reading there.", a
+block under someone else's claim "That block is under claim.", and the plan
+needs your licence and the rig's lease like any act. A plan names at most 16
+pockets and blocks and makes at most 64 steps.
+
+Between steps the rig drives itself, recovers into the bay at every full hopper
+and unloads into the hold, and comes home and parks when no cycle fits the
+hold's unreserved room, its list is worked out, or its 288 IC hours have run;
+the hours stop new steps, never one in flight. A plan fills one hold and never
+starts again: you file each shift. It re-reads your licence, the rig's lease
+and the block's claim at every step's start; if one has lapsed it stops mining,
+comes home, unloads and parks, and says why. It waits while you are off the
+helm or ashore, never past its 288 IC hours: then it ends where the rig stands.
+If the rig's unload log is full, the unload waits and goes by itself once the
+log frees, and the plan with it. Its soundings are loud, and everything it
+reads is yours for every use but a stake: a claim needs a reading you made by
+hand.
+
+While a plan is live it holds its rig — no hand act and no lift until it ends.
+`+tv/1 plan show` reads it back, step by step; `+tv/1 plan clear` ends it after
+the step in flight (no `go`), and on a plan that has ended strikes it from the
+rig's record. Both work from anywhere aboard, at the helm or not.
+
+  +tv/<n> plan <pockets and blocks> [family=<good>] [go]  preview, then file a plan
+  +tv/<n> plan show                                       read the rig's plan back
+  +tv/<n> plan clear                                      end it, or strike an ended one
+
+The captain's queue waits for the rigs: `+ship/order await tv all`, then
+`+ship/order depart ceres` and `+ship/order sell metal_ore all`, flies the ore
+home and sells it once every rig is parked — or after at most 288 IC hours
+(`until=` sets fewer), when a rig still out holds the departure as ever.
+`help orders` has the queue.
+
+A rig left on the ground with nothing to do for 24 IC hours comes home and
+parks by itself, unloading what it carries. One that cannot reach the ramp on
+its charge is parked where it stands, and you are told once.
+
+**While you were off watch.** Offline, a rig tells you one line a trip — its
+hopper unloaded into the hold — and one summary when a plan ends (what it mined,
+in how many cycles and trips, and the hold's state), plus a stop for a lapsed
+right, an idle return, a stranded rig and any act refused; never a line a cycle
+or a reading. They wait for you as "While you were off watch:" when you
+reconnect. Connected, you hear every line as it happens.
 
 **12. Sell.** Ore sells only at Ceres, to the Exchange's and Occator's standing
 bids, and only from the hold: a rig's hopper never sells — unload it first.
@@ -275,6 +325,6 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-Fill plans and awaiting a rig.
+Occator's mill and its drones.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

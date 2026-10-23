@@ -2501,6 +2501,7 @@
         "leg": null,
         "line": "Rig 1: in the bay, charge 100 %, hopper empty.",
         "mark": "OWP-TV-02",
+        "plan": null,
         "queued": null,
         "run": null,
         "slot": 1

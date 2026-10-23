@@ -120,6 +120,9 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     // its first word would admit `+claim/stake go`.
     "+registry",
     "+claim/list",
+    // Doc 20 cut SM.11 (D11): a read of the rig's fill plan. The switch form, never `+tv/plan`,
+    // whose first word would admit `+tv/plan C117 go`.
+    "+tv/plan/show",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows

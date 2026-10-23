@@ -60,7 +60,24 @@
 //! `tacsim.surface/{tv}/{ordinal}/queued` with `how: queued`, by the same attempt rule (attempts
 //! keyed `(tv, ordinal, QUEUED_CYCLE)`, never a finish's retries); and the unload's tell —
 //! `UNLOADED` (with what stayed), `UNLOADED_NONE` (nothing moved, something stays) or
-//! `UNLOADED_NONE_EMPTY` (nothing moved, nothing was there).
+//! `UNLOADED_NONE_EMPTY` (nothing moved, nothing was there). **Doc 20 cut SM.11** (the reviewer's
+//! R1): a queued start the hopper's full marker ring would refuse is never submitted — the tick
+//! reads the offer's own rule first (`markers_hold`), holds the queue on its back-off and tells
+//! `WHY_MARKERS_QUEUED` once per queue under the notice budget.
+//!
+//! **Doc 20 cut SM.11** adds three candidate reasons (the brief's 3.8): **plan** — an idle record
+//! whose fill plan is live for the rig's lessee: the tick runs the interpreter
+//! (`crate::surface::plan::decide`) over its own reads and submits the next act's start **as the
+//! author** with `by: plan` (keyed `tacsim.surface/{tv}/{ordinal}/plan/{step}/{word}`), or the
+//! plan's end (`act: plan_end`, keyed `tacsim.surface/{tv}/plan/{no}/end`), or caches the wait in
+//! RAM (a charging wait until its instant, the others for `PLAN_WAIT_IC_SECS`; a restart re-decides
+//! from durable state); **plan untold** — the plan's notes the projection has not told
+//! (`tell_plan`); **idle** — a rig on the ground with nothing in flight and no live plan for a day:
+//! the tick recovers it as its operator (`by: idle`), or, when its charge cannot pay the way home,
+//! reports it parked where it stands, once. **The notice budget** (lead ruling 7): every surface
+//! line goes through `crate::port_tick::notify_budget` — an offline operator's queue holds the
+//! trip-level lines only (an unload, a plan's parking or end, an idle return, a stranded rig, a
+//! refused act), never a cycle, a reading, a drive, a launch or a recover.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -79,9 +96,9 @@ use crate::surface::act::{
 use crate::surface::address::{self, Octant};
 use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::excursion::{
-    ActKind, ActResult, ActView, ExcursionId, FrozenLeg, LAUNCH_S, Mined, Outcome, ReadSpan,
-    RefusedCode, RigKey, RigRecord, RunEnd, RunView, TvPose, TvRec, TvRecState, TvState,
-    cells_apart, site_cell,
+    ActKind, ActResult, ActView, ExcursionId, FrozenLeg, LAUNCH_S, Mined, Outcome, PlanTold,
+    PlanView, ReadSpan, RefusedCode, RigKey, RigRecord, RunEnd, RunView, TvPose, TvRec, TvRecState,
+    TvState, cells_apart, site_cell,
 };
 use crate::surface::reading::{Footing, READING_RULE_VERSION};
 
@@ -114,6 +131,19 @@ type ActKey = (u32, u32, u8);
 /// them.
 pub(crate) const QUEUED_CYCLE: u8 = u8::MAX;
 
+/// **The attempts key's cycle for a plan's start or end** (doc 20 cut SM.11; the brief's 3.8): past
+/// every run cycle and beside [`QUEUED_CYCLE`]; never a finish's retries.
+pub(crate) const PLAN_CYCLE: u8 = u8::MAX - 1;
+
+/// **The attempts key's cycle for the idle return's recover** (doc 20 cut SM.11).
+pub(crate) const IDLE_CYCLE: u8 = u8::MAX - 2;
+
+/// Whether `cycle` is a start's attempts key (a queued unload, a plan's step, the idle return),
+/// never a finish's retry.
+const fn start_cycle(cycle: u8) -> bool {
+    cycle == QUEUED_CYCLE || cycle == PLAN_CYCLE || cycle == IDLE_CYCLE
+}
+
 /// **The tick's RAM slot** (the brief's 3.5): retry bookkeeping and once-a-boot pages only;
 /// every fact is in the family or the projection, so a restart loses nothing but a retry
 /// count. Its own slot, so `on_world_loaded`'s wholesale `TacsimStore` replacement never
@@ -136,6 +166,28 @@ pub struct SurfaceTickState {
     paged: BTreeSet<ActKey>,
     /// Whether the scan's cap has paged this boot.
     scan_paged: bool,
+    /// **Doc 20 cut SM.11** (the brief's 3.8, D16; the reviewer's F10): each waiting plan's cached
+    /// wait — its `seq` and the IC instant before which the tick does not decide for it again;
+    /// honoured only while the plan's `seq` is unchanged. Lost to a restart, and re-derived.
+    plan_waits: BTreeMap<ObjId, (u32, i64)>,
+    /// **Doc 20 cut SM.11** (lead ruling 6): a rig parked where it stands (or its operator
+    /// ashore), retried no sooner than this IC instant.
+    stranded: BTreeMap<ObjId, i64>,
+    /// **Doc 20 cut SM.11**: the waits told to a connected author this boot, `(tv, seq, wait code)`.
+    plan_told_waits: BTreeSet<(u32, u32, u8)>,
+    /// **Doc 20 cut SM.11** (the reviewer's R1): the queued unloads held on a full marker ring
+    /// whose `WHY_MARKERS_QUEUED` line was told (said, or queued under the notice budget) this
+    /// boot, `(tv, the queue's Queued::after)` — once per queue; pruned once the queue is gone.
+    markers_told: BTreeSet<(u32, u32)>,
+}
+
+/// **Test hook** (doc 20 cut SM.11; the brief's P1): the plan wait the tick has cached for `tv`,
+/// as `(seq, until_ic)`, if any. Reads only.
+#[doc(hidden)]
+#[must_use]
+pub fn plan_wait_for_tests(w: &World, tv: ObjId) -> Option<(u32, i64)> {
+    w.module_state::<SurfaceTickState>()
+        .and_then(|state| state.plan_waits.get(&tv).copied())
 }
 
 /// What one fire did, for tests and status renders.
@@ -190,7 +242,7 @@ fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<(u32, u8)> {
     let keys: Vec<(u32, u8)> = state
         .attempts
         .range((tv.0, 1, 0)..=(tv.0, u32::MAX, u8::MAX))
-        .filter(|((_, _, cycle), _)| *cycle != QUEUED_CYCLE)
+        .filter(|((_, _, cycle), _)| !start_cycle(*cycle))
         .map(|(&(_, ordinal, cycle), _)| (ordinal, cycle))
         .collect();
     let skip = keys.len().saturating_sub(MAX_RETRIED_ORDINALS);
@@ -211,6 +263,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(crate::port::tv::RigPointer::default());
     // Doc 20 cut SM.4b (the brief's decision P2): the drive orders the start's offer fixes.
     reg.state(crate::surface::act::ActOrders::default());
+    // Doc 20 cut SM.11: the plan's test counters (RAM; read by test hooks only).
+    reg.state(crate::surface::plan::PlanCounters::default());
     reg.tick(
         SURFACE_TICK,
         TickCadence::Coarse(SURFACE_TICK_PERIOD),
@@ -365,7 +419,95 @@ pub(crate) struct Candidate {
     /// **Doc 20 cut SM.8** (the brief's 3.9): an idle record holding a queued unload, outside its
     /// start's back-off — the tick submits the start as the operator.
     queued: bool,
+    /// **Doc 20 cut SM.11** (the brief's 3.8): an idle record whose plan is live for the rig's
+    /// lessee, outside its back-off and its cached wait — the tick decides and submits.
+    plan: bool,
+    /// **Doc 20 cut SM.11**: the plan's notes or view the projection has not told.
+    plan_untold: bool,
+    /// **Doc 20 cut SM.11** (lead ruling 6): a rig a day idle on the ground — the idle return.
+    idle: bool,
     order: (i64, u32),
+}
+
+/// **What the candidates read of a rig's plan** (doc 20 cut SM.11): the rig's live lessee and the
+/// projection's told plan and view.
+pub(crate) struct PlanReads<'a> {
+    /// The rig's live lessee (`TacsimStore::tv_lease_on`).
+    pub lessee: &'a dyn Fn(ObjId) -> Option<ObjId>,
+    /// The projection's `plan_told` and `plan`.
+    pub shown: &'a dyn Fn(ObjId) -> (Option<PlanTold>, Option<PlanView>),
+    /// The hull whose helm a pilot holds (`crate::surface::plan::helm_hull`): an orphaned queue's
+    /// reading (the SM.11 fixer round's correctness/F3).
+    pub helm: &'a dyn Fn(ObjId) -> Option<ObjId>,
+}
+
+/// No lessee.
+#[cfg(test)]
+fn no_lessee(_: ObjId) -> Option<ObjId> {
+    None
+}
+
+/// No helm.
+#[cfg(test)]
+fn no_helm(_: ObjId) -> Option<ObjId> {
+    None
+}
+
+/// Nothing shown.
+#[cfg(test)]
+fn nothing_shown(_: ObjId) -> (Option<PlanTold>, Option<PlanView>) {
+    (None, None)
+}
+
+#[cfg(test)]
+impl PlanReads<'static> {
+    /// No plan reads: no lessee, nothing shown (the earlier cuts' candidate tests).
+    #[must_use]
+    pub(crate) fn none() -> PlanReads<'static> {
+        PlanReads {
+            lessee: &no_lessee,
+            shown: &nothing_shown,
+            helm: &no_helm,
+        }
+    }
+}
+
+/// **A plan's attempts key** (doc 20 cut SM.11): `(tv, the ordinal its start will take,
+/// PLAN_CYCLE)`.
+fn plan_attempt(record: &RigRecord) -> ActKey {
+    (record.tv.0, record.ordinal.saturating_add(1), PLAN_CYCLE)
+}
+
+/// **The idle return's attempts key** (doc 20 cut SM.11).
+fn idle_attempt(record: &RigRecord) -> ActKey {
+    (record.tv.0, record.ordinal.saturating_add(1), IDLE_CYCLE)
+}
+
+/// **The plan view a rig's projection carries** (the SM.11 fixer round's conformance/F1): the
+/// record's plan only when the rig's live lessee filed it (`plan_view_for`), so the next lessee's
+/// projection never carries a previous lessee's plan.
+fn plan_view_of(w: &World, record: &RigRecord) -> Option<PlanView> {
+    let lessee = w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_lease_on(record.tv))
+        .map(|lease| lease.pilot);
+    crate::surface::plan::plan_view_for(record.plan.as_ref(), lessee)
+}
+
+/// **Whether a plan's projection is untold** (doc 20 cut SM.11), pure: the record's plan number and
+/// `seq` differ from the projection's told pair, or the view the rig's `lessee` may see
+/// ([`plan_view_of`]'s rule) from the projection's view.
+fn plan_untold(
+    record: &RigRecord,
+    lessee: Option<ObjId>,
+    shown: &(Option<PlanTold>, Option<PlanView>),
+) -> bool {
+    let view = crate::surface::plan::plan_view_for(record.plan.as_ref(), lessee);
+    let told = record.plan.as_ref().map(|plan| PlanTold {
+        no: plan.no,
+        seq: plan.seq,
+    });
+    (told.is_some() && told != shown.0) || view != shown.1
 }
 
 /// **An outcome's told pair** (doc 20 cut SM.7; decision R3): its ordinal and, for a mining
@@ -413,6 +555,14 @@ fn backing_off(state: &SurfaceTickState, key: ActKey) -> bool {
 /// run (its cycle began first); and an outcome is **untold** iff `(last.ordinal, its cycle)`
 /// differs from the projection's told pair (`told`, read like `shown`) — equality, never `>`, since
 /// a run's cycles share its ordinal and may finish after a later scan's.
+///
+/// **Doc 20 cut SM.11** (the brief's 3.8) adds three reasons: **plan** — a record whose plan is
+/// live for the rig's lessee, with no act, run or queued unload, outside its back-off and its
+/// cached wait of the same `seq` (`Busy` is never cached), ordered by `(last.at_ic or the filing,
+/// tv)`; **plan untold** — [`plan_untold`]; **idle** — an open excursion, nothing in flight, no
+/// live plan for the lessee, `idle_since + IDLE_PARK_IC_SECS ≤ now`, outside its back-off and the
+/// stranded retry, ordered by its idle instant.
+#[allow(clippy::too_many_lines)] // one reason after another, then the order and the cap
 pub(crate) fn candidates(
     records: Vec<RigRecord>,
     now: i64,
@@ -420,6 +570,7 @@ pub(crate) fn candidates(
     shown: impl Fn(ObjId) -> Option<u32>,
     shown_run: impl Fn(ObjId) -> Option<(u32, u8)>,
     state: &SurfaceTickState,
+    plans: &PlanReads<'_>,
 ) -> (Vec<Candidate>, u32) {
     let mut passed_over = 0_u32;
     let mut candidates: Vec<Candidate> = records
@@ -472,15 +623,73 @@ pub(crate) fn candidates(
                 .as_ref()
                 .filter(|last| told_pair(last) != told)
                 .map(|last| last.at_ic);
+            // Doc 20 cut SM.11 (the brief's 3.8): the plan, its untold notes, the idle return.
+            let lessee = (plans.lessee)(record.tv);
+            let live = lessee.and_then(|lessee| record.live_plan_for(lessee));
+            // The SM.8 handoff (the SM.11 fixer round's correctness/F3): the author's own queued
+            // unload, the author off the plan's hull's helm, is the plan's to read (its helm wait,
+            // told once, and one page), never SM.8's start, which would be refused at every try.
+            let orphaned = live
+                .zip(record.queued.as_ref())
+                .is_some_and(|(plan, queued)| {
+                    crate::surface::plan::queue_orphaned(queued, plan, (plans.helm)(plan.author))
+                });
             // Doc 20 cut SM.8 (the brief's 3.9): a queued unload on an idle rig, outside its
             // start's back-off.
             let queued_at = record
                 .queued
                 .as_ref()
-                .filter(|_| record.act.is_none() && record.run.is_none())
+                .filter(|_| record.act.is_none() && record.run.is_none() && !orphaned)
                 .filter(|_| rest(queued_attempt(&record)))
                 .map(|queued| queued.at_ic);
-            let at = due_at.or(untold_at).or(started_at).or(queued_at)?;
+            let quiet = record.act.is_none()
+                && record.run.is_none()
+                && (record.queued.is_none() || orphaned);
+            // The lead's pre-commit round, item 3: a plan past its bound is decided whatever it
+            // waits on — a standing queue or a cached wait — so its `Bound` end is submitted (the
+            // interpreter answers it from any wait; only an act or a run in flight holds it).
+            let idle = record.act.is_none() && record.run.is_none();
+            let plan_at = live
+                .filter(|plan| quiet || (idle && plan.deadline_ic <= now))
+                .filter(|plan| {
+                    plan.deadline_ic <= now
+                        || state
+                            .plan_waits
+                            .get(&record.tv)
+                            .is_none_or(|(seq, until)| *seq != plan.seq || *until <= now)
+                })
+                .filter(|_| rest(plan_attempt(&record)))
+                .map(|plan| {
+                    record
+                        .last
+                        .as_ref()
+                        .map_or(plan.filed_ic, |last| last.at_ic)
+                });
+            let untold_plan_at =
+                plan_untold(&record, lessee, &(plans.shown)(record.tv)).then(|| {
+                    record.plan.as_ref().map_or(0, |plan| {
+                        plan.notes.last().map_or(plan.filed_ic, |note| note.at_ic)
+                    })
+                });
+            let idle_since = record.idle_since();
+            let idle_at = idle_since
+                .filter(|_| quiet && live.is_none() && record.excursion.is_some())
+                .and_then(|since| since.checked_add(crate::surface::plan::IDLE_PARK_IC_SECS))
+                .filter(|due| *due <= now)
+                .filter(|_| {
+                    state
+                        .stranded
+                        .get(&record.tv)
+                        .is_none_or(|retry| *retry <= now)
+                })
+                .filter(|_| rest(idle_attempt(&record)));
+            let at = due_at
+                .or(untold_at)
+                .or(started_at)
+                .or(queued_at)
+                .or(untold_plan_at)
+                .or(plan_at)
+                .or(idle_at)?;
             Some(Candidate {
                 order: (at, record.tv.0),
                 due: due_at.is_some(),
@@ -488,6 +697,9 @@ pub(crate) fn candidates(
                 untold: untold_at.is_some(),
                 started: started_at.is_some(),
                 queued: queued_at.is_some(),
+                plan: plan_at.is_some(),
+                plan_untold: untold_plan_at.is_some(),
+                idle: idle_at.is_some(),
                 record,
             })
         })
@@ -518,8 +730,38 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     // Doc 20 cut SM.4a (§3.9): every open excursion's operator and rig by site, from the whole
     // scan and before the records move into the candidates — the heard sounding's listeners.
     let on_site = on_site(&records);
+    // Doc 20 cut SM.11 (the reviewer's R1): every queue standing, `(tv, Queued::after)` — the
+    // `WHY_MARKERS_QUEUED` told set keeps only these.
+    let queues: BTreeSet<(u32, u32)> = records
+        .iter()
+        .filter_map(|record| {
+            record
+                .queued
+                .as_ref()
+                .map(|queued| (record.tv.0, queued.after))
+        })
+        .collect();
+    // Doc 20 cut SM.11 (the brief's 3.4 "the caller gathers"): the open excursions by operator
+    // and site, from the whole scan — a plan's launch's caps (a capped scan only under-counts,
+    // which the start's own cap check then refuses).
+    let open: Vec<(ObjId, mush_core::CanonicalId)> = records
+        .iter()
+        .filter_map(|record| {
+            record
+                .excursion
+                .as_ref()
+                .map(|excursion| (excursion.operator, excursion.site.clone()))
+        })
+        .collect();
     let (candidates, resting) = {
         let w: &World = ctx.w;
+        let lessee = |tv: ObjId| {
+            w.module_state::<TacsimStore>()
+                .and_then(|store| store.tv_lease_on(tv))
+                .map(|lease| lease.pilot)
+        };
+        let shown_plan = |tv: ObjId| plan_shown_of(w, tv);
+        let helm = |pilot: ObjId| crate::surface::plan::helm_hull(w, pilot);
         candidates(
             records,
             now,
@@ -527,6 +769,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
             |tv| shown_of(w, tv),
             |tv| shown_run_of(w, tv),
             state,
+            &PlanReads {
+                lessee: &lessee,
+                shown: &shown_plan,
+                helm: &helm,
+            },
         )
     };
     stats.passed_over = resting;
@@ -545,6 +792,12 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
             && let Some(last) = &record.last
         {
             tell(ctx, &handles, record, last, &on_site);
+            stats.told = stats.told.saturating_add(1);
+            stats.worked = stats.worked.saturating_add(1);
+        }
+        // Doc 20 cut SM.11 (the brief's 3.8): the plan's untold notes and view.
+        if candidate.plan_untold {
+            tell_plan(ctx, record);
             stats.told = stats.told.saturating_add(1);
             stats.worked = stats.worked.saturating_add(1);
         }
@@ -664,6 +917,14 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                                 stats.passed_over = stats.passed_over.saturating_add(1);
                                 Step::Held
                             }
+                            // Doc 20 cut SM.11 (the reviewer's R1): a start known to fail is
+                            // never submitted — the hopper's ring read by the offer's own rule;
+                            // while it is full the queue holds on its back-off (re-read every 60
+                            // fires) and `WHY_MARKERS_QUEUED` is told once per queue.
+                            Visit::Submit if markers_hold(ctx, state, record, queued) => {
+                                stats.passed_over = stats.passed_over.saturating_add(1);
+                                Step::Held
+                            }
                             Visit::Submit => {
                                 let step = submit_queued(
                                     ctx,
@@ -701,6 +962,14 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     (None, _) => Step::Worked,
                 }
             }
+            // Doc 20 cut SM.11 (the brief's 3.8): the plan's next move, as its author.
+            (None, _) if candidate.plan => {
+                plan_step(ctx, &mut fire, state, &handles, record, &open, &mut stats)
+            }
+            // Doc 20 cut SM.11 (lead ruling 6): the idle return, as the operator.
+            (None, _) if candidate.idle => {
+                idle_step(ctx, &mut fire, state, &handles, record, &mut stats)
+            }
             (None, _) => Step::Worked,
         };
         fire.settle(tv, step);
@@ -713,6 +982,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
         state
             .paged
             .retain(|key| key.1 == 0 || still_due.contains(key));
+        state.markers_told.retain(|key| queues.contains(key));
     }
     stats
 }
@@ -753,6 +1023,21 @@ fn still_due(records: &[RigRecord], now: i64) -> BTreeSet<ActKey> {
         // Doc 20 cut SM.8: a queued unload's start, so its attempts survive the prune.
         if record.queued.is_some() && record.act.is_none() && record.run.is_none() {
             due.insert(queued_attempt(record));
+        }
+        // Doc 20 cut SM.11: a live plan's next start (whatever its lessee: a capped visit must
+        // not lose its bookkeeping) — past its bound with a queued unload standing too (the lead's
+        // pre-commit round, item 3: its `Bound` end) — and an idle rig's return.
+        let idle = record.act.is_none() && record.run.is_none();
+        let quiet = idle && record.queued.is_none();
+        if idle
+            && record.plan.as_ref().is_some_and(|plan| {
+                plan.live() && (record.queued.is_none() || plan.deadline_ic <= now)
+            })
+        {
+            due.insert(plan_attempt(record));
+        }
+        if quiet && record.excursion.is_some() {
+            due.insert(idle_attempt(record));
         }
     }
     due
@@ -836,6 +1121,7 @@ fn project_start(ctx: &mut Ctx<'_>, record: &RigRecord) {
     });
     rec.leg = leg_view(record);
     rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
+    rec.plan = plan_view_of(ctx.w, record);
     write_projection(ctx, &rec);
 }
 
@@ -866,6 +1152,7 @@ fn project_run(ctx: &mut Ctx<'_>, record: &RigRecord) {
     });
     rec.leg = leg_view(record);
     rec.run = Some(Box::new(RunView::of(run)));
+    rec.plan = plan_view_of(ctx.w, record);
     write_projection(ctx, &rec);
 }
 
@@ -905,6 +1192,7 @@ fn carried_for(mut rec: TvRec, operator: ObjId, excursion: Option<ExcursionId>) 
         rec.log.clear();
         rec.leg = None;
         rec.run = None;
+        rec.plan = None;
     }
     rec
 }
@@ -1128,6 +1416,7 @@ fn project_due(ctx: &mut Ctx<'_>, record: &RigRecord) {
     // no longer moves anything.
     rec.leg = None;
     rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
+    rec.plan = plan_view_of(ctx.w, record);
     rec.applied = act.ordinal;
     write_projection(ctx, &rec);
 }
@@ -1188,6 +1477,47 @@ fn submit_done(
     }
 }
 
+/// **Whether a queued unload is held on its hopper's full marker ring this visit** (doc 20 cut
+/// SM.11, the reviewer's R1): `crate::surface::act::queued_ring_full` — the queued start's offer's
+/// own rule, read through the fire's `Ctx` at the real second — says the start would be refused
+/// `unload_markers`. Then nothing is submitted: the queue's attempts key enters its back-off (the
+/// ring is read again after [`DONE_BACKOFF_FIRES`]; no attempt is counted, so no page), and the
+/// operator is told `ACT_FAILED` with `WHY_MARKERS_QUEUED` **once per queue** (`markers_told`,
+/// keyed `(tv, Queued::after)`), at trip level through the notice budget — said to a connected
+/// pilot, queued for an offline one's reconnect. A queue the finish re-filed after its own
+/// `MarkersFull` refusal (`queue_waits_on_markers`) was already told by that outcome's line and is
+/// not told again.
+fn markers_hold(
+    ctx: &mut Ctx<'_>,
+    state: &mut SurfaceTickState,
+    record: &RigRecord,
+    queued: &crate::surface::excursion::Queued,
+) -> bool {
+    let full = {
+        let reads: &Ctx<'_> = ctx;
+        crate::surface::act::queued_ring_full(reads.w, reads, record.tv, queued, reads.w.now())
+    };
+    if !full {
+        return false;
+    }
+    state.backoff.insert(queued_attempt(record), state.fires);
+    if state.markers_told.insert((record.tv.0, queued.after))
+        && !crate::surface::plan::queue_waits_on_markers(record)
+    {
+        let line = crate::port::tv::ACT_FAILED
+            .replace("{n}", &queued.slot.to_string())
+            .replace("{act}", ActKind::Unload.word())
+            .replace("{why}", crate::port::tv::WHY_MARKERS_QUEUED);
+        crate::port_tick::notify_budget(
+            ctx,
+            queued.operator,
+            &line,
+            crate::port_tick::NoticeLevel::Trip,
+        );
+    }
+    true
+}
+
 /// **A queued unload's start, as the operator** (doc 20 cut SM.8; lead ruling 1, decisions R1
 /// and R15): one closed call through `Fire::as_principal` — `AlreadyActed`, `Owed` and `Pending`
 /// defer (one submission an operator a fire, so the start lands on the fire after the recover is
@@ -1237,6 +1567,613 @@ fn submit_queued(
     }
 }
 
+/// The projection's told plan and plan view (doc 20 cut SM.11), `(None, None)` when absent or
+/// unreadable.
+fn plan_shown_of(w: &World, tv: ObjId) -> (Option<PlanTold>, Option<PlanView>) {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    {
+        Some(TvRecState::Present(rec)) => (rec.plan_told, rec.plan.clone()),
+        Some(TvRecState::Unreadable) | None => (None, None),
+    }
+}
+
+/// **A start the tick submits as `operator`** (doc 20 cut SM.11; `submit_queued`'s shape): one
+/// closed call through `Fire::as_principal` — `AlreadyActed`, `Owed` and `Pending` defer; `God`
+/// and `Gone` refuse, logged once a boot under `paged_key`.
+fn submit_start(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    paged: &mut BTreeSet<ActKey>,
+    (action, tv, paged_key): (&mush_core::DefinitionRef, ObjId, ActKey),
+    operator: ObjId,
+    parameters: serde_json::Value,
+    key: mush_core::IdempotencyKeyText,
+) -> Step {
+    match fire.as_principal(ctx, tv, operator, |ctx| {
+        ctx.submit_authoritative(
+            action.clone(),
+            PerceivedRef::SelfActor,
+            Vec::new(),
+            parameters,
+            key,
+        );
+    }) {
+        Ok(()) => Step::Submitted,
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
+        Err(SwapRefused::God | SwapRefused::Gone) => {
+            if paged.insert(paged_key) {
+                tracing::warn!(
+                    tv = tv.0,
+                    operator = operator.0,
+                    "tacsim: a rig's plan author or operator is GOD or gone; its start waits"
+                );
+            }
+            Step::Refused
+        }
+    }
+}
+
+/// Count a submission's step into the fire's stats.
+fn count_step(stats: &mut SurfaceFireStats, step: Step) {
+    match step {
+        Step::Submitted => {
+            stats.submitted = stats.submitted.saturating_add(1);
+            stats.worked = stats.worked.saturating_add(1);
+        }
+        Step::Deferred => stats.deferred = stats.deferred.saturating_add(1),
+        Step::Idle | Step::Worked | Step::Refused | Step::Held => {}
+    }
+}
+
+/// **A plan's step at the tick** (doc 20 cut SM.11; the brief's 3.8): the rig as its lease names
+/// it (never the author's helm list, the reviewer's F18), the caps' census from the scan, the
+/// interpreter over the tick's own reads — then the start or the end submitted as the author under
+/// SM.3b's attempt rule, or the wait cached (a charging wait until its instant, the others for
+/// `PLAN_WAIT_IC_SECS`; a cold ground wanted) and told once a boot to a connected author.
+#[allow(clippy::too_many_lines)] // one decision, then one submission or one wait
+fn plan_step(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    state: &mut SurfaceTickState,
+    handles: &PortHandles,
+    record: &RigRecord,
+    open: &[(ObjId, mush_core::CanonicalId)],
+    stats: &mut SurfaceFireStats,
+) -> Step {
+    use crate::surface::plan::{PLAN_WAIT_IC_SECS, PlanMove, PlanWait};
+    let tv = record.tv;
+    let now = ctx.w.world_ic_now().at;
+    let Some(lease) = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_lease_on(tv))
+        .cloned()
+    else {
+        return Step::Worked;
+    };
+    let Some(plan) = record.live_plan_for(lease.pilot).cloned() else {
+        return Step::Worked;
+    };
+    let rig = crate::surface::act::RigAt {
+        tv,
+        slot: lease.slot,
+        mark: lease.mark.clone(),
+        hull: lease.hull,
+        record: lease,
+    };
+    let mut counts = crate::surface::excursion::ExcursionCounts::default();
+    for (operator, site) in open {
+        counts.world = counts.world.saturating_add(1);
+        if *site == plan.site {
+            counts.site = counts.site.saturating_add(1);
+        }
+        if *operator == plan.author {
+            counts.operator = counts.operator.saturating_add(1);
+        }
+    }
+    // The SM.8 handoff (the fixer round's correctness/F3): a queued unload reaches the plan's arm
+    // orphaned — the author's own, the author off the helm — and pages once a boot here; the plan
+    // then reads its helm wait. (A plan past its bound reaches here with any queue standing — the
+    // lead's pre-commit round, item 3 — and only an orphaned one pages.)
+    if let Some(queued) = record.queued.as_ref()
+        && crate::surface::plan::queue_orphaned(
+            queued,
+            &plan,
+            crate::surface::plan::helm_hull(ctx.w, plan.author),
+        )
+        && state.paged.insert(queued_attempt(record))
+    {
+        tracing::error!(
+            tv = tv.0,
+            slot = queued.slot,
+            plan = plan.no,
+            "tacsim: rig {} (tacsim.excursion {}): its queued unload's operator #{} no longer \
+             holds the hull's helm, so the unload is refused at every try and plan {} waits on \
+             the helm; the queue clears when a start lands on the rig (the pilot back at the \
+             helm, or the next lessee); staff reach a loaded hopper through the hull",
+            queued.slot,
+            tv.0,
+            queued.operator.0,
+            plan.no
+        );
+    }
+    let tools = handles.surface_tools.clone().unwrap_or_default();
+    let mut peeks = crate::surface::Peeks::default();
+    let moved = {
+        let w: &World = ctx.w;
+        crate::surface::plan::decide(w, &*ctx, &rig, record, &counts, &tools, &mut peeks, now)
+    };
+    let Some(moved) = moved else {
+        return Step::Worked;
+    };
+    let Some(action) = handles.surface_act.clone() else {
+        return Step::Refused;
+    };
+    let key = plan_attempt(record);
+    let (parameters, idempotency) = match &moved {
+        PlanMove::Start { word, step, .. } => {
+            let ordinal = record.ordinal.saturating_add(1);
+            (
+                json!({
+                    "tv": tv.0.to_string(),
+                    "act": word,
+                    "ordinal": ordinal,
+                    "by": "plan",
+                    "plan": plan.no,
+                    "step": step,
+                }),
+                crate::surface::act::plan_step_key(tv, ordinal, *step, word),
+            )
+        }
+        PlanMove::End { .. } => (
+            json!({
+                "tv": tv.0.to_string(),
+                "act": "plan_end",
+                "ordinal": record.ordinal.max(1),
+                "by": "plan",
+                "plan": plan.no,
+                "step": plan.cursor,
+            }),
+            crate::surface::act::plan_end_key(tv, plan.no),
+        ),
+        PlanMove::Wait(wait) => {
+            let until = match wait {
+                PlanWait::Busy => return Step::Worked,
+                PlanWait::Charging { until_ic } => *until_ic,
+                PlanWait::Helm
+                | PlanWait::Ashore
+                | PlanWait::Cap
+                | PlanWait::Cold
+                | PlanWait::Dark
+                | PlanWait::Markers => now.saturating_add(PLAN_WAIT_IC_SECS),
+            };
+            state.plan_waits.insert(tv, (plan.seq, until));
+            if *wait == PlanWait::Cold {
+                crate::surface::want_site_ground(ctx.w, &plan.site);
+                if let Some((site, ramp)) = crate::surface::hull_home(ctx.w, plan.hull) {
+                    crate::surface::want_home(ctx.w, &site, ramp);
+                }
+            }
+            // Told once a boot per (rig, seq, reason), to a connected author only: nothing was
+            // submitted, so nothing pages.
+            if !matches!(wait, PlanWait::Charging { .. })
+                && ctx.w.is_connected(plan.author)
+                && state.plan_told_waits.insert((tv.0, plan.seq, wait.code()))
+            {
+                let words = crate::surface::act::PlanWords::of(ctx.w, &plan);
+                let line = crate::port::tv::PLAN_WAITS
+                    .replace("{n}", &words.n)
+                    .replace(
+                        "{why}",
+                        &crate::surface::act::wait_why(ctx.w, *wait, &words),
+                    );
+                ctx.out.sys_to_actor(plan.author, "tacsim", &line);
+            }
+            return Step::Worked;
+        }
+    };
+    let Some(idempotency) = idempotency else {
+        tracing::error!(tv = tv.0, "tacsim: a plan step's key did not form");
+        return Step::Refused;
+    };
+    let pending = ctx.authoritative_pending(plan.author);
+    match attempt_visit(state, key, pending) {
+        Visit::PassOver => {
+            stats.passed_over = stats.passed_over.saturating_add(1);
+            Step::Held
+        }
+        Visit::Page => {
+            tracing::error!(
+                tv = tv.0,
+                plan = plan.no,
+                "tacsim: rig {} (tacsim.excursion {}): plan {}'s next step has not started after \
+                 8 tries; +tv/{} plan show says why; +tv/{} plan clear ends it; the tick retries \
+                 every 60 s",
+                plan.slot,
+                tv.0,
+                plan.no,
+                plan.slot,
+                plan.slot
+            );
+            stats.passed_over = stats.passed_over.saturating_add(1);
+            Step::Held
+        }
+        Visit::Submit => {
+            let step = submit_start(
+                ctx,
+                fire,
+                &mut state.paged,
+                (&action, tv, key),
+                plan.author,
+                parameters,
+                idempotency,
+            );
+            note_step(state, key, step);
+            count_step(stats, step);
+            step
+        }
+    }
+}
+
+/// **The idle return at the tick** (doc 20 cut SM.11; lead ruling 6): the recover's world plan as
+/// the open excursion's operator — its way home affordable: the recover submitted with `by: idle`
+/// keyed `tacsim.surface/{tv}/{ordinal}/idle` under the attempt rule; its leg short of the charge:
+/// **parked where it stands** — the projection reads `Parked` (no submission), the operator is told
+/// `STRANDED` once (the projection's state is the de-dup) and the rig is tried no sooner than a day
+/// later; the operator ashore: tried a day later, nothing told.
+fn idle_step(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    state: &mut SurfaceTickState,
+    handles: &PortHandles,
+    record: &RigRecord,
+    stats: &mut SurfaceFireStats,
+) -> Step {
+    use crate::surface::act::Refusal;
+    let tv = record.tv;
+    let now = ctx.w.world_ic_now().at;
+    let retry = now.saturating_add(crate::surface::plan::IDLE_PARK_IC_SECS);
+    let (Some(lease), Some(excursion)) = (
+        ctx.w
+            .module_state::<TacsimStore>()
+            .and_then(|store| store.tv_lease_on(tv))
+            .cloned(),
+        record.excursion.clone(),
+    ) else {
+        return Step::Worked;
+    };
+    let operator = excursion.operator;
+    let rig = crate::surface::act::RigAt {
+        tv,
+        slot: lease.slot,
+        mark: lease.mark.clone(),
+        hull: lease.hull,
+        record: lease,
+    };
+    let battery = handles.surface_tools.as_ref().and_then(|tools| {
+        crate::surface::act::rig_battery_id(ctx.w, tv)
+            .and_then(|id| crate::surface::act::battery_of(tools, &id).copied())
+    });
+    let rates = crate::surface::act::rig_rates(ctx.w, tv, battery.as_ref());
+    let mut peeks = crate::surface::Peeks::default();
+    let planned = {
+        let w: &World = ctx.w;
+        crate::surface::act::recover_plan(w, operator, &rig, &mut peeks, rates).and_then(|plan| {
+            let ramp = ramp_label(w, rig.hull);
+            crate::surface::act::leg_home(record, &plan, battery.as_ref(), &rig, &ramp)
+                .map(|()| plan)
+        })
+    };
+    match planned {
+        Ok(_) => {}
+        Err(Refusal::LegShort { .. } | Refusal::Far { .. }) => {
+            parked_where_it_stands(ctx, record, &rig, &excursion);
+            state.stranded.insert(tv, retry);
+            return Step::Worked;
+        }
+        Err(Refusal::NotAboard { .. }) => {
+            state.stranded.insert(tv, retry);
+            return Step::Worked;
+        }
+        Err(Refusal::GroundCold { entry, .. }) => {
+            crate::surface::want_site_ground(ctx.w, &entry);
+            if let Some((site, ramp)) = crate::surface::hull_home(ctx.w, rig.hull) {
+                crate::surface::want_home(ctx.w, &site, ramp);
+            }
+            return Step::Worked;
+        }
+        Err(_) => return Step::Worked,
+    }
+    let Some(action) = handles.surface_act.clone() else {
+        return Step::Refused;
+    };
+    let ordinal = record.ordinal.saturating_add(1);
+    let Some(idempotency) = crate::surface::act::idle_key(tv, ordinal) else {
+        return Step::Refused;
+    };
+    let key = idle_attempt(record);
+    let pending = ctx.authoritative_pending(operator);
+    match attempt_visit(state, key, pending) {
+        Visit::PassOver => {
+            stats.passed_over = stats.passed_over.saturating_add(1);
+            Step::Held
+        }
+        // The lead's pre-commit round, item 4 (the judge's correctness/F9): an idle return that
+        // has not landed after 8 tries pages once a boot, as the plan's and the queue's arms do.
+        Visit::Page => {
+            tracing::error!(
+                tv = tv.0,
+                slot = rig.slot,
+                operator = operator.0,
+                "tacsim: rig {} (tacsim.excursion {}): its idle return has not started after 8 \
+                 tries; the rig stays out on its site; the pilot's own +tv/{} recover brings it \
+                 in; the tick retries every 60 s",
+                rig.slot,
+                tv.0,
+                rig.slot
+            );
+            stats.passed_over = stats.passed_over.saturating_add(1);
+            Step::Held
+        }
+        Visit::Submit => {
+            let step = submit_start(
+                ctx,
+                fire,
+                &mut state.paged,
+                (&action, tv, key),
+                operator,
+                json!({
+                    "tv": tv.0.to_string(),
+                    "act": ActKind::Recover.word(),
+                    "ordinal": ordinal,
+                    "by": "idle",
+                }),
+                idempotency,
+            );
+            note_step(state, key, step);
+            count_step(stats, step);
+            step
+        }
+    }
+}
+
+/// **Parked where it stands** (doc 20 cut SM.11; lead ruling 6): the projection reads `Parked`;
+/// the operator hears `STRANDED` once — only when the projection's state moved to `Parked` and the
+/// write landed (the state is the de-dup, `told`'s order).
+fn parked_where_it_stands(
+    ctx: &mut Ctx<'_>,
+    record: &RigRecord,
+    rig: &crate::surface::act::RigAt,
+    excursion: &crate::surface::excursion::Excursion,
+) {
+    let w: &World = ctx.w;
+    let mut rec = projection_for(
+        w,
+        record.tv,
+        rig.slot,
+        excursion.operator,
+        Some(excursion.id),
+    );
+    let already = rec.state == TvState::Parked;
+    rec.slot = rig.slot;
+    rec.operator = Some(excursion.operator);
+    rec.hull = Some(rig.hull);
+    rec.excursion = Some(excursion.id);
+    rec.site = Some(excursion.site.clone());
+    rec.state = TvState::Parked;
+    rec.pose = pose_of(w, record.tv);
+    rec.plan = plan_view_of(ctx.w, record);
+    let line = crate::port::tv::STRANDED
+        .replace("{n}", &rig.slot.to_string())
+        .replace("{ramp}", &ramp_label(w, rig.hull))
+        .replace("{site}", &site_name(w, &excursion.site));
+    let written = write_projection(ctx, &rec);
+    if written && !already {
+        crate::port_tick::notify_budget(
+            ctx,
+            excursion.operator,
+            &line,
+            crate::port_tick::NoticeLevel::Trip,
+        );
+    }
+}
+
+/// **The hold's figures a plan's end names** (doc 20 cut SM.11; the brief's 3.8): the ore the hold
+/// holds and its unreserved room, whole tonnes, read at the tell (`None` when either will not read).
+fn hold_figures(ctx: &Ctx<'_>, hull: ObjId) -> Option<(u64, u64)> {
+    let w: &World = ctx.w;
+    let view = crate::port::ship::hull_view(w, hull)?;
+    let goods = w.module_state::<TacsimStore>()?.goods()?;
+    let ore = mush_core::CanonicalId::new("metal_ore").ok()?;
+    let tag = goods.good(&ore)?.stowage.clone();
+    let mass = mush_core::CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    let limit: u64 = crate::port::ship::compartments(&view)
+        .into_iter()
+        .filter(|(_, comp)| comp.accepts.contains(&tag))
+        .filter_map(|(_, comp)| comp.limits.get(&mass).copied())
+        .sum();
+    let read = |endpoint: mush_inventory::record::EndpointRef, good: &mush_core::CanonicalId| {
+        crate::port_tick::read_pool(ctx, endpoint, good)
+    };
+    let read_rig = |tv: ObjId| crate::port::site_map::SurfaceReads::rig(ctx, tv);
+    let free = crate::port::ship::hold_unreserved_kg(w, &view, &[], &read, &read_rig)?;
+    let rigs: Vec<ObjId> = crate::port::tv::live_on_hull(w, hull)
+        .iter()
+        .map(|lease| lease.tv)
+        .collect();
+    let room = crate::port::ship::hold_unreserved_kg(w, &view, &rigs, &read, &read_rig)?;
+    Some((limit.saturating_sub(free) / 1_000, room / 1_000))
+}
+
+/// **A plan's note in words** (doc 20 cut SM.11; the brief's 3.8): a pass (`PLAN_PASSED`, live), a
+/// parking (`PLAN_PARKING`, a trip) or the end with its summary (`PLAN_ENDED`, a trip).
+fn plan_note_line(
+    ctx: &Ctx<'_>,
+    plan: &crate::surface::plan::FillPlan,
+    note: &crate::surface::plan::PlanNoteKind,
+) -> (String, crate::port_tick::NoticeLevel) {
+    use crate::port::tv;
+    use crate::port_tick::NoticeLevel;
+    use crate::surface::plan::PlanNoteKind;
+    let w: &World = ctx.w;
+    let words = crate::surface::act::PlanWords::of(w, plan);
+    match note {
+        PlanNoteKind::Passed { at, field, why } => {
+            let addr = if *field {
+                address::field_name(at[0], at[1]).unwrap_or_default()
+            } else {
+                address::pocket_address(at[0], at[1]).unwrap_or_default()
+            };
+            (
+                tv::PLAN_PASSED
+                    .replace("{n}", &words.n)
+                    .replace("{addr}", &addr)
+                    .replace("{why}", &crate::surface::act::pass_why(*why, plan.family)),
+                NoticeLevel::Live,
+            )
+        }
+        PlanNoteKind::Parking { why } => (
+            tv::PLAN_PARKING.replace("{n}", &words.n).replace(
+                "{why}",
+                &crate::surface::act::end_why(w, plan.author, *why, &words),
+            ),
+            NoticeLevel::Trip,
+        ),
+        PlanNoteKind::Ended { why } => {
+            let (held, room) = hold_figures(ctx, plan.hull).unwrap_or((0, 0));
+            (
+                tv::PLAN_ENDED
+                    .replace("{n}", &words.n)
+                    .replace("{site}", &words.site)
+                    .replace(
+                        "{why}",
+                        &crate::surface::act::end_why(w, plan.author, *why, &words),
+                    )
+                    .replace("{t}", &plan.tally.tonnes.to_string())
+                    .replace(
+                        "{ore}",
+                        &tv::ore_words(crate::surface::opening::ore_good(plan.family)),
+                    )
+                    .replace(
+                        "{c}",
+                        &tv::count_words(u64::from(plan.tally.cycles), "cycle", "cycles"),
+                    )
+                    .replace(
+                        "{trips}",
+                        &tv::count_words(u64::from(plan.tally.trips), "trip", "trips"),
+                    )
+                    .replace("{name}", &words.name)
+                    .replace("{held}", &held.to_string())
+                    .replace("{room}", &room.to_string()),
+                NoticeLevel::Trip,
+            )
+        }
+    }
+}
+
+/// **A plan's tell** (doc 20 cut SM.11; the brief's 3.8): the projection's plan view and its told
+/// pair moved to the record's, then each note the projection had not told — in order — said to a
+/// connected author, or queued under the notice budget for an offline one, **only once the
+/// projection's write succeeded** (SM.4a's D24 order, so a retold note never doubles). A record
+/// with no plan clears the projection's view.
+fn tell_plan(ctx: &mut Ctx<'_>, record: &RigRecord) {
+    let w: &World = ctx.w;
+    let stored: Option<TvRec> = match w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_rec(record.tv))
+    {
+        Some(TvRecState::Present(rec)) => Some(rec.clone()),
+        Some(TvRecState::Unreadable) | None => None,
+    };
+    let Some(stored) = stored else {
+        // No projection yet: start one for the rig as its plan's author would see it.
+        let Some(plan) = record.plan.as_ref() else {
+            return;
+        };
+        let mut rec = TvRec::new(record.tv, plan.slot);
+        rec.operator = Some(plan.author);
+        rec.hull = Some(plan.hull);
+        rec.state = state_for(w, record, Some(plan.hull), None);
+        rec.pose = pose_of(w, record.tv);
+        rec.plan = plan_view_of(w, record);
+        rec.plan_told = Some(PlanTold {
+            no: plan.no,
+            seq: plan.seq,
+        });
+        let lines: Vec<(String, crate::port_tick::NoticeLevel)> = plan
+            .notes
+            .iter()
+            .map(|note| plan_note_line(ctx, plan, &note.note))
+            .collect();
+        if write_projection(ctx, &rec) {
+            for (line, level) in lines {
+                crate::port_tick::notify_budget(ctx, plan.author, &line, level);
+            }
+        }
+        return;
+    };
+    let mut rec = stored.clone();
+    rec.plan = plan_view_of(ctx.w, record);
+    let mut lines: Vec<(String, crate::port_tick::NoticeLevel)> = Vec::new();
+    let mut author = None;
+    if let Some(plan) = record.plan.as_ref() {
+        let told = stored.plan_told.filter(|told| told.no == plan.no);
+        for note in &plan.notes {
+            if told.is_none_or(|told| note.seq > told.seq) {
+                lines.push(plan_note_line(ctx, plan, &note.note));
+            }
+        }
+        rec.plan_told = Some(PlanTold {
+            no: plan.no,
+            seq: plan.seq,
+        });
+        rec.state = state_for(w, record, rec.hull.or(Some(plan.hull)), Some(stored.state));
+        author = Some(plan.author);
+    }
+    if write_projection(ctx, &rec)
+        && let Some(author) = author
+    {
+        for (line, level) in lines {
+            crate::port_tick::notify_budget(ctx, author, &line, level);
+        }
+    }
+}
+
+/// **The projected state with `Parked`** (doc 20 cut SM.11; lead ruling 6): [`projected_state`],
+/// except a rig on the ground with nothing in flight reads `Parked` when its plan ended `Stranded`
+/// with no act since, or when the stored projection already says `Parked` and no plan is live (an
+/// idle rig the tick found short of its way home).
+fn state_for(
+    w: &World,
+    record: &RigRecord,
+    hull: Option<ObjId>,
+    stored: Option<TvState>,
+) -> TvState {
+    use crate::surface::plan::{FillState, PlanEnd};
+    let base = projected_state(w, record, hull);
+    let quiet = record.act.is_none() && record.run.is_none() && record.queued.is_none();
+    let on_ground = matches!(where_is(w, record.tv), Where::Ground { .. });
+    if base != TvState::Out || !quiet || !on_ground {
+        return base;
+    }
+    let stranded = record.plan.as_ref().is_some_and(|plan| match plan.state {
+        FillState::Ended {
+            why: PlanEnd::Stranded,
+            at_ic,
+        } => record.last.as_ref().is_none_or(|last| at_ic >= last.at_ic),
+        FillState::Ended { .. } | FillState::Live | FillState::Parking { .. } => false,
+    });
+    let idle_parked =
+        stored == Some(TvState::Parked) && record.plan.as_ref().is_none_or(|plan| !plan.live());
+    if stranded || idle_parked {
+        TvState::Parked
+    } else {
+        base
+    }
+}
+
 /// **The tell** (the brief's 3.5): the projection (`told` moved to the last act, the state
 /// and pose as they stand, one log line stamped at the act's own instant) and the completion
 /// line to the operator.
@@ -1259,6 +2196,7 @@ fn tell(
     let w: &World = ctx.w;
     let excursion = record.excursion.as_ref().map(|excursion| excursion.id);
     let mut rec = projection_for(w, record.tv, last.slot, last.operator, excursion);
+    let stored_state = rec.state;
     let hull = record
         .excursion
         .as_ref()
@@ -1307,8 +2245,12 @@ fn tell(
     rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
     (rec.told, rec.told_cycle) = told_pair(last);
     rec.push_log(last.at_ic, &log_line);
+    // Doc 20 cut SM.11: the plan's view, and a rig whose plan ended stranded reads `Parked`.
+    rec.plan = plan_view_of(ctx.w, record);
+    rec.state = state_for(w, record, hull, Some(stored_state));
     let written = write_projection(ctx, &rec);
-    crate::port_tick::notify(ctx, last.operator, &line);
+    // Doc 20 cut SM.11 (lead ruling 7): the notice budget — offline, only a trip-level line.
+    crate::port_tick::notify_budget(ctx, last.operator, &line, level_of(last));
     if let Some((site, ramp)) = wants {
         crate::surface::want_home(ctx.w, &site, ramp);
     }
@@ -1342,6 +2284,46 @@ fn tell(
              block is mined again",
             why.words()
         );
+    }
+}
+
+/// **A completion line's notice level** (doc 20 cut SM.11; lead ruling 7, the brief's 3.8): a
+/// trip-level line — an unload (`UNLOADED`, `UNLOADED_NONE`), a refused act or cycle
+/// (`ACT_FAILED`, `CYCLE_FAILED`), a run ended by a right or the dark registry (`RUN_RIGHTS`,
+/// `RUN_DARK`), the idle return (`IDLE_HOME`) — is queued for an offline operator; every other line
+/// (a launch, a recover, a dump, a reading, an arrival, a cycle, a core) is said only.
+#[must_use]
+pub(crate) fn level_of(last: &Outcome) -> crate::port_tick::NoticeLevel {
+    use crate::port_tick::NoticeLevel;
+    use crate::surface::plan::ActBy;
+    if let ActResult::Refused { .. } = last.result {
+        return NoticeLevel::Trip;
+    }
+    if let Some(mined) = &last.mined {
+        return match mined.end {
+            Some(
+                RunEnd::Licence { .. }
+                | RunEnd::Claimed
+                | RunEnd::Lease { .. }
+                | RunEnd::Dark { .. },
+            ) => NoticeLevel::Trip,
+            Some(RunEnd::Done | RunEnd::WorkedOut | RunEnd::Stopped | RunEnd::Refused) | None => {
+                NoticeLevel::Live
+            }
+        };
+    }
+    match (last.kind, last.by) {
+        (ActKind::Unload, _) | (ActKind::Recover, Some(ActBy::Idle)) => NoticeLevel::Trip,
+        (
+            ActKind::Launch
+            | ActKind::Recover
+            | ActKind::Dump
+            | ActKind::Scan
+            | ActKind::Sound
+            | ActKind::Drive
+            | ActKind::Mine,
+            _,
+        ) => NoticeLevel::Live,
     }
 }
 
@@ -1827,6 +2809,18 @@ fn completion_line(
                 .replace("{n}", &n)
                 .replace("{ramp}", &ramp)
                 .replace("{site}", &site),
+            // Doc 20 cut SM.11 (lead ruling 6): the idle return, with its unload clause.
+            ActKind::Recover if last.by == Some(crate::surface::plan::ActBy::Idle) => {
+                let then = record
+                    .queued
+                    .as_ref()
+                    .is_some_and(|queued| queued.after == last.ordinal);
+                tv::IDLE_HOME
+                    .replace("{n}", &n)
+                    .replace("{site}", &site)
+                    .replace("{name}", &name)
+                    .replace("{then}", if then { tv::IDLE_THEN } else { "" })
+            }
             ActKind::Recover
                 if record
                     .queued
@@ -1892,6 +2886,17 @@ fn completion_line(
                 RefusedCode::Unworked => tv::WHY_UNWORKED.to_owned(),
                 RefusedCode::LeftBay => tv::WHY_LEFT_BAY.to_owned(),
                 RefusedCode::HoldRefused => tv::WHY_HOLD_REFUSED.to_owned(),
+                // Doc 20 cut SM.11 (the lead's pre-commit round, item 1): a queued unload the
+                // finish re-filed (its queue after this outcome) unloads by itself once the ring
+                // frees; a hand unload's is "try again later".
+                RefusedCode::MarkersFull
+                    if record
+                        .queued
+                        .as_ref()
+                        .is_some_and(|queued| queued.after == last.ordinal) =>
+                {
+                    tv::WHY_MARKERS_QUEUED.to_owned()
+                }
                 RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
             };
             tv::ACT_FAILED
@@ -1932,6 +2937,7 @@ mod tests {
             arrived: None,
             mined: None,
             stays: BTreeMap::new(),
+            by: None,
         };
         let loud = outcome(Some(sound(false, true)), ActResult::Done);
         assert_eq!(heard_from(true, &loud), Some([170, 90]));
@@ -2096,10 +3102,13 @@ mod tests {
                 due_ic,
                 reserved_cu: 0,
                 params: ActParams::None {},
+                by: None,
             }),
             excursion: None,
             last: None,
             run: None,
+            plan: None,
+            plans: 0,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -2149,10 +3158,13 @@ mod tests {
                 due_ic,
                 reserved_cu: 0,
                 params: ActParams::None {},
+                by: None,
             }),
             excursion: None,
             last: None,
             run: None,
+            plan: None,
+            plans: 0,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -2169,7 +3181,15 @@ mod tests {
         }
         let told = |_: ObjId| (0, 0);
         // In the back-off: the fresh act is the one candidate.
-        let (picked, resting) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
+        let (picked, resting) = candidates(
+            records.clone(),
+            now,
+            told,
+            |_| None,
+            |_| None,
+            &state,
+            &PlanReads::none(),
+        );
         assert_eq!(
             picked
                 .iter()
@@ -2181,7 +3201,15 @@ mod tests {
         assert_eq!(resting, stuck, "every backed-off act is passed over");
         // One fire before the back-off ends: still the fresh act alone.
         state.fires = 500 + DONE_BACKOFF_FIRES - 1;
-        let (picked, _) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
+        let (picked, _) = candidates(
+            records.clone(),
+            now,
+            told,
+            |_| None,
+            |_| None,
+            &state,
+            &PlanReads::none(),
+        );
         assert_eq!(
             picked.len(),
             1,
@@ -2189,7 +3217,15 @@ mod tests {
         );
         // The back-off over: the 64 are candidates again, oldest first, and fill the window.
         state.fires = 500 + DONE_BACKOFF_FIRES;
-        let (picked, resting) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
+        let (picked, resting) = candidates(
+            records.clone(),
+            now,
+            told,
+            |_| None,
+            |_| None,
+            &state,
+            &PlanReads::none(),
+        );
         assert_eq!(resting, 0);
         assert_eq!(picked.len(), MAX_EXCURSIONS_VISITED_PER_FIRE);
         assert_eq!(picked[0].record.tv, ObjId(1), "the oldest due first");
@@ -2216,8 +3252,17 @@ mod tests {
             arrived: None,
             mined: None,
             stays: BTreeMap::new(),
+            by: None,
         });
-        let (picked, resting) = candidates(vec![untold], now, told, |_| None, |_| None, &state);
+        let (picked, resting) = candidates(
+            vec![untold],
+            now,
+            told,
+            |_| None,
+            |_| None,
+            &state,
+            &PlanReads::none(),
+        );
         assert_eq!(resting, 1);
         assert_eq!(picked.len(), 1);
         assert!(picked[0].untold && !picked[0].due, "told, not submitted");
@@ -2278,10 +3323,13 @@ mod tests {
                 due_ic,
                 reserved_cu: 2_700,
                 params,
+                by: None,
             }),
             excursion: None,
             last: None,
             run: None,
+            plan: None,
+            plans: 0,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -2290,7 +3338,15 @@ mod tests {
             record(22, now - 10, now + 590, ActParams::None {}),
             record(23, now - 600, now, drive.clone()),
         ];
-        let (picked, _) = candidates(records.clone(), now, |_| (0, 0), |_| None, |_| None, &state);
+        let (picked, _) = candidates(
+            records.clone(),
+            now,
+            |_| (0, 0),
+            |_| None,
+            |_| None,
+            &state,
+            &PlanReads::none(),
+        );
         let order: Vec<(u32, bool, bool)> = picked
             .iter()
             .map(|c| (c.record.tv.0, c.started, c.due))
@@ -2308,6 +3364,7 @@ mod tests {
             |tv| (tv.0 == 20).then_some(4),
             |_| None,
             &state,
+            &PlanReads::none(),
         );
         assert!(!picked.iter().any(|c| c.record.tv.0 == 20));
         assert!(picked.iter().any(|c| c.record.tv.0 == 21 && c.started));
@@ -2349,6 +3406,7 @@ mod tests {
                     fields: vec![27],
                     hidden: Vec::new(),
                 },
+                by: None,
             }),
             excursion: None,
             last: None,
@@ -2384,7 +3442,10 @@ mod tests {
                 }],
                 due_ic: run_due,
                 reserved_cu: 2_000 * u32::from(5 - k),
+                by: None,
             }),
+            plan: None,
+            plans: 0,
         }
     }
 
@@ -2399,7 +3460,15 @@ mod tests {
         // The projection already shows each record's run (the started reason is the next test's).
         let pick = |record: RigRecord, state: &SurfaceTickState| {
             let shown = record.run.as_ref().map(|run| (run.ordinal, run.k));
-            let (picked, _) = candidates(vec![record], now, |_| (0, 0), |_| None, |_| shown, state);
+            let (picked, _) = candidates(
+                vec![record],
+                now,
+                |_| (0, 0),
+                |_| None,
+                |_| shown,
+                state,
+                &PlanReads::none(),
+            );
             picked.first().map(|c| (c.due, c.cycle))
         };
         assert_eq!(
@@ -2457,8 +3526,15 @@ mod tests {
         let now = 10_000;
         let state = SurfaceTickState::default();
         let pick = |record: RigRecord, shown: Option<(u32, u8)>| {
-            let (picked, _) =
-                candidates(vec![record], now, |_| (0, 0), |_| None, |_| shown, &state);
+            let (picked, _) = candidates(
+                vec![record],
+                now,
+                |_| (0, 0),
+                |_| None,
+                |_| shown,
+                &state,
+                &PlanReads::none(),
+            );
             picked.first().map(|c| (c.started, c.due, c.order))
         };
         assert_eq!(
@@ -2519,6 +3595,7 @@ mod tests {
                 blind: false,
                 end: None,
             }),
+            by: None,
         });
         let untold = |told: (u32, u8)| {
             let (picked, _) = candidates(
@@ -2528,6 +3605,7 @@ mod tests {
                 |_| None,
                 |_| None,
                 &state,
+                &PlanReads::none(),
             );
             picked.first().is_some_and(|c| c.untold)
         };
@@ -2609,7 +3687,15 @@ mod tests {
         let now = 10_000;
         let state = SurfaceTickState::default();
         let pick = |records: Vec<RigRecord>, state: &SurfaceTickState| {
-            let (picked, resting) = candidates(records, now, |_| (0, 0), |_| None, |_| None, state);
+            let (picked, resting) = candidates(
+                records,
+                now,
+                |_| (0, 0),
+                |_| None,
+                |_| None,
+                state,
+                &PlanReads::none(),
+            );
             (
                 picked
                     .iter()
@@ -2664,6 +3750,334 @@ mod tests {
         state.attempts.insert((900, 4, 0), 2);
         state.attempts.insert((900, 3, 2), 1);
         assert_eq!(retried_ordinals(&state, ObjId(900)), vec![(3, 2), (4, 0)]);
+    }
+    /// A record at ordinal 5 holding plan 1 by the lessee 7, live, filed at `filed_ic`.
+    fn planned(tv: u32, filed_ic: i64) -> RigRecord {
+        use crate::surface::plan::{FillPlan, FillState, PLAN_BOUND_IC_SECS, PlanStep, PlanTally};
+        let mut record = RigRecord::fresh_unread(ObjId(tv));
+        record.ordinal = 5;
+        record.plans = 1;
+        record.plan = Some(FillPlan {
+            no: 1,
+            author: ObjId(7),
+            hull: ObjId(8),
+            slot: 1,
+            site: mush_core::CanonicalId::new("ahuna_port").expect("an id"),
+            family: crate::surface::geology::OreFamily::Metals,
+            filed_ic,
+            deadline_ic: filed_ic + PLAN_BOUND_IC_SECS,
+            list: vec!["C117".to_owned()],
+            steps: vec![PlanStep::Block { letter: 'C' }],
+            cursor: 0,
+            passed: Vec::new(),
+            state: FillState::Live,
+            seq: 1,
+            tally: PlanTally::default(),
+            notes: Vec::new(),
+        });
+        record
+    }
+
+    /// An idle record at ordinal 5 with an open excursion launched at `launch_ic` and no plan.
+    fn out_idle(tv: u32, launch_ic: i64) -> RigRecord {
+        let mut record = RigRecord::fresh_unread(ObjId(tv));
+        record.ordinal = 5;
+        record.excursion = Some(crate::surface::excursion::Excursion {
+            id: ExcursionId {
+                tv: ObjId(tv),
+                launch_ic,
+            },
+            operator: ObjId(7),
+            hull: ObjId(8),
+            slot: 1,
+            site: mush_core::CanonicalId::new("ahuna_port").expect("an id"),
+        });
+        record
+    }
+
+    /// The lessee 7 on every rig.
+    fn lessee_7(_: ObjId) -> Option<ObjId> {
+        Some(ObjId(7))
+    }
+
+    /// The lessee 9 on every rig (plan 1's author, 7, no longer leases it).
+    fn lessee_9(_: ObjId) -> Option<ObjId> {
+        Some(ObjId(9))
+    }
+
+    /// The pilot 7 holds the helm of hull 8 (plan 1's hull).
+    fn helm_8(_: ObjId) -> Option<ObjId> {
+        Some(ObjId(8))
+    }
+
+    /// The projection a lessee other than plan 1's author holds: the told pair carried, no view
+    /// (the SM.11 fixer round's conformance/F1).
+    fn shown_told_only(_: ObjId) -> (Option<PlanTold>, Option<PlanView>) {
+        (Some(PlanTold { no: 1, seq: 1 }), None)
+    }
+
+    /// The projection shows plan 1 at `seq` 1 with its view (nothing untold).
+    fn shown_current(_: ObjId) -> (Option<PlanTold>, Option<PlanView>) {
+        let record = planned(1, 1_000);
+        (
+            Some(PlanTold { no: 1, seq: 1 }),
+            record.plan.as_ref().map(crate::surface::plan::plan_view),
+        )
+    }
+
+    /// **The plan and idle candidates** (doc 20 cut SM.11; the brief's 3.8): pure over
+    /// `candidates` — a live plan with nothing in flight is a plan candidate; with an act, a run or
+    /// a queued unload beside it, not; an orphaned plan (its author no longer the lessee), not;
+    /// inside its back-off, not; inside a cached wait of the same `seq`, not, and of an older
+    /// `seq`, a candidate; an idle rig at 24 IC h less a minute, not, at 24 IC h, a candidate;
+    /// a stranded rig inside its day, not; a plan untold, a candidate; the order.
+    #[test]
+    fn sm11_plan_and_idle_candidates() {
+        use crate::surface::plan::IDLE_PARK_IC_SECS;
+        let now = 100_000;
+        let current = PlanReads {
+            lessee: &lessee_7,
+            shown: &shown_current,
+            helm: &helm_8,
+        };
+        let orphaned = PlanReads {
+            lessee: &lessee_9,
+            shown: &shown_told_only,
+            helm: &helm_8,
+        };
+        let pick = |records: Vec<RigRecord>, state: &SurfaceTickState, reads: &PlanReads<'_>| {
+            let (picked, _) =
+                candidates(records, now, |_| (0, 0), |_| None, |_| None, state, reads);
+            picked
+                .iter()
+                .map(|c| (c.record.tv.0, c.plan, c.plan_untold, c.idle, c.order))
+                .collect::<Vec<_>>()
+        };
+        let state = SurfaceTickState::default();
+        assert_eq!(
+            pick(vec![planned(1, 1_000)], &state, &current),
+            vec![(1, true, false, false, (1_000, 1))],
+            "a live plan with nothing in flight"
+        );
+        assert_eq!(
+            pick(vec![planned(1, 2_000), planned(2, 1_000)], &state, &current)
+                .iter()
+                .map(|c| c.0)
+                .collect::<Vec<_>>(),
+            vec![2, 1],
+            "ordered by the filing (no outcome yet), then the rig"
+        );
+        let mut busy = planned(1, 1_000);
+        busy.act = drilling(1, now + 500, 2, Some(now + 500)).act;
+        assert!(
+            pick(vec![busy], &state, &current).iter().all(|c| !c.1),
+            "an act beside it"
+        );
+        let mut running = drilling(1, now + 500, 2, None);
+        running.plan = planned(1, 1_000).plan;
+        running.plans = 1;
+        assert!(
+            pick(vec![running], &state, &current).iter().all(|c| !c.1),
+            "a run beside it"
+        );
+        let mut waiting_unload = planned(1, 1_000);
+        waiting_unload.queued = queued(1, 9_000).queued;
+        assert!(
+            pick(vec![waiting_unload], &state, &current)
+                .iter()
+                .all(|c| !c.1),
+            "a queued unload beside it"
+        );
+        // The lead's pre-commit round, item 3: past its bound a plan is decided whatever it waits
+        // on — a queued unload standing, or a cached wait — so its `Bound` end is submitted; an
+        // act in flight still holds it.
+        let past = now - crate::surface::plan::PLAN_BOUND_IC_SECS;
+        let mut bound_unload = planned(1, past);
+        bound_unload.queued = queued(1, 9_000).queued;
+        assert!(
+            pick(vec![bound_unload], &state, &current)
+                .iter()
+                .any(|c| c.1),
+            "past its bound, beside a queued unload"
+        );
+        let mut cached = SurfaceTickState::default();
+        cached.plan_waits.insert(ObjId(1), (1, now + 300));
+        assert!(
+            pick(vec![planned(1, past)], &cached, &current)
+                .iter()
+                .any(|c| c.1),
+            "past its bound, inside a cached wait"
+        );
+        assert!(
+            pick(vec![planned(1, past + 1)], &cached, &current)
+                .iter()
+                .all(|c| !c.1),
+            "a second before its bound, the cached wait holds"
+        );
+        let mut bound_busy = planned(1, past);
+        bound_busy.act = drilling(1, now + 500, 2, Some(now + 500)).act;
+        assert!(
+            pick(vec![bound_busy], &state, &current)
+                .iter()
+                .all(|c| !c.1),
+            "past its bound, an act in flight holds it"
+        );
+        assert!(
+            pick(vec![planned(1, 1_000)], &state, &orphaned).is_empty(),
+            "an orphaned plan is inert"
+        );
+        // The fixer round's conformance/F1: a projection still showing the previous lessee's
+        // plan is untold once (its view cleared for the new lessee), never a plan candidate.
+        let stale = PlanReads {
+            lessee: &lessee_9,
+            shown: &shown_current,
+            helm: &helm_8,
+        };
+        assert_eq!(
+            pick(vec![planned(1, 1_000)], &state, &stale),
+            vec![(1, false, true, false, (1_000, 1))],
+            "the old view is cleared, the plan stays inert"
+        );
+        // The fixer round's correctness/F3: the author's own queued unload with the author off
+        // the helm is orphaned — the plan's to read (its helm wait), not SM.8's start.
+        let off_helm = PlanReads {
+            lessee: &lessee_7,
+            shown: &shown_current,
+            helm: &no_helm,
+        };
+        let mut orphaned_unload = planned(1, 1_000);
+        orphaned_unload.queued = queued(1, 9_000).queued;
+        let (picked, _) = candidates(
+            vec![orphaned_unload],
+            now,
+            |_| (0, 0),
+            |_| None,
+            |_| None,
+            &state,
+            &off_helm,
+        );
+        assert_eq!(
+            picked
+                .iter()
+                .map(|c| (c.plan, c.queued))
+                .collect::<Vec<_>>(),
+            vec![(true, false)],
+            "an orphaned queue goes to the plan's arm"
+        );
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 6, PLAN_CYCLE), 100);
+        assert!(
+            pick(vec![planned(1, 1_000)], &resting, &current).is_empty(),
+            "in its back-off"
+        );
+        let mut cached = SurfaceTickState::default();
+        cached.plan_waits.insert(ObjId(1), (1, now + 300));
+        assert!(
+            pick(vec![planned(1, 1_000)], &cached, &current).is_empty(),
+            "inside a wait of the same seq"
+        );
+        cached.plan_waits.insert(ObjId(1), (0, now + 300));
+        assert_eq!(
+            pick(vec![planned(1, 1_000)], &cached, &current).len(),
+            1,
+            "a wait of an older seq is stale"
+        );
+        cached.plan_waits.insert(ObjId(1), (1, now));
+        assert_eq!(
+            pick(vec![planned(1, 1_000)], &cached, &current).len(),
+            1,
+            "a wait that has run out"
+        );
+        // The idle return (a rig with no plan shows none).
+        let idle = PlanReads {
+            lessee: &lessee_7,
+            shown: &nothing_shown,
+            helm: &helm_8,
+        };
+        let launched = now - IDLE_PARK_IC_SECS;
+        assert!(
+            pick(vec![out_idle(1, launched + 60)], &state, &idle).is_empty(),
+            "24 IC h less a minute"
+        );
+        assert_eq!(
+            pick(vec![out_idle(1, launched)], &state, &idle),
+            vec![(1, false, false, true, (now, 1))],
+            "24 IC h"
+        );
+        let mut stranded = SurfaceTickState::default();
+        stranded.stranded.insert(ObjId(1), now + 1);
+        assert!(
+            pick(vec![out_idle(1, launched)], &stranded, &idle).is_empty(),
+            "a stranded rig inside its day"
+        );
+        stranded.stranded.insert(ObjId(1), now);
+        assert_eq!(
+            pick(vec![out_idle(1, launched)], &stranded, &idle).len(),
+            1,
+            "a stranded rig's day has run"
+        );
+        let mut idle_resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        idle_resting.backoff.insert((1, 6, IDLE_CYCLE), 100);
+        assert!(pick(vec![out_idle(1, launched)], &idle_resting, &idle).is_empty());
+        let mut planning_out = out_idle(1, launched);
+        planning_out.plan = planned(1, 1_000).plan;
+        planning_out.plans = 1;
+        assert!(
+            pick(vec![planning_out], &state, &current)
+                .iter()
+                .all(|c| !c.3),
+            "a live plan is never idle"
+        );
+        // The plan untold.
+        let mut untold = planned(1, 1_000);
+        if let Some(plan) = untold.plan.as_mut() {
+            plan.seq = 2;
+        }
+        let (picked, _) = candidates(
+            vec![untold],
+            now,
+            |_| (0, 0),
+            |_| None,
+            |_| None,
+            &resting,
+            &current,
+        );
+        assert_eq!(
+            picked
+                .iter()
+                .map(|c| (c.plan_untold, c.plan, c.order))
+                .collect::<Vec<_>>(),
+            vec![(true, false, (1_000, 1))],
+            "untold even inside the step's back-off"
+        );
+        let due = still_due(&[planned(1, 1_000), out_idle(2, launched)], now);
+        assert!(due.contains(&(1, 6, PLAN_CYCLE)), "{due:?}");
+        assert!(due.contains(&(2, 6, IDLE_CYCLE)), "{due:?}");
+    }
+
+    /// **The plan and idle keys never meet a cycle** (doc 20 cut SM.11; the brief's 3.8):
+    /// `PLAN_CYCLE`, `IDLE_CYCLE` and SM.8's `QUEUED_CYCLE` are distinct and all past every run
+    /// cycle, and `retried_ordinals` names none of them.
+    #[test]
+    fn sm11_the_plan_and_idle_keys_never_meet_a_cycle() {
+        const {
+            assert!(PLAN_CYCLE > crate::surface::excursion::MAX_RUN_CYCLES);
+            assert!(IDLE_CYCLE > crate::surface::excursion::MAX_RUN_CYCLES);
+            assert!(PLAN_CYCLE != QUEUED_CYCLE && IDLE_CYCLE != QUEUED_CYCLE);
+            assert!(PLAN_CYCLE != IDLE_CYCLE);
+        };
+        let mut state = SurfaceTickState::default();
+        state.attempts.insert((900, 6, QUEUED_CYCLE), 3);
+        state.attempts.insert((900, 6, PLAN_CYCLE), 3);
+        state.attempts.insert((900, 6, IDLE_CYCLE), 3);
+        state.attempts.insert((900, 4, 0), 2);
+        assert_eq!(retried_ordinals(&state, ObjId(900)), vec![(4, 0)]);
     }
 
     /// **A new operator or excursion starts a clean log** (doc 20 cut SM.9; the brief's 3.4a,

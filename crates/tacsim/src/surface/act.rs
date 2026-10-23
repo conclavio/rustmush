@@ -73,6 +73,19 @@
 //! good). No act of the unload reads a licence, a tenure, a lease or the battery. Every start
 //! clears a queued unload.
 //!
+//! **Doc 20 cut SM.11** adds the fill plan on the same two actions (no third; the brief's lead
+//! rulings 1–4, decisions D10 and D17): `plan_cmd` (`+tv/<n> plan <list> [family=<good>] [go]`)
+//! compiles the list (`crate::surface::plan::compile`, the start's offer the same function),
+//! writes an `ActOrders` entry and submits `act: plan_file`; `plan_show_cmd` reads it back;
+//! `plan_clear_cmd` ends a live plan (`plan_clear`) or strikes an ended one (`plan_strike`) —
+//! two writes on two keys. Every step of a plan is one of the existing acts, submitted by the
+//! surface tick as the author with the server-authored start parameters `by: plan`, `plan` and
+//! `step`, which the offer fixes from the durable record (`crate::surface::plan::decide`) — never
+//! a RAM order — and the prepare holds the start to; a plan's end is `act: plan_end`. The idle
+//! return is a recover with `by: idle`. A live plan holds its rig from every hand start
+//! (`plan_live`). The finish copies who set an act going onto its outcome, writes a plan's
+//! readings `via: Plan` and counts the plan's tally.
+//!
 //! Neither provider's prepare reads a clock: `now` is the offer's IC instant. The start's offer
 //! never reads `World::now`; since cut SM.8 the finish's offer fixes the real second (`wall`) as
 //! well as the IC `clock` — the market lot offer's precedent — for the hopper's marker ring
@@ -129,6 +142,10 @@ use crate::surface::mine::{
     cursor_after, cursor_locked, cursor_released, cycle_secs, cycle_yield, fit, lock_live,
     pocket_yields, run_end,
 };
+use crate::surface::plan::{
+    ActBy, FillPlan, FillState, MAX_PLAN_NOTES, MAX_PLAN_STEPS, PLAN_BOUND_IC_SECS, PlanEnd,
+    PlanNote, PlanNoteKind, PlanStep, PlanTally, PlanUpdate,
+};
 use crate::surface::reading::Footing;
 use crate::surface::unload::{Bound as ShortBound, Short};
 use crate::surface::{HomePeek, Peeks};
@@ -147,13 +164,19 @@ pub const SURFACE_DONE_OUTCOME: &str = "tacsim_surface_done_result";
 /// the finish `tacsim.surface/{tv}/{ordinal}/done`.
 pub const SURFACE_KEY_PREFIX: &str = "tacsim.surface/";
 /// **The start's `act` words** (doc 20 cut SM.4a, D23): the offer's Choice and the plans' keys,
-/// sorted. Doc 20 cut SM.7 adds `mine` and `mine_stop`; doc 20 cut SM.8 `unload`.
-pub const ACT_WIRE_WORDS: [&str; 10] = [
+/// sorted. Doc 20 cut SM.7 adds `mine` and `mine_stop`; doc 20 cut SM.8 `unload`; doc 20 cut
+/// SM.11 the plan's four controls `plan_clear`, `plan_end`, `plan_file` and `plan_strike` (none an
+/// act: each writes the plan and never the act slot, `mine_stop`'s precedent).
+pub const ACT_WIRE_WORDS: [&str; 14] = [
     "drive",
     "dump",
     "launch",
     "mine",
     "mine_stop",
+    "plan_clear",
+    "plan_end",
+    "plan_file",
+    "plan_strike",
     "recover",
     "scan",
     "sound",
@@ -189,14 +212,28 @@ pub(crate) enum StartWord {
     },
     /// `+tv/mine stop`.
     MineStop,
+    /// **Doc 20 cut SM.11**: `+tv/plan … go` — the filing.
+    PlanFile,
+    /// `+tv/plan clear` on a live plan.
+    PlanClear,
+    /// `+tv/plan clear` on an ended plan: it is struck from the record.
+    PlanStrike,
+    /// The surface tick's end of a plan.
+    PlanEnd,
 }
 
-/// **The start's word** (doc 20 cut SM.7): [`act_of_word`]'s acts, and `mine_stop`. Both the
-/// start's `validate_invocation` and its prepare read it.
+/// **The start's word** (doc 20 cut SM.7): [`act_of_word`]'s acts, `mine_stop` and (doc 20 cut
+/// SM.11) the plan's four controls. Both the start's `validate_invocation` and its prepare read
+/// it.
 #[must_use]
 pub(crate) fn start_word(word: &str) -> Option<StartWord> {
-    if word == "mine_stop" {
-        return Some(StartWord::MineStop);
+    match word {
+        "mine_stop" => return Some(StartWord::MineStop),
+        "plan_file" => return Some(StartWord::PlanFile),
+        "plan_clear" => return Some(StartWord::PlanClear),
+        "plan_strike" => return Some(StartWord::PlanStrike),
+        "plan_end" => return Some(StartWord::PlanEnd),
+        _ => {}
     }
     act_of_word(word).map(|(kind, quiet)| StartWord::Act { kind, quiet })
 }
@@ -250,6 +287,70 @@ pub fn queued_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
         .ok()
 }
 
+/// **A plan's filing key** (doc 20 cut SM.11; the brief's 3.6): `tacsim.surface/{tv}/plan/{no}/file`
+/// — one filing a plan number.
+#[must_use]
+pub fn plan_file_key(tv: ObjId, no: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/plan/{no}/file", tv.0)).ok()
+}
+
+/// **A live plan's clear key** (the brief's D17; the reviewer's F1):
+/// `tacsim.surface/{tv}/plan/{no}/clear/{seq}` — while the plan is live its `seq` moves with every
+/// plan start, so the same `(no, seq)` always carries the same parameters: the clear names no act
+/// of the record ([`PLAN_CLEAR_ORDINAL`], the lead's pre-commit round, item 2).
+#[must_use]
+pub fn plan_clear_key(tv: ObjId, no: u32, seq: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!(
+        "{SURFACE_KEY_PREFIX}{}/plan/{no}/clear/{seq}",
+        tv.0
+    ))
+    .ok()
+}
+
+/// **The `ordinal` a clear carries** (the lead's pre-commit round, item 2; the judge's
+/// correctness/F6): the start's offer requires the parameter, but a clear names no act of the
+/// record and its prepare never reads it — so it is this constant, never the record's ordinal,
+/// which SM.8's queued unload start moves without moving the plan's `seq`. Two clears typed around
+/// such a landing carry the same key and the same parameters: the second is the store's Replay of
+/// the first, never its idempotency conflict.
+pub const PLAN_CLEAR_ORDINAL: u32 = 1;
+
+/// **An ended plan's strike key** (D17): `tacsim.surface/{tv}/plan/{no}/strike/{ordinal}` — hand
+/// acts may move the ordinal under an ended plan, so a retry after one is a new key.
+#[must_use]
+pub fn plan_strike_key(tv: ObjId, no: u32, ordinal: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!(
+        "{SURFACE_KEY_PREFIX}{}/plan/{no}/strike/{ordinal}",
+        tv.0
+    ))
+    .ok()
+}
+
+/// **A plan's end key** (the brief's 3.8): `tacsim.surface/{tv}/plan/{no}/end` — one end a plan.
+#[must_use]
+pub fn plan_end_key(tv: ObjId, no: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/plan/{no}/end", tv.0)).ok()
+}
+
+/// **A plan step's start key** (the brief's 3.6, D9): `tacsim.surface/{tv}/{ordinal}/plan/{step}/
+/// {word}` — the word in the key, because a step whose submission did not land may be re-decided
+/// as another move at the same ordinal (a drive becomes a recover), and a reused key with other
+/// parameters would meet the store's idempotency conflict.
+#[must_use]
+pub fn plan_step_key(tv: ObjId, ordinal: u32, step: u16, word: &str) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!(
+        "{SURFACE_KEY_PREFIX}{}/{ordinal}/plan/{step}/{word}",
+        tv.0
+    ))
+    .ok()
+}
+
+/// **The idle return's key** (lead ruling 6): `tacsim.surface/{tv}/{ordinal}/idle`.
+#[must_use]
+pub fn idle_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/idle", tv.0)).ok()
+}
+
 // ---- the actor's rigs and where a rig is ----------------------------------------------
 
 /// **One of an operator's rigs** (the brief's 3.3): a live lease record of the actor's on
@@ -282,6 +383,29 @@ pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
     let mut rigs: Vec<RigAt> = store
         .tv_leases_of(actor)
         .filter(|record| record.live() && record.hull == helm.hull)
+        .map(|record| RigAt {
+            tv: record.tv,
+            slot: record.slot,
+            mark: record.mark.clone(),
+            hull: record.hull,
+            record: record.clone(),
+        })
+        .collect();
+    rigs.sort_by_key(|rig| (rig.slot, rig.tv));
+    rigs
+}
+
+/// **Every rig `actor` leases, at the helm or not** (doc 20 cut SM.11; the lead's pre-commit round,
+/// item 3): [`operator_rigs`]' rows without its helm filter — the plan's author reaches their own
+/// plan from anywhere aboard (`+tv/plan show|clear`), and the plan's `Bound` end is submitted as
+/// its author wherever they stand.
+pub(crate) fn leased_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let mut rigs: Vec<RigAt> = store
+        .tv_leases_of(actor)
+        .filter(|record| record.live())
         .map(|record| RigAt {
             tv: record.tv,
             slot: record.slot,
@@ -824,11 +948,61 @@ pub enum Refusal {
         /// The slot.
         n: u8,
     },
+    /// `UNLOAD_MARKERS` (doc 20 cut SM.11, the lead's pre-commit round, item 1): the queued
+    /// unload's start, while the hopper's marker ring could not record the move — the queue
+    /// stands and the surface tick starts it again under its attempt rule.
+    UnloadMarkers {
+        /// The slot.
+        n: u8,
+    },
+    /// `PLAN_LIVE` (doc 20 cut SM.11; the brief's D8): a live plan holds its rig from every hand
+    /// start.
+    PlanLive {
+        /// The slot.
+        n: u8,
+        /// The plan's number.
+        no: u32,
+    },
+    /// `PLAN_ALREADY` (doc 20 cut SM.11): filing over a live plan.
+    PlanFiled {
+        /// The slot.
+        n: u8,
+        /// The live plan's number.
+        no: u32,
+    },
+    /// `PLAN_CHANGED` (doc 20 cut SM.11): the start's re-compile differs from the preview.
+    PlanChanged {
+        /// The slot.
+        n: u8,
+    },
+    /// `PLAN_WAITS` (doc 20 cut SM.11): the plan's next step cannot start now.
+    PlanWaits {
+        /// The slot.
+        n: u8,
+    },
+    /// `PLAN_CHANGED`'s line (doc 20 cut SM.11): the plan moved on between the decision and the
+    /// landing.
+    PlanMoved {
+        /// The slot.
+        n: u8,
+    },
+    /// `PLAN_NONE` (doc 20 cut SM.11).
+    PlanNone {
+        /// The slot.
+        n: u8,
+    },
+    /// `PLAN_ALREADY_ENDED` (doc 20 cut SM.11): a clear landing on a plan that ended by itself.
+    PlanEnded {
+        /// The slot.
+        n: u8,
+        /// The plan's number.
+        no: u32,
+    },
 }
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-const REFUSAL_CODES: [(&str, &str); 56] = [
+const REFUSAL_CODES: [(&str, &str); 64] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -910,7 +1084,31 @@ const REFUSAL_CODES: [(&str, &str); 56] = [
         "unload_changed",
         "the hopper or the hold's room changed; preview it again",
     ),
+    // Doc 20 cut SM.11 (the lead's pre-commit round, item 1): the queued unload's start while the
+    // hopper's unload log is full.
+    (
+        "unload_markers",
+        "the rig's unload log is full; try again later",
+    ),
+    // Doc 20 cut SM.11: the fill plan's seven (prepare refusals, never a world plan's).
+    ("plan_live", "that rig is working a plan"),
+    ("plan_filed", "that rig is already working a plan"),
+    (
+        "plan_changed",
+        "that plan changed since its preview; preview it again",
+    ),
+    ("plan_waits", "that rig's plan is waiting"),
+    ("plan_moved", "the plan moved on"),
+    ("plan_none", "that rig has no plan"),
+    ("plan_ended", "that plan has already ended"),
 ];
+
+/// **Every refusal word** (doc 20 cut SM.11; test support for the plan's refusal table, which
+/// iterates the start's own list).
+#[cfg(test)]
+pub(crate) fn refusal_words() -> Vec<&'static str> {
+    REFUSAL_CODES.iter().map(|(word, _)| *word).collect()
+}
 
 /// The start's message for an offer-wire word; an unknown word reads as dark.
 #[must_use]
@@ -982,6 +1180,14 @@ impl Refusal {
             Refusal::UnloadNoFit { .. } => "unload_no_fit",
             Refusal::UnloadNoStock { .. } => "unload_no_stock",
             Refusal::UnloadChanged { .. } => "unload_changed",
+            Refusal::UnloadMarkers { .. } => "unload_markers",
+            Refusal::PlanLive { .. } => "plan_live",
+            Refusal::PlanFiled { .. } => "plan_filed",
+            Refusal::PlanChanged { .. } => "plan_changed",
+            Refusal::PlanWaits { .. } => "plan_waits",
+            Refusal::PlanMoved { .. } => "plan_moved",
+            Refusal::PlanNone { .. } => "plan_none",
+            Refusal::PlanEnded { .. } => "plan_ended",
         }
     }
 
@@ -1164,8 +1370,232 @@ impl Refusal {
                 .replace("{fit}", &fit.to_string())
                 .replace("{ore}", ore),
             Refusal::UnloadChanged { n } => tv::UNLOAD_CHANGED.replace("{n}", &n.to_string()),
+            Refusal::UnloadMarkers { n } => tv::UNLOAD_MARKERS.replace("{n}", &n.to_string()),
+            Refusal::PlanLive { n, no } => tv::PLAN_LIVE
+                .replace("{n}", &n.to_string())
+                .replace("{no}", &no.to_string()),
+            Refusal::PlanFiled { n, no } => tv::PLAN_ALREADY
+                .replace("{n}", &n.to_string())
+                .replace("{no}", &no.to_string()),
+            Refusal::PlanChanged { n } | Refusal::PlanMoved { n } => {
+                tv::PLAN_CHANGED.replace("{n}", &n.to_string())
+            }
+            Refusal::PlanWaits { n } => tv::PLAN_WAITS
+                .replace("{n}", &n.to_string())
+                .replace("{why}", tv::WAIT_NEXT),
+            Refusal::PlanNone { n } => tv::PLAN_NONE.replace("{n}", &n.to_string()),
+            Refusal::PlanEnded { n, no } => tv::PLAN_ALREADY_ENDED
+                .replace("{n}", &n.to_string())
+                .replace("{no}", &no.to_string()),
         }
     }
+}
+
+/// **One sample of every refusal variant** (test support: `sm3b_every_refusal_word_has_a_message`
+/// and the plan's refusal table iterate it).
+#[cfg(test)]
+pub(crate) fn refusal_samples() -> Vec<Refusal> {
+    vec![
+        Refusal::Dark {
+            name: String::new(),
+        },
+        Refusal::Unwired,
+        Refusal::NotAboard {
+            name: String::new(),
+        },
+        Refusal::NotSite {
+            name: String::new(),
+        },
+        Refusal::UnderWay {
+            name: String::new(),
+        },
+        Refusal::Cleared {
+            name: String::new(),
+            port: String::new(),
+        },
+        Refusal::Out { n: 1 },
+        Refusal::Open { n: 1 },
+        Refusal::Forfeit {
+            n: 1,
+            counter: String::new(),
+            port: String::new(),
+        },
+        Refusal::Ended {
+            n: 1,
+            counter: String::new(),
+            port: String::new(),
+        },
+        Refusal::InBay { n: 1 },
+        Refusal::Elsewhere {
+            n: 1,
+            name: String::new(),
+        },
+        Refusal::Far {
+            n: 1,
+            m: 20,
+            ramp: String::new(),
+        },
+        Refusal::DumpNotSite {
+            n: 1,
+            name: String::new(),
+        },
+        Refusal::NoSpoil {
+            site: String::new(),
+        },
+        Refusal::Empty { n: 1 },
+        Refusal::Busy {
+            n: 1,
+            doing: String::new(),
+            when: String::new(),
+        },
+        Refusal::Reserve {
+            n: 1,
+            now: 1,
+            after: 0,
+            floor: 5,
+        },
+        Refusal::Cap {
+            cap: CapRefused::Operator,
+            site: String::new(),
+        },
+        Refusal::NothingNew,
+        Refusal::ChartFull {
+            body: String::new(),
+        },
+        Refusal::GroundCold {
+            site: String::new(),
+            entry: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
+        },
+        Refusal::InstrumentsDark,
+        Refusal::NoFooting {
+            n: 1,
+            terrain: String::new(),
+        },
+        Refusal::OffSite {
+            site: String::new(),
+        },
+        Refusal::Here { n: 1 },
+        Refusal::NoPath {
+            n: 1,
+            target: String::new(),
+        },
+        Refusal::Winding {
+            n: 1,
+            target: String::new(),
+            needed: 33,
+        },
+        Refusal::NoWayHome {
+            n: 1,
+            target: String::new(),
+            ramp: String::new(),
+        },
+        Refusal::Unplanned,
+        Refusal::Moved,
+        Refusal::LegShort {
+            n: 1,
+            now: "2".to_owned(),
+            need: "3".to_owned(),
+            ramp: String::new(),
+        },
+        Refusal::RecoverDark {
+            n: 1,
+            ramp: String::new(),
+        },
+        Refusal::MineInBay { n: 1 },
+        Refusal::MineRunning {
+            n: 1,
+            addr: String::new(),
+            k: 1,
+            cycles: 4,
+            when: String::new(),
+        },
+        Refusal::MineNoFooting {
+            n: 1,
+            terrain: String::new(),
+        },
+        Refusal::Licence {
+            line: tv::MINE_NO_LICENCE.to_owned(),
+        },
+        Refusal::Claimed,
+        Refusal::Locked,
+        Refusal::HopperFull {
+            n: 1,
+            hopper: String::new(),
+        },
+        Refusal::HoldFull {
+            name: String::new(),
+        },
+        Refusal::WorkedOut {
+            addr: String::new(),
+            ore: String::new(),
+        },
+        Refusal::NoFit {
+            n: 1,
+            m: 4,
+            fit: 3,
+            bound: Bound::Hopper,
+            fam: String::new(),
+        },
+        Refusal::BlindRoom { room: 3 },
+        Refusal::BlindCount {
+            n: 1,
+            fam: String::new(),
+        },
+        Refusal::NoOre {
+            addr: String::new(),
+            ore: String::new(),
+        },
+        Refusal::AllBarren {
+            addr: String::new(),
+        },
+        Refusal::MineForfeit {
+            n: 1,
+            counter: String::new(),
+            port: String::new(),
+        },
+        Refusal::MineEnded {
+            n: 1,
+            counter: String::new(),
+            port: String::new(),
+        },
+        Refusal::MineChanged,
+        Refusal::UnloadUnderWay {
+            name: String::new(),
+        },
+        Refusal::UnloadNotSite {
+            n: 1,
+            name: String::new(),
+        },
+        Refusal::UnloadOut {
+            n: 1,
+            site: String::new(),
+        },
+        Refusal::UnloadNoRoom {
+            n: 1,
+            name: String::new(),
+            load: String::new(),
+        },
+        Refusal::UnloadNoFit {
+            n: 1,
+            q: 9,
+            fit: 3,
+            ore: String::new(),
+        },
+        Refusal::UnloadNoStock {
+            n: 1,
+            fit: 3,
+            ore: String::new(),
+        },
+        Refusal::UnloadChanged { n: 1 },
+        Refusal::UnloadMarkers { n: 1 },
+        Refusal::PlanLive { n: 1, no: 2 },
+        Refusal::PlanFiled { n: 1, no: 2 },
+        Refusal::PlanChanged { n: 1 },
+        Refusal::PlanWaits { n: 1 },
+        Refusal::PlanMoved { n: 1 },
+        Refusal::PlanNone { n: 1 },
+        Refusal::PlanEnded { n: 1, no: 2 },
+    ]
 }
 
 // ---- the world plans --------------------------------------------------------------------------
@@ -2205,6 +2635,29 @@ fn want_cold(ctx: &mut Ctx<'_>, rig: &RigAt, refusal: &Refusal) {
     }
 }
 
+/// **A live plan holds its rig** (doc 20 cut SM.11; the brief's 3.5, D8): `PLAN_LIVE` when the
+/// rig's record holds a plan live for the actor — every hand start's command asks it first, before
+/// the record's busy refusal, and says nothing else. A record that will not read answers nothing
+/// here (the command's own read darkens it).
+fn plan_holds(ctx: &Ctx<'_>, rig: &RigAt) -> Result<(), CmdError> {
+    let Some(handles) = ctx.w.module_state::<PortHandles>() else {
+        return Ok(());
+    };
+    let Ok(Some(record)) = ctx.action_state(&handles.families.excursions, &RigKey(rig.tv)) else {
+        return Ok(());
+    };
+    match record.live_plan_for(ctx.actor) {
+        Some(plan) => Err(CmdError::msg(
+            Refusal::PlanLive {
+                n: rig.slot,
+                no: plan.no,
+            }
+            .line(),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// **The record's busy refusal** (`RIG_BUSY`): an act in flight.
 fn busy_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<Refusal> {
     let act = record.act.as_ref()?;
@@ -2319,7 +2772,7 @@ fn percent_up(cu: u32, battery: &BatteryDef) -> u32 {
 /// decision P6): `leg_affordable` on the record's own value — never the 5 % floor, never the
 /// battery's row; the battery reads only the words (`?` without it). **SM.11: its idle
 /// return-and-park must treat this refusal as "parked where it stands".**
-fn leg_home(
+pub(crate) fn leg_home(
     record: &RigRecord,
     plan: &ActPlan,
     battery: Option<&BatteryDef>,
@@ -2390,6 +2843,8 @@ pub(crate) fn act_cmd(
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig.
+    plan_holds(ctx, rig)?;
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     // 1. The world plan (the start's offer runs the same function). A reading act needs the
@@ -2815,6 +3270,8 @@ pub(crate) fn unload_cmd(
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig.
+    plan_holds(ctx, rig)?;
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     // 1. The world plan (the start's offer runs the same function).
@@ -3052,8 +3509,31 @@ pub(crate) struct UnloadOrder {
     pub qty: Option<u64>,
 }
 
+/// **One planned filing, waiting for its start** (doc 20 cut SM.11; the brief's 3.5 and D10, the
+/// `MineOrder` precedent): the command compiles the list and writes this order; the start's offer
+/// — only for the record's ordinal and next plan number (the reviewer's F11) — re-compiles over the
+/// engine and requires it equal (`plan_changed` otherwise), so `go` files exactly the preview or
+/// nothing. RAM only: a restart loses an unlanded filing ("that act was not planned"). The plan's
+/// own steps never read a RAM order (lead ruling 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlanOrder {
+    /// Who filed it.
+    pub actor: ObjId,
+    /// The record's ordinal when it was planned (a filing writes no act, so no ordinal of its own).
+    pub ordinal: u32,
+    /// The plan's number: the record's `plans + 1`.
+    pub no: u32,
+    /// The list as typed.
+    pub list: String,
+    /// `family=` as typed.
+    pub family: Option<OreFamily>,
+    /// The compiled plan previewed.
+    pub compiled: crate::surface::plan::Compiled,
+}
+
 /// **One rig's order** (doc 20 cut SM.7): a drive's or a mining run's — and since doc 20 cut SM.8
-/// a hand unload's; the newer of a rig's orders replaces the older (one slot).
+/// a hand unload's, since SM.11 a plan's filing; the newer of a rig's orders replaces the older
+/// (one slot).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ActOrder {
     /// `+tv/drive … go`.
@@ -3062,6 +3542,8 @@ pub(crate) enum ActOrder {
     Mine(Box<MineOrder>),
     /// `+tv/unload … go` (doc 20 cut SM.8).
     Unload(UnloadOrder),
+    /// `+tv/plan … go` (doc 20 cut SM.11; boxed beside the others).
+    Plan(Box<PlanOrder>),
 }
 
 /// **The act orders** (doc 20 cut SM.4b's `DriveOrders`, generalised by cut SM.7 to every act
@@ -3106,7 +3588,7 @@ fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
         .and_then(|orders| orders.0.get(&tv))
     {
         Some(ActOrder::Drive(order)) => Some(order.clone()),
-        Some(ActOrder::Mine(_) | ActOrder::Unload(_)) | None => None,
+        Some(ActOrder::Mine(_) | ActOrder::Unload(_) | ActOrder::Plan(_)) | None => None,
     }
 }
 
@@ -3117,7 +3599,7 @@ fn unload_order_of(w: &World, tv: ObjId) -> Option<UnloadOrder> {
         .and_then(|orders| orders.0.get(&tv))
     {
         Some(ActOrder::Unload(order)) => Some(order.clone()),
-        Some(ActOrder::Drive(_) | ActOrder::Mine(_)) | None => None,
+        Some(ActOrder::Drive(_) | ActOrder::Mine(_) | ActOrder::Plan(_)) | None => None,
     }
 }
 
@@ -3133,6 +3615,12 @@ pub(crate) fn prune_mine_orders(w: &mut World, records: &[RigRecord]) -> usize {
         .iter()
         .map(|record| (record.tv, record.ordinal.saturating_add(1)))
         .collect();
+    // Doc 20 cut SM.11 (the reviewer's F11): a filing leaves once it landed (`plans ≥ no`) or the
+    // rig's orders moved on (`ordinal` changed); a rig with no record keeps a first filing at 0.
+    let filed: BTreeMap<ObjId, (u32, u32)> = records
+        .iter()
+        .map(|record| (record.tv, (record.ordinal, record.plans)))
+        .collect();
     let Some(orders) = w.module_state_mut::<ActOrders>() else {
         return 0;
     };
@@ -3141,8 +3629,48 @@ pub(crate) fn prune_mine_orders(w: &mut World, records: &[RigRecord]) -> usize {
         ActOrder::Drive(_) => true,
         ActOrder::Mine(mine) => next.get(tv).copied().unwrap_or(1) == mine.ordinal,
         ActOrder::Unload(unload) => next.get(tv).copied().unwrap_or(1) == unload.ordinal,
+        ActOrder::Plan(plan) => {
+            let (ordinal, plans) = filed.get(tv).copied().unwrap_or((0, 0));
+            plans < plan.no && ordinal == plan.ordinal
+        }
     });
     before.saturating_sub(orders.0.len())
+}
+
+/// **Test hook** (doc 20 cut SM.11; the brief's P5): the plan number of the filing `tv`'s RAM
+/// slot holds, if any — so a test can prove a landed filing leaves the slot. Reads only.
+#[doc(hidden)]
+#[must_use]
+pub fn plan_order_for_tests(w: &World, tv: ObjId) -> Option<u32> {
+    plan_order_of(w, tv).map(|order| order.no)
+}
+
+/// **Test hook** (doc 20 cut SM.11; the brief's P5 and P8): how many times the start's offer
+/// compiled a filing, the interpreter ran and it planned a drive leg, this boot — so a test can
+/// prove a stale filing compiles nothing and a capped plan plans no leg. Reads only.
+#[doc(hidden)]
+#[must_use]
+pub fn plan_counts_for_tests(w: &World) -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering;
+    w.module_state::<crate::surface::plan::PlanCounters>()
+        .map_or((0, 0, 0), |counters| {
+            (
+                counters.0.compiles.load(Ordering::Relaxed),
+                counters.0.decides.load(Ordering::Relaxed),
+                counters.0.legs.load(Ordering::Relaxed),
+            )
+        })
+}
+
+/// The filing planned for `tv`, if its slot holds one (doc 20 cut SM.11).
+fn plan_order_of(w: &World, tv: ObjId) -> Option<PlanOrder> {
+    match w
+        .module_state::<ActOrders>()
+        .and_then(|orders| orders.0.get(&tv))
+    {
+        Some(ActOrder::Plan(order)) => Some(PlanOrder::clone(order)),
+        Some(ActOrder::Drive(_) | ActOrder::Mine(_) | ActOrder::Unload(_)) | None => None,
+    }
 }
 
 /// **Test hook** (doc 20 cut SM.7; the SM.7 lead's pre-commit round, item 5): the ordinal of the
@@ -3171,7 +3699,7 @@ fn mine_order_of(w: &World, tv: ObjId) -> Option<MineOrder> {
         .and_then(|orders| orders.0.get(&tv))
     {
         Some(ActOrder::Mine(order)) => Some(MineOrder::clone(order)),
-        Some(ActOrder::Drive(_) | ActOrder::Unload(_)) | None => None,
+        Some(ActOrder::Drive(_) | ActOrder::Unload(_) | ActOrder::Plan(_)) | None => None,
     }
 }
 
@@ -3201,6 +3729,8 @@ pub(crate) fn drive_cmd(
     let Some(target) = drive::parse_target(&split) else {
         return Err(CmdError::msg(tv::DRIVE_USAGE.replace("{n}", &n)));
     };
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig.
+    plan_holds(ctx, rig)?;
     let actor = ctx.actor;
     let handles = ctx
         .w
@@ -4315,6 +4845,8 @@ pub(crate) fn mine_cmd(
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig.
+    plan_holds(ctx, rig)?;
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     let tools = handles.surface_tools.clone().ok_or_else(dark)?;
@@ -4507,6 +5039,8 @@ pub(crate) fn mine_stop_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
+    // Doc 20 cut SM.11 (D8): a live plan holds its rig — its stop too.
+    plan_holds(ctx, rig)?;
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     let battery = rig_battery(ctx.w, &handles, rig);
@@ -4541,6 +5075,729 @@ pub(crate) fn mine_stop_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
         key,
     );
     crate::port::coop::say(ctx, line);
+    Ok(())
+}
+
+// ---- doc 20 cut SM.11: the fill plan's verbs ---------------------------------------------------
+
+/// **What a plan's preview and its filing read** (doc 20 cut SM.11; the brief's 3.5): the words
+/// the lines name and the figures beside the compile.
+#[derive(Clone, Debug)]
+pub(crate) struct PlanFacts {
+    /// The rig's record (fresh when absent).
+    pub record: RigRecord,
+    /// The hull's name.
+    pub name: String,
+    /// The site's entry.
+    pub site: CanonicalId,
+    /// The site's name.
+    pub site_name: String,
+    /// The hold's unreserved room, whole tonnes.
+    pub room_t: u64,
+    /// The slots of the hull's other rigs working a plan live for their lessee.
+    pub shared: Vec<u8>,
+}
+
+/// **Gather a plan's compile over the world** (doc 20 cut SM.11; the brief's 3.5 — one function,
+/// the command and the start's offer both call it, `mine_plan`'s precedent), cheap first: the
+/// layer and the view; under way; the hull on a site's pad (`LAUNCH_NOT_SITE`); the actor aboard
+/// (`TV_NOT_ABOARD`: filing is a hand act); the record (unreadable → `TV_DARK`); a plan live for
+/// the actor (`plan_filed`); the site's ground and home warm (`GROUND_COLD`, `INSTRUMENTS_DARK`);
+/// the tools rows and the rig's rates (`TV_DARK`); the hold's room (`TV_DARK`); the hopper; the
+/// site's ground resolved; the author's chart row; the rig's cell (the ramp's from the bay) — then
+/// [`crate::surface::plan::compile`] over the author's licence, lease, tenure and readings. `Err` is
+/// the world's refusal; `Ok` carries the compile's own answer.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one ordered gather
+pub(crate) fn plan_ask(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    actor: ObjId,
+    rig: &RigAt,
+    list: &str,
+    family: Option<OreFamily>,
+    tools: &BTreeMap<CanonicalId, ToolDef>,
+    peeks: &mut Peeks,
+    now_ic: i64,
+) -> Result<
+    (
+        Result<crate::surface::plan::Compiled, crate::surface::plan::PlanRefusal>,
+        PlanFacts,
+    ),
+    Refusal,
+> {
+    let (view, name) = view_of(w, rig)?;
+    if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
+        return Err(Refusal::UnderWay { name });
+    }
+    let berth = site_berth(w, &view)?;
+    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+        return Err(Refusal::NotAboard { name });
+    }
+    let dark = || Refusal::Dark { name: name.clone() };
+    let record = reads
+        .rig(rig.tv)
+        .map_err(|error| {
+            tracing::warn!(tv = rig.tv.0, %error, "tacsim: a rig's excursion record does not read");
+            dark()
+        })?
+        .unwrap_or_else(|| RigRecord::fresh_unread(rig.tv));
+    if let Some(plan) = record.live_plan_for(actor) {
+        return Err(Refusal::PlanFiled {
+            n: rig.slot,
+            no: plan.no,
+        });
+    }
+    let cold = || Refusal::GroundCold {
+        site: berth.name.clone(),
+        entry: berth.entry.clone(),
+    };
+    match chart::peek_site(w, &berth.entry, peeks) {
+        SitePeek::Warm(_) => {}
+        SitePeek::Cold => return Err(cold()),
+        SitePeek::Dark => return Err(Refusal::InstrumentsDark),
+    }
+    let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
+    let field = match crate::surface::peek_home(w, &berth.entry, ramp_cell, peeks) {
+        HomePeek::Warm(field) => field,
+        HomePeek::Cold => return Err(cold()),
+        HomePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let battery = rig_battery_id(w, rig.tv)
+        .and_then(|id| battery_of(tools, &id).copied())
+        .ok_or_else(dark)?;
+    let scanner = rig_scanner_id(w, rig.tv)
+        .and_then(|id| scanner_of(tools, &id).copied())
+        .ok_or_else(dark)?;
+    let drill = rig_drill_id(w, rig.tv)
+        .and_then(|id| drill_of(tools, &id).copied())
+        .ok_or_else(dark)?;
+    let rates = rig_rates(w, rig.tv, Some(&battery)).ok_or_else(dark)?;
+    let hull_rigs: Vec<ObjId> = tv::live_on_hull(w, rig.hull)
+        .iter()
+        .map(|lease| lease.tv)
+        .collect();
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
+    let read_rig = |tv: ObjId| reads.rig(tv);
+    let room_kg =
+        crate::port::ship::hold_unreserved_kg(w, &view, &hull_rigs, &read_pool, &read_rig)
+            .ok_or_else(dark)?;
+    let pool_unit = tv::pool_unit(w);
+    let (_, hopper_cap_kg) =
+        tv::hopper_load_with(w, rig.tv, pool_unit.as_ref(), &read_pool).map_err(|_| dark())?;
+    let site = chart::site_context(w, &berth.entry).map_err(|_| Refusal::InstrumentsDark)?;
+    let row = reads.chart(actor, &berth.entry).map_err(|_| dark())?;
+    let start_cell = match where_is(w, rig.tv) {
+        Where::Bay { hull } if hull == rig.hull => ramp_cell,
+        Where::Ground {
+            domain, x_cm, y_cm, ..
+        } if domain == berth.domain => site_cell(x_cm, y_cm),
+        Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
+            return Err(Refusal::Elsewhere { n: rig.slot, name });
+        }
+    };
+    let site_def = berth.def.site.as_ref().ok_or_else(dark)?;
+    let now = w.world_ic_now();
+    let tenure =
+        |letter: char| mine_tenure(w, reads, actor, (&berth.entry, site_def), letter, &now);
+    let cache = std::cell::RefCell::new(BTreeMap::new());
+    let classes = |pocket: (i64, i64)| {
+        crate::surface::plan::read_classes(&site, row.as_ref(), pocket, &mut cache.borrow_mut())
+    };
+    let fields = |field: (i64, i64)| crate::surface::plan::read_field(&site, row.as_ref(), field);
+    let home = |stand: (i64, i64)| drive::home_cu_to(&field, stand, &rates);
+    let compiled = crate::surface::plan::compile(&crate::surface::plan::CompileInput {
+        row: row.as_ref(),
+        list,
+        family,
+        licence: licence_verdict(w, actor, now_ic),
+        lease: lease_gate(w, &rig.record),
+        tenure: &tenure,
+        classes: &classes,
+        field_readings: &fields,
+        start_cell,
+        home: &home,
+        battery: &battery,
+        scanner: &scanner,
+        drill: &drill,
+        hold_room_t: room_kg / 1_000,
+        hopper_t: hopper_cap_kg / 1_000,
+    });
+    let mut shared: Vec<u8> = Vec::new();
+    for lease in tv::live_on_hull(w, rig.hull) {
+        if lease.tv == rig.tv {
+            continue;
+        }
+        if reads
+            .rig(lease.tv)
+            .ok()
+            .flatten()
+            .is_some_and(|other| other.live_plan_for(lease.pilot).is_some())
+        {
+            shared.push(lease.slot);
+        }
+    }
+    shared.sort_unstable();
+    Ok((
+        compiled,
+        PlanFacts {
+            record,
+            name,
+            site: berth.entry.clone(),
+            site_name: berth.name.clone(),
+            room_t: room_kg / 1_000,
+            shared,
+        },
+    ))
+}
+
+/// **A compile's refusal as the player hears it** (the brief's 3.5 texts): the two §5 lines byte
+/// for byte behind the address (`PLAN_REFUSED_AT`), the licence through `+licence`'s own line, the
+/// lease through the mining lines.
+fn plan_refusal_line(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+    name: &str,
+    refusal: &crate::surface::plan::PlanRefusal,
+) -> String {
+    use crate::surface::plan::{MAX_PLAN_ADDRESSES, MAX_PLAN_STEPS, PlanRefusal};
+    let n = rig.slot.to_string();
+    let at = |addr: &str, line: &str| {
+        tv::PLAN_REFUSED_AT
+            .replace("{addr}", addr)
+            .replace("{line}", line)
+    };
+    match refusal {
+        PlanRefusal::Usage => tv::PLAN_USAGE.to_owned(),
+        PlanRefusal::TooMany => tv::PLAN_TOO_MANY.replace("{max}", &MAX_PLAN_ADDRESSES.to_string()),
+        PlanRefusal::Twice { addr } => tv::PLAN_TWICE.replace("{addr}", addr),
+        PlanRefusal::NoReading { addr } => at(addr, tv::NO_READING),
+        PlanRefusal::Barren { addr, family } => tv::PLAN_BARREN
+            .replace("{addr}", addr)
+            .replace("{family}", family.label()),
+        PlanRefusal::Licence { why } => licence_end_line(w, actor, *why),
+        PlanRefusal::Lease { bar } => mine_lease_refusal(w, rig, *bar).line(),
+        PlanRefusal::Claimed { addr } => at(addr, tv::MINE_CLAIMED),
+        PlanRefusal::Dark { addr } => at(addr, tv::PLAN_DARK_LINE),
+        PlanRefusal::TooFar { addr } => at(addr, &tv::PLAN_TOO_FAR_LINE.replace("{n}", &n)),
+        PlanRefusal::TooLong { hours } => tv::PLAN_TOO_LONG.replace("{hours}", &hours.to_string()),
+        PlanRefusal::TooManySteps => {
+            tv::PLAN_TOO_MANY_STEPS.replace("{max}", &MAX_PLAN_STEPS.to_string())
+        }
+        PlanRefusal::HoldFull => tv::PLAN_HOLD_FULL.replace("{name}", name),
+    }
+}
+
+/// `{hours}` for an estimate: whole IC hours, rounded up.
+fn hours_up(secs: u64) -> u64 {
+    secs.div_ceil(3_600)
+}
+
+/// **`+tv/<n> plan <list> [family=<good>] [go]`** (doc 20 §1 beat 11, §8 "Leaving it running", §10;
+/// cut SM.11, the brief's 3.5; lead rulings 1 and 2, decision D10): [`plan_ask`] (the same gather
+/// the start's offer runs), then the compile's answer — a refusal's line, or bare the preview
+/// (`PLAN_PREVIEW_HEAD`, one `PLAN_PREVIEW_STEP` a step, `PLAN_PREVIEW_TAIL`), nothing written;
+/// with `go`, the filing written as an `ActOrders` entry (`ActOrder::Plan`) and ONE
+/// `tacsim_surface_act` with `act: plan_file` keyed `tacsim.surface/{tv}/plan/{no}/file`, and
+/// `PLAN_FILED`.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+#[allow(clippy::too_many_lines)] // the gather, then the preview or the go
+pub(crate) fn plan_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &RigAt,
+    list: &str,
+    family: Option<OreFamily>,
+    family_word: Option<&str>,
+    go: bool,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let tools = handles.surface_tools.clone().ok_or_else(dark)?;
+    let now_ic = ctx.w.world_ic_now().at;
+    let mut peeks = Peeks::default();
+    let asked = plan_ask(
+        ctx.w, &*ctx, actor, rig, list, family, &tools, &mut peeks, now_ic,
+    );
+    let (compiled, facts) = match asked {
+        Ok(asked) => asked,
+        Err(refusal) => {
+            want_cold(ctx, rig, &refusal);
+            return Err(CmdError::msg(refusal.line()));
+        }
+    };
+    let w: &World = ctx.w;
+    let compiled = compiled
+        .map_err(|refusal| CmdError::msg(plan_refusal_line(w, actor, rig, &name, &refusal)))?;
+    let n = rig.slot.to_string();
+    let ore = tv::ore_words(crate::surface::opening::ore_good(compiled.family));
+    let typed_list = {
+        let mut words = compiled.list.join(",");
+        if let Some(word) = family_word {
+            words.push_str(" family=");
+            words.push_str(word);
+        }
+        words
+    };
+    if !go {
+        let real = match crate::port::voyage::real_until(
+            w,
+            now_ic.saturating_add(crate::surface::plan::PLAN_BOUND_IC_SECS),
+        ) {
+            Some(real) => format!(", about {}", tv::span_words(real)),
+            None => String::new(),
+        };
+        let mut lines = vec![
+            tv::PLAN_PREVIEW_HEAD
+                .replace("{n}", &n)
+                .replace("{mark}", &rig.mark)
+                .replace("{site}", &facts.site_name)
+                .replace("{ore}", &ore)
+                .replace("{real}", &real),
+        ];
+        for (k, step) in compiled.steps.iter().enumerate() {
+            let secs = compiled.step_secs.get(k).copied().unwrap_or(0);
+            let hours = if secs > 0 {
+                tv::PLAN_STEP_HOURS.replace("{h}", &hours_up(secs).to_string())
+            } else {
+                String::new()
+            };
+            let far = compiled
+                .far
+                .iter()
+                .find(|(at, _)| usize::from(*at) == k)
+                .map_or_else(String::new, |(_, count)| {
+                    tv::PLAN_PREVIEW_FAR.replace("{k}", &count.to_string())
+                });
+            lines.push(
+                tv::PLAN_PREVIEW_STEP
+                    .replace("{k}", &k.saturating_add(1).to_string())
+                    .replace("{words}", &crate::surface::plan::step_words(step, true))
+                    .replace("{hours}", &hours)
+                    .replace("{far}", &far),
+            );
+        }
+        let shared: String = facts
+            .shared
+            .iter()
+            .map(|m| tv::PLAN_SHARED.replace("{m}", &m.to_string()))
+            .collect();
+        lines.push(
+            tv::PLAN_PREVIEW_TAIL
+                .replace("{name}", &facts.name)
+                .replace("{room}", &facts.room_t.to_string())
+                .replace("{shared}", &shared)
+                .replace("{hours}", &hours_up(compiled.est_secs).to_string())
+                .replace("{n}", &n)
+                .replace("{list}", &typed_list),
+        );
+        for line in lines {
+            crate::port::coop::say(ctx, line);
+        }
+        return Ok(());
+    }
+    // `go`: the order, then ONE submission as the actor.
+    let ordinal = facts.record.ordinal;
+    let Some(no) = facts.record.plans.checked_add(1) else {
+        return Err(dark());
+    };
+    let Some(key) = plan_file_key(rig.tv, no) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a plan's filing key did not form");
+        return Err(dark());
+    };
+    let when = tv::due_words(
+        ctx.w,
+        now_ic.saturating_add(crate::surface::plan::PLAN_BOUND_IC_SECS),
+    );
+    put_order(
+        ctx,
+        rig.tv,
+        ActOrder::Plan(Box::new(PlanOrder {
+            actor,
+            ordinal,
+            no,
+            list: list.to_owned(),
+            family,
+            compiled,
+        })),
+    );
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "tv": rig.tv.0.to_string(),
+            "act": "plan_file",
+            "ordinal": ordinal.max(1),
+        }),
+        key,
+    );
+    crate::port::coop::say(
+        ctx,
+        tv::PLAN_FILED
+            .replace("{n}", &n)
+            .replace("{no}", &no.to_string())
+            .replace("{when}", &when),
+    );
+    Ok(())
+}
+
+/// The words a plan's lines name (`{n}`, `{name}`, `{site}`, `{ramp}`, `{body}`).
+pub(crate) struct PlanWords {
+    /// The slot.
+    pub n: String,
+    /// The hull's name.
+    pub name: String,
+    /// The site's name.
+    pub site: String,
+    /// The egress's label.
+    pub ramp: String,
+    /// The site's body's name.
+    pub body: String,
+}
+
+impl PlanWords {
+    /// The words of `plan` on `w`.
+    pub(crate) fn of(w: &World, plan: &FillPlan) -> PlanWords {
+        let body = chart::lane_sites(w)
+            .into_iter()
+            .find(|site| site.entry == plan.site)
+            .map_or_else(String::new, |site| crate::port::site::body_name(&site.body));
+        PlanWords {
+            n: plan.slot.to_string(),
+            name: name_of(w, plan.hull),
+            site: site_name(w, &plan.site),
+            ramp: ramp_label(w, plan.hull),
+            body,
+        }
+    }
+}
+
+/// **Why a plan parked or ended, in a sentence** (the brief's 3.5 reason words): each ends in a
+/// full stop; the licence is `+licence`'s own line.
+#[must_use]
+pub(crate) fn end_why(w: &World, author: ObjId, why: PlanEnd, words: &PlanWords) -> String {
+    match why {
+        PlanEnd::WorkedOut => tv::END_WORKED_OUT.to_owned(),
+        PlanEnd::HoldFull => tv::END_HOLD_FULL.replace("{name}", &words.name),
+        PlanEnd::Bound => tv::END_BOUND.to_owned(),
+        PlanEnd::Licence { why } => licence_end_line(w, author, why),
+        PlanEnd::Claimed => tv::MINE_CLAIMED.to_owned(),
+        PlanEnd::Lease { forfeit: true } => tv::END_LEASE_FORFEIT.to_owned(),
+        PlanEnd::Lease { forfeit: false } => tv::END_LEASE_ENDED.to_owned(),
+        PlanEnd::Dark => tv::END_DARK.to_owned(),
+        PlanEnd::ChartFull => tv::END_CHART_FULL.replace("{body}", &words.body),
+        PlanEnd::Cleared => tv::END_CLEARED.to_owned(),
+        PlanEnd::Stranded => tv::END_STRANDED.replace("{ramp}", &words.ramp),
+    }
+}
+
+/// **Why a plan waits, in words** (the brief's 3.5): `Busy` is never told.
+#[must_use]
+pub(crate) fn wait_why(
+    w: &World,
+    wait: crate::surface::plan::PlanWait,
+    words: &PlanWords,
+) -> String {
+    use crate::surface::plan::PlanWait;
+    match wait {
+        PlanWait::Helm => tv::WAIT_HELM.replace("{name}", &words.name),
+        PlanWait::Ashore => tv::WAIT_ASHORE.replace("{name}", &words.name),
+        PlanWait::Cap => tv::WAIT_CAP.to_owned(),
+        PlanWait::Charging { until_ic } => {
+            tv::WAIT_CHARGING.replace("{when}", &tv::due_words(w, until_ic))
+        }
+        PlanWait::Cold => tv::WAIT_COLD.to_owned(),
+        PlanWait::Markers => tv::WAIT_MARKERS.to_owned(),
+        PlanWait::Dark | PlanWait::Busy => tv::WAIT_DARK.to_owned(),
+    }
+}
+
+/// **Why a plan passed something over, in words** (the brief's 3.5).
+#[must_use]
+pub(crate) fn pass_why(why: crate::surface::plan::PassWhy, family: OreFamily) -> String {
+    use crate::surface::plan::PassWhy;
+    match why {
+        PassWhy::WorkedOut => tv::PASS_WORKED_OUT.to_owned(),
+        PassWhy::Barren => tv::PASS_BARREN.replace("{family}", family.label()),
+        PassWhy::Locked => tv::PASS_LOCKED.to_owned(),
+        PassWhy::NoWay => tv::PASS_NO_WAY.to_owned(),
+        PassWhy::TooFar => tv::PASS_TOO_FAR.to_owned(),
+        PassWhy::NothingNew => tv::PASS_NOTHING_NEW.to_owned(),
+    }
+}
+
+/// **The excursion caps' census for `operator` at `site`** (doc 20 cut SM.11; the brief's 3.4
+/// "the caller gathers"): the world's rig records' open excursions, read through `read_rig` — the
+/// launch's own count.
+pub(crate) fn excursion_counts(
+    w: &World,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<RigRecord>, String>,
+    operator: ObjId,
+    site: &CanonicalId,
+) -> ExcursionCounts {
+    let mut counts = ExcursionCounts::default();
+    for tv in world_rigs(w) {
+        if let Ok(Some(record)) = read_rig(tv)
+            && let Some(excursion) = record.excursion.as_ref()
+        {
+            counts.world = counts.world.saturating_add(1);
+            if &excursion.site == site {
+                counts.site = counts.site.saturating_add(1);
+            }
+            if excursion.operator == operator {
+                counts.operator = counts.operator.saturating_add(1);
+            }
+        }
+    }
+    counts
+}
+
+/// **What a plan's next move does, in words** (`PLAN_SHOW_NOW`): the act's doing words, the wait's
+/// reason, or the end's.
+fn plan_now_words(
+    w: &World,
+    rig: &RigAt,
+    plan: &FillPlan,
+    words: &PlanWords,
+    moved: Option<crate::surface::plan::PlanMove>,
+) -> String {
+    use crate::surface::plan::{PlanActInner, PlanMove};
+    match moved {
+        Some(PlanMove::Start { word, act, .. }) => match act.0 {
+            PlanActInner::Act(planned) | PlanActInner::Drive(planned) => {
+                let kind = ActKind::from_word(word).unwrap_or(ActKind::Recover);
+                doing_words(kind, &planned.params, &ramp_label(w, rig.hull))
+            }
+            PlanActInner::Mine(planned) => drilling_words(&planned.addr),
+        },
+        Some(PlanMove::End { why, .. }) => {
+            format!("it ends: {}", end_why(w, plan.author, why, words))
+                .trim_end_matches('.')
+                .to_owned()
+        }
+        Some(PlanMove::Wait(wait)) => match wait {
+            crate::surface::plan::PlanWait::Busy => tv::WAIT_BUSY.to_owned(),
+            other => wait_why(w, other, words),
+        },
+        None => tv::WAIT_DARK.to_owned(),
+    }
+}
+
+/// **`+tv/<n> plan show`** (doc 20 cut SM.11; the brief's 3.5): a pure read of the record — no plan
+/// → `PLAN_NONE`; else `PLAN_SHOW_HEAD`, one `PLAN_SHOW_STEP` a step (done, now, next, pending,
+/// passed over), the tally, and for a live plan `PLAN_SHOW_NOW` from the interpreter over the
+/// command's own reads; an ended plan `PLAN_SHOW_ENDED`. Never a class, a tonnage of the ground or
+/// a reserve.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+pub(crate) fn plan_show_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdError> {
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let battery = rig_battery(ctx.w, &handles, rig);
+    let record = record_of(ctx, &handles, rig.tv, battery.as_ref()).map_err(|()| dark())?;
+    let n = rig.slot.to_string();
+    // Only the asker's own plan (the fixer round's conformance/F1): a previous lessee's plan left
+    // on the record reads as none — its pockets, family and tally are theirs.
+    let Some(plan) = record.plan.as_ref().filter(|plan| plan.author == ctx.actor) else {
+        return Err(CmdError::msg(tv::PLAN_NONE.replace("{n}", &n)));
+    };
+    let w: &World = ctx.w;
+    let words = PlanWords::of(w, plan);
+    let ore = tv::ore_words(crate::surface::opening::ore_good(plan.family));
+    let state = match plan.state {
+        FillState::Live => tv::STATE_LIVE,
+        FillState::Parking { .. } => tv::STATE_PARKING,
+        FillState::Ended { .. } => tv::STATE_ENDED,
+    };
+    let mut lines = vec![
+        tv::PLAN_SHOW_HEAD
+            .replace("{n}", &n)
+            .replace("{no}", &plan.no.to_string())
+            .replace("{site}", &words.site)
+            .replace("{ore}", &ore)
+            .replace("{state}", state)
+            .replace(
+                "{filed}",
+                &format!(
+                    "IC {}",
+                    mush_core::CivilDate::from_ic_seconds(plan.filed_ic)
+                ),
+            )
+            .replace("{deadline}", &tv::due_words(w, plan.deadline_ic)),
+    ];
+    let passed: std::collections::BTreeSet<(i64, i64, bool)> = plan
+        .notes
+        .iter()
+        .filter_map(|note| match note.note {
+            PlanNoteKind::Passed { at, field, .. } => Some((at[0], at[1], field)),
+            PlanNoteKind::Parking { .. } | PlanNoteKind::Ended { .. } => None,
+        })
+        .collect();
+    let cursor = usize::from(plan.cursor);
+    for (k, step) in plan.steps.iter().enumerate() {
+        let skipped = match step {
+            PlanStep::Mine { pocket } => passed.contains(&(pocket[0], pocket[1], false)),
+            PlanStep::Sound { field } => address::field_of_index(*field)
+                .is_some_and(|(fx, fy)| passed.contains(&(fx, fy, true))),
+            PlanStep::Block { .. } => false,
+        };
+        let mark = if k < cursor && skipped {
+            tv::MARK_PASSED
+        } else if k < cursor {
+            tv::MARK_DONE
+        } else if k == cursor && matches!(plan.state, FillState::Live) {
+            tv::MARK_NOW
+        } else if k == cursor.saturating_add(1) && matches!(plan.state, FillState::Live) {
+            // A parking plan works no further step (the fixer round's correctness/F4).
+            tv::MARK_NEXT
+        } else {
+            tv::MARK_PENDING
+        };
+        lines.push(
+            tv::PLAN_SHOW_STEP
+                .replace("{k}", &k.saturating_add(1).to_string())
+                .replace("{words}", &crate::surface::plan::step_words(step, false))
+                .replace("{mark}", mark),
+        );
+    }
+    lines.push(
+        tv::PLAN_SHOW_TALLY
+            .replace("{t}", &plan.tally.tonnes.to_string())
+            .replace("{ore}", &ore)
+            .replace(
+                "{c}",
+                &tv::count_words(u64::from(plan.tally.cycles), "cycle", "cycles"),
+            )
+            .replace(
+                "{trips}",
+                &tv::count_words(u64::from(plan.tally.trips), "trip", "trips"),
+            ),
+    );
+    match plan.state {
+        FillState::Ended { why, at_ic } => lines.push(
+            tv::PLAN_SHOW_ENDED
+                .replace(
+                    "{at}",
+                    &format!("IC {}", mush_core::CivilDate::from_ic_seconds(at_ic)),
+                )
+                .replace(
+                    "{why}",
+                    end_why(w, plan.author, why, &words).trim_end_matches('.'),
+                ),
+        ),
+        FillState::Live | FillState::Parking { .. } => {
+            let tools = handles.surface_tools.clone().unwrap_or_default();
+            let read_rig = |tv: ObjId| SurfaceReads::rig(&*ctx, tv);
+            let counts = excursion_counts(w, &read_rig, plan.author, &plan.site);
+            let mut peeks = Peeks::default();
+            let moved = crate::surface::plan::decide(
+                w,
+                &*ctx,
+                rig,
+                &record,
+                &counts,
+                &tools,
+                &mut peeks,
+                w.world_ic_now().at,
+            );
+            lines.push(
+                tv::PLAN_SHOW_NOW.replace("{doing}", &plan_now_words(w, rig, plan, &words, moved)),
+            );
+        }
+    }
+    for line in lines {
+        crate::port::coop::say(ctx, line);
+    }
+    Ok(())
+}
+
+/// **`+tv/<n> plan clear`** (doc 20 cut SM.11; the brief's 3.5, D6 and D17): committed with no
+/// `go` (`+tv/mine stop`'s R7 precedent). No plan → `PLAN_NONE`, nothing submitted; a live plan →
+/// ONE `tacsim_surface_act` with `act: plan_clear` keyed `tacsim.surface/{tv}/plan/{no}/clear/
+/// {seq}`, `ordinal` [`PLAN_CLEAR_ORDINAL`], and `PLAN_CLEARED` (the step in flight finishes by
+/// its own rules); an ended plan → ONE with `act: plan_strike` keyed `tacsim.surface/{tv}/plan/
+/// {no}/strike/{ordinal}` and `PLAN_DROPPED`. Two writes on two keys, so a second clear is never a silent replay of the first.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+pub(crate) fn plan_clear_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdError> {
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let battery = rig_battery(ctx.w, &handles, rig);
+    let record = record_of(ctx, &handles, rig.tv, battery.as_ref()).map_err(|()| dark())?;
+    let n = rig.slot.to_string();
+    // Only the asker's own plan (the fixer round's conformance/F1): a previous lessee's plan is
+    // inert, and the asker's own next filing replaces it.
+    let Some(plan) = record.plan.as_ref().filter(|plan| plan.author == ctx.actor) else {
+        return Err(CmdError::msg(tv::PLAN_NONE.replace("{n}", &n)));
+    };
+    let no = plan.no;
+    // A clear carries `PLAN_CLEAR_ORDINAL` (the lead's pre-commit round, item 2: its key names the
+    // plan's `seq`, never the record's ordinal, so neither do its parameters); a strike, keyed by
+    // the ordinal, carries it.
+    let (word, key, line, ordinal) = if plan.live() {
+        (
+            "plan_clear",
+            plan_clear_key(rig.tv, no, plan.seq),
+            tv::PLAN_CLEARED,
+            PLAN_CLEAR_ORDINAL,
+        )
+    } else {
+        (
+            "plan_strike",
+            plan_strike_key(rig.tv, no, record.ordinal),
+            tv::PLAN_DROPPED,
+            record.ordinal.max(1),
+        )
+    };
+    let Some(key) = key else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a plan's clear key did not form");
+        return Err(dark());
+    };
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "tv": rig.tv.0.to_string(),
+            "act": word,
+            "ordinal": ordinal,
+            "plan": no,
+        }),
+        key,
+    );
+    crate::port::coop::say(
+        ctx,
+        line.replace("{n}", &n).replace("{no}", &no.to_string()),
+    );
     Ok(())
 }
 
@@ -4584,6 +5841,41 @@ struct FixedPlan {
     /// start's `how`; the prepare picks by it — the brief's decision R15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unload: Option<UnloadFixed>,
+    /// **Doc 20 cut SM.11**: a plan step's binding — the plan, its `seq`, the step and the word
+    /// the interpreter chose, the update its start writes — fixed under the rig's `plan` key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<PlanFixed>,
+    /// **Doc 20 cut SM.11**: a filing's compiled plan, fixed under the rig's `plan_file` key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fill: Option<FillFixed>,
+}
+
+/// **A plan step as the start's offer fixes it** (doc 20 cut SM.11; the brief's 3.6): the
+/// interpreter's choice over the durable record, which the prepare holds the start's `plan`,
+/// `step` and `act` to (`Conflict` "the plan moved on" otherwise). Server-only fixed parameters,
+/// no truth: the act's own plan rides `FixedPlan` as the hand's does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanFixed {
+    no: u32,
+    seq: u32,
+    step: u16,
+    word: String,
+    update: PlanUpdate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end: Option<PlanEnd>,
+}
+
+/// **A filing as the start's offer fixes it** (doc 20 cut SM.11; the brief's 3.6): the order's
+/// number and ordinal and its re-compiled list, family and steps — required equal to the preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FillFixed {
+    no: u32,
+    ordinal: u32,
+    list: Vec<String>,
+    family: OreFamily,
+    steps: Vec<PlanStep>,
 }
 
 /// **An unload's server facts, as the start's offer fixes them** (doc 20 cut SM.8; the brief's
@@ -4726,6 +6018,8 @@ impl FixedPlan {
                 ordinal: None,
                 mine: None,
                 unload: None,
+                plan: None,
+                fill: None,
             },
             Err(refusal) => FixedPlan::refused(refusal.word()),
         }
@@ -4768,6 +6062,8 @@ fn drive_fixed(w: &World, actor: ObjId, rig: &RigAt) -> FixedPlan {
         ordinal: Some(order.ordinal),
         mine: None,
         unload: None,
+        plan: None,
+        fill: None,
     }
 }
 
@@ -4830,42 +6126,8 @@ fn mine_fixed(
         ordinal: Some(order.ordinal),
         mine: Some(MineFixed::of(&plan)),
         unload: None,
-    }
-}
-
-/// **One pool's availability through the engine's own snapshot** (doc 20 cut SM.8): the start's
-/// offer holds the engine, not a `Ctx`, so it reads `crate::port_tick::read_available`'s figure —
-/// the balance less every live hold — through the same families and the same rule (absent is 0, a
-/// half pool or a refusal is never 0), so the queued unload's split names what its prepare can
-/// move.
-fn engine_available(
-    engine: &mush_core::Engine,
-    endpoint: EndpointRef,
-    good: &CanonicalId,
-) -> Result<u64, crate::port_tick::PoolReadError> {
-    use crate::port_tick::PoolReadError;
-    let Some(inventory) = engine
-        .world
-        .module_state::<PortHandles>()
-        .and_then(|handles| handles.inventory.as_ref())
-    else {
-        return Err(PoolReadError::Unwired);
-    };
-    let key = mush_inventory::pool_key(endpoint, good)
-        .map_err(|error| PoolReadError::Key(error.to_string()))?;
-    let state = engine.action_state();
-    let scalar = state
-        .get(&inventory.pools, &key)
-        .map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
-    let book = state
-        .get(&inventory.books, &key)
-        .map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
-    match (scalar, book) {
-        (None, None) => Ok(0),
-        (Some(scalar), Some(book)) => book
-            .checked_available(*scalar)
-            .map_err(|_| PoolReadError::Corrupt),
-        (None, Some(_)) | (Some(_), None) => Err(PoolReadError::Corrupt),
+        plan: None,
+        fill: None,
     }
 }
 
@@ -4878,12 +6140,19 @@ fn engine_available(
 ///   never removed on landing), [`unload_plan`] re-run (`queued` false);
 /// - **the queued variant** — the record's [`Queued`] for this actor, [`unload_plan`] re-run
 ///   (`queued` true: no aboard gate) and the hopper's available goods split against the hold's
-///   room now ([`unload_room`], `crate::surface::unload::whole`) — possibly moving nothing.
+///   room now ([`unload_room`], `crate::surface::unload::whole`) — possibly moving nothing — and,
+///   doc 20 cut SM.11 (the lead's pre-commit round, item 1), **the hopper's marker ring able to
+///   record the split's moves at the offer's real second** ([`ring_admits`]): while it
+///   cannot, the variant is refused `unload_markers`, nothing lands and the queue stands. The
+///   surface tick reads the same rule first ([`queued_ring_full`], the reviewer's R1): while the
+///   ring is full it submits nothing, tells `WHY_MARKERS_QUEUED` once and re-reads the ring on the
+///   queue's back-off (every 60 fires), so the unload, and a plan waiting on it, goes on by itself
+///   once the ring frees; this refusal is the backstop for a ring that filled in between.
 ///
 /// `ok` when either variant planned; otherwise refused with the hand variant's word, else the
-/// queued's, else `unplanned`. The plan names the site, `UNLOAD_S`, and the server facts
-/// ([`UnloadFixed`]); its `params` are `None` — the prepare builds the act's parameters from the
-/// chosen variant.
+/// queued's (`unload_markers` for a full ring), else `unplanned`. The plan names the site,
+/// `UNLOAD_S`, and the server facts ([`UnloadFixed`]); its `params` are `None` — the prepare builds
+/// the act's parameters from the chosen variant.
 fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt) -> FixedPlan {
     let w: &World = &engine.world;
     let reads = crate::port::site_map::EngineReads(engine);
@@ -4956,27 +6225,36 @@ fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt) -> FixedP
         }),
         _ => None,
     };
+    let mut markers_full = false;
     let queued = match (queued, &queued_plan) {
         (Some(queued), Some(Ok(_))) => {
-            let pool_unit = tv::pool_unit(w);
-            let available = |endpoint: EndpointRef, good: &CanonicalId| {
-                engine_available(engine, endpoint, good)
-            };
-            let split = tv::hopper_contents_with(w, rig.tv, pool_unit.as_ref(), &available)
-                .ok()
-                .and_then(|contents| unload_split(&room, &contents, None).ok())
-                .and_then(Result::ok);
-            split.map(|split| QueuedFixed {
-                ordinal: next,
-                goods: split.moves,
-                excursion: queued.excursion,
-            })
+            // Doc 20 cut SM.11 (the lead's pre-commit round, item 1): a ring that cannot record
+            // the moves refuses the queued start before it lands (its finish would only record
+            // `MarkersFull` again); a split that moves nothing writes no marker. The surface tick
+            // reads the same two functions first (`queued_ring_full`, the reviewer's R1) and does
+            // not submit into a full ring, so this refusal is the backstop for a ring that filled
+            // between the tick's read and this offer.
+            match queued_split(w, &reads, rig.tv, &room) {
+                Some(split) if ring_admits(&reads, hopper, split.moves.len(), w.now()) => {
+                    Some(QueuedFixed {
+                        ordinal: next,
+                        goods: split.moves,
+                        excursion: queued.excursion,
+                    })
+                }
+                Some(_) => {
+                    markers_full = true;
+                    None
+                }
+                None => None,
+            }
         }
         _ => None,
     };
     if hand.is_none() && queued.is_none() {
         let word = match (&hand_plan, &queued_plan) {
             (Some(Err(refusal)), _) | (None, Some(Err(refusal))) => refusal.word(),
+            _ if markers_full => Refusal::UnloadMarkers { n: rig.slot }.word(),
             _ => "tv_dark",
         };
         return FixedPlan::refused(word);
@@ -5003,6 +6281,175 @@ fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt) -> FixedP
             goods_of_hold,
             siblings,
         }),
+        plan: None,
+        fill: None,
+    }
+}
+
+/// **The queued unload's split** (doc 20 cut SM.8's whole split; cut SM.11, the reviewer's R1):
+/// the hopper's available goods (`SurfaceReads::available`) split against `room` —
+/// `crate::surface::unload::whole` — exactly as the queued start's offer moves them. `None` when
+/// the hopper or the split will not read. One function for the offer, the surface tick and the
+/// plan's `Markers` wait, so the three never disagree on how many markers the start would write.
+pub(crate) fn queued_split(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    tv: ObjId,
+    room: &UnloadRoom,
+) -> Option<crate::surface::unload::Split> {
+    let pool_unit = tv::pool_unit(w);
+    let available = |endpoint: EndpointRef, good: &CanonicalId| reads.available(endpoint, good);
+    tv::hopper_contents_with(w, tv, pool_unit.as_ref(), &available)
+        .ok()
+        .and_then(|contents| unload_split(room, &contents, None).ok())
+        .and_then(Result::ok)
+}
+
+/// **Whether the hopper's marker ring can record `moves` more markers at `now_wall`** (doc 20 cut
+/// SM.11, the lead's pre-commit round, item 1): the ring read through `reads`
+/// ([`SurfaceReads::marker_ring`]) and `mush_inventory::MarkerRing::admits` at the real second
+/// (`World::now`, the `wall` the finish's offer stamps). Nothing to move needs no marker; an
+/// absent ring is empty; a ring or a roster that will not read admits (the finish's own
+/// `MarkerRingFull` refusal stays the authority, so a dark read never wedges a queue).
+pub(crate) fn ring_admits(
+    reads: &dyn SurfaceReads,
+    hopper: u64,
+    moves: usize,
+    now_wall: i64,
+) -> bool {
+    if moves == 0 {
+        return true;
+    }
+    match reads.marker_ring(EndpointRef(VaultId(hopper))) {
+        Ok(Some(ring)) => ring.admits(moves, now_wall),
+        Ok(None) | Err(_) => true,
+    }
+}
+
+/// **Whether a queued unload waits on its hopper's full marker ring** (doc 20 cut SM.11, the
+/// reviewer's R1): `queued`'s rig's split ([`queued_split`] against [`unload_room`] for the queue's
+/// hull) moves goods the ring cannot record at `now_wall` ([`ring_admits`]) — the very test the
+/// queued start's offer refuses `unload_markers` by. The surface tick reads it before it submits
+/// the queued start (and holds, telling `WHY_MARKERS_QUEUED` once, rather than submit a start
+/// known to fail); the plan's interpreter reads it for its `Markers` wait. `false` whenever any
+/// read is dark (the offer and the finish stay the authority).
+pub(crate) fn queued_ring_full(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    tv: ObjId,
+    queued: &Queued,
+    now_wall: i64,
+) -> bool {
+    if queued.kind != ActKind::Unload {
+        return false;
+    }
+    let Some(view) = hull_view(w, queued.hull) else {
+        return false;
+    };
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
+    let read_rig = |rig: ObjId| reads.rig(rig);
+    let Some(room) = unload_room(w, &view, tv, &read_pool, &read_rig) else {
+        return false;
+    };
+    let (Some(split), Some(hopper)) = (
+        queued_split(w, reads, tv, &room),
+        crate::port::vehicle::hopper_of(w, tv),
+    ) else {
+        return false;
+    };
+    !ring_admits(reads, hopper.0, split.moves.len(), now_wall)
+}
+
+/// **A plan step's act as the start fixes it** (doc 20 cut SM.11; the brief's 3.6): the plan
+/// variant built exactly as the hand path builds that act's — a sounding's or a recover's plan
+/// (the body's sites for a reading's caps), a drive's leg with the record's next ordinal (the
+/// drive's order shape), a run's [`MineFixed`] — plus its [`PlanFixed`] binding.
+fn plan_fixed(
+    w: &World,
+    plan: &FillPlan,
+    next: u32,
+    moved: crate::surface::plan::PlanMove,
+    has_battery: bool,
+) -> FixedPlan {
+    use crate::surface::plan::{PlanActInner, PlanMove};
+    match moved {
+        PlanMove::Start {
+            word,
+            step,
+            update,
+            act,
+        } => {
+            let binding = PlanFixed {
+                no: plan.no,
+                seq: plan.seq,
+                step,
+                word: word.to_owned(),
+                update,
+                end: None,
+            };
+            let mut fixed = match act.0 {
+                PlanActInner::Act(planned) => {
+                    if word == "sound" {
+                        reading_fixed(w, Some(Ok(planned)), has_battery)
+                    } else {
+                        FixedPlan::of(Ok(planned))
+                    }
+                }
+                PlanActInner::Drive(planned) => {
+                    if !has_battery {
+                        return FixedPlan::refused("tv_dark");
+                    }
+                    let mut fixed = FixedPlan::of(Ok(planned));
+                    fixed.ordinal = Some(next);
+                    fixed
+                }
+                PlanActInner::Mine(planned) => {
+                    let (Some(cost_cu), Some(secs), true) =
+                        (planned.run_cost_cu(), planned.run_secs(), has_battery)
+                    else {
+                        return FixedPlan::refused("tv_dark");
+                    };
+                    FixedPlan {
+                        ok: true,
+                        code: None,
+                        site: Some(planned.site.clone()),
+                        secs,
+                        cost_cu,
+                        home_cu: planned.home_cu,
+                        params: None,
+                        from_bay: false,
+                        goods: Vec::new(),
+                        body_sites: if planned.blind {
+                            chart::body_sites(w, &planned.body)
+                        } else {
+                            Vec::new()
+                        },
+                        ordinal: Some(next),
+                        mine: Some(MineFixed::of(&planned)),
+                        unload: None,
+                        plan: None,
+                        fill: None,
+                    }
+                }
+            };
+            if fixed.ok {
+                fixed.plan = Some(binding);
+            }
+            fixed
+        }
+        PlanMove::End { why, update } => FixedPlan {
+            ok: true,
+            plan: Some(PlanFixed {
+                no: plan.no,
+                seq: plan.seq,
+                step: plan.cursor,
+                word: "plan_end".to_owned(),
+                update,
+                end: Some(why),
+            }),
+            ..FixedPlan::default()
+        },
+        PlanMove::Wait(_) => FixedPlan::refused("plan_waits"),
     }
 }
 
@@ -5246,7 +6693,7 @@ fn act_param(parameters: &Map<String, Value>) -> Result<StartWord, ActionError> 
         .ok_or_else(|| {
             invalid(
                 "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine, \
-                 mine_stop or unload",
+                 mine_stop, unload, plan_file, plan_clear, plan_strike or plan_end",
             )
         })
 }
@@ -5299,6 +6746,159 @@ fn now_of(parameters: &Map<String, Value>) -> Result<i64, ActionError> {
         .get("now")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid("a surface act's offer fixes the instant"))
+}
+
+/// **The start's `by` word** (doc 20 cut SM.11; the brief's 3.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ByWord {
+    /// A fill plan's step or end.
+    Plan,
+    /// The idle return.
+    Idle,
+}
+
+/// **The start's `by`, `plan` and `step` parameters**, read and held to the parameter rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ByParams {
+    /// `by`.
+    pub by: Option<ByWord>,
+    /// `plan`: the plan's number.
+    pub plan: Option<u32>,
+    /// `step`: the step.
+    pub step: Option<u16>,
+}
+
+/// **The parameter rule** (doc 20 cut SM.11; the brief's 3.6): `by: plan` requires `plan` and
+/// `step` and is legal only on `drive`, `scan`, `sound`, `mine`, `recover` and `plan_end`; `by:
+/// idle` only on `recover`, carrying neither; `plan_file` carries none of the three; `plan_clear`
+/// and `plan_strike` carry `plan` only; any other combination is `InvalidRequest` "a plan's start
+/// names its plan and step". A malformed value of any of the three is refused the same way.
+fn by_params(word: StartWord, parameters: &Map<String, Value>) -> Result<ByParams, ActionError> {
+    let refuse = || invalid("a plan's start names its plan and step");
+    let by = match parameters.get("by") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some("plan") => Some(ByWord::Plan),
+            Some("idle") => Some(ByWord::Idle),
+            _ => return Err(refuse()),
+        },
+    };
+    let plan = match parameters.get("plan") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|no| u32::try_from(no).ok())
+                .filter(|no| *no >= 1)
+                .ok_or_else(refuse)?,
+        ),
+    };
+    let step = match parameters.get("step") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|step| u16::try_from(step).ok())
+                .filter(|step| usize::from(*step) <= MAX_PLAN_STEPS)
+                .ok_or_else(refuse)?,
+        ),
+    };
+    let ok = match (word, by) {
+        (StartWord::PlanFile, None) => plan.is_none() && step.is_none(),
+        (StartWord::PlanClear | StartWord::PlanStrike, None) => plan.is_some() && step.is_none(),
+        (StartWord::PlanEnd, Some(ByWord::Plan)) => plan.is_some() && step.is_some(),
+        (
+            StartWord::Act {
+                kind:
+                    ActKind::Drive | ActKind::Scan | ActKind::Sound | ActKind::Mine | ActKind::Recover,
+                ..
+            },
+            Some(ByWord::Plan),
+        ) => plan.is_some() && step.is_some(),
+        (
+            StartWord::Act {
+                kind: ActKind::Recover,
+                ..
+            },
+            Some(ByWord::Idle),
+        ) => plan.is_none() && step.is_none(),
+        (StartWord::Act { .. } | StartWord::MineStop, None) => plan.is_none() && step.is_none(),
+        (
+            StartWord::PlanFile
+            | StartWord::PlanClear
+            | StartWord::PlanStrike
+            | StartWord::PlanEnd
+            | StartWord::MineStop
+            | StartWord::Act { .. },
+            Some(_),
+        )
+        | (StartWord::PlanEnd, None) => false,
+    };
+    if ok {
+        Ok(ByParams { by, plan, step })
+    } else {
+        Err(refuse())
+    }
+}
+
+/// **Who set a start going, and its plan binding** (doc 20 cut SM.11): what the write stamps on
+/// the act or the run, and the plan's update it applies in the same bundle.
+#[derive(Clone, Debug, Default)]
+struct Stamp {
+    by: Option<ActBy>,
+    plan: Option<PlanFixed>,
+}
+
+/// `Conflict` "the plan moved on" (the brief's D16: the world moved between the decision and the
+/// landing; the next fire decides again).
+fn moved_on() -> ActionError {
+    port_error(ActionErrorCode::Conflict, "the plan moved on")
+}
+
+/// Push `note` onto `plan`'s ring under a fresh `seq`, the oldest dropped past
+/// [`MAX_PLAN_NOTES`].
+fn push_note(plan: &mut FillPlan, note: PlanNoteKind, at_ic: i64) -> Result<(), ActionError> {
+    plan.seq = plan
+        .seq
+        .checked_add(1)
+        .ok_or_else(|| port_error(ActionErrorCode::Integrity, "a plan's seq overflows"))?;
+    plan.notes.push(PlanNote {
+        seq: plan.seq,
+        at_ic,
+        note,
+    });
+    while plan.notes.len() > MAX_PLAN_NOTES {
+        plan.notes.remove(0);
+    }
+    Ok(())
+}
+
+/// **A plan step's update, applied** (doc 20 cut SM.11; the brief's 3.6): the cursor, the passed
+/// pockets, a parking, the notes (each under its own `seq`, in order) and one more `seq` — on the
+/// record the start writes. For a `plan_end` binding the plan then ends with its reason and one
+/// `Ended` note.
+fn apply_update(record: &mut RigRecord, binding: &PlanFixed, now: i64) -> Result<(), ActionError> {
+    let integrity = || port_error(ActionErrorCode::Integrity, "a plan's update does not apply");
+    let plan = record.plan.as_mut().ok_or_else(integrity)?;
+    let update = &binding.update;
+    if usize::from(update.cursor) > plan.steps.len() {
+        return Err(integrity());
+    }
+    plan.cursor = update.cursor;
+    plan.passed.clone_from(&update.passed);
+    if let Some(why) = update.parking {
+        plan.state = FillState::Parking { why };
+    }
+    for note in &update.notes {
+        push_note(plan, *note, now)?;
+    }
+    if let Some(why) = binding.end {
+        plan.passed.clear();
+        plan.state = FillState::Ended { why, at_ic: now };
+        push_note(plan, PlanNoteKind::Ended { why }, now)?;
+    }
+    plan.seq = plan.seq.checked_add(1).ok_or_else(integrity)?;
+    plan.check().map_err(|_| integrity())
 }
 
 /// The family's record, cloned; `None` when absent.
@@ -5411,7 +7011,13 @@ impl ActionProvider for SurfaceActProvider {
         let w: &World = &engine.world;
         let actor = query.actor();
         let rigs = operator_rigs(w, actor);
-        if rigs.is_empty() {
+        // The lead's pre-commit round, item 3: the actor's leased rigs off the helm, offered only
+        // their plan's variants below.
+        let off_helm: Vec<RigAt> = leased_rigs(w, actor)
+            .into_iter()
+            .filter(|rig| rigs.iter().all(|at| at.tv != rig.tv))
+            .collect();
+        if rigs.is_empty() && off_helm.is_empty() {
             return Ok(None);
         }
         // Doc 20 cut SM.4a (the brief's reviewer finding F5): each site's composite is peeked
@@ -5516,6 +7122,29 @@ impl ActionProvider for SurfaceActProvider {
                 wire_word(ActKind::Unload, false).to_owned(),
                 unload_fixed(engine, actor, rig),
             );
+            // Doc 20 cut SM.11 (the brief's 3.6): the plan's variants, each under its own key so
+            // it never meets a hand variant — the filing (the RAM order, re-compiled and required
+            // equal), the plan's next move (the interpreter over the durable record, only for a
+            // rig whose record holds a live plan: no plan, no cost), the clear and the strike.
+            let record: Option<RigRecord> = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(rig.tv))
+                .ok()
+                .flatten()
+                .cloned();
+            plans.insert(
+                "plan_file".to_owned(),
+                self.fill_fixed(engine, actor, rig, record.as_ref(), &mut peeks),
+            );
+            plans.extend(self.plan_variants(
+                engine,
+                actor,
+                rig,
+                record.as_ref(),
+                &mut peeks,
+                has_battery,
+                true,
+            ));
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
@@ -5525,6 +7154,53 @@ impl ActionProvider for SurfaceActProvider {
                     plans,
                 },
             );
+        }
+        // The lead's pre-commit round, item 3 (the judge's correctness/F5; D22 "stays
+        // clearable"): the actor's own leased rigs off the helm whose record holds the actor's own
+        // plan — the plan's variants only: its next move (off the helm the interpreter answers a
+        // wait, or past the bound the `Bound` end, which the tick submits as the author wherever
+        // they stand) and the clear and the strike, while the author is aboard the rig's hull.
+        for rig in &off_helm {
+            let record: Option<RigRecord> = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(rig.tv))
+                .ok()
+                .flatten()
+                .cloned();
+            if !record
+                .as_ref()
+                .and_then(|record| record.plan.as_ref())
+                .is_some_and(|plan| plan.author == actor)
+            {
+                continue;
+            }
+            let battery_id = rig_battery_id(w, rig.tv);
+            let has_battery = battery_id.is_some();
+            let aboard = crate::port::voyage::aboard(w, rig.hull, actor);
+            let plans: BTreeMap<String, FixedPlan> = self
+                .plan_variants(
+                    engine,
+                    actor,
+                    rig,
+                    record.as_ref(),
+                    &mut peeks,
+                    has_battery,
+                    aboard,
+                )
+                .into_iter()
+                .collect();
+            fixed_rigs.insert(
+                rig.tv.0.to_string(),
+                FixedRig {
+                    slot: rig.slot,
+                    hull: rig.hull,
+                    battery_id,
+                    plans,
+                },
+            );
+        }
+        if fixed_rigs.is_empty() {
+            return Ok(None);
         }
         let world: Vec<u32> = world_rigs(w).iter().map(|tv| tv.0).collect();
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
@@ -5539,7 +7215,14 @@ impl ActionProvider for SurfaceActProvider {
                 "tv",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: rigs.iter().map(|rig| rig.tv.0.to_string()).collect(),
+                    // Every rig the offer fixes: the helm's and, the lead's pre-commit round
+                    // item 3, the actor's own off it.
+                    choices: rigs
+                        .iter()
+                        .chain(off_helm.iter())
+                        .map(|rig| rig.tv.0.to_string())
+                        .filter(|tv| fixed_rigs.contains_key(tv))
+                        .collect(),
                 },
             )?,
             parameter(
@@ -5586,6 +7269,32 @@ impl ActionProvider for SurfaceActProvider {
                 ProjectedParameterKind::Integer {
                     minimum: 1,
                     maximum: i64::try_from(tv::MAX_TYPED_TONNES).unwrap_or(99),
+                },
+            )?,
+            // Doc 20 cut SM.11 (the brief's 3.6): who set the act going, and a plan step's plan
+            // and step — server-authored by the surface tick; the prepare holds them to the
+            // offer's plan variant and refuses any other combination.
+            parameter(
+                "by",
+                false,
+                ProjectedParameterKind::Choice {
+                    choices: ["idle", "plan"].iter().map(|w| (*w).to_owned()).collect(),
+                },
+            )?,
+            parameter(
+                "plan",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 1,
+                    maximum: i64::from(u32::MAX),
+                },
+            )?,
+            parameter(
+                "step",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 0,
+                    maximum: i64::try_from(MAX_PLAN_STEPS).unwrap_or(64),
                 },
             )?,
         ];
@@ -5645,23 +7354,147 @@ impl ActionProvider for SurfaceActProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| invalid("a surface act's offer fixes the world's rigs"))?;
-        // Doc 20 cut SM.7: `mine_stop` is a control on a committed run, no act.
+        // Doc 20 cut SM.11 (the brief's 3.6): who set it going, and a plan step's binding — the
+        // parameter rule first.
+        let by = by_params(word, parameters)?;
+        // Doc 20 cut SM.11 (D8): a live plan holds its rig from every hand start — a hand unload
+        // too, never the recover's queued one — and its stop.
+        let held = read_record(txn, &self.excursions, tv)?
+            .and_then(|record| record.live_plan_for(actor).map(|plan| plan.no));
+        let hand = by.by.is_none();
+        let queued_unload = matches!(
+            word,
+            StartWord::Act {
+                kind: ActKind::Unload,
+                ..
+            }
+        ) && how_of(parameters) == Some(UnloadHow::Queued);
+        let control = matches!(
+            word,
+            StartWord::PlanFile | StartWord::PlanClear | StartWord::PlanStrike | StartWord::PlanEnd
+        );
+        if hand && !control && !queued_unload && held.is_some() {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word("plan_live"),
+            ));
+        }
+        // Doc 20 cut SM.7: `mine_stop` is a control on a committed run, no act; doc 20 cut SM.11:
+        // so are the plan's four.
         let (kind, quiet) = match word {
             StartWord::Act { kind, quiet } => (kind, quiet),
             StartWord::MineStop => {
                 return self.stop_run(invocation, txn, (actor, tv, ordinal));
             }
+            StartWord::PlanFile => {
+                return self.file_plan(invocation, txn, (actor, tv, ordinal, now), rig);
+            }
+            StartWord::PlanClear | StartWord::PlanStrike => {
+                return self.clear_plan(
+                    invocation,
+                    txn,
+                    (actor, tv, now),
+                    rig,
+                    word == StartWord::PlanStrike,
+                    by.plan,
+                );
+            }
+            StartWord::PlanEnd => {
+                return self.end_plan(invocation, txn, (actor, tv, now), rig, &by);
+            }
         };
-        let plan = rig
-            .plans
-            .get(wire_word(kind, quiet))
-            .cloned()
-            .ok_or_else(|| invalid("that act is not planned"))?;
+        let wire = wire_word(kind, quiet);
+        let (plan, stamp) = match by.by {
+            None => (
+                rig.plans
+                    .get(wire)
+                    .cloned()
+                    .ok_or_else(|| invalid("that act is not planned"))?,
+                Stamp::default(),
+            ),
+            // A plan's step: the offer's plan variant, held to the start's plan, step and word.
+            Some(ByWord::Plan) => {
+                let fixed = rig
+                    .plans
+                    .get("plan")
+                    .cloned()
+                    .ok_or_else(|| invalid("that act is not planned"))?;
+                if !fixed.ok {
+                    return Err(port_error(
+                        ActionErrorCode::ProviderRejected,
+                        code_of_word(fixed.code.as_deref().unwrap_or("plan_moved")),
+                    ));
+                }
+                let binding = fixed.plan.clone().ok_or_else(moved_on)?;
+                let live = read_record(txn, &self.excursions, tv)?
+                    .and_then(|record| record.live_plan_for(actor).map(|plan| (plan.no, plan.seq)));
+                if Some(binding.no) != by.plan
+                    || Some(binding.step) != by.step
+                    || binding.word != wire
+                    || live != Some((binding.no, binding.seq))
+                {
+                    return Err(moved_on());
+                }
+                let step = binding.step;
+                (
+                    fixed,
+                    Stamp {
+                        by: Some(ActBy::Plan {
+                            no: binding.no,
+                            step,
+                        }),
+                        plan: Some(binding),
+                    },
+                )
+            }
+            // The idle return: the recover's own plan, the idle condition checked on the record.
+            Some(ByWord::Idle) => {
+                let fixed = rig
+                    .plans
+                    .get(wire)
+                    .cloned()
+                    .ok_or_else(|| invalid("that act is not planned"))?;
+                let record = read_record(txn, &self.excursions, tv)?;
+                let idle = record.as_ref().is_some_and(|record| {
+                    record.live_plan_for(actor).is_none()
+                        && record.act.is_none()
+                        && record.run.is_none()
+                        && record.queued.is_none()
+                        && record.excursion.is_some()
+                        && record.idle_since().is_some_and(|since| {
+                            since
+                                .checked_add(crate::surface::plan::IDLE_PARK_IC_SECS)
+                                .is_some_and(|due| due <= now)
+                        })
+                });
+                if !idle {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "that rig is not idle",
+                    ));
+                }
+                (
+                    fixed,
+                    Stamp {
+                        by: Some(ActBy::Idle),
+                        plan: None,
+                    },
+                )
+            }
+        };
         if !plan.ok {
             return Err(port_error(
                 ActionErrorCode::ProviderRejected,
                 code_of_word(plan.code.as_deref().unwrap_or("tv_dark")),
             ));
+        }
+        // Doc 20 cut SM.11: nothing in flight for a plan's step (SM.7/SM.8's idleness rule).
+        if stamp.plan.is_some()
+            && read_record(txn, &self.excursions, tv)?.is_some_and(|record| {
+                record.act.is_some() || record.run.is_some() || record.queued.is_some()
+            })
+        {
+            return Err(port_error(ActionErrorCode::Conflict, "that rig is busy"));
         }
         // Doc 20 cut SM.7: a run starts on its own path (one start action, SM.3b's decision 25).
         if kind == ActKind::Mine {
@@ -5672,6 +7505,7 @@ impl ActionProvider for SurfaceActProvider {
                 rig,
                 &plan,
                 &world,
+                &stamp,
             );
         }
         // Doc 20 cut SM.8: an unload starts on its own path too.
@@ -5713,9 +7547,11 @@ impl ActionProvider for SurfaceActProvider {
         // to the ordinal it was planned for — and (the review's correctness/F5) to the end cell
         // the start names, so a start whose order a later `go` replaced never runs the later
         // order's leg.
+        // Doc 20 cut SM.11: a plan's drive is bound by its plan and step instead of `to`.
         if kind == ActKind::Drive
             && (plan.ordinal != Some(ordinal)
-                || plan.params.as_ref().and_then(order_to_word) != to_word_of(parameters))
+                || (stamp.plan.is_none()
+                    && plan.params.as_ref().and_then(order_to_word) != to_word_of(parameters)))
         {
             return Err(port_error(
                 ActionErrorCode::Conflict,
@@ -5906,6 +7742,7 @@ impl ActionProvider for SurfaceActProvider {
             due_ic,
             reserved_cu: plan.cost_cu,
             params,
+            by: stamp.by,
         });
         // Doc 20 cut SM.8 (lead ruling 1): any start that lands supersedes a queued unload.
         record.queued = None;
@@ -5917,6 +7754,10 @@ impl ActionProvider for SurfaceActProvider {
                 slot: rig.slot,
                 site,
             });
+        }
+        // Doc 20 cut SM.11: a plan step's update rides the same bundle.
+        if let Some(binding) = &stamp.plan {
+            apply_update(&mut record, binding, now)?;
         }
         write_record(txn, &self.excursions, record, existed)?;
         let outcome = RulesValue::new(
@@ -6059,7 +7900,7 @@ impl SurfaceActProvider {
     /// written on its cursor. The lease, the tenure and the plan itself are the offer's re-plan at
     /// landing (`mine_fixed`: the prepare holds no world). The outcome is the start's own shape,
     /// identical for a barren and an ore blind core.
-    #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one ordered list, one bundle
     fn start_run(
         &self,
         invocation: &ActionInvocation,
@@ -6068,6 +7909,7 @@ impl SurfaceActProvider {
         rig: &FixedRig,
         plan: &FixedPlan,
         world: &[u32],
+        stamp: &Stamp,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
@@ -6213,10 +8055,15 @@ impl SurfaceActProvider {
             lock_rows: fixed.lock_rows.clone(),
             due_ic,
             reserved_cu: plan.cost_cu,
+            by: stamp.by,
         });
         // Doc 20 cut SM.8 (lead ruling 1): a run's start supersedes a queued unload too (a run is
         // never started from the bay, so none is expected).
         record.queued = None;
+        // Doc 20 cut SM.11: a plan's mine step's update rides the same bundle.
+        if let Some(binding) = &stamp.plan {
+            apply_update(&mut record, binding, now)?;
+        }
         let lock = PocketLock { tv, ordinal };
         for row in &fixed.lock_rows {
             let before = read_cursor(txn, &self.pockets, row.deposit)?;
@@ -6459,6 +8306,7 @@ impl SurfaceActProvider {
                 how,
                 excursion,
             },
+            by: None,
         });
         record.queued = None;
         write_record(txn, &self.excursions, record, existed)?;
@@ -6468,6 +8316,368 @@ impl SurfaceActProvider {
                 "act": wire_word(ActKind::Unload, false),
                 "actor": actor.0,
                 "due_ic": due_ic,
+                "ordinal": ordinal,
+                "tv": tv.0,
+            }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the surface act's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+
+    /// **The plan's three variants a rig's offer fixes** (doc 20 cut SM.11; the brief's 3.6): the
+    /// plan's next move — the interpreter over the durable record, only for a rig whose record
+    /// holds a plan live for the actor (no plan, no cost) — and the clear and the strike, each
+    /// only of the actor's own plan (a previous lessee's is inert: the lead's pre-commit round,
+    /// item 3) and only when `controls` (the actor aboard the rig's hull, for a rig off the
+    /// actor's helm; always at the helm, as before).
+    #[allow(clippy::too_many_arguments)] // the offer's own reads, passed through
+    fn plan_variants(
+        &self,
+        engine: &mush_core::Engine,
+        actor: ObjId,
+        rig: &RigAt,
+        record: Option<&RigRecord>,
+        peeks: &mut Peeks,
+        has_battery: bool,
+        controls: bool,
+    ) -> [(String, FixedPlan); 3] {
+        let w: &World = &engine.world;
+        let next = record.map_or(Some(1), |record| record.ordinal.checked_add(1));
+        let stepped = match (record, next) {
+            (Some(record), Some(next)) => match record.live_plan_for(actor) {
+                Some(plan) => {
+                    let reads = crate::port::site_map::EngineReads(engine);
+                    let counts = excursion_counts(w, &|tv| reads.rig(tv), plan.author, &plan.site);
+                    match crate::surface::plan::decide(
+                        w,
+                        &reads,
+                        rig,
+                        record,
+                        &counts,
+                        &self.tools,
+                        peeks,
+                        w.world_ic_now().at,
+                    ) {
+                        Some(moved) => plan_fixed(w, plan, next, moved, has_battery),
+                        None => FixedPlan::refused(Refusal::PlanNone { n: rig.slot }.word()),
+                    }
+                }
+                None => FixedPlan::refused(Refusal::PlanNone { n: rig.slot }.word()),
+            },
+            _ => FixedPlan::refused(Refusal::PlanNone { n: rig.slot }.word()),
+        };
+        let (live, ended) = record
+            .and_then(|record| record.plan.as_ref())
+            .filter(|plan| plan.author == actor)
+            .map_or((false, false), |plan| (plan.live(), !plan.live()));
+        // The reviewer's R2: a control the record would allow but the actor may not work from
+        // where they stand (off the helm and off the rig's hull) is refused `not_aboard`.
+        let control = |ok: bool, word: &str| match (ok, controls) {
+            (true, true) => FixedPlan {
+                ok: true,
+                ..FixedPlan::default()
+            },
+            (true, false) => FixedPlan::refused("not_aboard"),
+            (false, _) => FixedPlan::refused(word),
+        };
+        [
+            ("plan".to_owned(), stepped),
+            (
+                "plan_clear".to_owned(),
+                control(live, if ended { "plan_ended" } else { "plan_none" }),
+            ),
+            (
+                "plan_strike".to_owned(),
+                control(ended, if live { "plan_live" } else { "plan_none" }),
+            ),
+        ]
+    }
+
+    /// **The offer's filing variant** (doc 20 cut SM.11; the brief's 3.6, the reviewer's F11): the
+    /// rig's RAM [`PlanOrder`] for this actor **planned at the record's ordinal and for its next
+    /// plan number**, both checked before any compile — a stale order (its filing landed, or the
+    /// rig's orders moved on) is `unplanned` at once, with no compile — then [`plan_ask`] re-run
+    /// over the engine with the order's list and family and **required equal** to the order's
+    /// compile, else `plan_changed`: `go` files exactly the preview or nothing.
+    fn fill_fixed(
+        &self,
+        engine: &mush_core::Engine,
+        actor: ObjId,
+        rig: &RigAt,
+        record: Option<&RigRecord>,
+        peeks: &mut Peeks,
+    ) -> FixedPlan {
+        let w: &World = &engine.world;
+        let (ordinal, plans) = record.map_or((0, 0), |record| (record.ordinal, record.plans));
+        let Some(order) = plan_order_of(w, rig.tv).filter(|order| {
+            order.actor == actor
+                && order.ordinal == ordinal
+                && plans.checked_add(1) == Some(order.no)
+        }) else {
+            return FixedPlan::refused(Refusal::Unplanned.word());
+        };
+        crate::surface::plan::count(w, |c| &c.compiles);
+        let reads = crate::port::site_map::EngineReads(engine);
+        match plan_ask(
+            w,
+            &reads,
+            actor,
+            rig,
+            &order.list,
+            order.family,
+            &self.tools,
+            peeks,
+            w.world_ic_now().at,
+        ) {
+            Err(refusal) => FixedPlan::refused(refusal.word()),
+            Ok((Ok(compiled), facts)) if compiled == order.compiled => FixedPlan {
+                ok: true,
+                site: Some(facts.site),
+                ordinal: Some(ordinal),
+                fill: Some(FillFixed {
+                    no: order.no,
+                    ordinal,
+                    list: compiled.list,
+                    family: compiled.family,
+                    steps: compiled.steps,
+                }),
+                ..FixedPlan::default()
+            },
+            Ok(_) => FixedPlan::refused(Refusal::PlanChanged { n: rig.slot }.word()),
+        }
+    }
+
+    /// **A filing's prepare** (doc 20 cut SM.11; the brief's 3.6): the offer's filing variant ok
+    /// (its word refused otherwise); the record's ordinal the order's (`Conflict` "that rig's orders
+    /// moved on"); no plan live for the actor (`plan_filed`); the number the record's next — then
+    /// ONE write of the record alone: `plans = no` and the plan, live, its deadline 288 IC hours on,
+    /// its cursor 0 (an older ended plan replaced). `now` is the offer's instant.
+    fn file_plan(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
+        rig: &FixedRig,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let fixed = rig
+            .plans
+            .get("plan_file")
+            .cloned()
+            .ok_or_else(|| invalid("that act is not planned"))?;
+        if !fixed.ok {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word(fixed.code.as_deref().unwrap_or("unplanned")),
+            ));
+        }
+        let fill = fixed
+            .fill
+            .clone()
+            .ok_or_else(|| invalid("a filing's plan names its steps"))?;
+        let site = fixed
+            .site
+            .clone()
+            .ok_or_else(|| invalid("an act's plan names its site"))?;
+        let existing = read_record(txn, &self.excursions, tv)?;
+        let existed = existing.is_some();
+        let mut record = existing.unwrap_or_else(|| RigRecord::fresh_unread(tv));
+        // A filing writes no act: the invocation's ordinal is the record's (at least 1, the
+        // parameter's floor) and the order's.
+        if record.ordinal != fill.ordinal || record.ordinal.max(1) != ordinal {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "that rig's orders moved on",
+            ));
+        }
+        if record.live_plan_for(actor).is_some() {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word("plan_filed"),
+            ));
+        }
+        if record.plans.checked_add(1) != Some(fill.no) {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "that rig's orders moved on",
+            ));
+        }
+        let deadline_ic = now
+            .checked_add(PLAN_BOUND_IC_SECS)
+            .ok_or_else(|| integrity("the plan's deadline overflows"))?;
+        record.plans = fill.no;
+        record.plan = Some(FillPlan {
+            no: fill.no,
+            author: actor,
+            hull: rig.hull,
+            slot: rig.slot,
+            site,
+            family: fill.family,
+            filed_ic: now,
+            deadline_ic,
+            list: fill.list,
+            steps: fill.steps,
+            cursor: 0,
+            passed: Vec::new(),
+            state: FillState::Live,
+            seq: 1,
+            tally: PlanTally::default(),
+            notes: Vec::new(),
+        });
+        write_record(txn, &self.excursions, record, existed)?;
+        self.control_outcome(invocation, "plan_file", actor, tv, ordinal, now)
+    }
+
+    /// **A clear's or a strike's prepare** (doc 20 cut SM.11; the brief's 3.6, D17): the record's
+    /// plan of the invocation's number (`Conflict` "the plan moved on" otherwise). A clear: the plan
+    /// live (`plan_ended` when it ended by itself between the command and the landing) → ended
+    /// `Cleared` now, one `Ended` note, `seq` on — the step in flight untouched. A strike: the plan
+    /// ended (`plan_live` otherwise) → struck from the record. One write each.
+    fn clear_plan(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, now): (ObjId, ObjId, i64),
+        rig: &FixedRig,
+        strike: bool,
+        no: Option<u32>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let word = if strike { "plan_strike" } else { "plan_clear" };
+        // The offer names the rig the actor's, and its variant must be offered ok: the reviewer's
+        // R2 found the variant's `controls` (the author aboard the rig's hull, for a rig off their
+        // helm) fixed by the offer and never read here, so an author who had left the hull could
+        // still land a clear typed aboard. The variant's other answer (live or ended) is the
+        // record's, re-read below: the record is the authority.
+        match rig.plans.get(word) {
+            None => return Err(invalid("that act is not planned")),
+            Some(fixed) if !fixed.ok => {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word(fixed.code.as_deref().unwrap_or("plan_none")),
+                ));
+            }
+            Some(_) => {}
+        }
+        let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
+            return Err(moved_on());
+        };
+        // Only the actor's own plan (the lead's pre-commit round, item 3: a rig off the helm is
+        // offered to its plan's author; a previous lessee's plan is never cleared by another).
+        let Some(plan) = record
+            .plan
+            .as_mut()
+            .filter(|plan| Some(plan.no) == no && plan.author == actor)
+        else {
+            return Err(moved_on());
+        };
+        if strike {
+            if plan.live() {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word("plan_live"),
+                ));
+            }
+            record.plan = None;
+        } else {
+            if !plan.live() {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word("plan_ended"),
+                ));
+            }
+            plan.passed.clear();
+            plan.state = FillState::Ended {
+                why: PlanEnd::Cleared,
+                at_ic: now,
+            };
+            push_note(
+                plan,
+                PlanNoteKind::Ended {
+                    why: PlanEnd::Cleared,
+                },
+                now,
+            )?;
+            plan.seq = plan
+                .seq
+                .checked_add(1)
+                .ok_or_else(|| port_error(ActionErrorCode::Integrity, "a plan's seq overflows"))?;
+        }
+        let ordinal = record.ordinal.max(1);
+        write_record(txn, &self.excursions, record, true)?;
+        self.control_outcome(invocation, word, actor, tv, ordinal, now)
+    }
+
+    /// **A plan's end's prepare** (doc 20 cut SM.11; the brief's 3.6): the offer's plan variant an
+    /// end (`word == plan_end`) bound to the start's plan and step and the record's live plan's
+    /// `seq` (`Conflict` "the plan moved on" otherwise), nothing in flight — then the plan's update
+    /// and its end, one `Ended` note, `seq` on. No act; a `Stranded` end writes nothing else.
+    fn end_plan(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, now): (ObjId, ObjId, i64),
+        rig: &FixedRig,
+        by: &ByParams,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let fixed = rig
+            .plans
+            .get("plan")
+            .cloned()
+            .ok_or_else(|| invalid("that act is not planned"))?;
+        if !fixed.ok {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word(fixed.code.as_deref().unwrap_or("plan_moved")),
+            ));
+        }
+        let binding = fixed.plan.ok_or_else(moved_on)?;
+        let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
+            return Err(moved_on());
+        };
+        let live = record.live_plan_for(actor).map(|plan| (plan.no, plan.seq));
+        if binding.word != "plan_end"
+            || binding.end.is_none()
+            || Some(binding.no) != by.plan
+            || Some(binding.step) != by.step
+            || live != Some((binding.no, binding.seq))
+        {
+            return Err(moved_on());
+        }
+        // An act or a run in flight holds the end (the step finishes by its own rules); a queued
+        // unload does not — the interpreter answers an end with one standing only when the plan's
+        // bound has passed or the queue is orphaned (the lead's pre-commit round, item 3), and the
+        // queue is SM.8's own, which lands by itself whether the plan lives or not.
+        if record.act.is_some() || record.run.is_some() {
+            return Err(port_error(ActionErrorCode::Conflict, "that rig is busy"));
+        }
+        apply_update(&mut record, &binding, now)?;
+        let ordinal = record.ordinal.max(1);
+        write_record(txn, &self.excursions, record, true)?;
+        self.control_outcome(invocation, "plan_end", actor, tv, ordinal, now)
+    }
+
+    /// The start's outcome for a plan's control (no act: `due_ic` is `now`).
+    fn control_outcome(
+        &self,
+        invocation: &ActionInvocation,
+        word: &str,
+        actor: ObjId,
+        tv: ObjId,
+        ordinal: u32,
+        now: i64,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "act": word,
+                "actor": actor.0,
+                "due_ic": now,
                 "ordinal": ordinal,
                 "tv": tv.0,
             }),
@@ -6619,6 +8829,27 @@ fn left_after_launch(charge: &Charge, act: &Act, battery: Option<&BatteryDef>) -
     }
 }
 
+/// **How a reading was made, from who set its act going** (doc 20 cut SM.11; lead ruling 4): a
+/// plan's step writes `via: Plan`; the hand (and the idle return, which reads nothing) `Hand`.
+fn via_of(by: Option<ActBy>) -> chart::Via {
+    match by {
+        Some(ActBy::Plan { .. }) => chart::Via::Plan,
+        Some(ActBy::Idle) | None => chart::Via::Hand,
+    }
+}
+
+/// **The plan's tally, counted at a finish** (doc 20 cut SM.11; the brief's 3.7, the reviewer's
+/// F9): only on the record's plan whose number `by` names — riding the record write the finish
+/// already makes (no extra write, no `seq` bump).
+fn tally(record: &mut RigRecord, by: Option<ActBy>, count: impl FnOnce(&mut PlanTally)) {
+    let Some(ActBy::Plan { no, .. }) = by else {
+        return;
+    };
+    if let Some(plan) = record.plan.as_mut().filter(|plan| plan.no == no) {
+        count(&mut plan.tally);
+    }
+}
+
 /// **What a reading act's finish wrote to the chart**: its span on the outcome.
 fn write_reading(
     txn: &mut ActionTxn<'_>,
@@ -6648,7 +8879,7 @@ fn write_reading(
             hidden,
             ..
         } => {
-            write_scan(&mut row, *cell, fields, *footing, at);
+            write_scan(&mut row, *cell, fields, *footing, at, via_of(act.by));
             ReadSpan::Scan {
                 cell: *cell,
                 footing: *footing,
@@ -6663,7 +8894,7 @@ fn write_reading(
             ..
         } => {
             let pockets = pockets_in_reach((cell[0], cell[1]), i64::from(*radius));
-            write_sound(&mut row, *cell, &pockets, *quiet, at);
+            write_sound(&mut row, *cell, &pockets, *quiet, at, via_of(act.by));
             // The heard budget (D7): one heard line a sounder an IC hour on this site; a quiet
             // sounding is never heard and never touches it.
             let heard = !*quiet && heard_line_due(row.heard_ic, at);
@@ -7024,6 +9255,11 @@ impl ActionProvider for SurfaceDoneProvider {
                             at_ic: act.due_ic,
                             excursion: record.excursion.as_ref().map(|open| open.id),
                         });
+                        // Doc 20 cut SM.11 (the reviewer's F9): a plan's recover that brought ore
+                        // home is a trip; an empty one is not.
+                        tally(&mut record, act.by, |tally| {
+                            tally.trips = tally.trips.saturating_add(1);
+                        });
                     }
                     record.excursion = None;
                     // Doc 20 cut SM.4b (§3.6 of the brief): a recover that drove home spends its
@@ -7270,6 +9506,34 @@ impl ActionProvider for SurfaceDoneProvider {
                 // stands, `left_after_launch`'s rule).
                 let in_bay = matches!(&rig.facts, Facts::Bay { .. });
                 record.charge = settle(&record.charge, in_bay).unwrap_or(record.charge);
+                // Doc 20 cut SM.11 (the lead's pre-commit round, item 1): a QUEUED unload the
+                // hopper's full marker ring refused keeps its queue — re-filed after this unload's
+                // ordinal, so the surface tick starts it again under its attempt rule once the
+                // ring frees (the start's offer refuses `unload_markers` until then, so nothing
+                // lands and nothing more is told). A wait with the record's back-off, never a
+                // park: a plan waiting on it resumes by itself. A hand unload's refusal stays
+                // "try again later".
+                if result
+                    == (ActResult::Refused {
+                        code: RefusedCode::MarkersFull,
+                    })
+                    && let ActParams::Unload {
+                        how: UnloadHow::Queued,
+                        excursion,
+                        ..
+                    } = &act.params
+                {
+                    record.queued = Some(Queued {
+                        kind: ActKind::Unload,
+                        operator: act.operator,
+                        hull: act.hull,
+                        slot: act.slot,
+                        site: act.site.clone(),
+                        after: ordinal,
+                        at_ic: act.due_ic,
+                        excursion: *excursion,
+                    });
+                }
                 moved = done_moved;
                 stays = done_stays;
                 result
@@ -7290,6 +9554,7 @@ impl ActionProvider for SurfaceDoneProvider {
             arrived,
             mined: None,
             stays,
+            by: act.by,
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -7760,7 +10025,12 @@ impl SurfaceDoneProvider {
             let mut row = existing.unwrap_or_else(|| {
                 ChartRecord::new(run.operator, run.site.clone(), run.body.clone())
             });
-            chart::write_core(&mut row, (run.pocket[0], run.pocket[1]), run.due_ic);
+            chart::write_core(
+                &mut row,
+                (run.pocket[0], run.pocket[1]),
+                run.due_ic,
+                via_of(run.by),
+            );
             row.check()
                 .map_err(|_| integrity("the chart row is out of bounds"))?;
             let key = row.key();
@@ -7783,6 +10053,14 @@ impl SurfaceDoneProvider {
         };
         let at_ic = run.due_ic;
         let (slot, site) = (run.slot, run.site.clone());
+        // Doc 20 cut SM.11 (the brief's 3.7): a plan's cycle counts its tonnes and itself.
+        let run_by = run.by;
+        if !refused {
+            tally(&mut record, run_by, |tally| {
+                tally.tonnes = tally.tonnes.saturating_add(tonnes);
+                tally.cycles = tally.cycles.saturating_add(1);
+            });
+        }
         record.run = match end {
             Some(_) => None,
             None => {
@@ -7810,6 +10088,7 @@ impl SurfaceDoneProvider {
             arrived: None,
             mined: Some(mined),
             stays: BTreeMap::new(),
+            by: run_by,
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -7842,202 +10121,8 @@ mod tests {
     /// Every refusal's word is in the table and its message is the table's.
     #[test]
     fn sm3b_every_refusal_word_has_a_message() {
-        let refusals = [
-            Refusal::Dark {
-                name: String::new(),
-            },
-            Refusal::Unwired,
-            Refusal::NotAboard {
-                name: String::new(),
-            },
-            Refusal::NotSite {
-                name: String::new(),
-            },
-            Refusal::UnderWay {
-                name: String::new(),
-            },
-            Refusal::Cleared {
-                name: String::new(),
-                port: String::new(),
-            },
-            Refusal::Out { n: 1 },
-            Refusal::Open { n: 1 },
-            Refusal::Forfeit {
-                n: 1,
-                counter: String::new(),
-                port: String::new(),
-            },
-            Refusal::Ended {
-                n: 1,
-                counter: String::new(),
-                port: String::new(),
-            },
-            Refusal::InBay { n: 1 },
-            Refusal::Elsewhere {
-                n: 1,
-                name: String::new(),
-            },
-            Refusal::Far {
-                n: 1,
-                m: 20,
-                ramp: String::new(),
-            },
-            Refusal::DumpNotSite {
-                n: 1,
-                name: String::new(),
-            },
-            Refusal::NoSpoil {
-                site: String::new(),
-            },
-            Refusal::Empty { n: 1 },
-            Refusal::Busy {
-                n: 1,
-                doing: String::new(),
-                when: String::new(),
-            },
-            Refusal::Reserve {
-                n: 1,
-                now: 1,
-                after: 0,
-                floor: 5,
-            },
-            Refusal::Cap {
-                cap: CapRefused::Operator,
-                site: String::new(),
-            },
-            Refusal::NothingNew,
-            Refusal::ChartFull {
-                body: String::new(),
-            },
-            Refusal::GroundCold {
-                site: String::new(),
-                entry: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
-            },
-            Refusal::InstrumentsDark,
-            Refusal::NoFooting {
-                n: 1,
-                terrain: String::new(),
-            },
-            // Doc 20 cut SM.4b: the drive's and the far recover's nine.
-            Refusal::OffSite {
-                site: String::new(),
-            },
-            Refusal::Here { n: 1 },
-            Refusal::NoPath {
-                n: 1,
-                target: String::new(),
-            },
-            Refusal::Winding {
-                n: 1,
-                target: String::new(),
-                needed: 33,
-            },
-            Refusal::NoWayHome {
-                n: 1,
-                target: String::new(),
-                ramp: String::new(),
-            },
-            Refusal::Unplanned,
-            Refusal::Moved,
-            Refusal::LegShort {
-                n: 1,
-                now: "2".to_owned(),
-                need: "3".to_owned(),
-                ramp: String::new(),
-            },
-            Refusal::RecoverDark {
-                n: 1,
-                ramp: String::new(),
-            },
-            // Doc 20 cut SM.7: mining's sixteen words (two variants share `no_ore`).
-            Refusal::MineInBay { n: 1 },
-            Refusal::MineRunning {
-                n: 1,
-                addr: String::new(),
-                k: 1,
-                cycles: 4,
-                when: String::new(),
-            },
-            Refusal::MineNoFooting {
-                n: 1,
-                terrain: String::new(),
-            },
-            Refusal::Licence {
-                line: tv::MINE_NO_LICENCE.to_owned(),
-            },
-            Refusal::Claimed,
-            Refusal::Locked,
-            Refusal::HopperFull {
-                n: 1,
-                hopper: String::new(),
-            },
-            Refusal::HoldFull {
-                name: String::new(),
-            },
-            Refusal::WorkedOut {
-                addr: String::new(),
-                ore: String::new(),
-            },
-            Refusal::NoFit {
-                n: 1,
-                m: 4,
-                fit: 3,
-                bound: Bound::Hopper,
-                fam: String::new(),
-            },
-            Refusal::BlindRoom { room: 3 },
-            Refusal::BlindCount {
-                n: 1,
-                fam: String::new(),
-            },
-            Refusal::NoOre {
-                addr: String::new(),
-                ore: String::new(),
-            },
-            Refusal::AllBarren {
-                addr: String::new(),
-            },
-            Refusal::MineForfeit {
-                n: 1,
-                counter: String::new(),
-                port: String::new(),
-            },
-            Refusal::MineEnded {
-                n: 1,
-                counter: String::new(),
-                port: String::new(),
-            },
-            Refusal::MineChanged,
-            // Doc 20 cut SM.8: unloading's six.
-            Refusal::UnloadUnderWay {
-                name: String::new(),
-            },
-            Refusal::UnloadNotSite {
-                n: 1,
-                name: String::new(),
-            },
-            Refusal::UnloadOut {
-                n: 1,
-                site: String::new(),
-            },
-            Refusal::UnloadNoRoom {
-                n: 1,
-                name: String::new(),
-                load: String::new(),
-            },
-            Refusal::UnloadNoFit {
-                n: 1,
-                q: 9,
-                fit: 3,
-                ore: String::new(),
-            },
-            Refusal::UnloadNoStock {
-                n: 1,
-                fit: 3,
-                ore: String::new(),
-            },
-            Refusal::UnloadChanged { n: 1 },
-        ];
+        // Doc 20 cut SM.11: one sample of every variant, shared with the plan's refusal table.
+        let refusals = refusal_samples();
         let mut words: Vec<&str> = refusals.iter().map(Refusal::word).collect();
         for refusal in &refusals {
             assert!(
@@ -8070,8 +10155,14 @@ mod tests {
         // Doc 20 cut SM.4b: 24 → 33 words; the drive's lines verbatim. Doc 20 cut SM.7: 33 → 49
         // (mining's sixteen). Doc 20 cut SM.8: 49 → 55 (unloading's six), 55 → 56 at the lead's
         // pre-commit round (item 4: `unload_no_stock` — a named tonnage past the hopper's stock is
-        // no longer told as not fitting the hold).
-        assert_eq!(REFUSAL_CODES.len(), 56);
+        // no longer told as not fitting the hold). Doc 20 cut SM.11: 56 → 63 (the fill plan's
+        // seven prepare refusals); 63 → 64 at the lead's pre-commit round (item 1:
+        // `unload_markers`, the queued unload's start while the hopper's unload log is full).
+        assert_eq!(REFUSAL_CODES.len(), 64);
+        assert_eq!(
+            Refusal::PlanLive { n: 1, no: 2 }.code(),
+            "that rig is working a plan"
+        );
         assert_eq!(
             Refusal::UnloadNoFit {
                 n: 1,
@@ -8173,7 +10264,7 @@ mod tests {
         // Doc 20 cut SM.7: `mine_stop` is a control, no act (`sm7_the_wire_words_parse`).
         for word in ACT_WIRE_WORDS
             .into_iter()
-            .filter(|word| *word != "mine_stop")
+            .filter(|word| *word != "mine_stop" && !word.starts_with("plan_"))
         {
             let (kind, quiet) = act_of_word(word).unwrap_or_else(|| panic!("{word}"));
             assert_eq!(wire_word(kind, quiet), word);
@@ -8199,7 +10290,7 @@ mod tests {
         assert!(
             refused.to_string().contains(
                 "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, \
-                 mine, mine_stop or unload"
+                 mine, mine_stop, unload, plan_file, plan_clear, plan_strike or plan_end"
             ),
             "{refused}"
         );
@@ -8375,8 +10466,9 @@ mod tests {
     /// [`act_of_word`]; the Choice is sorted and holds nine; the cycle and stop keys form.
     #[test]
     fn sm7_the_wire_words_parse() {
-        // Doc 20 cut SM.8: nine → ten with `unload`.
-        assert_eq!(ACT_WIRE_WORDS.len(), 10);
+        // Doc 20 cut SM.8: nine → ten with `unload`; doc 20 cut SM.11: ten → fourteen with the
+        // plan's four controls.
+        assert_eq!(ACT_WIRE_WORDS.len(), 14);
         let mut sorted = ACT_WIRE_WORDS;
         sorted.sort_unstable();
         assert_eq!(sorted, ACT_WIRE_WORDS);
@@ -8391,7 +10483,14 @@ mod tests {
                     assert_eq!(act_of_word(word), Some((kind, quiet)));
                 }
                 StartWord::MineStop => assert_eq!(word, "mine_stop"),
+                StartWord::PlanFile => assert_eq!(word, "plan_file"),
+                StartWord::PlanClear => assert_eq!(word, "plan_clear"),
+                StartWord::PlanStrike => assert_eq!(word, "plan_strike"),
+                StartWord::PlanEnd => assert_eq!(word, "plan_end"),
             }
+        }
+        for word in ["plan_file", "plan_clear", "plan_strike", "plan_end"] {
+            assert_eq!(act_of_word(word), None, "{word} is no act");
         }
         assert_eq!(start_word("drill"), None, "the alias is the verb's only");
         assert_eq!(
@@ -8449,6 +10548,7 @@ mod tests {
             due_ic: 1_900,
             reserved_cu: 1_000,
             params: ActParams::None {},
+            by: None,
         };
         let settled =
             spent_after_launch(&charge, &act, &battery).unwrap_or_else(|e| panic!("{e:?}"));
@@ -8502,6 +10602,7 @@ mod tests {
             due_ic: 2_500,
             reserved_cu: 2_000,
             params: ActParams::None {},
+            by: None,
         };
         let left = left_after_launch(&charge, &act, Some(&battery));
         assert_eq!(
@@ -8548,6 +10649,150 @@ mod tests {
             queued_key(ObjId(900), 3).map(|k| k.as_str().to_owned()),
             Some("tacsim.surface/900/3/queued".to_owned())
         );
+        // Doc 20 cut SM.11 (the brief's 3.6, D9, D17): the plan's keys.
+        let text = |key: Option<IdempotencyKeyText>| key.map(|k| k.as_str().to_owned());
+        assert_eq!(
+            text(plan_file_key(ObjId(900), 2)),
+            Some("tacsim.surface/900/plan/2/file".to_owned())
+        );
+        assert_eq!(
+            text(plan_clear_key(ObjId(900), 2, 7)),
+            Some("tacsim.surface/900/plan/2/clear/7".to_owned())
+        );
+        assert_eq!(
+            text(plan_strike_key(ObjId(900), 2, 11)),
+            Some("tacsim.surface/900/plan/2/strike/11".to_owned())
+        );
+        assert_eq!(
+            text(plan_end_key(ObjId(900), 2)),
+            Some("tacsim.surface/900/plan/2/end".to_owned())
+        );
+        assert_eq!(
+            text(plan_step_key(ObjId(900), 12, 3, "drive")),
+            Some("tacsim.surface/900/12/plan/3/drive".to_owned())
+        );
+        assert_eq!(
+            text(idle_key(ObjId(900), 12)),
+            Some("tacsim.surface/900/12/idle".to_owned())
+        );
+        assert_ne!(
+            text(plan_clear_key(ObjId(900), 2, 7)),
+            text(plan_strike_key(ObjId(900), 2, 7)),
+            "a clear and a strike never share a key"
+        );
+    }
+    /// **A plan's filing leaves the slot once it landed or the rig moved on** (doc 20 cut SM.11;
+    /// the brief's 3.8, the reviewer's F11): `prune_mine_orders` keeps a filing while
+    /// `plans < no` and the record's ordinal is the one it was planned at; drops it once the filing
+    /// landed (`plans ≥ no`) or the ordinal moved; a rig with no record keeps a first filing
+    /// planned at ordinal 0 and drops one planned at another.
+    #[test]
+    fn sm11_the_prune_drops_a_landed_or_overtaken_filing() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::fixture::config()),
+        )]);
+        let w = &mut tw.engine_mut().world;
+        let filing = |no: u32, ordinal: u32| {
+            ActOrder::Plan(Box::new(PlanOrder {
+                actor: ObjId(42),
+                ordinal,
+                no,
+                list: "D".to_owned(),
+                family: None,
+                compiled: crate::surface::plan::Compiled {
+                    list: vec!["D".to_owned()],
+                    family: OreFamily::Metals,
+                    steps: vec![crate::surface::plan::PlanStep::Block { letter: 'D' }],
+                    est_secs: 1,
+                    step_secs: vec![1],
+                    far: Vec::new(),
+                },
+            }))
+        };
+        let record = |tv: u32, ordinal: u32, plans: u32| {
+            let mut record = RigRecord::fresh_unread(ObjId(tv));
+            record.ordinal = ordinal;
+            record.plans = plans;
+            record
+        };
+        let mut run = |orders: Vec<(u32, ActOrder)>, records: &[RigRecord]| {
+            if let Some(slot) = w.module_state_mut::<ActOrders>() {
+                slot.0 = orders.into_iter().map(|(tv, o)| (ObjId(tv), o)).collect();
+            }
+            let dropped = prune_mine_orders(w, records);
+            let kept: Vec<u32> = w
+                .module_state::<ActOrders>()
+                .map(|slot| slot.0.keys().map(|tv| tv.0).collect())
+                .unwrap_or_default();
+            (dropped, kept)
+        };
+        assert_eq!(
+            run(vec![(1, filing(1, 3))], &[record(1, 3, 0)]),
+            (0, vec![1]),
+            "not yet landed"
+        );
+        assert_eq!(
+            run(vec![(1, filing(1, 3))], &[record(1, 3, 1)]),
+            (1, Vec::new()),
+            "the filing landed: plans ≥ no"
+        );
+        assert_eq!(
+            run(vec![(1, filing(2, 3))], &[record(1, 4, 1)]),
+            (1, Vec::new()),
+            "the rig's orders moved on"
+        );
+        assert_eq!(
+            run(vec![(1, filing(1, 0)), (2, filing(1, 2))], &[]),
+            (1, vec![1]),
+            "no record: a first filing at ordinal 0 stays, another goes"
+        );
+    }
+
+    /// **A plan's start names its plan and step** (doc 20 cut SM.11; the brief's 3.6): the
+    /// parameter rule, word by word.
+    #[test]
+    fn sm11_a_plan_start_names_its_plan_and_step() {
+        let params = |value: Value| value.as_object().cloned().unwrap_or_default();
+        let act = |word: &str| start_word(word).unwrap_or_else(|| panic!("{word}"));
+        let ok = |word: &str, value: Value| by_params(act(word), &params(value)).is_ok();
+        // A plan's step: drive, scan, sound, mine, recover and plan_end, with plan and step.
+        for word in ["drive", "scan", "sound", "mine", "recover", "plan_end"] {
+            assert!(
+                ok(word, json!({ "by": "plan", "plan": 1, "step": 0 })),
+                "{word}"
+            );
+            assert!(
+                !ok(word, json!({ "by": "plan", "plan": 1 })),
+                "{word}: no step"
+            );
+            assert!(
+                !ok(word, json!({ "by": "plan", "step": 0 })),
+                "{word}: no plan"
+            );
+        }
+        for word in ["launch", "dump", "unload", "mine_stop", "plan_file"] {
+            assert!(
+                !ok(word, json!({ "by": "plan", "plan": 1, "step": 0 })),
+                "{word}"
+            );
+        }
+        // The idle return: a recover only, with neither.
+        assert!(ok("recover", json!({ "by": "idle" })));
+        assert!(!ok("recover", json!({ "by": "idle", "plan": 1 })));
+        assert!(!ok("scan", json!({ "by": "idle" })));
+        // The controls.
+        assert!(ok("plan_file", json!({})));
+        assert!(!ok("plan_file", json!({ "plan": 1 })));
+        assert!(ok("plan_clear", json!({ "plan": 1 })));
+        assert!(ok("plan_strike", json!({ "plan": 1 })));
+        assert!(!ok("plan_clear", json!({})));
+        assert!(!ok("plan_end", json!({})), "an end is the plan's");
+        // A hand start carries none; malformed values refuse.
+        assert!(ok("scan", json!({})));
+        assert!(!ok("scan", json!({ "plan": 1 })));
+        assert!(!ok("drive", json!({ "by": "hand" })));
+        assert!(!ok("drive", json!({ "by": "plan", "plan": 0, "step": 0 })));
+        assert!(!ok("drive", json!({ "by": "plan", "plan": 1, "step": 65 })));
     }
 
     /// **An unload's start names how it was planned** (doc 20 cut SM.8; decision R15): `how` reads

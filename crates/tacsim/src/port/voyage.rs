@@ -408,7 +408,8 @@ pub const TV_OUT: &str = "Rig {n} is out on {site}; the {name} lifts only with e
 pub const TV_AWAY: &str = "Rig {n} is logged out {where}; the {name} lifts only with every rig in her bay: staff must bring it in.";
 /// **Doc 20 cut SM.3b**: a rig mid-act: `{n}`, `{doing}`, `{name}`. A rig mid-run (doc 20 cut
 /// SM.7) uses it too, `{doing}` from `crate::surface::act::drilling_words` and
-/// `crate::port::tv::RUN_STOP_REMEDY` appended.
+/// `crate::port::tv::RUN_STOP_REMEDY` appended; and (doc 20 cut SM.11) a rig working a plan,
+/// `{doing}` `crate::port::tv::PLAN_DOING` with `crate::port::tv::PLAN_REMEDY` appended.
 pub const TV_BUSY: &str = "Rig {n} is {doing}; the {name} lifts once it is done.";
 /// **Doc 20 cut SM.3b (§4.3)**: a hopper with ore in it, the hull settled on a site's pad — where
 /// both remedies work (doc 20 cut SM.8 names the unload first): `{n}`, `{t}` whole tonnes,
@@ -2519,6 +2520,38 @@ pub(crate) fn bay_gate(
     view: &HullView<'_>,
     name: &str,
 ) -> Result<(), DepartRefusal> {
+    bay_gate_with(ctx, view, name, RigSkip::None)
+}
+
+/// **Which rigs the bay gate's rig half passes over** (doc 20 cut SM.11; the brief's 3.10, the
+/// reviewer's F4): the queue's dry run reads a depart behind an `await tv` over the rigs the await
+/// does not wait for — none behind `await tv all`, every rig but slot `n` behind `await tv n`.
+/// The hoppers' half always reads every rig.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RigSkip {
+    /// Every rig is read (every caller but the dry run).
+    None,
+    /// The rigs' half is skipped.
+    All,
+    /// The rig of this slot is skipped.
+    Slot(u8),
+}
+
+/// [`bay_gate`] with its rig half narrowed by `skip` (doc 20 cut SM.11). **A rig working a plan**
+/// (`RigFlight::Planning`) refuses [`TV_BUSY`] with `working its plan` and
+/// `crate::port::tv::PLAN_REMEDY`, ahead of [`TV_OUT`]: a hull never lifts while a rig is out or
+/// working a plan, by hand or from the queue (the queued depart waits on `TvOut`).
+///
+/// # Errors
+///
+/// As [`bay_gate`].
+#[allow(clippy::too_many_lines)] // one ordered walk of the rigs, then the hoppers
+pub(crate) fn bay_gate_with(
+    ctx: &Ctx<'_>,
+    view: &HullView<'_>,
+    name: &str,
+    skip: RigSkip,
+) -> Result<(), DepartRefusal> {
     use crate::port::tv::RigFlight;
     use crate::surface::act::{
         Where, doing_words, drilling_words, ramp_label, site_name, site_of_domain, where_is,
@@ -2560,6 +2593,13 @@ pub(crate) fn bay_gate(
         Berth::Docked { .. } | Berth::UnderWay | Berth::Elsewhere => None,
     };
     for (slot, tv) in &rigs {
+        // Doc 20 cut SM.11 (the reviewer's F4): the dry run behind an await reads only the rigs
+        // the await does not wait for.
+        match skip {
+            RigSkip::All => continue,
+            RigSkip::Slot(n) if n == *slot => continue,
+            RigSkip::Slot(_) | RigSkip::None => {}
+        }
         // The one reader the lease return and the repossession share (the fixer round's
         // item 1), so the three cannot drift.
         let flight = match crate::port::tv::rig_flight(ctx, *tv) {
@@ -2595,9 +2635,27 @@ pub(crate) fn bay_gate(
                 ),
             ));
         }
+        // Doc 20 cut SM.11 (the brief's 3.9): a rig working a plan holds the hull too — busy,
+        // with the clear as its remedy — ahead of `TV_OUT`.
+        if let RigFlight::Planning { .. } = &flight {
+            return Err(refusal(
+                K::TvOut,
+                format!(
+                    "{}{}",
+                    TV_BUSY
+                        .replace("{n}", &n_of(*slot))
+                        .replace("{doing}", crate::port::tv::PLAN_DOING)
+                        .replace("{name}", name),
+                    crate::port::tv::PLAN_REMEDY.replace("{n}", &n_of(*slot))
+                ),
+            ));
+        }
         let open = match &flight {
             RigFlight::Out { site } => Some(site),
-            RigFlight::Idle | RigFlight::Busy { .. } | RigFlight::Drilling { .. } => None,
+            RigFlight::Idle
+            | RigFlight::Busy { .. }
+            | RigFlight::Drilling { .. }
+            | RigFlight::Planning { .. } => None,
         };
         if !in_bay || open.is_some() {
             let named = match (open, place) {

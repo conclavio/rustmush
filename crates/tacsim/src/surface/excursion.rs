@@ -39,6 +39,13 @@
 //! record's durable queue [`Queued`] (`RigRecord::queued`, written by a `Done` recover with ore in
 //! the hopper and cleared by any start), [`Outcome::stays`] and the refusal codes
 //! [`RefusedCode::LeftBay`], [`RefusedCode::HoldRefused`] and [`RefusedCode::MarkersFull`].
+//!
+//! **Doc 20 cut SM.11** adds the fill plan (§8 "Leaving it running"; D-20-11, Q-20-3): the rig's
+//! durable plan ([`RigRecord::plan`], a [`FillPlan`] — the record type is
+//! `crate::surface::plan`'s) and its count ([`RigRecord::plans`]); who set an act going
+//! ([`Act::by`], [`Run::by`], [`Outcome::by`] — a plan's step or the idle return, never a player's
+//! word); the projection's plan view ([`TvRec::plan`], [`PlanView`], [`PlanTold`]); and
+//! [`TvState::Parked`]'s meaning, a rig on the ground whose charge cannot pay its way home.
 
 use std::collections::BTreeMap;
 
@@ -49,6 +56,7 @@ use smol_str::SmolStr;
 use crate::definitions::logistics::{BayDef, MAX_BAY_ITEMS};
 use crate::definitions::tools::BatteryDef;
 use crate::surface::ground::SITE_CELL_CM;
+use crate::surface::plan::{ActBy, FillPlan, FillState};
 use crate::surface::reading::Footing;
 
 /// The typed family (§8; lead ruling 1).
@@ -579,6 +587,11 @@ pub struct Act {
     pub reserved_cu: u32,
     /// Its frozen parameters.
     pub params: ActParams,
+    /// **Who set it going** (doc 20 cut SM.11; lead rulings 1 and 4): a fill plan's step or the
+    /// idle return, from the start's server-authored `by` parameter; `None` for the hand.
+    /// Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<ActBy>,
 }
 
 /// **The sortie identity** (§4.3; D-UM-45): `(tv, launch_ic)` — the bay is the hangar.
@@ -711,6 +724,11 @@ pub struct Outcome {
     /// carries what an unload moved). Skipped when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub stays: BTreeMap<CanonicalId, u64>,
+    /// **Who set the act going** (doc 20 cut SM.11): the act's (or, for a cycle, the run's)
+    /// [`Act::by`], copied by the finish, so the tell knows a plan's or the idle return's act.
+    /// Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<ActBy>,
 }
 
 /// **What one mining cycle did** (doc 20 cut SM.7; §6, §1 beat 8's line): carried on its
@@ -913,6 +931,11 @@ pub struct Run {
     pub due_ic: i64,
     /// The run's remaining reservation: `cost_cu × (cycles − k + 1)`.
     pub reserved_cu: u32,
+    /// **Who set it going** (doc 20 cut SM.11): a fill plan's mine step, or `None` for the hand;
+    /// each cycle's outcome carries it, and its cores are written `via: Plan`. Skipped when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<ActBy>,
 }
 
 impl Run {
@@ -1022,6 +1045,24 @@ pub struct RigRecord {
     /// `None` (schema 1 stands: pre-launch, no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued: Option<Queued>,
+    /// **The rig's fill plan** (doc 20 cut SM.11; §8 "Leaving it running"; the SM.11 brief's lead
+    /// ruling 1, decision D1): live, parking or ended (an ended plan keeps its outcome until the
+    /// next filing or `+tv/plan clear`). Written only in the start's prepare — the filing, every
+    /// plan step's start, the end, the clear, the strike — and by the finish's tally, each in the
+    /// bundle that writes this record. Skipped when `None` (schema 1 stands: pre-launch, no
+    /// migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<FillPlan>,
+    /// **Plans ever filed on the rig** (doc 20 cut SM.11): the next plan's number is `plans + 1`.
+    /// Skipped at 0.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub plans: u32,
+}
+
+/// serde's `skip_serializing_if` for [`RigRecord::plans`].
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+const fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// **An act a finish queued for the tick to start** (doc 20 §7.1; cut SM.8 lead ruling 1): the
@@ -1076,6 +1117,8 @@ impl RigRecord {
             last: None,
             run: None,
             queued: None,
+            plan: None,
+            plans: 0,
         }
     }
 
@@ -1100,6 +1143,8 @@ impl RigRecord {
             last: None,
             run: None,
             queued: None,
+            plan: None,
+            plans: 0,
         }
     }
 
@@ -1279,7 +1324,66 @@ impl RigRecord {
                 return Err("a queued act waits on an idle rig".to_owned());
             }
         }
+        // Doc 20 cut SM.11 (lead rulings 1 and 4): the plan's own bounds and number; who set an
+        // act, a run or an outcome going — the idle return only ever recovers, and a plan never
+        // dumps or unloads (SM.8's queued unload is the plan's recover's second half).
+        if let Some(plan) = &self.plan {
+            plan.check()?;
+            if plan.no == 0 || plan.no > self.plans {
+                return Err("a plan's number is one of the rig's plans".to_owned());
+            }
+        }
+        let by_ok = |kind: ActKind, by: Option<&ActBy>| match by {
+            None => true,
+            Some(ActBy::Idle) => kind == ActKind::Recover,
+            Some(ActBy::Plan { .. }) => !matches!(kind, ActKind::Dump | ActKind::Unload),
+        };
+        if let Some(act) = &self.act
+            && !by_ok(act.kind, act.by.as_ref())
+        {
+            return Err(
+                "an act is set going by the hand, a plan's step or the idle return".to_owned(),
+            );
+        }
+        if let Some(run) = &self.run
+            && !by_ok(ActKind::Mine, run.by.as_ref())
+        {
+            return Err("a run is set going by the hand or a plan's step".to_owned());
+        }
+        if let Some(last) = &self.last
+            && !by_ok(last.kind, last.by.as_ref())
+        {
+            return Err(
+                "a finished act was set going by the hand, a plan's step or the idle return"
+                    .to_owned(),
+            );
+        }
         Ok(())
+    }
+
+    /// **The rig's plan, when it is live for `lessee`** (doc 20 cut SM.11; the brief's decision
+    /// D12): a plan whose author no longer leases the rig is orphaned — inert.
+    #[must_use]
+    pub fn live_plan_for(&self, lessee: ObjId) -> Option<&FillPlan> {
+        self.plan.as_ref().filter(|plan| plan.live_for(lessee))
+    }
+
+    /// **The instant the rig last acted or its plan ended** (doc 20 cut SM.11; the brief's 3.6
+    /// and 3.8, lead ruling 6): `max(last.at_ic, the ended plan's at_ic)`, else the open
+    /// excursion's launch; `None` with neither. The idle return reads it.
+    #[must_use]
+    pub fn idle_since(&self) -> Option<i64> {
+        let last = self.last.as_ref().map(|last| last.at_ic);
+        let ended = self.plan.as_ref().and_then(|plan| match &plan.state {
+            FillState::Ended { at_ic, .. } => Some(*at_ic),
+            FillState::Live | FillState::Parking { .. } => None,
+        });
+        match (last, ended) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a
+                .or(b)
+                .or_else(|| self.excursion.as_ref().map(|open| open.id.launch_ic)),
+        }
     }
 }
 
@@ -1605,8 +1709,49 @@ pub enum TvState {
     Out,
     /// Promoted and held (phase 3).
     Held,
-    /// Parked on the ground (SM.11).
+    /// **Parked where it stands** (doc 20 cut SM.11; the brief's lead ruling 6): a rig on the
+    /// ground with nothing in flight whose charge cannot pay its way home — the idle return's
+    /// recover refused `leg_short`, or a fill plan that ended `Stranded`. Staff bring it in. A
+    /// plan's normal park is the bay ([`TvState::Bay`]).
     Parked,
+}
+
+/// **A fill plan as the projection shows it** (doc 20 cut SM.11; the brief's lead ruling 10): the
+/// plan's number and state, the step it works and the step words from it, its deadline and, once
+/// it has ended, the end's reason word — never a class, a tonnage or a reserve.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanView {
+    /// The rig's plan number.
+    pub no: u32,
+    /// `live`, `parking` or `ended`.
+    pub state: String,
+    /// The step it works, from 1 (`steps + 1` once the list is worked out).
+    pub step: u16,
+    /// Its steps.
+    pub steps: u16,
+    /// At most [`MAX_PLAN_VIEW_NEXT`] step words from the step it works (`mine C117`).
+    pub next: Vec<String>,
+    /// Its deadline, IC.
+    pub deadline_ic: i64,
+    /// Why it parked or ended, in a short word (`hold full`); skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+}
+
+/// The most step words a [`PlanView`] carries.
+pub const MAX_PLAN_VIEW_NEXT: usize = 4;
+
+/// **What of a plan the operator has been told** (doc 20 cut SM.11; the brief's 3.8): the plan's
+/// number and its `seq` at the last tell — never cleared on an operator change (clearing it would
+/// re-tell, `told`'s rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanTold {
+    /// The plan's number.
+    pub no: u32,
+    /// Its `seq` told.
+    pub seq: u32,
 }
 
 /// A pose on a site's grid, as the projection carries it.
@@ -1777,6 +1922,13 @@ pub struct TvRec {
     pub run: Option<Box<RunView>>,
     /// The newest [`MAX_TV_LOG_LINES`] lines, oldest first.
     pub log: Vec<TvLogLine>,
+    /// **The rig's fill plan, as [`PlanView`] shows it** (doc 20 cut SM.11; lead ruling 10);
+    /// skipped when `None`, so a projection with no plan reads byte for byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanView>,
+    /// **The plan notes told** (doc 20 cut SM.11); skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_told: Option<PlanTold>,
 }
 
 /// serde's `skip_serializing_if` for [`TvRec::told_cycle`].
@@ -1806,6 +1958,8 @@ impl TvRec {
             told_cycle: 0,
             run: None,
             log: Vec::new(),
+            plan: None,
+            plan_told: None,
         }
     }
 
@@ -1908,6 +2062,21 @@ impl TvRec {
                 "a rig projection's told cycle is at most {MAX_RUN_CYCLES}"
             ));
         }
+        // Doc 20 cut SM.11 (lead ruling 10): the plan view's step words and end, bounded.
+        if let Some(plan) = &self.plan
+            && (plan.next.len() > MAX_PLAN_VIEW_NEXT
+                || plan
+                    .next
+                    .iter()
+                    .chain(plan.end.iter())
+                    .chain(std::iter::once(&plan.state))
+                    .any(|words| words.len() > MAX_TV_LOG_BYTES || words.contains(['\n', '\r'])))
+        {
+            return Err(format!(
+                "a rig projection's plan shows at most {MAX_PLAN_VIEW_NEXT} steps, each one row of \
+                 at most {MAX_TV_LOG_BYTES} bytes"
+            ));
+        }
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
         if bytes.len() > MAX_TV_REC_BYTES {
             return Err(format!(
@@ -1933,6 +2102,9 @@ pub fn tv_rec_key_owner(key: &str) -> Option<ObjId> {
 }
 
 /// **One rig's projection, as the store holds it.**
+// Doc 20 cut SM.11: the plan view made `Present` the large variant; the store holds one per rig
+// (at most `MAX_RIG_RECORDS`), read far more often than written, so it stays unboxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TvRecState {
     /// The document read.
@@ -2241,6 +2413,7 @@ mod tests {
             due_ic: 1_300,
             reserved_cu: 0,
             params,
+            by: None,
         }
     }
 
@@ -2280,9 +2453,12 @@ mod tests {
                 arrived: None,
                 mined: None,
                 stays: BTreeMap::new(),
+                by: None,
             }),
             run: None,
             queued: None,
+            plan: None,
+            plans: 0,
         }
     }
 
@@ -3002,6 +3178,7 @@ mod tests {
             }],
             due_ic: 2_800,
             reserved_cu: 8_000,
+            by: None,
         }
     }
 
@@ -3476,5 +3653,175 @@ mod tests {
             let back: RefusedCode = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(back, code);
         }
+    }
+    /// A live plan 1 of three steps on `ahuna_port`, filed at 1,000.
+    fn fill_plan() -> FillPlan {
+        use crate::surface::plan::{PLAN_BOUND_IC_SECS, PlanStep, PlanTally};
+        FillPlan {
+            no: 1,
+            author: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: cid("ahuna_port"),
+            family: crate::surface::geology::OreFamily::Metals,
+            filed_ic: 1_000,
+            deadline_ic: 1_000 + PLAN_BOUND_IC_SECS,
+            list: vec!["C117".to_owned(), "D".to_owned()],
+            steps: vec![
+                PlanStep::Mine { pocket: [20, 52] },
+                PlanStep::Sound { field: 30 },
+                PlanStep::Block { letter: 'D' },
+            ],
+            cursor: 0,
+            passed: Vec::new(),
+            state: FillState::Live,
+            seq: 1,
+            tally: PlanTally::default(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// **A record carries its plan and its `by`** (doc 20 cut SM.11; the brief's 3.1): a record
+    /// with a plan and an act set going by the plan checks and round-trips; `by: Idle` on a scan
+    /// (or any act but a recover) is refused; a plan never dumps or unloads; a plan whose `no` is
+    /// above `plans` (or 0) is refused; the plan's own bounds are read; `live_plan_for` names only
+    /// the author; `idle_since` reads the later of the last outcome and the plan's end.
+    #[test]
+    fn sm11_a_record_carries_its_plan_and_its_by() {
+        let mut record = sample();
+        record.plans = 1;
+        record.plan = Some(fill_plan());
+        if let Some(act) = record.act.as_mut() {
+            act.by = Some(ActBy::Plan { no: 1, step: 0 });
+        }
+        assert_eq!(record.check(), Ok(()));
+        let wire = serde_json::to_string(&record).unwrap_or_else(|e| panic!("{e}"));
+        let back: RigRecord = serde_json::from_str(&wire).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, record);
+        assert!(
+            wire.contains(r#""by":{"by":"plan","no":1,"step":0}"#),
+            "{wire}"
+        );
+        // An empty record's wire carries none of the new keys.
+        let plain = serde_json::to_string(&sample()).unwrap_or_default();
+        assert!(
+            !plain.contains("\"plan") && !plain.contains("\"by\""),
+            "{plain}"
+        );
+        // Who set it going.
+        let mut idle_scan = record.clone();
+        if let Some(act) = idle_scan.act.as_mut() {
+            act.kind = ActKind::Scan;
+            act.by = Some(ActBy::Idle);
+        }
+        assert!(idle_scan.check().is_err(), "the idle return only recovers");
+        let mut idle_recover = sample();
+        if let Some(last) = idle_recover.last.as_mut() {
+            last.by = Some(ActBy::Idle);
+        }
+        assert_eq!(idle_recover.check(), Ok(()), "an idle recover's outcome");
+        let mut plan_dump = record.clone();
+        if let Some(act) = plan_dump.act.as_mut() {
+            act.kind = ActKind::Dump;
+        }
+        assert!(plan_dump.check().is_err(), "a plan never dumps");
+        let mut unload_by = sample();
+        if let Some(last) = unload_by.last.as_mut() {
+            last.kind = ActKind::Unload;
+            last.by = Some(ActBy::Plan { no: 1, step: 0 });
+        }
+        assert!(unload_by.check().is_err(), "a plan never unloads");
+        // The plan's number.
+        let mut above = record.clone();
+        above.plans = 0;
+        assert!(above.check().is_err(), "a plan no above plans");
+        let mut zero = record.clone();
+        if let Some(plan) = zero.plan.as_mut() {
+            plan.no = 0;
+        }
+        assert!(zero.check().is_err(), "a plan no of 0");
+        let mut bad_cursor = record.clone();
+        if let Some(plan) = bad_cursor.plan.as_mut() {
+            plan.cursor = 4;
+        }
+        assert!(bad_cursor.check().is_err(), "the plan's own bounds");
+        // Whose plan it is.
+        assert!(record.live_plan_for(ObjId(42)).is_some());
+        assert!(
+            record.live_plan_for(ObjId(43)).is_none(),
+            "orphaned for another lessee"
+        );
+        // The idle instant.
+        assert_eq!(record.idle_since(), Some(800), "the last outcome");
+        let mut ended = record.clone();
+        if let Some(plan) = ended.plan.as_mut() {
+            plan.state = FillState::Ended {
+                why: crate::surface::plan::PlanEnd::WorkedOut,
+                at_ic: 5_000,
+            };
+        }
+        assert_eq!(ended.idle_since(), Some(5_000), "the plan's later end");
+        assert!(
+            ended.live_plan_for(ObjId(42)).is_none(),
+            "an ended plan is not live"
+        );
+        let mut fresh_out = sample();
+        fresh_out.last = None;
+        assert_eq!(
+            fresh_out.idle_since(),
+            Some(1_000),
+            "the launch, with no outcome"
+        );
+    }
+
+    /// **A projection with a plan fits 4 KiB** (doc 20 cut SM.11; the brief's 3.1): a `TvRec`
+    /// with a sixteen-line log of 160-byte lines and a full `PlanView` (four step words, an end)
+    /// fits after `fit`, the plan view kept whole and the newest line kept.
+    #[test]
+    fn sm11_a_projection_with_a_plan_fits_four_kib() {
+        let mut rec = TvRec::new(ObjId(900), 1);
+        rec.plan = Some(PlanView {
+            no: 4_000_000_000,
+            state: "parking".to_owned(),
+            step: 64,
+            steps: 64,
+            next: vec![
+                "mine block D, fair or better".to_owned(),
+                "mine block E, fair or better".to_owned(),
+                "sound D-NW".to_owned(),
+                "mine C117".to_owned(),
+            ],
+            deadline_ic: 123_456_789_012,
+            end: Some("its licence lapsed".to_owned()),
+        });
+        rec.plan_told = Some(PlanTold {
+            no: 4_000_000_000,
+            seq: 4_000_000_000,
+        });
+        for n in 0..16_i64 {
+            rec.push_log(1_000_000 + n, &format!("{n:02}{}", "x".repeat(158)));
+        }
+        let size = |rec: &TvRec| serde_json::to_vec(rec).map(|b| b.len()).unwrap_or(0);
+        let plan = rec.plan.clone();
+        rec.fit();
+        assert_eq!(rec.check(), Ok(()));
+        assert!(size(&rec) <= MAX_TV_REC_BYTES, "{}", size(&rec));
+        assert_eq!(rec.plan, plan, "the plan view is kept whole");
+        assert_eq!(
+            rec.log.last().map(|l| l.at_ic),
+            Some(1_000_015),
+            "the newest line"
+        );
+        // The view's own bounds.
+        let mut five = rec.clone();
+        if let Some(view) = five.plan.as_mut() {
+            view.next.push("mine C118".to_owned());
+        }
+        assert!(five.check().is_err(), "at most four step words");
+        let wire = serde_json::to_string(&rec).unwrap_or_else(|e| panic!("{e}"));
+        let back: TvRec = serde_json::from_str(&wire).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, rec);
+        let bare = serde_json::to_string(&TvRec::new(ObjId(900), 1)).unwrap_or_default();
+        assert!(!bare.contains("plan"), "skipped when empty: {bare}");
     }
 }

@@ -1343,6 +1343,57 @@ pub fn with_ctx<T>(tw: &mut TestWorld, f: impl FnOnce(&mut mush_core::Ctx<'_>) -
     f(&mut ctx)
 }
 
+/// **Staff place `tv` `Direct` on `domain` at site cell `(x, y)`'s centre, facing south, and hand
+/// back the placement's persisted writes** (doc 20 cut SM.11; the lead's pre-commit round, item 5,
+/// the judge's T15): [`with_ctx`] drops its outbox, so a staff placement's recovery-ledger append
+/// never reaches a test's store and a reboot would come back with the placement missing. The
+/// caller folds the world's own module ops first, then these (`claims.rs`'s and `plans.rs`'s
+/// `to_cell`, which moved here from `claims.rs`'s `to_cell_on`).
+pub fn place_keeping(
+    tw: &mut TestWorld,
+    domain: mush_sim::DomainId,
+    tv: mush_core::ObjId,
+    (x, y): (i64, i64),
+) -> Vec<mush_core::ModuleOp> {
+    let mut out = mush_core::Outbox::new();
+    let placed = {
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: None,
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+            .map_err(|e| e.to_string())
+            .expect("a posture");
+        mush_sim::place(
+            &mut ctx,
+            tv,
+            domain,
+            mush_sim::data::Pose {
+                x_cm: x * 1_000 + 500,
+                y_cm: y * 1_000 + 500,
+                z_cm: 0,
+                heading_mdeg: 180_000,
+                posture,
+            },
+        )
+    };
+    placed.expect("staff place the rig");
+    out.take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The cell centre, pose-wise, that the proving ground authors for one slot id
 /// — the applier's own arithmetic (`cell × cell_cm + cell_cm / 2`).
 #[must_use]

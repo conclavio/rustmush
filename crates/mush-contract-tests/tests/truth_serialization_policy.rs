@@ -12,6 +12,7 @@ use tacsim::surface::geology::{FieldGround, PocketRow, ProvinceGround};
 use tacsim::surface::ground::{SiteGeology, SiteGround};
 use tacsim::surface::mine::MinePlan;
 use tacsim::surface::opening::OpeningRow;
+use tacsim::surface::plan::{PlanAct, PlanMove};
 
 assert_not_impl_any!(ResolvedActionInvocation: Serialize, DeserializeOwned);
 assert_not_impl_any!(ResolvedAuthoritativeOffer: Serialize, DeserializeOwned);
@@ -39,6 +40,13 @@ assert_not_impl_any!(MinePlan: Serialize, DeserializeOwned);
 // core never serialise. The block record (`tacsim.claims`) names no deposit.
 assert_not_impl_any!(ClaimPlan: Serialize, DeserializeOwned);
 assert_not_impl_any!(PlanCore: Serialize, DeserializeOwned);
+// Doc 20 cut SM.11 (the brief's 3.11, D23; reviewer F5): a fill plan's next move and its act hold a
+// mining plan (the pocket's true class and tonnes), so neither serialises. The fill plan itself
+// (`FillPlan`, on the rig's `tacsim.excursion` record) and the start's fixed parameters
+// (`PlanFixed`, `FillFixed`) serialise — a durable family and server-only fixed parameters — and
+// hold no truth: step words, addresses, a cursor, a tally of what landed, never a class or a reserve.
+assert_not_impl_any!(PlanMove: Serialize, DeserializeOwned);
+assert_not_impl_any!(PlanAct: Serialize, DeserializeOwned);
 
 #[test]
 fn private_truth_wrappers_have_no_serde_contract() {
@@ -64,12 +72,15 @@ fn private_truth_wrappers_have_no_serde_contract() {
         // Doc 20 cut SM.10: the claim plan and its compared core.
         std::any::type_name::<ClaimPlan>(),
         std::any::type_name::<PlanCore>(),
+        // Doc 20 cut SM.11: a fill plan's move and its act.
+        std::any::type_name::<PlanMove>(),
+        std::any::type_name::<PlanAct>(),
     ] {
         assert!(
             name.contains("Geology")
                 || name.contains("Ground")
                 || name.contains("Row")
-                || name.contains("Plan") // "Plan": SM.7's MinePlan, SM.10's ClaimPlan and PlanCore
+                || name.contains("Plan") // "Plan": SM.7's MinePlan, SM.10's ClaimPlan and PlanCore, SM.11's PlanMove and PlanAct
         );
     }
 }

@@ -912,26 +912,17 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     heard
 }
 
-/// Staff place `tv` `Direct` on `entry`'s domain at site cell `(x, y)`'s centre.
-fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, (x, y): (i64, i64)) {
+/// Staff place `tv` `Direct` on `entry`'s domain at site cell `(x, y)`'s centre — and keep the
+/// placement's writes for a reboot (doc 20 cut SM.11: `support::with_ctx` drops its outbox, so a
+/// staff placement's recovery-ledger append never reached the store; harmless until a placement
+/// sealed a ledger chunk, which the idle return's extra placements made happen here). The
+/// placement itself is `support::place_keeping` (the lead's pre-commit round, item 5: shared with
+/// `plans.rs`).
+fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, cell: (i64, i64)) {
     let domain = mush_sim::DomainId(port_map(&rig.tw, entry).domain.expect("a domain"));
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
-        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
-            .map_err(|e| e.to_string())?;
-        mush_sim::place(
-            ctx,
-            tv,
-            domain,
-            mush_sim::data::Pose {
-                x_cm: x * 1_000 + 500,
-                y_cm: y * 1_000 + 500,
-                z_cm: 0,
-                heading_mdeg: 180_000,
-                posture,
-            },
-        )
-    });
-    placed.expect("staff place the rig");
+    let staff = support::place_keeping(&mut rig.tw, domain, tv, cell);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
 }
 
 /// Launch the pilot's rig 1 and finish it (it stands at the ramp).
@@ -988,6 +979,27 @@ fn scanned_in(rig: &mut Rig, entry: &str, pilot: ObjId, tv: ObjId, letter: char)
     let _ = act_go(rig, pilot, "+tv/1 scan go");
     let _ = finish(rig, tv, pilot);
     stand
+}
+
+/// **Put the rig back where it stood** after a long settle (doc 20 cut SM.11, lead ruling 6): at
+/// this suite's rate a settle runs past a day, so the idle return brings a rig left on the ground
+/// home; the rig is launched again (once its recover has landed) and staff put it back on
+/// `stand`. A rig still out is only put back.
+fn back_on(rig: &mut Rig, (entry, pilot, tv): (&str, ObjId, ObjId), stand: (i64, i64)) {
+    if let Some(act) = record_of(&mut rig.tw, tv).and_then(|record| record.act) {
+        let (_, queued) = advance_to(rig, act.due_ic);
+        land_all(rig, &queued);
+        let _ = fire_landing(rig);
+    }
+    let out = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|state| matches!(state.parent_of(tv), mush_sim::SpatialParent::Direct { .. }));
+    if !out {
+        launched(rig, pilot, tv);
+    }
+    to_cell_on(rig, entry, tv, stand);
 }
 
 /// Sound (loud unless `quiet`) from where the rig stands; what the pilot heard.
@@ -1397,13 +1409,14 @@ fn stake(
     tv: ObjId,
     letter: char,
 ) -> tacsim::surface::claims::BlockClaim {
-    let _ = scanned_in(rig, entry, pilot, tv, letter);
+    let stand = scanned_in(rig, entry, pilot, tv, letter);
     let out = claim_go(rig, pilot, "+claim/stake go");
     assert!(
         out.contains(&format!("You stake block {letter} at ")),
         "{out}"
     );
     let _ = settle(rig, &[pilot]);
+    back_on(rig, (entry, pilot, tv), stand);
     let claim = block_record(&mut rig.tw, entry, letter)
         .and_then(|record| record.claim)
         .expect("the claim");
@@ -1719,10 +1732,12 @@ fn c2_world(table: &'static str) -> StakeSeen {
     let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
     let (b, _, tb) = on_ahuna(&mut rig, "Bryn", "BrynAcct", "Grey Heron");
     let (c, _, tc) = on_ahuna(&mut rig, "Cato", "CatoAcct", "Tern");
+    // Doc 20 cut SM.11: aligned before the launches, so the jump to the aligned instant never
+    // leaves a rig a day idle on the ground (the idle return would bring it home).
+    align(&mut rig);
     launched(&mut rig, a, ta);
     launched(&mut rig, b, tb);
     launched(&mut rig, c, tc);
-    align(&mut rig);
     let ic = ic_now(&rig.tw);
     let stands = stands_in(&mut rig.tw, AHUNA, 'C');
     for (who, tv, i, quiet) in [(b, tb, 0, false), (b, tb, 1, true), (c, tc, 2, false)] {
@@ -3032,8 +3047,10 @@ fn sm10_claims_on_the_site_map() {
 fn c16_world(table: &'static str) -> (String, String) {
     let mut rig = world_with_table(table);
     let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
-    launched(&mut rig, a, ta);
+    // Doc 20 cut SM.11: aligned before the launches, so the jump to the aligned instant never
+    // leaves a rig a day idle on the ground (the idle return would bring it home).
     align(&mut rig);
+    launched(&mut rig, a, ta);
     let _ = scanned_in(&mut rig, AHUNA, a, ta, 'C');
     let _ = claim_go(&mut rig, a, "+claim/stake metals go");
     let _ = settle(&mut rig, &[a]);
@@ -4290,9 +4307,11 @@ fn c23_world(table: &'static str) -> Vec<String> {
     let mut rig = world_with_table(table);
     let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
     let (b, _, tb) = on_ahuna(&mut rig, "Bryn", "BrynAcct", "Grey Heron");
+    // Doc 20 cut SM.11: aligned before the launches, so the jump to the aligned instant never
+    // leaves a rig a day idle on the ground (the idle return would bring it home).
+    align(&mut rig);
     launched(&mut rig, a, ta);
     launched(&mut rig, b, tb);
-    align(&mut rig);
     let mut lines = Vec::new();
     let _ = scanned_in(&mut rig, AHUNA, a, ta, 'C');
     lines.push(claim_lines(&claim_go(&mut rig, a, "+claim/stake go")));

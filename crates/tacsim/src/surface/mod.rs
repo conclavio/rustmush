@@ -110,6 +110,17 @@
 //!   `tacsim.surface/{tv}/{ordinal}/queued`), or the operator files one with `+tv/unload`; its
 //!   finish moves the hopper's goods into the hold by one inventory-owned marked transfer.
 //!
+//! **Doc 20 cut SM.11** lets the pilot leave it running (§1 beat 11, §8 "Leaving it running",
+//! D-20-11, Q-20-3):
+//!
+//! - [`plan`](crate::surface::plan) — the fill plan, a durable record on the rig's
+//!   `tacsim.excursion` record (`RigRecord::plan`), its pure compiler (the closed vocabulary: a
+//!   loud sounding, a mine step, a block's fair-or-better pockets) and its interpreter, which the
+//!   surface tick runs to choose each next act and the start's offer runs again to fix it; every
+//!   step is one of the existing acts on SM.3b's one start and one finish;
+//! - the idle return: a rig left on the ground with nothing to do for a day is recovered by the
+//!   tick as its operator, or reported parked where it stands.
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -140,6 +151,7 @@ pub mod key;
 pub mod mine;
 pub mod mined;
 pub mod opening;
+pub mod plan;
 pub mod reading;
 pub mod tenure;
 pub mod tick;

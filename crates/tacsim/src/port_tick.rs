@@ -1970,6 +1970,51 @@ pub fn notify(ctx: &mut Ctx<'_>, who: ObjId, text: &str) {
     }
 }
 
+/// **How a surface line rides the reconnect queue** (doc 20 cut SM.11; the brief's lead ruling 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeLevel {
+    /// A trip-level line — an unload, a plan's parking or end, an idle return, a stranded rig, a
+    /// refused act: queued for an offline operator.
+    Trip,
+    /// Every other surface line — a cycle, a reading, a drive, a launch, a recover: said to a
+    /// connected operator, never queued.
+    Live,
+}
+
+/// **Tell `who` one surface line under the notice budget** (doc 20 §8 "Reconnect notices: at most
+/// one a trip plus a summary", §11 Caps "≤ 1 notice a trip"; cut SM.11 lead ruling 7): connected,
+/// the line is said, as [`notify`] does; offline it is queued only when it is a trip-level line —
+/// an unload, a plan's parking or end, an idle return, a stranded rig, a refused act — never a
+/// cycle, a reading, a drive, a launch or a recover. The ring's cap ([`MAX_NOTICE_LINES`]) stands.
+pub fn notify_budget(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
+    match delivery(ctx.w.is_connected(who), level) {
+        Delivery::Say => ctx.out.sys_to_actor(who, "tacsim", text),
+        Delivery::Queue => queue_notice(ctx, who, text),
+        Delivery::Drop => {}
+    }
+}
+
+/// What [`notify_budget`] does with one line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    /// Said now.
+    Say,
+    /// Queued for the next login.
+    Queue,
+    /// Neither: an offline operator hears no live line.
+    Drop,
+}
+
+/// [`notify_budget`]'s rule, pure: connected, every line is said; offline, a trip-level line is
+/// queued and every other dropped.
+fn delivery(connected: bool, level: NoticeLevel) -> Delivery {
+    match (connected, level) {
+        (true, _) => Delivery::Say,
+        (false, NoticeLevel::Trip) => Delivery::Queue,
+        (false, NoticeLevel::Live) => Delivery::Drop,
+    }
+}
+
 /// Queue a line for `who`'s next login, writing the whole document. PLAYERS ONLY: a non-player
 /// (a Thing principal such as IC8's clerk, which never connects) or a gone object gets nothing
 /// queued, with a `tracing::debug!`. A serialization failure is a `tracing::error!` and writes
@@ -2206,6 +2251,17 @@ mod tests {
         assert!(std::str::from_utf8(line.as_bytes()).is_ok());
         queue.push(0, "a\nb");
         assert_eq!(queue.lines[1].text, "a b");
+    }
+
+    /// **The budget queues a trip, not a cycle** (doc 20 cut SM.11; lead ruling 7): offline a
+    /// trip-level line is queued and a live line is not; connected both are said. The world proof
+    /// is `tests/plans.rs`'s P13.
+    #[test]
+    fn sm11_the_budget_queues_a_trip_not_a_cycle() {
+        assert_eq!(delivery(false, NoticeLevel::Trip), Delivery::Queue);
+        assert_eq!(delivery(false, NoticeLevel::Live), Delivery::Drop);
+        assert_eq!(delivery(true, NoticeLevel::Trip), Delivery::Say);
+        assert_eq!(delivery(true, NoticeLevel::Live), Delivery::Say);
     }
 
     #[test]

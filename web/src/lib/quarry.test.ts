@@ -344,4 +344,24 @@ describe("a rig's run and queue", () => {
     expect(blessed.queued).toBeNull();
     expect(blessed.run).toBeNull();
   });
+
+  // Doc 20 cut SM.11: a rig's fill plan, on its author's frame (step words and hours only).
+  it("decodes the rig's plan", () => {
+    const raw = fixture("site_map.json") as { site: { rigs: Record<string, unknown>[] } };
+    const variant = structuredClone(raw);
+    variant.site.rigs[0]!.plan = {
+      no: 2,
+      state: "live",
+      step: 3,
+      steps: 7,
+      next: ["mine C118", "sound D-NW", 7],
+      deadline_ic: 99_000,
+      text: "Plan 2: step 3 of 7, mine C118",
+    };
+    const plan = parseSiteFrame(variant)!.site!.rigs[0]!.plan!;
+    expect(plan.text).toBe("Plan 2: step 3 of 7, mine C118");
+    expect(plan.next).toEqual(["mine C118", "sound D-NW"]);
+    expect(plan.end).toBeNull();
+    expect(parseSiteFrame(raw)!.site!.rigs[0]!.plan).toBeNull();
+  });
 });

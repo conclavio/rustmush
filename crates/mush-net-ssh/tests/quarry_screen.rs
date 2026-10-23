@@ -337,6 +337,15 @@ fn sm9_the_rigs_and_readings_panes_read_the_frames_words() {
         left[2],
         "> Rig 2: (150, 178), charge 80 %, hopper 3 t of 4."
     );
+    // Doc 20 cut SM.11: a rig working its author's fill plan carries the plan's line under it.
+    let mut planned = variant.clone();
+    planned["site"]["rigs"][0]["plan"] = json!({
+        "no": 1, "state": "live", "step": 2, "steps": 7, "next": ["mine C118"],
+        "deadline_ic": 99_000, "text": "Plan 1: step 2 of 7, mine C118",
+    });
+    let left = pane_rows(&app, &planned, (32, 20), render_quarry_rigs_rows);
+    assert_eq!(left[1], "    Unloads its hopper into the hold next.");
+    assert_eq!(left[2], "    Plan 1: step 2 of 7, mine C118");
     let right = pane_rows(&app, &variant, (28, 40), render_quarry_side_rows);
     assert_eq!(
         right,

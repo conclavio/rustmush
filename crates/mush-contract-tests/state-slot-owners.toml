@@ -428,6 +428,24 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
+path = "crates/tacsim/tests/plans.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.11, for the unloading.rs row's reason: the plan tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases, the hop to a site's pad, the plans' runs and
+unloads and the captain's queue that lifts and sells, and both rules fail
+closed on an unmapped character. The rig maps one gateway account for every
+pilot it spawns: the usual pilot, the second pilot whose claim or own rig a
+case needs, and the pilots of the port hulls; the lapsed-licence case edits the
+stored licence document across a reboot. The oracle is boot-hydrated by the
+host from the store, which a `TestWorld` has none of, so the rig installs the
+fixed account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/quarry.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

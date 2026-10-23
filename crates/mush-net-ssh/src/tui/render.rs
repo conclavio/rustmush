@@ -4694,7 +4694,8 @@ fn quarry_text(frame: &Value, pointer: &str) -> Option<String> {
 /// carries it (`site.rigs[].line`, the very line `+tv/map` prints) — the selected rig (`t`'s,
 /// else the frame's addressed one) led `> ` and bold — and under a drilling rig its run clause
 /// (`run.text`, from the operator's own projection), under a rig with an unload queued its queue
-/// line; then the hold's line, dim. No frame or a reason frame: a sentence.
+/// line, under a rig working a plan its author's plan line (`plan.text`, doc 20 cut SM.11); then
+/// the hold's line, dim. No frame or a reason frame: a sentence.
 pub fn render_quarry_rigs_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if data.is_null() {
         return PaneRows::one(QUARRY_NO_MAP);
@@ -4736,6 +4737,10 @@ pub fn render_quarry_rigs_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         }
         if let Some(queued) = rig.get("queued").and_then(Value::as_str) {
             rows.push(PaneRow::plain(Line::from(format!("    {}", clean(queued)))));
+        }
+        // Doc 20 cut SM.11: the rig's fill plan, on its author's frame (step words and hours).
+        if let Some(plan) = quarry_text(rig, "/plan/text") {
+            rows.push(PaneRow::plain(Line::from(format!("    {plan}"))));
         }
     }
     if rows.is_empty() {

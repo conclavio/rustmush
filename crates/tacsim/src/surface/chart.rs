@@ -146,7 +146,9 @@ pub enum Instrument {
 }
 
 /// **How the reading was made** (§5, §8): by hand, or by a fill plan's instruments while the
-/// operator was away (SM.11). SM.4a writes only `Hand`.
+/// operator was away. SM.4a writes only `Hand`; **doc 20 cut SM.11** (lead ruling 4) writes `Plan`
+/// for every reading a plan's scan, sounding or core makes — the character's own for every use but
+/// a stake (`crate::surface::tenure::evidence_at` never counts it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Via {
@@ -193,8 +195,13 @@ pub struct FieldRow {
     pub first_local_at: i64,
     /// The latest stamp.
     pub last_at: i64,
-    /// The newest four provenance entries by stamp, oldest first.
+    /// The newest four provenance entries by stamp, oldest first — hand stamps kept before plan
+    /// stamps ([`write_scan`]'s trim, doc 20 cut SM.11).
     pub provenance: Vec<ChartProvenance>,
+    /// **The earliest hand-made stamp ever written** (doc 20 cut SM.11; lead ruling 4): a plan's
+    /// stamp never touches it, so SM.10's stake evidence reads it. Skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_hand_at: Option<i64>,
 }
 
 /// **One block's sounded pockets** (§5): 256 one-byte cells, `index = pocket number − 1` (row-
@@ -210,8 +217,12 @@ pub struct PocketBlock {
     pub first_local_at: i64,
     /// The latest stamp.
     pub last_at: i64,
-    /// The newest four provenance entries by stamp, oldest first.
+    /// The newest four provenance entries by stamp, oldest first — hand stamps kept before plan
+    /// stamps (doc 20 cut SM.11).
     pub provenance: Vec<ChartProvenance>,
+    /// **The earliest hand-made stamp ever written** (doc 20 cut SM.11); skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_hand_at: Option<i64>,
 }
 
 impl PocketBlock {
@@ -222,6 +233,7 @@ impl PocketBlock {
             first_local_at: at,
             last_at: at,
             provenance: Vec::new(),
+            first_hand_at: None,
         }
     }
 
@@ -299,10 +311,19 @@ pub struct ChartRecord {
     pub sound_stand: Option<[i64; 2]>,
 }
 
-/// One row's provenance: `1..=4`, each stamp within `[first, last]`, `first ≤ last`.
-fn check_stamps(first: i64, last: i64, provenance: &[ChartProvenance]) -> Result<(), String> {
+/// One row's provenance: `1..=4`, each stamp within `[first, last]`, `first ≤ last`; doc 20 cut
+/// SM.11: the first hand stamp, when there is one, within `[first, last]` too.
+fn check_stamps(
+    first: i64,
+    last: i64,
+    provenance: &[ChartProvenance],
+    first_hand: Option<i64>,
+) -> Result<(), String> {
     if first > last {
         return Err("a chart row's first stamp is no later than its last".to_owned());
+    }
+    if first_hand.is_some_and(|hand| hand < first || hand > last) {
+        return Err("a chart row's first hand stamp lies within its stamps".to_owned());
     }
     if provenance.is_empty() || provenance.len() > MAX_CHART_PROVENANCE {
         return Err(format!(
@@ -412,7 +433,12 @@ impl ChartRecord {
             if field_of_index(*index).is_none() {
                 return Err(format!("field {index} is not a field of a site"));
             }
-            check_stamps(row.first_local_at, row.last_at, &row.provenance)?;
+            check_stamps(
+                row.first_local_at,
+                row.last_at,
+                &row.provenance,
+                row.first_hand_at,
+            )?;
         }
         if self.blocks.len() > MAX_CHART_BLOCKS_PER_SITE {
             return Err(format!(
@@ -449,7 +475,12 @@ impl ChartRecord {
             if !bytes.iter().any(|b| cell_tier(*b) == TIER_R2) {
                 return Err(format!("block {letter} holds at least one sounded pocket"));
             }
-            check_stamps(block.first_local_at, block.last_at, &block.provenance)?;
+            check_stamps(
+                block.first_local_at,
+                block.last_at,
+                &block.provenance,
+                block.first_hand_at,
+            )?;
         }
         Ok(())
     }
@@ -562,21 +593,30 @@ pub fn heard_line_due(last: Option<i64>, at: i64) -> bool {
     last.is_none_or(|last| at.saturating_sub(last) >= HEARD_EVERY_IC)
 }
 
-/// Push one provenance entry into a ring of the newest four, keep `first_local_at` the
-/// earliest stamp and move `last_at` to the latest. **The ring is ordered by stamp** (the
-/// pre-commit round's item 4; SM.10's contest evidence reads it): the entry goes in after every
-/// entry stamped no later than `at` (ties keep their insertion order), and the trim drops the
-/// oldest stamp — so a backed-off finish landing after a later-due one never evicts a newer
-/// entry, and the ring always holds the four newest stamps whatever order finishes land in.
-fn stamp(
-    first: &mut i64,
-    last: &mut i64,
-    provenance: &mut Vec<ChartProvenance>,
-    instrument: Instrument,
-    at: i64,
-) {
-    *first = (*first).min(at);
-    *last = (*last).max(at);
+/// One row's stamps a write moves: its first, its last, its ring and its first hand stamp.
+struct Stamps<'a> {
+    first: &'a mut i64,
+    last: &'a mut i64,
+    provenance: &'a mut Vec<ChartProvenance>,
+    first_hand: &'a mut Option<i64>,
+}
+
+/// Push one provenance entry into a ring of four, keep `first_local_at` the earliest stamp and
+/// move `last_at` to the latest. **The ring is ordered by stamp** (the pre-commit round's item 4;
+/// SM.10's contest evidence reads it): the entry goes in after every entry stamped no later than
+/// `at` (ties keep their insertion order). **Doc 20 cut SM.11** (lead ruling 4; the reviewer's F7):
+/// a hand stamp also moves `first_hand_at` to the earliest hand stamp (a plan's never touches it);
+/// and the trim, while the ring holds more than four, drops **the oldest `via: Plan` entry if the
+/// ring holds one, else the oldest entry** — so the ring holds the four newest hand stamps, then
+/// the newest plan stamps in what room is left: a plan's stamps never evict a hand stamp, and for a
+/// pilot who never files a plan the ring behaves byte for byte as SM.4a built it.
+fn stamp(stamps: Stamps<'_>, instrument: Instrument, at: i64, via: Via) {
+    *stamps.first = (*stamps.first).min(at);
+    *stamps.last = (*stamps.last).max(at);
+    if via == Via::Hand {
+        *stamps.first_hand = Some(stamps.first_hand.map_or(at, |first| first.min(at)));
+    }
+    let provenance = stamps.provenance;
     let slot = provenance
         .iter()
         .position(|entry| entry.at() > at)
@@ -586,11 +626,14 @@ fn stamp(
         ChartProvenance::Local {
             instrument,
             at,
-            via: Via::Hand,
+            via,
         },
     );
     while provenance.len() > MAX_CHART_PROVENANCE {
-        provenance.remove(0);
+        let oldest_plan = provenance
+            .iter()
+            .position(|entry| matches!(entry, ChartProvenance::Local { via: Via::Plan, .. }));
+        provenance.remove(oldest_plan.unwrap_or(0));
     }
 }
 
@@ -609,13 +652,15 @@ fn renew(row: &mut ChartRecord) {
 /// **A scan's write** (lead ruling 3): each of `fields` covered at `footing` — footing only
 /// ever sharpens — `scan_stand` set to `stand`, and for **every** field the act read (whether
 /// or not its coverage changed) `last_at = at`, `first_local_at` kept the earliest and one
-/// `Local { Scan, at, Hand }` pushed into its ring.
+/// `Local { Scan, at, via }` pushed into its ring (doc 20 cut SM.11: `via` the act's — `Hand`, or
+/// `Plan` for a fill plan's).
 pub fn write_scan(
     row: &mut ChartRecord,
     stand: [i64; 2],
     fields: &[u8],
     footing: Footing,
     at: i64,
+    via: Via,
 ) {
     renew(row);
     row.scan_stand = Some(stand);
@@ -625,16 +670,21 @@ pub fn write_scan(
             first_local_at: at,
             last_at: at,
             provenance: Vec::new(),
+            first_hand_at: None,
         });
         if footing.sharpness() > entry.footing.sharpness() {
             entry.footing = footing;
         }
         stamp(
-            &mut entry.first_local_at,
-            &mut entry.last_at,
-            &mut entry.provenance,
+            Stamps {
+                first: &mut entry.first_local_at,
+                last: &mut entry.last_at,
+                provenance: &mut entry.provenance,
+                first_hand: &mut entry.first_hand_at,
+            },
             Instrument::Scan,
             at,
+            via,
         );
     }
 }
@@ -642,13 +692,14 @@ pub fn write_scan(
 /// **A sounding's write** (lead ruling 3): each of `pockets`' tier set to [`TIER_R2`] in its
 /// block — the cell's other bits ([`PIT_SEEN`]) kept (the pre-commit round's item 3) —
 /// `sound_stand` set to `stand`, and every block the act read stamped once (`Local { Sound |
-/// QuietSound, at, Hand }`).
+/// QuietSound, at, via }`; doc 20 cut SM.11's `via`).
 pub fn write_sound(
     row: &mut ChartRecord,
     stand: [i64; 2],
     pockets: &[(i64, i64)],
     quiet: bool,
     at: i64,
+    via: Via,
 ) {
     renew(row);
     row.sound_stand = Some(stand);
@@ -676,11 +727,15 @@ pub fn write_sound(
         }
         block.cells = encode_cells(&bytes);
         stamp(
-            &mut block.first_local_at,
-            &mut block.last_at,
-            &mut block.provenance,
+            Stamps {
+                first: &mut block.first_local_at,
+                last: &mut block.last_at,
+                provenance: &mut block.provenance,
+                first_hand: &mut block.first_hand_at,
+            },
             instrument,
             at,
+            via,
         );
     }
 }
@@ -688,9 +743,9 @@ pub fn write_sound(
 /// **A core's write** (doc 20 cut SM.7; §5 "the core is a reading", §6; the brief's lead ruling 7
 /// and 3.9): the row renewed under the current rule; `pocket`'s block (created when absent); its
 /// cell set to [`TIER_R2`] with [`PIT_SEEN`] — the cell's other bits kept; the block stamped once,
-/// `Local { Core, at, Hand }`. **Neither stand is touched**: a core never feeds the same-cell
-/// repeat rule. A pocket off the site writes nothing.
-pub fn write_core(row: &mut ChartRecord, pocket: (i64, i64), at: i64) {
+/// `Local { Core, at, via }` (doc 20 cut SM.11's `via`). **Neither stand is touched**: a core
+/// never feeds the same-cell repeat rule. A pocket off the site writes nothing.
+pub fn write_core(row: &mut ChartRecord, pocket: (i64, i64), at: i64, via: Via) {
     renew(row);
     let Some((letter, index)) = pocket_in_block(pocket.0, pocket.1) else {
         return;
@@ -705,11 +760,15 @@ pub fn write_core(row: &mut ChartRecord, pocket: (i64, i64), at: i64) {
     }
     block.cells = encode_cells(&bytes);
     stamp(
-        &mut block.first_local_at,
-        &mut block.last_at,
-        &mut block.provenance,
+        Stamps {
+            first: &mut block.first_local_at,
+            last: &mut block.last_at,
+            provenance: &mut block.provenance,
+            first_hand: &mut block.first_hand_at,
+        },
         Instrument::Core,
         at,
+        via,
     );
 }
 
@@ -1544,7 +1603,14 @@ mod tests {
         assert!(scan_adds(None, &[27], Footing::Ice));
         assert!(!scan_adds(None, &[], Footing::Rock));
         let mut r = row();
-        write_scan(&mut r, [128, 124], &[27, 28], Footing::Regolith, 1_000);
+        write_scan(
+            &mut r,
+            [128, 124],
+            &[27, 28],
+            Footing::Regolith,
+            1_000,
+            Via::Hand,
+        );
         assert!(!scan_adds(Some(&r), &[27, 28], Footing::Regolith));
         assert!(!scan_adds(Some(&r), &[27], Footing::Ice), "never duller");
         assert!(scan_adds(Some(&r), &[27], Footing::Rock), "sharper");
@@ -1554,7 +1620,7 @@ mod tests {
         );
         let pockets = address::pockets_in_reach((112, 112), 8);
         assert!(sound_adds(Some(&r), &pockets));
-        write_sound(&mut r, [112, 112], &pockets, true, 2_000);
+        write_sound(&mut r, [112, 112], &pockets, true, 2_000, Via::Hand);
         assert!(!sound_adds(Some(&r), &pockets));
         assert!(sound_adds(
             Some(&r),
@@ -1581,7 +1647,7 @@ mod tests {
             !repeat_refused(None, false, stand, false),
             "no row, nothing to repeat"
         );
-        write_scan(&mut r, stand, &[27], Footing::Rock, 1_000);
+        write_scan(&mut r, stand, &[27], Footing::Rock, 1_000, Via::Hand);
         assert!(repeat_refused(Some(&r), false, stand, false));
         assert!(!repeat_refused(Some(&r), false, stand, true), "it adds");
         assert!(
@@ -1594,13 +1660,13 @@ mod tests {
         );
         let quiet = address::pockets_in_reach((112, 112), 8);
         let loud = address::pockets_in_reach((112, 112), 16);
-        write_sound(&mut r, stand, &quiet, true, 2_000);
+        write_sound(&mut r, stand, &quiet, true, 2_000, Via::Hand);
         let adds = sound_adds(Some(&r), &loud);
         assert!(
             adds && !repeat_refused(Some(&r), true, stand, adds),
             "loud after quiet"
         );
-        write_sound(&mut r, stand, &loud, false, 3_000);
+        write_sound(&mut r, stand, &loud, false, 3_000, Via::Hand);
         let adds = sound_adds(Some(&r), &quiet);
         assert!(
             !adds && repeat_refused(Some(&r), true, stand, adds),
@@ -1619,7 +1685,7 @@ mod tests {
     fn sm4a_forget_keeps_the_heard_budget() {
         let mut r = row();
         let pockets = address::pockets_in_reach((112, 112), 16);
-        write_sound(&mut r, [112, 112], &pockets, false, 1_000);
+        write_sound(&mut r, [112, 112], &pockets, false, 1_000, Via::Hand);
         r.heard_ic = Some(1_000);
         let kept = forget_row(r.clone(), 1_000 + 3_599).expect("inside the hour");
         assert!(!kept.has_coverage());
@@ -1661,7 +1727,7 @@ mod tests {
         for n in 0..15 {
             let mut other = ChartRecord::new(ObjId(42), cid(&format!("site_{n}")), cid("ceres"));
             for index in 0..64_u8 {
-                write_scan(&mut other, [0, 0], &[index], Footing::Rock, 1);
+                write_scan(&mut other, [0, 0], &[index], Footing::Rock, 1, Via::Hand);
             }
             full.push(other);
         }
@@ -1669,14 +1735,14 @@ mod tests {
         let all: Vec<u8> = (0..64).collect();
         assert!(body_admits(&full, &site, &all, &[]));
         let mut here = row();
-        write_scan(&mut here, [0, 0], &all, Footing::Rock, 1);
+        write_scan(&mut here, [0, 0], &all, Footing::Rock, 1, Via::Hand);
         full.push(here);
         assert!(
             body_admits(&full, &site, &[0], &[]),
             "already held is not new"
         );
         let mut sixteenth = ChartRecord::new(ObjId(42), cid("site_x"), cid("ceres"));
-        write_scan(&mut sixteenth, [0, 0], &[0], Footing::Rock, 1);
+        write_scan(&mut sixteenth, [0, 0], &[0], Footing::Rock, 1, Via::Hand);
         full.push(sixteenth);
         assert!(!body_admits(&full, &site, &[], &[]), "1,025 field rows");
         // Blocks: four full sites of 16 blocks is the cap.
@@ -1713,8 +1779,8 @@ mod tests {
             .collect();
         for n in 0..4 {
             let at = i64::MAX - n;
-            write_scan(&mut r, [255, 255], &all, Footing::Rock, at);
-            write_sound(&mut r, [255, 255], &every, false, at);
+            write_scan(&mut r, [255, 255], &all, Footing::Rock, at, Via::Hand);
+            write_sound(&mut r, [255, 255], &every, false, at, Via::Hand);
         }
         r.heard_ic = Some(i64::MIN);
         assert_eq!(r.check(), Ok(()));
@@ -1735,8 +1801,15 @@ mod tests {
     #[test]
     fn sm4a_a_chart_row_checks_its_bounds() {
         let mut ok = row();
-        write_scan(&mut ok, [128, 124], &[27], Footing::Regolith, 1_000);
-        write_sound(&mut ok, [128, 124], &[(32, 31)], false, 1_000);
+        write_scan(
+            &mut ok,
+            [128, 124],
+            &[27],
+            Footing::Regolith,
+            1_000,
+            Via::Hand,
+        );
+        write_sound(&mut ok, [128, 124], &[(32, 31)], false, 1_000, Via::Hand);
         assert_eq!(ok.check(), Ok(()));
         let mut broken = vec![
             ChartRecord {
@@ -1815,7 +1888,7 @@ mod tests {
         // The ring keeps the newest four and the earliest first stamp.
         let mut ring = row();
         for at in [10, 20, 30, 40, 50] {
-            write_scan(&mut ring, [0, 0], &[0], Footing::Ice, at);
+            write_scan(&mut ring, [0, 0], &[0], Footing::Ice, at, Via::Hand);
         }
         let entry = ring
             .fields
@@ -1857,7 +1930,7 @@ mod tests {
     fn sm4a_the_pit_seen_bit_reads_sounded_and_survives_a_resounding() {
         let mut r = row();
         let pockets = address::pockets_in_reach((112, 112), 8);
-        write_sound(&mut r, [112, 112], &pockets, true, 1_000);
+        write_sound(&mut r, [112, 112], &pockets, true, 1_000, Via::Hand);
         let pit = pockets[0];
         let (letter, index) = pocket_in_block(pit.0, pit.1).unwrap_or_else(|| panic!("a pocket"));
         let set_pit = |r: &mut ChartRecord| {
@@ -1888,6 +1961,7 @@ mod tests {
             &address::pockets_in_reach((112, 112), 16),
             false,
             2_000,
+            Via::Hand,
         );
         assert_eq!(byte(&r), Some(TIER_R2 | PIT_SEEN), "the pit bit survives");
         assert_eq!(r.sounded_pockets(), 64);
@@ -1910,7 +1984,7 @@ mod tests {
     fn sm7_a_core_writes_r2_and_the_pit_bit() {
         let pocket = (36, 44);
         let mut fresh = row();
-        write_core(&mut fresh, pocket, 5_000);
+        write_core(&mut fresh, pocket, 5_000, Via::Hand);
         assert_eq!(cell_of(&fresh, pocket), Some(TIER_R2 | PIT_SEEN));
         assert_eq!(fresh.sounded_pockets(), 1);
         assert_eq!(
@@ -1942,9 +2016,10 @@ mod tests {
             &address::pockets_in_reach((stand[0], stand[1]), 8),
             false,
             1_000,
+            Via::Hand,
         );
         assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2));
-        write_core(&mut sounded, pocket, 3_000);
+        write_core(&mut sounded, pocket, 3_000, Via::Hand);
         assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2 | PIT_SEEN));
         assert_eq!(
             sounded.sound_stand,
@@ -1958,6 +2033,7 @@ mod tests {
             &address::pockets_in_reach((stand[0], stand[1]), 8),
             true,
             4_000,
+            Via::Hand,
         );
         assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2 | PIT_SEEN));
         let ring: Vec<(Instrument, i64)> = sounded
@@ -1999,7 +2075,7 @@ mod tests {
     fn sm7_the_pit_bit_reads_as_sounded() {
         let pocket = (36, 44);
         let mut r = row();
-        write_core(&mut r, pocket, 5_000);
+        write_core(&mut r, pocket, 5_000, Via::Hand);
         assert!(r.pocket_sounded(pocket));
         assert!(row_reads_pocket(Some(&r), pocket));
         assert!(!sound_adds(Some(&r), &[pocket]));
@@ -2033,7 +2109,7 @@ mod tests {
     fn sm4a_the_provenance_ring_is_ordered_by_stamp() {
         let mut r = row();
         for at in [50, 10, 40, 20, 30] {
-            write_scan(&mut r, [0, 0], &[0], Footing::Rock, at);
+            write_scan(&mut r, [0, 0], &[0], Footing::Rock, at, Via::Hand);
         }
         let ring = |r: &ChartRecord| {
             let entry = r.fields.get(&0).cloned().unwrap_or_else(|| panic!("a row"));
@@ -2048,21 +2124,21 @@ mod tests {
             )
         };
         assert_eq!(ring(&r), (10, 50, vec![20, 30, 40, 50]));
-        write_scan(&mut r, [0, 0], &[0], Footing::Rock, 5);
+        write_scan(&mut r, [0, 0], &[0], Footing::Rock, 5, Via::Hand);
         assert_eq!(
             ring(&r),
             (5, 50, vec![20, 30, 40, 50]),
             "an older one never evicts"
         );
-        write_scan(&mut r, [0, 0], &[0], Footing::Rock, 45);
+        write_scan(&mut r, [0, 0], &[0], Footing::Rock, 45, Via::Hand);
         assert_eq!(ring(&r), (5, 50, vec![30, 40, 45, 50]));
         assert_eq!(r.check(), Ok(()));
         // Ties keep their insertion order: a quiet then a loud sounding at one instant.
         let mut b = row();
         let pockets = address::pockets_in_reach((112, 112), 8);
-        write_sound(&mut b, [112, 112], &pockets, false, 70);
-        write_sound(&mut b, [112, 112], &pockets, true, 60);
-        write_sound(&mut b, [112, 112], &pockets, false, 60);
+        write_sound(&mut b, [112, 112], &pockets, false, 70, Via::Hand);
+        write_sound(&mut b, [112, 112], &pockets, true, 60, Via::Hand);
+        write_sound(&mut b, [112, 112], &pockets, false, 60, Via::Hand);
         let block = b
             .blocks
             .values()
@@ -2094,22 +2170,29 @@ mod tests {
     #[test]
     fn sm4a_a_scan_never_dulls_a_footing() {
         let mut r = row();
-        write_scan(&mut r, [16, 16], &[0], Footing::Rock, 100);
-        write_scan(&mut r, [17, 16], &[0], Footing::Regolith, 200);
-        write_scan(&mut r, [18, 16], &[0], Footing::Ice, 300);
+        write_scan(&mut r, [16, 16], &[0], Footing::Rock, 100, Via::Hand);
+        write_scan(&mut r, [17, 16], &[0], Footing::Regolith, 200, Via::Hand);
+        write_scan(&mut r, [18, 16], &[0], Footing::Ice, 300, Via::Hand);
         let entry = r.fields.get(&0).cloned().unwrap_or_else(|| panic!("a row"));
         assert_eq!(entry.footing, Footing::Rock, "never duller");
         assert_eq!((entry.first_local_at, entry.last_at), (100, 300));
         assert_eq!(entry.provenance.len(), 3);
         assert_eq!(r.scan_stand, Some([18, 16]));
         let mut sharpen = row();
-        write_scan(&mut sharpen, [16, 16], &[0], Footing::Ice, 100);
-        write_scan(&mut sharpen, [16, 16], &[0], Footing::Regolith, 200);
+        write_scan(&mut sharpen, [16, 16], &[0], Footing::Ice, 100, Via::Hand);
+        write_scan(
+            &mut sharpen,
+            [16, 16],
+            &[0],
+            Footing::Regolith,
+            200,
+            Via::Hand,
+        );
         assert_eq!(
             sharpen.fields.get(&0).map(|f| f.footing),
             Some(Footing::Regolith)
         );
-        write_scan(&mut sharpen, [16, 16], &[0], Footing::Rock, 300);
+        write_scan(&mut sharpen, [16, 16], &[0], Footing::Rock, 300, Via::Hand);
         assert_eq!(
             sharpen.fields.get(&0).map(|f| f.footing),
             Some(Footing::Rock)
@@ -2301,5 +2384,133 @@ mod tests {
         for off in [(-1, 0), (0, -1), (256, 0), (0, 256)] {
             assert_eq!(footing_at(&ground, off), Err(TerrainClass::Void), "{off:?}");
         }
+    }
+
+    /// A ring's `(instrument, at, via)` triples.
+    fn ring_of(ring: &[ChartProvenance]) -> Vec<(Instrument, i64, Via)> {
+        ring.iter()
+            .map(|entry| match entry {
+                ChartProvenance::Local {
+                    instrument,
+                    at,
+                    via,
+                } => (*instrument, *at, *via),
+            })
+            .collect()
+    }
+
+    /// **A plan's stamp never touches `first_hand_at`** (doc 20 cut SM.11; lead ruling 4, the
+    /// reviewer's F7): a field scanned by a plan, then by hand, then four more times by the plan
+    /// keeps the hand entry and the three newest plan entries; `first_local_at` is the first plan
+    /// stamp and `first_hand_at` the hand one. A sounding and a core alike.
+    #[test]
+    fn sm11_a_plan_stamp_never_touches_first_hand_at() {
+        let mut r = row();
+        write_scan(&mut r, [128, 124], &[27], Footing::Regolith, 100, Via::Plan);
+        write_scan(&mut r, [128, 124], &[27], Footing::Regolith, 200, Via::Hand);
+        for at in [300, 400, 500, 600] {
+            write_scan(&mut r, [128, 124], &[27], Footing::Regolith, at, Via::Plan);
+        }
+        let field = r.fields.get(&27).unwrap_or_else(|| panic!("the field row"));
+        assert_eq!(
+            ring_of(&field.provenance),
+            vec![
+                (Instrument::Scan, 200, Via::Hand),
+                (Instrument::Scan, 400, Via::Plan),
+                (Instrument::Scan, 500, Via::Plan),
+                (Instrument::Scan, 600, Via::Plan),
+            ]
+        );
+        assert_eq!(
+            (field.first_local_at, field.first_hand_at),
+            (100, Some(200))
+        );
+        assert_eq!(r.check(), Ok(()));
+        // A sounding and a core: the plan's alone leave `first_hand_at` absent.
+        let pockets = address::pockets_in_reach((112, 112), 8);
+        let pocket = pockets.first().copied().unwrap_or((28, 28));
+        let mut b = row();
+        write_sound(&mut b, [112, 112], &pockets, false, 100, Via::Plan);
+        write_core(&mut b, pocket, 150, Via::Plan);
+        let letter = pocket_in_block(pocket.0, pocket.1)
+            .map(|(letter, _)| letter.to_string())
+            .unwrap_or_default();
+        let block = b
+            .blocks
+            .get(letter.as_str())
+            .unwrap_or_else(|| panic!("the block"));
+        assert_eq!((block.first_local_at, block.first_hand_at), (100, None));
+        write_core(&mut b, pocket, 175, Via::Hand);
+        let block = b
+            .blocks
+            .get(letter.as_str())
+            .unwrap_or_else(|| panic!("the block"));
+        assert_eq!(block.first_hand_at, Some(175));
+        assert_eq!(b.check(), Ok(()));
+    }
+
+    /// **The trim evicts a plan's stamp before a hand stamp** (doc 20 cut SM.11; the reviewer's
+    /// F7): four hand stamps then a later plan stamp keep the four hand stamps; three hand and one
+    /// plan then a hand drop the plan entry; five hand stamps and no plan drop the oldest, as
+    /// SM.4a built it.
+    #[test]
+    fn sm11_the_trim_evicts_a_plan_stamp_before_a_hand_one() {
+        let mut r = row();
+        for at in [10, 20, 30, 40] {
+            write_scan(&mut r, [0, 0], &[0], Footing::Rock, at, Via::Hand);
+        }
+        write_scan(&mut r, [0, 0], &[0], Footing::Rock, 50, Via::Plan);
+        let ats = |r: &ChartRecord| -> Vec<(i64, Via)> {
+            r.fields
+                .get(&0)
+                .map(|field| {
+                    ring_of(&field.provenance)
+                        .into_iter()
+                        .map(|(_, at, via)| (at, via))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            ats(&r),
+            vec![
+                (10, Via::Hand),
+                (20, Via::Hand),
+                (30, Via::Hand),
+                (40, Via::Hand)
+            ]
+        );
+        let mut mixed = row();
+        for (at, via) in [
+            (10, Via::Hand),
+            (20, Via::Plan),
+            (30, Via::Hand),
+            (40, Via::Hand),
+        ] {
+            write_scan(&mut mixed, [0, 0], &[0], Footing::Rock, at, via);
+        }
+        write_scan(&mut mixed, [0, 0], &[0], Footing::Rock, 50, Via::Hand);
+        assert_eq!(
+            ats(&mixed),
+            vec![
+                (10, Via::Hand),
+                (30, Via::Hand),
+                (40, Via::Hand),
+                (50, Via::Hand)
+            ]
+        );
+        let mut hand = row();
+        for at in [10, 20, 30, 40, 50] {
+            write_scan(&mut hand, [0, 0], &[0], Footing::Rock, at, Via::Hand);
+        }
+        assert_eq!(
+            ats(&hand),
+            vec![
+                (20, Via::Hand),
+                (30, Via::Hand),
+                (40, Via::Hand),
+                (50, Via::Hand)
+            ]
+        );
     }
 }

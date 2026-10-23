@@ -3150,7 +3150,14 @@ fn sm4a_a_full_chart_refuses_until_a_forget_frees_room() {
     let now = ic_now(&rig.tw);
     for site in &others {
         let mut row = ChartRecord::new(pilot, site.clone(), cid("ceres"));
-        tacsim::surface::write_sound(&mut row, [0, 0], &every, true, now);
+        tacsim::surface::write_sound(
+            &mut row,
+            [0, 0],
+            &every,
+            true,
+            now,
+            tacsim::surface::Via::Hand,
+        );
         assert_eq!(row.blocks.len(), 16);
         assert_eq!(row.check(), Ok(()));
         put_chart_under(&mut rig, row.key(), row);
@@ -3395,7 +3402,14 @@ fn sm4a_an_unreadable_chart_row_is_never_forgotten_blind() {
     let mut rig = stocked();
     let (pilot, _, _) = on_pad(&mut rig, 1);
     let mut foreign = ChartRecord::new(ObjId(pilot.0 + 1_000_000), cid(AHUNA), cid("ceres"));
-    tacsim::surface::write_scan(&mut foreign, [128, 124], &[27], Footing::Rock, 1);
+    tacsim::surface::write_scan(
+        &mut foreign,
+        [128, 124],
+        &[27],
+        Footing::Rock,
+        1,
+        tacsim::surface::Via::Hand,
+    );
     let key = ChartKey {
         principal: pilot,
         site: cid(AHUNA),

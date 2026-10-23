@@ -92,6 +92,7 @@
             </button>
             {#if r.run}<div class="sub">{r.run.text}</div>{/if}
             {#if r.queued}<div class="sub">{r.queued}</div>{/if}
+            {#if r.plan}<div class="sub">{r.plan.text}</div>{/if}
           </li>
         {/each}
       </ul>

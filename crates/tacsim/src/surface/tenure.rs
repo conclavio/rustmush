@@ -91,21 +91,18 @@ fn hand_made(entry: &ChartProvenance) -> bool {
     )
 }
 
-/// Whether a provenance ring holds a plan-made entry.
-fn ring_has_plan(ring: &[ChartProvenance]) -> bool {
-    ring.iter()
-        .any(|entry| matches!(entry, ChartProvenance::Local { via: Via::Plan, .. }))
-}
-
 /// **The hand-made evidence rule** (doc 20 §9.3; cut SM.10, lead ruling 2): the earliest
 /// qualifying stamp `≥ since` (`None` since = epoch 0) in the actor's own chart row for block
 /// `letter`. The candidates are every `Local { via: Hand, instrument: Scan | Sound | QuietSound
 /// | Core }` entry in the provenance rings of the block's four field rows (scans) and of its
-/// pocket block (soundings and cores), **plus** each of those rows' `first_local_at` when it is
-/// `≥ since` and that row's ring holds no `via: Plan` entry — `first_local_at` survives the
-/// ring's four-entry eviction (reviewer F14). Until SM.11 writes `Plan`, every local stamp is a
-/// hand stamp, so this reading is exact; **SM.11 owns revisiting the `first_local_at` clause**.
-/// A `via: Plan` entry never counts, and another block's rows are never read.
+/// pocket block (soundings and cores), **plus** each of those rows' `first_hand_at` — the earliest
+/// hand-made stamp ever written to the row, which survives the ring's four-entry eviction
+/// (reviewer F14). **Doc 20 cut SM.11** (lead ruling 4; the SM.10 handoff) revisited SM.10's
+/// second clause, which trusted `first_local_at` while its ring held no `Plan` entry: a plan's
+/// stamp never sets `first_hand_at`, so a plan-made discovery never qualifies a stake; and the
+/// ring's trim evicts a plan's stamp before any hand stamp (`chart`'s `stamp`), so a plan's cores
+/// never push an in-epoch hand stamp out (the reviewer's F7). A `via: Plan` entry never counts,
+/// and another block's rows are never read.
 #[must_use]
 pub fn evidence_at(row: &ChartRecord, letter: char, since: Option<i64>) -> Option<i64> {
     let inside = |at: i64| since.is_none_or(|since| at >= since);
@@ -118,18 +115,18 @@ pub fn evidence_at(row: &ChartRecord, letter: char, since: Option<i64>) -> Optio
     let rings = block_field_indexes(letter)
         .into_iter()
         .filter_map(|index| row.fields.get(&index))
-        .map(|field| (field.first_local_at, field.provenance.as_slice()))
+        .map(|field| (field.first_hand_at, field.provenance.as_slice()))
         .chain(
             row.blocks
                 .get(letter.to_string().as_str())
-                .map(|block| (block.first_local_at, block.provenance.as_slice())),
+                .map(|block| (block.first_hand_at, block.provenance.as_slice())),
         );
-    for (first, ring) in rings {
+    for (first_hand, ring) in rings {
         for entry in ring.iter().filter(|entry| hand_made(entry)) {
             consider(entry.at());
         }
-        if !ring_has_plan(ring) {
-            consider(first);
+        if let Some(first_hand) = first_hand {
+            consider(first_hand);
         }
     }
     best
@@ -235,11 +232,21 @@ mod tests {
         }
     }
 
+    /// Doc 20 cut SM.11: a hand-built row's `first_hand_at` is its first stamp when its ring
+    /// holds a hand entry (every row these tests build was first stamped by the hand, or only by a
+    /// plan) — what `chart`'s writers set.
+    fn first_hand(first: i64, ring: &[ChartProvenance]) -> Option<i64> {
+        ring.iter()
+            .any(|entry| matches!(entry, ChartProvenance::Local { via: Via::Hand, .. }))
+            .then_some(first)
+    }
+
     fn field(first: i64, ring: Vec<ChartProvenance>) -> FieldRow {
         FieldRow {
             footing: crate::surface::reading::Footing::Regolith,
             first_local_at: first,
             last_at: ring.last().map_or(first, ChartProvenance::at),
+            first_hand_at: first_hand(first, &ring),
             provenance: ring,
         }
     }
@@ -249,6 +256,7 @@ mod tests {
             cells: "0".repeat(512),
             first_local_at: first,
             last_at: ring.last().map_or(first, ChartProvenance::at),
+            first_hand_at: first_hand(first, &ring),
             provenance: ring,
         }
     }
@@ -345,6 +353,50 @@ mod tests {
         five.fields.insert(c_field(), field(100, ring));
         assert_eq!(evidence_at(&five, 'C', None), Some(100));
         assert_eq!(evidence_at(&five, 'C', Some(150)), Some(200));
+    }
+
+    /// **Evidence reads `first_hand_at`, never a plan** (doc 20 cut SM.11; lead ruling 4, the
+    /// reviewer's F7), through `chart`'s own writers: a block known only by plan readings yields
+    /// none; a plan reading earlier than the hand one never wins; a pre-epoch hand stamp, an
+    /// in-epoch hand stamp, then four plan cores of the block — the evidence is the in-epoch hand
+    /// stamp (the Plan-first trim kept it); `heard_before` over a row whose only loud soundings are
+    /// a plan's is empty.
+    #[test]
+    fn sm11_evidence_reads_first_hand_at_never_a_plan() {
+        use crate::surface::chart::{write_core, write_sound};
+        let c_pocket =
+            crate::surface::address::parse_pocket_address("C117").unwrap_or_else(|| panic!("C117"));
+        let reach =
+            crate::surface::address::pockets_in_reach((c_pocket.0 * 4 + 2, c_pocket.1 * 4 + 2), 16);
+        let stand = [c_pocket.0 * 4 + 2, c_pocket.1 * 4 + 2];
+        // Plan readings only.
+        let mut plan_only = row(1);
+        write_sound(&mut plan_only, stand, &reach, false, 300, Via::Plan);
+        write_core(&mut plan_only, c_pocket, 400, Via::Plan);
+        assert_eq!(evidence_at(&plan_only, 'C', None), None);
+        assert_eq!(
+            heard_before(&plan_only, 'C', None, 10_000),
+            Vec::<i64>::new()
+        );
+        // A plan reading earlier than the hand one never wins.
+        let mut both = row(1);
+        write_sound(&mut both, stand, &reach, false, 300, Via::Plan);
+        write_core(&mut both, c_pocket, 500, Via::Hand);
+        assert_eq!(evidence_at(&both, 'C', None), Some(500));
+        // Pre-epoch hand, in-epoch hand, then four plan cores: the in-epoch hand stamp stands.
+        let mut epoch = row(1);
+        write_core(&mut epoch, c_pocket, 100, Via::Hand);
+        write_core(&mut epoch, c_pocket, 600, Via::Hand);
+        for at in [700, 800, 900, 1_000] {
+            write_core(&mut epoch, c_pocket, at, Via::Plan);
+        }
+        assert_eq!(evidence_at(&epoch, 'C', Some(500)), Some(600));
+        assert_eq!(evidence_at(&epoch, 'C', None), Some(100));
+        assert_eq!(
+            evidence_at(&epoch, 'C', Some(650)),
+            None,
+            "only plan stamps after"
+        );
     }
 
     /// Only a loud hand sounding is heard; the window is `from ≤ at < before`.

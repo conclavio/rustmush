@@ -132,6 +132,17 @@ pub(crate) trait SurfaceReads {
     fn cursor(&self, deposit: mush_industry::OreDepositId) -> Result<Option<PocketCursor>, String>;
     /// One pool's balance.
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError>;
+    /// **One pool's availability** (doc 20 cut SM.11, the reviewer's R1): its balance less every
+    /// live hold — [`crate::port_tick::read_available`]'s rule (absent is 0; a scalar without its
+    /// book, or a book without its scalar, is `Corrupt`; a refusal is never 0).
+    fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError>;
+    /// **An endpoint's inventory marker ring** (doc 20 cut SM.11, the reviewer's R1): `None` when
+    /// nothing was ever marked there — what a queued unload's start offer, the surface tick and
+    /// the plan's `Markers` wait read through `crate::surface::act::queued_ring_full`.
+    fn marker_ring(
+        &self,
+        endpoint: EndpointRef,
+    ) -> Result<Option<mush_inventory::MarkerRing>, String>;
     /// **An industry deposit** (doc 20 cut SM.7), `None` when it was never opened.
     fn deposit(
         &self,
@@ -166,6 +177,30 @@ pub(crate) trait SurfaceReads {
 fn handles_of(w: &World) -> Result<&PortHandles, String> {
     w.module_state::<PortHandles>()
         .ok_or_else(|| "the port handles are not composed".to_owned())
+}
+
+/// The inventory's families, or why not.
+fn inventory_of(w: &World) -> Result<&mush_inventory::InventoryFamilies, PoolReadError> {
+    w.module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+        .ok_or(PoolReadError::Unwired)
+}
+
+/// **A pool's availability from its two reads** (doc 20 cut SM.11, the reviewer's R1):
+/// [`crate::port_tick::read_available`]'s rule over any reader's scalar and book.
+fn available_of<E: std::fmt::Display>(
+    scalar: Result<Option<&mush_core::BoundedScalar>, E>,
+    book: Result<Option<&mush_core::ReservationBook>, E>,
+) -> Result<u64, PoolReadError> {
+    let scalar = scalar.map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
+    let book = book.map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
+    match (scalar, book) {
+        (None, None) => Ok(0),
+        (Some(scalar), Some(book)) => book
+            .checked_available(*scalar)
+            .map_err(|_| PoolReadError::Corrupt),
+        (None, Some(_)) | (Some(_), None) => Err(PoolReadError::Corrupt),
+    }
 }
 
 /// Industry's families, or why not (doc 20 cut SM.7: read only).
@@ -287,6 +322,29 @@ impl SurfaceReads for EngineReads<'_> {
         }
     }
 
+    fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        let inventory = inventory_of(&self.0.world)?;
+        let key = mush_inventory::pool_key(endpoint, good)
+            .map_err(|error| PoolReadError::Key(error.to_string()))?;
+        let state = self.0.action_state();
+        available_of(
+            state.get(&inventory.pools, &key),
+            state.get(&inventory.books, &key),
+        )
+    }
+
+    fn marker_ring(
+        &self,
+        endpoint: EndpointRef,
+    ) -> Result<Option<mush_inventory::MarkerRing>, String> {
+        let inventory = inventory_of(&self.0.world).map_err(|error| format!("{error:?}"))?;
+        self.0
+            .action_state()
+            .get(&inventory.marker_ring, &endpoint)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
+    }
+
     fn deposit(
         &self,
         id: mush_industry::OreDepositId,
@@ -386,6 +444,20 @@ impl SurfaceReads for Ctx<'_> {
         crate::port_tick::read_pool(self, endpoint, good)
     }
 
+    fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        crate::port_tick::read_available(self, endpoint, good)
+    }
+
+    fn marker_ring(
+        &self,
+        endpoint: EndpointRef,
+    ) -> Result<Option<mush_inventory::MarkerRing>, String> {
+        let inventory = inventory_of(self.w).map_err(|error| format!("{error:?}"))?;
+        self.action_state(&inventory.marker_ring, &endpoint)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
+    }
+
     fn deposit(
         &self,
         id: mush_industry::OreDepositId,
@@ -477,6 +549,26 @@ impl SurfaceReads for HookReadContext<'_> {
 
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
         crate::port_tick::read_pool_in(self, endpoint, good)
+    }
+
+    fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        let inventory = inventory_of(self.world())?;
+        let key = mush_inventory::pool_key(endpoint, good)
+            .map_err(|error| PoolReadError::Key(error.to_string()))?;
+        available_of(
+            self.action_state(&inventory.pools, &key),
+            self.action_state(&inventory.books, &key),
+        )
+    }
+
+    fn marker_ring(
+        &self,
+        endpoint: EndpointRef,
+    ) -> Result<Option<mush_inventory::MarkerRing>, String> {
+        let inventory = inventory_of(self.world()).map_err(|error| format!("{error:?}"))?;
+        self.action_state(&inventory.marker_ring, &endpoint)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
     }
 
     fn deposit(
@@ -1900,6 +1992,14 @@ pub(crate) fn site_map_frame(
             .as_ref()
             .and_then(|record| record.queued.as_ref())
             .map(|_| tv::QUEUED_LINE.trim());
+        // Doc 20 cut SM.11 (lead ruling 10): the viewer's own plan as `PlanView` shows it — step
+        // words, the step, the deadline and the end's word, never a class or a tonnage.
+        let plan = rig
+            .record
+            .as_ref()
+            .and_then(|record| record.plan.as_ref())
+            .filter(|plan| plan.author == actor)
+            .map_or(Value::Null, plan_value);
         rig_rows.push(json!({
             "slot": rig.rig.slot,
             "mark": rig.rig.mark,
@@ -1911,6 +2011,7 @@ pub(crate) fn site_map_frame(
             "line": rig_line,
             "run": run,
             "queued": queued,
+            "plan": plan,
         }));
         rig_lines.push(rig_line);
     }
@@ -2172,6 +2273,65 @@ fn run_clause(run: &crate::surface::excursion::RunView, when: &str) -> String {
             .replace("{when}", when)
             .replace("{stop}", if run.stop { tv::RUN_STOP_CLAUSE } else { "" })
     }
+}
+
+/// **A plan's vector form** (doc 20 cut SM.11; lead ruling 10): its [`PlanView`] keys and the rig
+/// line's clause (`text`) — `Plan {no}: step {k} of {steps}, {words}` live, `Plan {no} ended:
+/// {end}` ended.
+///
+/// [`PlanView`]: crate::surface::excursion::PlanView
+fn plan_value(plan: &crate::surface::plan::FillPlan) -> Value {
+    let view = crate::surface::plan::plan_view(plan);
+    let text = match (view.state.as_str(), view.end.as_deref()) {
+        ("ended", end) => format!("Plan {} ended: {}", view.no, end.unwrap_or_default()),
+        (_, _) => format!(
+            "Plan {}: step {} of {}, {}",
+            view.no,
+            view.step.min(view.steps),
+            view.steps,
+            view.next
+                .first()
+                .map_or(super::tv::STATE_PARKING, String::as_str)
+        ),
+    };
+    json!({
+        "no": view.no,
+        "state": view.state,
+        "step": view.step,
+        "steps": view.steps,
+        "next": view.next,
+        "deadline_ic": view.deadline_ic,
+        "end": view.end,
+        "text": text,
+    })
+}
+
+/// **Whether the public pit shows a pocket worked out in one family** (doc 20 cut SM.11; the
+/// brief's 3.4 step 5): the family's cursor row for the pocket drawn to its tonnes — [`pit_at`]'s
+/// own exhausted rule ([`row_exhausted`]), one family. Public, the same for every asker.
+pub(crate) fn pit_exhausted(
+    reads: &dyn SurfaceReads,
+    entry: &CanonicalId,
+    ground: &crate::surface::SiteGround,
+    pocket: (i64, i64),
+    family: OreFamily,
+) -> bool {
+    let (Some(letter), Some(number)) = (
+        address::block_letter(pocket.0, pocket.1),
+        address::pocket_number(pocket.0, pocket.1),
+    ) else {
+        return false;
+    };
+    let receipt = crate::surface::opening::receipt(entry, letter, family);
+    let Ok(deposit) = mush_industry::derive_system_deposit_id(&receipt) else {
+        return false;
+    };
+    let Ok(Some(cursor)) = reads.cursor(deposit) else {
+        return false;
+    };
+    cursor
+        .row(number)
+        .is_some_and(|row| row.drawn_t >= 1 && row_exhausted(ground, pocket, family, row.drawn_t))
 }
 
 /// **The run a projection shows its viewer** (pure; lead ruling 4): `rec.run` only when the

@@ -203,6 +203,17 @@ fn reboot(rig: Rig) -> Rig {
     }
 }
 
+/// [`reboot`], then `reconnect` come back (a real restart drops every session).
+fn reboot_with(rig: Rig, reconnect: &[ObjId]) -> Rig {
+    let mut rig = reboot(rig);
+    for who in reconnect {
+        if !rig.tw.world().is_connected(*who) {
+            let _ = rig.tw.connect(*who);
+        }
+    }
+    rig
+}
+
 /// Everything due `secs` on.
 fn sweep(tw: &mut TestWorld, secs: i64) {
     let t = tw.world().now().saturating_add(secs);
@@ -1221,7 +1232,10 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
     let tv = tvs_b[0];
     let _ = act_go(&mut b, pilot_b, "+tv/1 launch go");
     let due = due_of(&mut b.tw, tv);
-    let mut b = reboot(b);
+    // Doc 20 cut SM.11 (the brief's §6, the reviewer's F17): the pilot reconnects after the
+    // restart, so "told exactly once across a restart" is pinned on what they hear — offline, a
+    // `LAUNCHED` line is never queued (the notice budget; `sm11_an_offline_launch_line_is_not_queued`).
+    let mut b = reboot_with(b, &[pilot_b]);
     assert_eq!(due_of(&mut b.tw, tv), due, "the act survives the restart");
     let (events, queued) = advance_to(&mut b, due + 40);
     let mut heard = said(&b.tw, &events, pilot_b);
@@ -1250,15 +1264,12 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
         .iter()
         .filter(|line| **line == launched)
         .count();
-    assert_eq!(
-        count(&heard, &launched) + queued_notice,
-        1,
-        "{heard}\n{queued_notice}"
-    );
+    assert_eq!(count(&heard, &launched), 1, "{heard}");
+    assert_eq!(queued_notice, 0, "heard, never queued");
     // A told act stays told across a restart (review finding tests/T5): the tick's projection
     // folds, reloads and still reads `told`, so a second reboot re-tells nothing — no
     // `LAUNCHED` heard, none queued beyond the first — and the projection is unchanged.
-    let mut b = reboot(b);
+    let mut b = reboot_with(b, &[pilot_b]);
     assert_eq!(
         projection(&b.tw, tv).as_ref(),
         Some(&rec_b),
@@ -1278,6 +1289,96 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
     assert!(queued_again <= queued_notice, "nothing re-queued");
     assert_eq!(projection(&b.tw, tv), Some(rec_b), "told once, still");
     no_refused_writes(&b.tw);
+}
+/// Drop every connection of `who` and end their session (`orders.rs`'s helper).
+fn disconnect(tw: &mut TestWorld, who: ObjId) {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let conns: Vec<u64> = (1..=64)
+        .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
+        .collect();
+    assert!(!conns.is_empty(), "{who} holds a connection");
+    for conn in conns {
+        tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: who,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    tw.engine_mut().step(
+        mush_core::Inbound::SessionGone { actor: who },
+        &mut out,
+        &mut fx,
+    );
+}
+
+/// **An offline launch line is not queued** (doc 20 cut SM.11, lead ruling 7 and D13; the
+/// brief's §6, the reviewer's F17): the pilot launches and logs off before the act is due; the
+/// launch lands and its line goes to the rig's projection log, but nothing is queued for the
+/// reconnect — a launch is a `Live` line, and offline only a trip-level line is queued. **The
+/// budget's other half** (the lead's pre-commit round, item 6, the judge's T12): the same rig left
+/// a day on the ground comes home by itself, and that trip-level line (`IDLE_HOME`) IS queued —
+/// exactly it, the launch's line still not — and read on reconnect after the heading.
+#[test]
+fn sm11_an_offline_launch_line_is_not_queued() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    disconnect(&mut rig.tw, pilot);
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    assert_eq!(finishes(&queued).len(), 1);
+    land_all(&mut rig, &queued);
+    for _ in 0..2 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    assert!(on_ground_at(&rig.tw, tv, RAMP), "the launch landed");
+    let launched = LAUNCHED
+        .replace("{n}", "1")
+        .replace("{ramp}", "stern ramp")
+        .replace("{site}", "Ahuna Flank");
+    let pending = tacsim::port_tick::pending_notices(rig.tw.world(), pilot);
+    assert!(
+        !pending.iter().any(|line| line.contains(&launched)),
+        "{pending:?}"
+    );
+    let rec = projection(&rig.tw, tv).expect("the projection");
+    assert!(
+        rec.log.iter().any(|line| line.text.contains(&launched)),
+        "the projection still logs it: {:?}",
+        rec.log
+    );
+    // The positive control: a day idle, the rig's return is a trip-level line, queued offline.
+    let since = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.idle_since())
+        .expect("idle since");
+    let (_, queued) = advance_to(&mut rig, since + tacsim::surface::plan::IDLE_PARK_IC_SECS);
+    land_all(&mut rig, &queued);
+    let _ = finish(&mut rig, tv, pilot);
+    assert!(in_bay(&rig.tw, tv, &row), "the idle return brought it in");
+    let home = tacsim::port::tv::IDLE_HOME
+        .replace("{n}", "1")
+        .replace("{site}", "Ahuna Flank")
+        .replace("{name}", "Salt Moth")
+        .replace("{then}", "");
+    let pending = tacsim::port_tick::pending_notices(rig.tw.world(), pilot);
+    assert_eq!(pending, vec![home.clone()], "exactly the trip's line");
+    let events = rig.tw.connect(pilot);
+    let heard = said(&rig.tw, &events, pilot);
+    let lines: Vec<&str> = heard.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == tacsim::port_tick::NOTICE_HEADING)
+        .expect("the heading");
+    assert_eq!(lines.get(at + 1).copied(), Some(home.as_str()), "{heard}");
+    assert!(!heard.contains(&launched), "{heard}");
+    no_refused_writes(&rig.tw);
 }
 
 // ---------------------------------------------------------------------------
@@ -2274,6 +2375,7 @@ fn sm3b_a_rig_on_the_ground_holds_the_revoke() {
         due_ic: now + 1_000_000,
         reserved_cu: 0,
         params: ActParams::None {},
+        by: None,
     });
     let held = format!(
         "{}{}",
@@ -3495,6 +3597,7 @@ fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
         // Far off, so no surface fire lands a cycle while the test reads.
         due_ic: now + 1_000_000,
         reserved_cu: 8_000,
+        by: None,
     });
     assert_eq!(drilling.check(), Ok(()), "a well-formed staff record");
     put_record(&mut rig, drilling.clone());

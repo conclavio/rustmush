@@ -178,10 +178,11 @@ hopper then unloads it into the hold on its own (600 IC s); `+tv/1 unload go` do
 the same by hand, for a rig in the bay. `+tv/1 dump go` empties its hopper onto the
 site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig you
 named last, or your only rig. `+tv` shows where each rig is, its charge and any
-act it is in the middle of. The Dray-P lifts only with every rig in her bay and
-every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
-rig holds her, and on a site's pad name the unload and the dump; at a port, where
-neither works, only staff can empty a hopper. Scanning, sounding and the rest of
-the mining loop are in `help mining`.
+act it is in the middle of. The Dray-P lifts only with every rig in her bay,
+none working a fill plan, and every hopper empty: `+ship/lift`, `+ship/plan` and
+a queued depart all say which rig holds her (`+tv/1 plan clear` ends a plan), and
+on a site's pad name the unload and the dump; at a port, where neither works, only
+staff can empty a hopper. Scanning, sounding and the rest of the mining loop are in
+`help mining`.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.

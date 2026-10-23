@@ -61,6 +61,21 @@ export interface SiteRun {
   text: string;
 }
 
+/** A rig's fill plan as its author's frame carries it (doc 20 cut SM.11): step words and hours only. */
+export interface SitePlan {
+  no: number;
+  /** `live`, `parking` or `ended`. */
+  state: string;
+  step: number;
+  steps: number;
+  /** Up to four step words from the cursor. */
+  next: string[];
+  deadline_ic: number;
+  end: string | null;
+  /** The plan's line under the rig. */
+  text: string;
+}
+
 /** One of the viewer's rigs. */
 export interface SiteRig {
   slot: number;
@@ -75,6 +90,8 @@ export interface SiteRig {
   run: SiteRun | null;
   /** The queued unload's line, when one is queued. */
   queued: string | null;
+  /** The rig's fill plan, on its author's frame only (doc 20 cut SM.11). */
+  plan: SitePlan | null;
 }
 
 /** The `site` vector block. */
@@ -239,6 +256,18 @@ function rig(v: unknown): SiteRig | null {
     line: str(v.line),
     run,
     queued: typeof v.queued === "string" ? v.queued : null,
+    plan: isObj(v.plan)
+      ? {
+          no: num(v.plan.no),
+          state: str(v.plan.state),
+          step: num(v.plan.step),
+          steps: num(v.plan.steps),
+          next: strs(v.plan.next),
+          deadline_ic: num(v.plan.deadline_ic),
+          end: typeof v.plan.end === "string" ? v.plan.end : null,
+          text: str(v.plan.text),
+        }
+      : null,
   };
 }
 

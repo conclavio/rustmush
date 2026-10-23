@@ -399,6 +399,64 @@ fn ic14_a_ring_over_its_cap_does_not_decode() {
     );
 }
 
+/// **`MarkerRing::admits` is `push`'s rule, read only** (doc 20 cut SM.11, the lead's pre-commit
+/// round, item 1): over a ring at its cap of young entries, a ring with room, a ring whose oldest
+/// entries aged past the horizon and a ring that ages by fewer than one push evicts, `admits(n,
+/// now)` answers exactly whether `n` pushes stamped `now` all succeed.
+#[test]
+fn sm11_admits_answers_exactly_what_push_would() {
+    let entry = |n: usize, wall: i64| RingEntry {
+        key: SmolStr::new(format!("{n:080x}")),
+        wall,
+    };
+    let ring_of = |walls: &[i64]| {
+        MarkerRing::new(
+            walls
+                .iter()
+                .enumerate()
+                .map(|(n, wall)| entry(n, *wall))
+                .collect(),
+        )
+        .expect("a ring")
+    };
+    let pushes = |ring: &MarkerRing, n: usize, now: i64| {
+        let mut ring = ring.clone();
+        for k in 0..n {
+            match ring.push(entry(100_000 + k, now), now) {
+                Ok((next, _)) => ring = next,
+                Err(_) => return false,
+            }
+        }
+        true
+    };
+    let young = vec![T0; MAX_MARKER_RING];
+    let room = vec![T0; MAX_MARKER_RING - 2];
+    let aged = vec![T0 - MARKER_RETENTION_SECS; MAX_MARKER_RING];
+    // Only a few of the full ring's entries aged: fewer than one push may evict.
+    let mut few = vec![T0; MAX_MARKER_RING];
+    few[0] = T0 - MARKER_RETENTION_SECS;
+    for walls in [&young, &room, &aged, &few] {
+        let ring = ring_of(walls);
+        for n in 0..=MAX_RING_EVICTIONS_PER_PUSH + 2 {
+            for now in [T0, T0 + 1, T0 + MARKER_RETENTION_SECS] {
+                assert_eq!(
+                    ring.admits(n, now),
+                    pushes(&ring, n, now),
+                    "{} entries, {n} pushes at {now}",
+                    walls.len()
+                );
+            }
+        }
+    }
+    assert!(!ring_of(&young).admits(1, T0), "a full young ring refuses");
+    assert!(ring_of(&young).admits(0, T0), "nothing pushed fits");
+    assert!(ring_of(&room).admits(2, T0) && !ring_of(&room).admits(3, T0));
+    assert!(
+        ring_of(&young).admits(1, T0 + MARKER_RETENTION_SECS),
+        "the ring frees as its markers age"
+    );
+}
+
 #[test]
 fn ic14_the_marker_id_rule_is_inventorys() {
     // The one rule (cut IC14 row 17): the market calls this, not a copy.

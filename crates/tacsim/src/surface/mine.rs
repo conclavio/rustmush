@@ -854,7 +854,10 @@ mod tests {
                 lock_rows: vec![lock_row(letter, number)],
                 due_ic: 1_800,
                 reserved_cu: 2_000,
+                by: None,
             }),
+            plan: None,
+            plans: 0,
         }
     }
 

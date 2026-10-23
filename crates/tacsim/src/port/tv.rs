@@ -87,6 +87,8 @@ A lease past its term is re-debited at your next +tv/lease, or the deposit is fo
 +tv/<n> sound [quiet] [go]  read every pocket of the field rig n stands in, heard across the site; quiet reads a quarter of it and nobody hears (1,200 IC s, 2,000 cu).
 +tv/<n> mine [family] [cycles] [go]  (alias drill) mine the pocket rig n stands on, from your own reading of it: the family you name, else the one with most tonnes left; no number runs until the pocket, the hopper or the hold's room gives out (at most eight cycles). An unread pocket is cored one cycle (1,800 IC s, 3,600 on rock; 2,000 cu a cycle).
 +tv/<n> mine stop  the cycle in flight finishes and yields; the run ends there.
++tv/<n> plan <pockets and blocks> [family=<good>] [go]  leave rig n working: mine the pockets you name and every pocket of a block you read fair or better, sounding a field first where you have only scanned it; it comes home and unloads at every full hopper, and parks when the hold has no room for another cycle or the list is worked out, within 288 IC h. It is never re-armed. While it works, the rig takes no other order.
++tv/<n> plan show  read rig n's plan back.  +tv/<n> plan clear  end it after the step in flight, or strike a finished one.
 +tv/quiet [on|off]  stop (or start) hearing other rigs' soundings.
 +tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
 From the bay, a scan, a sounding or a drive goes down the ramp first. Mining is help mining.
@@ -146,7 +148,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/plan <pockets|blocks> [family=<good>] [go]  or  +tv[/<n>]/plan show|clear  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -254,7 +256,9 @@ pub const WHY_HOPPER_CHANGED: &str = "its hopper no longer held what was to be d
 pub const WHY_SPOIL_GONE: &str =
     "the spoil would not take the load; it stays in the hopper and nothing moved";
 /// An act in flight: `{n}`, `{doing}`, `{when}`. A run in flight (doc 20 cut SM.7) uses it
-/// too, `{doing}` from `crate::surface::act::drilling_words` and [`RUN_STOP_REMEDY`] appended.
+/// too, `{doing}` from `crate::surface::act::drilling_words` and [`RUN_STOP_REMEDY`] appended;
+/// the lease return of a rig working a plan (doc 20 cut SM.11) with `{doing}` [`PLAN_DOING`],
+/// no `done {when}` clause, and [`PLAN_REMEDY`] appended.
 pub const RIG_BUSY: &str = "Rig {n} is {doing}: done {when}.";
 /// **The lease return with a rig still logged out** (the fixer round's item 1): its
 /// `tacsim.excursion` record holds an open excursion but no act. A rig can only be in
@@ -671,6 +675,11 @@ pub const UNLOAD_NO_STOCK: &str = "Rig {n}'s hopper holds only {fit} t of {ore}:
 /// The hopper or the hold's room changed between the preview and its start: `{n}`.
 pub const UNLOAD_CHANGED: &str =
     "Rig {n}'s hopper or the hold's room changed since the preview; preview it again.";
+/// **The queued unload's start refused while the hopper's unload log is full** (doc 20 cut SM.11,
+/// the lead's pre-commit round, item 1): the surface tick's own start, never a typed one, so the
+/// line is the start's wire refusal's only: `{n}`.
+pub const UNLOAD_MARKERS: &str =
+    "Rig {n}'s unload log is full; its hopper unloads by itself once the log frees.";
 /// The grammar: `{n}`.
 pub const UNLOAD_USAGE: &str = "Unload how? +tv/{n} unload [tonnes] [go].";
 /// `ACT_FAILED`'s `{why}` for an unload whose rig left the bay.
@@ -682,10 +691,188 @@ pub const WHY_HOLD_REFUSED: &str =
 /// round's correctness/F2): the ring frees itself as its markers age, so the remedy is time.
 pub const WHY_MARKERS_FULL: &str =
     "the rig's unload log is full; it stays in the hopper and nothing moved: try again later";
+/// `ACT_FAILED`'s `{why}` for a **queued** unload whose hopper's marker ring is full (doc 20 cut
+/// SM.11, the lead's pre-commit round, item 1): the finish keeps the queue, and the surface tick
+/// starts it again once the ring frees — the remedy is time, and nobody has to type it.
+pub const WHY_MARKERS_QUEUED: &str = "the rig's unload log is full; the load stays in the hopper and unloads by itself once the log frees";
 /// The status's line under a rig with a queued unload.
 pub const QUEUED_LINE: &str = "  Unloads its hopper into the hold next.";
 /// The most tonnes `+tv/unload` takes as typed (`1..=99`).
 pub const MAX_TYPED_TONNES: u64 = 99;
+
+// ---- doc 20 cut SM.11: the fill plan's texts (the planner's wording for the owner; the two §5
+// lines byte for byte) ----
+
+/// `+tv/plan`'s grammar.
+pub const PLAN_USAGE: &str = "Usage: +tv[/<n>]/plan <pocket|block>[,<pocket|block>…] [family=<good>] [go]  or  +tv[/<n>]/plan show  or  +tv[/<n>]/plan clear";
+/// The preview's head: `{n}`, `{mark}`, `{site}`, `{ore}`, `{real}` (", about {span}" of 288 IC h).
+pub const PLAN_PREVIEW_HEAD: &str =
+    "Rig {n} ({mark}) would work this plan on {site}, mining {ore}, for at most 288 IC h{real}:";
+/// One step of the preview: `{k}`, `{words}`, `{hours}` ([`PLAN_STEP_HOURS`] or empty), `{far}`
+/// ([`PLAN_PREVIEW_FAR`] or empty).
+pub const PLAN_PREVIEW_STEP: &str = "  {k}. {words}{hours}{far}";
+/// A step's estimate: `{h}` whole IC hours.
+pub const PLAN_STEP_HOURS: &str = ", about {h} IC h";
+/// A block step's far pockets: `{k}`.
+pub const PLAN_PREVIEW_FAR: &str = " ({k} of its pockets you read lie beyond what a full charge can work and bring home; the plan passes over them)";
+/// The preview's tail: `{name}`, `{room}`, `{shared}` ([`PLAN_SHARED`] per other rig), `{hours}`,
+/// `{n}`, `{list}`.
+pub const PLAN_PREVIEW_TAIL: &str = "Between them it drives, recovers and unloads at every full hopper, and parks when no cycle fits the {name}'s hold ({room} t unreserved{shared}) or the list is worked out: at least {hours} IC h of work. +tv/{n} plan {list} go files it.";
+/// Another rig's live plan draws on the hold: `{m}`.
+pub const PLAN_SHARED: &str = "; rig {m}'s plan draws on it too";
+/// Filed: `{n}`, `{no}`, `{when}`.
+pub const PLAN_FILED: &str = "Rig {n}'s plan {no} is filed; it works until {when} at the latest. +tv/{n} plan show reads it; +tv/{n} plan clear ends it.";
+/// A refusal at one address: `{addr}`, `{line}` ([`NO_READING`], [`MINE_CLAIMED`],
+/// [`PLAN_TOO_FAR_LINE`] or [`PLAN_DARK_LINE`]).
+pub const PLAN_REFUSED_AT: &str = "{addr}: {line}";
+/// Too far: `{n}`.
+pub const PLAN_TOO_FAR_LINE: &str = "a full charge cannot work it and bring rig {n} home.";
+/// The registry dark.
+pub const PLAN_DARK_LINE: &str = "the registry cannot be read here.";
+/// A sounded-barren address: `{addr}`, `{family}`.
+pub const PLAN_BARREN: &str = "{addr} reads barren in {family}; strike it from the list.";
+/// Too many addresses: `{max}`.
+pub const PLAN_TOO_MANY: &str = "A plan names at most {max} pockets and blocks.";
+/// Named twice: `{addr}`.
+pub const PLAN_TWICE: &str = "{addr} is named twice.";
+/// Too many steps: `{max}`.
+pub const PLAN_TOO_MANY_STEPS: &str = "That list makes more than {max} steps; name fewer blocks.";
+/// A full hold: `{name}`.
+pub const PLAN_HOLD_FULL: &str =
+    "The {name}'s hold has no unreserved room for another cycle; a plan would only park.";
+/// Too long: `{hours}`.
+pub const PLAN_TOO_LONG: &str = "That list needs at least {hours} IC h; a plan works at most 288.";
+/// A plan is live already: `{n}`, `{no}`.
+pub const PLAN_ALREADY: &str =
+    "Rig {n} is already working plan {no}: +tv/{n} plan show reads it; +tv/{n} plan clear ends it.";
+/// No plan: `{n}`.
+pub const PLAN_NONE: &str = "Rig {n} has no plan.";
+/// The plan changed since the preview: `{n}`.
+pub const PLAN_CHANGED: &str = "Rig {n}'s plan changed since the preview; preview it again.";
+/// A live plan holds its rig: `{n}`, `{no}`.
+pub const PLAN_LIVE: &str =
+    "Rig {n} is working plan {no}: +tv/{n} plan clear ends it after the step in flight.";
+/// A clear landing on a plan that ended by itself: `{n}`, `{no}`.
+pub const PLAN_ALREADY_ENDED: &str =
+    "Rig {n}'s plan {no} has already ended: +tv/{n} plan clear strikes it.";
+/// Cleared: `{n}`, `{no}`.
+pub const PLAN_CLEARED: &str =
+    "Rig {n}'s plan {no} is cleared: the step in flight finishes, and the rig is yours again.";
+/// Struck: `{n}`, `{no}`.
+pub const PLAN_DROPPED: &str = "Rig {n}'s finished plan {no} is struck from its record.";
+/// `+tv/plan show`'s head: `{n}`, `{no}`, `{site}`, `{ore}`, `{state}`, `{filed}`, `{deadline}`.
+pub const PLAN_SHOW_HEAD: &str = "Rig {n}'s plan {no} on {site}, mining {ore}: {state}; filed {filed}, works until {deadline} at the latest.";
+/// One step: `{k}`, `{words}`, `{mark}`.
+pub const PLAN_SHOW_STEP: &str = "  {k}. {words}: {mark}";
+/// The tally: `{t}`, `{ore}`, `{c}`, `{trips}`.
+pub const PLAN_SHOW_TALLY: &str = "So far: {t} t of {ore} in {c} over {trips}.";
+/// What it does now: `{doing}`.
+pub const PLAN_SHOW_NOW: &str = "Now: {doing}.";
+/// When it ended: `{at}`, `{why}`.
+pub const PLAN_SHOW_ENDED: &str = "It ended {at}: {why}.";
+/// A live plan's state word.
+pub const STATE_LIVE: &str = "working";
+/// A parking plan's state word.
+pub const STATE_PARKING: &str = "coming home to park";
+/// An ended plan's state word.
+pub const STATE_ENDED: &str = "ended";
+/// A step done.
+pub const MARK_DONE: &str = "done";
+/// The step it works.
+pub const MARK_NOW: &str = "now";
+/// The step after.
+pub const MARK_NEXT: &str = "next";
+/// A later step.
+pub const MARK_PENDING: &str = "pending";
+/// A step passed over.
+pub const MARK_PASSED: &str = "passed over";
+/// The status's plan line: `{no}`, `{k}`, `{steps}`, `{words}`, `{when}`.
+pub const PLAN_LINE: &str =
+    "  Plan {no}: step {k} of {steps}, {words}; until {when} at the latest.";
+/// The status's ended plan: `{no}`, `{why}`.
+pub const PLAN_LINE_ENDED: &str = "  Plan {no} ended: {why}.";
+/// A pass, told: `{n}`, `{addr}`, `{why}`.
+pub const PLAN_PASSED: &str = "Rig {n}'s plan passes over {addr}: {why}.";
+/// A parking for a right, told: `{n}`, `{why}` (a sentence).
+pub const PLAN_PARKING: &str =
+    "Rig {n}'s plan stops mining: {why} It comes home, unloads and parks.";
+/// The end's summary: `{n}`, `{site}`, `{why}` (a sentence), `{t}`, `{ore}`, `{c}`, `{trips}`,
+/// `{name}`, `{held}`, `{room}`.
+pub const PLAN_ENDED: &str = "Rig {n}'s plan at {site} ended: {why} It mined {t} t of {ore} in {c} over {trips}; the {name}'s hold holds {held} t, {room} t of it unreserved.";
+/// A wait, told once a boot to a connected operator: `{n}`, `{why}`.
+pub const PLAN_WAITS: &str = "Rig {n}'s plan waits: {why}.";
+/// The idle return: `{n}`, `{site}`, `{name}`, `{then}` ([`IDLE_THEN`] or empty).
+pub const IDLE_HOME: &str =
+    "Rig {n} stood a day idle on {site} and came home into the {name}'s bay{then}.";
+/// The idle return's unload clause.
+pub const IDLE_THEN: &str = "; it unloads its hopper next";
+/// Parked where it stands: `{n}`, `{ramp}`, `{site}`.
+pub const STRANDED: &str = "Rig {n} cannot reach the {ramp} on its charge; it is parked where it stands on {site}. Staff can bring it in.";
+/// The remedy after `TV_BUSY` or `RIG_BUSY` for a rig working a plan: `{n}`.
+pub const PLAN_REMEDY: &str = " +tv/{n} plan clear ends it after the step in flight.";
+/// `{doing}` for a rig working a plan.
+pub const PLAN_DOING: &str = "working its plan";
+
+/// **`{c}` and `{trips}` in words** (doc 20 cut SM.11): `1 cycle`, `13 cycles`.
+#[must_use]
+pub fn count_words(n: u64, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+/// An end: the list worked out.
+pub const END_WORKED_OUT: &str = "its list is worked out.";
+/// An end: the hold full — `{name}`.
+pub const END_HOLD_FULL: &str = "the {name}'s hold has no room for another cycle.";
+/// An end: out of time.
+pub const END_BOUND: &str = "its 288 IC hours ran out.";
+/// An end: the lease ended.
+pub const END_LEASE_ENDED: &str = "the rig's lease has ended.";
+/// An end: the deposit forfeit.
+pub const END_LEASE_FORFEIT: &str = "the rig's deposit is forfeit.";
+/// An end: the registry dark.
+pub const END_DARK: &str = "the registry cannot be read here.";
+/// An end: the chart full — `{body}`.
+pub const END_CHART_FULL: &str = "your chart of {body} is full; +tv/forget makes room.";
+/// An end: cleared.
+pub const END_CLEARED: &str = "you cleared it.";
+/// An end: stranded — `{ramp}`.
+pub const END_STRANDED: &str = "it cannot reach the {ramp} on its charge.";
+/// A wait: the helm — `{name}`.
+pub const WAIT_HELM: &str = "you no longer hold the {name}'s helm";
+/// A wait: ashore — `{name}`.
+pub const WAIT_ASHORE: &str = "you are not aboard the {name}";
+/// A wait: the cap.
+pub const WAIT_CAP: &str = "you have as many rigs out as one pilot may run";
+/// A wait: charging — `{when}`.
+pub const WAIT_CHARGING: &str = "it charges in the bay until {when}";
+/// A wait: the ground cold.
+pub const WAIT_COLD: &str = "the ground is still being mapped";
+/// A wait: dark.
+pub const WAIT_DARK: &str = "the rig or the ground cannot be read right now";
+/// A wait: the hopper's queued unload waits for its full marker ring to free (the SM.11 fixer
+/// round's correctness/F1; the lead's pre-commit round, item 1: the queue stands and the tick
+/// starts it again, so the plan resumes by itself).
+pub const WAIT_MARKERS: &str =
+    "the rig's unload log is full; its hopper unloads once the log frees, then the plan goes on";
+/// `+tv/plan show`'s `Now:` for an act in flight.
+pub const WAIT_BUSY: &str = "the step in flight finishes first";
+/// A start refused because the plan's next step cannot start.
+pub const WAIT_NEXT: &str = "its next step cannot start yet";
+/// A pass: worked out.
+pub const PASS_WORKED_OUT: &str = "it is worked out";
+/// A pass: barren — `{family}`.
+pub const PASS_BARREN: &str = "it reads barren in {family}";
+/// A pass: locked.
+pub const PASS_LOCKED: &str = "another rig is working it";
+/// A pass: no way there.
+pub const PASS_NO_WAY: &str = "there is no way there";
+/// A pass: too far.
+pub const PASS_TOO_FAR: &str = "a full charge cannot work it and come home";
+/// A pass: nothing new.
+pub const PASS_NOTHING_NEW: &str = "you learn nothing new there";
 
 /// **`{ore}`**: the family's ore good's id with `_` read as a space (`metal ore`).
 #[must_use]
@@ -1329,15 +1516,34 @@ enum Act {
         /// Committed.
         go: bool,
     },
+    /// **Doc 20 cut SM.11**: `+tv[/<n>]/plan <list> [family=<good>] [go]` — the list as typed
+    /// (case kept, `go` and `family=` removed).
+    Plan {
+        /// The pockets and blocks.
+        list: String,
+        /// `family=`'s word, as typed.
+        family: Option<String>,
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 20 cut SM.11**: `+tv[/<n>]/plan show` or `+tv[/<n>]/plan/show` — a pure read.
+    PlanShow,
+    /// **Doc 20 cut SM.11**: `+tv[/<n>]/plan clear` — committed with no `go` (D6).
+    PlanClear,
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
-/// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`).
-const ACT_WORDS: [&str; 14] = [
+/// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`; since SM.11
+/// `plan`).
+const ACT_WORDS: [&str; 15] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill", "unload",
+    "map", "mine", "drill", "unload", "plan",
 ];
+
+/// **`/show`** (doc 20 cut SM.11; the brief's D11): a switch accepted only beside `plan`, so the
+/// TUI's run allowlist can name `+tv/plan/show` — a first word that admits nothing but the read.
+pub const SHOW_SWITCH: &str = "show";
 
 /// **The most cycles `+tv/mine` takes as typed** (the brief's 3.6: `1..=99`; the plan refuses a
 /// count that does not fit and names the count that does).
@@ -1387,13 +1593,74 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
         next = words.next();
     }
     let Some(act) = act else {
-        return if next.is_none() {
+        return if next.is_none() && !has(SHOW_SWITCH) {
             Ok((slot, Act::Status))
         } else {
             Err(usage())
         };
     };
+    // Doc 20 cut SM.11 (D11): `/show` only beside `plan`.
+    if has(SHOW_SWITCH) && act != "plan" {
+        return Err(usage());
+    }
     match act.as_str() {
+        // Doc 20 cut SM.11 (the brief's 3.5): `plan <list> [family=<good>] [go]`, `plan show`
+        // (or the `/show` switch), `plan clear`.
+        "plan" => {
+            let plan_usage = || CmdError::msg(PLAN_USAGE);
+            if has(SHOW_SWITCH) {
+                return if next.is_none() {
+                    Ok((slot, Act::PlanShow))
+                } else {
+                    Err(plan_usage())
+                };
+            }
+            match next.as_deref() {
+                None => return Err(plan_usage()),
+                Some("show") => {
+                    return if words.next().is_none() {
+                        Ok((slot, Act::PlanShow))
+                    } else {
+                        Err(plan_usage())
+                    };
+                }
+                Some("clear") => {
+                    return if words.next().is_none() {
+                        Ok((slot, Act::PlanClear))
+                    } else {
+                        Err(plan_usage())
+                    };
+                }
+                Some(_) => {}
+            }
+            let (typed, go) = act_words(raw, "plan", first_word);
+            let mut family: Option<String> = None;
+            let mut list: Vec<&str> = Vec::new();
+            for token in typed.split_whitespace() {
+                let lower = token.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("family=") {
+                    if family.is_some() || value.is_empty() {
+                        return Err(plan_usage());
+                    }
+                    family = token.get("family=".len()..).map(str::to_owned);
+                } else if lower == "go" {
+                    return Err(plan_usage());
+                } else {
+                    list.push(token);
+                }
+            }
+            if list.is_empty() {
+                return Err(plan_usage());
+            }
+            return Ok((
+                slot,
+                Act::Plan {
+                    list: list.join(" "),
+                    family,
+                    go,
+                },
+            ));
+        }
         // Doc 20 cut SM.4a: the forget names no rig; its name is the raw text (F10).
         "forget" => {
             if slot.is_some() {
@@ -1687,6 +1954,26 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .map_err(CmdError::msg)?;
             crate::surface::act::unload_cmd(ctx, &rig, qty, go)
         }
+        // Doc 20 cut SM.11 (§8 "Leaving it running", §10; the brief's 3.5).
+        Act::Plan { list, family, go } => {
+            let rig = select_word(ctx, slot, "plan").map_err(CmdError::msg)?;
+            let named = match family.as_deref() {
+                None => None,
+                Some(word) => Some(
+                    crate::surface::geology::family_of_word(word)
+                        .ok_or_else(|| CmdError::msg(MAP_FAMILY_UNKNOWN.replace("{word}", word)))?,
+                ),
+            };
+            crate::surface::act::plan_cmd(ctx, &rig, &list, named, family.as_deref(), go)
+        }
+        Act::PlanShow => {
+            let rig = select_plan_word(ctx, slot, "plan show").map_err(CmdError::msg)?;
+            crate::surface::act::plan_show_cmd(ctx, &rig)
+        }
+        Act::PlanClear => {
+            let rig = select_plan_word(ctx, slot, "plan clear").map_err(CmdError::msg)?;
+            crate::surface::act::plan_clear_cmd(ctx, &rig)
+        }
     }
 }
 
@@ -1871,15 +2158,50 @@ fn select(
     named: Option<u8>,
     kind: crate::surface::excursion::ActKind,
 ) -> Result<crate::surface::act::RigAt, String> {
+    select_word(ctx, named, kind.word())
+}
+
+/// [`select`] for an act named by its words (doc 20 cut SM.11: `plan`, `plan show`, `plan
+/// clear`).
+fn select_word(
+    ctx: &Ctx<'_>,
+    named: Option<u8>,
+    word: &str,
+) -> Result<crate::surface::act::RigAt, String> {
     let w: &World = ctx.w;
     if crate::surface::act::operator_rigs(w, ctx.actor).is_empty() {
         status_lines(ctx, named, &mut Vec::new())?;
     }
-    select_in(
+    select_in(w, ctx.actor, named, &WHICH_RIG_ACT.replace("{act}", word))
+}
+
+/// [`select_word`] for the plan's own read and clear (doc 20 cut SM.11; the lead's pre-commit
+/// round, item 3, the judge's correctness/F5: D22's "a plan stays clearable"): at the helm,
+/// exactly [`select_word`]; off it, the actor's own leased rigs on a hull they are aboard, by the
+/// same rule ([`select_among`]) — `plan_show_cmd` and `plan_clear_cmd` then read only the actor's
+/// own plan. With no such rig, [`select_word`]'s refusal.
+fn select_plan_word(
+    ctx: &Ctx<'_>,
+    named: Option<u8>,
+    word: &str,
+) -> Result<crate::surface::act::RigAt, String> {
+    let w: &World = ctx.w;
+    if !crate::surface::act::operator_rigs(w, ctx.actor).is_empty() {
+        return select_word(ctx, named, word);
+    }
+    let aboard: Vec<crate::surface::act::RigAt> = crate::surface::act::leased_rigs(w, ctx.actor)
+        .into_iter()
+        .filter(|rig| crate::port::voyage::aboard(w, rig.hull, ctx.actor))
+        .collect();
+    if aboard.is_empty() {
+        return select_word(ctx, named, word);
+    }
+    select_among(
         w,
         ctx.actor,
+        aboard,
         named,
-        &WHICH_RIG_ACT.replace("{act}", kind.word()),
+        &WHICH_RIG_ACT.replace("{act}", word),
     )
 }
 
@@ -1893,7 +2215,24 @@ pub(crate) fn select_in(
     named: Option<u8>,
     which: &str,
 ) -> Result<crate::surface::act::RigAt, String> {
-    let rigs = crate::surface::act::operator_rigs(w, actor);
+    select_among(
+        w,
+        actor,
+        crate::surface::act::operator_rigs(w, actor),
+        named,
+        which,
+    )
+}
+
+/// [`select_in`]'s rule over `rigs` (the lead's pre-commit round, item 3: the helm's rigs, or the
+/// plan author's own off it).
+fn select_among(
+    w: &World,
+    actor: ObjId,
+    rigs: Vec<crate::surface::act::RigAt>,
+    named: Option<u8>,
+    which: &str,
+) -> Result<crate::surface::act::RigAt, String> {
     let no_rig = |n: u8, hull: ObjId| {
         NO_RIG
             .replace("{n}", &n.to_string())
@@ -2227,6 +2566,41 @@ fn rig_state(
         .is_some_and(|record| record.queued.is_some())
     {
         acts.push(QUEUED_LINE.to_owned());
+    }
+    // Doc 20 cut SM.11 (the brief's 3.5): the rig's plan, live or ended, under its lines — only
+    // the asker's own (the fixer round's conformance/F1: a previous lessee's plan is never shown).
+    if let Some(plan) = record
+        .as_ref()
+        .and_then(|found| found.as_ref())
+        .and_then(|record| record.plan.as_ref())
+        .filter(|plan| plan.author == ctx.actor)
+    {
+        use crate::surface::plan::FillState;
+        // The step clamped to the count, and a parking plan named as coming home, never by the
+        // step it skips (the fixer round's correctness/F4).
+        let view = crate::surface::plan::plan_view(plan);
+        let line = match plan.state {
+            FillState::Live | FillState::Parking { .. } => PLAN_LINE
+                .replace("{no}", &plan.no.to_string())
+                .replace("{k}", &view.step.to_string())
+                .replace("{steps}", &view.steps.to_string())
+                .replace(
+                    "{words}",
+                    view.next.first().map_or(STATE_PARKING, String::as_str),
+                )
+                .replace("{when}", &due_words(w, plan.deadline_ic)),
+            FillState::Ended { why, .. } => {
+                let words = crate::surface::act::PlanWords::of(w, plan);
+                PLAN_LINE_ENDED
+                    .replace("{no}", &plan.no.to_string())
+                    .replace(
+                        "{why}",
+                        crate::surface::act::end_why(w, plan.author, why, &words)
+                            .trim_end_matches('.'),
+                    )
+            }
+        };
+        acts.push(line);
     }
     let charge = match (battery, record) {
         (Some(battery), Some(record)) => {
@@ -3285,6 +3659,17 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
                 RUN_STOP_REMEDY.replace("{n}", &slot)
             ));
         }
+        // Doc 20 cut SM.11 (the brief's 3.9): a rig working a plan, and the clear that ends it.
+        Ok(RigFlight::Planning { .. }) => {
+            return Err(format!(
+                "{}{}",
+                RIG_BUSY
+                    .replace("{n}", &slot)
+                    .replace("{doing}", PLAN_DOING)
+                    .replace(": done {when}", ""),
+                PLAN_REMEDY.replace("{n}", &slot)
+            ));
+        }
         Ok(RigFlight::Out { site }) => {
             return Err(RIG_LOGGED_OUT
                 .replace("{n}", &slot)
@@ -3642,6 +4027,15 @@ pub(crate) enum RigFlight {
         /// The running cycle's due instant, IC seconds.
         due_ic: i64,
     },
+    /// **Working a plan** (doc 20 cut SM.11; the brief's 3.9): no act and no run, and a plan live
+    /// for the rig's lessee — read after a run and before an open excursion, so the departure and
+    /// the lease return name `+tv/{n} plan clear`.
+    Planning {
+        /// The plan's number.
+        no: u32,
+        /// The rig stands in a bay (a parked plan holds nothing physical).
+        in_bay: bool,
+    },
     /// No act and no run, but an excursion open on `site` (the site port entry).
     Out {
         /// The excursion's site.
@@ -3678,23 +4072,76 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
         ));
     }
     // An act in flight outranks a run (a scan from a drilling rig names the scan); a run
-    // outranks the open excursion it drills from (the SM.7 lead's pre-commit round, item 2).
-    Ok(match (&record.act, &record.run, &record.excursion) {
-        (Some(act), _, _) => RigFlight::Busy {
-            kind: act.kind,
-            due_ic: act.due_ic,
-            params: act.params.clone(),
+    // outranks the open excursion it drills from (the SM.7 lead's pre-commit round, item 2); doc
+    // 20 cut SM.11: a live plan of the rig's lessee is read between the two.
+    let lessee = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_lease_on(tv))
+        .map(|lease| lease.pilot);
+    let planning = lessee
+        .and_then(|lessee| record.live_plan_for(lessee))
+        .map(|plan| plan.no);
+    Ok(
+        match (&record.act, &record.run, planning, &record.excursion) {
+            (Some(act), _, _, _) => RigFlight::Busy {
+                kind: act.kind,
+                due_ic: act.due_ic,
+                params: act.params.clone(),
+            },
+            (None, Some(run), _, _) => RigFlight::Drilling {
+                pocket: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
+                    .unwrap_or_default(),
+                due_ic: run.due_ic,
+            },
+            (None, None, Some(no), _) => RigFlight::Planning {
+                no,
+                in_bay: matches!(
+                    crate::surface::act::where_is(ctx.w, tv),
+                    crate::surface::act::Where::Bay { .. }
+                ),
+            },
+            (None, None, None, Some(excursion)) => RigFlight::Out {
+                site: excursion.site.clone(),
+            },
+            (None, None, None, None) => RigFlight::Idle,
         },
-        (None, Some(run), _) => RigFlight::Drilling {
-            pocket: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
-                .unwrap_or_default(),
-            due_ic: run.due_ic,
-        },
-        (None, None, Some(excursion)) => RigFlight::Out {
-            site: excursion.site.clone(),
-        },
-        (None, None, None) => RigFlight::Idle,
-    })
+    )
+}
+
+/// **Whether a rig is parked, for `await tv`** (doc 20 cut SM.11; the brief's 3.10, lead ruling 5,
+/// the reviewer's F3), pure: true when either (a) it stands in this hull's bay (`in_this_bay`) and
+/// its record (none is idle) holds no act, no run, no queued unload and no plan live for `lessee`;
+/// or (b) it is on the ground with no act, no run and no queued unload, and either its plan ended
+/// with no act since (`ended.at_ic ≥ last.at_ic`; no outcome counts as since) — a plan that ended
+/// stranded where it stands — or its projection reads [`crate::surface::TvState::Parked`] (an idle
+/// rig stranded with no plan). A rig out by hand with yesterday's ended plan is not parked once it
+/// has acted since; an unreadable record never counts (the caller passes it as not parked).
+#[must_use]
+pub(crate) fn rig_parked(
+    record: Option<&crate::surface::RigRecord>,
+    lessee: Option<ObjId>,
+    in_this_bay: bool,
+    projected: Option<crate::surface::TvState>,
+) -> bool {
+    use crate::surface::plan::FillState;
+    let Some(record) = record else {
+        return in_this_bay;
+    };
+    let quiet = record.act.is_none() && record.run.is_none() && record.queued.is_none();
+    if !quiet {
+        return false;
+    }
+    if in_this_bay {
+        return lessee.is_none_or(|lessee| record.live_plan_for(lessee).is_none());
+    }
+    let ended_since = record.plan.as_ref().is_some_and(|plan| match plan.state {
+        FillState::Ended { at_ic, .. } => {
+            record.last.as_ref().is_none_or(|last| at_ic >= last.at_ic)
+        }
+        FillState::Live | FillState::Parking { .. } => false,
+    });
+    ended_since || projected == Some(crate::surface::TvState::Parked)
 }
 
 /// **Whether a rig is out on a site or mid-act** (doc 20 cut SM.3b, decision 13):
@@ -3702,6 +4149,9 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
 /// will not read counts as out (fail closed: the hull is held and paged, never stripped).
 fn rig_out_or_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
     match rig_flight(ctx, tv) {
+        // Doc 20 cut SM.11 (the brief's 3.9, D12): a plan parked in the bay holds nothing
+        // physical — once the lease ends it is orphaned and inert; a plan's rig out is out.
+        Ok(RigFlight::Planning { in_bay: true, .. }) => false,
         Ok(flight) => flight != RigFlight::Idle,
         Err(error) => {
             tracing::warn!(tv = tv.0, %error, "tacsim: a rig's excursion record does not read");
@@ -4337,6 +4787,8 @@ mod tests {
             WHY_LEFT_BAY,
             WHY_HOLD_REFUSED,
             WHY_MARKERS_FULL,
+            WHY_MARKERS_QUEUED,
+            UNLOAD_MARKERS,
             QUEUED_LINE,
             crate::port::voyage::HOPPER_LOADED,
             crate::port::voyage::HOPPER_LOADED_AWAY,
@@ -4384,6 +4836,354 @@ mod tests {
                 .replace("{ore}", "Metal ore"),
             "5 t do not fit: rig 1 can unload 3 t of Metal ore now — +tv/1 unload 3, or +tv/1 \
              unload with no number."
+        );
+    }
+    /// **The plan grammar** (doc 20 cut SM.11; the brief's 3.5 and D11): `+tv[/<n>]/plan <list>
+    /// [family=<good>] [go]` as a switch or a first word, the list whole (commas and spaces kept
+    /// for the compiler); `plan show`, `plan/show` and `plan clear`; `/show` only beside `plan`;
+    /// every malformed form is the plan's usage line.
+    #[test]
+    fn sm11_the_plan_grammar() {
+        let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
+            parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
+        };
+        let plan = |list: &str, family: Option<&str>, go| Act::Plan {
+            list: list.to_owned(),
+            family: family.map(str::to_owned),
+            go,
+        };
+        assert_eq!(
+            parse(&["1", "plan"], "C117,C118,D family=metal_ore"),
+            Ok((Some(1), plan("C117,C118,D", Some("metal_ore"), false)))
+        );
+        assert_eq!(
+            parse(&["1"], "plan C117,C118,D family=metal_ore go"),
+            Ok((Some(1), plan("C117,C118,D", Some("metal_ore"), true)))
+        );
+        assert_eq!(
+            parse(&[], "plan C117 D go"),
+            Ok((None, plan("C117 D", None, true)))
+        );
+        assert_eq!(parse(&["1", "plan"], "show"), Ok((Some(1), Act::PlanShow)));
+        assert_eq!(parse(&["1"], "plan show"), Ok((Some(1), Act::PlanShow)));
+        assert_eq!(
+            parse(&["1", "plan", "show"], ""),
+            Ok((Some(1), Act::PlanShow)),
+            "the switch form the allowlist names"
+        );
+        assert_eq!(parse(&["plan", "show"], ""), Ok((None, Act::PlanShow)));
+        assert_eq!(
+            parse(&["1", "plan"], "clear"),
+            Ok((Some(1), Act::PlanClear))
+        );
+        assert_eq!(parse(&["1"], "plan clear"), Ok((Some(1), Act::PlanClear)));
+        for (switches, raw) in [
+            (&["1", "plan"][..], ""),
+            (&["1", "plan"][..], "go"),
+            (&["1", "plan"][..], "family=metal_ore"),
+            (&["1", "plan"][..], "family= C117"),
+            (&["1", "plan"][..], "C117 family=a family=b"),
+            (&["1", "plan"][..], "C117 go D"),
+            (&["1", "plan"][..], "show now"),
+            (&["1", "plan"][..], "clear go"),
+            (&["1", "plan", "show"][..], "C117 go"),
+            (&["1", "plan", "show"][..], "show"),
+        ] {
+            assert_eq!(
+                parse(switches, raw),
+                Err(PLAN_USAGE.to_owned()),
+                "{switches:?} {raw:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["1", "show"], ""),
+            Err(TV_USAGE.to_owned()),
+            "/show alone"
+        );
+        assert_eq!(
+            parse(&["1", "scan", "show"], ""),
+            Err(TV_USAGE.to_owned()),
+            "/show beside another act"
+        );
+        assert!(TV_USAGE.contains("+tv[/<n>]/plan "), "{TV_USAGE}");
+        assert!(TV_HELP.contains("+tv/<n> plan "), "{TV_HELP}");
+        assert!(ACT_WORDS.contains(&"plan"));
+    }
+
+    /// **The plan's texts fill** (doc 20 cut SM.11; the brief's 3.5): every template filled with
+    /// the widest figures holds no newline and no unfilled `{`, and the §5 fog line stands byte
+    /// for byte behind its address.
+    #[test]
+    fn sm11_the_plan_texts_fill() {
+        let fill = |template: &str| {
+            [
+                ("{n}", "4"),
+                ("{m}", "3"),
+                ("{no}", "4294967295"),
+                ("{mark}", "OWP-TV-04"),
+                ("{site}", "Ahuna Flank"),
+                ("{ore}", "Water ice ore"),
+                ("{real}", ", about 3 real h"),
+                ("{k}", "64"),
+                (
+                    "{words}",
+                    "mine every pocket of block P that reads fair or better",
+                ),
+                ("{hours}", ", about 288 IC h"),
+                ("{far}", ""),
+                ("{h}", "288"),
+                ("{name}", "Salt Moth"),
+                ("{room}", "86"),
+                ("{shared}", "; rig 3's plan draws on it too"),
+                ("{list}", "C117,C118,D"),
+                ("{when}", "23:59 UTC (IC 2350-12-31 23:59; in 25 s)"),
+                ("{addr}", "C117"),
+                ("{line}", "You have no reading there."),
+                ("{family}", "Water ice ore"),
+                ("{max}", "64"),
+                ("{state}", "coming home to park"),
+                ("{filed}", "IC 2350-12-31 23:59"),
+                ("{deadline}", "IC 2351-01-12 23:59"),
+                ("{t}", "4294967295"),
+                ("{c}", "65535 cycles"),
+                ("{trips}", "65535 trips"),
+                ("{doing}", "its next step cannot start yet"),
+                ("{at}", "IC 2351-01-12 23:59"),
+                ("{why}", "its 288 IC hours ran out."),
+                ("{steps}", "64"),
+                ("{held}", "120"),
+                ("{then}", IDLE_THEN),
+                ("{ramp}", "Salt Moth's ramp"),
+                ("{body}", "Ceres"),
+            ]
+            .iter()
+            .fold(template.to_owned(), |text, (key, value)| {
+                text.replace(key, value)
+            })
+        };
+        for template in [
+            PLAN_USAGE,
+            PLAN_PREVIEW_HEAD,
+            PLAN_PREVIEW_STEP,
+            PLAN_STEP_HOURS,
+            PLAN_PREVIEW_FAR,
+            PLAN_PREVIEW_TAIL,
+            PLAN_SHARED,
+            PLAN_FILED,
+            PLAN_REFUSED_AT,
+            PLAN_TOO_FAR_LINE,
+            PLAN_DARK_LINE,
+            PLAN_BARREN,
+            PLAN_TOO_MANY,
+            PLAN_TWICE,
+            PLAN_TOO_MANY_STEPS,
+            PLAN_HOLD_FULL,
+            PLAN_TOO_LONG,
+            PLAN_ALREADY,
+            PLAN_NONE,
+            PLAN_CHANGED,
+            PLAN_LIVE,
+            PLAN_ALREADY_ENDED,
+            PLAN_CLEARED,
+            PLAN_DROPPED,
+            PLAN_SHOW_HEAD,
+            PLAN_SHOW_STEP,
+            PLAN_SHOW_TALLY,
+            PLAN_SHOW_NOW,
+            PLAN_SHOW_ENDED,
+            PLAN_LINE,
+            PLAN_LINE_ENDED,
+            PLAN_PASSED,
+            PLAN_PARKING,
+            PLAN_ENDED,
+            PLAN_WAITS,
+            IDLE_HOME,
+            STRANDED,
+            PLAN_REMEDY,
+            END_HOLD_FULL,
+            END_CHART_FULL,
+            END_STRANDED,
+            WAIT_HELM,
+            WAIT_ASHORE,
+            WAIT_CHARGING,
+            PASS_BARREN,
+        ] {
+            let text = fill(template);
+            assert!(
+                !text.contains('{') && !text.contains('\n'),
+                "{template}: {text}"
+            );
+        }
+        for word in [
+            STATE_LIVE,
+            STATE_PARKING,
+            STATE_ENDED,
+            MARK_DONE,
+            MARK_NOW,
+            MARK_NEXT,
+            MARK_PENDING,
+            MARK_PASSED,
+            END_WORKED_OUT,
+            END_BOUND,
+            END_LEASE_ENDED,
+            END_LEASE_FORFEIT,
+            END_DARK,
+            END_CLEARED,
+            WAIT_CAP,
+            WAIT_COLD,
+            WAIT_DARK,
+            WAIT_BUSY,
+            WAIT_NEXT,
+            PASS_WORKED_OUT,
+            PASS_LOCKED,
+            PASS_NO_WAY,
+            PASS_TOO_FAR,
+            PASS_NOTHING_NEW,
+            PLAN_DOING,
+        ] {
+            assert!(!word.is_empty() && !word.contains(['{', '\n']), "{word}");
+        }
+        assert_eq!(
+            fill(PLAN_REFUSED_AT),
+            "C117: You have no reading there.",
+            "the §5 fog line, behind the address"
+        );
+        assert_eq!(
+            fill(PLAN_ENDED),
+            "Rig 4's plan at Ahuna Flank ended: its 288 IC hours ran out. It mined 4294967295 t of \
+             Water ice ore in 65535 cycles over 65535 trips; the Salt Moth's hold holds 120 t, 86 t \
+             of it unreserved."
+        );
+    }
+
+    /// A record with plan 1 by the pilot 42 in `state`, whose last outcome landed at `last_ic`.
+    fn parked_record(
+        state: crate::surface::plan::FillState,
+        last_ic: Option<i64>,
+    ) -> crate::surface::RigRecord {
+        use crate::surface::plan::{FillPlan, PLAN_BOUND_IC_SECS, PlanStep, PlanTally};
+        let mut record = crate::surface::RigRecord::fresh_unread(ObjId(900));
+        record.ordinal = 5;
+        record.plans = 1;
+        record.plan = Some(FillPlan {
+            no: 1,
+            author: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").expect("an id"),
+            family: crate::surface::geology::OreFamily::Metals,
+            filed_ic: 1_000,
+            deadline_ic: 1_000 + PLAN_BOUND_IC_SECS,
+            list: vec!["D".to_owned()],
+            steps: vec![PlanStep::Block { letter: 'D' }],
+            cursor: 0,
+            passed: Vec::new(),
+            state,
+            seq: 1,
+            tally: PlanTally::default(),
+            notes: Vec::new(),
+        });
+        record.last = last_ic.map(|at_ic| crate::surface::excursion::Outcome {
+            ordinal: 5,
+            kind: crate::surface::excursion::ActKind::Launch,
+            operator: ObjId(42),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").expect("an id"),
+            at_ic,
+            result: crate::surface::excursion::ActResult::Done,
+            moved: std::collections::BTreeMap::new(),
+            span: None,
+            arrived: None,
+            mined: None,
+            stays: std::collections::BTreeMap::new(),
+            by: None,
+        });
+        record
+    }
+
+    /// **`rig_parked` reads both cases** (doc 20 cut SM.11; the brief's 3.10, the reviewer's F3):
+    /// in the bay idle → parked; in the bay with a live plan or a queued unload → not; out with
+    /// nothing in flight and a plan ended after the last outcome → parked; out with an ended plan
+    /// older than the last outcome → not; out, no plan, projection `Parked` → parked, `Out` or
+    /// unread → not; no record and in the bay → parked, out → not.
+    #[test]
+    fn sm11_rig_parked_reads_both_cases() {
+        use crate::surface::TvState;
+        use crate::surface::plan::{FillState, PlanEnd};
+        let pilot = Some(ObjId(42));
+        let live = parked_record(FillState::Live, Some(2_000));
+        let ended = |at_ic| {
+            parked_record(
+                FillState::Ended {
+                    why: PlanEnd::HoldFull,
+                    at_ic,
+                },
+                Some(2_000),
+            )
+        };
+        assert!(rig_parked(None, pilot, true, None), "no record, in the bay");
+        assert!(!rig_parked(None, pilot, false, None), "no record, out");
+        let idle = crate::surface::RigRecord::fresh_unread(ObjId(900));
+        assert!(
+            rig_parked(Some(&idle), pilot, true, None),
+            "idle in the bay"
+        );
+        assert!(
+            !rig_parked(Some(&live), pilot, true, None),
+            "a live plan in the bay"
+        );
+        assert!(
+            rig_parked(Some(&live), Some(ObjId(43)), true, None),
+            "an orphaned plan in the bay holds nothing"
+        );
+        let mut unloading = ended(3_000);
+        unloading.queued = Some(crate::surface::excursion::Queued {
+            kind: crate::surface::excursion::ActKind::Unload,
+            operator: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").expect("an id"),
+            after: 5,
+            at_ic: 2_000,
+            excursion: None,
+        });
+        assert!(
+            !rig_parked(Some(&unloading), pilot, true, None),
+            "a queued unload"
+        );
+        assert!(
+            rig_parked(Some(&ended(3_000)), pilot, true, None),
+            "an ended plan in the bay"
+        );
+        assert!(
+            rig_parked(Some(&ended(3_000)), pilot, false, None),
+            "ended after the last outcome"
+        );
+        assert!(
+            rig_parked(Some(&ended(2_000)), pilot, false, None),
+            "ended at the last outcome"
+        );
+        assert!(
+            !rig_parked(Some(&ended(1_500)), pilot, false, None),
+            "acted since it ended"
+        );
+        let mut planless = live.clone();
+        planless.plan = None;
+        assert!(
+            rig_parked(Some(&planless), pilot, false, Some(TvState::Parked)),
+            "stranded with no plan"
+        );
+        assert!(
+            !rig_parked(Some(&planless), pilot, false, Some(TvState::Out)),
+            "out"
+        );
+        assert!(
+            !rig_parked(Some(&planless), pilot, false, None),
+            "an unread projection"
+        );
+        assert!(
+            !rig_parked(Some(&live), pilot, false, Some(TvState::Out)),
+            "a live plan out"
         );
     }
 }

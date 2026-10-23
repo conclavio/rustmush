@@ -2628,6 +2628,7 @@
         "leg": null,
         "line": "Rig 1: (146, 178), charge 95 %, hopper empty.",
         "mark": "OWP-TV-01",
+        "plan": null,
         "queued": null,
         "run": null,
         "slot": 1
