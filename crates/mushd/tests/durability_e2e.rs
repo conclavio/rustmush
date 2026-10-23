@@ -2,7 +2,7 @@
 //! mid-play, restart it on the same store, and the world — including the
 //! last acked command — plus the accounts survive.
 //!
-//! Three tests:
+//! Four tests:
 //!
 //! - `kill9_mid_play_world_survives_redis_gated` — spawns the actual
 //!   `mushd` binary (`CARGO_BIN_EXE_mushd`) against a live Redis (own
@@ -22,6 +22,9 @@
 //!   the direct world-task harness (no child process) against the
 //!   in-memory store, with the "kill" as a hard task abort; keeps the whole
 //!   logic covered on machines without Redis.
+//!
+//! - R2: a queued relay dispatch and a frozen strategic leg survive real process death.
+//!   The returning ACK also crosses the relay; CI supplies an isolated Redis database.
 //!
 //! Disconnect semantics asserted here (the documented M2 behavior):
 //! characters stay where they were — there is no send-home on disconnect
@@ -482,4 +485,221 @@ async fn kill9_journey_local_twin_in_memory() {
     let mut nick_rx2 = attach_direct(&sessions2, &world2, 7, nick, "nick").await;
     cmd(&world2, 7, nick, "look").await;
     expect_text(&mut nick_rx2, &format!("Vault(#{}", vault.0)).await;
+}
+
+// R2: the same production boot used by the split server, in a real child.
+// This complements the live split-gateway VPS gate with a repeatable CI crash proof.
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
+    use mush_store::RedisStore;
+    use support::{Term, wait_until};
+
+    async fn command(term: &mut Term, line: &str, expected: &str) -> String {
+        // The SSH listener can bind before the world's initial durable fence
+        // clears. Match the existing split-process harness's bounded readiness
+        // retry; a refused connection has not entered the game or run a command.
+        if line.starts_with("connect ") {
+            let mut reply = String::new();
+            wait_until(
+                Duration::from_secs(60),
+                "world connection boundary",
+                async || {
+                    let mark = term.mark();
+                    term.send_line(line).await;
+                    let ready = term
+                        .expect_one_of_after(
+                            mark,
+                            &[
+                                expected,
+                                "Connection failed:",
+                                "You're doing that too fast.",
+                            ],
+                        )
+                        .await
+                        == 0;
+                    reply = strip_ansi(&term.seen[mark..]);
+                    if !ready {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    ready
+                },
+            )
+            .await;
+            return reply;
+        }
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.expect_after(mark, expected).await;
+        strip_ansi(&term.seen[mark..])
+    }
+    async fn record(store: &RedisStore, id: u32) -> serde_json::Value {
+        store
+            .module_json_get("propagation", &format!("envelope:{id}"))
+            .await
+            .unwrap()
+            .expect("durable envelope")
+    }
+    async fn barrier(term: &mut Term) {
+        command(term, "@dump", "@dump: snapshot acknowledged by the store.").await;
+    }
+
+    let Some(base) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!("relay process proof not run: REDIS_URL not set; CI redis-faults supplies it");
+        return;
+    };
+    let _serialize = CHILD_LOCK.lock().await;
+    // Same target and lock as the existing db-13 process proof; CI runs serially.
+    let url = redis_url_with_db(&base, 13);
+    let store = RedisStore::connect(&url).await.expect("live Redis");
+    store.wipe_namespaces().await.unwrap();
+    let dir = scratch_dir("relay-r2");
+    seed_boss_account(&dir.join("data"), GM_PASSWORD);
+    let cfg = write_config(&dir, &format!("store = \"redis\"\nredis_url = \"{url}\""));
+    let mut config = std::fs::read_to_string(&cfg).unwrap();
+    // Rate one keeps the physical leg in flight throughout the restart, without
+    // wall-clock timing assumptions about compilation or process boot.
+    config.push_str("\n[tacsim]\nenabled = true\n[game]\nic_ratio = 1\n");
+    std::fs::write(&cfg, config).unwrap();
+    let mut server = ChildServer::spawn(&cfg);
+    let addr = server.ssh_addr().await;
+    let (_gh, mut god) = support::play_client_sized(addr, 240, 40).await;
+    command(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        "Connected as God",
+    )
+    .await;
+    let (_rh, mut receiver) = support::play_client_sized(addr, 240, 40).await;
+    command(
+        &mut receiver,
+        "create R2Receiver relay-test-password",
+        "Connected as R2Receiver",
+    )
+    .await;
+    let recipient = store
+        .get_account("r2receiver")
+        .await
+        .unwrap()
+        .unwrap()
+        .characters[0]
+        .id;
+    let reg = store
+        .module_json_get("sim", "relay:registry")
+        .await
+        .unwrap()
+        .unwrap();
+    let luna = reg["nodes"]["malapert"]["coverage"][0].as_u64().unwrap();
+    let ceres = reg["nodes"]["ceres"]["coverage"][0].as_u64().unwrap();
+    let node = reg["nodes"]["ceres"]["place"].as_u64().unwrap();
+    god.send_line(&format!("@teleport me=#{luna}")).await;
+    god.send_line(&format!("@teleport {recipient}=#{ceres}"))
+        .await;
+    god.send_line(&format!("@prop/jam #{node}=9")).await;
+    barrier(&mut god).await;
+    let reply = command(
+        &mut god,
+        &format!("+order {recipient}=queued-crash-proof"),
+        "their order",
+    )
+    .await;
+    let id = parse_id_after(&reply, "envelope #");
+    wait_until(
+        Duration::from_secs(60),
+        "persisted FIFO ticket",
+        async || !record(&store, id).await["transit"]["queued_at"].is_null(),
+    )
+    .await;
+    let queued = record(&store, id).await;
+    command(&mut receiver, "+orders", "No traffic.").await;
+    server.kill_hard();
+    drop(god);
+    drop(receiver);
+
+    let mut server = ChildServer::spawn(&cfg);
+    let addr = server.ssh_addr().await;
+    let (_gh, mut god) = support::play_client_sized(addr, 240, 40).await;
+    command(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        "Connected as God",
+    )
+    .await;
+    assert_eq!(record(&store, id).await, queued);
+    god.send_line(&format!("@prop/jam #{node}=0")).await;
+    barrier(&mut god).await;
+    wait_until(Duration::from_secs(60), "one relay arrival", async || {
+        record(&store, id).await["state"] == "delivered"
+    })
+    .await;
+    let delivered = record(&store, id).await;
+    assert_eq!(delivered["path"].as_array().unwrap().len(), 1);
+    god.send_line("@prop/pass").await;
+    barrier(&mut god).await;
+    assert_eq!(record(&store, id).await, delivered);
+    let (_rh, mut receiver) = support::play_client_sized(addr, 240, 40).await;
+    command(
+        &mut receiver,
+        "connect R2Receiver relay-test-password",
+        "Connected as R2Receiver",
+    )
+    .await;
+    command(&mut receiver, "+orders", "queued-crash-proof").await;
+    command(
+        &mut receiver,
+        &format!("+orders/ack {id}"),
+        "Acknowledgement queued",
+    )
+    .await;
+    wait_until(Duration::from_secs(60), "returning ACK", async || {
+        record(&store, id).await["state"] == "acknowledged"
+    })
+    .await;
+
+    command(&mut god, "@relay/disable luna_ceres.luna", "revision").await;
+    let reply = command(
+        &mut god,
+        &format!("+order {recipient}=frozen-crash-proof"),
+        "their order",
+    )
+    .await;
+    let flight_id = parse_id_after(&reply, "envelope #");
+    wait_until(
+        Duration::from_secs(60),
+        "frozen strategic flight",
+        async || {
+            record(&store, flight_id).await["transit"]["flight"]["seconds"]
+                .as_i64()
+                .is_some_and(|s| s > 60)
+        },
+    )
+    .await;
+    let flying = record(&store, flight_id).await;
+    let flight = flying["transit"]["flight"].clone();
+    assert!(flight["basis"].as_str().unwrap().starts_with("sky.v1:"));
+    server.kill_hard();
+    drop(god);
+    drop(receiver);
+
+    let mut server = ChildServer::spawn(&cfg);
+    let addr = server.ssh_addr().await;
+    let (_gh, mut god) = support::play_client_sized(addr, 240, 40).await;
+    command(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        "Connected as God",
+    )
+    .await;
+    assert_eq!(record(&store, flight_id).await, flying);
+    command(&mut god, "@relay/enable luna_ceres.luna", "revision").await;
+    god.send_line("@prop/pass").await;
+    barrier(&mut god).await;
+    let after = record(&store, flight_id).await;
+    assert_eq!(
+        after["transit"]["flight"], flight,
+        "repair cannot accelerate an in-flight leg"
+    );
+    assert_eq!(after["state"], "transmitted");
+    server.kill_hard();
+    store.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }

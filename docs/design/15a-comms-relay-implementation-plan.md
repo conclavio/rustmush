@@ -1,12 +1,13 @@
 # 15a — Relay backbone implementation plan
 
-**Draft 0.2 — 2026-10-23.** Grounded against `origin/main` at
+**Draft 0.3 — 2026-10-23.** Initially grounded against `origin/main` at
 `7c886408c1a1d4d0283b886bdd62fbbe2f8fe7af`.
 Parent: [15 — Communications](15-comms-relay-backbone.md).
 This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
-and evidence record. R1 is implemented and its dev1 live checks passed. Normal
-workspace CI remains outstanding, so full acceptance under §5 is not yet claimed.
-Work is paused before R2; all later milestones remain unstarted.
+and evidence record. R1 is pushed to main. The owner authorized R2 after that
+push; R2 is implemented and its dev1 live checks passed. Normal candidate CI is
+still required for full acceptance under §5. Work stops after R2, before R5;
+all later milestones remain unstarted.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -227,7 +228,7 @@ traffic regression. **Stop after recording this evidence.**
 plus real dev1 upgrade/fresh boot, TLS WebSocket and SSH commands, confirmed-write
 SIGKILL recovery, and four bad-record boot refusals. The pair is restored to Live.
 See [15b](15b-comms-relay-cut-notes.md) for transcripts, deployed binary hashes and
-the normal-CI gap. **Paused here; R2 has not started.**
+the normal-CI gap and subsequent CI correction. The owner then authorized R2.
 
 ### Gate 2 — R2: one complete routed delivery
 
@@ -473,8 +474,8 @@ small adapter needed to complete a milestone belongs in that milestone; an unrel
 large dependency requires a revised, separately gated slice before implementation
 continues.
 
-**Start with R1 only:** rebase/re-ground against the implementation starting head;
-inventory existing relay names/places and compatibility gates; establish the real
-Redis/client test environment; add the registry, minimal Luna–Ceres seed and
-diagnostics; run Gate 1; record the outcome and pause. Do not start R2 while Gate 1
-is incomplete.
+The initial action was R1 only: registry, minimal Luna–Ceres seed, diagnostics,
+real Redis/client testing and an owner review. The owner subsequently authorized
+the R1 push and R2 implementation. **Current stop: after R2, before R5.** Complete
+and report R2's evidence and any outstanding CI result before asking the owner
+to continue to another milestone.

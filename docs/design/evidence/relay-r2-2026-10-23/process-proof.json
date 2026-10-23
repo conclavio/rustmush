@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "target": "mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated",
+  "command": "REDIS_URL=redis://127.0.0.1:6788 CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated -j4 -- --exact --test-threads=1",
+  "host": "conclav.io",
+  "freshLogicalDatabase": 13,
+  "passedCount": 1,
+  "failedCount": 0,
+  "ignoredCount": 0,
+  "filteredCount": 3,
+  "seconds": 18.17,
+  "productionCodeCommit": "1182c36f3c890aa9b0a06fd84c659e73f56b03a2",
+  "mushdSha256": "1db63ce6e758d793ba45ade586d6a8e7df8e98b8df87b46933625b9b763d0a8a",
+  "assertions": [
+    "fresh production composition and Redis schema",
+    "real SSH order producer and recipient query",
+    "hard process death after durable FIFO ticket",
+    "one relay arrival and returning ACK",
+    "hard process death with positive frozen Sky flight",
+    "repair does not accelerate or replay the flight"
+  ]
+}

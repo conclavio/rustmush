@@ -321,7 +321,15 @@ room, with two physical halves and explicit room coverage. `@relay` provides sta
 inspection and availability controls. Startup reconciles records against the real
 objects and refuses contradictory evidence. The full Malapert compound and star
 remain R10. See [15b](15b-comms-relay-cut-notes.md) for implementation, test results
-and the outstanding normal-CI criterion. R2 and later milestones have not started.
+and CI status.
+
+**R2 as built (2026-10-23):** the existing propagation delivery pass now persists
+stationary itineraries, frozen Sky light-time, shared FIFO pair capacity and
+bounded forwarding. Orders, contact reports and returning ACKs use that path;
+typed dispatch kinds keep messages out of standing-order supersession. Staff
+inspect routes with `@prop/route`. The dev1 live gate passed; full CI status and
+limits are recorded in 15b. Work stops here before R5. Mail/channels, service
+classes, billing and travelling hulls remain later cuts.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

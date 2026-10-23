@@ -4,10 +4,11 @@
 
 **Candidate:** `916e8fee`, based on `origin/main` at `7c886408`.
 **Status:** implemented and deployed; targeted and live integration checks passed.
-**Full milestone acceptance: not yet claimed** under 15a §5, because the normal
-workspace CI run is outstanding. No criterion is waived. Work is paused for the
-owner's review of these results before R2.
-R2 has not started. This record implements Gate 1 of
+The owner subsequently authorized committing/pushing R1 and continuing with R2.
+R1 reached main at `193001e1`; CI found stale boot goldens (28 packs/22 institutions
+instead of 29/23). `7dc36d48` corrects both and pins the relay pack identity; the
+corrected boot-parity test passes. Normal CI status is recorded below; no criterion
+is waived. This section records Gate 1 of
 [15a](15a-comms-relay-implementation-plan.md).
 
 ### What this cut implements
@@ -166,9 +167,172 @@ wrapping. The final evidence above comes from rerunning those corrected checks.
 
 ### Stop and outstanding work
 
-R1's implementation and real-server checks are complete. Normal workspace CI is
-**not run**, so the full §5 acceptance remains pending; targeted checks are not
-presented as a substitute. The retained live evidence is ready for owner review.
-R2 has not started. Before R2, complete that CI criterion and re-ground against
-the then-current main; reassess the bounded legacy persistence lane before making
-the catalog authoritative to routing. Continue only on the owner's instruction.
+R1's implementation and real-server checks are complete. The owner authorized
+the push and R2 continuation. Main's graphics fixes through `5ab00035` were merged
+before the push; R2's implementation and persistence reassessment follow below.
+The first CI run's stale goldens were corrected, rather than treating the failed
+job as accepted.
+
+## R2 — Stationary routing, durable legs and FIFO (2026-10-23)
+
+**Base:** R1 plus current main, `193001e1`; R1 CI correction `7dc36d48`.
+**Deployed code candidate:** `1182c36f3c890aa9b0a06fd84c659e73f56b03a2`.
+Subsequent changes add test automation, CI inventory and evidence only.
+**Status:** implementation, focused checks and the deployed dev1 live gate pass.
+Full §5 acceptance remains pending normal candidate CI. **Stop before R5.**
+
+### Implemented boundary and ownership
+
+The existing `mush-propagation` delivery pass is the only scheduler.
+`Envelope.kind` distinguishes orders, reports, ACKs and the reserved mail/channel
+kinds. Old envelopes infer their kind from their existing references; old queued
+traffic starts at its last recorded relay, preserving the existing hop history.
+Only orders supersede standing orders. Reports still enter the existing tactics
+contact-sharing consumer after arrival, including when their ACK arrives first.
+No mail or channel producer is switched in this cut.
+
+| Record | Owner, writer and reader | Compatibility and failure behavior |
+| --- | --- | --- |
+| `mod:sim:relay:registry` | Existing sim catalog; content/bootstrap and staff availability commands write; propagation reads one validated snapshot | R1 schema unchanged. Binding contradictions still refuse boot. |
+| `mod:propagation:envelope:<id>` | Existing propagation owner; order/report/ACK commands and delivery pass write; party queries, standing-order and report consumers read | Adds typed kind and optional version-1 transit. Legacy documents decode. Invalid route cursors, bounds, arithmetic or clock identities are held with diagnostics, not rewritten. |
+| `mod:propagation:relay_transport` | Propagation command admission and delivery pass write; the pass consumes shared capacity | Version 1, at most 64 pair buckets. Malformed state or missing state beside routed envelopes refuses startup; capacity cannot silently reset on reboot. |
+| Existing propagation allocator | Existing owner and commands; delivery tick now also persists scan-cursor movement | Preserves bounded scan progress even on a fire that advances no envelope. |
+
+Transit stores the current committed position, destination, remaining legs, queue
+ticket, frozen flight, completed physical history and work counters. Capacity and
+envelope post-images share the same store batch. The bounded legacy persistence
+lane is retained after reviewing the production world task's exact receipt fence:
+dirty output, subsequent world commands and effects cannot pass the pending write;
+write failure stops the world. Admission explicitly uses the durable-ack gate.
+This cut does not claim a migration of propagation into the separate authoritative
+bundle framework. Real process death after the confirmed queue/flight writes
+demonstrates recovery through the existing boundary.
+
+TacSim injects the stationary metric through `MetricProvider`; propagation gains
+no dependency on TacSim or messaging modules. The adapter maps authored port rooms
+and their atlas neighborhoods to bodies and uses the existing `Sky::light_lag_s`.
+A transmitted leg freezes its lag, endpoints, Sky revision and due IC scalar.
+Clock-generation changes retain that scalar. Explicit node coverage has zero local
+ingress/egress; other same-body short legs use the local metric or round a positive
+radio leg to one IC second. Unknown strategic positions wait; in-transit and
+recovery rooms remain unresolved until R5.
+
+Routes use deterministic cost/hop/identity ties. Only live Exchange-policy pairs
+participate; private-policy links wait for their later authorization work.
+A registry change replans from the last committed position after an in-flight leg
+finishes. It never accelerates or replays that leg. A moved recipient requires a
+new bounded forwarding leg. A payload too large for a pair's one-second budget
+chooses conventional delivery instead of permanently blocking the FIFO.
+
+### Bounds and player visibility
+
+- Catalog: 32 nodes, 64 pairs. Each plan performs at most 65 metric lookups and
+  512 directed edge visits, independently of success. The shipped two-node route
+  measures **5 lookups / 8 edge visits**. A synthetic cycle's hit and miss both
+  measure **9 lookups / 24 edge visits**.
+- At most four pair hops in the existing four-entry `HopRef` history; at most six
+  legs in one itinerary, eight physical legs over its lifetime, four recipient
+  forwardings, and fourteen internal transitions per envelope per fire.
+- At most 128 pending dispatches and 64 reserved pending copies per pair. FIFO
+  tickets sort by committed IC enqueue time and envelope identity. Existing
+  accepted traffic can migrate without being rejected by the new admission cap.
+- Version-1 message units are `ceil(payload UTF-8 bytes / 128)`; the existing
+  512-byte order limit means one to four units. The seed permits eight units per
+  IC second, shared in both directions. Restart and backwards time cannot refill
+  an already consumed bucket. Unused skipped seconds do not accumulate burst credit.
+- The existing 64-envelope per-fire scan and 4,096-record store bound remain.
+  Unknown endpoints retain the existing 30-day IC expiry. Cadence and queue service
+  can add delay; the physical due time is a not-before bound, not a delivery SLA.
+- Incoming undelivered traffic is absent from player lists and payloads. Outgoing
+  party views hide remote hop progress and arrival state until a transported ACK.
+  Staff-only `@prop/route <id>` reports route legs, frozen due time, queue time,
+  units and work counters; denied and unknown-ID probes do not disclose routes.
+
+### Focused verification
+
+The cumulative `mush-server --test relay_registry` suite now has **10 passing
+tests**: the five R1 cases plus pair/ACK/restart and visibility, disabled fallback
+and repair, FIFO capacity/restart/overflow, recipient forwarding, and unknown
+endpoint admission/expiry. The propagation crate has **110 passing tests**
+(13 unit, 5 E7c11, 88 E7c7, 4 E7c8). The server library has **299 passing tests**
+and its two pre-existing Redis-only ignored tests. Contract ownership, mail,
+channels, content and port regressions also pass. Boot parity's 20 unaffected
+tests passed, and its corrected seed-count test passed on rerun. Targeted Clippy
+with `-D warnings`, changed-file rustfmt and `git diff --check` pass.
+
+The real-process CI proof is
+`mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated`.
+It uses the same production composition, a fresh isolated Redis database, real
+SSH clients and a hard-killed child; it checks queued restart, one arrival,
+returning ACK, frozen physical restart and link repair. It reuses the existing
+child harness, database lock and account bootstrap. The `redis-faults` CI job
+explicitly invokes it, and the gated-test census includes it.
+
+The process proof passed on the VPS with fresh Redis logical database 13:
+**1 passed, 0 failed, 0 ignored**, 18.17 seconds, using the actual Linux child
+binary. [process-proof.json](evidence/relay-r2-2026-10-23/process-proof.json)
+records the exact command and binary hash. All **six** CI inventory tests pass.
+The preliminary Windows-to-VPS Redis run hit startup/account busy refusals over
+the WAN tunnel; it is not counted as passing. Running beside Redis matches the
+CI environment. The harness retries the existing initial connection boundary
+within a fixed timeout and prints child logs on failure; it changes no server
+timeout or durability rule.
+
+### Deployed live evidence
+
+Environment: the owner's disposable `conclav.io:/opt/rustmush/dev1`, split
+gateway/server, Redis 8.10.2, TLS WebSocket :6790 and SSH :6789. IC ratio 24,
+epoch `0987-04-20 06:00`. TLS verification remained enabled with the instance's
+private CA certificate. Credentials remain root-only on the VPS.
+
+| Check | Observed result |
+| --- | --- |
+| Upgrade | All **670** existing objects and the exact R1 catalog survived. [upgrade.json](evidence/relay-r2-2026-10-23/upgrade.json) |
+| Pair order and returning ACK | Passed via real connected characters in ordinary covered rooms; one pair hop each. Recipient query hidden before arrival; sender query hides delivery until ACK. |
+| Queued crash | SIGKILL the verified dev1 server child; gateway starts a replacement. The entire committed envelope, FIFO time and progress survive exactly. |
+| Full queue and FIFO | **64 accepted, 65th refused**. All accepted copies cross once in FIFO order; maximum **8 units per IC second**. |
+| Conventional flight and crash | Pair disabled, physical lag **1,063 IC seconds**. SIGKILL/restart preserves the frozen flight exactly. Repairing the pair does not accelerate it. No payload before due. |
+| Physical arrival and returning ACK | Order due **74,162,165,479**, arrived **74,162,165,496**. ACK due **74,162,166,583**, arrived **74,162,166,600**. Both are 17 IC seconds late under the 24× coarse tick, never early. Repeated pass leaves arrival unchanged. |
+| Missing route | Unplaced recipient waits invisibly; placing it in Ceres resumes and completes routing. |
+| Invalid state | Bad capacity version and missing capacity refuse boot; bad cursor and inconsistent history clock are held. All four injected documents remain unchanged; good state is restored. [negative-cases.json](evidence/relay-r2-2026-10-23/negative-cases.json) |
+| SSH parity | Actual SSH login, relay check and route inspection agree with WebSocket/Redis truth. [ssh.json](evidence/relay-r2-2026-10-23/ssh.json) |
+| Final health | Gateway/Redis active, Live pair, registry revision **21**, dev2 gateway PID **539467** unchanged. [environment.json](evidence/relay-r2-2026-10-23/environment.json) |
+
+The full **103-command** transcript, exact queue/flight/arrival snapshots and crash
+PIDs are in [live.json](evidence/relay-r2-2026-10-23/live.json). Measured client command
+latency was median **51 ms**, maximum **787 ms**; largest response **18,735 bytes**
+(the bounded order list). These are observations on this instance, not CI
+performance thresholds. Binary hashes are in environment.json.
+
+Reproduce the live checks on this explicitly disposable instance:
+
+```sh
+export PATH=/opt/rustmush/dev1/r1-tools/node_modules/node/bin:$PATH
+export NODE_EXTRA_CA_CERTS=/opt/rustmush/dev1/tls/cert.pem
+node scripts/relay-r2-live.mjs https://conclav.io:6790 \
+  /opt/rustmush/dev1/r1-evidence/credentials.json /opt/rustmush/dev1/r2-evidence 6788
+python3 scripts/relay-r2-negative.py
+python3 /opt/rustmush/dev1/r2-ssh.py
+```
+
+The live runner creates test traffic and deliberately kills only the child whose
+resolved executable is dev1's server. Negative tests stop dev1, inject bounded
+bad records and restore them in a finally block. Backups, build/upgrade logs and
+SSH helper remain in dev1's `r2-evidence` and `r2-*.{sh,py,log}` files.
+The first client attempt used a remote display name where object matching requires
+an addressable reference; the corrected runner uses the authenticated character
+ID. That was a harness correction, not a routing bypass.
+
+### CI and stop
+
+R1 main push: [CI 39994259374](https://github.com/conclavio/rustmush/actions/runs/39994259374).
+Its boot golden failure was fixed in `7dc36d48`; the follow-up is
+[CI 39998822477](https://github.com/conclavio/rustmush/actions/runs/39998822477).
+At the R2 handoff, that run has no reported failures and its two long test shards
+are still running. The R2 push triggers another full candidate run; its result is
+**pending**, not accepted by substitution of the targeted/live results. The final
+handoff links the new run. No later milestone is started while this gate is pending.
+
+R2 implementation and deployed integration are complete. Full acceptance remains
+pending any CI criterion explicitly marked outstanding. **Do not start R5, R3 or
+R6 until the owner reviews this gate and authorizes continuation.**

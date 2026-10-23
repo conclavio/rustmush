@@ -625,6 +625,7 @@ jobs:
         run: |
           cargo test -p mush-gateway --test authoritative_process_kill -- --test-threads=1
           cargo test -p mushd --test durability_e2e kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1
+          cargo test -p mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
       # 08j S4: without these the seven `*_redis_gated` proofs in
       # `crates/mushd/tests/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
