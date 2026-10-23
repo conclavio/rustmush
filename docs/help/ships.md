@@ -30,6 +30,13 @@ and `home` do not take you off it, and nothing you do crosses the hull under
 way: your own moves out of the hold refuse until she docks. You leave by the
 Airlock, in port.
 
+While aboard, `+ship` also estimates the one-way physical radio lag to an
+Exchange endpoint. Queue time and the returning acknowledgement add to that
+figure. Orders and acknowledgements in flight keep their original arrival time
+even if the ship progresses or the world rate changes. If your passage cannot
+be located, traffic waits; the instruments report that the lag is unavailable.
+OOC channels remain immediate.
+
 ## The hold
 
 `+ship/hold` shows the hold good by good, in tonnes and cubic metres. The cargo

@@ -24,10 +24,30 @@ pub const BYTES_PER_UNIT: usize = 128;
 /// A game supplies astronomical distances without adding a game dependency here.
 pub trait MetricProvider: std::fmt::Debug + Send + Sync {
     fn snapshot(&self, world: &World, at: &ClockStamp) -> Box<dyn Metric>;
+
+    /// Engine dispatch supplies the live read lens to the composition's adapter.
+    /// Detached callers retain stationary physics; a ship needs its real ticket.
+    fn snapshot_in(&self, ctx: &mush_core::Ctx<'_>, at: &ClockStamp) -> Box<dyn Metric> {
+        self.snapshot(ctx.w, at)
+    }
 }
 
 pub trait Metric: std::fmt::Debug {
     fn between(&self, world: &World, from: ObjId, to: ObjId) -> Measurement;
+
+    /// A moving carrier remains one receiving endpoint across its interior rooms.
+    fn endpoint(&self, world: &World, state: &SpatialState, object: ObjId) -> Option<ObjId> {
+        place(world, state, object)
+    }
+}
+
+pub fn snapshot_in(ctx: &mush_core::Ctx<'_>, at: &ClockStamp) -> Option<Box<dyn Metric>> {
+    Some(
+        ctx.w
+            .module_state::<RoutingServices>()?
+            .0
+            .snapshot_in(ctx, at),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -528,11 +548,21 @@ pub fn prepare(
 ) -> Option<Transit> {
     let services = world.module_state::<RoutingServices>()?;
     let metric = services.0.snapshot(world, now);
+    prepare_with(world, state, envelope, now, metric.as_ref())
+}
+
+pub fn prepare_with(
+    world: &World,
+    state: &SpatialState,
+    envelope: &Envelope,
+    now: &ClockStamp,
+    metric: &dyn Metric,
+) -> Option<Transit> {
     plan(
         world,
         state,
-        metric.as_ref(),
-        place(
+        metric,
+        metric.endpoint(
             world,
             state,
             envelope
@@ -540,7 +570,7 @@ pub fn prepare(
                 .last()
                 .map_or(envelope.issuer(), |h| h.relay),
         )?,
-        place(world, state, envelope.recipient())?,
+        metric.endpoint(world, state, envelope.recipient())?,
         now,
         envelope.path().len(),
         message_units(envelope),
@@ -566,10 +596,12 @@ impl<'a> Pass<'a> {
         state: &'a SpatialState,
         store: &PropagationStore,
         now: &ClockStamp,
+        metric: Option<Box<dyn Metric>>,
     ) -> Option<Self> {
         if !enabled(world) {
             return None;
         }
+        let services = world.module_state::<RoutingServices>()?;
         let mut rows = Vec::new();
         for e in store.envelopes().filter(|e| {
             matches!(
@@ -592,10 +624,7 @@ impl<'a> Pass<'a> {
         Some(Self {
             world,
             state,
-            metric: world
-                .module_state::<RoutingServices>()?
-                .0
-                .snapshot(world, now),
+            metric: metric.unwrap_or_else(|| services.0.snapshot(world, now)),
             queues,
             jamming: store.jamming_map(),
         })
@@ -650,7 +679,7 @@ impl<'a> Pass<'a> {
         let mut route = match envelope.transit() {
             Some(route) => route.clone(),
             None => {
-                let from = place(
+                let from = self.metric.endpoint(
                     self.world,
                     self.state,
                     envelope
@@ -658,7 +687,9 @@ impl<'a> Pass<'a> {
                         .last()
                         .map_or(envelope.issuer(), |h| h.relay),
                 )?;
-                let to = place(self.world, self.state, envelope.recipient())?;
+                let to = self
+                    .metric
+                    .endpoint(self.world, self.state, envelope.recipient())?;
                 let route = plan(
                     self.world,
                     self.state,
@@ -696,7 +727,9 @@ impl<'a> Pass<'a> {
             route.flight = None;
             return Some(envelope.with_transit(route));
         }
-        let destination = place(self.world, self.state, envelope.recipient())?;
+        let destination = self
+            .metric
+            .endpoint(self.world, self.state, envelope.recipient())?;
         if route.destination != destination || route.registry_revision != catalog.revision {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));

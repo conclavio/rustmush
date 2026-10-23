@@ -26,7 +26,7 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::NS;
-use crate::pass::{DeliveryReport, delivery_pass};
+use crate::pass::{DeliveryReport, delivery_pass_with_metric};
 use crate::record::{
     ALLOCATOR_KEY, ContactProvenance, Envelope, EnvelopeState, FalseCause, Phantom,
     PropagationStore, Provenance, envelope_key, phantom_key, provenance_key, sighting_key,
@@ -510,10 +510,19 @@ fn route_submission(ctx: &mut Ctx<'_>, envelope: Envelope) -> Result<Envelope, C
     if !crate::routing::enabled(ctx.w) {
         return Ok(envelope);
     }
+    let metric = crate::routing::snapshot_in(ctx, envelope.issued());
     let route = ctx
         .w
         .module_state::<mush_sim::SpatialState>()
-        .and_then(|state| crate::routing::prepare(ctx.w, state, &envelope, envelope.issued()));
+        .and_then(|state| {
+            crate::routing::prepare_with(
+                ctx.w,
+                state,
+                &envelope,
+                envelope.issued(),
+                metric.as_deref()?,
+            )
+        });
     if let Some(book) = store(ctx) {
         crate::routing::admission(book, route.as_ref(), None).map_err(CmdError::msg)?;
     }
@@ -983,7 +992,7 @@ fn decode_error_of(key: &str, value: &serde_json::Value) -> Option<String> {
 
 /// `@prop/pass` — single-step the coarse pass (staff).
 ///
-/// It runs the same [`delivery_pass`] the coarse tick runs and then arms the
+/// It runs the same [`delivery_pass_with_metric`] the coarse tick runs and then arms the
 /// detection pass's intents through **`mush-tactics`' own ingress**: one
 /// `Ctx::submit_authoritative` of the tactics-owned `sensor_arm` action, never a
 /// contact write of its own. Propagation writes **no `ContactState`** — it could
@@ -1002,7 +1011,16 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, UNAVAILABLE);
         return Ok(());
     };
-    let report = delivery_pass(&mut book, &state, ctx.w, &ledger_snapshot, &at, None);
+    let metric = crate::routing::snapshot_in(ctx, &at);
+    let report = delivery_pass_with_metric(
+        &mut book,
+        &state,
+        ctx.w,
+        &ledger_snapshot,
+        &at,
+        None,
+        metric,
+    );
     // The pass is given the caller's OWN arm bound, so it books exactly what it
     // emits and the page it reports is true (fold D4(a)).
     let detection = crate::pass::detection_pass(

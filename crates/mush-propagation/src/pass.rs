@@ -255,6 +255,20 @@ pub fn delivery_pass(
     now: &ClockStamp,
     domain: Option<DomainId>,
 ) -> DeliveryReport {
+    delivery_pass_with_metric(store, state, world, ledger, now, domain, None)
+}
+
+/// The shipping command/tick path supplies its owner's live metric projection.
+#[allow(clippy::too_many_arguments)]
+pub fn delivery_pass_with_metric(
+    store: &mut PropagationStore,
+    state: &SpatialState,
+    world: &World,
+    ledger: &ContactLedgerState,
+    now: &ClockStamp,
+    domain: Option<DomainId>,
+    metric: Option<Box<dyn crate::routing::Metric>>,
+) -> DeliveryReport {
     let mut report = DeliveryReport::default();
     reap(store, ledger, now, &mut report);
     // The declared-interference view is read once, before the book is mutated,
@@ -262,7 +276,7 @@ pub fn delivery_pass(
     // jamming map is snapshotted — a full store clone was up to three deep
     // copies of every book per fire (fold B16).
     let jamming_view = store.jamming_map();
-    let mut router = crate::routing::Pass::new(world, state, store, now);
+    let mut router = crate::routing::Pass::new(world, state, store, now, metric);
     let cursor = store.envelope_scan_cursor();
     let mut ordered: Vec<u64> = store
         .envelopes()

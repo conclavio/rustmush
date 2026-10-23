@@ -354,8 +354,71 @@ explicit upgrade, subsequent relay installation and a further idempotent restart
 The corrected geology, sites and stations suites pass **65 tests**. Propagation
 passes **111 tests**, and the content apply suite passes **9 tests**, including the
 deferral/refusal matrix. The corrective push must receive a full CI result;
-targeted and live results do not substitute for it. No later milestone is started.
+targeted and live results do not substitute for it.
 
 R2 implementation and deployed integration are complete. Full acceptance remains
-pending any CI criterion explicitly marked outstanding. **Do not start R5, R3 or
-R6 until the owner reviews this gate and authorizes continuation.**
+pending any CI criterion explicitly marked outstanding. The owner then authorized
+Gate 3 / R5 after the corrective dev1 test and took over monitoring GitHub CI.
+The corrective `7bed1a2a` dev1 rerun passed: exact registry/object preservation,
+queued and in-flight SIGKILL recovery, 64 accepted / 65th refused, FIFO capacity,
+timed fallback and returning ACKs. The Linux real-Redis process test and kept
+station upgrade test also passed. The rerunnable client now checks the specific
+outgoing row (old ACK history may legitimately say Delivered), reuses gateway
+sessions across child restarts and respects login throttling.
+
+## Gate 3 — R5: ticketed ships underway (candidate)
+
+### Implementation and compatibility
+
+TacSim's injected metric now reads the real `tacsim.ticket` through its immutable
+owner-stamped hook lens. The production command and coarse tick supply that lens;
+detached world-only calls cannot fabricate a ship ticket. Propagation receives a
+bounded metric projection, with no TacSim write delegation or new kernel API.
+
+The ticket key, route identity, departure instant, frozen leg durations and pinned
+route bodies must agree with the active `CarrierJourney`. Missing, unreadable,
+unsupported or contradictory passages wait under the existing envelope TTL.
+The active journey cursor selects a frozen plan leg. Elapsed IC time interpolates
+its frozen kilometre distance; the nearer endpoint wins, with the origin winning
+an exact midpoint tie. Radio distance is that offset plus the current sky distance
+between endpoint bodies. No moving ship coordinate is introduced. An overdue
+journey cursor holds at that leg's endpoint until the journey owner advances it.
+
+Actual spatial membership and ancestry resolve passengers and nested interiors
+to one hull endpoint. Moving between its rooms does not spend a forwarding hop;
+boarding or disembarking can. At physical arrival the recipient's endpoint is
+revalidated. A missing ticket cannot settle a remote delivery. Existing four
+forwarding/eight physical-leg bounds remain in force.
+
+Positive distances round up to whole kilometres, then whole IC seconds, with
+checked wide arithmetic. Transmission freezes due time and a `ship.v1` digest of
+the metric inputs (sky revision, timestamp, endpoints, bodies, offsets and ticket
+leg provenance). Restart, sky edits and world-rate changes cannot accelerate that
+flight. R2's envelope/flight wire already permits object endpoints and bounded
+basis text: no new durable record, pack version, migration or scheduler is added.
+Old stationary itineraries and existing tickets retain their bytes and meaning.
+
+A snapshot visits at most 33 port maps, 65 hull rows and 64 typed ticket keys;
+each passage is bounded by the existing 32-leg cap. Oversized or duplicate hull
+maps refuse the snapshot, never silently truncate it. Endpoint ancestry is bounded
+by the existing depth-8 graph walk. Route work retains R2's 65 metric-read and
+512 edge-visit bounds. `+ship`, while aboard, prints physical one-way lag to a live
+public Exchange endpoint and explicitly excludes queue and returning-ACK time.
+It distinguishes unknown passage data from no live Exchange pair. OOC channels
+are unchanged.
+
+### Integration gate
+
+`ic_slice_loop::r5_real_dray_radio_freezes_forwards_and_recovers` boots the shipping
+composition and buys the real trade cargo, fuel and provisions, boards a chartered
+Dray and launches it through the ordinary clearance and burn. It checks boarding
+forwarding, departure, exact quarter/three-quarter lag arithmetic and nearer-end
+selection, a real leg boundary, docking/disembarkation forwarding, ticket loss and
+recovery, saved-flight restart, rate changes, hull-room movement and delayed ACKs.
+The existing six ship story tests and ten relay integration tests also pass.
+
+Real dev1 acceptance is pending on the final candidate. `scripts/relay-r5-live.mjs`
+uses authenticated WebSocket clients, normal trade/departure commands, the real
+IC clock, a verified dev1-child SIGKILL, and a reversible missing-ticket fault while
+dev1 is stopped. Its evidence and final results will be recorded here before the
+gate is closed. **Stop after R5; R6a is not authorized by this continuation.**

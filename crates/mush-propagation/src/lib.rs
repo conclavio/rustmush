@@ -314,7 +314,9 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // a `Phantom` never expired, so no envelope aged out and no holder of a
     // false contact ever received its `Loss`.
     let reanchored = reanchor(&mut book, &at);
-    let report = pass::delivery_pass(&mut book, &state, ctx.w, &ledger, &at, None);
+    let metric = routing::snapshot_in(ctx, &at);
+    let report =
+        pass::delivery_pass_with_metric(&mut book, &state, ctx.w, &ledger, &at, None, metric);
     let allocator = book.allocator();
     if allocator != old_allocator {
         ctx.persist(ModuleOp {

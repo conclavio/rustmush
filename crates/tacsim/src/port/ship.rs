@@ -735,6 +735,11 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // Doc 20 cut SM.2 (§1 beat 3): on a pad, the stores line after the hold line.
         let stores = crate::port::voyage::settled_stores_line(ctx, &view);
         let mut lines = vec![first, hold];
+        // Only an observer aboard can read the hull's current physical lag.
+        // An ashore charter holder must not gain instant remote telemetry.
+        if crate::port::voyage::aboard(ctx.w, charter.hull, actor) {
+            lines.push(crate::relay_metric::lag_line(ctx, charter.hull));
+        }
         lines.extend(stores);
         lines.push(programme);
         lines

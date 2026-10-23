@@ -2,12 +2,12 @@
 
 **Draft 0.3, 2026-10-23.** The owner decisions in §9 are binding and all seven questions
 in §10 are answered. **All mail is IC and must transit; there is no OOC mail mode.**
-R1's registry, Luna–Ceres seed and operator diagnostics are implemented and deployed
-on dev1. Its live integration checks passed; normal workspace CI remains outstanding.
-[15b](15b-comms-relay-cut-notes.md) records the evidence and pause before R2.
+R1's registry and R2's routed orders, reports and returning ACKs are implemented
+and deployed on dev1. Their live integration checks passed. The owner authorized
+Gate 3 / R5 after the CI repair's dev1 rerun and is monitoring the long CI run.
+[15b](15b-comms-relay-cut-notes.md) records the evidence and current R5 gate.
 [15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
-mandatory integration stop after every milestone. Routing and mail transit are not
-implemented by R1.
+mandatory integration stop after every milestone. Mail transit remains R6a.
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require
@@ -306,7 +306,7 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (R1 implemented; paused before R2)
+## 8. Engine backlog (R1–R2 implemented; R5 in integration)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
@@ -328,8 +328,8 @@ stationary itineraries, frozen Sky light-time, shared FIFO pair capacity and
 bounded forwarding. Orders, contact reports and returning ACKs use that path;
 typed dispatch kinds keep messages out of standing-order supersession. Staff
 inspect routes with `@prop/route`. The dev1 live gate passed; full CI status and
-limits are recorded in 15b. Work stops here before R5. Mail/channels, service
-classes, billing and travelling hulls remain later cuts.
+limits are recorded in 15b. The owner continued to R5 after the corrective dev1
+rerun. Mail/channels, service classes and billing remain later cuts.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

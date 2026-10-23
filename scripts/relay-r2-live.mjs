@@ -28,12 +28,21 @@ function text(value) {
   return '';
 }
 async function auth(route, body) {
-  const response = await fetch(target + '/api/auth/' + route, {
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),
-    signal:AbortSignal.timeout(15000),
-  });
-  assert.equal(response.status,200,'authentication endpoint '+route+': '+response.status);
-  return response.json();
+  const deadline=Date.now()+120000;
+  while(true) {
+    const response = await fetch(target + '/api/auth/' + route, {
+      method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),
+      signal:AbortSignal.timeout(15000),
+    });
+    if(response.status===429 && Date.now()<deadline) {
+      const seconds=Number(response.headers.get('retry-after')) || 15;
+      await response.body?.cancel();
+      await sleep(Math.min(60000,Math.max(1000,seconds*1000)));
+      continue;
+    }
+    assert.equal(response.status,200,'authentication endpoint '+route+': '+response.status);
+    return response.json();
+  }
 }
 async function connect(login) {
   const ws = new WebSocket(target.replace(/^http/,'ws')+'/ws?char='+login.characters[0].key,'rustmush.v1.'+login.token);
@@ -121,12 +130,14 @@ function milestone(test, facts) {
   save('live.json',evidence);
   console.log(JSON.stringify({completed:test,...facts}));
 }
-let staff, visitor;
+let staff, visitor, staffLogin, visitorLogin;
 try {
-  staff=await connect(await auth('login',credentials));
+  staffLogin=await auth('login',credentials);
+  staff=await connect(staffLogin);
   const vc={account:'r2v'+randomBytes(4).toString('hex'),password:randomBytes(24).toString('hex'),char_name:'R2Visitor'+randomBytes(3).toString('hex')};
   save('visitor-credentials.json',vc);
-  visitor=await connect(await auth('register',vc));
+  visitorLogin=await auth('register',vc);
+  visitor=await connect(visitorLogin);
   const reg=registry(), luna=reg.nodes.malapert.coverage[0], ceres=reg.nodes.ceres.coverage[0], node=reg.nodes.ceres.place;
   await command(staff,'@relay/enable luna_ceres.luna');
   await command(staff,'@relay/check','Live');
@@ -141,8 +152,9 @@ try {
   assert(!(await command(visitor,'+orders')).includes('R2-pair-crash'));
   await command(staff,'@prop/route '+pairId,'FIFO queued');
   await crash('queued-restart');
-  staff=await connect(await auth('login',credentials));
-  visitor=await connect(await auth('login',vc));
+  // A child restart leaves the gateway and its session tokens alive.
+  staff=await connect(staffLogin);
+  visitor=await connect(visitorLogin);
   assert.deepEqual(envelope(pairId),queued,'queue ticket and progress survive process death');
   await command(staff,'@prop/jam #'+node+'=0');
   await command(staff,'@prop/pass');
@@ -150,7 +162,8 @@ try {
   const arrived=envelope(pairId);
   assert.equal(arrived.path.length,1);
   await command(visitor,'+orders','R2-pair-crash');
-  assert(!(await command(staff,'+orders')).includes('Delivered'),'sender has no remote delivery oracle');
+  const senderRow=(await command(staff,'+orders')).split('\n').find(line=>line.startsWith('-> #'+pairId+' '));
+  assert(senderRow?.includes(' Transmitted ') && !senderRow.includes(' hops '),'sender has no remote delivery oracle for this order');
   const ackReply=await command(visitor,'+orders/ack '+pairId,'queued');
   const ackId=Number(ackReply.match(/envelope #(\d+)/)[1]);
   await until(()=>envelope(pairId).state==='acknowledged','returning pair ACK');
@@ -185,8 +198,8 @@ try {
   await command(staff,'@prop/route '+fallbackId,'Frozen');
   assert(!(await command(visitor,'+orders')).includes('R2-frozen-light-time'));
   await crash('in-flight-restart');
-  staff=await connect(await auth('login',credentials));
-  visitor=await connect(await auth('login',vc));
+  staff=await connect(staffLogin);
+  visitor=await connect(visitorLogin);
   assert.deepEqual(envelope(fallbackId).transit.flight,frozen);
   // Repairing the network cannot accelerate a leg already in flight.
   await command(staff,'@relay/enable luna_ceres.luna','revision');

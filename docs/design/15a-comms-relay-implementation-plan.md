@@ -6,8 +6,10 @@ Parent: [15 — Communications](15-comms-relay-backbone.md).
 This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
 and evidence record. R1 is pushed to main. The owner authorized R2 after that
 push; R2 is implemented and its dev1 live checks passed. Normal candidate CI is
-still required for full acceptance under §5. Work stops after R2, before R5;
-all later milestones remain unstarted.
+still required for full acceptance under §5. After the CI repair's dev1 rerun
+passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
+CI run. R5 is in progress; its real-server gate remains mandatory. Stop after
+R5, before R6a; all later milestones remain unstarted.
 
 ## 1. Owner rulings and delivery discipline
 

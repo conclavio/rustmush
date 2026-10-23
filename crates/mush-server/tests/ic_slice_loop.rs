@@ -2703,6 +2703,298 @@ async fn ic12_a_rate_change_mid_passage_relabels_the_arrival() {
     assert_no_pages(&rig.tw);
 }
 
+// Relay gate 3: the same real trade/departure path, with radio in both directions.
+fn radio_envelope(rig: &Rig, id: u64) -> mush_propagation::Envelope {
+    rig.tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelope(id)
+        .unwrap()
+        .clone()
+}
+
+async fn radio_issue(rig: &mut Rig, pilot: ObjId, body: &str) -> u64 {
+    let out = run(rig, GOD, &format!("+order {pilot}={body}")).await;
+    assert!(out.contains("Queued"), "{out}");
+    rig.tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelopes()
+        .last()
+        .unwrap()
+        .id()
+}
+
+async fn radio_pass(rig: &mut Rig) {
+    let _ = run(rig, GOD, "@prop/pass").await;
+}
+
+async fn radio_arrive(rig: &mut Rig, id: u64) {
+    for _ in 0..16 {
+        radio_pass(rig).await;
+        let e = radio_envelope(rig, id);
+        if e.state() == mush_propagation::EnvelopeState::Delivered {
+            return;
+        }
+        if let Some(f) = e.transit().and_then(|r| r.flight.as_ref()) {
+            to_ic(rig, f.due.at).await;
+        } else {
+            to_ic(rig, ic_now(&rig.tw) + 1).await;
+        }
+    }
+    panic!("radio did not arrive: {:?}", radio_envelope(rig, id));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn r5_real_dray_radio_freezes_forwards_and_recovers() {
+    use mush_propagation::EnvelopeState;
+    let mut rig = boot("relay-r5").await;
+    sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let pilot = pilot(&mut rig, "RadioPilot", "radioacct").await;
+    let row = enrol(&mut rig, pilot, "Radio Dray").await;
+    let hull = ObjId(row.hull);
+    outfit(&mut rig, pilot).await;
+    let luna = rig
+        .tw
+        .world()
+        .module_state::<mush_sim::relay::RelayStore>()
+        .unwrap()
+        .registry()
+        .unwrap()
+        .nodes[&cid("malapert")]
+        .place;
+    run(&mut rig, GOD, &format!("@teleport me={luna}")).await;
+    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    let boarding = radio_issue(&mut rig, pilot, "board-and-forward").await;
+    radio_pass(&mut rig).await;
+    board_from_chandlery(&mut rig, pilot, "Radio Dray").await;
+    radio_arrive(&mut rig, boarding).await;
+    assert_eq!(
+        radio_envelope(&rig, boarding)
+            .transit()
+            .unwrap()
+            .forwardings,
+        1
+    );
+    assert!(
+        run(&mut rig, pilot, "+ship")
+            .await
+            .contains("conventional radio remains available")
+    );
+    run(&mut rig, GOD, "@relay/enable luna_ceres.luna").await;
+    let ceres = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    run(&mut rig, GOD, &format!("@teleport me={ceres}")).await;
+    set_rate(&mut rig, 3_600).await;
+    let out = run(&mut rig, pilot, "+ship/undock stickney").await;
+    assert!(out.contains("Clearance filed"), "{out}");
+    for _ in 0..16 {
+        fire_quietly(&mut rig).await;
+        if under_way(&rig.tw, hull) {
+            break;
+        }
+    }
+    assert!(under_way(&rig.tw, hull));
+    let flown = ticket(&mut rig.tw, hull, 1).unwrap();
+    let leg = &flown.plan.legs[0];
+    set_rate(&mut rig, 1).await;
+    // The actual departure has a resolvable endpoint, and a positive radio leg.
+    let departure = radio_issue(&mut rig, pilot, "departure-radio").await;
+    radio_arrive(&mut rig, departure).await;
+    assert_eq!(
+        radio_envelope(&rig, departure)
+            .transit()
+            .unwrap()
+            .destination,
+        hull
+    );
+
+    to_ic(&mut rig, leg.t0 + i64::from(leg.secs) / 4).await;
+    let id = radio_issue(&mut rig, pilot, "mid-leg-private").await;
+    radio_pass(&mut rig).await;
+    let frozen = radio_envelope(&rig, id)
+        .transit()
+        .unwrap()
+        .flight
+        .clone()
+        .unwrap();
+    assert!(frozen.seconds > 0 && frozen.basis.starts_with("ship.v1:"));
+    let elapsed = u64::try_from(frozen.started.at - leg.t0).unwrap();
+    let km = (u128::from(leg.dist_km) * u128::from(elapsed)).div_ceil(u128::from(leg.secs));
+    let expected = (km * 1_000)
+        .div_ceil(u128::from(tacsim::sky::LIGHT_M_PER_S))
+        .max(1);
+    assert_eq!(u128::try_from(frozen.seconds).unwrap(), expected);
+    assert!(
+        !run(&mut rig, pilot, "+orders")
+            .await
+            .contains("mid-leg-private")
+    );
+    let status = run(&mut rig, pilot, "+ship").await;
+    assert!(
+        status.contains("IC seconds one way") && status.contains("returning acknowledgements"),
+        "{status}"
+    );
+    restart(&mut rig, |tw| ticket(tw, hull, 1).as_ref() == Some(&flown)).await;
+    assert_eq!(
+        radio_envelope(&rig, id).transit().unwrap().flight.as_ref(),
+        Some(&frozen)
+    );
+    // Walking within the moving hull is not a new receiving endpoint.
+    walk(&mut rig, pilot, "in", room_of(&row, "passage")).await;
+    set_rate(&mut rig, 2).await;
+    radio_pass(&mut rig).await;
+    let reanchored = radio_envelope(&rig, id)
+        .transit()
+        .unwrap()
+        .flight
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (reanchored.started.at, reanchored.due.at, reanchored.basis),
+        (frozen.started.at, frozen.due.at, frozen.basis)
+    );
+    to_ic(&mut rig, frozen.due.at - 2).await;
+    radio_pass(&mut rig).await;
+    assert_eq!(radio_envelope(&rig, id).state(), EnvelopeState::Transmitted);
+    radio_arrive(&mut rig, id).await;
+    assert_eq!(radio_envelope(&rig, id).transit().unwrap().forwardings, 0);
+    assert!(
+        run(&mut rig, pilot, "+orders")
+            .await
+            .contains("mid-leg-private")
+    );
+    let out = run(&mut rig, pilot, &format!("+orders/ack {id}")).await;
+    assert!(out.contains("Acknowledgement queued"), "{out}");
+    let ack = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelopes()
+        .find(|e| e.ack_of() == Some(id))
+        .unwrap()
+        .id();
+    radio_pass(&mut rig).await;
+    assert_eq!(
+        radio_envelope(&rig, id).state(),
+        EnvelopeState::Delivered,
+        "no early returning ACK"
+    );
+    assert!(
+        radio_envelope(&rig, ack)
+            .transit()
+            .unwrap()
+            .flight
+            .as_ref()
+            .unwrap()
+            .seconds
+            > 0
+    );
+    radio_arrive(&mut rig, ack).await;
+    assert_eq!(
+        radio_envelope(&rig, id).state(),
+        EnvelopeState::Acknowledged
+    );
+
+    // The second half of a leg uses its OTHER endpoint, with deterministic
+    // distance from the frozen plan, not a new ship position in the sky.
+    to_ic(&mut rig, leg.t0 + i64::from(leg.secs) * 3 / 4).await;
+    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    let far = radio_issue(&mut rig, pilot, "nearer-end-switched").await;
+    radio_pass(&mut rig).await;
+    let far_flight = radio_envelope(&rig, far)
+        .transit()
+        .unwrap()
+        .flight
+        .clone()
+        .unwrap();
+    let lane = store(&rig.tw)
+        .pack(&flown.route_pack, flown.route_version)
+        .unwrap();
+    let sky = tacsim::sky::Sky::from_pack(&lane.pack, &store(&rig.tw).config().time.ephemeris);
+    let hop = sky
+        .distance_km(
+            &cid("ceres"),
+            far_flight.started.at,
+            &leg.body,
+            far_flight.started.at,
+        )
+        .unwrap();
+    let remaining = u64::try_from(leg.t1 - far_flight.started.at).unwrap();
+    let offset = (u128::from(leg.dist_km) * u128::from(remaining)).div_ceil(u128::from(leg.secs));
+    let expected =
+        ((u128::from(hop) + offset) * 1000).div_ceil(u128::from(tacsim::sky::LIGHT_M_PER_S));
+    assert_eq!(u128::try_from(far_flight.seconds).unwrap(), expected);
+    radio_arrive(&mut rig, far).await;
+    run(&mut rig, GOD, "@relay/enable luna_ceres.luna").await;
+
+    // Missing typed ticket is a bounded wait, including a ship-local room.
+    let handles = handles(&rig.tw);
+    let mut txn = rig
+        .tw
+        .engine_mut()
+        .action_transaction(&handles.families.tickets)
+        .unwrap();
+    txn.remove(&handles.families.tickets, &TicketId { hull, seq: 1 })
+        .unwrap();
+    let (_, install) = txn.prepare().unwrap().into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .unwrap();
+    let missing = radio_issue(&mut rig, pilot, "missing-ticket").await;
+    radio_pass(&mut rig).await;
+    assert!(radio_envelope(&rig, missing).transit().is_none());
+    assert!(
+        run(&mut rig, pilot, "+ship")
+            .await
+            .contains("physical lag unavailable")
+    );
+    let mut txn = rig
+        .tw
+        .engine_mut()
+        .action_transaction(&handles.families.tickets)
+        .unwrap();
+    txn.insert(
+        &handles.families.tickets,
+        &TicketId { hull, seq: 1 },
+        flown.clone(),
+    )
+    .unwrap();
+    let (_, install) = txn.prepare().unwrap().into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .unwrap();
+    radio_arrive(&mut rig, missing).await;
+
+    // Cross a real journey boundary; then freeze a radio leg spanning docking.
+    to_ic(&mut rig, leg.t1 + 12).await;
+    assert!(journey(&rig.tw, hull).unwrap().cursor() >= 1);
+    let boundary = radio_issue(&mut rig, pilot, "boundary-radio").await;
+    radio_arrive(&mut rig, boundary).await;
+    let arrival = flown.plan.depart_ic + flown.plan.total_s;
+    to_ic(&mut rig, arrival - 10).await;
+    let landing = radio_issue(&mut rig, pilot, "dock-and-leave").await;
+    radio_pass(&mut rig).await;
+    to_ic(&mut rig, arrival + 12).await;
+    assert!(!under_way(&rig.tw, hull));
+    walk(&mut rig, pilot, "airlock", room_of(&row, "airlock")).await;
+    let out = run(&mut rig, pilot, "+ship/leave").await;
+    assert!(!out.contains("under way"), "{out}");
+    assert_ne!(location(&rig.tw, pilot), Some(room_of(&row, "airlock")));
+    radio_arrive(&mut rig, landing).await;
+    assert_eq!(
+        radio_envelope(&rig, landing).transit().unwrap().forwardings,
+        1
+    );
+    assert_no_pages(&rig.tw);
+}
+
 // ---------------------------------------------------------------------------
 // Negative checks (§6)
 // ---------------------------------------------------------------------------
