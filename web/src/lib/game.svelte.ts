@@ -952,11 +952,11 @@ export class GameApp {
     } else if (d.feed === "comsys") {
       if (d.kind === "keyframe") {
         this.channels.applyState(d.data);
+        // A rejoin can change the membership while the tab stays open.
+        // Refill its cleared cache from this membership's arrived history.
+        if (this.channels.active !== null) this.openChannelTab(this.channels.active);
       } else {
-        const merged = this.channels.applyBacklog(d.data);
-        if (pending?.kind === "backlog" && merged === 0) {
-          this.channels.backlogFetched[pending.channel.toLowerCase()] = true;
-        }
+        this.channels.applyBacklog(d.data);
       }
     } else if (d.feed === "mail" && d.kind === "keyframe") {
       this.mail.applyList(d.data);

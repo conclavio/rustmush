@@ -2577,3 +2577,20 @@ describe("the quarry (doc 20 cut SM.9)", () => {
     expect(paramsOf(asked)).toEqual({ view: "drive" });
   });
 });
+
+
+it("refetches an open IC tab after a membership epoch changes", () => {
+  const { app, ws } = boot(["comsys"]);
+  const membership = (epoch: string) => ({ channels: [{ name: "Radio", alias: "r", logged: true, ic: true, epoch, seq: 1, last_read: 0 }] });
+  ws.deliver(panel(1, "comsys", "keyframe", membership("old")));
+  app.openChannelTab("Radio");
+  const oldRequest=lastReq(ws);
+  ws.deliver(panel(2, "comsys", "keyframe", membership("new")));
+  const freshRequest=lastReq(ws);
+  expect(freshRequest.id).not.toBe(oldRequest.id);
+  expect(freshRequest.q.t).toBe("channel_backlog");
+  ws.deliver(reply(3,oldRequest.id,panelEvent("comsys","delta",{backlog:{channel:"Radio",epoch:"old",messages:[{seq:1,actor:{id:"#1",name:"A"},text:"stale"}]}})));
+  expect(app.channels.messagesOf("Radio")).toHaveLength(0);
+  ws.deliver(reply(4,freshRequest.id,panelEvent("comsys","delta",{backlog:{channel:"Radio",epoch:"new",messages:[{seq:1,actor:{id:"#1",name:"A"},text:"arrived"}]}})));
+  expect(app.channels.messagesOf("Radio")[0]?.text).toEqual([{text:"arrived"}]);
+});

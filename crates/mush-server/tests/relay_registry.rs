@@ -293,6 +293,28 @@ impl Drop for Rig {
     }
 }
 impl Rig {
+    async fn set_mail_quota(&mut self, quota: usize) {
+        // Controlled configuration fault through the owner's persisted schema;
+        // do not write another module's live state slot from the server fixture.
+        self.flush().await;
+        self.store
+            .write(WriteBatch {
+                serial: self.serial,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "mail".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "config".into(),
+                        value: serde_json::json!({"quota":quota}),
+                    },
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        self.serial += 1;
+        self.restart().await.unwrap();
+    }
     fn mail(&self) -> &mush_mail::MailState {
         self.tw.world().module_state().unwrap()
     }
@@ -1123,11 +1145,7 @@ async fn r6a_refusals_wait_for_arrival_and_a_physical_return() {
     rig.run(GOD, &format!("@teleport {alice}={luna}"));
     rig.tw.world_mut().set_connected(bob, false);
     for expected in [Outcome::Refused, Outcome::Full, Outcome::Unavailable] {
-        rig.tw
-            .world_mut()
-            .module_state_mut::<mush_mail::MailState>()
-            .unwrap()
-            .set_quota(300);
+        rig.set_mail_quota(300).await;
         rig.run(alice, &format!("@mail/quick {bob}=policy/private"));
         let id = rig.mail().next_id() - 1;
         rig.mail_tick();
@@ -1147,18 +1165,10 @@ async fn r6a_refusals_wait_for_arrival_and_a_physical_return() {
             }
             Outcome::Full => {
                 assert!(rig.run(bob, "@unlock/mail me").contains("Unlocked."));
-                rig.tw
-                    .world_mut()
-                    .module_state_mut::<mush_mail::MailState>()
-                    .unwrap()
-                    .set_quota(0);
+                rig.set_mail_quota(0).await;
             }
             Outcome::Unavailable => {
-                rig.tw
-                    .world_mut()
-                    .module_state_mut::<mush_mail::MailState>()
-                    .unwrap()
-                    .set_quota(300);
+                rig.set_mail_quota(300).await;
                 rig.tw
                     .world_mut()
                     .set_flag(bob, mush_core::Flags::GOING, true)
