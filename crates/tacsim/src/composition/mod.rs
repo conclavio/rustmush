@@ -1118,6 +1118,14 @@ pub fn content_module_with(
     // proving ground's two, and (cut IC2) the lane after them — the game's thirteen
     // boot packs — from the one list the tests read too.
     let packs = boot_pack_list(starter_area, game_content)?;
+    // A kept Ceres v1 world must remain bootable so staff can explicitly take
+    // Ceres v2 before installing the relay seed. Fresh/current worlds seed now.
+    for pack in packs
+        .iter()
+        .filter(|p| p.manifest().id().as_str() == "tacsim.relay.luna_ceres")
+    {
+        module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+    }
     if !packs.is_empty() {
         module = module.with_boot_packs(packs);
     }

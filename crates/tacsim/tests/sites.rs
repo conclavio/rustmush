@@ -62,7 +62,7 @@ use tacsim::surface::reading::read_r0;
 use tacsim::surface::{GeologyBoot, OreFamily, Word, installed_bodies};
 use tacsim::{TacsimConfig, TacsimStore};
 
-use geology_keyed::{CERES_TABLE, KEY_1, VESTA_TABLE, boot_keyed, mac, secret};
+use geology_keyed::{CERES_TABLE, KEY_1, VESTA_TABLE, boot_keyed, mac, reboot_keyed, secret};
 use support::ground::{UNSIGNED, sign};
 use support::sites::{SITE_PORTS, SITE_VENUES, strip_sites};
 
@@ -1692,7 +1692,7 @@ fn sm2_the_lane_tables_are_section_3_2s() {
     // A restart (reviewer T2): the lane is latched and never re-applied, so the boot pass
     // (lib.rs, after the key) is the only installer — the tables stand and the survey reads.
     let folded = mush_testkit::fold_module_ops(tw.take_module_ops());
-    let mut rebooted = boot_keyed(Some(GeologyBoot::Key(secret(KEY_1))), folded, true);
+    let mut rebooted = reboot_keyed(tw, Some(GeologyBoot::Key(secret(KEY_1))), folded, true);
     assert_eq!(
         installed_bodies(rebooted.world()),
         vec![cid("ceres"), cid("vesta")],

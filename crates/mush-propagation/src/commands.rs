@@ -496,7 +496,7 @@ fn persist_transport(ctx: &mut Ctx<'_>) {
     let Some(book) = store(ctx) else {
         return;
     };
-    let value = serde_json::to_value(&book.transport).expect("transport wire");
+    let value = book.transport.to_value();
     ctx.persist(ModuleOp {
         ns: NS.into(),
         op: ModuleWrite::JsonSet {
@@ -591,7 +591,7 @@ fn cmd_order(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let slot = ctx
         .w
         .module_state_mut::<PropagationStore>()
-        .expect("propagation store");
+        .ok_or_else(|| CmdError::msg(UNAVAILABLE))?;
     slot.put_envelope(envelope.clone())
         .map_err(|error| CmdError::msg(error.to_string()))?;
     persist_envelope(ctx, &envelope);
@@ -739,7 +739,7 @@ fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let slot = ctx
         .w
         .module_state_mut::<PropagationStore>()
-        .expect("propagation store");
+        .ok_or_else(|| CmdError::msg(UNAVAILABLE))?;
     slot.put_envelope(ack.clone())
         .map_err(|error| CmdError::msg(error.to_string()))?;
     persist_envelope(ctx, &ack);

@@ -190,6 +190,28 @@ impl Default for TransportState {
 }
 
 impl TransportState {
+    /// This wire contains only string keys and integers. Construct its JSON
+    /// directly so persisting capacity cannot panic or omit a spent bucket.
+    pub(crate) fn to_value(&self) -> serde_json::Value {
+        let capacity = self
+            .capacity
+            .iter()
+            .map(|(pair, bucket)| {
+                (
+                    pair.to_string(),
+                    serde_json::Value::Object(serde_json::Map::from_iter([
+                        ("at".into(), bucket.at.into()),
+                        ("units".into(), bucket.units.into()),
+                    ])),
+                )
+            })
+            .collect();
+        serde_json::Value::Object(serde_json::Map::from_iter([
+            ("version".into(), self.version.into()),
+            ("capacity".into(), serde_json::Value::Object(capacity)),
+        ]))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1
             || self.capacity.len() > MAX_PAIRS
@@ -391,22 +413,30 @@ fn plan_catalog(
         }
         layers = next;
     }
-    let use_pair = best
-        .as_ref()
-        .is_some_and(|p| direct.as_ref().is_none_or(|d| p.cost < d.0));
-    let legs = if use_pair {
-        let path = best.expect("selected path");
+    let best = best.filter(|p| direct.as_ref().is_none_or(|d| p.cost < d.0));
+    let legs = if let Some(path) = best {
+        let Some(nodes) = path
+            .nodes
+            .iter()
+            .map(|id| catalog.nodes.get(id))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return (None, work);
+        };
+        let Some((first, rest)) = nodes.split_first() else {
+            return (None, work);
+        };
         let mut legs = Vec::new();
-        let first = &catalog.nodes[&path.nodes[0]];
         legs.push(Leg {
             from,
             to: first.place,
             pair: None,
             relay: None,
         });
-        for (i, pair) in path.pairs.iter().enumerate() {
-            let a = &catalog.nodes[&path.nodes[i]];
-            let b = &catalog.nodes[&path.nodes[i + 1]];
+        for (pair, endpoints) in path.pairs.iter().zip(nodes.windows(2)) {
+            let [a, b] = endpoints else {
+                return (None, work);
+            };
             legs.push(Leg {
                 from: a.place,
                 to: b.place,
@@ -414,7 +444,7 @@ fn plan_catalog(
                 relay: Some(b.object),
             });
         }
-        let last = &catalog.nodes[path.nodes.last().expect("path node")];
+        let last = rest.last().unwrap_or(first);
         legs.push(Leg {
             from: last.place,
             to,
@@ -994,11 +1024,36 @@ mod tests {
         let mut state = TransportState::default();
         let pair = cid("ab");
         assert!(state.consume(&pair, 10, 4, 8));
-        let mut loaded: TransportState =
-            serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        assert_eq!(state.to_value(), serde_json::to_value(&state).unwrap());
+        let mut loaded: TransportState = serde_json::from_value(state.to_value()).unwrap();
         assert!(loaded.consume(&pair, 10, 4, 8));
         assert!(!loaded.consume(&pair, 10, 1, 8));
         assert!(!loaded.consume(&pair, 9, 1, 8));
         assert!(loaded.consume(&pair, 11, 8, 8));
+    }
+
+    #[test]
+    fn capacity_post_image_matches_the_wire_at_integer_limits() {
+        let mut state = TransportState::default();
+        assert_eq!(state.to_value(), serde_json::to_value(&state).unwrap());
+        state.capacity.insert(
+            cid("ab"),
+            Capacity {
+                at: i64::MIN,
+                units: 0,
+            },
+        );
+        state.capacity.insert(
+            cid("ba"),
+            Capacity {
+                at: i64::MAX,
+                units: u32::MAX,
+            },
+        );
+        assert_eq!(state.to_value(), serde_json::to_value(&state).unwrap());
+        assert_eq!(
+            serde_json::from_value::<TransportState>(state.to_value()).unwrap(),
+            state
+        );
     }
 }

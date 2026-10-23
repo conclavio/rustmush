@@ -30,7 +30,9 @@ impl MetricProvider for RelayMetric {
         let Some(store) = world.module_state::<TacsimStore>() else {
             return Box::new(snapshot);
         };
-        let lane = CanonicalId::new(crate::definitions::content::LANE_PACK).expect("lane ID");
+        let Ok(lane) = CanonicalId::new(crate::definitions::content::LANE_PACK) else {
+            return Box::new(snapshot);
+        };
         let Some(version) = store.applied_in(world, &lane) else {
             return Box::new(snapshot);
         };

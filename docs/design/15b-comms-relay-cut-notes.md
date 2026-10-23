@@ -328,10 +328,33 @@ ID. That was a harness correction, not a routing bypass.
 R1 main push: [CI 39994259374](https://github.com/conclavio/rustmush/actions/runs/39994259374).
 Its boot golden failure was fixed in `7dc36d48`; the follow-up is
 [CI 39998822477](https://github.com/conclavio/rustmush/actions/runs/39998822477).
-At the R2 handoff, that run has no reported failures and its two long test shards
-are still running. The R2 push triggers another full candidate run; its result is
-**pending**, not accepted by substitution of the targeted/live results. The final
-handoff links the new run. No later milestone is started while this gate is pending.
+The R2 candidate [CI 40003067213](https://github.com/conclavio/rustmush/actions/runs/40003067213)
+finished with three failed jobs. Kernel contracts and the rest shard both caught
+seven new production `expect` sites. TacSim integration caught six failures:
+two restart fixtures restored module documents without their world objects,
+three station goldens omitted the relay seed/node, and one real upgrade defect
+prevented a kept Ceres v1 world from booting because the relay seed requires v2.
+The Redis/process-fault matrix, including R2's kill/restart proof, passed.
+
+The CI repair removes all seven new panic sites without raising either budget.
+Capacity post-images use infallible string/integer JSON construction, checked
+against the existing wire at integer limits. Route selection and optional module
+state use checked branches. Restart fixtures now retain objects; station goldens
+explicitly include the seed, dependencies and hardware.
+
+For a kept Ceres v1 world, the production composition explicitly defers the new
+relay seed until staff upgrade Ceres with `@atlas/pack plan` and `apply`. Boot logs
+name the pending seed and required versions. Staff then restart or manually apply
+`tacsim.relay.luna_ceres`. Fresh worlds and existing relay latches behave as before.
+This opt-in deferral applies only to older active dependencies; missing, retired,
+held, newer and digest-mismatched dependencies still refuse boot. Published pack
+bytes and digests are unchanged. The station upgrade regression checks the
+explicit upgrade, subsequent relay installation and a further idempotent restart.
+
+The corrected geology, sites and stations suites pass **65 tests**. Propagation
+passes **111 tests**, and the content apply suite passes **9 tests**, including the
+deferral/refusal matrix. The corrective push must receive a full CI result;
+targeted and live results do not substitute for it. No later milestone is started.
 
 R2 implementation and deployed integration are complete. Full acceptance remains
 pending any CI criterion explicitly marked outstanding. **Do not start R5, R3 or

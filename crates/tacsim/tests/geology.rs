@@ -45,7 +45,7 @@ use tacsim::surface::{GEOLOGY_PIN_KEY, GeologyBoot, GeologyDisabled, GeologyStat
 mod geology_keyed;
 use geology_keyed::{
     CERES_RADIUS_KM, CERES_TABLE, KEY_1, KEY_2, VESTA_RADIUS_KM, VESTA_TABLE, boot_keyed, mac,
-    secret,
+    reboot_keyed, secret,
 };
 
 // ---------------------------------------------------------------------------
@@ -993,7 +993,12 @@ fn sm1_the_first_boot_pins_the_key_and_the_next_compares_it() {
 
     // A reboot over the folded store with the same key: Ready, and no second pin.
     let folded = fold_module_ops(ops);
-    let mut again = boot_keyed(Some(GeologyBoot::Key(one.clone())), folded.clone(), true);
+    let mut again = reboot_keyed(
+        tw,
+        Some(GeologyBoot::Key(one.clone())),
+        folded.clone(),
+        true,
+    );
     assert!(
         pin_writes(&again.take_module_ops()).is_empty(),
         "no rewrite"
@@ -1001,7 +1006,7 @@ fn sm1_the_first_boot_pins_the_key_and_the_next_compares_it() {
     assert_eq!(geology_line(&again).state, LineState::Ready);
 
     // A third boot with another key: Flagged with the mismatch, nothing written.
-    let mut wrong = boot_keyed(Some(GeologyBoot::Key(two.clone())), folded, true);
+    let mut wrong = reboot_keyed(again, Some(GeologyBoot::Key(two.clone())), folded, true);
     assert!(
         pin_writes(&wrong.take_module_ops()).is_empty(),
         "no rewrite"

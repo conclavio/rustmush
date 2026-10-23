@@ -330,7 +330,7 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             ns: NS.into(),
             op: ModuleWrite::JsonSet {
                 key: routing::STATE_KEY.into(),
-                value: serde_json::to_value(&book.transport).expect("transport wire"),
+                value: book.transport.to_value(),
             },
         });
     }

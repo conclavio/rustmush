@@ -231,6 +231,89 @@ fn an_unchanged_pack_applied_twice_creates_nothing_and_plans_nothing() {
 }
 
 #[test]
+fn boot_deferral_is_opt_in_and_only_for_older_active_dependencies() {
+    // A new seed can wait for an explicit dependency upgrade, but the same
+    // policy must not turn missing/newer/corrupt content into a successful boot.
+    for (dependency_version, defer, bad_digest, held_seed, expected) in [
+        (Some(1), true, false, false, "deferred"),
+        (Some(2), true, false, false, "applied"),
+        (Some(1), false, false, false, "requires base@2"),
+        (Some(3), true, false, false, "requires base@2"),
+        (None, true, false, false, "requires base@2"),
+        (Some(2), true, true, false, "at digest"),
+        (Some(1), true, false, true, "held"),
+    ] {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&signed("seed", 1, TWO)).expect("wire");
+        doc["manifest"]["requires"] = serde_json::json!([{"id": "base", "version": 2}]);
+        if bad_digest {
+            doc["manifest"]["requires"][0]["digest"] = "f".repeat(64).into();
+        }
+        let digest = parse_pack(&doc.to_string())
+            .expect("draft")
+            .computed_digest()
+            .expect("digest");
+        doc["manifest"]["digest"] = digest.to_hex().into();
+        let seed = load_pack(&doc.to_string()).expect("signed seed");
+        let mut packs = Vec::new();
+        if let Some(version) = dependency_version {
+            packs.push(load_pack(&signed("base", version, "{}")).expect("dependency"));
+        }
+        packs.push(seed);
+        let mut appliers = Appliers::new();
+        appliers.register("test", Arc::new(Things)).expect("owner");
+        let mut module = mush_content::ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(packs);
+        if defer {
+            module = module.wait_for_dependency_upgrades(id("seed"));
+        }
+        let (world, registry) = boot_world();
+        let mut engine = mush_core::Engine::with_modules(world, registry, vec![Box::new(module)])
+            .expect("content registers");
+        let mut boot = std::collections::HashMap::new();
+        if held_seed {
+            boot.insert(
+                mush_content::NS.into(),
+                mush_core::ModuleBootData {
+                    kv: vec![("applied:seed".into(), serde_json::json!({"bad": "latch"}))],
+                    ..Default::default()
+                },
+            );
+        }
+        let result =
+            engine.modules_loaded(boot, &mut Outbox::new(), &mut mush_core::Effects::new());
+        if matches!(expected, "deferred" | "applied") {
+            result.expect(expected);
+            let state = engine
+                .world
+                .module_state::<mush_content::ContentState>()
+                .expect("state");
+            assert_eq!(
+                state.latches.applied(&id("seed")).is_some(),
+                expected == "applied"
+            );
+            assert_eq!(
+                state.latches.applied(&id("base")).map(|l| l.version()),
+                dependency_version,
+                "boot never upgrades the dependency"
+            );
+            assert_eq!(
+                engine
+                    .world
+                    .iter()
+                    .filter(|o| o.kind == ObjKind::Thing)
+                    .count(),
+                if expected == "applied" { 2 } else { 0 }
+            );
+        } else {
+            let error = result.expect_err(expected).to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+}
+
+#[test]
 fn an_edited_entry_updates_and_a_dropped_entry_retires() {
     let mut h = Harness::new();
     let v1 = load_pack(&signed("lot", 1, TWO)).expect("v1");

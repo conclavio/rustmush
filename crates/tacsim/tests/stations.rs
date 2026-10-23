@@ -457,12 +457,13 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
     // since doc 19 cut A.8, twenty-five since doc 20 cut SM.2).
     want.push(LANE_PACK.to_string());
+    want.push("tacsim.relay.luna_ceres".to_string());
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        28,
+        29,
         "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
-         SM.2), the lane"
+         SM.2), the lane and the relay seed"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -488,6 +489,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_REGION_PACK.to_string(), 1)]),
             // Doc 18 cut IC2: the lane requires nothing.
             LANE_PACK => assert!(requires.is_empty()),
+            "tacsim.relay.luna_ceres" => assert_eq!(
+                requires,
+                vec![(AITKEN_PACK.to_string(), 1), (CERES_PACK.to_string(), 2)]
+            ),
             // Doc 20 cut SM.2: the site regions require nothing; each site
             // neighborhood requires its region at 1.
             site if site_regions.contains(&site) => assert!(requires.is_empty()),
@@ -506,6 +511,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         assert!(!starter_only.iter().any(|p| p == name));
     }
     assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
+    assert!(!starter_only.iter().any(|p| p == "tacsim.relay.luna_ceres"));
     // On the production roster the shelf lists all ten, latched, and (doc 20 cut SM.2)
     // the twelve site packs at 1.
     let mut tw = booted();
@@ -1169,7 +1175,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .count();
     // Six storefront items, and since doc 18 cut IC8 each port's stock clerk (a DARK
     // Thing in the staff spine).
-    assert_eq!(items, 8);
+    // R1 also installs the Ceres relay node in the maintenance spine.
+    assert_eq!(items, 9);
     // A non-staff player in Limbo types `c` and stands in Port Watch Arrivals.
     let pilot = tw.spawn_player("Pilot");
     let events = tw.run(pilot, "c");
@@ -1229,9 +1236,10 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        28,
-        "five, ten stations, the twelve site packs (doc 20 cut SM.2) and the lane"
+        29,
+        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane and relay seed"
     );
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(1));
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1882,11 +1890,16 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     };
     assert_eq!(version(&tw, CERES_PACK), Some(1));
     assert_eq!(version(&tw, STICKNEY_PACK), Some(2));
-    let store = fold_module_ops(tw.take_module_ops());
+    let mut store = fold_module_ops(tw.take_module_ops());
     // Second boot: the new binary over the kept store never upgrades a latch.
     let mut tw = tw
-        .reboot_into(production_roster_with_starter(config()), store)
+        .reboot_into(production_roster_with_starter(config()), store.clone())
         .expect("a kept world boots the new binary");
+    assert_eq!(
+        version(&tw, "tacsim.relay.luna_ceres"),
+        None,
+        "the relay seed waits for the explicit Ceres upgrade"
+    );
     assert_eq!(
         version(&tw, CERES_PACK),
         Some(1),
@@ -1920,6 +1933,30 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         let out = said(&tw, &events, reader);
         assert!(out.contains(opening), "`look {key}` in {room}: {out}");
     }
+    fold_module_ops_into(&mut store, tw.take_module_ops());
+    let mut tw = tw
+        .reboot_into(production_roster_with_starter(config()), store.clone())
+        .expect("the relay seed installs after the station upgrade");
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(1));
+    let registry = tw
+        .world()
+        .module_state::<mush_sim::relay::RelayStore>()
+        .and_then(mush_sim::relay::RelayStore::registry)
+        .expect("relay installed")
+        .clone();
+    assert!(registry.reconcile(tw.world()).is_ok());
+    let objects = live_objects(&tw);
+    fold_module_ops_into(&mut store, tw.take_module_ops());
+    let tw = tw
+        .reboot_into(production_roster_with_starter(config()), store)
+        .expect("the relay seed is idempotent");
+    assert_eq!(live_objects(&tw), objects);
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_sim::relay::RelayStore>()
+            .and_then(mush_sim::relay::RelayStore::registry),
+        Some(&registry)
+    );
 }
 
 /// What `who` was told, line by line, blank lines dropped.
