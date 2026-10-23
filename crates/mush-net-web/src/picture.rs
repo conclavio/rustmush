@@ -14,6 +14,14 @@
 //! `HEADING` line like any other). While it is on, the socket's pump runs a
 //! frame clock at the picture's interval and sends a frame only when its
 //! pixels changed — an idle cockpit costs nothing on the wire.
+//!
+//! **The clock is the picture's rate limit** (the external report of
+//! 2026-10-23, doc 21a `X-01`): its deadline ([`WebPicture::deadline`]) is
+//! moved by its own tick alone ([`WebPicture::tick`]), never by a request —
+//! a look change is drawn at the next scheduled tick, so a client sending
+//! look updates as fast as it likes still gets at most one frame an
+//! interval. Before, every request reset the deadline to now, and a loopback
+//! probe drew twenty frames in 845 ms.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -41,6 +49,9 @@ pub(crate) struct WebPicture {
     frame: Frame,
     /// The hash of the last frame sent, so an unchanged one is not.
     last_sent: Option<u64>,
+    /// The frame clock's deadline: when the pump next draws. Only
+    /// [`WebPicture::tick`] moves it.
+    next_frame: tokio::time::Instant,
 }
 
 impl WebPicture {
@@ -52,6 +63,7 @@ impl WebPicture {
             picture: CockpitPicture::new(),
             frame: Frame::new(FRAME_W, FRAME_H),
             last_sent: None,
+            next_frame: tokio::time::Instant::now(),
         }
     }
 
@@ -65,8 +77,30 @@ impl WebPicture {
         self.picture.interval()
     }
 
+    /// The frame clock's deadline: when the pump next draws (sleep until it,
+    /// while the picture is on). Stale while the picture is off, so turning
+    /// it on after a while draws at once; a request never moves it.
+    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+        self.next_frame
+    }
+
+    /// One tick of the frame clock, at `now`: the next deadline is an
+    /// interval on from this one (so the rate never drifts), or an interval
+    /// from `now` when the clock is behind — the pump fell behind on a slow
+    /// send, or the picture just came on after a while off — so missed ticks
+    /// are skipped, never caught up in a burst.
+    pub(crate) fn tick(&mut self, now: tokio::time::Instant) {
+        let next = self.next_frame + self.interval();
+        self.next_frame = if next > now {
+            next
+        } else {
+            now + self.interval()
+        };
+    }
+
     /// The client's `Picture` request. Turning it on (or changing the look)
-    /// forgets the last frame sent, so the next tick sends one.
+    /// forgets the last frame sent, so the next tick sends one — the next
+    /// *scheduled* tick: the clock's deadline is not touched (`X-01`).
     pub(crate) fn request(&mut self, on: bool, look_mdeg: i64) {
         if on != self.on || look_mdeg != self.look_mdeg {
             self.last_sent = None;
@@ -170,6 +204,52 @@ mod tests {
         assert!(p.frame().is_none(), "off again");
         p.request(true, 30_000);
         assert!(p.frame().is_some(), "on again sends the current picture");
+    }
+
+    /// Doc 21a `X-01`: the frame clock is the picture's rate limit. Its
+    /// deadline moves by its own tick alone — an interval on from the last
+    /// deadline, or from now when behind — and never by a request, so ten
+    /// look changes inside one interval are drawn at the next tick, once.
+    #[test]
+    fn the_frame_clock_moves_by_its_ticks_alone() {
+        let mut p = WebPicture::new();
+        let interval = p.interval();
+        assert_eq!(interval, Duration::from_millis(50), "the cockpit's 20 Hz");
+        let t0 = p.deadline();
+        p.tick(t0 + Duration::from_millis(1));
+        assert_eq!(
+            p.deadline(),
+            t0 + interval,
+            "from the deadline, not the tick"
+        );
+        p.tick(t0 + interval + Duration::from_millis(3));
+        assert_eq!(p.deadline(), t0 + 2 * interval, "no drift");
+        // Behind (a slow send, or on again after a while off): an interval
+        // from now, the missed ticks skipped.
+        let late = t0 + 10 * interval;
+        p.tick(late);
+        assert_eq!(p.deadline(), late + interval);
+        p.tick(late + interval);
+        assert_eq!(
+            p.deadline(),
+            late + 2 * interval,
+            "exactly on time counts as on time"
+        );
+
+        // A request, on or any number of look changes, leaves the deadline
+        // alone; the next tick draws the latest look, once.
+        let (cockpit, map) = keyframes();
+        p.observe(&cockpit);
+        p.observe(&map);
+        let before = p.deadline();
+        p.request(true, 0);
+        assert!(p.frame().is_some(), "on: the first frame");
+        for look in 1..=10 {
+            p.request(true, look * 1_000);
+            assert_eq!(p.deadline(), before, "look {look}: the clock is not moved");
+        }
+        assert!(p.frame().is_some(), "the next tick draws the latest look");
+        assert!(p.frame().is_none(), "once");
     }
 
     /// The feeds come from the stream itself: a `Reply`-wrapped keyframe

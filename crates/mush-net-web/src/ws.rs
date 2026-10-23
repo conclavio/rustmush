@@ -467,10 +467,10 @@ async fn pump(
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_nonce: u64 = 0;
     let mut outstanding_pings: u32 = 0;
-    // Doc 21 cut G.3: the picture and its frame clock (a deadline, resynced
-    // when behind, polled only while the picture is on).
+    // Doc 21 cut G.3: the picture and its frame clock (a deadline the clock's
+    // own tick moves, polled only while the picture is on; it is the
+    // picture's rate limit, so a request never moves it — doc 21a `X-01`).
     let mut picture = WebPicture::new();
-    let mut next_frame = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -524,10 +524,12 @@ async fn pump(
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
                         Ok(ClientCommand::Picture { on, look_mdeg }) => {
-                            // Transport-local (doc 21 cut G.3): the next tick
-                            // draws whatever the new request wants.
+                            // Transport-local (doc 21 cut G.3): the next
+                            // scheduled tick draws whatever the new request
+                            // wants — the clock is not reset for it, so a
+                            // burst of look changes is still one frame an
+                            // interval (doc 21a `X-01`).
                             picture.request(on, look_mdeg);
-                            next_frame = tokio::time::Instant::now();
                         }
                         Ok(ClientCommand::Composing { active }) => {
                             // A presence hint (interface plan I4, D-I-11): the
@@ -563,11 +565,8 @@ async fn pump(
                 // uninteresting (keepalive is app-level).
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
             },
-            () = tokio::time::sleep_until(next_frame), if picture.is_on() => {
-                next_frame = std::cmp::max(
-                    next_frame + picture.interval(),
-                    tokio::time::Instant::now(),
-                );
+            () = tokio::time::sleep_until(picture.deadline()), if picture.is_on() => {
+                picture.tick(tokio::time::Instant::now());
                 if let Some(png) = picture.frame()
                     && !send_bin(socket, png, send_timeout).await
                 {

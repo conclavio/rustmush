@@ -12,6 +12,7 @@ Counts: 137 items verified (124 open, 10 partly or disputed, 3 closed) plus the 
 
 - **X-01** [P2, S, web] Web picture requests bypass the 20 Hz cap
   - crates/mush-net-web/src/ws.rs:526-530 resets next_frame to now on every Picture command and picture.rs:70 forgets the last sent frame on any look change, so a client sending look updates gets a frame per message (a loopback probe saw 20 frames in 845 ms). Fix: keep the deadline on a look change; reset it only when the picture turns on.
+  - **FIXED 2026-10-23** (cut notes, "The external bug reports of 2026-10-23"): the frame clock lives with the picture (`WebPicture::deadline`/`tick`), its deadline moved by its own tick alone, never by a request; a burst of look changes is drawn at the next scheduled tick.
 - **X-02** [P2, S, web] Hidden browser tabs keep steering the tank
   - web/src/components/PictureView.svelte: `visible` (line 105-117) gates only the server request and the local draw loop; the held-turn timer (:197-203) and the look timer (:187-194) clear on element blur alone (:274-277), never on visibilitychange. A release outside the tab leaves repeated HEADING orders running. Fix: clear turning and lookTurn on visibility loss and window blur.
 - **X-03** [P2, M, engine] Lock reticle uses the flat-ground projection on relief maps
