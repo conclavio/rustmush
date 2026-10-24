@@ -1943,6 +1943,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
                 "Hold: cargo 100/100 t · 120.0/120 m³ · tank 53/80 t · locker 19/120 crew-days.",
+                "Radio: about 1 IC seconds one way to an Exchange endpoint; queue time and returning acknowledgements are additional.",
                 "Programme: 0 sales; buyout 90000.00cr.",
             ]
         ),
