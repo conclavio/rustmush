@@ -2360,13 +2360,17 @@ mod tests {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
         }
-        for c in [
+        let administrative = [
             "org.role.manage",
             "org.grant.delegate",
             "relay.manage",
             "relay.inspect",
             "relay.publish",
-        ] {
+            "relay.discover",
+            "relay.use",
+            "relay.speak",
+        ];
+        for c in administrative {
             assert!(
                 vocab.contains(&mush_org::CapabilityId::new(c).expect("well-formed")),
                 "{c}"
@@ -2377,7 +2381,7 @@ mod tests {
             mush_economy::CAPABILITIES.len()
                 + mush_housing::CAPABILITIES.len()
                 + mush_campaign::CAPABILITIES.len()
-                + 5
+                + administrative.len()
         );
         // …and a `force.*` id that is NOT declared is absent, so a typo'd grant
         // still fails loudly rather than becoming an inert record.

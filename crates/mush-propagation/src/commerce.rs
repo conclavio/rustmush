@@ -154,7 +154,10 @@ fn pending(e: &Envelope) -> bool {
     !e.state().is_terminal()
 }
 fn unspent(e: &Envelope) -> bool {
-    pending(e) && e.path().is_empty()
+    pending(e)
+        && e.path().is_empty()
+        && e.transit()
+            .is_none_or(|r| r.serialization.is_none() && r.admitted_operators.is_empty())
 }
 pub(crate) fn persist(ctx: &mut Ctx<'_>) {
     let Some(book) = ctx.w.module_state::<PropagationStore>() else {

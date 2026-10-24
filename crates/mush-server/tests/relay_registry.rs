@@ -1758,13 +1758,13 @@ async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
 }
 
 #[tokio::test]
-async fn r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership() {
+async fn r3_mixed_traffic_serializes_fifo_and_receipts_follow_membership() {
     use mush_propagation::record::DispatchKind;
     let mut rig = Rig::new(true).await;
     let bob = rig.endpoints();
     let channel = rig.channel_setup(&[GOD, bob]);
     // Seven mail units, then an eight-unit channel copy, then one order unit.
-    // The channel must not consume the last unit or block the smaller order.
+    // The channel uses the remaining unit and retains FIFO rank on restart.
     assert!(
         rig.run(GOD, &format!("@mail/quick {bob}=seven/{}", "m".repeat(840)))
             .contains("queued")
@@ -1786,8 +1786,8 @@ async fn r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership() {
     rig.pass();
     assert_eq!(
         rig.envelope(order).path().len(),
-        1,
-        "eligible small work passes a busy head"
+        0,
+        "older partial work retains FIFO rank"
     );
     let state = rig
         .tw
@@ -1805,6 +1805,20 @@ async fn r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership() {
         .filter(|r| r.kind == DispatchKind::Channel)
         .count();
     assert_eq!(channel_receipts, 0);
+    let partial = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelopes()
+        .find(|e| e.kind() == DispatchKind::Channel && e.recipient() == bob)
+        .unwrap()
+        .transit()
+        .unwrap()
+        .serialization
+        .clone()
+        .unwrap();
+    assert_eq!((partial.sent, partial.total), (1, 8));
     assert_eq!(state.capacity[&cid("luna_ceres")].units, 8);
     rig.flush().await;
     rig.restart().await.unwrap();
@@ -1822,6 +1836,8 @@ async fn r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership() {
     rig.advance_ic_to(now + 1);
     rig.finish_channel(channel, 1);
     rig.finish_mail(mail_id);
+    rig.pb_passes();
+    assert_eq!(rig.envelope(order).path().len(), 1);
     assert!(rig.run(bob, "+relay/receipts").contains("Channel"));
     rig.run(bob, "delcom radio");
     assert!(!rig.run(bob, "+relay/receipts").contains("Channel"));
@@ -4958,4 +4974,458 @@ async fn ap_zero_based_organization_and_scope_survive_source_handoff_and_restart
         rig.run(official, "+relay/represent")
             .contains("org:0; scope 0")
     );
+}
+
+// RR-5..7: checked schedules, once-per-operator admission and persistent serialization.
+impl Rig {
+    fn pb_state(&self) -> &mush_propagation::service::State {
+        self.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+    }
+    fn pb_schedule(&mut self, pair: &str, fields: &str) {
+        let reply = self.run(
+            GOD,
+            &format!("+relay/schedule {pair}={fields};integration gate"),
+        );
+        assert!(reply.contains("recorded"), "{reply}");
+    }
+    fn pb_passes(&mut self) {
+        for _ in 0..6 {
+            self.pass();
+        }
+    }
+}
+#[tokio::test]
+async fn pb_schedule_authority_revision_bounds_and_frozen_admission() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    assert!(
+        rig.run(bob, "+relay/schedule luna_ceres=standard:120;unauthorized")
+            .contains("Permission denied")
+    );
+    rig.pb_schedule("luna_ceres", "standard:120,rate:2,burst:2");
+    let first = rig.pb_state().schedules[&cid("luna_ceres")].clone();
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.actor, GOD);
+    assert!(
+        rig.pb_state()
+            .audit
+            .last()
+            .unwrap()
+            .action
+            .contains("rate=2 burst=2")
+    );
+    for settings in [
+        "expect:0,rate:1",
+        "rate:9",
+        "burst:0",
+        "max:129",
+        "period:10,start:9,window:2",
+    ] {
+        assert!(
+            !rig.run(
+                GOD,
+                &format!("+relay/schedule luna_ceres={settings};refuse")
+            )
+            .contains("recorded")
+        );
+        assert_eq!(rig.pb_state().schedules[&cid("luna_ceres")], first);
+    }
+    rig.run(GOD, "+relay/grant luna_ceres/#1=standard");
+    rig.run(GOD, &format!("+order {bob}=frozen-schedule"));
+    let id = rig.last_envelope().id();
+    rig.pb_passes();
+    let ticket = rig.envelope(id).transit().unwrap().service.clone().unwrap();
+    assert_eq!(ticket.policy.as_ref().unwrap().revision, 1);
+    assert_eq!(ticket.declared_s, 120);
+    rig.pb_schedule("luna_ceres", "expect:1,standard:300,rate:1,burst:1");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.envelope(id).transit().unwrap().service.as_ref(),
+        Some(&ticket)
+    );
+    assert_eq!(rig.pb_state().schedules[&cid("luna_ceres")].revision, 2);
+    rig.advance_ic_to(ticket.eligible_at - 1);
+    rig.pb_passes();
+    assert!(!rig.run(bob, "+orders").contains("frozen-schedule"));
+    rig.advance_ic_to(ticket.eligible_at);
+    rig.pb_passes();
+    assert!(rig.run(bob, "+orders").contains("frozen-schedule"));
+    rig.run(GOD, &format!("+order {bob}=new-schedule"));
+    rig.pb_passes();
+    assert_eq!(
+        rig.last_envelope()
+            .transit()
+            .unwrap()
+            .service
+            .as_ref()
+            .unwrap()
+            .declared_s,
+        300
+    );
+    assert!(
+        rig.run(GOD, "+relay/audit luna_ceres")
+            .contains("revision 2")
+    );
+}
+#[tokio::test]
+async fn pb_two_spokes_pay_one_operator_admission_across_restart() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    let registry = rig.registry();
+    rig.run(
+        GOD,
+        &format!("@teleport me={}", registry.nodes[&cid("ceres")].coverage[0]),
+    );
+    rig.run(
+        GOD,
+        &format!(
+            "@teleport {bob}={}",
+            registry.nodes[&cid("mercury")].coverage[0]
+        ),
+    );
+    for pair in ["luna_ceres", "luna_mercury"] {
+        rig.run(GOD, &format!("+relay/grant {pair}/#1=standard"));
+    }
+    rig.pb_schedule("luna_ceres", "standard:60");
+    rig.pb_schedule("luna_mercury", "standard:180");
+    rig.run(GOD, &format!("+order {bob}=single-network-admission"));
+    let id = rig.last_envelope().id();
+    rig.pb_passes();
+    let first = rig.envelope(id).transit().unwrap().service.clone().unwrap();
+    assert!(!first.repeat_operator);
+    assert_eq!(first.declared_s, 60);
+    rig.advance_ic_to(first.eligible_at);
+    rig.pass();
+    let middle = rig.envelope(id);
+    assert_eq!(middle.path().len(), 1);
+    let second = middle.transit().unwrap().service.as_ref().unwrap();
+    assert!(second.repeat_operator);
+    assert_eq!(second.declared_s, 0);
+    assert_eq!(
+        second.policy.as_ref().unwrap().settings.standard_delay_s,
+        180
+    );
+    assert_eq!(second.eligible_at, first.eligible_at);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pb_passes();
+    assert_eq!(rig.envelope(id).path().len(), 2);
+    assert!(rig.run(bob, "+orders").contains("single-network-admission"));
+    let receipts: Vec<_> = rig
+        .pb_state()
+        .receipts
+        .iter()
+        .filter(|r| r.envelope == id)
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    assert!(receipts.iter().all(|r| r.transmitted == first.eligible_at));
+}
+#[tokio::test]
+async fn pb_paid_serialization_captures_first_unit_once_and_hides_incomplete_mail() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    rig.retail_ready();
+    rig.pb_schedule("luna_ceres", "rate:1,burst:1");
+    let (alice, payer) = rig.retail_sender("SerializationBuyer", true);
+    let (mail, id) = rig.retail_mail(alice, bob, &"x".repeat(490));
+    let quote = rig.retail_quote(alice, id, "priority", payer);
+    let price = rig.retail().purchases[&quote].total_minor;
+    let total = rig.money_total();
+    rig.run(alice, &format!("+relay/buy {quote}"));
+    rig.flush_money(quote, "reserved").await;
+    rig.pb_passes();
+    let first = rig.envelope(id);
+    let partial = first.transit().unwrap().serialization.clone().unwrap();
+    assert_eq!((partial.sent, partial.total), (1, 4));
+    assert!(first.path().is_empty());
+    assert_eq!(rig.retail().purchases[&quote].phase, Phase::Consumed);
+    assert_eq!(rig.account(payer).posted_balance.minor(), 10_000 - price);
+    assert!(rig.mail().entry(bob, mail).is_none());
+    assert!(!rig.pb_state().receipts.iter().any(|r| r.envelope == id));
+    rig.flush_money(quote, "consumed").await;
+    rig.restart().await.unwrap();
+    let purchase = rig.retail().purchases[&quote].clone();
+    rig.pb_passes();
+    assert_eq!(
+        rig.envelope(id).transit().unwrap().serialization.as_ref(),
+        Some(&partial)
+    );
+    // Policy changes do not mint a fresh burst, change the paid price, or discard progress.
+    rig.pb_schedule("luna_ceres", "burst:8,max:128");
+    rig.pb_passes();
+    assert_eq!(
+        rig.envelope(id).transit().unwrap().serialization.as_ref(),
+        Some(&partial)
+    );
+    for n in 1..4 {
+        rig.advance_ic_to(partial.started + n);
+        rig.pb_passes();
+        if n < 3 {
+            assert_eq!(
+                rig.envelope(id)
+                    .transit()
+                    .unwrap()
+                    .serialization
+                    .as_ref()
+                    .unwrap()
+                    .sent,
+                n as u32 + 1
+            );
+            assert!(rig.mail().entry(bob, mail).is_none());
+        }
+    }
+    assert_eq!(
+        rig.envelope(id).state(),
+        mush_propagation::EnvelopeState::Delivered
+    );
+    let receipt = rig
+        .pb_state()
+        .receipts
+        .iter()
+        .find(|r| r.envelope == id)
+        .unwrap();
+    assert_eq!(receipt.serialized_from, Some(partial.started));
+    assert_eq!(receipt.transmitted, partial.started + 3);
+    assert_eq!(
+        receipt.ticket.policy.as_ref().unwrap().settings.max_bytes,
+        1024
+    );
+    rig.mail_tick();
+    assert!(rig.mail().entry(bob, mail).is_some());
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.mail_tick();
+    assert!(rig.mail().entry(bob, mail).is_some());
+    assert_eq!(rig.retail().purchases[&quote], purchase);
+    assert_eq!(rig.money_total(), total);
+}
+#[tokio::test]
+async fn pb_deferred_window_keeps_partial_progress_and_accepted_window() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    rig.pb_schedule(
+        "luna_ceres",
+        "deferred:0,period:10,start:0,window:2,rate:1,burst:1",
+    );
+    rig.run(GOD, "+relay/grant luna_ceres/#1=deferred");
+    rig.run(GOD, &format!("+order {bob}={}", "d".repeat(400)));
+    let id = rig.last_envelope().id();
+    rig.pass();
+    let at = rig.tw.world().world_ic_now().at;
+    let start = (at.div_euclid(10) + 1) * 10;
+    rig.advance_ic_to(start);
+    rig.pb_passes();
+    assert_eq!(
+        rig.envelope(id)
+            .transit()
+            .unwrap()
+            .serialization
+            .as_ref()
+            .unwrap()
+            .sent,
+        1
+    );
+    rig.advance_ic_to(start + 1);
+    rig.pb_passes();
+    let progress = rig
+        .envelope(id)
+        .transit()
+        .unwrap()
+        .serialization
+        .clone()
+        .unwrap();
+    assert_eq!(progress.sent, 2);
+    rig.pb_schedule("luna_ceres", "period:1,start:0,window:1,max:128");
+    rig.advance_ic_to(start + 2);
+    rig.pb_passes();
+    assert_eq!(
+        rig.envelope(id).transit().unwrap().serialization.as_ref(),
+        Some(&progress)
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.advance_ic_to(start + 9);
+    rig.pb_passes();
+    assert_eq!(
+        rig.envelope(id).transit().unwrap().serialization.as_ref(),
+        Some(&progress)
+    );
+    assert!(!rig.run(bob, "+orders").contains(&"d".repeat(400)));
+    rig.advance_ic_to(start + 10);
+    rig.pb_passes();
+    rig.advance_ic_to(start + 11);
+    rig.pb_passes();
+    assert!(rig.run(bob, "+orders").contains(&"d".repeat(400)));
+    // The new maximum is independent of rate and applies to later traffic.
+    rig.run(GOD, &format!("+order {bob}={}", "n".repeat(200)));
+    assert!(
+        rig.last_envelope()
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.as_ref() != Some(&cid("luna_ceres")))
+    );
+}
+#[tokio::test]
+async fn pb_one_unit_private_hardware_serializes_and_revocation_discards_partial() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    ap_private_fixture(&mut rig).await;
+    let mut registry = rig.registry();
+    registry
+        .pairs
+        .get_mut(&cid("independent"))
+        .unwrap()
+        .capacity_units_per_ic_second = 1;
+    registry.revision += 1;
+    rig.replace_document(serde_json::to_value(registry).unwrap())
+        .await;
+    rig.restart().await.unwrap();
+    rig.public_hub(false);
+    rig.pb_schedule("independent", "standard:0,rate:1,burst:1");
+    assert!(
+        rig.run(GOD, "+relay/schedule independent=rate:2;too fast")
+            .contains("installed link capacity")
+    );
+    rig.run(GOD, &format!("+relay/access independent/{bob}=use"));
+    assert_eq!(
+        rig.run(bob, "+relay/schedule independent"),
+        rig.run(bob, "+relay/schedule missing")
+    );
+    rig.run(GOD, &format!("+order {bob}={}", "p".repeat(300)));
+    let id = rig.last_envelope().id();
+    rig.pb_passes();
+    let first = rig.envelope(id);
+    assert_eq!(
+        first
+            .transit()
+            .unwrap()
+            .serialization
+            .as_ref()
+            .unwrap()
+            .sent,
+        1
+    );
+    assert!(
+        first
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.run(GOD, &format!("+relay/access independent/{bob}=none"));
+    rig.pb_passes();
+    let rerouted = rig.envelope(id);
+    let r = rerouted.transit().unwrap();
+    assert!(r.serialization.is_none());
+    assert!(r.legs.iter().all(|l| l.pair.is_none()));
+    assert!(r.flight.as_ref().is_some_and(|f| f.due.at > f.started.at));
+    assert!(rerouted.path().is_empty());
+    assert!(!rig.run(bob, "+orders").contains(&"p".repeat(300)));
+}
+#[tokio::test]
+async fn pb_corrupt_policy_and_serialization_refuse_boot_without_resetting_spend() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@tacsim/time rate=1");
+    rig.pb_schedule("luna_ceres", "rate:1,burst:1");
+    rig.retail_ready();
+    let (_, id) = rig.retail_mail(GOD, bob, &"z".repeat(490));
+    rig.pb_passes();
+    assert!(rig.envelope(id).transit().unwrap().serialization.is_some());
+    assert!(
+        rig.run(GOD, &format!("+relay/quote {id}=priority,1"))
+            .contains("No such unconsumed outgoing copy")
+    );
+    assert!(
+        !rig.run(GOD, "+relay/outbox")
+            .contains(&format!("Envelope {id} "))
+    );
+    rig.flush().await;
+    let key = format!("envelope:{id}");
+    let original = rig
+        .store
+        .module_json_get("propagation", &key)
+        .await
+        .unwrap()
+        .unwrap();
+    let transport = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    for (record, good, bad) in [
+        (key.as_str(), original.clone(), {
+            let mut bad = original.clone();
+            bad["transit"]["serialization"]["sent"] = 0.into();
+            bad
+        }),
+        ("relay_transport", transport.clone(), {
+            let mut bad = transport.clone();
+            bad["service"]["schedules"]["luna_ceres"]["settings"]["rate"] = 9.into();
+            bad
+        }),
+    ] {
+        rig.store
+            .write(WriteBatch {
+                serial: rig.serial,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "propagation".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: record.into(),
+                        value: bad.clone(),
+                    },
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        rig.serial += 1;
+        assert!(rig.restart().await.is_err());
+        assert_eq!(
+            rig.store
+                .module_json_get("propagation", record)
+                .await
+                .unwrap(),
+            Some(bad)
+        );
+        rig.store
+            .write(WriteBatch {
+                serial: rig.serial,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "propagation".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: record.into(),
+                        value: good,
+                    },
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        rig.serial += 1;
+        rig.restart().await.unwrap();
+    }
+    assert_eq!(serde_json::to_value(rig.envelope(id)).unwrap(), original);
 }

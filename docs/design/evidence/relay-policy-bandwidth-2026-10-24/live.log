@@ -1,0 +1,7 @@
+PASS genuine-funded-checkpoint
+PASS explicit-star-upgrade-preserves-real-funded-private-hardware
+PASS unmount-restart-refit-retains-policy-and-physical-identities
+PASS one-operator-admission-two-pairs-frozen-policy-and-real-inbox
+PASS paid-serialization-no-early-visibility-one-charge-conserved-capacity
+PASS real-funded-carrier-departure
+PASS actual-one-unit-private-hardware-multiunit-delivery-after-crash

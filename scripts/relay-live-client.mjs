@@ -11,7 +11,7 @@ import { join } from 'node:path';
 assert(Number(process.versions.node.split('.')[0]) >= 22, 'relay live acceptance requires Node >=22');
 const [target, credentialsPath, output, redisPort] = process.argv.slice(2);
 assert(target === 'https://conclav.io:6790' && redisPort === '6788', 'dev1 only');
-assert(/^\/opt\/rustmush\/dev1\/(?:r[0-9]+[ab]?-evidence(?:\/acceptance-repair)?|availability-evidence)$/.test(realpathSync(output)), 'dev1 gate evidence only');
+assert(/^\/opt\/rustmush\/dev1\/(?:r[0-9]+[ab]?-evidence(?:\/acceptance-repair)?|availability-evidence|policy-evidence)$/.test(realpathSync(output)), 'dev1 gate evidence only');
 const credentials = JSON.parse(readFileSync(credentialsPath, 'utf8'));
 mkdirSync(output, { recursive: true });
 const evidence={target,at:new Date().toISOString(),checks:[],milestones:[]};

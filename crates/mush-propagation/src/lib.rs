@@ -70,6 +70,7 @@ pub mod pass;
 pub mod policy;
 pub mod record;
 pub mod routing;
+pub mod schedule;
 pub mod service;
 
 pub use commands::{
@@ -340,6 +341,9 @@ impl GameModule for PropagationModule {
                     value: store.transport.to_value(),
                 },
             });
+        }
+        if let Some(state) = &store.transport.service {
+            schedule::validate_bindings(ctx.w, state).map_err(ModError::msg)?;
         }
         store.reconcile_allocators();
         let dispatches: Vec<_> = store.envelopes().filter_map(|e| e.dispatch_ref()).collect();

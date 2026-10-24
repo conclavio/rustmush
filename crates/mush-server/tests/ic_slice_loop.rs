@@ -5433,6 +5433,25 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
             .is_none()
     })
     .await;
+    let policy_pair = mush_core::CanonicalId::new(format!("private_{order:016x}")).unwrap();
+    let out = run(
+        &mut rig,
+        GOD,
+        &format!("+relay/schedule {policy_pair}=aging:301;retain across refit"),
+    )
+    .await;
+    assert!(out.contains("recorded"), "{out}");
+    let policy = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .schedules[&policy_pair]
+        .clone();
     let identities = tacsim::relay_foundry::current(rig.tw.world())
         .unwrap()
         .machines[&order]
@@ -5459,6 +5478,18 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
         tacsim::relay_mobile::mounted(tw.world(), p.hull).is_none()
     })
     .await;
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .schedules[&policy_pair],
+        policy
+    );
     let count = rig.tw.world().next_id();
     assert!(
         run(&mut rig, who, &format!("+relayfleet/refit wo#{order:016x}"))
@@ -5471,6 +5502,18 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
         .machines[&order];
     assert_eq!(restored.halves, identities.halves);
     assert_eq!(restored.installed, identities.installed);
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .schedules[&policy_pair],
+        policy
+    );
     assert_eq!(
         tacsim::relay_mobile::current(rig.tw.world())
             .unwrap()

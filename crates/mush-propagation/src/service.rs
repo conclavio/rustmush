@@ -151,6 +151,10 @@ impl Config {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ticket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<crate::schedule::Snapshot>,
+    #[serde(default)]
+    pub repeat_operator: bool,
     pub version: u16,
     pub class: Class,
     /// Missing on pre-R4 tickets: their recorded class is their entitlement.
@@ -165,7 +169,11 @@ pub struct Ticket {
 }
 impl Ticket {
     pub fn valid(&self) -> bool {
-        self.version == 1
+        self.policy
+            .as_ref()
+            .is_none_or(|p| p.settings.validate().is_ok())
+            && (!self.repeat_operator || self.policy.as_ref().is_some_and(|p| p.operator.is_some()))
+            && self.version == 1
             && if self.throttled {
                 self.base_class.is_some_and(|c| c.demoted() == self.class)
             } else {
@@ -178,6 +186,8 @@ impl Ticket {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serialized_from: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub representation: Option<mush_core::RelayRepresentation>,
     pub envelope: u64,
@@ -227,6 +237,8 @@ pub struct Audit {
 #[serde(deny_unknown_fields)]
 pub struct State {
     #[serde(default)]
+    pub schedules: std::collections::BTreeMap<CanonicalId, crate::schedule::Revision>,
+    #[serde(default)]
     pub access: crate::access::Policy,
     #[serde(default)]
     pub commerce: Option<crate::commerce::Market>,
@@ -244,6 +256,7 @@ pub struct State {
 impl State {
     pub fn new(config: Config) -> Self {
         Self {
+            schedules: Default::default(),
             access: Default::default(),
             commerce: None,
             billing: None,
@@ -259,6 +272,12 @@ impl State {
     pub fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
         self.access.validate()?;
+        if self.schedules.len() > mush_sim::relay::MAX_PAIRS {
+            return Err("Too many relay schedules".into());
+        }
+        for policy in self.schedules.values() {
+            policy.validate()?;
+        }
         if let Some(billing) = &self.billing {
             billing.validate()?;
         }
@@ -296,6 +315,8 @@ impl State {
                         || r.reference
                             .as_ref()
                             .is_some_and(|s| s.is_empty() || s.len() > 96)
+                        || r.serialized_from
+                            .is_some_and(|at| at < r.queued || at > r.transmitted)
                         || r.queued > r.transmitted
                         || r.transmitted < r.ticket.eligible_at
                         || r.arrived.is_some_and(|at| at < r.transmitted)
@@ -304,7 +325,7 @@ impl State {
                             .is_some_and(|at| at < r.queued || at > r.transmitted)
                 })
             || self.evidence.iter().any(|e| !e.receipt.proof())
-            || self.audit.iter().any(|a| a.action.len() > 256)
+            || self.audit.iter().any(|a| a.action.len() > 512)
         {
             return Err("invalid or over-bound relay service state".into());
         }
@@ -670,13 +691,23 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
             ServiceState::Throttled => base.demoted().label(),
             ServiceState::Suspended => "unavailable",
         };
-        lines.push(format!("{id}: {:?}; your class {}; service {status:?}; Standard declared wait {} IC seconds. Sovereign/Priority wait for capacity. Deferred: at least {} IC seconds, window {}..{} in each {} IC seconds. Rate {} units/IC second; burst {} units.",p.state(),class,cfg.standard_delay_s,cfg.deferred_min_s,cfg.window_start_s,cfg.window_start_s+cfg.window_duration_s,cfg.window_period_s,p.capacity_units_per_ic_second,cfg.burst_units.min(p.capacity_units_per_ic_second)));
+        let (revision, settings) =
+            crate::schedule::current(Some(state), id, p.capacity_units_per_ic_second);
+        lines.push(format!(
+            "{:?}; your class {}; service {status:?}; {}",
+            p.state(),
+            class,
+            crate::schedule::line(id, revision, &settings)
+        ));
     }
     lines
 }
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one relay command switch."));
+    }
+    if ctx.switches.has("schedule") {
+        return crate::schedule::command(ctx);
     }
     if crate::access::handles(ctx) {
         return crate::access::command(ctx);
@@ -1046,9 +1077,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+relay".into(),
             shape: ArgShape::EqPair,
-            switches: ["access", "network", "represent", "subscribe","enroll","subscriptions","unsubscribe","cure","treaty","outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
+            switches: ["schedule", "access", "network", "represent", "subscribe","enroll","subscriptions","unsubscribe","cure","treaty","outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
                 .into_iter().map(Into::into).collect(),
-            help: "+relay: public tariff board. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/access pair/#character|org:id=discover,use|discover|use|none: private rights (manage). +relay/network pair=private|public: carriage policy (manage; public also publish). +relay/represent personal|org:id: explicit relay.speak authority, checked on send and each hop. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
+            help: "+relay: public tariff board. +relay/schedule pair[=key:value,...;reason]: link schedule (edits require manage). +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/access pair/#character|org:id=discover,use|discover|use|none: private rights (manage). +relay/network pair=private|public: carriage policy (manage; public also publish). +relay/represent personal|org:id: explicit relay.speak authority, checked on send and each hop. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
             ..Default::default()
         },
         Arc::new(command),
@@ -1127,6 +1158,7 @@ mod tests {
         let pair = CanonicalId::new("test").unwrap();
         let mut state = State::new(config());
         let mut receipt = Receipt {
+            serialized_from: None,
             representation: None,
             envelope: 1,
             pair: pair.clone(),
@@ -1135,6 +1167,8 @@ mod tests {
             reference: None,
             kind: crate::record::DispatchKind::Mail,
             ticket: Ticket {
+                policy: None,
+                repeat_operator: false,
                 version: 1,
                 class: Class::Standard,
                 base_class: None,

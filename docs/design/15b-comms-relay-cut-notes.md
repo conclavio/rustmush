@@ -1658,3 +1658,35 @@ Upgrade behavior: existing private pairs default closed until authority is grant
 or public carriage explicitly opened. Exchange charter links remain public. This
 unit does not begin the policy/bandwidth gate, add new gameplay consumers or create
 organization inboxes; RR-5 through RR-7 and live Discord acceptance remain open.
+
+
+## Policy/bandwidth follow-up gate — 2026-10-24
+
+The owner authorized RR-5 through RR-7 after availability/privacy commit `749e0f98`.
+[Design 15e](15e-comms-policy-bandwidth.md) reconciles hub admission and per-pair
+physical capacity. Authorized operators now set versioned, attributed per-link
+schedules through a checked API/command, preserving accepted delay/window/size terms.
+An envelope incurs admission once per operator; each traversed pair spends its own
+capacity. Message size, refill rate and burst are independent. Partial serialization,
+first-unit payment capture and capacity share durable boundaries, with no early
+recipient visibility. Policy updates cannot mint tokens. Spent courtesy traffic
+cannot be purchased after transmission begins.
+
+Validation passed **2,086 passing automated tests, 3 pre-existing ignored tests, 93 checked live commands and 6 SIGKILL/restart boundaries**. Full formatting, strict all-targets Clippy, help
+contracts, release server build and harness syntax checks passed. The live gate
+proved frozen admission across two spokes, one real retail debit across a partial
+crash and final arrival, and a multi-unit message on the genuinely commissioned
+one-unit private hardware after a real funded voyage. No receipts or hardware were fabricated.
+All 1,495 build/help/harness inputs matched. Tested and restored server
+SHA-256: `6bdf7529856b6d00d5e27027da9373f62539b7b7c4e16f2a7aa6919dcdf9f8a4`.
+
+The saved dev1 database/config was restored and healthy (HTTPS 200,
+2 nodes/1 pair, no private installation); dev2 stayed at PID
+539467. [Evidence and retained attempts](evidence/relay-policy-bandwidth-2026-10-24/README.md)
+and [metadata](evidence/relay-policy-bandwidth-2026-10-24/metadata.json) provide exact
+identities and counts. This closes **RR-5, RR-6 and RR-7**. Further consumers,
+aggregate hub contention and live Discord acceptance remain outside this gate.
+The preceding availability/privacy CI also exposed a stale capability-vocabulary
+count; this gate explicitly asserts discover/use/speak and passes the full 302-test
+server library suite. No production permission check was weakened.
+Normal CI for the new push is a separate result. Pause after publication.

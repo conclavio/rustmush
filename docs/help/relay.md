@@ -14,13 +14,40 @@ web query. `+relay/receipts` shows timestamps for your retained, arrived traffic
 Leaving a channel removes access to its receipts as well as its history. Private
 link stamps also require current discovery rights.
 
-The v1 policy has four classes. Sovereign and Priority wait for actual capacity.
-Standard additionally waits 60 IC seconds from queue admission. Deferred waits at
-least 7,200 IC seconds and transmits in the first 3,600 seconds of each 86,400-second
-IC day. Old eligible work gains a scheduling rank every 300 IC seconds; smaller
-eligible copies may pass a head that cannot fit the remaining capacity. The pair
-shares one eight-unit bucket across directions; it never accumulates idle credit.
-Delivery is checked on the existing coarse cadence, so these are earliest times.
+The seeded policy has four classes. Sovereign and Priority wait for actual capacity.
+Standard adds 60 IC seconds of admission delay; Deferred adds at least 7,200 IC
+seconds and transmits in the first 3,600 seconds of each 86,400-second IC day.
+Admission delay applies once per operator per envelope, including across two
+Exchange spokes. Each pair still has its own queue, capacity and Deferred window.
+There is no shared aggregate Luna bandwidth bucket. Old eligible work gains a
+scheduling rank every 300 IC seconds. Closed windows and jammed destinations let
+other eligible work proceed; large messages retain their FIFO rank while transmitting.
+
+Each started 128 content bytes is one unit. A pair's maximum message size, refill
+rate and burst are separate settings. Public pairs start at eight units/IC second
+with an eight-unit burst; manufactured/private pairs start at one and one. Idle
+capacity accumulates only up to the burst. A multi-unit message can span several
+seconds on a narrow link. Progress and spent capacity survive restart; recipients
+see the message only after its complete route arrives. Delivery uses the existing
+coarse cadence, so all posted times are earliest times.
+
+Operators with discovery and `relay.manage` can inspect or change a link's schedule:
+
+```
++relay/schedule <pair>
++relay/schedule <pair>=standard:60,rate:1,burst:1;reason
++relay/schedule <pair>=expect:3,max:1024;reason
+```
+
+The board shows the current revision. `expect` rejects a stale update. Other fields
+are `deferred`, `period`, `start`, `window` and `aging`, all in IC seconds. Maximum
+size is 128–1024 bytes in multiples of 128. Rate cannot exceed installed hardware;
+burst is positive and bounded. Changes record the operator, time, reason and values.
+Accepted tickets keep their delay, window, aging and size terms. Current rate and
+burst govern physical transmission; increasing burst creates no free capacity.
+An over-limit new message may use another pair or conventional transport. A route
+replan can discard partial serialization; spent capacity and consumed fees are not
+refunded, while completed operator admission remains recorded.
 
 New Exchange traffic defaults to free Deferred. Short queued copies can buy Standard at
 1 cr per unit or Priority at 5 cr per unit. One unit is each started 128 content
@@ -39,7 +66,7 @@ pair still consumes physical capacity. Existing accepted traffic keeps its terms
 
 Quotes freeze class, recipient, content units, tariff and payer for 600 IC seconds.
 Buying reserves real funds; the account's normal debit and approval rules apply.
-The first Exchange transmission settles the whole fee. An unsent reservation
+The first serialized unit on an Exchange pair settles the whole fee. An unsent reservation
 expires after one IC day from quoting or can be cancelled for full release.
 Consumed service has no refund. To upgrade unused Standard, cancel its reservation
 and quote Priority. Repeating a purchase does not reserve or charge again.

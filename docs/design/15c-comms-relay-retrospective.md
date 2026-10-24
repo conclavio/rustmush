@@ -39,6 +39,21 @@ new push remains a separate result. The findings below retain the reviewed R10
 behavior; RR-5 through RR-7, further consumer interfaces and live Discord acceptance
 remain open.
 
+## Policy/bandwidth follow-up
+
+The owner subsequently authorized RR-5 through RR-7. [Design 15e](15e-comms-policy-bandwidth.md)
+records the reconciled model: physical capacity per pair, admission once per operator,
+versioned attributed schedules and durable multi-unit serialization independent of
+message size. The gate passed 2,086 passing automated tests, 3 pre-existing ignored tests, 93 checked live commands and 6 SIGKILL/restart boundaries. The real dev1 run includes a commissioned
+one-unit private link, real first-unit payment capture, crashes and actual inbox
+arrival. Dev1's baseline was restored and dev2 unchanged.
+
+**RR-5, RR-6 and RR-7 are closed by this follow-up.** The findings below retain the
+reviewed R10 behavior. Additional consumer interfaces, a separately designed aggregate
+hub bottleneck and live Discord acceptance remain future work. See the
+[acceptance report](evidence/relay-policy-bandwidth-2026-10-24/README.md); publication
+CI remains a separate result.
+
 ## Assessment
 
 The core chain is built. It is substantially more than a registry or a deferred

@@ -1,0 +1,3 @@
+PASS genuine-funded-checkpoint
+PASS explicit-star-upgrade-preserves-real-funded-private-hardware
+PASS unmount-restart-refit-retains-policy-and-physical-identities

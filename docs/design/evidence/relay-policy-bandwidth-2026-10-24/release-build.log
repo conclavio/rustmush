@@ -1,0 +1,4 @@
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `release` profile [optimized] target(s) in 8m 41s

@@ -1,0 +1,18 @@
+CI for 749e0f9808171314941f43fabec7792718b822e9
+https://github.com/conclavio/rustmush/actions/runs/40132559247/job/120987189907
+
+2026-10-24T21:22:16.6170939Z ---- modules::tests::the_org_capability_vocabulary_covers_every_economy_capability stdout ----
+2026-10-24T21:22:16.6171671Z
+2026-10-24T21:22:16.6172376Z thread 'modules::tests::the_org_capability_vocabulary_covers_every_economy_capability' (20193) panicked at crates/mush-server/src/modules.rs:2375:9:
+2026-10-24T21:22:16.6173221Z assertion `left == right` failed
+2026-10-24T21:22:16.6173485Z   left: 28
+2026-10-24T21:22:16.6173681Z  right: 25
+2026-10-24T21:22:16.6174013Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-24T21:22:16.6174333Z
+2026-10-24T21:22:16.6174343Z
+2026-10-24T21:22:16.6174430Z failures:
+2026-10-24T21:22:16.6174762Z     modules::tests::the_org_capability_vocabulary_covers_every_economy_capability
+2026-10-24T21:22:16.6175091Z
+2026-10-24T21:22:16.6175376Z test result: FAILED. 301 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 7.95s
+2026-10-24T21:22:16.6175763Z
+2026-10-24T21:22:16.6255190Z error: test failed, to rerun pass `-p mush-server --lib`

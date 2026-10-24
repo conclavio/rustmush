@@ -1,0 +1,73 @@
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized] target(s) in 50.00s
+     Running tests/relay_registry.rs (target/debug/deps/relay_registry-ff4d0ab27cabbd9b)
+
+running 63 tests
+test ap_multiple_mail_senders_leave_channel_and_tactical_headroom ... ok
+test ap_organization_quota_is_shared_and_switching_identity_cannot_evade_actor_quota ... ok
+test ap_one_sender_cannot_fill_shared_admission_before_or_after_handoff ... ok
+test ap_organization_speaking_is_explicit_frozen_scoped_and_revocable ... ok
+test ap_private_discovery_use_revocation_and_public_carriage_are_separate ... ok
+test ap_mail_reservation_stays_with_original_sender_until_return_is_consumed ... ok
+test ap_zero_based_organization_and_scope_survive_source_handoff_and_restart ... ok
+test ap_control_reserve_survives_data_saturation_and_restart ... ok
+test pb_deferred_window_keeps_partial_progress_and_accepted_window ... ok
+test pb_two_spokes_pay_one_operator_admission_across_restart ... ok
+test r10_public_star_content_digests_are_pinned ... ok
+test pb_schedule_authority_revision_bounds_and_frozen_admission ... ok
+test r10_expansion_inherits_terminal_hub_loss_without_a_healthy_window ... ok
+test pb_one_unit_private_hardware_serializes_and_revocation_discards_partial ... ok
+test r10_historical_pack_upgrade_preserves_identity_money_and_inflight_due ... ok
+test pb_corrupt_policy_and_serialization_refuse_boot_without_resetting_spend ... ok
+test pb_paid_serialization_captures_first_unit_once_and_hides_incomplete_mail ... ok
+test r10_named_terms_case_deduplicates_unrelated_principals_and_cure ... ok
+test r1_bounds_and_terminal_state_are_enforced ... ok
+test r1_permissions_and_installed_object_lifecycle ... ok
+test r1_existing_world_acquires_seed_once ... ok
+test r2_conventional_fallback_freezes_sky_lag_across_restart_and_link_repair ... ok
+test r2_moving_recipient_requires_another_physical_leg ... ok
+test r1_real_seed_availability_and_noop_plan_survive_restart ... ok
+test r10_upgrade_observes_cancelled_debt_without_inventing_an_active_subscription ... ok
+test r2_fifo_bandwidth_survives_restart_and_rejects_full_link_queue ... ok
+test r3_aged_standard_work_precedes_new_high_class_traffic ... ok
+test r3_expired_queue_tickets_do_not_inflate_private_load ... ok
+test r2_unknown_endpoints_wait_with_bounded_admission_and_expiry ... ok
+test r1_bad_documents_are_held_not_reseeded ... ok
+test r2_pair_delivery_and_ack_are_durable_and_arrival_gated ... ok
+test r4_org_titled_endpoints_and_independent_operator_link ... ok
+test r3_mixed_traffic_serializes_fifo_and_receipts_follow_membership ... ok
+test r4_receiver_throttle_sources_status_privacy_and_restore ... ok
+test r3_four_classes_restart_capacity_receipts_and_scandal ... ok
+test r4_sender_receiver_policy_revalidates_queue_and_preserves_consumed_service ... ok
+test r3_full_legacy_tickets_preserve_capacity_and_refuse_partial_policy ... ok
+test r6a_all_send_paths_bulk_self_and_old_mail_use_the_right_boundary ... ok
+test r6a_pending_capacity_expiry_and_deleted_sent_payload_are_bounded ... ok
+test r6b_identified_relay_retries_survive_restart_without_duplicate_fanout ... ok
+test r6b_membership_bound_and_corrupt_knowledge_fail_closed ... ok
+test r6a_mail_handoffs_gate_visibility_and_survive_each_restart ... ok
+test r7_station_pack_digest_and_bounded_attention ... ok
+test r6b_channel_holes_offline_restart_and_shared_mirror_are_arrival_gated ... ok
+test r6b_bounds_expiry_and_retention_release_real_transport_work ... ok
+test r7_custody_void_and_checked_return_use_the_same_loss_writer ... ok
+test r6a_refusals_wait_for_arrival_and_a_physical_return ... ok
+test r6b_membership_revocation_and_source_loss_preserve_transport_boundaries ... ok
+test r7_damage_permanent_loss_consequences_repair_and_restart ... ok
+test r8a_expired_hold_waiting_in_release_backlog_cannot_be_captured ... ok
+test r8a_cancel_expiry_no_funds_and_no_payer_alias_bypass ... ok
+test r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once ... ok
+test r8a_failed_capture_keeps_money_capacity_receipt_and_message_unspent ... ok
+test r8a_standard_fanout_prices_real_utf8_content_and_default_deferred_stays_free ... ok
+test r8a_orphaned_reservation_and_forged_quote_refuse_boot ... ok
+test r8a_pre_retail_upgrade_preserves_accepted_terms_and_missing_market_refuses_boot ... ok
+test r8a_two_exchange_hops_use_one_purchase_and_survive_restart_between_hops ... ok
+test r8a_purchase_reservation_atomic_transmission_restart_and_conservation ... ok
+test r8b_later_payment_does_not_erase_old_debt_and_cancellation_keeps_arrears ... ok
+test r8b_cure_preserves_economic_suspension_and_rate_changes_do_not_rebill ... ok
+test r8b_lost_subscription_owner_and_forged_terms_refuse_boot ... ok
+test r8b_sovereign_real_institution_treaty_expires_before_billing_and_never_aliases_payer ... ok
+test r8b_person_subscription_real_bills_queued_delivery_arrears_cure_restart_and_sanctions ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 144.28s
+

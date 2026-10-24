@@ -863,6 +863,15 @@ fn prop_route(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ),
         );
     }
+    if let Some(progress) = &route.serialization {
+        info(
+            ctx,
+            format!(
+                "Serialization: {}/{} units, first IC {}, last IC {}; no recipient visibility until complete.",
+                progress.sent, progress.total, progress.started, progress.last
+            ),
+        );
+    }
     if let Some(queued) = &route.queued_at {
         info(
             ctx,

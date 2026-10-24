@@ -470,6 +470,10 @@ impl<'de> Deserialize<'de> for Envelope {
                 .service
                 .as_ref()
                 .is_some_and(|t| t.units != crate::service::units(&envelope))
+                || transit
+                    .serialization
+                    .as_ref()
+                    .is_some_and(|p| p.total != crate::service::units(&envelope))
             {
                 return Err(serde::de::Error::custom(
                     "service units contradict content accounting",

@@ -1,0 +1,7 @@
+{
+  "action": "restore",
+  "sourceSha256": "4355115e797754148d4479242e4496e2b41554ee6e865115875980ad5adf06bc",
+  "dev2Pid": 539467,
+  "keys": 4887,
+  "method": "portless RDB reader; dev1 DB0 RESTORE with AOF retained"
+}

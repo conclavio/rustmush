@@ -107,9 +107,21 @@ pub struct CompletedLeg {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Serialization {
+    pub total: u32,
+    pub sent: u32,
+    pub started: i64,
+    pub last: i64,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Transit {
     pub version: u16,
     pub registry_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serialization: Option<Serialization>,
+    #[serde(default)]
+    pub admitted_operators: Vec<u64>,
     pub position: ObjId,
     pub destination: ObjId,
     pub legs: Vec<Leg>,
@@ -126,6 +138,29 @@ pub struct Transit {
 
 impl Transit {
     pub fn validate(&self) -> Result<(), String> {
+        let admitted: std::collections::BTreeSet<_> = self.admitted_operators.iter().collect();
+        if admitted.len() != self.admitted_operators.len() || admitted.len() > MAX_LINK_HOPS {
+            return Err("Invalid operator admission history".into());
+        }
+        if let Some(ticket) = &self.service
+            && let Some(operator) = ticket.policy.as_ref().and_then(|p| p.operator)
+            && (ticket.repeat_operator || self.serialization.is_some())
+            && !self.admitted_operators.contains(&operator)
+        {
+            return Err("Service ticket contradicts operator admission history".into());
+        }
+        if let Some(p) = &self.serialization
+            && (!(1..=8).contains(&p.total)
+                || p.sent == 0
+                || p.sent >= p.total
+                || p.last < p.started
+                || self.flight.is_some()
+                || self.queued_at.as_ref().is_none_or(|q| p.started < q.at)
+                || self.legs.get(self.next).is_none_or(|l| l.pair.is_none())
+                || self.service.as_ref().is_some_and(|t| t.units != p.total))
+        {
+            return Err("Invalid relay serialization progress".into());
+        }
         if self
             .service
             .as_ref()
@@ -211,6 +246,8 @@ pub struct Work {
 pub struct Capacity {
     pub at: i64,
     pub units: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -240,13 +277,11 @@ impl TransportState {
             .capacity
             .iter()
             .map(|(pair, bucket)| {
-                (
-                    pair.to_string(),
-                    serde_json::Value::Object(serde_json::Map::from_iter([
-                        ("at".into(), bucket.at.into()),
-                        ("units".into(), bucket.units.into()),
-                    ])),
-                )
+                let mut value = serde_json::json!({"at": bucket.at, "units": bucket.units});
+                if let Some(tokens) = bucket.tokens {
+                    value["tokens"] = tokens.into();
+                }
+                (pair.to_string(), value)
             })
             .collect();
         let mut value = serde_json::json!({"version":self.version,"capacity":serde_json::Value::Object(capacity)});
@@ -262,39 +297,97 @@ impl TransportState {
         }
         if self.version != 1
             || self.capacity.len() > MAX_PAIRS
-            || self.capacity.values().any(|b| b.units > 1_000_000)
+            || self
+                .capacity
+                .values()
+                .any(|b| b.units > 1_000_000 || b.tokens.is_some_and(|t| t > 1_000_000))
         {
             return Err("invalid relay transport capacity state".into());
         }
         Ok(())
     }
 
-    fn available(&self, pair: &CanonicalId, now: i64, limit: u32) -> u32 {
+    pub(crate) fn available(&self, pair: &CanonicalId, now: i64, rate: u32, burst: u32) -> u32 {
         match self.capacity.get(pair) {
             Some(b) if b.at > now => 0,
-            Some(b) if b.at == now => limit.saturating_sub(b.units),
-            _ => limit,
+            Some(b) => {
+                // Legacy buckets record units spent in one IC second. Convert
+                // the unspent balance conservatively; never refill on reboot.
+                let balance = b.tokens.unwrap_or_else(|| burst.saturating_sub(b.units));
+                let elapsed = now.saturating_sub(b.at) as u64;
+                u64::from(balance)
+                    .saturating_add(elapsed.saturating_mul(u64::from(rate)))
+                    .min(u64::from(burst)) as u32
+            }
+            None => burst,
         }
     }
-    fn consume(&mut self, pair: &CanonicalId, now: i64, units: u32, limit: u32) -> bool {
-        if !self.capacity.contains_key(pair) && self.capacity.len() >= MAX_PAIRS {
-            return false;
+    fn next_bucket(
+        &self,
+        pair: &CanonicalId,
+        now: i64,
+        units: u32,
+        rate: u32,
+        burst: u32,
+    ) -> Option<Capacity> {
+        if units == 0 || (!self.capacity.contains_key(pair) && self.capacity.len() >= MAX_PAIRS) {
+            return None;
         }
-        let bucket = self
+        let available = self.available(pair, now, rate, burst);
+        if units > available {
+            return None;
+        }
+        let spent = self
             .capacity
-            .entry(pair.clone())
-            .or_insert(Capacity { at: now, units: 0 });
-        if now < bucket.at {
+            .get(pair)
+            .filter(|b| b.at == now)
+            .map_or(0, |b| b.units);
+        Some(Capacity {
+            at: now,
+            units: spent.saturating_add(units),
+            tokens: Some(available - units),
+        })
+    }
+    #[cfg(test)]
+    fn consume(&mut self, pair: &CanonicalId, now: i64, units: u32, rate: u32, burst: u32) -> bool {
+        let Some(bucket) = self.next_bucket(pair, now, units, rate, burst) else {
             return false;
-        }
-        if now > bucket.at {
-            *bucket = Capacity { at: now, units: 0 };
-        }
-        if bucket.units.saturating_add(units) > limit {
-            return false;
-        }
-        bucket.units += units;
+        };
+        self.capacity.insert(pair.clone(), bucket);
         true
+    }
+    /// Materialize under the old rate before changing it. Raising a burst or
+    /// changing policy twice in one second cannot mint spendable capacity.
+    pub(crate) fn reconfigure(
+        &mut self,
+        pair: &CanonicalId,
+        now: i64,
+        old_rate: u32,
+        old_burst: u32,
+        new_burst: u32,
+    ) -> Result<(), String> {
+        if self.capacity.get(pair).is_some_and(|b| b.at > now)
+            || (!self.capacity.contains_key(pair) && self.capacity.len() >= MAX_PAIRS)
+        {
+            return Err("Relay capacity cannot be reconfigured at this clock or bound.".into());
+        }
+        let tokens = self
+            .available(pair, now, old_rate, old_burst)
+            .min(new_burst);
+        let units = self
+            .capacity
+            .get(pair)
+            .filter(|b| b.at == now)
+            .map_or(0, |b| b.units);
+        self.capacity.insert(
+            pair.clone(),
+            Capacity {
+                at: now,
+                units,
+                tokens: Some(tokens),
+            },
+        );
+        Ok(())
     }
 }
 
@@ -468,7 +561,17 @@ fn plan_catalog(
                 if depth + used_hops >= MAX_LINK_HOPS
                     || pair.state() != LinkState::Live
                     || !permitted.contains(pair_id)
-                    || pair.capacity_units_per_ic_second < units
+                    || units
+                        > crate::schedule::current(
+                            world
+                                .module_state::<PropagationStore>()
+                                .and_then(|s| s.transport.service.as_ref()),
+                            pair_id,
+                            pair.capacity_units_per_ic_second,
+                        )
+                        .1
+                        .max_bytes
+                            / 128
                 {
                     continue;
                 }
@@ -561,6 +664,8 @@ fn plan_catalog(
         Some(Transit {
             version: 1,
             registry_revision: catalog.revision,
+            serialization: None,
+            admitted_operators: vec![],
             position: from,
             destination: to,
             legs,
@@ -713,7 +818,13 @@ impl<'a> Pass<'a> {
                     let class = crate::service::effective(s, world, pair, e)
                         .map_or(crate::service::Class::Deferred, |v| v.0);
                     (class as i64)
-                        .saturating_sub(now.at.saturating_sub(at.at) / s.config.aging_s)
+                        .saturating_sub(
+                            now.at.saturating_sub(at.at)
+                                / r.service
+                                    .as_ref()
+                                    .and_then(|t| t.policy.as_ref())
+                                    .map_or(s.config.aging_s, |p| p.settings.aging_s),
+                        )
                         .max(0)
                 });
                 rows.push((rank, at.at, e.id(), pair.clone()));
@@ -847,6 +958,27 @@ impl<'a> Pass<'a> {
                     envelope.representation(),
                 )
             });
+        let oversized = route
+            .legs
+            .iter()
+            .enumerate()
+            .skip(route.next)
+            .any(|(index, leg)| {
+                !(index == route.next && route.service.is_some())
+                    && leg.pair.as_ref().is_some_and(|id| {
+                        catalog.pairs.get(id).is_some_and(|p| {
+                            message_units(envelope)
+                                > crate::schedule::current(
+                                    store.transport.service.as_ref(),
+                                    id,
+                                    p.capacity_units_per_ic_second,
+                                )
+                                .1
+                                .max_bytes
+                                    / 128
+                        })
+                    })
+            });
         let uncovered = route
             .legs
             .iter()
@@ -862,6 +994,7 @@ impl<'a> Pass<'a> {
         if route.destination != destination
             || route.registry_revision != catalog.revision
             || denied
+            || oversized
             || uncovered
         {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
@@ -886,6 +1019,7 @@ impl<'a> Pass<'a> {
             revised.forwardings = route.forwardings + u8::from(route.destination != destination);
             revised.physical_legs = route.physical_legs;
             revised.history = route.history;
+            revised.admitted_operators = route.admitted_operators;
             return Some(envelope.with_transit(revised));
         }
         let Some(leg) = route.legs.get(route.next).cloned() else {
@@ -896,6 +1030,14 @@ impl<'a> Pass<'a> {
             if pair.state() != LinkState::Live {
                 return None;
             }
+            let (revision, settings) = crate::schedule::current(
+                store.transport.service.as_ref(),
+                pair_id,
+                pair.capacity_units_per_ic_second,
+            );
+            let operator = crate::service::integration(self.world)
+                .and_then(|api| api.operator(self.world, pair_id));
+            let repeated = operator.is_some_and(|o| route.admitted_operators.contains(&o));
             if route.queued_at.is_none()
                 || (store.transport.service.is_some() && route.service.is_none())
             {
@@ -915,24 +1057,32 @@ impl<'a> Pass<'a> {
                         service, self.world, pair_id, envelope,
                     ));
                     let units = message_units(envelope);
-                    let available = store.transport.available(
-                        pair_id,
-                        now.at,
-                        pair.capacity_units_per_ic_second
-                            .min(service.config.burst_units),
-                    );
+                    let available =
+                        store
+                            .transport
+                            .available(pair_id, now.at, settings.rate, settings.burst);
                     route.service = Some(crate::service::Ticket {
-                        version: service.config.version,
+                        version: 1,
                         class,
                         base_class,
                         throttled,
                         units,
-                        eligible_at: service.config.eligible_at(class, queued.at),
-                        declared_s: service.config.standard_delay_s,
-                        actual_ready: (available >= units
+                        eligible_at: settings.eligible_at(class, queued.at, repeated),
+                        declared_s: if repeated {
+                            0
+                        } else {
+                            settings.standard_delay_s
+                        },
+                        actual_ready: (available > 0
                             && self.jamming.get(&leg.to).copied().unwrap_or(0)
                                 < crate::context::JAMMING_BLOCKS_AT)
                             .then_some(now.at),
+                        policy: Some(crate::schedule::Snapshot {
+                            revision,
+                            operator,
+                            settings: settings.clone(),
+                        }),
+                        repeat_operator: repeated,
                     });
                 }
                 route.queued_at = Some(queued);
@@ -952,31 +1102,33 @@ impl<'a> Pass<'a> {
                         Some(crate::commerce::base(state, self.world, pair_id, envelope));
                     ticket.class = class;
                     ticket.throttled = throttled;
-                    ticket.eligible_at = state.config.eligible_at(class, queued.at);
+                    ticket.eligible_at = ticket.policy.as_ref().map_or_else(
+                        || state.config.eligible_at(class, queued.at),
+                        |p| {
+                            p.settings
+                                .eligible_at(class, queued.at, ticket.repeat_operator)
+                        },
+                    );
                     ticket.actual_ready = None;
                     return Some(envelope.with_transit(route));
                 }
             }
-            let limit = store
-                .transport
-                .service
-                .as_ref()
-                .map_or(pair.capacity_units_per_ic_second, |s| {
-                    pair.capacity_units_per_ic_second.min(s.config.burst_units)
-                });
-            let available = store.transport.available(pair_id, now.at, limit);
+            let available =
+                store
+                    .transport
+                    .available(pair_id, now.at, settings.rate, settings.burst);
             if let Some(ticket) = route.service.as_mut()
                 && ticket.actual_ready.is_none()
-                && available >= ticket.units
+                && available > 0
                 && self.jamming.get(&leg.to).copied().unwrap_or(0)
                     < crate::context::JAMMING_BLOCKS_AT
             {
                 ticket.actual_ready = Some(now.at);
                 return Some(envelope.with_transit(route));
             }
-            // A closed Deferred window, jammed destination or oversized head
-            // cannot block an eligible smaller copy. The bounded class/FIFO
-            // ordering ages all open work toward the highest scheduling rank.
+            // A closed Deferred window or jammed destination cannot block open
+            // work. Large messages retain class/FIFO rank while serializing;
+            // aging prevents a stream of higher-class work starving them.
             let queue = self.queues.get_mut(pair_id)?;
             let chosen = queue
                 .iter()
@@ -1012,16 +1164,17 @@ impl<'a> Pass<'a> {
                             return false;
                         }
                         r.service.as_ref().map_or_else(
-                            || message_units(e) <= available,
+                            || available > 0,
                             |t| {
-                                t.units <= available
+                                available > 0
                                     && now.at >= t.eligible_at
                                     && (t.class != crate::service::Class::Deferred
-                                        || store
-                                            .transport
-                                            .service
-                                            .as_ref()
-                                            .is_some_and(|s| s.config.window_open(now.at)))
+                                        || store.transport.service.as_ref().is_some_and(|s| {
+                                            t.policy.as_ref().map_or_else(
+                                                || s.config.window_open(now.at),
+                                                |p| p.settings.window_open(now.at),
+                                            )
+                                        }))
                             },
                         )
                     })
@@ -1062,18 +1215,60 @@ impl<'a> Pass<'a> {
             {
                 return None;
             }
-            let units = message_units(envelope);
-            let mut next = match envelope.relayed(leg.relay?, now.clone()) {
-                Ok(next) => next,
-                Err(_) => return Some(envelope.in_state(EnvelopeState::Expired, now.clone())),
-            };
-            if !store.transport.consume(pair_id, now.at, units, limit) {
+            let total = message_units(envelope);
+            let sent = route.serialization.as_ref().map_or(0, |p| p.sent);
+            let units = total.saturating_sub(sent).min(available);
+            if units == 0 {
                 return None;
             }
+            if operator.is_some_and(|o| !route.admitted_operators.contains(&o))
+                && route.admitted_operators.len() >= MAX_LINK_HOPS
+            {
+                return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
+            }
+            // Preflight every fallible step before marking money or capacity.
+            let completed = if sent + units == total {
+                Some(match envelope.relayed(leg.relay?, now.clone()) {
+                    Ok(next) => next,
+                    Err(_) => return Some(envelope.in_state(EnvelopeState::Expired, now.clone())),
+                })
+            } else {
+                None
+            };
+            let bucket = store.transport.next_bucket(
+                pair_id,
+                now.at,
+                units,
+                settings.rate,
+                settings.burst,
+            )?;
+            // First-unit capture, progress and capacity share the existing strict
+            // durable transaction. Failed capture installs none of this pass.
             if !crate::commerce::consuming(store, self.world, pair_id, envelope.id()) {
                 return None;
             }
+            store.transport.capacity.insert(pair_id.clone(), bucket);
             self.paid_capture |= needs_capture;
+            if let Some(operator) = operator
+                && !route.admitted_operators.contains(&operator)
+            {
+                route.admitted_operators.push(operator);
+            }
+            let started = route.serialization.as_ref().map_or(now.at, |p| p.started);
+            if sent + units < total {
+                route.serialization = Some(Serialization {
+                    total,
+                    sent: sent + units,
+                    started,
+                    last: now.at,
+                });
+                return Some(
+                    envelope
+                        .in_state(EnvelopeState::Transmitted, now.clone())
+                        .with_transit(route),
+                );
+            }
+            let mut next = completed?;
             queue.retain(|id| *id != envelope.id());
             if let (Some(state), Some(ticket), Some(queued)) = (
                 &mut store.transport.service,
@@ -1081,6 +1276,7 @@ impl<'a> Pass<'a> {
                 &route.queued_at,
             ) {
                 state.receipt(crate::service::Receipt {
+                    serialized_from: Some(started),
                     representation: envelope.representation(),
                     envelope: envelope.id(),
                     pair: pair_id.clone(),
@@ -1098,6 +1294,7 @@ impl<'a> Pass<'a> {
             route.next += 1;
             route.queued_at = None;
             route.service = None;
+            route.serialization = None;
             next = next.with_transit(route);
             Some(next)
         } else {
@@ -1397,13 +1594,13 @@ mod tests {
     fn shared_capacity_is_conserved_across_wire_round_trip_and_clock_rollback() {
         let mut state = TransportState::default();
         let pair = cid("ab");
-        assert!(state.consume(&pair, 10, 4, 8));
+        assert!(state.consume(&pair, 10, 4, 8, 8));
         assert_eq!(state.to_value(), serde_json::to_value(&state).unwrap());
         let mut loaded: TransportState = serde_json::from_value(state.to_value()).unwrap();
-        assert!(loaded.consume(&pair, 10, 4, 8));
-        assert!(!loaded.consume(&pair, 10, 1, 8));
-        assert!(!loaded.consume(&pair, 9, 1, 8));
-        assert!(loaded.consume(&pair, 11, 8, 8));
+        assert!(loaded.consume(&pair, 10, 4, 8, 8));
+        assert!(!loaded.consume(&pair, 10, 1, 8, 8));
+        assert!(!loaded.consume(&pair, 9, 1, 8, 8));
+        assert!(loaded.consume(&pair, 11, 8, 8, 8));
     }
 
     #[test]
@@ -1415,6 +1612,7 @@ mod tests {
             Capacity {
                 at: i64::MIN,
                 units: 0,
+                tokens: None,
             },
         );
         state.capacity.insert(
@@ -1422,6 +1620,7 @@ mod tests {
             Capacity {
                 at: i64::MAX,
                 units: u32::MAX,
+                tokens: None,
             },
         );
         assert_eq!(state.to_value(), serde_json::to_value(&state).unwrap());
@@ -1429,5 +1628,32 @@ mod tests {
             serde_json::from_value::<TransportState>(state.to_value()).unwrap(),
             state
         );
+    }
+    #[test]
+    fn token_rate_burst_policy_changes_and_legacy_buckets_conserve_capacity() {
+        let mut state = TransportState::default();
+        let pair = cid("ab");
+        assert!(state.consume(&pair, 10, 6, 2, 6));
+        assert!(!state.consume(&pair, 10, 1, 2, 6));
+        assert!(state.consume(&pair, 11, 2, 2, 6));
+        let mut state: TransportState = serde_json::from_value(state.to_value()).unwrap();
+        assert_eq!(state.available(&pair, 11, 2, 6), 0);
+        assert_eq!(state.available(&pair, 10, 2, 6), 0);
+        assert_eq!(state.available(&pair, 100, 2, 6), 6);
+        state.reconfigure(&pair, 100, 2, 6, 20).unwrap();
+        state.reconfigure(&pair, 100, 1, 20, 30).unwrap();
+        assert_eq!(state.available(&pair, 100, 1, 30), 6);
+        assert_eq!(state.available(&pair, 101, 1, 30), 7);
+        assert!(state.reconfigure(&pair, 99, 1, 30, 30).is_err());
+        state.capacity.insert(
+            pair.clone(),
+            Capacity {
+                at: 10,
+                units: 8,
+                tokens: None,
+            },
+        );
+        assert_eq!(state.available(&pair, 10, 8, 8), 0);
+        assert_eq!(state.available(&pair, 11, 8, 8), 8);
     }
 }

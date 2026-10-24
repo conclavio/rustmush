@@ -1,0 +1,537 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T22:15:16.310Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 45 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.relay.luna_ceres",
+      "reply": "Plan for tacsim.relay.luna_ceres@2: 0 create, 1 update, 0 retire, 0 unchanged\n update   network (relay_network)\n validator: no findings\n fingerprint 0cff218fe728013e — @atlas/pack apply 0cff218fe728013e",
+      "wallMs": 26,
+      "replyBytes": 204
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack apply 0cff218fe728013e",
+      "reply": "Applied tacsim.relay.luna_ceres@2: 0 created, 1 updated, 0 retired, 0 unchanged.",
+      "wallMs": 155,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 52,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #678=policy gate transfer",
+      "reply": "#678 is not placed",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has left.\nemit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 50,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "+relay/schedule private_407fdca2ba48ecec=aging:301;policy acceptance",
+      "reply": "Schedule revision 1 recorded. Existing admission terms retained. private_407fdca2ba48ecec: schedule v1; Standard admission 60 IC seconds once per operator; Deferred admission 7200, window 0..3600 / 86400; aging 301; maximum 1024 bytes; rate 1 units/IC second; burst 1 units.",
+      "wallMs": 51,
+      "replyBytes": 274
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relayfleet/remove",
+      "reply": "Fleet pair removed to the Lunar dock; its original halves and cradles are retained for refit.",
+      "wallMs": 25,
+      "replyBytes": 93
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 26,
+      "replyBytes": 66
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relayfleet/refit wo#407fdca2ba48ecec",
+      "reply": "Fleet refit restored using the original halves and cradles; no new front segment or first-launch record.",
+      "wallMs": 51,
+      "replyBytes": 104
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=policy gate transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 27,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#101",
+      "reply": "emit R6carol1f8127 has left.\nTeleported.",
+      "wallMs": 50,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #678=policy gate transfer",
+      "reply": "#678 is not placed",
+      "wallMs": 52,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#703",
+      "reply": "emit R6bob1b16df has left.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#679=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_mercury/#679=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/schedule luna_ceres=standard:60,rate:8,burst:8;policy acceptance",
+      "reply": "Schedule revision 1 recorded. Existing admission terms retained. luna_ceres: schedule v1; Standard admission 60 IC seconds once per operator; Deferred admission 7200, window 0..3600 / 86400; aging 300; maximum 1024 bytes; rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 260
+    },
+    {
+      "actor": "God",
+      "line": "+relay/schedule luna_mercury=standard:1800;policy acceptance",
+      "reply": "Schedule revision 1 recorded. Existing admission terms retained. luna_mercury: schedule v1; Standard admission 1800 IC seconds once per operator; Deferred admission 7200, window 0..3600 / 86400; aging 300; maximum 1024 bytes; rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 264
+    }
+  ],
+  "milestones": [
+    {
+      "test": "genuine-funded-checkpoint",
+      "fixture": {
+        "action": "prepare",
+        "sourceSha256": "7cecd71fe01a116829d3342fa7e6658da763f6c95528ecb74dcdd6d91a9a9c16",
+        "dev2Pid": 539467,
+        "keys": 5362,
+        "method": "portless RDB reader; dev1 DB0 RESTORE with AOF retained"
+      },
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": null,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      },
+      "pair": {
+        "capacity_units_per_ic_second": 1,
+        "class_policy": "private",
+        "halves": [
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_0",
+            "node": "private_407fdca2ba48ecec_0",
+            "object": 729,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_1",
+            "node": "private_407fdca2ba48ecec_1",
+            "object": 730,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    {
+      "test": "star-upgrade-with-real-private-hardware",
+      "signal": "SIGKILL",
+      "gateway": 1264698,
+      "old": 1264710,
+      "fresh": 1264755
+    },
+    {
+      "test": "explicit-star-upgrade-preserves-real-funded-private-hardware",
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": null,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      },
+      "registry": {
+        "losses": {},
+        "nodes": {
+          "ceres": {
+            "coverage": [
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113
+            ],
+            "label": "Ceres relay endpoint",
+            "object": 664,
+            "operator": 22,
+            "place": 112
+          },
+          "kirkwood": {
+            "coverage": [
+              698,
+              699
+            ],
+            "label": "Kirkwood relay endpoint",
+            "object": 733,
+            "operator": 22,
+            "place": 699
+          },
+          "malapert": {
+            "coverage": [
+              202,
+              203,
+              212,
+              209,
+              213,
+              204,
+              205,
+              206,
+              207,
+              208,
+              210,
+              211,
+              685,
+              686,
+              687
+            ],
+            "label": "Malapert relay endpoint",
+            "object": 665,
+            "operator": 22,
+            "place": 687
+          },
+          "mercury": {
+            "coverage": [
+              702,
+              703
+            ],
+            "label": "Mercury relay endpoint",
+            "object": 734,
+            "operator": 22,
+            "place": 703
+          },
+          "phobos": {
+            "coverage": [
+              692,
+              693,
+              156,
+              157,
+              158,
+              159,
+              160,
+              161,
+              162,
+              163,
+              164,
+              165,
+              166,
+              167,
+              261,
+              262,
+              263,
+              264,
+              265,
+              266,
+              268,
+              269,
+              270,
+              267,
+              271
+            ],
+            "label": "Phobos relay endpoint",
+            "object": 735,
+            "operator": 22,
+            "place": 693
+          },
+          "private_407fdca2ba48ecec_0": {
+            "coverage": [
+              202
+            ],
+            "label": "Concord Fleet lunar anchor",
+            "object": 731,
+            "operator": 24,
+            "place": 202
+          },
+          "private_407fdca2ba48ecec_1": {
+            "coverage": [
+              715
+            ],
+            "label": "Concord Fleet mobile half",
+            "object": 732,
+            "operator": 24,
+            "place": 715
+          }
+        },
+        "operator": 22,
+        "pairs": {
+          "luna_ceres": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.luna",
+                "node": "malapert",
+                "object": 666,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.ceres",
+                "node": "ceres",
+                "object": 667,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_kirkwood": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.luna",
+                "node": "malapert",
+                "object": 736,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.kirkwood",
+                "node": "kirkwood",
+                "object": 737,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_mercury": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.luna",
+                "node": "malapert",
+                "object": 738,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.mercury",
+                "node": "mercury",
+                "object": 739,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_phobos": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.luna",
+                "node": "malapert",
+                "object": 740,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.phobos",
+                "node": "phobos",
+                "object": 741,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "private_407fdca2ba48ecec": {
+            "capacity_units_per_ic_second": 1,
+            "class_policy": "private",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "private_407fdca2ba48ecec_half_0",
+                "node": "private_407fdca2ba48ecec_0",
+                "object": 729,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "private_407fdca2ba48ecec_half_1",
+                "node": "private_407fdca2ba48ecec_1",
+                "object": 730,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          }
+        },
+        "revision": 39,
+        "source_entry": "network",
+        "source_pack": "tacsim.relay.luna_ceres",
+        "structural_version": 1,
+        "version": 1
+      }
+    },
+    {
+      "test": "unmounted-private-policy-retained",
+      "signal": "SIGKILL",
+      "gateway": 1264698,
+      "old": 1264755,
+      "fresh": 1264800
+    },
+    {
+      "test": "unmount-restart-refit-retains-policy-and-physical-identities",
+      "schedule": {
+        "actor": 1,
+        "at": 74225036848,
+        "reason": "policy acceptance",
+        "revision": 1,
+        "settings": {
+          "aging_s": 301,
+          "burst": 1,
+          "deferred_min_s": 7200,
+          "max_bytes": 1024,
+          "rate": 1,
+          "standard_delay_s": 60,
+          "window_duration_s": 3600,
+          "window_period_s": 86400,
+          "window_start_s": 0
+        }
+      },
+      "pair": {
+        "capacity_units_per_ic_second": 1,
+        "class_policy": "private",
+        "halves": [
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_0",
+            "node": "private_407fdca2ba48ecec_0",
+            "object": 729,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_1",
+            "node": "private_407fdca2ba48ecec_1",
+            "object": 730,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    }
+  ],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T22:15:16.375Z",
+      "gatewayPid": 1264698,
+      "serverPid": 1264710,
+      "serverSha256": "6bdf7529856b6d00d5e27027da9373f62539b7b7c4e16f2a7aa6919dcdf9f8a4"
+    }
+  ],
+  "failure": "AssertionError [ERR_ASSERTION]: +relay/schedule luna_ceres=standard:1;unauthorized: Schedule revision 2 recorded. Existing admission terms retained. luna_ceres: schedule v2; Standard admission 1 IC seconds once per operator; Deferred admission 7200, window 0..3600 / 86400; aging 300; maximum 1024 bytes; rate 8 units/IC second; burst 8 units.\n    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:100:16)\n    at async twoSpokes (file:///opt/rustmush/dev1/build/scripts/relay-policy-live.mjs:41:2)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-policy-live.mjs:106:69"
+}

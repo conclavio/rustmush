@@ -118,7 +118,7 @@ Luna hub means Earth's own traffic first crosses to Luna at light speed.
 | Earth surface → Luna | 1.3 s | 1.3 s (Earth uplinks to Luna conventionally) |
 | Earth surface → Mars surface | 3–22 min | ≈ 1.4 s |
 | Luna → Mars surface | 3–22 min | ≈ 0.1 s |
-| Phobos → Ceres (two hops, one queue) | 8–38 min | ≈ 0.1 s plus the Luna queue |
+| Phobos → Ceres (two hops, one admission) | 8–38 min | ≈ 0.1 s plus operator admission and both pair queues |
 | Earth → Ceres | 14–33 min | ≈ 1.4 s |
 | Luna → Mercury | 4–12 min | ≈ 0.1 s |
 | Earth → a Jovian moon (no node at start) | 35–54 min | 35–54 min |
@@ -144,7 +144,7 @@ sky at the end bodies and the ticket's frozen legs, as D-15-11 says.
 Every world-start link terminates at **Malapert**, the Luna hub next door to the Concord Executive
 at Shackleton. No spoke-to-spoke pair exists. The star is the Concord's deliberate instrument of
 control, in the same spirit as the Registry: a Republic order to Ceres, a Freeport tip to Kirkwood,
-a Co-op invoice to Phobos — all of it transits Luna's queue and Luna's eyes.
+a Co-op invoice to Phobos — all of it transits Luna's admission policy, pair queues and oversight.
 
 ```text
                  Mercury (Solar Authority)
@@ -169,11 +169,13 @@ doc 11 §5: **J** de jure · **F** de facto · **C** covert · **E** economic.
 
 Consequences that fall out of the star:
 
-- **No private channel between the Republic and the Freeport.** Two instant hops, one queue, one
-  operator. Encryption (T15, later) hides content but not volume and timing, and metadata is
+- **No private channel between the Republic and the Freeport.** Two relay hops, one admission,
+  one operator. Encryption (T15, later) hides content but not volume and timing, and metadata is
   intelligence.
-- **The Luna queue is everyone's queue.** Congestion at one node — real or declared (§5.2) — delays
-  the whole corridor.
+- **The Exchange controls every public route.** Physical capacity and queues belong to each
+  pair. Declared admission is paid once per operator per envelope, at its first used link.
+  Congestion on one pair delays routes through that pair; there is no aggregate Luna bandwidth
+  bucket or automatic corridor-wide delay. A hub bottleneck would be a separate gameplay change.
 - **Cutting Malapert partitions everyone from everyone** (§6.2). It is the one node the Concord's
   expensive navy unambiguously exists to guard.
 - **Future pairs may bypass Luna.** A Phobos–Ceres pair, whoever makes it, is the strategic
@@ -216,13 +218,21 @@ Every envelope carries a class; the class decides its queue position at each nod
 
 The Exchange publishes a **congestion board** per link: the load it *declares*. Standard traffic
 waits by the board; Priority and Sovereign wait by the truth. The board overstates the truth: the
-gap is the upsell. The board is computed by Malapert's licensed scheduling mind (doc 11 §2, the
-Compact); in whose interest it overstates is a fair question for a scene. Two facts therefore
+gap is the upsell. An authorized operator sets the board through the checked scheduling interface.
+A future licensed scheduling mind (doc 11 §2, the Compact) can use that same interface; in whose
+interest it overstates is a fair question for a scene. Two facts therefore
 exist for every link — `declared_congestion` (public,
 operator-set) and the actual load (private, derived from real traffic) — and the gap between them is
 exactly the kind of secret the epistemic engine is built to hold: discoverable by comparing one's own
 timestamps across classes, by an insider, or by an OTS tap, and worth a scandal front when published
 (§10 q5).
+
+**Policy/bandwidth follow-up (RR-5–RR-7):** [design 15e](15e-comms-policy-bandwidth.md)
+defines audited, versioned per-link schedules and immutable accepted admission/window terms.
+Delay is once per operator per envelope, including across replans; physical rate, burst and
+maximum message size are independent. Multi-unit messages serialize over narrow links with
+durable partial progress and no early recipient visibility. Public two-spoke routes use both
+pair budgets, without repeating the operator's declared admission wait.
 
 ### 5.3 Service state: Served, Throttled, Suspended
 
