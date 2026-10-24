@@ -865,3 +865,42 @@ without Redis.
 normal R3 CI is triggered by the push and remains owner-monitored. The earlier
 R6b live Discord-provider gap remains recorded above; R3 changes no bridge code.
 **Paused after R3, before R4.**
+
+
+## R4 — operator service policy (candidate, 2026-10-23)
+
+Base `0bb5a25f`. The owner authorized all remaining R4–R10 gates, each with
+integration testing followed by commit/push before dependent work. R4 adds
+operator-wide Served/Throttled/Suspended restrictions with independent sources,
+IC actor/time/reason audit, scoped `relay.manage` and player-only own status.
+The new `restrictions` array defaults empty on R3 records. Tickets add optional
+base class and a default-false throttle marker; legacy tickets retain their class.
+No new state slot, namespace, crate dependency or budget exception is introduced.
+
+The real producer is `+relay/policy pair/#character|org:id=state,operator.source,reason`.
+The existing propagation planner and bounded pass consume it at both endpoints
+before each untransmitted link hop, including work queued before the change.
+A character speaks personally; a titled unit additionally represents its actual
+legal owner through the economy read adapter. Login, membership, database owner
+and payer aliases confer no representation. Throttles compose once by greatest
+severity. Served clears only the specified source, reserving automatic billing
+and incident sources for their future owner writers. A legitimate throttle is
+excluded from congestion-fraud proof. Consumed service and frozen physical flights
+are preserved. Independent links use their own node operator; both halves must
+agree, every node's operator must exist, and the seed reconciler permits additional
+independent topology while checking every seeded identity and binding.
+
+The independent-pair acceptance fixture is controlled topology input with normal
+object/behavior/organization setup, not a shipped fabrication or deployment verb.
+Its routes and policy decisions use the production consumer. R9 still owns the
+finite-input manufacture, shipment and installation producer. The live gate
+restores the seeded topology and removes fixture bindings afterward.
+
+Prior R3 CI run `40051264494` exposed a durability-test timing assumption: its
+60-second ACK wall timeout was also the new Standard minimum IC wait. The R2
+process-kill scenario now explicitly grants Priority to both endpoints, preserving
+its physical/crash premise; R3 class stories retain Standard delay assertions.
+This correction must pass on actual dev1 Redis/child processes before pushing.
+
+Local production stories, owner tests and architecture contracts passed during
+candidate preparation. Real-server evidence and final acceptance are pending.

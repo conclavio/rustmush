@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mush_core::{CanonicalId, ClockStamp, ObjId, ObjKind, World};
 use mush_sim::SpatialState;
-use mush_sim::relay::{ClassPolicy, LinkState, MAX_NODES, MAX_PAIRS, RelayRegistry, RelayStore};
+use mush_sim::relay::{LinkState, MAX_NODES, MAX_PAIRS, RelayRegistry, RelayStore};
 use serde::{Deserialize, Serialize};
 
 use crate::record::{Envelope, EnvelopeState, MAX_ENVELOPE_HOPS, PropagationStore};
@@ -351,12 +351,13 @@ pub fn plan(
     at: &ClockStamp,
     used_hops: usize,
     units: u32,
+    endpoints: Option<(ObjId, ObjId)>,
 ) -> (Option<Transit>, Work) {
     let Some(catalog) = registry(world) else {
         return (None, Work::default());
     };
     plan_catalog(
-        catalog, world, state, metric, from, to, at, used_hops, units,
+        catalog, world, state, metric, from, to, at, used_hops, units, endpoints,
     )
 }
 
@@ -371,6 +372,7 @@ fn plan_catalog(
     at: &ClockStamp,
     used_hops: usize,
     units: u32,
+    endpoints: Option<(ObjId, ObjId)>,
 ) -> (Option<Transit>, Work) {
     let mut work = Work {
         metric_reads: 1,
@@ -405,6 +407,12 @@ fn plan_catalog(
         }
         ends.insert(id.clone(), egress);
     }
+    let permitted: std::collections::BTreeSet<_> = catalog
+        .pairs
+        .keys()
+        .filter(|id| endpoints.is_none_or(|ends| crate::service::allowed(world, id, ends)))
+        .cloned()
+        .collect();
     let mut best: Option<Path> = None;
     for depth in 0..MAX_LINK_HOPS {
         let mut next = BTreeMap::<CanonicalId, Path>::new();
@@ -415,7 +423,7 @@ fn plan_catalog(
                 let b = &pair.halves[1 - direction].node;
                 if depth + used_hops >= MAX_LINK_HOPS
                     || pair.state() != LinkState::Live
-                    || pair.class_policy != ClassPolicy::Exchange
+                    || !permitted.contains(pair_id)
                     || pair.capacity_units_per_ic_second < units
                 {
                     continue;
@@ -600,6 +608,7 @@ pub fn prepare_with(
         now,
         envelope.path().len(),
         message_units(envelope),
+        Some((envelope.issuer(), envelope.recipient())),
     )
     .0
 }
@@ -655,10 +664,8 @@ impl<'a> Pass<'a> {
                 && let Some(pair) = r.legs.get(r.next).and_then(|l| l.pair.as_ref())
             {
                 let rank = store.transport.service.as_ref().map_or(0, |s| {
-                    let class = r
-                        .service
-                        .as_ref()
-                        .map_or_else(|| s.class(pair, e.issuer()), |t| t.class);
+                    let class = crate::service::effective(s, world, pair, e)
+                        .map_or(crate::service::Class::Deferred, |v| v.0);
                     (class as i64)
                         .saturating_sub(now.at.saturating_sub(at.at) / s.config.aging_s)
                         .max(0)
@@ -749,6 +756,7 @@ impl<'a> Pass<'a> {
                     now,
                     envelope.path().len(),
                     message_units(envelope),
+                    Some((envelope.issuer(), envelope.recipient())),
                 )
                 .0?;
                 if admission(store, Some(&route), Some(envelope.id())).is_err() {
@@ -778,7 +786,20 @@ impl<'a> Pass<'a> {
             return Some(envelope.with_transit(route));
         }
         let destination = destination(self.metric.as_ref(), self.world, self.state, envelope)?;
-        if route.destination != destination || route.registry_revision != catalog.revision {
+        let denied = route
+            .legs
+            .iter()
+            .skip(route.next)
+            .filter_map(|l| l.pair.as_ref())
+            .any(|pair| {
+                !crate::service::allowed(
+                    self.world,
+                    pair,
+                    (envelope.issuer(), envelope.recipient()),
+                )
+            });
+        if route.destination != destination || route.registry_revision != catalog.revision || denied
+        {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
             }
@@ -791,6 +812,7 @@ impl<'a> Pass<'a> {
                 now,
                 envelope.path().len(),
                 message_units(envelope),
+                Some((envelope.issuer(), envelope.recipient())),
             )
             .0?;
             if admission(store, Some(&revised), Some(envelope.id())).is_err() {
@@ -806,7 +828,7 @@ impl<'a> Pass<'a> {
         };
         if let Some(pair_id) = &leg.pair {
             let pair = catalog.pairs.get(pair_id)?;
-            if pair.state() != LinkState::Live || pair.class_policy != ClassPolicy::Exchange {
+            if pair.state() != LinkState::Live {
                 return None;
             }
             if route.queued_at.is_none()
@@ -822,7 +844,9 @@ impl<'a> Pass<'a> {
                 }
                 let queued = route.queued_at.clone().unwrap_or_else(|| now.clone());
                 if let Some(service) = &store.transport.service {
-                    let class = service.class(pair_id, envelope.issuer());
+                    let (class, throttled) =
+                        crate::service::effective(service, self.world, pair_id, envelope)?;
+                    let base_class = Some(service.class(pair_id, envelope.issuer()));
                     let units = message_units(envelope);
                     let available = store.transport.available(
                         pair_id,
@@ -833,6 +857,8 @@ impl<'a> Pass<'a> {
                     route.service = Some(crate::service::Ticket {
                         version: service.config.version,
                         class,
+                        base_class,
+                        throttled,
                         units,
                         eligible_at: service.config.eligible_at(class, queued.at),
                         declared_s: service.config.standard_delay_s,
@@ -844,6 +870,24 @@ impl<'a> Pass<'a> {
                 }
                 route.queued_at = Some(queued);
                 return Some(envelope.with_transit(route));
+            }
+            // Policy applies again immediately before transmission. Preserve the
+            // purchased/granted base and queue age, never stack demotions on retries.
+            if let (Some(state), Some(ticket), Some(queued)) = (
+                &store.transport.service,
+                &mut route.service,
+                &route.queued_at,
+            ) {
+                let (class, throttled) =
+                    crate::service::effective(state, self.world, pair_id, envelope)?;
+                if ticket.class != class || ticket.throttled != throttled {
+                    ticket.base_class = Some(ticket.base_class.unwrap_or(ticket.class));
+                    ticket.class = class;
+                    ticket.throttled = throttled;
+                    ticket.eligible_at = state.config.eligible_at(class, queued.at);
+                    ticket.actual_ready = None;
+                    return Some(envelope.with_transit(route));
+                }
             }
             let limit = store
                 .transport
@@ -886,6 +930,17 @@ impl<'a> Pass<'a> {
                             || self.jamming.get(&l.to).copied().unwrap_or(0)
                                 >= crate::context::JAMMING_BLOCKS_AT
                         {
+                            return false;
+                        }
+                        if store.transport.service.as_ref().is_some_and(|state| {
+                            crate::service::effective(state, self.world, pair_id, e).is_none_or(
+                                |(class, throttled)| {
+                                    r.service.as_ref().is_some_and(|t| {
+                                        t.class != class || t.throttled != throttled
+                                    })
+                                },
+                            )
+                        }) {
                             return false;
                         }
                         r.service.as_ref().map_or_else(
@@ -988,7 +1043,7 @@ impl<'a> Pass<'a> {
 mod tests {
     use super::*;
     use mush_core::ClockRef;
-    use mush_sim::relay::{RelayHalf, RelayNode, RelayPair};
+    use mush_sim::relay::{ClassPolicy, RelayHalf, RelayNode, RelayPair};
 
     fn cid(s: &str) -> CanonicalId {
         CanonicalId::new(s).unwrap()
@@ -1083,6 +1138,7 @@ mod tests {
             &at,
             0,
             1,
+            None,
         );
         let (miss, miss_work) = plan_catalog(
             &registry,
@@ -1094,6 +1150,7 @@ mod tests {
             &at,
             0,
             1,
+            None,
         );
         let hit = hit.unwrap();
         hit.validate().unwrap();
@@ -1103,6 +1160,28 @@ mod tests {
         assert_eq!(hit_work.edge_visits, 24);
         assert_eq!(hit.legs.iter().filter(|l| l.pair.is_some()).count(), 1);
         registry.pairs.get_mut(&cid("ca")).unwrap().class_policy = ClassPolicy::Private;
+        let (private, _) = plan_catalog(
+            &registry,
+            &world,
+            &spatial,
+            &TestMetric { end: ObjId(30) },
+            ObjId(100),
+            ObjId(200),
+            &at,
+            0,
+            1,
+            None,
+        );
+        assert_eq!(
+            private
+                .unwrap()
+                .legs
+                .iter()
+                .filter(|l| l.pair.is_some())
+                .count(),
+            1
+        );
+        registry.pairs.get_mut(&cid("ca")).unwrap().halves[0].enabled = false;
         let (around, _) = plan_catalog(
             &registry,
             &world,
@@ -1113,6 +1192,7 @@ mod tests {
             &at,
             0,
             1,
+            None,
         );
         assert_eq!(
             around
@@ -1133,6 +1213,7 @@ mod tests {
             &at,
             MAX_LINK_HOPS - 1,
             1,
+            None,
         );
         assert!(bounded.is_none());
     }
@@ -1149,6 +1230,7 @@ mod tests {
             &clock(0),
             0,
             1,
+            None,
         )
         .0
         .unwrap();

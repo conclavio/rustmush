@@ -123,8 +123,8 @@ fn preflight(
         registry.reconcile(ctx.w)?;
         if &registry.source_pack != pack.manifest().id()
             || &registry.source_entry != id
-            || registry.nodes.len() != def.nodes.len()
-            || registry.pairs.len() != def.pairs.len()
+            || registry.nodes.len() < def.nodes.len()
+            || registry.pairs.len() < def.pairs.len()
             || orgs
                 .state()
                 .org(registry.operator)
@@ -136,7 +136,8 @@ fn preflight(
             let live = registry.nodes.get(id).ok_or("relay: node identity drift")?;
             let coverage: Result<Vec<_>, _> =
                 authored.coverage.iter().map(|k| room(ctx, k)).collect();
-            if live.label != authored.label
+            if live.operator != registry.operator
+                || live.label != authored.label
                 || live.place != room(ctx, &authored.place)?
                 || live.coverage != coverage?
             {

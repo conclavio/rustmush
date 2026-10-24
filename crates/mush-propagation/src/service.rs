@@ -7,6 +7,7 @@ use mush_core::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub const MAX_RESTRICTIONS: usize = 256;
 pub const MAX_GRANTS: usize = 256;
 pub const MAX_RECEIPTS: usize = 512;
 pub const MAX_EVIDENCE: usize = 64;
@@ -30,6 +31,13 @@ impl Class {
             Self::Deferred => "Deferred",
         }
     }
+    pub fn demoted(self) -> Self {
+        match self {
+            Self::Sovereign => Self::Priority,
+            Self::Priority => Self::Standard,
+            _ => Self::Deferred,
+        }
+    }
     fn parse(s: &str) -> Option<Self> {
         match s {
             "sovereign" => Some(Self::Sovereign),
@@ -39,6 +47,62 @@ impl Class {
             _ => None,
         }
     }
+}
+/// IC identity supplied by the game adapter, never a login account or payer alias.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Principal {
+    Object(ObjId),
+    Organization(u64),
+}
+impl Principal {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Object(id) => id.to_string(),
+            Self::Organization(id) => format!("org:{id}"),
+        }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        if let Some(id) = s.strip_prefix("org:") {
+            id.parse().ok().map(Self::Organization)
+        } else {
+            s.strip_prefix('#')?
+                .parse::<u32>()
+                .ok()
+                .map(|n| Self::Object(ObjId(n)))
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceState {
+    #[default]
+    Served,
+    Throttled,
+    Suspended,
+}
+impl ServiceState {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "served" => Some(Self::Served),
+            "throttled" => Some(Self::Throttled),
+            "suspended" => Some(Self::Suspended),
+            _ => None,
+        }
+    }
+}
+/// Operator-wide restriction. Independent sources compose by greatest severity;
+/// restoring one source cannot remove another source's sanction.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Restriction {
+    pub operator: u64,
+    pub principal: Principal,
+    pub source: CanonicalId,
+    pub state: ServiceState,
+    pub reason: String,
+    pub actor: ObjId,
+    pub at: i64,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +153,11 @@ impl Config {
 pub struct Ticket {
     pub version: u16,
     pub class: Class,
+    /// Missing on pre-R4 tickets: their recorded class is their entitlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_class: Option<Class>,
+    #[serde(default)]
+    pub throttled: bool,
     pub units: u32,
     pub eligible_at: i64,
     pub declared_s: i64,
@@ -97,6 +166,11 @@ pub struct Ticket {
 impl Ticket {
     pub fn valid(&self) -> bool {
         self.version == 1
+            && if self.throttled {
+                self.base_class.is_some_and(|c| c.demoted() == self.class)
+            } else {
+                self.base_class.is_none_or(|c| c == self.class)
+            }
             && (1..=8).contains(&self.units)
             && (0..=86_400).contains(&self.declared_s)
     }
@@ -117,7 +191,8 @@ pub struct Receipt {
 }
 impl Receipt {
     pub fn proof(&self) -> bool {
-        self.ticket.class == Class::Standard
+        !self.ticket.throttled
+            && self.ticket.class == Class::Standard
             && self.ticket.declared_s > 0
             && self
                 .ticket
@@ -151,6 +226,8 @@ pub struct Audit {
 pub struct State {
     pub config: Config,
     pub grants: Vec<Grant>,
+    #[serde(default)]
+    pub restrictions: Vec<Restriction>,
     pub receipts: Vec<Receipt>,
     pub evidence: Vec<Evidence>,
     pub published: std::collections::BTreeMap<CanonicalId, u64>,
@@ -161,6 +238,7 @@ impl State {
         Self {
             config,
             grants: vec![],
+            restrictions: vec![],
             receipts: vec![],
             evidence: vec![],
             published: Default::default(),
@@ -171,7 +249,21 @@ impl State {
         self.config.validate()?;
         let keys: std::collections::BTreeSet<_> =
             self.grants.iter().map(|g| (&g.pair, g.principal)).collect();
-        if self.grants.len() > MAX_GRANTS
+        let restrictions: std::collections::BTreeSet<_> = self
+            .restrictions
+            .iter()
+            .map(|r| (r.operator, &r.principal, &r.source))
+            .collect();
+        if self.restrictions.len() > MAX_RESTRICTIONS
+            || restrictions.len() != self.restrictions.len()
+            || self.restrictions.iter().any(|r| {
+                r.source.as_str().len() > 48
+                    || r.reason.trim().is_empty()
+                    || r.reason.len() > 160
+                    || r.reason.chars().any(char::is_control)
+                    || r.state == ServiceState::Served
+            })
+            || self.grants.len() > MAX_GRANTS
             || keys.len() != self.grants.len()
             || self.receipts.len() > MAX_RECEIPTS
             || self.evidence.len() > MAX_EVIDENCE
@@ -206,6 +298,43 @@ impl State {
             .find(|g| &g.pair == pair && g.principal == actor)
             .map_or(Class::Standard, |g| g.class)
     }
+    pub fn status(&self, operator: u64, principals: &[Principal]) -> ServiceState {
+        self.restrictions
+            .iter()
+            .filter(|r| r.operator == operator && principals.contains(&r.principal))
+            .map(|r| r.state)
+            .max()
+            .unwrap_or_default()
+    }
+    pub fn restrict(&mut self, restriction: Restriction) -> Result<(), String> {
+        let index = self.restrictions.iter().position(|r| {
+            r.operator == restriction.operator
+                && r.principal == restriction.principal
+                && r.source == restriction.source
+        });
+        if restriction.source.as_str().len() > 48
+            || restriction.reason.trim().is_empty()
+            || restriction.reason.len() > 160
+            || restriction.reason.chars().any(char::is_control)
+        {
+            return Err(
+                "Provide a source (at most 48 bytes) and a plain reason (1..160 bytes).".into(),
+            );
+        }
+        if restriction.state == ServiceState::Served {
+            if let Some(i) = index {
+                self.restrictions.remove(i);
+            }
+        } else if let Some(i) = index {
+            self.restrictions[i] = restriction;
+        } else {
+            if self.restrictions.len() == MAX_RESTRICTIONS {
+                return Err("Restriction table is full.".into());
+            }
+            self.restrictions.push(restriction);
+        }
+        Ok(())
+    }
     pub fn receipt(&mut self, receipt: Receipt) {
         if self.receipts.len() >= MAX_RECEIPTS {
             self.receipts.remove(0);
@@ -223,6 +352,9 @@ impl State {
 /// preflight all fallible work before mutating, and must never disclose payloads.
 pub trait Integration: Send + Sync + std::fmt::Debug {
     fn seed(&self) -> Result<Config, String>;
+    fn operator(&self, world: &World, pair: &CanonicalId) -> Option<u64>;
+    fn principals(&self, world: &World, endpoint: ObjId) -> Vec<Principal>;
+    fn valid_principal(&self, world: &World, principal: &Principal) -> bool;
     fn visible(&self, world: &World, actor: ObjId, receipt: &Receipt) -> bool;
     fn authorized(&self, world: &World, actor: ObjId, pair: &CanonicalId, action: &str) -> bool;
     fn discover(&self, ctx: &mut Ctx<'_>, evidence: &Evidence) -> Result<(), String>;
@@ -233,6 +365,69 @@ fn integration(world: &World) -> Option<Arc<dyn Integration>> {
         .module_state::<crate::routing::RoutingServices>()?
         .1
         .clone()
+}
+/// Both endpoint identities are checked. A payer or class grant cannot replace
+/// either endpoint. The game adapter returns at most two identities per endpoint.
+pub fn status(
+    state: &State,
+    world: &World,
+    pair: &CanonicalId,
+    endpoints: (ObjId, ObjId),
+) -> ServiceState {
+    if state.restrictions.is_empty() {
+        return ServiceState::Served;
+    }
+    let Some(api) = integration(world) else {
+        return ServiceState::Served;
+    };
+    let Some(operator) = api.operator(world, pair) else {
+        return ServiceState::Suspended;
+    };
+    endpoints_into(endpoints)
+        .into_iter()
+        .map(|endpoint| {
+            let principals = api.principals(world, endpoint);
+            if principals.len() > 2 {
+                ServiceState::Suspended
+            } else {
+                state.status(operator, &principals)
+            }
+        })
+        .max()
+        .unwrap_or_default()
+}
+fn endpoints_into(endpoints: (ObjId, ObjId)) -> [ObjId; 2] {
+    [endpoints.0, endpoints.1]
+}
+pub fn allowed(world: &World, pair: &CanonicalId, endpoints: (ObjId, ObjId)) -> bool {
+    world
+        .module_state::<PropagationStore>()
+        .and_then(|s| s.transport.service.as_ref())
+        .is_none_or(|state| status(state, world, pair, endpoints) != ServiceState::Suspended)
+}
+pub fn effective(
+    state: &State,
+    world: &World,
+    pair: &CanonicalId,
+    envelope: &Envelope,
+) -> Option<(Class, bool)> {
+    let base = envelope
+        .transit()
+        .and_then(|r| r.service.as_ref())
+        .map_or_else(
+            || state.class(pair, envelope.issuer()),
+            |t| t.base_class.unwrap_or(t.class),
+        );
+    match status(
+        state,
+        world,
+        pair,
+        (envelope.issuer(), envelope.recipient()),
+    ) {
+        ServiceState::Served => Some((base, false)),
+        ServiceState::Throttled => Some((base.demoted(), true)),
+        ServiceState::Suspended => None,
+    }
 }
 fn current<'a>(ctx: &'a Ctx<'_>) -> Option<&'a State> {
     ctx.w
@@ -288,7 +483,14 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
         if p.class_policy != mush_sim::relay::ClassPolicy::Exchange {
             continue;
         }
-        lines.push(format!("{id}: {:?}; your class {}; Standard declared wait {} IC seconds. Sovereign/Priority wait for capacity. Deferred: at least {} IC seconds, window {}..{} in each {} IC seconds. Rate {} units/IC second; burst {} units.",p.state(),state.class(id,actor).label(),cfg.standard_delay_s,cfg.deferred_min_s,cfg.window_start_s,cfg.window_start_s+cfg.window_duration_s,cfg.window_period_s,p.capacity_units_per_ic_second,cfg.burst_units.min(p.capacity_units_per_ic_second)));
+        let status = status(state, world, id, (actor, actor));
+        let base = state.class(id, actor);
+        let class = match status {
+            ServiceState::Served => base.label(),
+            ServiceState::Throttled => base.demoted().label(),
+            ServiceState::Suspended => "unavailable",
+        };
+        lines.push(format!("{id}: {:?}; your class {}; service {status:?}; Standard declared wait {} IC seconds. Sovereign/Priority wait for capacity. Deferred: at least {} IC seconds, window {}..{} in each {} IC seconds. Rate {} units/IC second; burst {} units.",p.state(),class,cfg.standard_delay_s,cfg.deferred_min_s,cfg.window_start_s,cfg.window_start_s+cfg.window_duration_s,cfg.window_period_s,p.capacity_units_per_ic_second,cfg.burst_units.min(p.capacity_units_per_ic_second)));
     }
     lines
 }
@@ -328,9 +530,11 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         return Ok(());
     }
-    if !["grant", "load", "audit", "discover", "publish"]
-        .iter()
-        .any(|s| ctx.switches.has(s))
+    if ![
+        "policy", "status", "grant", "load", "audit", "discover", "publish",
+    ]
+    .iter()
+    .any(|s| ctx.switches.has(s))
     {
         for line in board(ctx.w, ctx.actor) {
             say(ctx, line);
@@ -342,7 +546,33 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .split_once('/')
         .map_or((left.as_str(), None), |(a, b)| (a, Some(b)));
     let id = pair(ctx, pair_name)?;
-    let action = if ctx.switches.has("grant") {
+    if ctx.switches.has("status") {
+        if subject.is_some() || ctx.args.rhs().is_some() {
+            return Err(CmdError::msg(
+                "Usage: +relay/status <pair> (your own service only).",
+            ));
+        }
+        let operator = api
+            .operator(ctx.w, &id)
+            .ok_or_else(|| CmdError::msg("Operator unavailable."))?;
+        let principals = api.principals(ctx.w, viewer);
+        say(
+            ctx,
+            format!("{id}: {:?}.", state.status(operator, &principals)),
+        );
+        for r in state
+            .restrictions
+            .iter()
+            .filter(|r| r.operator == operator && principals.contains(&r.principal))
+        {
+            say(
+                ctx,
+                format!("{} {:?}: {} (IC {}).", r.source, r.state, r.reason, r.at),
+            );
+        }
+        return Ok(());
+    }
+    let action = if ctx.switches.has("grant") || ctx.switches.has("policy") {
         "relay.manage"
     } else if ctx.switches.has("publish") {
         "relay.publish"
@@ -353,6 +583,61 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Permission denied."));
     }
     let at = ctx.w.world_ic_now().at;
+    if ctx.switches.has("policy") {
+        let usage = || {
+            CmdError::msg(
+                "Usage: +relay/policy pair/#character|org:id=served|throttled|suspended,source,reason",
+            )
+        };
+        let principal = subject
+            .and_then(Principal::parse)
+            .filter(|p| api.valid_principal(ctx.w, p))
+            .ok_or_else(usage)?;
+        let mut parts = ctx.args.rhs().unwrap_or("").splitn(3, ',');
+        let policy = parts
+            .next()
+            .and_then(|s| ServiceState::parse(s.trim()))
+            .ok_or_else(usage)?;
+        let source = parts
+            .next()
+            .and_then(|s| CanonicalId::new(s.trim()).ok())
+            .ok_or_else(usage)?;
+        let reason = parts.next().unwrap_or("").trim().to_owned();
+        // Manual policy cannot masquerade as a future automatic billing or incident writer.
+        if !source.as_str().starts_with("operator.") {
+            return Err(CmdError::msg(
+                "Manual policy sources must start with operator.",
+            ));
+        }
+        let operator = api
+            .operator(ctx.w, &id)
+            .ok_or_else(|| CmdError::msg("Operator unavailable."))?;
+        let action = format!(
+            "policy {id} {} {policy:?} {source}: {reason}",
+            principal.label()
+        );
+        if action.len() > 256 {
+            return Err(CmdError::msg("Policy audit exceeds 256 bytes."));
+        }
+        state
+            .restrict(Restriction {
+                operator,
+                principal,
+                source,
+                state: policy,
+                reason,
+                actor: ctx.actor,
+                at,
+            })
+            .map_err(CmdError::msg)?;
+        state.audit(ctx.actor, at, action);
+        save(ctx, state)?;
+        say(
+            ctx,
+            "Operator policy recorded; applies to both endpoints before their next relay hop.",
+        );
+        return Ok(());
+    }
     if ctx.switches.has("grant") {
         let actor = subject
             .and_then(|s| s.trim_start_matches('#').parse::<u32>().ok())
@@ -525,9 +810,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+relay".into(),
             shape: ArgShape::EqPair,
-            switches: ["receipts", "grant", "load", "audit", "discover", "publish"]
+            switches: ["policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
                 .into_iter().map(Into::into).collect(),
-            help: "+relay: public board and your operator-granted class. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
+            help: "+relay: public board and your operator-granted class. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
             ..Default::default()
         },
         Arc::new(command),
@@ -615,6 +900,8 @@ mod tests {
             ticket: Ticket {
                 version: 1,
                 class: Class::Standard,
+                base_class: None,
+                throttled: false,
                 units: 2,
                 eligible_at: 60,
                 declared_s: 60,
@@ -645,5 +932,50 @@ mod tests {
             2
         ];
         assert!(state.validate().is_err());
+    }
+    #[test]
+    fn restriction_bounds_sources_and_legacy_tickets_are_checked() {
+        let mut state = State::new(config());
+        let base = Restriction {
+            operator: 7,
+            principal: Principal::Object(ObjId(3)),
+            source: CanonicalId::new("operator.test").unwrap(),
+            state: ServiceState::Throttled,
+            reason: "Review pending".into(),
+            actor: ObjId(1),
+            at: 1,
+        };
+        state.restrict(base.clone()).unwrap();
+        state.validate().unwrap();
+        let mut duplicate = state.clone();
+        duplicate.restrictions.push(base.clone());
+        assert!(duplicate.validate().is_err());
+        let mut bad = base.clone();
+        bad.reason = "bad\nreason".into();
+        assert!(state.restrict(bad).is_err());
+        for id in 1..MAX_RESTRICTIONS {
+            let mut r = base.clone();
+            r.source = CanonicalId::new(&format!("operator.source{id}")).unwrap();
+            state.restrict(r).unwrap();
+        }
+        let mut extra = base.clone();
+        extra.source = CanonicalId::new("operator.extra").unwrap();
+        assert!(state.restrict(extra.clone()).is_err());
+        let mut clear = base;
+        clear.state = ServiceState::Served;
+        state.restrict(clear).unwrap();
+        state.restrict(extra).unwrap();
+        state.validate().unwrap();
+        let legacy: Ticket = serde_json::from_value(serde_json::json!({"version":1,"class":"priority","units":1,"eligible_at":0,"declared_s":60,"actual_ready":null})).unwrap();
+        assert!(legacy.valid());
+        assert_eq!(legacy.base_class, None);
+        let mut corrupt = legacy;
+        corrupt.throttled = true;
+        assert!(!corrupt.valid());
+        let mut wire = serde_json::to_value(State::new(config())).unwrap();
+        wire.as_object_mut().unwrap().remove("restrictions");
+        let upgraded: State = serde_json::from_value(wire).unwrap();
+        assert!(upgraded.restrictions.is_empty());
+        upgraded.validate().unwrap();
     }
 }

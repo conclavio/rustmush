@@ -594,6 +594,18 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     god.send_line(&format!("@teleport me=#{luna}")).await;
     god.send_line(&format!("@teleport {recipient}=#{ceres}"))
         .await;
+    // This story isolates physical routing and crash durability. R3's Standard
+    // policy deliberately waits 60 IC seconds, so give both the order and its
+    // returning ACK explicit no-charge Priority service. Class-delay coverage
+    // lives in the relay service stories; a 60-second timeout is not that clock.
+    for actor in [mush_core::GOD, recipient] {
+        command(
+            &mut god,
+            &format!("+relay/grant luna_ceres/{actor}=priority"),
+            "Class grant recorded",
+        )
+        .await;
+    }
     god.send_line(&format!("@prop/jam #{node}=9")).await;
     barrier(&mut god).await;
     let reply = command(
@@ -610,6 +622,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     )
     .await;
     let queued = record(&store, id).await;
+    assert_eq!(queued["transit"]["service"]["class"], "priority");
     command(&mut receiver, "+orders", "No traffic.").await;
     server.kill_hard();
     drop(god);

@@ -22,8 +22,32 @@ Class grants currently come from the operator; no purchase or charge exists yet.
 A scoped operator can use `+relay/grant luna_ceres/#character=priority` (or
 `sovereign`, `standard`, `deferred`). This needs `relay.manage` on the Exchange's
 organization scope. Restoring Standard removes the override and frees its grant slot. Grants affect future pair tickets; issued tickets survive
-restart with their class and eligibility time. The receiver's class is not used
+restart with their base class. Service restrictions are rechecked before transmission. The receiver's class is not used
 for the sender's message.
+
+`+relay/status luna_ceres` shows your service restrictions and reasons. An operator
+with `relay.manage` can set, for example:
+
+```
++relay/policy luna_ceres/#123=throttled,operator.incident,Investigation pending
++relay/policy luna_ceres/org:22=suspended,operator.sanction,Contract violation
++relay/policy luna_ceres/#123=served,operator.incident,Investigation cleared
+```
+
+A policy belongs to the pair's operator and applies to every link that operator
+runs. The strongest sender/receiver restriction wins: Served keeps the granted
+class; Throttled demotes once (Sovereign → Priority → Standard → Deferred);
+Suspended uses conventional transport or waits for a known route. Independent
+operators' links remain eligible. Both characters and a titled unit's legal owner
+are checked. Ordinary membership, database ownership and payment do not authorize
+representing an organization or bypass a receiving endpoint's restriction.
+
+Each source is independent; Served clears only the named source. Manual sources
+must begin `operator.`. Changes require a reason, are durably audited, and affect
+queued traffic before its next relay hop. Already consumed service and frozen
+conventional legs are preserved. Up to 256 active source/principal/operator
+restrictions are retained; clearing a source frees its slot. Only your own reasons
+are exposed in player status; actual load remains operator-only.
 
 `+relay/load luna_ceres`, `/audit` and `/discover` need `relay.inspect`.
 Discovery files timestamp evidence in the observer's private `+intel` ledger.

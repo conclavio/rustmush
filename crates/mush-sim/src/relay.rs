@@ -117,7 +117,6 @@ impl RelayRegistry {
         for node in self.nodes.values() {
             if node.label.is_empty()
                 || node.label.len() > 128
-                || node.operator != self.operator
                 || node.coverage.is_empty()
                 || node.coverage.len() > MAX_COVERAGE
                 || node.coverage.iter().collect::<BTreeSet<_>>().len() != node.coverage.len()
@@ -135,6 +134,11 @@ impl RelayRegistry {
                 || pair.halves[0].node == pair.halves[1].node
             {
                 return Err("invalid pair capacity or endpoints".into());
+            }
+            if self.nodes.get(&pair.halves[0].node).map(|n| n.operator)
+                != self.nodes.get(&pair.halves[1].node).map(|n| n.operator)
+            {
+                return Err("pair halves must have one operator".into());
             }
             for half in &pair.halves {
                 if !self.nodes.contains_key(&half.node)
@@ -162,6 +166,13 @@ impl RelayRegistry {
             return Err(format!("operator #{} is missing", self.operator.0));
         }
         for (id, node) in &self.nodes {
+            if world
+                .module_state::<OrgStore>()
+                .and_then(|s| s.state().org(node.operator))
+                .is_none()
+            {
+                return Err(format!("node {id} operator is missing"));
+            }
             check_object(
                 world,
                 node.object,

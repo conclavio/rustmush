@@ -1,6 +1,6 @@
 # 15a — Relay backbone implementation plan
 
-**Draft 0.3 — 2026-10-23.** Initially grounded against `origin/main` at
+**Draft 0.4 — 2026-10-23.** Initially grounded against `origin/main` at
 `7c886408c1a1d4d0283b886bdd62fbbe2f8fe7af`.
 Parent: [15 — Communications](15-comms-relay-backbone.md).
 This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
@@ -34,16 +34,15 @@ an OOC bypass nor permission to buy Priority service.
 
 **One milestone at a time.** Build its real producer, persistence, consumer and
 player/operator surface together. Run its integration gate, repair failures, write
-the evidence, then **stop and report to the owner**. Start the next milestone only
-when the owner continues. Do not accumulate dependent implementation while a gate
+the evidence, then record the result and **commit/push that milestone before continuing**. The owner has authorized the remaining R4–R10 train automatically. Do not accumulate dependent implementation while a gate
 is failed, skipped or awaiting its live test. Routine implementation choices inside
 a milestone can be resolved and recorded without reopening the seven decisions.
 
 The owner subsequently authorized automatic continuation from R6a to R6b, after
 R6a's integration gate, commit and push. This changes that stop only; failed gates
-still block dependent implementation. The owner has since authorized R3; the next stop is before R4.
+still block dependent implementation. The owner subsequently authorized R3 and now the entire remaining R4–R10 train.
 
-Every other split milestone below has its own stop. If another split becomes necessary,
+Every split milestone below retains its own integration gate. If another split becomes necessary,
 each new part must still end in an observable, integrated result. A library, record
 schema or mocked consumer alone is not an accepted milestone.
 
@@ -338,7 +337,7 @@ All 52 Linux boot/relay/passage tests, targeted lint, fresh Redis boot/reboot an
 upgraded dev1 WebSocket/SSH gates passed. All four queued classes and publication
 survived actual child SIGKILLs; 13 mixed producer copies drained within the shared
 capacity. [15b](15b-comms-relay-cut-notes.md) records the evidence. Normal CI is
-owner-monitored. **Paused after R3; R4 has not started.**
+owner-monitored. **R3 gate passed; remaining R4–R10 implementation is authorized.**
 
 ### Gate 7 — R4: service state and operator authority
 
@@ -490,7 +489,7 @@ Each milestone's evidence record must name:
 - seed version, IC rate, route/due-time expectations and observed arrival/ledger results;
 - restart/fault boundaries exercised, upgrade result and measured bounds;
 - defects found and resolved, any uncompleted criterion, and **accepted / not accepted**;
-- the explicit pause and the owner's continuation before the next milestone.
+- the milestone result, commit/push and the owner's standing authorization to continue.
 
 Acceptance means every required criterion is green. A material scope change or
 waived criterion must be recorded as an explicit owner decision, not described as
@@ -509,5 +508,5 @@ The initial action was R1 only: registry, minimal Luna–Ceres seed, diagnostics
 real Redis/client testing and an owner review. The owner subsequently authorized
 the R1 push and R2 implementation, then Gate 3 / R5 after the corrective dev1
 rerun. The next authorization covers R6a and automatic continuation to R6b after
-R6a's live gate and push. The owner subsequently authorized R3. **Next owner stop: after R3, before R4.** The owner is
+R6a's live gate and push. The owner subsequently authorized R3. **The remaining R4–R10 train is authorized, committing/pushing after each successful milestone gate.** The owner is
 monitoring GitHub CI; every live milestone gate still must pass before proceeding.
