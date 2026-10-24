@@ -760,7 +760,7 @@ impl SessionManager {
         let mut report = SendReport::default();
         for id in conn_ids {
             if let Some(e) = self.conns.get(&id) {
-                let sent = if e.handle.is_structured() {
+                let sent = if e.handle.uses_envelopes() {
                     e.handle.try_send_envelope(Arc::clone(&env))
                 } else {
                     e.handle.try_send(Arc::clone(ev))
@@ -786,7 +786,7 @@ impl SessionManager {
         let Some(e) = self.conns.get(&conn) else {
             return SendToConn::Unknown;
         };
-        if !e.handle.is_structured() {
+        if !e.handle.uses_envelopes() {
             return if e.handle.try_send(ev) {
                 SendToConn::Delivered
             } else {
@@ -825,11 +825,8 @@ impl SessionManager {
             return SendToConn::Unknown;
         };
         if !entry.handle.is_structured() {
-            return if entry.handle.try_send(ev) {
-                SendToConn::Delivered
-            } else {
-                SendToConn::Dropped
-            };
+            drop(entry);
+            return self.send_to_conn(conn, ev);
         }
         let sess = entry.sess;
         let handle = Arc::clone(&entry.handle);

@@ -922,7 +922,7 @@ impl mush_core::QueryHandler for ToySheetLive {
             data,
             show_staff,
         }
-        .keyframe(&self.feed, revision))
+        .query_keyframe(w, &self.feed, revision))
     }
 }
 

@@ -1,0 +1,66 @@
+    Checking serde_core v1.0.229
+    Checking once_cell v1.21.4
+    Checking smallvec v1.15.2
+    Checking tracing-core v0.1.36
+    Checking parking_lot_core v0.9.12
+    Checking parking_lot v0.12.5
+    Checking tracing v0.1.44
+    Checking futures-channel v0.3.34
+    Checking tokio v1.53.1
+    Checking futures-util v0.3.34
+    Checking bitflags v2.13.1
+    Checking serde_json v1.0.151
+    Checking serde v1.0.229
+    Checking smol_str v0.3.6
+    Checking log v0.4.34
+    Checking mush-proto v0.1.0 (/opt/rustmush/dev1/build/crates/mush-proto)
+    Checking getrandom v0.3.4
+    Checking rand_core v0.9.5
+    Checking icu_normalizer v2.3.0
+    Checking futures-executor v0.3.34
+    Checking futures v0.3.34
+    Checking idna_adapter v1.2.2
+    Checking percent-encoding v2.3.2
+    Checking form_urlencoded v1.2.2
+    Checking idna v1.1.0
+    Checking tokio-util v0.7.19
+    Checking rand_chacha v0.9.0
+    Checking dashmap v6.2.1
+    Checking rustix v1.1.4
+    Checking redis-protocol v6.0.0
+    Checking rand v0.9.5
+    Checking mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+    Checking nix v0.31.3
+    Checking generic-array v0.14.7
+    Checking url v2.5.8
+    Checking tokio-stream v0.1.19
+    Checking tempfile v3.27.0
+    Checking fred v10.1.0
+    Checking generic-array v1.4.5
+    Checking russh-cryptovec v0.62.0
+    Checking russh-util v0.52.0
+    Checking serde_bytes v0.11.19
+    Checking ratatui v0.29.0
+    Checking russh v0.63.1
+    Checking rusty-fork v0.3.1
+    Checking russh-sftp v3.0.1
+    Checking mush-pixel v0.1.0 (/opt/rustmush/dev1/build/crates/mush-pixel)
+    Checking mush-session v0.1.0 (/opt/rustmush/dev1/build/crates/mush-session)
+    Checking mush-ansi v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ansi)
+    Checking rand_xorshift v0.4.0
+    Checking proptest v1.11.0
+    Checking mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+    Checking mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+    Checking mush-canon v0.1.0 (/opt/rustmush/dev1/build/crates/mush-canon)
+    Checking mush-scenes v0.1.0 (/opt/rustmush/dev1/build/crates/mush-scenes)
+    Checking mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+    Checking mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+    Checking mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+    Checking mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+    Checking mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+    Checking mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+    Checking mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+    Checking mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+    Checking mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+    Checking mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+    Finished `dev` profile [unoptimized] target(s) in 1m 08s

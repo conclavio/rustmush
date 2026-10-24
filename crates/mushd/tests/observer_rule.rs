@@ -4107,6 +4107,8 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
     let (_b2, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     bo.expect("BOARD takes it back.").await;
     say(&mut bo, "EXIT", "climb").await;
+    // EXIT acknowledges world custody before the arena publishes its release.
+    support::wait_arena_pilot_left(&mut god, "BA", "Bo").await;
     let after = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
     assert_eq!(
         row(&after, "blue:"),

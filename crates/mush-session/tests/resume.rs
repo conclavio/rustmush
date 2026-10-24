@@ -1157,3 +1157,34 @@ fn revoked_private_mind_feed_does_not_replay_on_reconnect() {
         "the original connection received trace and revocation"
     );
 }
+
+#[test]
+fn stamped_ssh_live_identity_matches_history_without_ack_retention() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (tx, mut rx) = mpsc::channel(8);
+    let ssh = ConnectionHandle::new_with_sink_at(
+        ConnId(1),
+        addr(1),
+        ansi_caps(),
+        mush_session::Sink::AnsiStamped(tx),
+        Instant::now(),
+    );
+    assert!(!ssh.is_structured());
+    let (sess, _) = mgr.attach(ssh, CharKey(42), "nick".into());
+    let event = OutputEvent::Narrative {
+        kind: NarrativeKind::Say,
+        actor: None,
+        text: RichText::plain("one identity"),
+    };
+    mgr.send_event_to_char(CharKey(42), event.clone());
+    let live = rx.try_recv().unwrap();
+    let history = mgr.replay_since(sess, 0).unwrap();
+    assert_eq!(history[0].seq, live.seq);
+    assert_eq!(history[0].event, event);
+    assert_eq!(
+        mgr.send_to_conn(ConnId(1), Arc::new(sys("private"))),
+        SendToConn::Delivered
+    );
+    assert!(rx.try_recv().unwrap().seq > live.seq);
+    assert_eq!(mgr.replay_since(sess, 0).unwrap().len(), 1);
+}

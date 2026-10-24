@@ -40,6 +40,8 @@ pub enum Sink {
     /// ANSI-rendering transport (SSH): receives plain [`OutputEvent`]s and
     /// renders them through `mush-ansi`. Never sees envelopes.
     Ansi(mpsc::Sender<Arc<OutputEvent>>),
+    /// SSH with sequence metadata for live/history deduplication; no receipt ACKs.
+    AnsiStamped(mpsc::Sender<Arc<Envelope>>),
     /// Structured transport (web): receives seq/ts-stamped [`Envelope`]s
     /// (serialized as JSON on the wire). Never sees bare events.
     Structured(mpsc::Sender<Arc<Envelope>>),
@@ -144,6 +146,11 @@ impl ConnectionHandle {
         matches!(self.sink, Sink::Structured(_))
     }
 
+    /// Whether this sink needs envelope metadata, independently of receipt ACK support.
+    pub fn uses_envelopes(&self) -> bool {
+        matches!(self.sink, Sink::Structured(_) | Sink::AnsiStamped(_))
+    }
+
     /// Current capabilities (copy).
     pub fn caps(&self) -> ClientCaps {
         *read_locked(&self.caps, "caps")
@@ -189,7 +196,7 @@ impl ConnectionHandle {
                     false
                 }
             },
-            Sink::Structured(_) => {
+            Sink::Structured(_) | Sink::AnsiStamped(_) => {
                 tracing::error!(
                     conn = self.id.0,
                     "bare OutputEvent sent to a structured connection; \
@@ -206,7 +213,7 @@ impl ConnectionHandle {
     /// and is handled the same way.
     pub fn try_send_envelope(&self, env: Arc<Envelope>) -> bool {
         match &self.sink {
-            Sink::Structured(tx) => match tx.try_send(env) {
+            Sink::Structured(tx) | Sink::AnsiStamped(tx) => match tx.try_send(env) {
                 Ok(()) => true,
                 Err(err) => {
                     self.note_send_failure(matches!(err, TrySendError::Full(_)));

@@ -685,7 +685,8 @@ async fn the_story_is_the_same_story_through_the_gateway() {
 
     // **16b cut Q.2**: the name the row reads once it has been told apart, which
     // is not `held` — `held` was scraped at the first detection and is the
-    // provisional `X<n>`. Every sentence a gunner is told about the target's hull
+    // provisional `X<n>` on a fast reader; a delayed reader can first observe
+    // an already-classified row. Every sentence about the target's hull
     // is gated on classification, so the assertions below have to be against the
     // classified spelling or they would be about the wrong half of the match.
     let mut classified = String::new();
@@ -700,8 +701,8 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(
-        !classified.is_empty() && classified != held,
-        "the contact never crossed the boundary as a classified row"
+        !classified.is_empty(),
+        "the contact never crossed the boundary as a classified row: first={held:?}, classified={classified:?}"
     );
 
     // ---- the fight -----------------------------------------------------

@@ -76,6 +76,15 @@ impl TuiSession {
 
     /// Apply one event to the app state (no paint). Returns the read-only
     /// queries the app wants submitted as a result (a resync, a hydration).
+    /// Apply a live event with its gateway sequence when available.
+    pub fn apply_stamped_event(
+        &mut self,
+        event: &OutputEvent,
+        seq: Option<u64>,
+    ) -> Vec<(String, serde_json::Value)> {
+        self.app.apply_stamped_event(event, seq)
+    }
+
     pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, serde_json::Value)> {
         self.app.apply_event(event)
     }

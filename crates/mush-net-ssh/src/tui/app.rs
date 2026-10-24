@@ -312,11 +312,11 @@ pub struct TuiApp {
     /// because an SSH scrollback entry carries no seq to dedup against.
     cleared: usize,
     /// `before_seq` for the next narrative-history page; `None` asks from
-    /// the newest (interface plan I12). It only ever moves DOWN, and that is
-    /// the whole dedup: an SSH connection is a `Sink::Ansi` and never sees an
-    /// `Envelope`, so a live scrollback entry carries no seq to compare a
-    /// page against.
+    /// the newest (interface plan I12). It only moves toward older entries;
+    /// stamped live delivery is deduplicated separately below.
     backlog_cursor: Option<u64>,
+    /// Bounded identities of live or recalled narrative already rendered.
+    narrative_seen: std::collections::BTreeSet<u64>,
     /// The server may hold older narrative below what has been prepended.
     backlog_more: bool,
     /// A page is in flight, and when it was asked for — an aging latch, not
@@ -696,6 +696,7 @@ impl TuiApp {
             scroll_off: 0,
             cleared: 0,
             backlog_cursor: None,
+            narrative_seen: std::collections::BTreeSet::new(),
             backlog_more: true,
             backlog_pending: None,
             backlog_floored: false,
@@ -1798,6 +1799,25 @@ impl TuiApp {
     /// Apply one event to the app state. Returns read-only queries the app
     /// wants submitted (a resync after an unmergeable delta, a hydration
     /// after a `Hello`).
+    /// Sequence-aware live delivery closes the TUI priming race in either arrival order.
+    pub fn apply_stamped_event(
+        &mut self,
+        event: &OutputEvent,
+        seq: Option<u64>,
+    ) -> Vec<(String, Value)> {
+        if matches!(event, OutputEvent::Narrative { .. })
+            && let Some(seq) = seq
+        {
+            if !self.narrative_seen.insert(seq) {
+                return Vec::new();
+            }
+            while self.narrative_seen.len() > SCROLLBACK_CAP {
+                self.narrative_seen.pop_first();
+            }
+        }
+        self.apply_event(event)
+    }
+
     pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, Value)> {
         let now = self.now();
         let mut queries = Vec::new();
@@ -2218,6 +2238,7 @@ impl TuiApp {
     /// reply, so a permanent in-flight flag would wedge history for the rest
     /// of the connection. Read-only, so it never stamps idle (D-I-3).
     fn request_backlog(&mut self, r: &mut InputResult) {
+        debug_assert!(self.cleared == 0 || !self.backlog_more);
         if !self.backlog_more {
             return;
         }
@@ -2242,6 +2263,7 @@ impl TuiApp {
     /// goes through the same [`render_event`] a live one did, so a recalled
     /// line is byte-identical to how it first appeared.
     fn apply_narrative_backlog(&mut self, data: &Value) {
+        debug_assert!(self.cleared == 0 || !self.backlog_more);
         self.backlog_pending = None;
         if !self.backlog_more {
             // Nothing is being asked for any more: the server's floor, a full
@@ -2267,21 +2289,25 @@ impl TuiApp {
             self.mark_backlog_floor(page.evicted);
             return;
         }
-        // The dedup: only lines strictly older than the cursor. An SSH
-        // scrollback entry can carry no seq of its own, so this is all there
-        // is — and all there needs to be, because entry primes the first
-        // page into an EMPTY scrollback.
+        // Keep only older, unseen identities. A priming page may race live
+        // delivery on the same connection in either order.
         let cursor = self.backlog_cursor;
         let kept: Vec<_> = page
             .lines
             .iter()
-            .filter(|l| cursor.is_none_or(|c| l.seq < c))
+            .filter(|l| cursor.is_none_or(|c| l.seq < c) && !self.narrative_seen.contains(&l.seq))
             .collect();
+        let page_floor = page.lines.iter().map(|line| line.seq).min();
         if kept.is_empty() {
-            // A stale page: every line in it is one already held (a second
-            // priming page, or one that raced a re-armed latch). Drop it
-            // and leave the cursor and `more` alone — the next ask carries
-            // the current cursor and gets the right page.
+            if let Some(floor) = page_floor
+                && cursor.is_none_or(|c| floor < c)
+            {
+                self.backlog_cursor = Some(floor);
+                self.backlog_more = page.more;
+                self.mark_backlog_floor(page.evicted);
+            }
+            // A page wholly covered by live delivery still advances the cursor.
+            // A genuinely stale page cannot move it backward.
             return;
         }
         // Never evict the live tail. `push_entry` pops the FRONT at the cap,
@@ -2306,9 +2332,14 @@ impl TuiApp {
             for entry in entries.into_iter().rev() {
                 self.scrollback.push_front(entry);
             }
+            self.narrative_seen.insert(line.seq);
+            while self.narrative_seen.len() > SCROLLBACK_CAP {
+                self.narrative_seen.pop_first();
+            }
             oldest_pushed = Some(line.seq);
         }
-        self.backlog_cursor = oldest_pushed.or(self.backlog_cursor);
+        self.backlog_cursor =
+            if truncated { oldest_pushed } else { page_floor }.or(self.backlog_cursor);
         if truncated {
             // The local ring is the floor here, not the server's buffer, so
             // no marker: it would say something untrue about the world.
@@ -6419,6 +6450,40 @@ mod tests {
     /// A clock ten seconds past the fixture's, for the aging latch.
     fn clock_ten_s_later() -> i64 {
         3600 * 14 + 60 * 30 + 10
+    }
+
+    #[test]
+    fn priming_and_live_delivery_deduplicate_in_both_orders() {
+        let live = OutputEvent::Narrative {
+            kind: NarrativeKind::Say,
+            actor: Some(ObjRef::new("#5", "Mireille")),
+            text: RichText::plain("racing words"),
+        };
+        for live_first in [true, false] {
+            let mut app = app();
+            if live_first {
+                app.apply_stamped_event(&live, Some(9));
+            }
+            app.apply_event(&backlog_reply(
+                serde_json::json!([
+                    hline(9, "Mireille", "racing words"),
+                    hline(8, "Mireille", "older words")
+                ]),
+                true,
+                false,
+            ));
+            if !live_first {
+                app.apply_stamped_event(&live, Some(9));
+            }
+            assert_eq!(
+                rows_of(&app)
+                    .iter()
+                    .filter(|s| s.contains("racing words"))
+                    .count(),
+                1
+            );
+            assert_eq!(app.backlog_cursor, Some(8));
+        }
     }
 
     /// I12, the regression that matters most: a narrative-backlog page is

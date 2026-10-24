@@ -25,6 +25,17 @@ const keyframe = {
 };
 
 describe("SheetStore", () => {
+  it("full-data frames remove fields hidden after a visibility change", () => {
+    const s = new SheetStore();
+    s.applyKeyframe({ ...keyframe, data: { strength: 3, staffSecret: 7 } });
+    expect(s.data.staffSecret).toBe(7);
+    expect(s.applyDelta({ revision: 6, base_revision: 5, data: { strength: 4 } })).toBe("applied");
+    expect(s.data).toEqual({ strength: 4 });
+    s.applyKeyframe({ ...keyframe, revision: 6, data: { strength: 4, staffSecret: 8 } });
+    s.applyKeyframe({ ...keyframe, revision: 7, data: { strength: 5 } });
+    expect(s.data).toEqual({ strength: 5 });
+  });
+
   it("starts empty and not loaded", () => {
     const s = new SheetStore();
     expect(s.loaded).toBe(false);
