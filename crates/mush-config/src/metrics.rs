@@ -33,6 +33,9 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
+/// Maximum age of an authoritative world-loop heartbeat, in real seconds.
+pub const WORLD_HEALTH_MAX_AGE_S: i64 = 5;
+
 /// Loop-lag histogram bucket upper bounds, milliseconds (Prometheus `le`).
 /// The final `+Inf` bucket is implicit (`total` minus the sum of these).
 pub const LAG_BUCKETS_MS: [u64; 12] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
@@ -432,6 +435,26 @@ impl Metrics {
         self.world_loop_last_iter_unix.load(Ordering::Relaxed)
     }
 
+    /// Last observed loop lag, without allocating a metrics snapshot.
+    #[must_use]
+    pub fn world_loop_lag_ms(&self) -> u64 {
+        self.loop_lag_last_ms.load(Ordering::Relaxed)
+    }
+
+    /// Mirror an authoritative health sample at the split gateway. Do not add
+    /// received samples to the local loop histogram: it is not this process's loop.
+    pub fn receive_world_health(
+        &self,
+        unix_s: i64,
+        lag_ms: u64,
+        store_ok: bool,
+        integrity_ok: bool,
+    ) {
+        self.set_persistence_state(!store_ok, !integrity_ok);
+        self.loop_lag_last_ms.store(lag_ms, Ordering::Relaxed);
+        self.set_world_loop_iteration(unix_s);
+    }
+
     /// The `/healthz` liveness JSON, read **lock-free** straight from the
     /// atomics it needs — no [`snapshot`](Self::snapshot) (which would lock the
     /// LLM mutex and clone the feature vec) for four scalars. `/healthz` is
@@ -439,8 +462,27 @@ impl Metrics {
     /// contention-light.
     #[must_use]
     pub fn health_json(&self, uptime_s: u64, version: &str) -> serde_json::Value {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .unwrap_or(0);
+        self.health_json_at(uptime_s, version, now)
+    }
+
+    fn health_json_at(&self, uptime_s: u64, version: &str, now: i64) -> serde_json::Value {
+        let stamp = self.world_loop_last_iter_unix();
+        // Source time, not receipt time: a queued old IPC sample cannot renew health.
+        // Clock regressions fail closed until the world publishes a current sample.
+        let world_ok =
+            stamp > 0 && (0..=WORLD_HEALTH_MAX_AGE_S).contains(&now.saturating_sub(stamp));
+        let store_ok = self.store_ok();
+        let integrity_ok = self.integrity_ok();
+        let supervision_ok = !self.supervision_abandoned();
         serde_json::json!({
-            "ok": true,
+            "ok": world_ok && store_ok && integrity_ok && supervision_ok,
+            "world_ok": world_ok,
+            "world_max_age_s": WORLD_HEALTH_MAX_AGE_S,
             "uptime_s": uptime_s,
             "version": version,
             "connections": self.ssh_current.load(Ordering::Relaxed)
@@ -2270,6 +2312,26 @@ mod tests {
     }
 
     #[test]
+    fn health_requires_fresh_world_and_writable_store() {
+        let m = Metrics::new();
+        assert_eq!(m.health_json_at(1, "test", 100)["ok"], false);
+        m.receive_world_health(100, 17, true, true);
+        assert_eq!(m.health_json_at(1, "test", 105)["ok"], true);
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
+        assert_eq!(m.health_json_at(1, "test", 99)["ok"], false);
+        m.receive_world_health(106, 17, false, true);
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
+        m.receive_world_health(106, 17, true, false);
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
+        m.receive_world_health(106, 17, true, true);
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], true);
+        m.abandon_supervision();
+        assert_eq!(m.health_json_at(1, "test", 106)["ok"], false);
+        m.set_world_loop_iteration(0);
+        assert_eq!(m.health_json_at(1, "test", 106)["world_ok"], false);
+    }
+
+    #[test]
     fn health_json_shape() {
         let m = Metrics::new();
         m.ssh_connection_opened();
@@ -2280,7 +2342,7 @@ mod tests {
             ..WorldSample::default()
         });
         // Read lock-free, straight from the atomics (no snapshot/clone).
-        let j = m.health_json(42, "9.9.9");
+        let j = m.health_json_at(42, "9.9.9", 1_700_000_001);
         assert_eq!(j["ok"], true);
         assert_eq!(j["uptime_s"], 42);
         assert_eq!(j["version"], "9.9.9");

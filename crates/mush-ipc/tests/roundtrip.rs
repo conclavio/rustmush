@@ -407,6 +407,12 @@ fn every_to_gateway() -> Vec<ToGateway> {
             features: vec!["reattach".to_string(), "compression".to_string()],
             panels: vec!["who".to_string(), "mail".to_string()],
         },
+        ToGateway::WorldHealth {
+            world_loop_unixtime: 1_700_000_000,
+            loop_lag_ms: 19,
+            store_ok: false,
+            integrity_ok: true,
+        },
         ToGateway::Bye,
     ]
 }
@@ -427,10 +433,10 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    // Name-only attributed removal and its pending reply extend the closed
-    // Invoke vocabulary. A v8 receiver cannot decode them; both halves must
-    // be rebuilt together before this entry is used.
-    assert_eq!(IPC_VERSION, 9, "the boundary protocol version is pinned");
+    // Name-only attributed removal and its pending reply (9) and authoritative
+    // world health (10) extend the closed vocabulary. An older receiver cannot
+    // decode them; both halves must be rebuilt together before they are used.
+    assert_eq!(IPC_VERSION, 10, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -754,7 +760,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 9);
+    assert_eq!(IPC_VERSION, 10);
 }
 
 #[test]
@@ -792,6 +798,6 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 9);
+    assert_eq!(IPC_VERSION, 10);
     Ok(())
 }

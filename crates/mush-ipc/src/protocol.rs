@@ -59,7 +59,10 @@ pub use mush_core::ControlMsg;
 // Unlike gateway-owned LegalAction, it crosses WireInbound::Invoke; v7 cannot
 // decode it. Upgrade gateway and server together before enabling this route.
 // Version 9 adds source-free attributed Remove and its non-committed pending reply.
-pub const IPC_VERSION: u32 = 9;
+// Version 10 adds authoritative world health (`ToGateway::WorldHealth`), which
+// main's line numbered 8 on its own; the merged protocol carries both lines, so
+// neither an 8 nor a 9 peer decodes it. Deploy both halves together.
+pub const IPC_VERSION: u32 = 10;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -1036,6 +1039,18 @@ pub enum ToServer {
 /// Server → gateway. Everything the server half sends across the boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToGateway {
+    /// Periodic authoritative liveness. Source timestamps remain unchanged when
+    /// the world stalls, even if the IPC writer and gateway are still running.
+    WorldHealth {
+        /// Last real Unix second in which the world loop began an iteration.
+        world_loop_unixtime: i64,
+        /// Most recent loop-lag observation in milliseconds.
+        loop_lag_ms: u64,
+        /// Whether authoritative persistence is writable.
+        store_ok: bool,
+        /// Whether authoritative integrity remains intact.
+        integrity_ok: bool,
+    },
     /// One resolved output: `event` goes to `target`. The world loop's
     /// `resolve_sends` already applied audience/ignore/perception filtering, so
     /// the gateway just routes.

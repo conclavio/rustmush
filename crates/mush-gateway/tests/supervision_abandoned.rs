@@ -443,6 +443,18 @@ async fn an_abandoned_supervisor_is_visible_then_fatal() {
     let (_h, mut player) = connect_god(healthy.ssh).await;
     assert_eq!(healthz(healthy.web).await["supervision_ok"], true);
 
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let h = healthz(healthy.web).await;
+            if h["ok"] == true {
+                assert!(h["world_loop_unixtime"].as_i64().unwrap() > 0);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("authoritative world health reaches the split HTTP endpoint");
     let mark = player.mark();
     assert!(healthy.trigger.restart().await, "restart must be accepted");
     player.expect_after(mark, "Reconnected").await;

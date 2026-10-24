@@ -232,7 +232,13 @@ fn scrubbed_span(request: &Request<Body>) -> tracing::Span {
 /// LLM mutex or allocate a full snapshot per hit.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = state.started.elapsed().as_secs();
-    Json(state.metrics.health_json(uptime, env!("CARGO_PKG_VERSION")))
+    let health = state.metrics.health_json(uptime, env!("CARGO_PKG_VERSION"));
+    let status = if health["ok"] == true {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(health))
 }
 
 /// `GET /metrics` → Prometheus text exposition. Registered only when

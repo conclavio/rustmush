@@ -1204,6 +1204,7 @@ async fn gateway_writer(
 /// The socket reader: decode each [`ToGateway`] and route it onto the local
 /// session layer. Returns when the server closes the boundary (clean EOF /
 /// [`ToGateway::Bye`]) or a protocol fault occurs.
+#[allow(clippy::too_many_arguments)] // One boundary and its shared routing/health state.
 async fn gateway_reader(
     mut reader: FrameReader<BoxRead>,
     transport: SessionDelivery,
@@ -1212,7 +1213,9 @@ async fn gateway_reader(
     sessions: Arc<SessionManager>,
     manifest: ManifestCache,
     input_custody: Arc<Mutex<InputCustody>>,
+    metrics: Arc<Metrics>,
 ) {
+    metrics.set_world_loop_iteration(0);
     loop {
         let msg = match reader.read::<ToGateway>().await {
             Ok(Some(m)) => m,
@@ -1226,6 +1229,19 @@ async fn gateway_reader(
             }
         };
         match msg {
+            ToGateway::WorldHealth {
+                world_loop_unixtime,
+                loop_lag_ms,
+                store_ok,
+                integrity_ok,
+            } => {
+                metrics.receive_world_health(
+                    world_loop_unixtime,
+                    loop_lag_ms,
+                    store_ok,
+                    integrity_ok,
+                );
+            }
             ToGateway::Deliver { target, event } => {
                 // Same SendTarget → session routing the in-process gateway runs;
                 // the world already resolved audience/perception server-side.
@@ -1366,6 +1382,7 @@ async fn gateway_reader(
             }
         }
     }
+    metrics.set_world_loop_iteration(0);
     // Boundary gone (EOF / error / Bye): fail every in-flight service request
     // fast instead of leaving its bridge task parked on `orx.await` forever
     // (F3). Raise `down` and drop every parked sender under the lock — dropping
@@ -1784,6 +1801,7 @@ async fn connect_and_wire(
         Arc::clone(sessions),
         Arc::clone(manifest),
         Arc::clone(&env.input_custody),
+        Arc::clone(&env.tuning.metrics),
     ));
     Ok(WiredBoundary {
         conn,
@@ -4476,8 +4494,20 @@ mod tests {
             sessions,
             Arc::new(Mutex::new(HelloManifest::default())),
             Arc::clone(&custody),
+            Arc::clone(&_metrics),
         ));
 
+        mush_ipc::write_frame(
+            &mut server_io,
+            &ToGateway::WorldHealth {
+                world_loop_unixtime: 123,
+                loop_lag_ms: 19,
+                store_ok: false,
+                integrity_ok: true,
+            },
+        )
+        .await
+        .unwrap();
         mush_ipc::write_frame(
             &mut server_io,
             &ToGateway::RequestDisposition {
@@ -4498,10 +4528,14 @@ mod tests {
             "the replay copy must be gone before legacy execution is authorized"
         );
 
+        assert_eq!(_metrics.world_loop_last_iter_unix(), 123);
+        assert_eq!(_metrics.world_loop_lag_ms(), 19);
+        assert!(!_metrics.store_ok());
         mush_ipc::write_frame(&mut server_io, &ToGateway::Bye)
             .await
             .unwrap();
         reader_task.await.unwrap();
+        assert_eq!(_metrics.world_loop_last_iter_unix(), 0);
     }
 
     /// A minimal [`AuthBackend`] for the bridge-level notice test.

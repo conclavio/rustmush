@@ -1,0 +1,579 @@
+{
+  "passed": true,
+  "samples": [
+    {
+      "at": 1792882434.5109746,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 13,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882434.5359821,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 13,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882434.7917414,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 13,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882435.0471914,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 13,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882435.3023932,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 14,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882435.5586247,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 14,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882435.8135293,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 14,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882436.0680137,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 14,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882436.3231654,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 15,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882436.5780017,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 15,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882436.832741,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 15,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882437.088267,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 15,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882437.3446093,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 16,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882437.601836,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 16,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882437.8569853,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 16,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882438.1125543,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 16,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882438.367541,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 17,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882438.6227436,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 17,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882438.8771853,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 17,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882439.1323745,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 17,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882439.3865497,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882439.6408188,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882439.8956883,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882440.1524749,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882434,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882440.1739147,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882440,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882440.1796906,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 18,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882440,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    },
+    {
+      "at": 1792882440.4404147,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 19,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882440.4481528,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 19,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882440.7053998,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 19,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882440.9625194,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 19,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882441.2216105,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 20,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882441.4792814,
+      "status": 503,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": false,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 20,
+        "version": "0.1.0",
+        "world_loop_unixtime": 0,
+        "world_max_age_s": 5,
+        "world_ok": false
+      }
+    },
+    {
+      "at": 1792882441.7369754,
+      "status": 200,
+      "body": {
+        "connections": 0,
+        "integrity_ok": true,
+        "loop_lag_ms": 0,
+        "ok": true,
+        "store_ok": true,
+        "supervision_ok": true,
+        "uptime_s": 20,
+        "version": "0.1.0",
+        "world_loop_unixtime": 1792882441,
+        "world_max_age_s": 5,
+        "world_ok": true
+      }
+    }
+  ],
+  "gateway": 1286420,
+  "originalServer": 1286432,
+  "dev2": 539467,
+  "replacementServer": 1286545,
+  "checks": [
+    "authoritative stamp",
+    "live gateway over stopped world returns 503",
+    "continued world recovers",
+    "child crash invalidates health",
+    "replacement recovers",
+    "gateway survives",
+    "dev2 untouched"
+  ]
+}

@@ -167,6 +167,12 @@ async fn healthz_reports_ok_and_uptime() {
     // Publish a couple of values so the enriched fields are non-trivial.
     hooks.metrics_registry().ssh_connection_opened();
     hooks.metrics_registry().observe_loop_lag(9);
+    hooks.metrics_registry().set_world_loop_iteration(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    );
     let addr = spawn_server(hooks, test_config()).await;
 
     let resp = client()
