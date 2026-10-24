@@ -1618,6 +1618,61 @@ async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
             .contains("Permission denied")
     );
     rig.run(GOD, &format!("@org/grant {receiver}={org} relay.publish"));
+    // Knowledge is bounded independently of retained transport evidence. A
+    // rolled-off or cleared observation can be filed again through its owner.
+    rig.flush().await;
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "npc".into(),
+                op: ModuleWrite::JsonSet {
+                    key: mush_npc::intel_key(mush_faction::Principal::Character(receiver)),
+                    value: serde_json::json!([]),
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert!(
+        rig.run(receiver, "+relay/publish luna_ceres")
+            .contains("no longer")
+    );
+    assert!(
+        rig.run(receiver, "+relay/discover luna_ceres")
+            .contains("knowledge refreshed")
+    );
+    assert!(rig.run(receiver, "+intel").contains("Standard queued"));
+    rig.run(receiver, "+relay/discover luna_ceres");
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .intel
+            .for_principal(mush_faction::Principal::Character(receiver))
+            .len(),
+        1
+    );
+    // Restoring the default class releases the bounded entitlement slot.
+    rig.run(GOD, &format!("+relay/grant luna_ceres/{receiver}=standard"));
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .grants
+            .iter()
+            .any(|g| g.principal == receiver)
+    );
     let published = rig.run(receiver, "+relay/publish luna_ceres");
     assert!(published.contains("scandal front"), "{published}");
     rig.flush().await;

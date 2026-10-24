@@ -279,6 +279,7 @@ fn expected_panels() -> Vec<&'static str> {
         "tactics.unit",
         "tactics.vitals",
         "tactics.contacts",
+        "relay.board",
         "mail",
         "weather",
         "worldgen.draft",

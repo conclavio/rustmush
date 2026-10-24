@@ -116,6 +116,21 @@ impl Integration for RelayService {
         {
             return Err("Permission denied.".into());
         }
+        if ctx
+            .w
+            .module_state::<mush_npc::NpcHostState>()
+            .is_some_and(|s| {
+                s.intel
+                    .for_principal(mush_faction::Principal::Character(ctx.actor))
+                    .iter()
+                    .any(|r| {
+                        r.kind == mush_npc::IntelKind::ServiceEvidence
+                            && r.provenance == provenance(e)
+                    })
+            })
+        {
+            return Ok(());
+        }
         let registry = mush_propagation::routing::registry(ctx.w).ok_or("Relay unavailable.")?;
         let node = registry
             .pairs

@@ -21,7 +21,7 @@ Delivery is checked on the existing coarse cadence, so these are earliest times.
 Class grants currently come from the operator; no purchase or charge exists yet.
 A scoped operator can use `+relay/grant luna_ceres/#character=priority` (or
 `sovereign`, `standard`, `deferred`). This needs `relay.manage` on the Exchange's
-organization scope. Grants affect future pair tickets; issued tickets survive
+organization scope. Restoring Standard removes the override and frees its grant slot. Grants affect future pair tickets; issued tickets survive
 restart with their class and eligibility time. The receiver's class is not used
 for the sender's message.
 

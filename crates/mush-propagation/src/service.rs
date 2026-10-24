@@ -372,7 +372,11 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .rhs()
             .and_then(|s| Class::parse(s.trim()))
             .ok_or_else(|| CmdError::msg("Unknown service class."))?;
-        if let Some(g) = state
+        if class == Class::Standard {
+            state
+                .grants
+                .retain(|g| g.pair != id || g.principal != actor);
+        } else if let Some(g) = state
             .grants
             .iter_mut()
             .find(|g| g.pair == id && g.principal == actor)
@@ -448,6 +452,19 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     if ctx.switches.has("discover") {
+        if let Some(evidence) = state
+            .evidence
+            .iter()
+            .find(|e| e.holder == ctx.actor && e.receipt.pair == id)
+        {
+            // Retained proof can restore a rolled-off knowledge entry without
+            // inventing another observation or consuming another evidence slot.
+            api.discover(ctx, evidence).map_err(CmdError::msg)?;
+            ctx.gate_on_durable_ack();
+            say(ctx, "Evidence already filed; knowledge refreshed.");
+            return Ok(());
+        }
+
         let receipt = state
             .receipts
             .iter()
@@ -459,14 +476,6 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             holder: ctx.actor,
             receipt,
         };
-        if state
-            .evidence
-            .iter()
-            .any(|e| e.holder == ctx.actor && e.receipt.pair == id)
-        {
-            say(ctx, "Evidence already filed.");
-            return Ok(());
-        }
         if state.evidence.len() >= MAX_EVIDENCE {
             return Err(CmdError::msg("Evidence store full."));
         }

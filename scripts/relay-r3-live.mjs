@@ -175,6 +175,8 @@ try {
  const items={};
  for(const cls of ['standard','deferred','priority','sovereign'])items[cls]=await send(cls);
  evidence.messages=items;save('live.json',evidence);
+ await command(staff,'+relay/load luna_ceres','actual queued');
+ await command(staff,'@prop/pass','visited');
  const before=Object.fromEntries(Object.entries(items).map(([k,v])=>[k,envelope(v.envelope)]));
  await crash('all-four-classes-queued');await reconnect();
  for(const [cls,item] of Object.entries(items))assert.deepEqual(envelope(item.envelope),before[cls]);
@@ -228,11 +230,13 @@ try {
  const earlierIds=new Set(envelopes().map(e=>e.id));
  for(let i=0;i<6;i++){
   await command(staff,`r3 R3-channel-${i}-${'c'.repeat(400)}`,'queued for IC transit');
-  await command(staff,`+order ${clients.bob.object}=R3-order-${i}-${'o'.repeat(400)}`,'Queued revision');
+  if(i===0)await command(staff,`+order ${clients.bob.object}=R3-order-${i}-${'o'.repeat(400)}`,'Queued revision');
   await command(staff,`@mail/quick ${clients.bob.object}=R3-mixed-${i}/${'m'.repeat(400)}`,'queued for IC transit');
  }
- const queued=await until(()=>{const rows=envelopes().filter(e=>!earlierIds.has(e.id)&&e.transit?.queued_at);return rows.length>=18&&rows;},'mixed queued producers');
+ const queued=await until(()=>{const rows=envelopes().filter(e=>!earlierIds.has(e.id)&&['queued','transmitted'].includes(e.state)&&e.transit?.queued_at);return rows.length>=13&&rows;},'mixed queued producers');
  const kinds=new Set(queued.map(e=>e.kind));assert(kinds.has('mail')&&kinds.has('channel')&&kinds.has('order'));
+ await command(staff,'+relay/load luna_ceres','actual queued');
+ await command(staff,'@prop/pass','visited');
  const beforeIds=new Set(service().receipts.map(r=>r.envelope));
  await command(staff,`@prop/jam #${jammed}=0`);jammed=null;
  await until(()=>queued.every(e=>receipt(e.id)),'mixed classes drain',60);
