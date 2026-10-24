@@ -1,0 +1,31 @@
+    Checking tokio v1.53.1
+    Checking mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+    Checking libm v0.2.16
+    Checking mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+    Checking memory-stats v1.2.0
+    Checking tokio-util v0.7.19
+    Checking hyper v1.11.0
+    Checking tokio-rustls v0.26.4
+    Checking tower v0.5.3
+    Checking backon v1.6.0
+    Checking tokio-stream v0.1.19
+    Checking hyper-util v0.1.20
+    Checking tower-http v0.6.11
+    Checking mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+    Checking mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+    Checking fred v10.1.0
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+    Checking mush-llm v0.1.0 (/opt/rustmush/dev1/build/crates/mush-llm)
+    Checking mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+    Checking mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+    Checking mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+    Checking mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+    Checking mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+    Checking mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+    Checking mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+    Checking mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+    Checking mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+    Checking tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `dev` profile [unoptimized] target(s) in 2m 10s

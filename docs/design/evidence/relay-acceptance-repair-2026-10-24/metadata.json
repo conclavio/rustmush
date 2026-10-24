@@ -1,0 +1,205 @@
+{
+  "acceptanceRepairPassed": true,
+  "parentCommit": "57c5747dc02370e6854188e009dda61b9108df94",
+  "originalCi": {
+    "run": 40110674650,
+    "url": "https://github.com/conclavio/rustmush/actions/runs/40110674650",
+    "conclusion": "failure",
+    "failedTests": 4,
+    "failedJobs": {
+      "test (tacsim-lib)": 120921544228,
+      "test (rest)": 120921543963
+    },
+    "tacsimIntegration": "success",
+    "codeQL": "success",
+    "followupCi": "Triggered by the subsequent push; not claimed green by these results."
+  },
+  "source": {
+    "parentCommit": "57c5747dc02370e6854188e009dda61b9108df94",
+    "sourceSha256": {
+      "crates/tacsim/src/match_/centre.rs": "46e14cdd67480d5360dc0cc188bac9ddb996d11fba007e7952e378d53a66dd10",
+      "crates/tacsim/src/relay_world.rs": "cd02f2e5fe1f4c0e8d19975b5145e1d41052ac1f5b8a6bd41598cd8a0afdc240",
+      "docs/help/relay.md": "0e9be18476b626af9837b6bf1a00662c69b1fae06d2881786bf86a1cbd896d42",
+      "scripts/relay-r9b-live.mjs": "ce2accca3c1f1a1ceb97aa188c1e81d38283e4f0d722d99d32518dab7c7ba512",
+      "scripts/relay-live-client.mjs": "a007b98d0e3e3c5628df04e68681ad28f92b3c526eabd6d53a48640651e4b17b"
+    },
+    "note": "Rust/help/shared-client inputs match the full paid campaign and all test/build logs. The final R9b harness tests the nearby observer transfer after real docking and uses the current client after restart. Its exact helpers and transfer/lifecycle block run in the retained final continuation."
+  },
+  "buildInputs": {
+    "checked": 1448,
+    "mismatches": [],
+    "localWorkingTreeNewlineConversions": [
+      "crates/mush-comsys/Cargo.toml",
+      "crates/tacsim/content/relays/luna_ceres-v1.json"
+    ],
+    "manifestSha256": "53b267b3c3b306b8c048abc5f30aa47739e23e629cdcb29cbe1a1d96ee50f021"
+  },
+  "linuxTests": {
+    "tacsim-lib.log": [
+      {
+        "passed": 1480,
+        "failed": 0,
+        "ignored": 1
+      }
+    ],
+    "help-commands.log": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "relay-boot-regressions.log": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 49,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "totalTests": {
+    "passed": 1564,
+    "failed": 0,
+    "ignored": 1
+  },
+  "commands": {
+    "environment": {
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0"
+    },
+    "tests": [
+      "cargo test --locked -p tacsim --lib -j4",
+      "cargo test --locked -p mush-contract-tests --test help_commands -j4",
+      "cargo test --locked -p mush-server --test relay_registry --test boot_parity --test ic_slice_loop -j4"
+    ],
+    "format": "cargo fmt --all --check",
+    "clippy": "cargo clippy --locked -p tacsim --lib --tests -j4 -- -D warnings",
+    "release": "cargo build --locked --release -p mush-server -p mush-gateway --features mush-gateway/tls -j4",
+    "node": "22.23.4; --check passed for both changed harness files and the final continuation"
+  },
+  "live": {
+    "target": "https://conclav.io:6790",
+    "mode": "split",
+    "attempts": {
+      "live-full-campaign-transfer-refusal.json": {
+        "commands": 79,
+        "processCrashes": 8,
+        "passed": false,
+        "failure": "AssertionError [ERR_ASSERTION]: #678 is aboard #706, which is under way; nothing crosses a carrier's boundary mid-journey\n    at place (file:///opt/rustmush/dev1/build/scripts/relay-r9b-live.mjs:23:2)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-r9b-live.mjs:102:17"
+      },
+      "live-continuation-assertion-failure.json": {
+        "commands": 10,
+        "processCrashes": 1,
+        "passed": false,
+        "failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n707 !== 101\n\n    at file:///opt/rustmush/dev1/r9b-evidence/acceptance-repair/recipient-transfer-continuation.mjs:63:9"
+      },
+      "live-continuation-socket-failure.json": {
+        "commands": 11,
+        "processCrashes": 1,
+        "passed": false,
+        "failure": "AssertionError [ERR_ASSERTION]: socket closed\n\n3 !== 1\n\n    at wait (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:89:12)\n    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:98:9)\n    at file:///opt/rustmush/dev1/r9b-evidence/acceptance-repair/recipient-transfer-continuation.mjs:71:20"
+      },
+      "live.json": {
+        "commands": 23,
+        "processCrashes": 3,
+        "passed": true,
+        "failure": null
+      }
+    },
+    "processCrashesObserved": 13,
+    "acceptedPathCrashBoundaries": 11,
+    "fundingPayments": [
+      88,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "finalContinuationPassed": true,
+    "recipientTransfer": {
+      "scenario": "After real docking, move the nearby observer from Deimos to Ceres. Moving coverage and restart in passage were proved earlier in the same genuine campaign.",
+      "location": {
+        "actor": 679,
+        "before": 261,
+        "after": 101,
+        "at": 74183960365
+      },
+      "destinationBefore": 261,
+      "destinationAfter": 101,
+      "forwardingsBefore": 0,
+      "forwardingsAfter": 1,
+      "flight": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74183960366",
+        "due": {
+          "at": 74183962179,
+          "clock": {
+            "generation": 53,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1813,
+        "started": {
+          "at": 74183960366,
+          "clock": {
+            "generation": 53,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "receivedAt": 74183962241,
+      "earlyChecks": 339,
+      "inboxCopiesBeforeAndAfterRestart": 1,
+      "deliveredEnvelopeRetiredAfterRestart": true
+    },
+    "moneyConservation": {
+      "before": "0",
+      "after": "0"
+    },
+    "continuationSha256": "af78a458c99ed646d0a2ece3a190d6379adc9db7fc6c3731c015a18f4bbc8ed4",
+    "continuationHelpersAndFinalBlockMatchHarness": true
+  },
+  "restoration": {
+    "restored": true,
+    "purpose": "restore",
+    "keys": 4814,
+    "keyDigest": "c4af662d1a721490d5505dbc736ac7d53f9ee2e3d825e701d6edcfb7ee9c1ef5"
+  },
+  "health": {
+    "atUtc": "2026-10-24T19:22:44Z",
+    "services": {
+      "dev1mush-gateway": "active",
+      "redis-dev1mush": "active"
+    },
+    "httpsReady": true,
+    "gatewayPid": 1144267,
+    "serverPid": 1144279,
+    "serverSha256": "fdac539098a6d83ca4f0fb2c89d44b632c7529ba7ac0e3617b4554a2a4686316",
+    "gatewaySha256": "c53d95967583e1d3cbd7033a9f53dd341881a00c47b0a7ca149bc24ef6170f14",
+    "dev2": "MainPID=539467",
+    "dev2Before": "MainPID=539467",
+    "restoredBaseline": {
+      "laneVersion": 12,
+      "relayVersion": 1,
+      "nodes": 2,
+      "pairs": 1,
+      "mobile": null,
+      "terms": null,
+      "manufacturedMachines": 0
+    },
+    "baselineDatabase": 3,
+    "note": "Original verified pre-R9b baseline restored with original expiry deadlines; normal R10 boot adds geography while lane/relay upgrades stay explicit."
+  },
+  "scope": "Acceptance repair only. No admission fairness, private-link permission, congestion-policy, hub-timing or message-size behavior changes.",
+  "evidenceNote": "This is a full real paid campaign plus a successful targeted continuation, not one uninterrupted full run with the final harness. Both intermediate assertion/client failures are retained. The final forwarded envelope is retired after its post-delivery restart; the in-flight milestone preserves the forwarding proof, while arrival timestamps, early checks and both inbox replies remain in the final transcript. Private RDBs/configuration/credentials are excluded."
+}

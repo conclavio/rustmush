@@ -11,6 +11,9 @@ and bounded-load checks. The implementation train stops for programme acceptance
 Normal candidate CI remains owner-monitored. The Discord bridge passed controlled
 provider tests; live Discord remains open because dev1 has no enabled bot/mapping.
 [15a](15a-comms-relay-implementation-plan.md) retains the sequence and gate criteria.
+The [retrospective](15c-comms-relay-retrospective.md) reopened the original R9b
+recipient-transfer proof and identified R10 CI failures. Their acceptance repair
+is recorded in [15b](15b-comms-relay-cut-notes.md#acceptance-repair--r10-ci-and-r9b-recipient-transfer).
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require
@@ -377,7 +380,9 @@ refit. Its Halcyon cruiser carries a checked 300,000-km relay socket; first laun
 requires actual departure. Removal/remount preserves identities, the installed half
 adds five tonnes to the voyage, and carrier power/destruction drives service and
 terminal loss. The dev1 gate passed the hour-long funding cadence, moving coverage,
-recipient transfer, nine crashes, finite-money/material audits and restoration.
+nine crashes, finite-money/material audits and restoration. The original recipient-
+transfer proof was invalidated in retrospective; its corrected rerun is recorded
+in 15b’s acceptance-repair entry.
 See 15b for exact evidence.
 
 **R10 as built (2026-10-24):** the five-node/four-pair/eight-half Luna star adds

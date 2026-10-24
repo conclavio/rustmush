@@ -190,7 +190,7 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
         observe(ctx, &fact)?;
     }
     tracing::info!(
-        "relay world ready: Luna star v2; five public nodes, four pairs; Terms of Service and A Half Afloat; +relay, +relay/rates, +clocks"
+        "relay world ready: Luna star v2; five public nodes, four pairs; Terms of Service and A Half Afloat; +relay (board and tariffs), +clocks"
     );
     Ok(())
 }

@@ -158,14 +158,16 @@ Availability controls take a half ID:
 ```
 
 A pair is Live when both halves are enabled, powered and staffed. Otherwise it
-is Degraded; a destroyed half makes it Dead. R1 has no destruction or replacement
-command. Power and staffing are explicit operator settings, not a crew simulation.
+is Degraded; a destroyed half makes it permanently Dead and orphans its partner.
+Repairing the station does not recreate the pair. Power and staffing are explicit
+operator settings, not a crew simulation.
 Repeated settings make no change. Successful mutations persist before confirmation.
 
-The seed pack is `tacsim.relay.luna_ceres`. Reapplying it preserves IDs and settings.
-Its Malapert Exchange endpoints occupy the Aitken service spine on Luna and the
-Ceres maintenance room; coverage is the explicit room list shown by `/show`.
-The pair shares 8 units/IC-second in both directions, with one unit per started
+The seed pack is `tacsim.relay.luna_ceres`. Its current version supplies the five-node
+Luna star, with four pairs and eight halves. Malapert occupies the Exchange compound;
+coverage is the explicit room list shown by `/show`. Existing worlds take upgrades
+through the content plan/apply commands, preserving pair identities and settings.
+Each public pair shares 8 units/IC-second in both directions, with one unit per started
 128 payload bytes. Its class queue admits at most 64 pending messages; total pending
 transport is capped at 128. Overload is refused before acceptance. A message larger
 than a link's one-second capacity uses conventional delivery.
@@ -295,4 +297,4 @@ through `@atlas/pack plan` / `@atlas/pack apply`. Restart to seed the missing
 Exchange geography, then explicitly apply `tacsim.relay.luna_ceres` version 2 and
 restart. Existing halves, purchases, balances and damage survive; a conflicting
 partial expansion refuses and requires repair. Startup logs report the full star
-ready; `@relay`, `+relay`, and `+relay/rates` show the topology, board and tariffs.
+ready; `@relay` shows the topology, and `+relay` shows the board and tariffs.

@@ -17,6 +17,14 @@ const cruising=()=>read('mod:sim:cjourney:'+programme().hull)?.state?.state==='C
 let staff,pilot,observer,logins,f,row,payer,pairId,conserved;
 async function reconnect(){for(const ws of sockets)if(ws.readyState===WebSocket.OPEN)ws.close();await sleep(300);[staff,pilot,observer]=await Promise.all(logins.map(connect));}
 async function death(label){await crash(label);await reconnect();}
+async function place(client,room){
+ const before=read('obj:'+actor(client))?.location;
+ const unplaced=await command(staff,`@spatial/unplace ${client.object}=R9b acceptance fixture transfer`);
+ assert(unplaced.includes('Unplaced ')||unplaced.includes(client.object+' is not placed'),unplaced);
+ await command(staff,`@teleport ${client.object}=#${room}`);
+ await until(()=>read('obj:'+actor(client))?.location===room,'authoritative recipient placement',15);
+ return {actor:actor(client),before,after:room,at:now()};
+}
 async function buy(good,vendor,qty,dest){const l=docs('mod:market:market:listing:*').find(l=>l.vendor===vendor&&l.catalog.code===good&&!l.source.wanted);assert(l,'listing '+good);const out=await command(pilot,`+market/quote #${l.id}=${qty}`,'Quote #');const q=out.match(/Quote #(\d+)/)[1];await command(pilot,'+market/accept #'+q+(dest?'='+dest:''),'Agreed.');await sleep(1200);}
 async function settled(){await until(()=>docs('mod:market:market:quote:*').filter(q=>q.buyer.Object===actor(pilot)&&q.contract!==null).every(q=>q.settled!==null),'all real purchases settled',180);}
 async function cell(section,value){await command(staff,`@unit/damage #${row.hull}=`+JSON.stringify({ops:[{SetCell:{addr:{Section:{section,cell:'internals'}},value}}]}),'Applied');}
@@ -38,7 +46,7 @@ try{
  for(const org of [f.owner,p.fleet])for(const cap of ['economy.account.post','economy.account.view','vault.deposit','vault.withdraw'])await command(staff,`@org/grant ${pilot.object}=${org} ${cap}`);
  await command(observer,'+relayfleet/fund','authority');await command(observer,'+relayfleet/consent yes','authority');
  await command(staff,`@asset/assign #${row.hull}=${pilot.object} Fleet command`,'Assigned');
- for(const c of [staff,pilot,observer])await command(staff,`@teleport ${c.object}=#${f.place}`);
+ for(const c of [staff,pilot,observer])await place(c,f.place);
  await command(pilot,'+ship','Halcyon');await command(staff,`@account/open ${pilot.object}=tacsim.credit`);payer=accounts().find(a=>a.owner.Object===actor(pilot)&&a.instrument==='tacsim.credit').id;
  await command(staff,`@econ/pay 1=${payer} 4000000`);assert.equal(total(),conserved);
  const fleetAccount=accounts().find(a=>a.owner.Organization===p.fleet&&a.instrument==='tacsim.credit');assert(fleetAccount);const fleetBalance=fleetAccount.posted_balance;
@@ -79,16 +87,40 @@ try{
  await death('mobile-half-in-real-passage');assert.equal(programme().launch,launch);await command(staff,'@relay/disable luna_ceres.luna');
  const last=ticket.plan.legs.at(-1),end=last.t0+last.secs;await until(()=>now()>=ticket.plan.depart_ic+Math.floor((end-ticket.plan.depart_ic)/3),'mid-passage position',720);
  await command(staff,'@tacsim/time rate=24');const aboard=await send(pilot,'R9b aboard');await received(pilot,aboard);assert(uses(aboard));await command(pilot,'@mail','R9b aboard');
- await command(staff,`@teleport ${observer.object}=#${port('ceres_port').presentation}`);const outside=await send(observer,'R9b outside');await received(observer,outside);assert(!uses(outside));
+ await place(observer,port('ceres_port').presentation);const outside=await send(observer,'R9b outside');await received(observer,outside);assert(!uses(outside));
  milestone('onboard-and-outside-coverage',{ticket,aboard:envelope(aboard),outside:envelope(outside),launch});
  const nearbySeconds=Math.floor(200000*last.secs/last.dist_km);assert(nearbySeconds>60);
  // Approach using supported clock rates, slowing before the actual coverage boundary.
  for(const rate of [3600,300,30]){await command(staff,'@tacsim/time rate='+rate);await until(()=>end-now()<=nearbySeconds+rate*3,'approach at '+rate,1200);}
  await command(staff,'@tacsim/time rate=1');await until(()=>end-now()<=nearbySeconds,'inside moving local coverage',120);assert(cruising());
- await command(staff,`@teleport ${observer.object}=#${port('deimos_port').presentation}`);const nearby=await send(observer,'R9b nearby');await received(observer,nearby);assert(uses(nearby));assert(cruising());
- const moving=await send(pilot,'R9b forwarding');assert(uses(moving));assert.notEqual(envelope(moving).state,'delivered','move before arrival');await command(staff,`@teleport ${pilot.object}=#${port('ceres_port').presentation}`);await command(staff,'@tacsim/time rate=24');await received(pilot,moving);await command(pilot,'@mail','R9b forwarding');
- milestone('nearby-coverage-and-recipient-transfer',{nearby:envelope(nearby),forwarded:envelope(moving),icNow:now(),end});
- await command(staff,`@teleport ${pilot.object}=#${row.rooms.airlock}`);await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking',90);await command(pilot,'+ship/leave','cycle the lock');
+ await place(observer,port('deimos_port').presentation);const nearby=await send(observer,'R9b nearby');await received(observer,nearby);assert(uses(nearby));assert(cruising());
+ // Complete normal passage before the recipient transfer; underway boundaries are strict.
+ await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking before transfer',90);await command(staff,'@tacsim/time rate=1');
+ const moving=await send(observer,'R9b forwarding accepted');assert(uses(moving));
+ const beforeTransfer=envelope(moving),message=Number(beforeTransfer.dispatch.key.split(':')[2]);
+ assert.notEqual(beforeTransfer.state,'delivered','move before arrival');assert(!box(observer,message));
+ // Move the nearby shore recipient out of mobile coverage. An embarked actor
+ // cannot cross the carrier boundary underway, including by staff unplacement.
+ const transfer=await place(observer,port('ceres_port').presentation);assert.notEqual(transfer.before,transfer.after);
+ const forwarded=await until(()=>{const e=envelope(moving);return e.transit?.forwardings>beforeTransfer.transit.forwardings&&e.transit?.flight&&e;},'forwarding to the changed endpoint',30);
+ assert.notEqual(forwarded.transit.destination,beforeTransfer.transit.destination);
+ assert.notEqual(forwarded.state,'delivered');assert(!box(observer,message));
+ const flight=forwarded.transit.flight;assert(flight.seconds>0);assert(flight.due.at>now()+15,'restart before the forwarded physical leg arrives');
+ milestone('recipient-transfer-in-flight',{before:beforeTransfer,transfer,forwarded,icNow:now()});
+ await command(staff,'@dump','snapshot acknowledged');await death('recipient-transfer-forwarding-in-flight');
+ assert.equal(read('obj:'+actor(observer)).location,transfer.after);assert.equal(envelope(moving).transit.forwardings,forwarded.transit.forwardings);
+ assert.equal(envelope(moving).transit.flight.due.at,flight.due.at,'restart preserves frozen arrival');assert(!box(observer,message));
+ await command(staff,'@tacsim/time rate=24');
+ const arrivalDeadline=Date.now()+180000;let earlyChecks=0;
+ while(!box(observer,message)){assert(Date.now()<arrivalDeadline,'forwarded inbox arrival timeout');if(now()<flight.due.at)earlyChecks++;await sleep(200);}
+ const receivedAt=now();assert(receivedAt>=flight.due.at,'no inbox before frozen arrival');assert(earlyChecks>0);
+ assert.equal(envelope(moving).state,'delivered');assert(envelope(moving).transit.history.some(h=>h.flight.due.at===flight.due.at&&h.arrived.at>=flight.due.at));
+ const inbox=await command(observer,'@mail','R9b forwarding accepted');assert.equal(inbox.split('\n').filter(line=>line.includes('R9b forwarding accepted')).length,1,'one inbox entry');
+ await command(staff,'@dump','snapshot acknowledged');await death('recipient-transfer-delivered-once');
+ assert.equal((await command(observer,'@mail','R9b forwarding accepted')).split('\n').filter(line=>line.includes('R9b forwarding accepted')).length,1,'restart does not duplicate delivery');
+ milestone('nearby-coverage-and-recipient-transfer',{nearby:envelope(nearby),before:beforeTransfer,transfer,forwarded:envelope(moving),flight,receivedAt,earlyChecks,icNow:now(),end});
+ await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking',90);
+ await command(pilot,'+ship/leave','cycle the lock');
  const half=registry().pairs[pairId].halves[1].id;await command(staff,'@relay/disable '+half);assert.equal(registry().pairs[pairId].halves[1].enabled,false);await command(staff,'@relay/enable '+half);assert.equal(registry().pairs[pairId].halves[1].enabled,true);
  await cell('hull',0);assert.equal(registry().pairs[pairId].halves[1].destroyed,true);const node=registry().pairs[pairId].halves[1].node;const loss=registry().losses[node];assert(loss&&loss.canon);await death('destroyed-capital-carrier');assert.deepEqual(registry().losses[node],loss);assert.equal(programme().launch,launch);
  await cell('hull',12000);assert.equal(registry().pairs[pairId].halves[1].destroyed,true,'repair cannot erase terminal relay loss');assert.equal(total(),conserved);

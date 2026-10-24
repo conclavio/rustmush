@@ -1,0 +1,28 @@
+2026-10-24T16:22:15.4240454Z failures:
+2026-10-24T16:22:15.4240739Z
+2026-10-24T16:22:15.4241093Z ---- match_::centre::tests::the_boot_warning_is_chosen_by_the_reading_and_says_the_route stdout ----
+2026-10-24T16:22:15.4241621Z
+2026-10-24T16:22:15.4242392Z thread 'match_::centre::tests::the_boot_warning_is_chosen_by_the_reading_and_says_the_route' (4517) panicked at crates/mush-testkit/src/lib.rs:138:14:
+2026-10-24T16:22:15.4243385Z test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+2026-10-24T16:22:15.4244147Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-24T16:22:15.4244635Z
+2026-10-24T16:22:15.4245083Z ---- match_::centre::tests::the_fieldable_count_follows_the_pods_and_tanks_that_exist stdout ----
+2026-10-24T16:22:15.4245529Z
+2026-10-24T16:22:15.4246005Z thread 'match_::centre::tests::the_fieldable_count_follows_the_pods_and_tanks_that_exist' (4518) panicked at crates/mush-testkit/src/lib.rs:138:14:
+2026-10-24T16:22:15.4247070Z test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+2026-10-24T16:22:15.4247440Z
+2026-10-24T16:22:15.4247788Z ---- match_::lobby::tests::the_cap_is_the_configured_one_held_down_to_the_pods_that_exist stdout ----
+2026-10-24T16:22:15.4248231Z
+2026-10-24T16:22:15.4248570Z thread 'match_::lobby::tests::the_cap_is_the_configured_one_held_down_to_the_pods_that_exist' (4602) panicked at crates/mush-testkit/src/lib.rs:138:14:
+2026-10-24T16:22:15.4249106Z test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+2026-10-24T16:22:15.4249333Z
+2026-10-24T16:22:15.4249336Z
+2026-10-24T16:22:15.4249403Z failures:
+2026-10-24T16:22:15.4249675Z     match_::centre::tests::the_boot_warning_is_chosen_by_the_reading_and_says_the_route
+2026-10-24T16:22:15.4250088Z     match_::centre::tests::the_fieldable_count_follows_the_pods_and_tanks_that_exist
+2026-10-24T16:22:15.4250513Z     match_::lobby::tests::the_cap_is_the_configured_one_held_down_to_the_pods_that_exist
+2026-10-24T16:22:15.4250755Z
+2026-10-24T16:22:15.4250970Z test result: FAILED. 1477 passed; 3 failed; 1 ignored; 0 measured; 0 filtered out; finished in 188.88s
+2026-10-24T16:22:15.4251261Z
+2026-10-24T16:22:15.4308493Z error: test failed, to rerun pass `-p tacsim --lib`
+2026-10-24T16:22:18.2783048Z [monitor 16:22:18] mem used 984M avail 15004M swap used 0M | thr 250 proc 152 | runner thr 53/63838 | cargo 0 rustc 0 target/debug 0 | load 1.60 1.39 0.69 | psi io 0.00 mem 0.00 | root 113441M ws 113441M tmp 1M

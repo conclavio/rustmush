@@ -1396,7 +1396,8 @@ commands, 12 real SSH checks and nine actual SIGKILL/restart boundaries. The
 to v13 upgrade without changing the old relay/foundry identities; real paid
 manufacture; consent/refit; funding persistence; commissioning before launch;
 removal/remount; carrier power recovery; passage restart; onboard, outside and
-nearby delivery; recipient transfer; and terminal carrier loss. Repairing the
+nearby delivery; and terminal carrier loss. The original recipient-transfer claim
+was invalidated by retrospective; see the acceptance-repair entry below. Repairing the
 carrier afterward did not revive its destroyed half or append another first-launch
 event. Public-board and permission checks passed through the real SSH front door.
 
@@ -1520,3 +1521,82 @@ The split campaign proved explicit lane-v13/full-star-v2 migration preserving id
 Fresh Redis database 2 boot/reboot passed with the same five-node/four-pair identities, finite capitalization and dormant Fleet/Terms receipts. The original dev1 world was restored from the retained database-1 baseline with original expiry deadlines: lane v12, relay v1, two nodes/one pair, no Fleet or Terms programme and no manufactured machines. The following R10 boot adds its six new Atlas geography packs, while lane/relay upgrades remain explicit. Both dev1 services are active; dev2 remained `MainPID=539467`. Installed executable hashes, retained failures, transcripts and counts are in [acceptance metadata](evidence/relay-r10-2026-10-24/metadata.json). Credentials, server configuration and database snapshots are excluded.
 
 R9b CI run `40096036146` finished with failures in nine TacSim targets; the final R10 candidate repairs those fixtures and reruns their affected suites. Normal CI for this push remains owner-monitored and is not claimed green. The earlier live Discord-provider criterion remains open because dev1 has no enabled bot/mapping; controlled-provider bridge tests remain the existing evidence. The R1–R10 implementation sequence is complete; this is the stop for programme acceptance.
+
+
+## Acceptance repair — R10 CI and R9b recipient transfer
+
+### Correction to the original acceptance record
+
+The retrospective of R10 commit `57c5747dc02370e6854188e009dda61b9108df94`
+found that R9b's `nearby-coverage-and-recipient-transfer` milestone did not prove
+transfer. The pilot's teleport was refused because they were aboard Long Vigil;
+the harness ignored that response, and the delivered envelope recorded zero
+forwardings. The original nearby/outside-coverage evidence remains valid, but the
+recipient-transfer assertion is superseded by the corrected gate recorded here.
+
+R10 normal CI run `40110674650` subsequently completed with four failures: three
+TacSim library tests booted the full relay content with TacSim's game definitions
+disabled, and the help-command contract found the nonexistent `+relay/rates` switch.
+The TacSim integration shard and CodeQL passed. The repair uses one `game_content`
+value for both sides of the centre fixture; production's missing-receipt guards
+remain intact. Help and the startup hint now point to `+relay`, whose existing board
+includes retail and subscription tariffs. Current help also describes terminal
+pair destruction and the full-star Malapert compound instead of R1's initial state.
+
+### Corrected gate
+
+After normal docking, the harness moves the nearby shore recipient from Deimos to
+Ceres using supported staff placement, then verifies the stored location and the
+transport's resolved destination. It requires an increased forwarding count and a new physical flight,
+checks the frozen due time across SIGKILL, rejects early inbox visibility, and checks
+one inbox entry again after delivery and another restart. Moving coverage and restart
+in passage are proved before docking; the pilot stays aboard until the later normal
+disembarkation check. This tests a recipient leaving mobile coverage;
+it does not add an underway carrier transfer or ship-to-ship EVA feature.
+
+The complete paid campaign reran the six real installments, manufacture, physical
+refit, commissioning, removal/remount, power-loss recovery and actual voyage. Its
+strict transfer assertion then exposed that staff unplacement, like teleport, refuses
+to remove an embarked actor underway. That failed attempt is retained. A targeted
+continuation uses the same funded world after its real voyage docks, and the final
+harness's exact helpers and transfer/lifecycle block; no reset, payment, manufacturing receipt
+or clock anchor is fabricated. One intermediate continuation caught a stale assertion
+that checked the pilot instead of the moved observer; that failure is also retained.
+A second attempt reached delivery but an inbox command used a WebSocket captured
+before restart. The final block reads the reconnected observer client after each
+restart, and tests recipient relocation after normal docking.
+
+Prior startup failures and an interrupted preflight attempt are retained separately.
+The shared harness now checks Node >=22 and permits an explicitly scoped
+acceptance-repair evidence subdirectory, preserving the original gate evidence.
+
+### Validation result
+
+The final continuation passed. Recipient #679 moved from Deimos room #261 to Ceres
+room #101; the resolved destination changed accordingly and forwarding increased
+from 0 to 1. The physical flight lasted 1,813 IC seconds, with frozen due time
+74,183,962,179. There were 339 pre-arrival checks; inbox visibility was observed at
+74,183,962,241, after the due time. Both the in-flight restart and a second restart
+after delivery preserved exactly one inbox entry. Normal pilot disembarkation,
+installation disable/enable, carrier destruction, terminal loss after hull repair,
+once-only launch canon and total-money conservation passed. The acknowledged transport
+envelope is retired after restart; the saved in-flight milestone retains its route.
+
+The paid campaign and final continuation cover 11 accepted-path SIGKILL boundaries;
+two interrupted continuations add two observed crashes, recorded separately rather
+than counted as successful complete runs. No funded checkpoint restore was needed.
+The original verified dev1 baseline was restored with its expiry deadlines: lane v12,
+relay v1, two nodes/one pair, no Fleet/Terms programme or manufactured machines. HTTPS,
+gateway and Redis health passed, and dev2 remained `MainPID=539467`.
+
+Linux validation passed **1,564 tests**, with zero failures and one pre-existing
+ignored library test: 1,480 TacSim library, four help contracts, 21 boot-parity,
+ten IC integration and 49 relay integration tests. Full formatting, TacSim
+library/test Clippy with warnings denied, release server/TLS gateway builds and
+Node syntax checks passed. The 1,448 crate/Cargo/help inputs and final harness hashes
+match the VPS. The runtime build did not change during the harness corrections.
+See [acceptance metadata](evidence/relay-acceptance-repair-2026-10-24/metadata.json)
+and [retained transcripts and procedure](evidence/relay-acceptance-repair-2026-10-24/README.md).
+Normal CI for the follow-up push is a separate result and is not claimed green here.
+RR-1 and RR-4 through RR-7 remain follow-up work; this closes the requested acceptance
+repair and current-help correction, not unconditional acceptance of every review finding.

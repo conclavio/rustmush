@@ -1,0 +1,105 @@
+diff --git a/crates/tacsim/src/match_/centre.rs b/crates/tacsim/src/match_/centre.rs
+index 7d80ded6..c115d403 100644
+--- a/crates/tacsim/src/match_/centre.rs
++++ b/crates/tacsim/src/match_/centre.rs
+@@ -504,2 +504,7 @@ pub(crate) mod tests {
+-        mods.push(comp::tacsim_module_wired(cfg, false, inventory));
+-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
++        // Keep the lane definitions and applied content together, as production
++        // does: the full relay star needs the Fleet/Postmaster programme.
++        let game_content = cfg.enabled;
++        mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
++        mods.push(
++            comp::content_module_with(true, game_content).expect("the content module composes"),
++        );
+diff --git a/crates/tacsim/src/relay_world.rs b/crates/tacsim/src/relay_world.rs
+index 30c19b5b..ff318624 100644
+--- a/crates/tacsim/src/relay_world.rs
++++ b/crates/tacsim/src/relay_world.rs
+@@ -193 +193 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
+-        "relay world ready: Luna star v2; five public nodes, four pairs; Terms of Service and A Half Afloat; +relay, +relay/rates, +clocks"
++        "relay world ready: Luna star v2; five public nodes, four pairs; Terms of Service and A Half Afloat; +relay (board and tariffs), +clocks"
+diff --git a/docs/help/relay.md b/docs/help/relay.md
+index 64f29641..b9c50b84 100644
+--- a/docs/help/relay.md
++++ b/docs/help/relay.md
+@@ -161,2 +161,3 @@ A pair is Live when both halves are enabled, powered and staffed. Otherwise it
+-is Degraded; a destroyed half makes it Dead. R1 has no destruction or replacement
+-command. Power and staffing are explicit operator settings, not a crew simulation.
++is Degraded; a destroyed half makes it permanently Dead and orphans its partner.
++Repairing the station does not recreate the pair. Power and staffing are explicit
++operator settings, not a crew simulation.
+@@ -165,4 +166,5 @@ Repeated settings make no change. Successful mutations persist before confirmati
+-The seed pack is `tacsim.relay.luna_ceres`. Reapplying it preserves IDs and settings.
+-Its Malapert Exchange endpoints occupy the Aitken service spine on Luna and the
+-Ceres maintenance room; coverage is the explicit room list shown by `/show`.
+-The pair shares 8 units/IC-second in both directions, with one unit per started
++The seed pack is `tacsim.relay.luna_ceres`. Its current version supplies the five-node
++Luna star, with four pairs and eight halves. Malapert occupies the Exchange compound;
++coverage is the explicit room list shown by `/show`. Existing worlds take upgrades
++through the content plan/apply commands, preserving pair identities and settings.
++Each public pair shares 8 units/IC-second in both directions, with one unit per started
+@@ -298 +300 @@ partial expansion refuses and requires repair. Startup logs report the full star
+-ready; `@relay`, `+relay`, and `+relay/rates` show the topology, board and tariffs.
++ready; `@relay` shows the topology, and `+relay` shows the board and tariffs.
+diff --git a/scripts/relay-live-client.mjs b/scripts/relay-live-client.mjs
+index c5e8d7f3..f5d2b1ea 100644
+--- a/scripts/relay-live-client.mjs
++++ b/scripts/relay-live-client.mjs
+@@ -10,0 +11 @@ import { join } from 'node:path';
++assert(Number(process.versions.node.split('.')[0]) >= 22, 'relay live acceptance requires Node >=22');
+@@ -13 +14 @@ assert(target === 'https://conclav.io:6790' && redisPort === '6788', 'dev1 only'
+-assert(/^\/opt\/rustmush\/dev1\/r[0-9]+[ab]?-evidence$/.test(realpathSync(output)), 'dev1 gate evidence only');
++assert(/^\/opt\/rustmush\/dev1\/r[0-9]+[ab]?-evidence(?:\/acceptance-repair)?$/.test(realpathSync(output)), 'dev1 gate evidence only');
+diff --git a/scripts/relay-r9b-live.mjs b/scripts/relay-r9b-live.mjs
+index e352cdd2..bf335de7 100644
+--- a/scripts/relay-r9b-live.mjs
++++ b/scripts/relay-r9b-live.mjs
+@@ -19,0 +20,8 @@ async function death(label){await crash(label);await reconnect();}
++async function place(client,room){
++ const before=read('obj:'+actor(client))?.location;
++ const unplaced=await command(staff,`@spatial/unplace ${client.object}=R9b acceptance fixture transfer`);
++ assert(unplaced.includes('Unplaced ')||unplaced.includes(client.object+' is not placed'),unplaced);
++ await command(staff,`@teleport ${client.object}=#${room}`);
++ await until(()=>read('obj:'+actor(client))?.location===room,'authoritative recipient placement',15);
++ return {actor:actor(client),before,after:room,at:now()};
++}
+@@ -41 +49 @@ try{
+- for(const c of [staff,pilot,observer])await command(staff,`@teleport ${c.object}=#${f.place}`);
++ for(const c of [staff,pilot,observer])await place(c,f.place);
+@@ -82 +90 @@ try{
+- await command(staff,`@teleport ${observer.object}=#${port('ceres_port').presentation}`);const outside=await send(observer,'R9b outside');await received(observer,outside);assert(!uses(outside));
++ await place(observer,port('ceres_port').presentation);const outside=await send(observer,'R9b outside');await received(observer,outside);assert(!uses(outside));
+@@ -88,4 +96,28 @@ try{
+- await command(staff,`@teleport ${observer.object}=#${port('deimos_port').presentation}`);const nearby=await send(observer,'R9b nearby');await received(observer,nearby);assert(uses(nearby));assert(cruising());
+- const moving=await send(pilot,'R9b forwarding');assert(uses(moving));assert.notEqual(envelope(moving).state,'delivered','move before arrival');await command(staff,`@teleport ${pilot.object}=#${port('ceres_port').presentation}`);await command(staff,'@tacsim/time rate=24');await received(pilot,moving);await command(pilot,'@mail','R9b forwarding');
+- milestone('nearby-coverage-and-recipient-transfer',{nearby:envelope(nearby),forwarded:envelope(moving),icNow:now(),end});
+- await command(staff,`@teleport ${pilot.object}=#${row.rooms.airlock}`);await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking',90);await command(pilot,'+ship/leave','cycle the lock');
++ await place(observer,port('deimos_port').presentation);const nearby=await send(observer,'R9b nearby');await received(observer,nearby);assert(uses(nearby));assert(cruising());
++ // Complete normal passage before the recipient transfer; underway boundaries are strict.
++ await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking before transfer',90);await command(staff,'@tacsim/time rate=1');
++ const moving=await send(observer,'R9b forwarding accepted');assert(uses(moving));
++ const beforeTransfer=envelope(moving),message=Number(beforeTransfer.dispatch.key.split(':')[2]);
++ assert.notEqual(beforeTransfer.state,'delivered','move before arrival');assert(!box(observer,message));
++ // Move the nearby shore recipient out of mobile coverage. An embarked actor
++ // cannot cross the carrier boundary underway, including by staff unplacement.
++ const transfer=await place(observer,port('ceres_port').presentation);assert.notEqual(transfer.before,transfer.after);
++ const forwarded=await until(()=>{const e=envelope(moving);return e.transit?.forwardings>beforeTransfer.transit.forwardings&&e.transit?.flight&&e;},'forwarding to the changed endpoint',30);
++ assert.notEqual(forwarded.transit.destination,beforeTransfer.transit.destination);
++ assert.notEqual(forwarded.state,'delivered');assert(!box(observer,message));
++ const flight=forwarded.transit.flight;assert(flight.seconds>0);assert(flight.due.at>now()+15,'restart before the forwarded physical leg arrives');
++ milestone('recipient-transfer-in-flight',{before:beforeTransfer,transfer,forwarded,icNow:now()});
++ await command(staff,'@dump','snapshot acknowledged');await death('recipient-transfer-forwarding-in-flight');
++ assert.equal(read('obj:'+actor(observer)).location,transfer.after);assert.equal(envelope(moving).transit.forwardings,forwarded.transit.forwardings);
++ assert.equal(envelope(moving).transit.flight.due.at,flight.due.at,'restart preserves frozen arrival');assert(!box(observer,message));
++ await command(staff,'@tacsim/time rate=24');
++ const arrivalDeadline=Date.now()+180000;let earlyChecks=0;
++ while(!box(observer,message)){assert(Date.now()<arrivalDeadline,'forwarded inbox arrival timeout');if(now()<flight.due.at)earlyChecks++;await sleep(200);}
++ const receivedAt=now();assert(receivedAt>=flight.due.at,'no inbox before frozen arrival');assert(earlyChecks>0);
++ assert.equal(envelope(moving).state,'delivered');assert(envelope(moving).transit.history.some(h=>h.flight.due.at===flight.due.at&&h.arrived.at>=flight.due.at));
++ const inbox=await command(observer,'@mail','R9b forwarding accepted');assert.equal(inbox.split('\n').filter(line=>line.includes('R9b forwarding accepted')).length,1,'one inbox entry');
++ await command(staff,'@dump','snapshot acknowledged');await death('recipient-transfer-delivered-once');
++ assert.equal((await command(observer,'@mail','R9b forwarding accepted')).split('\n').filter(line=>line.includes('R9b forwarding accepted')).length,1,'restart does not duplicate delivery');
++ milestone('nearby-coverage-and-recipient-transfer',{nearby:envelope(nearby),before:beforeTransfer,transfer,forwarded:envelope(moving),flight,receivedAt,earlyChecks,icNow:now(),end});
++ await command(staff,'@tacsim/time rate=3600');await until(()=>!cruising(),'real docking',90);
++ await command(pilot,'+ship/leave','cycle the lock');

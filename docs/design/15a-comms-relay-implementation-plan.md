@@ -10,6 +10,9 @@ covers fresh/upgraded worlds, both deployment modes, crash recovery, real billin
 a voyage and bounded concurrent traffic. The train stops for programme acceptance.
 Normal candidate CI remains owner-monitored and required for full acceptance.
 The external live Discord-provider criterion remains open; dev1 has no bot/mapping.
+The [retrospective](15c-comms-relay-retrospective.md) reopened the original R9b
+recipient-transfer proof and identified R10 CI failures. Their acceptance repair
+is recorded in [15b](15b-comms-relay-cut-notes.md#acceptance-repair--r10-ci-and-r9b-recipient-transfer).
 
 ## 1. Owner rulings and delivery discipline
 
@@ -470,8 +473,9 @@ first launch once. **Stop.**
 monthly transfers took 3,604 wall seconds at rate 3600; consent and paid physical
 refit completed the dormant 8-segment front. Removal/remount preserved the original
 halves, carrier power loss recovered, and the first launch followed a real voyage.
-Onboard/nearby mail, outside fallback, recipient transfer and terminal carrier loss
-passed through nine SIGKILL boundaries. Fresh boot/reboot, 12 SSH checks, finite
+Onboard/nearby mail, outside fallback and terminal carrier loss passed through nine
+SIGKILL boundaries. The original recipient-transfer claim was invalidated by the
+retrospective; see the acceptance-repair entry in 15b for its corrected rerun. Fresh boot/reboot, 12 SSH checks, finite
 material/money audit and baseline restoration passed. Linux ran 662 tests with zero
 failures or skips; formatting, Clippy and release/web builds passed. Seven legacy
 fixture targets from the preceding CI failure now pass with production inventory

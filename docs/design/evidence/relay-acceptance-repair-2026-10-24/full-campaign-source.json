@@ -1,0 +1,10 @@
+{
+  "parentCommit": "57c5747dc02370e6854188e009dda61b9108df94",
+  "sourceSha256": {
+    "crates/tacsim/src/match_/centre.rs": "46e14cdd67480d5360dc0cc188bac9ddb996d11fba007e7952e378d53a66dd10",
+    "crates/tacsim/src/relay_world.rs": "cd02f2e5fe1f4c0e8d19975b5145e1d41052ac1f5b8a6bd41598cd8a0afdc240",
+    "docs/help/relay.md": "0e9be18476b626af9837b6bf1a00662c69b1fae06d2881786bf86a1cbd896d42",
+    "scripts/relay-r9b-live.mjs": "ece9b53ed86a721cdaf004e14bc323afea8d83ed8ed4747a24e9b3d383a7c549",
+    "scripts/relay-live-client.mjs": "a007b98d0e3e3c5628df04e68681ad28f92b3c526eabd6d53a48640651e4b17b"
+  }
+}

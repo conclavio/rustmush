@@ -1,0 +1,7 @@
+{
+  "crates/tacsim/src/match_/centre.rs": "46e14cdd67480d5360dc0cc188bac9ddb996d11fba007e7952e378d53a66dd10",
+  "crates/tacsim/src/relay_world.rs": "cd02f2e5fe1f4c0e8d19975b5145e1d41052ac1f5b8a6bd41598cd8a0afdc240",
+  "docs/help/relay.md": "0e9be18476b626af9837b6bf1a00662c69b1fae06d2881786bf86a1cbd896d42",
+  "scripts/relay-r9b-live.mjs": "ce2accca3c1f1a1ceb97aa188c1e81d38283e4f0d722d99d32518dab7c7ba512",
+  "scripts/relay-live-client.mjs": "a007b98d0e3e3c5628df04e68681ad28f92b3c526eabd6d53a48640651e4b17b"
+}

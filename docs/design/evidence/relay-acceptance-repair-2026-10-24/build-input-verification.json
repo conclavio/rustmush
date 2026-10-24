@@ -1,0 +1,9 @@
+{
+  "checked": 1448,
+  "mismatches": [],
+  "localWorkingTreeNewlineConversions": [
+    "crates/mush-comsys/Cargo.toml",
+    "crates/tacsim/content/relays/luna_ceres-v1.json"
+  ],
+  "manifestSha256": "53b267b3c3b306b8c048abc5f30aa47739e23e629cdcb29cbe1a1d96ee50f021"
+}

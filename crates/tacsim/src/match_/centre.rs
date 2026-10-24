@@ -501,8 +501,13 @@ pub(crate) mod tests {
             comp::npc_agent_adapter(),
             &mush_config::config::NpcCfg::default(),
         ));
-        mods.push(comp::tacsim_module_wired(cfg, false, inventory));
-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        // Keep the lane definitions and applied content together, as production
+        // does: the full relay star needs the Fleet/Postmaster programme.
+        let game_content = cfg.enabled;
+        mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
+        mods.push(
+            comp::content_module_with(true, game_content).expect("the content module composes"),
+        );
         mush_testkit::TestWorld::with_modules(mods)
     }
 
