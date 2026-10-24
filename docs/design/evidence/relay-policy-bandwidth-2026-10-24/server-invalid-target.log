@@ -1,0 +1,32 @@
+error: no test target named `ic_integration` in `mush-server` package
+help: available test targets:
+    arena_bridge
+    authoritative_action_coordinator
+    authoritative_boot
+    authoritative_durable_outbox
+    boot_parity
+    boot_store
+    cli_args
+    dead_world_reader
+    e0_ledger_durability
+    e4c_bridge
+    e6a_alerts
+    e6a_inbox
+    e6b_seal
+    e7r2_proving_loop
+    gateway_link_parity
+    h2b_scene_turns
+    h2c_ability_coordinator
+    ic_buyout_dormancy
+    ic_slice_loop
+    ipc_authoritative_action
+    ipc_teardown
+    market_issuer
+    preflight_retry_bounds
+    production_action_migrations
+    provisioning_smoke
+    quarantine_boot
+    relay_registry
+    sm_story
+    world_exit_status
+    world_panic_firewall

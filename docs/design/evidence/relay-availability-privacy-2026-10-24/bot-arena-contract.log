@@ -1,0 +1,126 @@
+   Compiling bitflags v2.13.1
+   Compiling serde_json v1.0.151
+   Compiling mio v1.2.2
+   Compiling tokio v1.53.1
+   Compiling mush-proto v0.1.0 (/opt/rustmush/dev1/build/crates/mush-proto)
+   Compiling mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+   Compiling tokio-util v0.7.19
+   Compiling h2 v0.4.19
+   Compiling hyper v1.11.0
+   Compiling hyper-util v0.1.20
+   Compiling tokio-rustls v0.26.4
+   Compiling tower v0.5.3
+   Compiling hyper-rustls v0.27.9
+   Compiling async-compression v0.4.43
+   Compiling aho-corasick v1.1.5
+   Compiling tower-http v0.6.11
+   Compiling regex-automata v0.4.18
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-canon v0.1.0 (/opt/rustmush/dev1/build/crates/mush-canon)
+   Compiling mush-scenes v0.1.0 (/opt/rustmush/dev1/build/crates/mush-scenes)
+   Compiling raw-cpuid v11.6.0
+   Compiling quanta v0.12.6
+   Compiling governor v0.10.4
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+   Compiling signal-hook v0.3.18
+   Compiling matchers v0.2.0
+   Compiling reqwest v0.12.28
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling tokio-stream v0.1.19
+   Compiling rustix v0.38.44
+   Compiling fred v10.1.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling twilight-model v0.17.1
+   Compiling linux-raw-sys v0.4.15
+   Compiling tracing-appender v0.2.5
+   Compiling signal-hook-mio v0.2.5
+   Compiling nix v0.31.3
+   Compiling mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+   Compiling mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+   Compiling twilight-validate v0.17.0
+   Compiling backon v1.6.0
+   Compiling mush-llm v0.1.0 (/opt/rustmush/dev1/build/crates/mush-llm)
+   Compiling mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+   Compiling russh-cryptovec v0.62.0
+   Compiling crossterm v0.28.1
+   Compiling twilight-http-ratelimiting v0.17.1
+   Compiling russh-util v0.52.0
+   Compiling tokio-websockets v0.13.3
+   Compiling russh v0.63.1
+   Compiling ratatui v0.29.0
+   Compiling rhai v1.26.0
+   Compiling twilight-http v0.17.1
+   Compiling tokio-tungstenite v0.29.0
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+   Compiling mush-comsys v0.1.0 (/opt/rustmush/dev1/build/crates/mush-comsys)
+   Compiling twilight-gateway-queue v0.17.0
+   Compiling mush-ansi v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ansi)
+   Compiling axum v0.8.9
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling twilight-gateway v0.17.1
+   Compiling mush-pixel v0.1.0 (/opt/rustmush/dev1/build/crates/mush-pixel)
+   Compiling twilight-util v0.17.0
+   Compiling russh-sftp v3.0.1
+   Compiling mush-net-discord v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-discord)
+   Compiling tower_governor v0.8.0
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-script v0.1.0 (/opt/rustmush/dev1/build/crates/mush-script)
+   Compiling mush-mind v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mind)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-roll v0.1.0 (/opt/rustmush/dev1/build/crates/mush-roll)
+   Compiling mush-party v0.1.0 (/opt/rustmush/dev1/build/crates/mush-party)
+   Compiling mush-mail v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mail)
+   Compiling mush-privileges v0.1.0 (/opt/rustmush/dev1/build/crates/mush-privileges)
+   Compiling mush-dice v0.1.0 (/opt/rustmush/dev1/build/crates/mush-dice)
+   Compiling mush-session v0.1.0 (/opt/rustmush/dev1/build/crates/mush-session)
+   Compiling mush-bot v0.1.0 (/opt/rustmush/dev1/build/crates/mush-bot)
+   Compiling mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling num_cpus v1.17.0
+   Compiling deadpool-runtime v0.1.4
+   Compiling deadpool v0.12.3
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling regex v1.13.1
+   Compiling assert-json-diff v2.0.2
+   Compiling wiremock v0.6.5
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 5m 45s
+     Running tests/arena_contract.rs (target/debug/deps/arena_contract-1251a7c045291d91)
+
+running 19 tests
+test m5_1_the_selection_fog_reads_as_the_bot_reads_it ... ok
+test m3_the_core_dropped_sentences_read_as_neutral_lines_and_open_no_reply ... ok
+test m1b4_the_arming_its_line_and_its_sentences_read_as_the_bot_reads_them ... ok
+test m3_the_turret_lost_with_its_core_words_raises_the_weapons_doubt_and_nothing_else ... ok
+test m5_6_the_reworded_acknowledgements_and_the_mind_hint_read_as_the_bot_reads_them ... ok
+test m5_3_the_release_words_read_as_the_bot_reads_them ... ok
+test m5_6_the_your_mind_block_and_the_release_line_read_as_neutral_lines ... ok
+test m5rules_a_landing_refusal_does_not_invent_an_odds_floor ... ok
+test the_briefs_empty_sentence_and_end_line_read_as_the_game_prints_them ... ok
+test the_drive_notices_read_as_neutral_lines_and_open_no_reply ... ok
+test the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply ... ok
+test the_view_brief_header_reads_as_the_game_prints_it ... ok
+test the_watch_digest_reads_as_neutral_lines_and_opens_no_reply ... ok
+test the_parser_reads_what_the_cockpit_formatters_print ... ok
+test m5_2_the_profile_refusal_and_the_seal_lines_read_as_the_bot_reads_them ... ok
+test m5_4_the_mind_lines_read_as_the_bot_reads_them ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+test m5rules_the_bot_reads_native_rules_over_its_own_ssh_client ... ok
+test the_bot_reads_a_live_centre_over_its_own_ssh_client ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.34s
+

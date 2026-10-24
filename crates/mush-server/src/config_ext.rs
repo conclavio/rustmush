@@ -199,6 +199,11 @@ pub fn tacsim_economy_config(cfg: &TacsimCfg) -> Result<tacsim::GameEconomyConfi
 /// enormous file is refused by name rather than pulled into memory and then rejected.
 pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
 
+/// **The boot refusal of `[tacsim.surface].registry_interlock = false`** (doc 20 cut SM.10;
+/// §9.4, lead ruling 9, D16): the interlock is phase 1's only claim enforcement until the fight
+/// exists.
+pub const TACSIM_INTERLOCK_REFUSED: &str = "[tacsim.surface].registry_interlock = false is not supported: the Registry interlock is phase 1's only claim enforcement until the fight exists (doc 20 §9.4).";
+
 /// The layer-facing `[tacsim]` config (E7 cut 1, 10b §7 and §3.1's OPEN 1).
 ///
 /// **The host reads the bytes; the ruleset owns parse, digest and validation.** This
@@ -222,7 +227,8 @@ pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
 ///
 /// A message naming the file, for an I/O failure, a file past
 /// [`MAX_TACSIM_PACK_BYTES`], a directory that cannot be listed, or anything
-/// `tacsim::verify_sources` refuses.
+/// `tacsim::verify_sources` refuses; (doc 20 cut SM.10) [`TACSIM_INTERLOCK_REFUSED`] for
+/// `[tacsim.surface].registry_interlock = false`.
 pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     let mut packs = Vec::new();
     let mut seeds = Vec::new();
@@ -239,6 +245,12 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             mush_atlas::DEFAULT_CELL_SIZES,
             cfg.ground_cell_cm
         ));
+    }
+    // Doc 20 cut SM.10 (§9.4; lead ruling 9, D16): the Registry interlock is phase 1's only
+    // claim enforcement, so its `false` is refused here rather than parsed into a server whose
+    // claims bar nobody. The lever is reserved for the fight (§17).
+    if !cfg.surface.registry_interlock {
+        return Err(TACSIM_INTERLOCK_REFUSED.to_owned());
     }
     let typed = tacsim::TacsimConfig {
         enabled: cfg.enabled,
@@ -961,6 +973,24 @@ mod tests {
         assert!(typed.packs.is_empty() && !typed.enabled);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Doc 20 cut SM.10 (§9.4; lead ruling 9, D16)**: `[tacsim.surface].registry_interlock =
+    /// false` refuses the boot with the exact line, on or off; `true` (the default) boots.
+    #[test]
+    fn sm10_an_interlock_set_false_refuses_the_boot() {
+        let off = TacsimCfg {
+            surface: mush_config::config::TacsimSurfaceCfg {
+                registry_interlock: false,
+            },
+            ..TacsimCfg::default()
+        };
+        assert_eq!(
+            tacsim_config(&off).expect_err("the interlock off refuses"),
+            "[tacsim.surface].registry_interlock = false is not supported: the Registry \
+             interlock is phase 1's only claim enforcement until the fight exists (doc 20 §9.4)."
+        );
+        assert!(tacsim_config(&TacsimCfg::default()).is_ok());
     }
 
     /// A directory in `pack_paths` is searched, in **sorted** order, so which pack wins

@@ -1,0 +1,260 @@
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: quarantine spool /opt/rustmush/dev1/data/quarantine: quarantine artifact owner differs from spool directory owner
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 1.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 2.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 3.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 4.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 5.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 6.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 7.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 8.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 9.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 10.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 11.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 12.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 13.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 14.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 15.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 16.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 17.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 18.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 19.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 20.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 21.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 22.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 23.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 24.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 25.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 26.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 27.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 28.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 29.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 30.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 31.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 32.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 33.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 34.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 35.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 36.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 37.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 38.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 39.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 40.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 41.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 42.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 43.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 44.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 45.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 46.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 47.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 48.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 49.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 50.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+rustmush-r10-allinone.service: Scheduled restart job, restart counter is at 51.
+Started rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.
+mushd: quarantine spool preflight failed: partial quarantine record requires recovery: /opt/rustmush/dev1/data/quarantine/.rustmush-write-probe-1093426-0.tmp
+rustmush-r10-allinone.service: Main process exited, code=exited, status=1/FAILURE
+rustmush-r10-allinone.service: Failed with result 'exit-code'.
+Stopped rustmush-r10-allinone.service - /opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml.

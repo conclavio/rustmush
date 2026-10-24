@@ -1,0 +1,2 @@
+fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca  /opt/rustmush/dev1/build/target/release/mush-server
+edb2a5d72dd8c2c6831ec10f9c1294d45877eed688441127e91573446a58f475  /opt/rustmush/dev1/build/target/release/mush-gateway

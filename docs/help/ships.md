@@ -30,6 +30,13 @@ and `home` do not take you off it, and nothing you do crosses the hull under
 way: your own moves out of the hold refuse until she docks. You leave by the
 Airlock, in port.
 
+While aboard, `+ship` also estimates the one-way physical radio lag to an
+Exchange endpoint. Queue time and the returning acknowledgement add to that
+figure. Orders and acknowledgements in flight keep their original arrival time
+even if the ship progresses or the world rate changes. If your passage cannot
+be located, traffic waits; the instruments report that the lag is unavailable.
+OOC channels remain immediate.
+
 ## The hold
 
 `+ship/hold` shows the hold good by good, in tonnes and cubic metres. The cargo
@@ -91,6 +98,12 @@ Titan's lanes fit the tank only throttled (`help trade`).
   +chart <port>           the window: that passage planned on every IC day of
                           the next year — the fastest, the cheapest, the worst
   +chart/body <body>      one body and the elements it moves on
+  +chart/ground [<body>]  the Registry's survey of a body: its sites by letter,
+                          each with the survey's words, its tenure, the passage
+                          now and your own best reading (`help mining`)
+  +chart/ground map [<body>] [<family>]
+                          the survey as a map: the body flat, 56 by 28, one
+                          family's wash, the port and the sites by letter
   +chart/map              the sky as a flat map: the Sun, every orbit, the bodies
                           by letter, the listed routes dotted, you at @ — what the
                           TUI's chart screen (Alt+c) and the web's chart tab draw
@@ -149,7 +162,8 @@ counter in the Exchange Hall at Ceres Freeport, with your Dray-P docked,
 `+tv/lease` shows the terms and signs nothing; `+tv/lease go` signs them:
 1400.00cr for a term of 168 IC days, paid now, and a 5000.00cr deposit held on
 your account while the rig is aboard. The rig rolls up the ramp into the lowest free
-slot; `+tv/2/lease go` names slot 2. Two leases are two rigs.
+slot; `+tv/2/lease go` names slot 2. Two leases are two rigs. A lease needs a
+prospecting licence (`+licence/buy`; `help coop`), in force or in its grace.
 
 `+tv` reads each slot anywhere: the rig, how long its lease has left and what
 its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
@@ -158,19 +172,24 @@ deposit and the rig must go back.
 
 `+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
 the bay and its hopper empty, and your deposit is released. Without go it says
-what would happen. A rig never sells from its hopper, and nobody takes ore out of
-a hopper by hand.
+what would happen. Ore leaves a hopper only by the rig's own unload into the hold
+or a dump onto the spoil; a hopper never sells.
 
 With your Dray-P settled on a site's pad and you aboard, you work the rigs from
 the bridge. `+tv/1 launch` says what sending rig 1 down the stern ramp would do
 and commits nothing; `+tv/1 launch go` sends it: 300 IC s later it stands on the
 ground at the foot of the ramp. `+tv/1 recover` brings it back up when it stands
 beside the ramp, on the ramp's own cell or the next (300 IC s); a rig further off
-is told about how far it is. `+tv/1 dump go` empties its hopper onto the
+drives to the ramp first, in the same act. A rig that comes home with ore in its
+hopper then unloads it into the hold on its own (600 IC s); `+tv/1 unload go` does
+the same by hand, for a rig in the bay. `+tv/1 dump go` empties its hopper onto the
 site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig you
 named last, or your only rig. `+tv` shows where each rig is, its charge and any
-act it is in the middle of. The Dray-P lifts only with every rig in her bay and
-every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
-rig holds her.
+act it is in the middle of. The Dray-P lifts only with every rig in her bay,
+none working a fill plan, and every hopper empty: `+ship/lift`, `+ship/plan` and
+a queued depart all say which rig holds her (`+tv/1 plan clear` ends a plan), and
+on a site's pad name the unload and the dump; at a port, where neither works, only
+staff can empty a hopper. Scanning, sounding and the rest of the mining loop are in
+`help mining`.
 
-See also: `help orders`, `help ports`, `help trade`, `help coop`.
+See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.

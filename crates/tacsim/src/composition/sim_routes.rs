@@ -110,6 +110,21 @@ impl CarrierHooks for TacsimCarrierHooks {
         crate::port::voyage::narrate_hull(ctx, hull, &docks);
         let notice = notice.replace("{hhmm}", &crate::port::voyage::utc_hhmm(ctx.w.now()));
         crate::port::voyage::tell_absent_tenant(ctx, hull, &notice);
+        // Doc 20 cut SM.4a (lead ruling 6): a hull settled on a site's pad asks for the site's
+        // ground, so the surface tick warms it before the first scan (RAM only; a no-op with the
+        // geology layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and its way home from
+        // every cell — the home field for the hull's ramp cell, wanted whatever the layer's
+        // state (`want_home` wants the site's ground too).
+        if let crate::port::ship::Berth::Docked { map, def } =
+            crate::port::ship::berth_of(ctx.w, hull)
+            && def.site.is_some()
+        {
+            let entry = map.entry.clone();
+            match crate::surface::hull_home(ctx.w, hull) {
+                Some((site, ramp)) => crate::surface::want_home(ctx.w, &site, ramp),
+                None => crate::surface::want_site_ground(ctx.w, &entry),
+            }
+        }
         REPLACE_GENERIC_ABOARD_LINES
     }
 }

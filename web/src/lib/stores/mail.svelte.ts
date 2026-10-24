@@ -33,6 +33,7 @@ export interface MailEntry {
   status: MailEntryStatus;
   sentAt: number;
   replyTo: number | null;
+  delivery: string | null;
 }
 
 function str(v: unknown): string | null {
@@ -98,6 +99,7 @@ export class MailStore {
               : "read") as MailEntryStatus,
             sentAt: num(e.sent_at),
             replyTo: typeof e.reply_to === "number" ? e.reply_to : null,
+            delivery: str(e.delivery),
           },
         ];
       });

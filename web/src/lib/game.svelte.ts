@@ -37,6 +37,10 @@ import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
 import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
+import { PictureStore } from "./stores/picture.svelte";
+import { pictureCommand } from "./picture";
+import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
+import { QuarryStore } from "./stores/quarry.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
@@ -53,7 +57,13 @@ import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
-import { CHART_SCREEN, ScreensStore, UNIT_SCREEN, type GateInput } from "./stores/screens.svelte";
+import {
+  CHART_SCREEN,
+  QUARRY_SCREEN,
+  ScreensStore,
+  UNIT_SCREEN,
+  type GateInput,
+} from "./stores/screens.svelte";
 import { ScrollbackStore, type SbOlderBlock } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
@@ -115,7 +125,9 @@ type PendingReq =
   | { kind: "arena.replay" }
   | { kind: "arena.observer" }
   | { kind: "scenes" }
-  | { kind: "chart" };
+  | { kind: "chart" }
+  | { kind: "site.map" }
+  | { kind: "body.ground" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -249,6 +261,12 @@ export class GameApp {
   replay = new ReplayStore();
   /** The sky chart (doc 19 cut A.3b): the `sky.chart` keyframe. */
   chart = new ChartStore();
+  /** The cockpit's picture (doc 21 cut G.3c): asked for, its look, its last
+   * frame. */
+  picture = new PictureStore();
+  /** The quarry (doc 20 cut SM.9): the `site.map` and `body.ground` keyframes and the
+   * screen's view. */
+  quarry = new QuarryStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -310,6 +328,13 @@ export class GameApp {
       onStatus: (s) => {
         this.session.status = s;
         if (s !== "connected") this.#clearMinds();
+        // Doc 21 cut G.3c: the gateway's picture is per connection, so a
+        // reconnect asks for it again; while away, nothing is shown.
+        if (s === "connected" && this.picture.on) {
+          this.client.send(pictureCommand(true, this.picture.lookMdeg));
+        } else if (s !== "connected") {
+          this.picture.clear();
+        }
         if (s === "closed") {
           // A clean close never reconnects on its own: nothing will answer
           // the heal's asks, so it stops with the socket (16b cut B.2).
@@ -319,6 +344,7 @@ export class GameApp {
       onTokenCooloff: () => {
         this.#localNotice("Too many reconnects from this network; retrying in one minute.");
       },
+      onBinary: (data) => this.picture.receive(data),
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested
@@ -506,6 +532,10 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.cockpit.clear();
+    // Doc 20 cut SM.9 (§5, D16): the quarry's frames hold the viewer's own readings, log and
+    // best readings — another character's session never shows them, nor asks with their rig,
+    // family or view.
+    this.quarry.clear();
     this.replay.clear(); // 16b cut I.2: nothing open, nothing dismissed
     this.#armMapHeal(); // unseated: stops the heal (16b cut B.2)
     this.genericViews.clear();
@@ -654,6 +684,7 @@ export class GameApp {
   #onChannel(env: EnvelopeOf<"channel">): void {
     const fresh = this.channels.live({
       channel: env.d.channel,
+      epoch: env.d.epoch,
       seq: env.d.seq,
       actor: env.d.actor,
       title: env.d.title ?? null,
@@ -715,6 +746,13 @@ export class GameApp {
       !this.screens.feedScreens.some((f) => f.def.id === CHART_SCREEN.def.id)
     ) {
       this.#screenRefused(CHART_SCREEN.def.label, this.screens.registerFeedScreen(CHART_SCREEN));
+    }
+    // The quarry (doc 20 cut SM.9), the same way, on its letter hotkey `q`.
+    if (
+      this.session.panels.some((p) => p.endsWith(QUARRY_SCREEN.suffix)) &&
+      !this.screens.feedScreens.some((f) => f.def.id === QUARRY_SCREEN.def.id)
+    ) {
+      this.#screenRefused(QUARRY_SCREEN.def.label, this.screens.registerFeedScreen(QUARRY_SCREEN));
     }
     let mapAsked = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
@@ -921,11 +959,11 @@ export class GameApp {
     } else if (d.feed === "comsys") {
       if (d.kind === "keyframe") {
         this.channels.applyState(d.data);
+        // A rejoin can change the membership while the tab stays open.
+        // Refill its cleared cache from this membership's arrived history.
+        if (this.channels.active !== null) this.openChannelTab(this.channels.active);
       } else {
-        const merged = this.channels.applyBacklog(d.data);
-        if (pending?.kind === "backlog" && merged === 0) {
-          this.channels.backlogFetched[pending.channel.toLowerCase()] = true;
-        }
+        this.channels.applyBacklog(d.data);
       }
     } else if (d.feed === "mail" && d.kind === "keyframe") {
       this.mail.applyList(d.data);
@@ -982,11 +1020,14 @@ export class GameApp {
       // keyframe — a `VIEW` composite too, which is the same payload with a
       // grid this client does not read — so there is no delta arm.
       if (d.kind === "keyframe") {
+        // Doc 21 cut G.3b: and the picture drawn here reads it.
+        this.picture.observeCockpit(d.data);
         this.#followTheCockpit(d.data);
       }
     } else if (d.feed === ARENA_MAP_FEED) {
       // The terrain under it: pulled, never pushed, one per match.
       if (d.kind === "keyframe") {
+        this.picture.observeMap(d.data);
         if (this.cockpit.seated && decodeArenaMap(d.data)?.seated === false) {
           // The world answered a map ask `seated: false` while a seated frame
           // is held (16b cut B.2): the seat is gone and nothing said so. A
@@ -1008,6 +1049,26 @@ export class GameApp {
       // The sky chart (doc 19 cut A.3b): every frame is a whole keyframe.
       if (d.kind === "keyframe") {
         this.chart.applyKeyframe(d.data);
+      }
+    } else if (d.feed === SITE_MAP_FEED) {
+      // The quarry's site map (doc 20 cut SM.9): pulled, every frame a whole keyframe. Doc 20 cut
+      // SM.10 (SM.9's lead round, inherited): a reason frame that cleared the pick is re-asked once
+      // while the quarry is the screen, so it is not held until the next push or `r`.
+      if (d.kind === "keyframe") {
+        const cleared = this.quarry.applySite(d.data, Date.now());
+        if (cleared && this.screens.active === QUARRY_SCREEN.def.id) {
+          this.refreshQuarrySite();
+        }
+      }
+    } else if (d.feed === BODY_GROUND_FEED) {
+      if (d.kind === "keyframe") {
+        this.quarry.applyGround(d.data);
+      }
+    } else if (d.feed === TV_STATUS_FEED) {
+      // A rig's projection changed (doc 20 cut SM.9, decision D13): the quarry, when it is
+      // the screen, pulls the site map again; anywhere else the cue is dropped.
+      if (d.kind === "keyframe" && this.screens.active === QUARRY_SCREEN.def.id) {
+        this.refreshQuarrySite();
       }
     } else if (d.feed === REPLAY_FEED) {
       // A finished match (16b cut I.2; 16c N9): the pushed grid opens it, the
@@ -1361,9 +1422,9 @@ export class GameApp {
   act(intent: NavIntent): boolean {
     switch (intent.kind) {
       case "screen":
-        return this.screens.switchDigit(intent.digit, this.gate);
+        return this.#entered(this.screens.switchDigit(intent.digit, this.gate));
       case "screenKey":
-        return this.screens.switchHotkey(intent.key, this.gate);
+        return this.#entered(this.screens.switchHotkey(intent.key, this.gate));
       case "compose":
         this.focusComposer(intent.prefill.length > 0 ? intent.prefill : undefined);
         return true;
@@ -1422,6 +1483,20 @@ export class GameApp {
     queueMicrotask(() => this.composer?.focus(prefill));
   }
 
+  /** **Switch to the screen `id`** (a tab's click), pulling what it reads where it pulls on
+   * entry (doc 20 cut SM.9: the quarry asks for both frames). */
+  switchScreen(id: string): boolean {
+    return this.#entered(this.screens.switchTo(id, this.gate));
+  }
+
+  /** A switch that landed on the quarry pulls its frames (doc 20 cut SM.9). */
+  #entered(switched: boolean): boolean {
+    if (switched && this.screens.active === QUARRY_SCREEN.def.id) {
+      this.refreshQuarry();
+    }
+    return switched;
+  }
+
   /** Run the active screen's binding for `key` (D-I-18): a prefill opens
    * the box with the line ready, a run sends a read-only verb, a local
    * action refreshes or clears. */
@@ -1433,6 +1508,11 @@ export class GameApp {
     switch (b.action.kind) {
       case "prefill":
         this.focusComposer(b.action.line);
+        return true;
+      case "prefillRig":
+        // Doc 20 cut SM.9 (lead ruling 6): the act's line for the quarry's rig; nothing is
+        // sent until the pilot adds the target and `go`.
+        this.focusComposer(rigPrefill(this.quarry.selectedRig, b.action.act));
         return true;
       case "run":
         this.submit(b.action.cmd);
@@ -1455,9 +1535,26 @@ export class GameApp {
       | "picturePrev"
       | "pictureNext"
       | "pictureFocus"
-      | "pictureClose",
+      | "pictureClose"
+      | "quarryRig"
+      | "quarryZoom"
+      | "quarryLayer",
   ): void {
     switch (action) {
+      // Doc 20 cut SM.9: the quarry's view keys — client steps over the held frames, then both
+      // frames asked again with the new parameters. Nothing here submits a `+tv` line.
+      case "quarryRig":
+        this.quarry.stepRig();
+        this.refreshQuarry();
+        return;
+      case "quarryZoom":
+        this.quarry.stepMode();
+        this.refreshQuarry();
+        return;
+      case "quarryLayer":
+        this.quarry.stepFamily();
+        this.refreshQuarry();
+        return;
       // 16b cut I.2: the picture's four keys, over the document the client
       // holds — nothing is sent.
       case "picturePrev":
@@ -1551,6 +1648,9 @@ export class GameApp {
           case "chart":
             this.refreshChart();
             return;
+          case "quarry":
+            this.refreshQuarry();
+            return;
           default:
             this.refreshWho();
         }
@@ -1561,6 +1661,33 @@ export class GameApp {
   /** Ask for the sky chart again (doc 19 cut A.3b, the chart screen's `r`). */
   refreshChart(): void {
     this.#req({ kind: "chart" }, { t: "panel_subscribe", d: { feed: SKY_CHART_FEED } });
+  }
+
+  /** **Ask for the quarry's frames** (doc 20 cut SM.9): the site map with the screen's view,
+   * rig and family, and the ground chart with its family — the ground chart only where the
+   * hello's manifest carries it. */
+  refreshQuarry(): void {
+    this.refreshQuarrySite();
+    if (this.session.hasPanel(BODY_GROUND_FEED)) {
+      this.#req(
+        { kind: "body.ground" },
+        { t: "panel_subscribe", d: { feed: BODY_GROUND_FEED, params: groundParams(this.quarry.family) } },
+      );
+    }
+  }
+
+  /** The site map alone (a pushed `tv.status` asks no ground chart: no act moves it). */
+  refreshQuarrySite(): void {
+    this.#req(
+      { kind: "site.map" },
+      {
+        t: "panel_subscribe",
+        d: {
+          feed: SITE_MAP_FEED,
+          params: siteParams(this.quarry.mode, this.quarry.rig, this.quarry.family),
+        },
+      },
+    );
   }
 
   /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A
@@ -1657,6 +1784,24 @@ export class GameApp {
   }
 
   // -- input --------------------------------------------------------------
+
+  /** Ask for the cockpit's picture, at a look, or stop it (doc 21 cut
+   * G.3c). The look changes by asking again. */
+  setPicture(on: boolean, lookMdeg: number): void {
+    const changed = on !== this.picture.on || lookMdeg !== this.picture.lookMdeg;
+    this.picture.on = on;
+    this.picture.lookMdeg = lookMdeg;
+    if (!on) this.picture.clear();
+    if (changed) this.client.send(pictureCommand(on, lookMdeg));
+  }
+
+  /** A helm order from the picture's arrow keys (doc 21 cut G.3c): a
+   * `HEADING` line sent as a typed one, without the echo. */
+  helm(line: string): void {
+    if (!this.client.sendLine(line)) {
+      this.#localNotice("Not connected — command dropped.");
+    }
+  }
 
   /** Submit a line from the main input. Handles client-local /commands. */
   submit(line: string): void {

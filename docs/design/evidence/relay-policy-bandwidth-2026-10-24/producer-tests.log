@@ -1,0 +1,280 @@
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+    Finished `test` profile [unoptimized] target(s) in 3.52s
+     Running unittests src/lib.rs (target/debug/deps/mush_comsys-0030e9916026fd05)
+
+running 1 test
+test api::tests::alias_sanitizing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/comsys.rs (target/debug/deps/comsys-7173f280134b61f7)
+
+running 48 tests
+test addcom_realias_and_duplicate_alias_refusal ... ok
+test alias_is_case_insensitive_and_bare_alias_prompts ... ok
+test a_macro_whose_line_is_a_channel_alias_reaches_comsys ... ok
+test admin_commands_are_gated ... ok
+test addcom_warns_when_alias_shadows_command_or_exit_and_alias_wins ... ok
+test a_channel_line_naming_a_member_lands_a_mention_notice_on_them_alone ... ok
+test backlog_query_honors_the_see_lock ... ok
+test backlog_query_slices_newest_first ... ok
+test boot_drops_orphaned_membership_docs ... ok
+test comlist_and_delcom_lifecycle ... ok
+test corrupt_channel_doc_is_skipped_and_preserves_memberships ... ok
+test create_color_perm_validation_and_destroy_cleanup ... ok
+test comtitle_shows_on_messages_and_no_titles_suppresses ... ok
+test gag_suppresses_delivery_and_speaking_until_ungag ... ok
+test destroying_last_channel_does_not_reseed_on_reboot ... ok
+test d4_relay_flag_mirrors_lines_once_and_the_relay_speaker_keeps_the_gates ... ok
+test first_boot_seeds_public_and_autojoins_everyone ... ok
+test ignore_filters_channel_messages_and_notices ... ok
+test obj_created_observer_autojoins_new_players_only ... ok
+test join_lock_refuses_addcom ... ok
+test linkdead_member_keeps_unread_cursor ... ok
+test ic_flag_sets_lists_and_reports ... ok
+test obj_destroyed_observer_drops_memberships ... ok
+test loud_channels_announce_unread_counts_at_login ... ok
+test persisted_history_cap_boundaries_are_safe_stream_requests ... ok
+test history_cap_survives_round_trip_exactly ... ok
+test recall_renders_pose_forms_and_titles ... ok
+test over_deep_channel_perm_is_refused_and_mutates_nothing ... ok
+test prefix_expanded_speech_never_routes_to_a_channel ... ok
+test recall_honors_the_see_lock ... ok
+test recall_replays_history_and_honors_cap ... ok
+test persistence_round_trip_rebuilds_identical_state ... ok
+test speaking_marks_message_and_mirrors_docs ... ok
+test the_ic_flag_round_trips_and_a_pre_i7_document_reads_as_ooc ... ok
+test speaking_delivers_all_three_pose_forms ... ok
+test see_lock_hides_from_clist_who_and_delivery ... ok
+test speak_lock_blocks_speaking_but_not_hearing ... ok
+test state_query_reports_channels_colors_and_unread ... ok
+test the_stage_claims_the_actor_s_own_aliases ... ok
+test unsafe_persisted_history_cap_fails_before_stream_request_and_at_module_boot ... ok
+test z4_ensure_channel_answers_none_for_an_unusable_name_and_writes_nothing ... ok
+test z4_a_forced_join_says_what_an_alias_it_could_not_take_already_means ... ok
+test z4_a_closed_channel_is_delivered_to_its_members_and_is_nothing_to_anybody_else ... ok
+test z4_a_shut_join_lock_refuses_addcom_while_force_join_joins ... ok
+test z4_ensure_channel_makes_one_channel_once_and_reasserts_its_locks ... ok
+test z4_a_closed_channels_notices_and_loud_count_ignore_its_see_lock ... ok
+test z4_set_title_persists_and_the_next_line_carries_it ... ok
+test speaking_with_many_offline_members_only_updates_the_live_audience ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/deep_channel_perm.rs (target/debug/deps/deep_channel_perm-5314ddbe47e38185)
+
+running 5 tests
+test the_deepest_accepted_lock_keeps_the_channel_document_inside_the_store_bound ... ok
+test an_over_deep_lock_is_refused_on_every_channel_gate ... ok
+test a_namespace_of_unreadable_docs_is_not_mistaken_for_a_first_boot ... ok
+test an_undecodable_channel_doc_is_skipped_and_the_module_still_boots ... ok
+test an_unreadable_channel_id_is_never_reallocated ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_mail-96c7832188a245e4)
+
+running 8 tests
+test data::tests::folder_name_rules ... ok
+test data::tests::rebuild_drops_orphans_and_derives_next_id ... ok
+test data::tests::rebuild_rejects_malformed_documents ... ok
+test data::tests::status_serde_and_unread ... ok
+test date::tests::civil_parts ... ok
+test date::tests::known_timestamps ... ok
+test data::tests::rebuild_refuses_broken_handoffs_and_early_mailboxes ... ok
+test data::tests::rebuild_rejects_oversized_content_and_exhausted_ids ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mail.rs (target/debug/deps/mail-8747da5d510093d2)
+
+running 27 tests
+test config_quota_loads_from_boot_data ... ok
+test compose_tilde_q_aborts_without_sending ... ok
+test compose_multiline_preview_and_send ... ok
+test empty_folder_and_bad_numbers ... ok
+test connect_summary_reports_unread_and_urgent ... ok
+test folder_name_rules_and_cap ... ok
+test destroyed_character_mailbox_is_cleaned_up ... ok
+test forward_copies_the_body ... ok
+test folders_create_file_switch_and_remove ... ok
+test quick_send_delivers_and_notifies ... ok
+test multi_recipient_fan_out_stores_once ... ok
+test mail_lock_refusals_are_reported_per_recipient ... ok
+test mail_list_query_reports_folders_and_entries ... ok
+test listing_shows_classic_columns ... ok
+test read_shows_headers_and_marks_read ... ok
+test persistence_round_trip_rebuilds_state ... ok
+test quota_bounces_with_notice_and_staff_are_exempt ... ok
+test reply_builds_the_chain_without_re_stacking ... ok
+test quota_excludes_trash_and_purge_frees_it ... ok
+test unknown_recipient_aborts_send ... ok
+test self_send_keeps_the_inbox_entry ... ok
+test unread_flips_back ... ok
+test soft_delete_moves_to_hidden_trash_and_back ... ok
+test replyall_targets_everyone_but_self ... ok
+test send_requests_the_durable_ack_gate ... ok
+test reply_to_own_message_targets_its_recipients ... ok
+test compose_and_recipient_fanout_are_hard_bounded ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_propagation-2dac9e11331d9cd7)
+
+running 20 tests
+test context::tests::a_jammed_unit_is_still_detected_and_an_occluded_courier_still_arrives ... ok
+test context::tests::a_miss_and_a_hit_are_the_same_shape_and_carry_the_same_lag ... ok
+test billing::tests::arrears_counts_cures_without_erasing_independent_pause ... ok
+test context::tests::every_term_saturates_rather_than_overflowing ... ok
+test context::tests::the_media_map_onto_the_base_vocabulary_and_back ... ok
+test billing::tests::subscription_books_reject_duplicate_claims_corrupt_prices_and_unbounded_records ... ok
+test record::tests::a_relay_cycle_terminates_at_the_hop_bound ... ok
+test record::tests::a_phantoms_subject_is_scoped_and_has_no_object_arm_at_all ... ok
+test record::tests::a_terminal_transition_is_idempotent ... ok
+test routing::tests::capacity_post_image_matches_the_wire_at_integer_limits ... ok
+test routing::tests::corrupt_frozen_time_and_cursor_are_refused_and_generation_change_preserves_due_scalar ... ok
+test record::tests::an_over_long_payload_is_refused_at_issue_not_truncated_at_delivery ... ok
+test record::tests::every_record_re_enters_through_its_constructor ... ok
+test routing::tests::legacy_dispatch_kind_is_inferred_and_reports_or_messages_are_not_standing_orders ... ok
+test routing::tests::cycle_hit_and_miss_visit_the_same_bounded_graph_and_respect_remaining_hops ... ok
+test routing::tests::shared_capacity_is_conserved_across_wire_round_trip_and_clock_rollback ... ok
+test routing::tests::token_rate_burst_policy_changes_and_legacy_buckets_conserve_capacity ... ok
+test service::tests::policy_has_strict_bounds_and_utc_independent_ic_windows ... ok
+test service::tests::receipt_bounds_and_evidence_require_observed_free_capacity ... ok
+test service::tests::restriction_bounds_sources_and_legacy_tickets_are_checked ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/e7c11.rs (target/debug/deps/e7c11-3298e212764bfd0d)
+
+running 5 tests
+test e7c11_b0_an_order_from_a_seat_is_issued_by_the_npc ... ok
+test e7c11_b0_a_seat_narrows_who_a_driver_may_address ... ok
+test e7c11_b0_a_proxy_driver_reads_the_units_picture_and_not_their_own ... ok
+test e7c11_b0_the_ingress_is_inert_without_a_live_seat ... ok
+test vf_d7_a_staff_driver_is_narrowed_by_the_seat_like_anyone_else ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/e7c7.rs (target/debug/deps/e7c7-3ddfc6b60f5e1f82)
+
+running 88 tests
+test e7c7_a4_the_six_sensor_sources_are_registered_beside_handoff_and_production ... ok
+test e7c7_b4_a_contact_past_contact_ttl_is_lost_and_one_merely_stale_is_refreshed ... ok
+test e7c7_b2_a_report_from_a_destroyed_observer_still_renders_with_its_age ... ok
+test e7c7_b1_a_phantoms_expiry_issues_loss_to_every_holder ... ok
+test e7c7_a3_a_detection_pass_is_deterministic_ordered_and_bounded ... ok
+test e7c7_a2_prop_pass_stages_the_tactics_owned_sensor_arm_and_writes_no_contact_document ... ok
+test e7c7_b3_an_envelope_whose_recipient_is_destroyed_expires_and_is_attributed ... ok
+test e7c7_a1_only_mush_tactics_has_a_contact_guard_validator_not_propagation_sim_or_industry ... ok
+test e7c7_k1_a_phantom_subject_never_resolves_to_a_unit_through_any_projection ... ok
+test e7c7_k2_a_false_and_a_real_contact_render_identically_and_cost_the_same_reads ... ok
+test e7c7_k4_a_leak_scan_over_every_player_facing_render_finds_no_undetected_unit ... ok
+test e7c7_b8_the_delivery_pass_bound_is_paged_not_logged ... ok
+test e7c7_k3_one_observers_contact_is_invisible_to_another_and_the_two_refusals_are_identical ... ok
+test e7c7_b6_an_in_flight_envelope_at_restart_is_neither_delivered_twice_nor_lost ... ok
+test e7c7_b7_a_corrupt_record_is_held_loudly_not_deleted ... ok
+test e7c7_b5_every_envelope_state_hydrates_across_a_reboot ... ok
+test e7c7_k5_a_detection_miss_and_a_hit_cost_the_same_lag_and_the_same_shape ... ok
+test e7c7_k6_an_unviewable_and_a_nonexistent_envelope_subject_are_byte_identical ... ok
+test e7c7_o10_an_over_size_payload_is_refused_at_issue ... ok
+test e7c7_o3_a_jammed_recipient_keeps_its_last_delivered_order ... ok
+test e7c7_o1_revision_3_after_2_supersedes_and_the_recipient_obeys_the_newest_received ... ok
+test e7c7_o4_restored_reachability_delivers_the_newest_valid_revision_not_the_backlog ... ok
+test e7c7_o6_a_duplicate_ack_is_a_hit ... ok
+test e7c7_o5_an_ack_is_itself_a_delivery_and_a_lost_one_leaves_the_issuer_uninformed ... ok
+test e7c7_p3_the_phantom_class_and_owner_agree_between_tactics_and_propagation ... ok
+test e7c7_o2_an_older_revision_arriving_late_is_superseded_and_never_becomes_active ... ok
+test e7c7_o7_a_relay_cycle_terminates_at_max_envelope_hops ... ok
+test e7c7_p2_the_prop_staff_gate_covers_pass_phantom_and_jam_and_an_unknown_switch_refuses ... ok
+test e7c7_o8_a_share_fires_only_after_delivered_and_a_queued_envelope_shares_nothing ... ok
+test e7c7_o9_expiry_is_idempotent ... ok
+test e7c7_p5_the_coarse_delivery_tick_advances_an_envelope_without_a_staff_verb ... ok
+test e7c7_p1_every_verbs_recorded_compatibility_class_matches_its_group ... ok
+test e7c7_p4_an_unwired_sensor_policy_arms_nothing ... ok
+test i8_k2_a_phantom_backed_row_and_a_real_row_differ_only_in_id_and_prefill ... ok
+test e7c7_p6_a_jammed_platform_is_still_detected_and_an_occluded_one_still_receives ... ok
+test i8_k3_params_are_ignored_and_another_holders_rows_never_appear ... ok
+test i8_one_view_the_row_reconstructs_the_plus_contacts_line_and_its_prefill_resolves ... ok
+test i8_the_contacts_query_writes_nothing_and_stamps_no_idle ... ok
+test i8_the_contacts_feed_is_registered_under_its_literal_name ... ok
+test i8_k4_the_keyframe_leak_scan_finds_no_dbref_no_holder_no_phantom_and_no_stamp ... ok
+test vf_b10_a_subjectless_or_time_reversed_sighting_is_refused_on_load ... ok
+test u4_a_platform_an_arena_holds_is_neither_observer_subject_refresher_nor_sharer ... ok
+test u4_a_platform_an_arena_holds_neither_loses_nor_is_credited_a_phantom ... ok
+test vf_b12_a_second_pass_with_no_change_writes_no_sighting_op ... ok
+test vf_b13_the_delivery_tick_drives_delivery_only_and_arms_nothing ... ok
+test i8_the_table_caps_at_max_contact_view_rows_says_truncated_and_is_deterministic ... ok
+test vf_b14_plus_orders_pages_rather_than_printing_the_whole_history ... ok
+test vf_b11_a_hydrated_phantom_set_raises_the_phantom_allocator ... ok
+test vf_b16_the_delivery_pass_takes_a_jamming_view_not_a_store ... ok
+test vf_b18_every_contact_renders_unattributed_and_every_hop_relay_is_the_issuer ... ok
+test vf_b3c_the_tick_pages_its_bound_and_its_anomalies ... ok
+test vf_b6_a_pass_scoped_to_one_domain_names_no_subject_in_another ... ok
+test vf_b3a_the_delivery_pass_resumes_where_it_stopped ... ok
+test vf_b3b_an_envelope_behind_a_jam_still_reaches_its_ttl ... ok
+test vf_b15_a_context_build_visits_at_most_max_context_records ... ok
+test vf_b1b_an_expired_phantom_is_dropped_after_its_losses_are_armed ... ok
+test vf_b7a_the_held_map_is_bounded_and_a_held_document_is_inspectable ... ok
+test vf_b8_prop_publishes_authoritative_because_pass_stages_sensor_arm ... ok
+test vf_dev_c_the_signature_constant_is_not_the_fog_model ... ok
+test vf_k13a_no_sighting_key_or_phantom_id_carries_a_dbref ... ok
+test vf_k15_a_reported_provenance_names_no_dbref ... ok
+test vf_k1a_a_unit_in_another_domain_is_not_detected_while_a_same_domain_pair_still_detects ... ok
+test vf_k1b_no_cross_domain_unit_reaches_the_armed_ingress_document ... ok
+test vf_b9_the_arm_is_filled_by_bytes_and_a_trimmed_intent_is_not_left_booked ... ok
+test vf_k2a_two_carriers_under_way_do_not_observe_each_other ... ok
+test vf_k3a_a_rate_change_ages_out_an_envelope_and_expires_a_phantom ... ok
+test vf_k3b_a_pre_change_contact_never_renders_as_freshly_observed ... ok
+test vf_k2b_an_order_to_a_ship_under_way_waits_and_says_so ... ok
+test vf_k3c_the_stranded_contacts_are_paged_and_retired ... ok
+test vf_k4a_a_second_pass_replaces_the_standing_cursor ... ok
+test vf_k4c_a_loss_is_not_armed_for_a_destroyed_holder ... ok
+test vf_k5_an_order_to_an_undetected_dbref_refuses_identically_to_a_nonexistent_one ... ok
+test vf_b1a_finished_traffic_is_compacted_and_order_still_works_at_the_census ... ok
+test vf_k6_a_lost_phantom_contact_reacquires_and_a_lost_real_one_is_observed_again ... ok
+test vf_k9_a_sealed_hull_occludes_in_both_directions ... ok
+test vf_k8_a_stranger_cannot_displace_a_commanders_standing_order ... ok
+test vf_o10_two_contacts_sharing_an_id_prefix_arm_two_distinct_intents ... ok
+test vf_o2c_a_sensor_arm_without_a_projected_offer_refuses_in_prepare_not_only_in_the_offer ... ok
+test vf_o2a_loss_refresh_share_reacquire_and_observe_by_a_principal_outside_the_audience_all_refuse ... ok
+test vf_o6_every_holder_sees_its_own_contacts_past_the_ledger_cap ... ok
+test vf_o7_a_minted_phantom_becomes_a_contact_through_the_pass ... ok
+test vf_the_after_action_audience_cap_ties_to_the_seat_cap ... ok
+test vf_k7b_the_paged_remainder_is_still_due_on_the_second_run ... ok
+test vf_provenance_tripwire_no_production_writer_yet ... ok
+test vf_o9_a_shared_contact_refreshes_once_not_once_per_holder ... ok
+test vf_o8_the_sensor_ingress_round_trip_commits_replaces_and_refuses ... ok
+test vf_k7c_a_full_sighting_book_refuses_rather_than_rearming ... ok
+test vf_k7a_the_detection_bound_pages_and_resumes ... ok
+
+test result: ok. 88 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/e7c8.rs (target/debug/deps/e7c8-0c62a88505033a55)
+
+running 4 tests
+test vf_d8d_the_detection_tick_adds_no_contact_authority_and_no_new_family ... ok
+test vf_d8a_a_promoted_domain_detects_with_no_staff_action_and_a_passive_one_does_not ... ok
+test vf_d8c_the_detection_tick_is_bounded_on_domains_and_on_intents_and_pages_its_bound ... ok
+test vf_d8b_the_detection_tick_arms_the_tactics_owned_sensor_arm_and_nothing_of_its_own ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests mush_comsys
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mush_mail
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mush_propagation
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

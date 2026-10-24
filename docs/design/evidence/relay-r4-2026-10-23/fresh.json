@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "boots": [
+    {
+      "pid": 767633,
+      "database": 14,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "nodes": 2,
+      "pairs": 1
+    },
+    {
+      "pid": 767655,
+      "database": 14,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "nodes": 2,
+      "pairs": 1
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "passed": true,
+  "boots": [
+    {
+      "foundry": {
+        "facility": 668,
+        "machines": {},
+        "owner": 11,
+        "place": 202,
+        "vault": 125
+      },
+      "billing": {
+        "cursor": 0,
+        "next": 1,
+        "subscriptions": {},
+        "tariff": {
+          "period_secs": 86400,
+          "priority_minor": 10000,
+          "quote_secs": 600,
+          "sovereign_minor": 50000,
+          "standard_minor": 2500,
+          "version": 1
+        },
+        "treaties": {}
+      },
+      "pid": 924058,
+      "database": 6,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "market": {
+        "capital_transaction": 51,
+        "legacy_before": 1,
+        "next": 1,
+        "operator": 22,
+        "payee": 23,
+        "purchases": {},
+        "tariff": {
+          "priority_minor": 500,
+          "quote_secs": 600,
+          "reservation_secs": 86400,
+          "standard_minor": 100,
+          "version": 1
+        }
+      },
+      "operatingBalance": 100000,
+      "nodes": 2,
+      "pairs": 1
+    },
+    {
+      "foundry": {
+        "facility": 668,
+        "machines": {},
+        "owner": 11,
+        "place": 202,
+        "vault": 125
+      },
+      "billing": {
+        "cursor": 0,
+        "next": 1,
+        "subscriptions": {},
+        "tariff": {
+          "period_secs": 86400,
+          "priority_minor": 10000,
+          "quote_secs": 600,
+          "sovereign_minor": 50000,
+          "standard_minor": 2500,
+          "version": 1
+        },
+        "treaties": {}
+      },
+      "pid": 924664,
+      "database": 6,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "market": {
+        "capital_transaction": 51,
+        "legacy_before": 1,
+        "next": 1,
+        "operator": 22,
+        "payee": 23,
+        "purchases": {},
+        "tariff": {
+          "priority_minor": 500,
+          "quote_secs": 600,
+          "reservation_secs": 86400,
+          "standard_minor": 100,
+          "version": 1
+        }
+      },
+      "operatingBalance": 100000,
+      "nodes": 2,
+      "pairs": 1
+    }
+  ]
+}

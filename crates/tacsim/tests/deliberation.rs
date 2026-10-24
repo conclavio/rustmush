@@ -2642,7 +2642,7 @@ fn roster_of(cfg: tacsim::TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

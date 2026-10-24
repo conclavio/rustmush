@@ -43,6 +43,16 @@ const keyframe = {
 };
 
 describe("MailStore", () => {
+  it("keeps sender transit status separate from recipient unread knowledge", () => {
+    const mail = new MailStore();
+    mail.applyList({folder: "sent", folders: [{name: "inbox",count: 0,unread: 0}], entries: [
+      {index: 1,id: 1,status: "read",subject: "Waiting",delivery: "#5: queued / awaiting confirmation"},
+    ]});
+    expect(mail.entries[0]?.delivery).toContain("awaiting confirmation");
+    expect(mail.unread).toBe(0);
+    mail.applyList({...keyframe, entries: [keyframe.entries[0]]});
+    expect(mail.entries[0]?.delivery).toBeNull();
+  });
   it("hydrates folders, entries, quota and the unread badge", () => {
     const mail = new MailStore();
     expect(mail.loaded).toBe(false);

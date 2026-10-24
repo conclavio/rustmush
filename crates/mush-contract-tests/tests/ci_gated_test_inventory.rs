@@ -452,10 +452,11 @@ fn the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_back
     // +2 for H3's `scale_world_boot_redis_gated` and `scale_authoritative_soak_redis_gated`;
     // +2 for H4's `economy_journal_round_trip_redis_gated` and
     // `inventory_pool_round_trip_redis_gated`; -2 for 16b cut R-b, whose deleted
-    // character rulesets took their two sheet-reboot proofs with them.
+    // character rulesets took their two sheet-reboot proofs with them; +1 for
+    // R2's relay queue and frozen-leg process-death proof.
     assert_eq!(
         live.len(),
-        13,
+        14,
         "the live-backend `*_gated` census changed: {live:?}"
     );
     for name in &live {

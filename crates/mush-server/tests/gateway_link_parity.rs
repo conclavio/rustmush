@@ -461,6 +461,8 @@ fn every_service_req() -> Vec<ServiceReq> {
             values: Vec::new(),
         }),
         ServiceReq::RelaySpeak(RelaySpeak {
+            message_id: None,
+            dm_conn: None,
             user_id: 7,
             account: AccountId::mint("parity-probe", 0).expect("sample account id"),
             actor: GOD,

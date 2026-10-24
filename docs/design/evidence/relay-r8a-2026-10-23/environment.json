@@ -1,0 +1,78 @@
+{
+  "at": "2026-10-24T05:08:41.415438+00:00",
+  "target": "https://conclav.io:6790",
+  "redisPort": 6788,
+  "tlsVerification": true,
+  "candidateBase": "42f610ecb83e9eec6a00051becd7e039c07cac38",
+  "candidateTree": "7376f2c61b5bcce6b2a9b4adc73038be4a4961e4",
+  "gatewayPid": 833759,
+  "serverPid": 833772,
+  "runtimeHashes": {
+    "server": "48cb5f5e1d4221246f42f517ae0a583266c1810e1b602d595984ab1d343219fb",
+    "gateway": "7b927a80ad644708d2f9dbc8f951c903bcf3940b5922bdb15ba10a16798188af"
+  },
+  "runnerHashes": {
+    "relay-r8a-live.mjs": "abcdaad6702cef0d29185fe94284bf91d66ef9ec4ea9f83cf7b5b907b5c9af38",
+    "relay-r8a-ssh.py": "1ebc47be4585e0627c2556e76e085cae44e114897fbeb49b42749969ac45c2ff",
+    "relay-r8a-fresh.py": "5a76db5111d3ed372ff67ce454500949d7eb015e9b6145ce857f98dab9580954",
+    "relay-r8a-world-fixture.py": "a4e88533b50ae13caf6fbb36460f12fedfc3b6c9e9eb1d438491e4c813ecd093",
+    "relay-live-client.mjs": "2b9e6eeb59f04f8a1f1b9c2a56eb274fa80789c9814d7d0cd973fce9f5908ded"
+  },
+  "dev2Unchanged": true,
+  "websocketCommands": 298,
+  "latencyMs": {
+    "median": 26.0,
+    "max": 583
+  },
+  "restoredBaseline": {
+    "fundedExchange": {
+      "capital_transaction": 83,
+      "legacy_before": 402,
+      "next": 1,
+      "operator": 22,
+      "payee": 25,
+      "purchases": {},
+      "tariff": {
+        "priority_minor": 500,
+        "quote_secs": 600,
+        "reservation_secs": 86400,
+        "standard_minor": 100,
+        "version": 1
+      }
+    },
+    "clearingMinor": 4900000,
+    "operatingMinor": 100000,
+    "pending": 0,
+    "rate": 24
+  },
+  "processDeaths": [
+    {
+      "test": "quoted-before-reservation",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 832856,
+      "fresh": 833002
+    },
+    {
+      "test": "reserved-before-transmission",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833002,
+      "fresh": 833036
+    },
+    {
+      "test": "settled-money-and-transmission",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833036,
+      "fresh": 833071
+    },
+    {
+      "test": "unused-release-restart",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833071,
+      "fresh": 833443
+    }
+  ]
+}

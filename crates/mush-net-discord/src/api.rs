@@ -271,6 +271,8 @@ pub enum DiscordEvent {
     /// A message from a non-bot author (D2 DMs, D4 relay). Delivered only
     /// when the shard subscribes to message events.
     Message {
+        /// Stable provider message identity for retry-safe ingress.
+        message_id: u64,
         /// The author.
         user_id: u64,
         /// The channel.
@@ -902,6 +904,7 @@ fn reduce(event: Event) -> Option<DiscordEvent> {
                 return None;
             }
             Some(DiscordEvent::Message {
+                message_id: message.id.get(),
                 user_id: message.author.id.get(),
                 channel_id: message.channel_id.get(),
                 guild_id: message.guild_id.map(Id::get),

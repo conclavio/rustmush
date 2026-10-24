@@ -24,7 +24,7 @@
 //! by [`validate_screens`], and the exit walk is the one carve-out.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use mush_ansi::AnsiTheme;
 use mush_proto::{
@@ -38,22 +38,26 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
-use super::keys::{Key, KeyParser};
+use super::cockpit_text;
+use super::keys::{Arrow, Key, KeyParser};
 use super::mind_workshop::MindWorkshop;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
-    PanelStore, REPLAY_FEED, UNIT_FEED,
+    PanelStore, QuarryMode, REPLAY_FEED, UNIT_FEED,
 };
+use super::pixel::PixelView;
 use super::render::{
-    Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, floor_line, legend_line,
-    render_backlog_rows, render_channels_rows, render_event, render_rolls_rows, render_sheet_rows,
-    render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
+    BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
+    TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
+    render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
+    render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail, status_line,
+    tab_strip, vitals_line, wrap_spans,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
-    BorderRole, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction, KeyBinding,
-    LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, Screen, ScreenId, builtin_screens,
-    validate_screens,
+    BorderRole, CHART_SCREEN, COCKPIT_SCREEN, FLOOR_COLS, GLOBAL_KEYS, JUMP_KEYS, KeyAction,
+    KeyBinding, LocalAction, PaneContent, PaneId, PaneSlot, PaneSpec, QUARRY_SCREEN, Screen,
+    ScreenId, builtin_screens, validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -399,6 +403,12 @@ pub struct TuiApp {
     live_seen_at: Option<i64>,
     /// When the timer heal last asked `arena.observer` (16b cut I.4).
     live_asked_at: Option<i64>,
+    /// **The pixel cockpit view** (spike, 2026-10-21): the kitty graphics
+    /// probe, the camera on its leash, the frame clock's counters.
+    pixel: PixelView,
+    /// **The cockpit's sounds** (doc 21 cut G.10): BEL, or w11term's OSC 440
+    /// once its `XTVERSION` names it.
+    sounds: super::sound::Sounds,
 }
 
 fn system_clock() -> i64 {
@@ -720,6 +730,8 @@ impl TuiApp {
             picture_switched: None,
             live_seen_at: None,
             live_asked_at: None,
+            pixel: PixelView::new(),
+            sounds: super::sound::Sounds::new(),
         })
     }
 
@@ -1201,7 +1213,106 @@ impl TuiApp {
                 }
             }
         }
+        if screen.id == QUARRY_SCREEN {
+            self.quarry_asks(&mut q);
+        }
         q
+    }
+
+    /// **The quarry's asks, shaped** (doc 20 cut SM.9; the brief's 3.6): `site.map` with
+    /// `{ view: drive|site (the ground view pulls the site view), rig?, family? }` and
+    /// `body.ground` with `{ family? }` (the body defaults on the server) — and `body.ground`
+    /// only where the manifest carries it: no pane declares it (the panes read it from the
+    /// store), so the ordinary gate would ask a server that has no ground chart.
+    fn quarry_asks(&self, q: &mut Vec<(String, Value)>) {
+        let view = self.panels.quarry();
+        let has_ground = manifest_has(&self.manifest, BODY_GROUND_FEED);
+        q.retain(|(name, _)| name != BODY_GROUND_FEED || has_ground);
+        for (name, args) in q.iter_mut() {
+            let mut shaped = serde_json::Map::new();
+            if name == SITE_MAP_FEED {
+                let word = match view.mode {
+                    QuarryMode::Drive => "drive",
+                    QuarryMode::Site | QuarryMode::Ground => "site",
+                };
+                shaped.insert("view".to_owned(), Value::from(word));
+                if let Some(rig) = view.rig {
+                    shaped.insert("rig".to_owned(), Value::from(rig));
+                }
+            } else if name != BODY_GROUND_FEED {
+                continue;
+            }
+            if let Some(family) = &view.family {
+                shaped.insert("family".to_owned(), Value::from(family.as_str()));
+            }
+            *args = Value::Object(shaped);
+        }
+    }
+
+    /// **The `site.map` ask alone, shaped** (doc 20 cut SM.9): what a pushed `tv.status`
+    /// keyframe re-asks while the quarry is the screen.
+    fn quarry_map_ask(&self) -> Option<(String, Value)> {
+        let mut q = vec![(
+            SITE_MAP_FEED.to_owned(),
+            Value::Object(serde_json::Map::new()),
+        )];
+        self.quarry_asks(&mut q);
+        q.into_iter().next()
+    }
+
+    /// The slots of the rigs the held site frame lists (`site.rigs[].slot`), in its order;
+    /// none for a reason frame or no frame.
+    fn quarry_slots(&self) -> Vec<u8> {
+        self.panels
+            .get(SITE_MAP_FEED)
+            .and_then(|frame| frame.pointer("/site/rigs"))
+            .and_then(Value::as_array)
+            .map(|rigs| {
+                rigs.iter()
+                    .filter_map(|rig| rig.get("slot").and_then(Value::as_u64))
+                    .filter_map(|n| u8::try_from(n).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **Forget a pick the held site frame no longer lists** (doc 20 cut SM.9; the judge's
+    /// correctness/F7): `t`'s pick stands only while the frame lists that slot. **Doc 20 cut
+    /// SM.10** (SM.9's lead round, inherited): returns whether it cleared a pick, so a reason
+    /// frame that cleared one is re-asked once — the clearing is what re-asks, and a pick cleared
+    /// stays cleared, so a frame that again lists nothing asks nothing more.
+    fn forget_an_unlisted_quarry_rig(&mut self) -> bool {
+        let view = self.panels.quarry();
+        if let Some(rig) = view.rig
+            && !self.quarry_slots().contains(&rig)
+        {
+            let mut view = view.clone();
+            view.rig = None;
+            self.panels.set_quarry(view);
+            return true;
+        }
+        false
+    }
+
+    /// Whether the held site frame is a reason frame: one that lists no rigs at all (no
+    /// `site.rigs` array — `MAP_NO_RIG` and its kin).
+    fn quarry_reason_frame(&self) -> bool {
+        self.panels
+            .get(SITE_MAP_FEED)
+            .and_then(|frame| frame.pointer("/site/rigs"))
+            .and_then(Value::as_array)
+            .is_none()
+    }
+
+    /// The rig a quarry key addresses: `t`'s pick, else the held frame's addressed rig.
+    fn quarry_rig(&self) -> Option<u8> {
+        self.panels.quarry().rig.or_else(|| {
+            self.panels
+                .get(SITE_MAP_FEED)
+                .and_then(|frame| frame.pointer("/site/addressed"))
+                .and_then(Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+        })
     }
 
     /// **What one `arena.cockpit` keyframe asks of the client** (16b cut Q.4;
@@ -1272,6 +1383,8 @@ impl TuiApp {
         // The ring first (16b cut B.3): the frame's own notices, composed from
         // their fields, and a new match's frame empties it before they land.
         self.panels.push_cockpit_notices(frame);
+        // Doc 21 cut G.10: and the same notices as sounds.
+        self.sounds.frame(frame, Instant::now());
         self.cockpit_seat = true;
         let holds_the_ground = self.holds_the_ground(match_id);
         if !holds_the_ground && self.panels.get(ARENA_MAP_FEED).is_some() {
@@ -1347,6 +1460,9 @@ impl TuiApp {
     #[must_use]
     pub fn heal_queries(&mut self, now: i64) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
+        self.pixel_chart_ask(&mut queries);
+        // Doc 21 cut G.11: a w11term is told the asset pack again, slowly.
+        self.sounds.tick(Instant::now());
         if self.picture.is_some_and(|p| p.live) {
             let aged = |at: Option<i64>| {
                 at.is_none_or(|at| !(0..LIVE_STALE_S).contains(&now.saturating_sub(at)))
@@ -1664,6 +1780,8 @@ impl TuiApp {
         }
         self.replay_asked_at = None;
         self.picture_switched = None;
+        // Doc 21 cut G.8: the replay's picture goes with it.
+        self.pixel.close_kind(super::pixel::PictureKind::Replay);
     }
 
     /// Switch to the cockpit screen, answering its hydration queries. Nothing
@@ -1783,6 +1901,34 @@ impl TuiApp {
                     }
                     PanelOutcome::Stored | PanelOutcome::Ignored => {}
                 }
+                // Doc 20 cut SM.9 (the pre-commit round; the judge's correctness/F7): a site
+                // frame that no longer lists the rig `t` picked — returned to the bay counter,
+                // or the hull moved — clears the pick, so the next ask carries no rig and the
+                // server addresses its own default; `t` then starts from the first listed slot.
+                // A reason frame lists no rigs, so it clears a pick too.
+                // Doc 20 cut SM.10 (SM.9's lead round, inherited): a reason frame that cleared the
+                // pick is re-asked once while the quarry is the screen, so the screen does not hold
+                // the `MAP_NO_RIG` frame the cleared pick caused until the next push or `r`.
+                if feed.as_str() == SITE_MAP_FEED
+                    && *kind == PanelFrameKind::Keyframe
+                    && self.forget_an_unlisted_quarry_rig()
+                    && self.quarry_reason_frame()
+                    && self.active == QUARRY_SCREEN
+                    && let Some(ask) = self.quarry_map_ask()
+                {
+                    queries.push(ask);
+                }
+                // Doc 20 cut SM.9 (the brief's 3.6, decision D13): a rig's projection changed —
+                // a start, a due step, a tell — so the quarry, when it is the screen, pulls the
+                // site map again (never `body.ground`, which no act moves). Anywhere else the
+                // keyframe is stored and asks nothing.
+                if feed.as_str() == TV_STATUS_FEED
+                    && *kind == PanelFrameKind::Keyframe
+                    && self.active == QUARRY_SCREEN
+                    && let Some(ask) = self.quarry_map_ask()
+                {
+                    queries.push(ask);
+                }
                 match feed.as_str() {
                     "commands.list" => self.set_commands(data),
                     "comsys" if *kind == PanelFrameKind::Keyframe => self.set_aliases(data),
@@ -1841,6 +1987,7 @@ impl TuiApp {
             }
             OutputEvent::Channel {
                 channel,
+                epoch,
                 seq,
                 actor,
                 kind,
@@ -1855,6 +2002,7 @@ impl TuiApp {
                     mush_proto::NarrativeKind::Spoof => format!("[{}] {plain}", actor.name),
                     _ => format!("{}: {plain}", actor.name),
                 };
+                self.panels.channel_epoch(channel, epoch.as_deref());
                 self.panels.push_channel(
                     channel,
                     ChanMsg {
@@ -2305,6 +2453,77 @@ impl TuiApp {
     /// Act on one decoded key (tests drive this directly).
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
         r.redraw = true;
+        // Pixel cockpit spike (2026-10-21): the probe's replies are not keys
+        // a person pressed; `^G` opens or closes the view; while it is open
+        // it owns every key but the detach (the text cockpit's chat line
+        // among them, `Self::pixel_key`).
+        match key {
+            Key::GraphicsOk | Key::GraphicsErr => {
+                self.pixel.graphics_reply(key == Key::GraphicsOk);
+                r.redraw = false;
+                return;
+            }
+            Key::CellSize(cell) => {
+                self.pixel.cell_size(cell);
+                r.redraw = false;
+                return;
+            }
+            Key::DeviceAttributes(da1) => {
+                self.pixel.device_attributes(da1);
+                r.redraw = false;
+                return;
+            }
+            Key::KeyboardFlags(_) => {
+                self.pixel.keyboard_reply();
+                r.redraw = false;
+                return;
+            }
+            // Doc 21 cut G.10: the terminal's name, for the sounds.
+            Key::TermVersion(version) => {
+                self.sounds.set_terminal(version.as_str());
+                r.redraw = false;
+                return;
+            }
+            Key::Ctrl('g') => {
+                // Doc 21 cut G.5b: the picture is the screen's — the orbital
+                // view on the chart screen, the cockpit elsewhere. The view
+                // opens flying: a line being typed is kept as the draft its
+                // chat line brings back.
+                // Doc 21 cut G.8: and the replay on screen 0 while a replay
+                // (not a live picture) is its layout, opened at the panes'
+                // keyframe.
+                let kind = if self.active == CHART_SCREEN {
+                    super::pixel::PictureKind::Chart
+                } else if self.active == super::screen::DAMAGE_SCREEN {
+                    // Doc 21 cut G.6a: the armour doll as a page.
+                    super::pixel::PictureKind::Doll
+                } else if self.picture_layout() && self.picture.is_some_and(|p| !p.live) {
+                    super::pixel::PictureKind::Replay
+                } else {
+                    super::pixel::PictureKind::Cockpit
+                };
+                let opened = self.pixel.toggle_for(kind, Instant::now());
+                if opened && kind == super::pixel::PictureKind::Replay {
+                    self.pixel_replay_follow(true);
+                }
+                if opened && self.mode == Mode::Input {
+                    self.leave_input(true);
+                }
+                r.submit.extend(self.pixel.take_orders());
+                self.pixel_chart_ask(&mut r.queries);
+                return;
+            }
+            _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
+                self.pixel_key(key, r);
+                return;
+            }
+            // A held key's repeat or release that outlived the view.
+            Key::Repeat(_) | Key::Release(_) => {
+                r.redraw = false;
+                return;
+            }
+            _ => {}
+        }
         if key != Key::Ctrl(']')
             && self.workshop.open
             && self.requests.is_empty()
@@ -2387,6 +2606,156 @@ impl TuiApp {
         match self.mode {
             Mode::Nav => self.nav_key(key, r),
             Mode::Input => self.input_key(key, r),
+        }
+    }
+
+    /// A key while the pixel view is open (the text cockpit, 2026-10-22).
+    ///
+    /// The chat line owns the keys while it is open, as the input box does
+    /// (typing never steers): Enter sends the line as typed and goes back to
+    /// flying, Esc goes back keeping the draft. A held arrow's repeats move
+    /// the line's cursor and its release is nothing; Alt keys, which would
+    /// act on a screen the view hides, and the command palette are not
+    /// offered here.
+    ///
+    /// Flying, Enter opens the line (with the draft Esc kept), stopping a
+    /// turn in progress first; every other key is the view's (doc 21 cut
+    /// G.4: its helm orders go to the world as the lines a pilot would type,
+    /// `HEADING <deg>`).
+    fn pixel_key(&mut self, key: Key, r: &mut InputResult) {
+        if self.mode == Mode::Input {
+            match key {
+                Key::Repeat(arrow) => {
+                    let key = match arrow {
+                        Arrow::Up => Key::Up,
+                        Arrow::Down => Key::Down,
+                        Arrow::Left => Key::Left,
+                        Arrow::Right => Key::Right,
+                    };
+                    self.input_key(key, r);
+                }
+                Key::Release(_) | Key::Alt(_) => r.redraw = false,
+                Key::Enter => {
+                    self.input_key(key, r);
+                    if self.mode == Mode::Input {
+                        self.leave_input(false);
+                    }
+                }
+                _ => self.input_key(key, r),
+            }
+            self.palette = None;
+            return;
+        }
+        if key == Key::Enter {
+            self.pixel.chat_opened(Instant::now());
+            r.submit.extend(self.pixel.take_orders());
+            self.mode = Mode::Input;
+            match self.draft.take() {
+                Some(draft) => self.line.set(&draft),
+                None => self.line.clear(),
+            }
+            return;
+        }
+        if self.pixel.kind() == super::pixel::PictureKind::Replay && self.pixel_replay_key(key, r) {
+            return;
+        }
+        self.pixel.key(key, Instant::now());
+        r.submit.extend(self.pixel.take_orders());
+        self.pixel_chart_ask(&mut r.queries);
+    }
+
+    /// **The replay picture's keys that need the document** (doc 21 cut
+    /// G.8): `,` and `.` step to the keyframe before or after the cursor,
+    /// `[` and `]` move it ten seconds, each pausing it and putting the
+    /// panes on the keyframe at or before it; `u` moves the focus and `x`
+    /// closes the replay, as on screen 0. Whether the key was one of these.
+    fn pixel_replay_key(&mut self, key: Key, r: &mut InputResult) -> bool {
+        let Some(picture) = self.picture.filter(|p| !p.live) else {
+            return false;
+        };
+        let times: Vec<i64> = self
+            .replay_document(picture.match_id)
+            .map(|doc| {
+                (0..doc.keyframe_count())
+                    .map(|i| doc.keyframe_t(i))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let t = self.pixel.replay().t_ms;
+        match key {
+            Key::Char(',') | Key::Char('.') => {
+                let at = if key == Key::Char(',') {
+                    times.iter().rposition(|k| *k < t).unwrap_or(0)
+                } else {
+                    times
+                        .iter()
+                        .position(|k| *k > t)
+                        .unwrap_or(times.len().saturating_sub(1))
+                };
+                if let Some(kt) = times.get(at) {
+                    self.pixel.replay_seek(*kt);
+                }
+                if let Some(p) = self.picture.as_mut() {
+                    p.at = at;
+                }
+            }
+            Key::Char('[') | Key::Char(']') => {
+                let step = if key == Key::Char('[') {
+                    -super::pixel::REPLAY_SEEK_MS
+                } else {
+                    super::pixel::REPLAY_SEEK_MS
+                };
+                self.pixel.replay_seek(t.saturating_add(step));
+                self.pixel_replay_follow(false);
+            }
+            Key::Char('u') => self.local_action(LocalAction::PictureFocus, r),
+            Key::Char('x') => self.local_action(LocalAction::PictureClose, r),
+            _ => return false,
+        }
+        true
+    }
+
+    /// **The replay picture follows the document** (doc 21 cut G.8): the
+    /// cursor kept inside the match the held document ends at, and the
+    /// panes put on the keyframe at or before the cursor — or, `seek`, the
+    /// cursor put on the panes' keyframe (the picture opening).
+    fn pixel_replay_follow(&mut self, seek: bool) {
+        if self.pixel.kind() != super::pixel::PictureKind::Replay || !self.pixel.is_active() {
+            return;
+        }
+        let Some(picture) = self.picture.filter(|p| !p.live) else {
+            return;
+        };
+        let Some((end, times)) = self.replay_document(picture.match_id).map(|doc| {
+            let times: Vec<i64> = (0..doc.keyframe_count())
+                .map(|i| doc.keyframe_t(i))
+                .collect();
+            (doc.end_ms().max(times.last().copied().unwrap_or(0)), times)
+        }) else {
+            return;
+        };
+        self.pixel.replay_set_end(end);
+        if seek {
+            if let Some(kt) = times.get(picture.at) {
+                self.pixel.replay_seek(*kt);
+            }
+            return;
+        }
+        let t = self.pixel.replay().t_ms;
+        let at = times.iter().rposition(|k| *k <= t).unwrap_or(0);
+        if let Some(p) = self.picture.as_mut() {
+            p.at = at;
+        }
+    }
+
+    /// Ask for the chart again when an open chart picture is due (doc 21 cut
+    /// G.5b): on opening, on `r`, and every minute while it is open.
+    fn pixel_chart_ask(&mut self, queries: &mut Vec<(String, Value)>) {
+        if self.pixel.chart_refresh_due(Instant::now()) {
+            queries.push((
+                CHART_FEED.to_string(),
+                Value::Object(serde_json::Map::new()),
+            ));
         }
     }
 
@@ -2495,6 +2864,15 @@ impl TuiApp {
                 self.enter_input(Some(format!("{p}{key}")));
             }
             KeyAction::Run(cmd) => r.submit.push(cmd.to_string()),
+            // Doc 20 cut SM.9 (lead ruling 6): the act's line for the quarry's rig, into the
+            // box; nothing is sent.
+            KeyAction::PrefillRig(act) => {
+                let line = match self.quarry_rig() {
+                    Some(n) => format!("+tv/{n} {act}"),
+                    None => format!("+tv {act}"),
+                };
+                self.enter_input(Some(line));
+            }
         }
     }
 
@@ -2616,6 +2994,54 @@ impl TuiApp {
                 let now = self.now();
                 self.note_map_ask(&queries, now);
                 r.queries.extend(queries);
+            }
+            // Doc 20 cut SM.9: the quarry's three view keys, each a client step over what the
+            // held frames list, then both frames asked again with the new arguments.
+            LocalAction::QuarryRig => {
+                let mut view = self.panels.quarry().clone();
+                let slots = self.quarry_slots();
+                let current = self.quarry_rig();
+                view.rig = next_in(&slots, current);
+                self.panels.set_quarry(view);
+                r.queries.extend(self.screen_queries());
+            }
+            LocalAction::QuarryZoom => {
+                let mut view = self.panels.quarry().clone();
+                view.mode = view.mode.next();
+                self.panels.set_quarry(view);
+                r.queries.extend(self.screen_queries());
+            }
+            LocalAction::QuarryLayer => {
+                let mut view = self.panels.quarry().clone();
+                let source = match view.mode {
+                    QuarryMode::Ground => self.panels.get(BODY_GROUND_FEED),
+                    QuarryMode::Drive | QuarryMode::Site => self.panels.get(SITE_MAP_FEED),
+                };
+                let words: Vec<String> = source
+                    .map(|frame| {
+                        let block = frame.get("ground").or_else(|| frame.get("site"));
+                        block
+                            .and_then(|b| b.get("families"))
+                            .and_then(Value::as_array)
+                            .map(|words| {
+                                words
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let shown = source
+                    .and_then(|frame| frame.get("ground").or_else(|| frame.get("site")))
+                    .and_then(|b| b.get("family_word"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| view.family.as_ref().map(ToString::to_string));
+                view.family = next_in(&words, shown).map(mush_proto::SmolStr::from);
+                self.panels.set_quarry(view);
+                r.queries.extend(self.screen_queries());
             }
             LocalAction::Backlog => {
                 if let Some(channel) = self.selected_channel() {
@@ -3372,6 +3798,10 @@ impl TuiApp {
                     // arrived), so hand them the empty frame rather than a
                     // spinner that never stops.
                     None if feed.ends_with(".unit") => render(&Value::Null, &ctx),
+                    // Doc 20 cut SM.9: the quarry's renderers have an honest empty state (the
+                    // "no map yet" sentence), and in the ground view the map pane draws a held
+                    // `body.ground` before any `site.map` frame lands.
+                    None if feed == SITE_MAP_FEED => render(&Value::Null, &ctx),
                     // 16b cut I.2: with a picture open and no cockpit frame held
                     // (a viewer who never sat and whose `arena.cockpit` answer
                     // has not landed), the cockpit's renderers are handed an
@@ -3484,6 +3914,13 @@ impl TuiApp {
             return;
         }
         let now = self.now();
+        // Doc 20 cut SM.9 (the 0z ruling 1): the quarry map places the viewer's moving rigs by
+        // the clock of this paint.
+        if self.panels.quarry().now != now {
+            let mut view = self.panels.quarry().clone();
+            view.now = now;
+            self.panels.set_quarry(view);
+        }
         self.thinking.retain(|(_, at)| now - at < THINKING_TTL_S);
         self.composing.retain(|(_, at)| now - at < COMPOSING_TTL_S);
         // **The floor** (16b cut AB.1, 16c `Q-AB1`): narrower than
@@ -3496,6 +3933,10 @@ impl TuiApp {
         // the screen the player was on exactly as they left it.
         if area.width < FLOOR_COLS {
             self.draw_floor(frame, area);
+            return;
+        }
+        if self.pixel.is_active() {
+            self.draw_pixel(frame, area);
             return;
         }
         // The scene tail is the terminal's notice surface: while it is in view
@@ -3576,6 +4017,287 @@ impl TuiApp {
     /// rather than being stuck behind keys that do nothing), and an ask the
     /// engine has not expired (it is answered from the keyboard, so it must be
     /// seen). Every piece of app state is left as it is.
+    /// **The text cockpit** (2026-10-22; the pixel view's chrome since the
+    /// spike of 2026-10-21): the status line on top, the picture's rows
+    /// cleared for the picture [`Self::pixel_paint`] places over them after
+    /// the frame, the text panel (armour, weapons and heat, contacts, the
+    /// notices over the comms), the chat line and the key legend
+    /// ([`cockpit_text`]). The comms are the scrollback's tail, so they are
+    /// seen as they land.
+    fn draw_pixel(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let now = Instant::now();
+        let cockpit = self.panels.get(COCKPIT_FEED).cloned();
+        let (top, bottom) = self.pixel.hud(cockpit.as_ref(), now);
+        let camera_mdeg = self.pixel.camera_mdeg(cockpit.as_ref(), now);
+        self.notice_unseen = 0;
+        let chatting = self.mode == Mode::Input;
+        let areas = cockpit_text::areas(area);
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                top,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))),
+            areas.status,
+        );
+        let ctx = self.render_ctx();
+        let held = cockpit.clone().unwrap_or(Value::Null);
+        if self.pixel.kind() == super::pixel::PictureKind::Replay {
+            // Doc 21 cut G.8: the replay's own panes under its picture.
+            let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
+                move |w: u16, h: u16| {
+                    f(&RenderCtx {
+                        pane: Some((w, h)),
+                        ..ctx
+                    })
+                    .unwrap_or_default()
+                }
+            };
+            let (status, shots, wrecks) = (
+                pane(super::replay::status_rows),
+                pane(super::replay::weapons_rows),
+                pane(super::replay::damage_rows),
+            );
+            cockpit_text::draw_replay_panel(
+                frame,
+                areas.panel,
+                &[("MATCH", &status), ("SHOTS", &shots), ("WRECKS", &wrecks)],
+                &|w| self.scrollback_rows(w),
+            );
+        } else if self.pixel.kind() == super::pixel::PictureKind::Chart {
+            let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
+            cockpit_text::draw_chart_panel(
+                frame,
+                areas.panel,
+                &|w, h| {
+                    render_chart_table_rows(
+                        &sky,
+                        &RenderCtx {
+                            pane: Some((w, h)),
+                            ..ctx
+                        },
+                    )
+                },
+                &|w| self.scrollback_rows(w),
+            );
+        } else {
+            cockpit_text::draw_panel(
+                frame,
+                areas.panel,
+                &cockpit_text::Panel {
+                    cockpit: cockpit.as_ref(),
+                    camera_mdeg,
+                    utf8: self.caps.utf8,
+                },
+                &|w, h| {
+                    render_cockpit_notices_rows(
+                        &held,
+                        &RenderCtx {
+                            pane: Some((w, h)),
+                            ..ctx
+                        },
+                    )
+                },
+                &|w| self.scrollback_rows(w),
+            );
+        }
+        let cursor = match self.input_mode {
+            InputMode::NoEcho => 0,
+            _ => self.line.cursor(),
+        };
+        cockpit_text::draw_input(
+            frame,
+            areas.input,
+            chatting,
+            &self.shown_input(),
+            cursor,
+            self.draft.as_deref(),
+        );
+        let legend = if chatting {
+            cockpit_text::CHAT_LEGEND.to_string()
+        } else {
+            bottom
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(dim_span_owned(&legend))),
+            areas.legend,
+        );
+    }
+
+    // ---- the pixel cockpit view (spike, 2026-10-21) ----------------------
+
+    /// Whether the pixel view is on screen (the pump then runs the frame
+    /// clock).
+    #[must_use]
+    pub fn pixel_active(&self) -> bool {
+        self.pixel.is_active()
+    }
+
+    /// The probe bytes went out: start its clock.
+    pub fn pixel_probe_sent(&mut self) {
+        self.pixel.probe_sent(Instant::now());
+    }
+
+    /// The sounds waiting to go out with the next paint (doc 21 cut G.10).
+    pub fn take_sound_bytes(&mut self) -> Vec<u8> {
+        self.sounds.take_bytes()
+    }
+
+    /// `@sounds on|off` (doc 21 cut G.10).
+    pub fn set_sounds(&mut self, on: bool) {
+        self.sounds.set_on(on);
+    }
+
+    /// `@sounds`' report: on, the terminal's name, and whether by name.
+    #[must_use]
+    pub fn sounds_report(&self) -> (bool, Option<String>, bool) {
+        (
+            self.sounds.is_on(),
+            self.sounds.terminal().map(str::to_string),
+            self.sounds.by_name(),
+        )
+    }
+
+    /// Which picture the view draws (doc 21 cut G.5b).
+    #[must_use]
+    pub fn pixel_kind(&self) -> super::pixel::PictureKind {
+        self.pixel.kind()
+    }
+
+    /// The replay picture's cursor (doc 21 cut G.8).
+    #[must_use]
+    pub fn pixel_replay(&self) -> super::pixel::ReplayClock {
+        self.pixel.replay()
+    }
+
+    /// One frame-clock tick: advance the camera.
+    pub fn pixel_tick(&mut self) {
+        self.pixel.tick(Instant::now());
+        // Doc 21 cut G.8: a playing replay moves the panes with it.
+        self.pixel_replay_follow(false);
+    }
+
+    /// The frame clock's wait (20 Hz, or ~1 ms when `u` uncapped it).
+    #[must_use]
+    pub fn pixel_interval(&self) -> std::time::Duration {
+        self.pixel.interval()
+    }
+
+    /// The view's helm orders since the last call (doc 21 cut G.4), for the
+    /// output pump to send as typed lines.
+    pub fn pixel_take_orders(&mut self) -> Vec<String> {
+        self.pixel.take_orders()
+    }
+
+    /// Bytes for the terminal ahead of the next text frame (the kitty
+    /// keyboard protocol's push and pop).
+    pub fn pixel_take_terminal_bytes(&mut self) -> Vec<u8> {
+        self.pixel.take_terminal_bytes()
+    }
+
+    /// Whether the view has the kitty keyboard protocol pushed.
+    #[must_use]
+    pub fn pixel_keyboard_pushed(&self) -> bool {
+        self.pixel.keyboard_pushed()
+    }
+
+    /// Leaving the TUI with the view open: stop a turn in progress and hand
+    /// back its order.
+    pub fn pixel_leave_orders(&mut self) -> Vec<String> {
+        self.pixel.stop_helm(Instant::now());
+        self.pixel.take_orders()
+    }
+
+    /// The encoder of the picture a close since the last call took off
+    /// screen (the caller frees a kitty image or wipes a sixel one).
+    pub fn pixel_take_close(&mut self) -> Option<mush_pixel::caps::Encoder> {
+        self.pixel.take_close()
+    }
+
+    /// The encoder of the picture on screen, if any.
+    #[must_use]
+    pub fn pixel_shown(&self) -> Option<mush_pixel::caps::Encoder> {
+        self.pixel.shown()
+    }
+
+    /// A sixel picture's cell box, 0-based, for the backend to watch.
+    #[must_use]
+    pub fn pixel_sixel_box(&self) -> Option<(u16, u16, u16, u16)> {
+        self.pixel.sixel_box()
+    }
+
+    /// The text frame wrote over the sixel picture: send it again.
+    pub fn pixel_text_touched(&mut self) {
+        self.pixel.text_touched();
+    }
+
+    /// Whether the next picture goes out under a full text repaint.
+    pub fn pixel_take_wipe(&mut self) -> bool {
+        self.pixel.take_wipe()
+    }
+
+    /// `@pixel/encoder <choice>` for this connection.
+    pub fn pixel_set_choice(&mut self, choice: mush_pixel::caps::EncoderChoice) {
+        self.pixel.set_choice(choice);
+    }
+
+    /// What the probe found, in words, and the encoder the view would draw
+    /// in now (for `@pixel/encoder`'s answer).
+    pub fn pixel_report(&mut self) -> (&'static str, Option<mush_pixel::caps::Encoder>) {
+        let now = Instant::now();
+        (self.pixel.probe_words(now), self.pixel.encoder(now))
+    }
+
+    /// The kitty bytes that place this tick's picture, or nothing (closed,
+    /// no encoder, no frame held, or unchanged since the last send). The
+    /// picture reads its feeds from the panel store, as every pane does.
+    pub fn pixel_paint(&mut self) -> Vec<u8> {
+        let (w, h) = (self.caps.width, self.caps.height);
+        let TuiApp {
+            pixel,
+            panels,
+            picture,
+            ..
+        } = self;
+        // Doc 21 cut G.8: the replay's cursor is the view's, and reaches the
+        // picture as a client-local feed beside the held ones.
+        if pixel.kind() == super::pixel::PictureKind::Replay {
+            let cursor = serde_json::json!({
+                "match": picture.map_or(0, |p| p.match_id),
+                "t_ms": pixel.replay().t_ms,
+                "focus": picture.map_or(0, |p| p.focus),
+            });
+            let feeds = super::pixel::WithFeed {
+                base: &*panels,
+                name: mush_pixel::replay::REPLAY_CURSOR_FEED,
+                value: cursor,
+            };
+            return pixel.paint(&feeds, w, h, Instant::now());
+        }
+        pixel.paint(&*panels, w, h, Instant::now())
+    }
+
+    /// `[pixel]`'s knobs for this connection's view (doc 21 G.1b).
+    pub fn pixel_set_config(&mut self, cfg: super::pixel::PixelConfig) {
+        self.pixel.set_config(cfg);
+    }
+
+    /// The pump's picture write took `took` (G.1b's step-down).
+    pub fn pixel_write_took(&mut self, took: std::time::Duration) -> super::pixel::StepChange {
+        self.pixel.write_took(took, Instant::now())
+    }
+
+    /// `@pixel/stats`'s lines (G.1b).
+    pub fn pixel_stats_lines(&mut self) -> Vec<String> {
+        self.pixel.stats_lines(Instant::now())
+    }
+
+    /// The view's counters.
+    #[must_use]
+    pub fn pixel_stats(&self) -> super::pixel::Stats {
+        self.pixel.stats
+    }
+
     fn draw_floor(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let now = self.now();
         let [top, input_area] = Layout::vertical([
@@ -4082,7 +4804,7 @@ impl TuiApp {
             ),
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
             Line::from(
-                "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart)",
+                "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart, q: the quarry)",
             ),
             Line::from("F10 or /minds: owned mind cards, ordered rules and read-only source"),
             Line::from(""),
@@ -4254,6 +4976,16 @@ pub fn exit_keys(exits: &[ExitRef]) -> Vec<(char, String)> {
 // no caller anywhere — `pub mod tui` hides that from `dead_code`, so nothing
 // could see it. `RESERVED_EXIT_KEYS` is already `pub` in `screen`, and
 // `rich_plain` is used directly by the renderers.
+
+/// **The entry after `current` in `items`, wrapping** (doc 20 cut SM.9's `t` and `l`): the
+/// first when `current` is absent or not listed; `None` for an empty list.
+fn next_in<T: Clone + PartialEq>(items: &[T], current: Option<T>) -> Option<T> {
+    let at = current.and_then(|c| items.iter().position(|item| *item == c));
+    match at {
+        Some(i) => items.get((i + 1) % items.len()).cloned(),
+        None => items.first().cloned(),
+    }
+}
 
 /// Whether `feed` is one of the manifest's feeds.
 #[must_use]
@@ -4877,10 +5609,32 @@ mod tests {
                 { "name": "Staff", "alias": "st", "unread": 5 },
             ] }),
         });
-        let text = super::super::frame_text(&mut app, 120, 34);
+        // Doc 20 cut SM.9: with no manifest the chart and the quarry tabs both show, and a
+        // twelve-tab strip with badges is past 120 columns, where it elides its inactive names
+        // by design (`render::tab_strip`) — so the badges are read where the strip is whole.
+        let text = super::super::frame_text(&mut app, 140, 34);
         let tabs = text.lines().next().unwrap();
         assert!(tabs.contains("3 mail 3"), "{tabs:?}");
         assert!(tabs.contains("4 chan 7"), "{tabs:?}");
+        // At the owner's 120-column floor (the pre-commit round; the judge's tests/N1) the same
+        // strip elides as `render::tab_strip` designs it: the active scene keeps its name, every
+        // inactive tab keeps its hotkey, and each badge stands beside its hotkey — mail's 3 by
+        // `3`, the channels' 7 by `4` — with no inactive name; the strip, exactly.
+        let floor = super::super::frame_text(&mut app, 120, 34);
+        let tabs = floor.lines().next().unwrap().trim_end();
+        assert_eq!(
+            tabs,
+            format!(
+                "rustmush  1 scene   2   3 3   4 7   5   6   7   8   9   c   q {}● 0 on 14:30",
+                " ".repeat(46)
+            ),
+            "{tabs:?}"
+        );
+        assert!(tabs.contains(" 1 scene "), "{tabs:?}");
+        assert!(tabs.contains(" 3 3 ") && tabs.contains(" 4 7 "), "{tabs:?}");
+        for name in ["sheet", "mail", "chan", "chart", "quarry"] {
+            assert!(!tabs.contains(name), "{name} in {tabs:?}");
+        }
     }
 
     fn page_notice() -> OutputEvent {
@@ -5266,6 +6020,7 @@ mod tests {
                     "tactics.unit".to_string(),
                     "tactics.contacts".to_string(),
                 ],
+                asset_pack: None,
             })
             .into_iter()
             .map(|(n, _)| n)
@@ -5280,6 +6035,7 @@ mod tests {
                 server: "rustmush 0.1".into(),
                 features: vec![],
                 panels: vec!["wod.vitals".to_string()],
+                asset_pack: None,
             })
             .into_iter()
             .map(|(n, _)| n)
@@ -6077,6 +6833,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         let after = app.feed_input(b"g");
         assert_eq!(after.queries.len(), 1, "the latch cleared");
@@ -6284,6 +7041,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         assert!(app.requests.is_empty(), "the queue is empty");
         assert!(app.answering.is_none(), "and nothing is being answered");
@@ -6533,6 +7291,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels: vec!["mail".into()],
+            asset_pack: None,
         });
         assert_eq!(left.active_screen(), ScreenId(1));
     }
@@ -6787,6 +7546,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels,
+            asset_pack: None,
         };
         let cockpit_asks = |queries: &[(String, Value)]| -> usize {
             queries.iter().filter(|(n, _)| n == COCKPIT_FEED).count()
@@ -7976,6 +8736,7 @@ mod tests {
             server: "rustmush test".into(),
             features: vec![],
             panels: arena_manifest().panels,
+            asset_pack: None,
         });
         assert_eq!(count(&q, REPLAY_FEED), 1, "{q:?}");
         assert!(app.replay_document(7).is_none(), "the old one is dropped");
@@ -8428,6 +9189,7 @@ mod tests {
             server: "rustmush".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         });
         assert_eq!(count(&q, OBSERVER_FEED), 1, "{q:?}");
         assert_eq!(count(&q, REPLAY_FEED), 0, "{q:?}");

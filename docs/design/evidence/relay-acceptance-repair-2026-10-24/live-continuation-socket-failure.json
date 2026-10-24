@@ -1,0 +1,511 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T19:14:10.142Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "The world already runs at 1 IC seconds per real second.",
+      "wallMs": 25,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=R9b acceptance fixture transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#261",
+      "reply": "Teleported.",
+      "wallMs": 51,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #679=R9b nearby verified/Real mobile half acceptance.",
+      "reply": "MAIL: Message 109 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #679=R9b forwarding verified/Real mobile half acceptance.",
+      "reply": "MAIL: Message 110 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=R9b acceptance fixture transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 25,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#101",
+      "reply": "Teleported.",
+      "wallMs": 51,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 25,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 50 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4046 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 855
+    }
+  ],
+  "milestones": [
+    {
+      "test": "continuation-of-genuine-paid-voyage",
+      "previousEvidenceSha256": "8085587a677dfae9a67f03e5da2f02ad38badeea10f1c79833096641b637577e",
+      "previousCrashes": 8,
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": 5,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      },
+      "pairId": "private_407fdca2ba48ecec",
+      "total": "0",
+      "nearby": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74183954631,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 47,
+          "fallback": 261,
+          "key": "mail:v1:109:679:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 413,
+        "issued": {
+          "at": 74183954571,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "mail",
+        "path": [
+          {
+            "at": {
+              "at": 74183954631,
+              "clock": {
+                "generation": 49,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 732
+          }
+        ],
+        "payload": "mail:v1:109:679:out",
+        "recipient": 679,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 261,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74183954571,
+                "clock": {
+                  "generation": 49,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74183954571,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74183954571,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            },
+            {
+              "arrived": {
+                "at": 74183954631,
+                "clock": {
+                  "generation": 49,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74183954631,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74183954631,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 715,
+                "pair": null,
+                "relay": null,
+                "to": 261
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            },
+            {
+              "from": 202,
+              "pair": "private_407fdca2ba48ecec",
+              "relay": 732,
+              "to": 715
+            },
+            {
+              "from": 715,
+              "pair": null,
+              "relay": null,
+              "to": 261
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 261,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "recipient-transfer-in-flight",
+      "before": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74183954633,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 51,
+          "fallback": 261,
+          "key": "mail:v1:110:679:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 415,
+        "issued": {
+          "at": 74183954632,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:110:679:out",
+        "recipient": 679,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 261,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74183954633,
+                "clock": {
+                  "generation": 49,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74183954633,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74183954633,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            },
+            {
+              "from": 202,
+              "pair": "private_407fdca2ba48ecec",
+              "relay": 732,
+              "to": 715
+            },
+            {
+              "from": 715,
+              "pair": null,
+              "relay": null,
+              "to": 261
+            }
+          ],
+          "next": 1,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": {
+            "at": 74183954633,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "registry_revision": 39,
+          "service": {
+            "actual_ready": 74183954633,
+            "base_class": "standard",
+            "class": "standard",
+            "declared_s": 60,
+            "eligible_at": 74183954693,
+            "throttled": false,
+            "units": 1,
+            "version": 1
+          },
+          "version": 1
+        }
+      },
+      "transfer": {
+        "actor": 679,
+        "before": 261,
+        "after": 101,
+        "at": 74183954634
+      },
+      "forwarded": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74183954633,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 51,
+          "fallback": 261,
+          "key": "mail:v1:110:679:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 415,
+        "issued": {
+          "at": 74183954632,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:110:679:out",
+        "recipient": 679,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 101,
+          "flight": {
+            "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74183954634",
+            "due": {
+              "at": 74183956447,
+              "clock": {
+                "generation": 49,
+                "kind": "world_ic"
+              }
+            },
+            "seconds": 1813,
+            "started": {
+              "at": 74183954634,
+              "clock": {
+                "generation": 49,
+                "kind": "world_ic"
+              }
+            }
+          },
+          "forwardings": 1,
+          "history": [
+            {
+              "arrived": {
+                "at": 74183954633,
+                "clock": {
+                  "generation": 49,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74183954633,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74183954633,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 101
+            }
+          ],
+          "next": 0,
+          "physical_legs": 2,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      },
+      "icNow": 74183954635
+    },
+    {
+      "test": "recipient-transfer-forwarding-in-flight",
+      "signal": "SIGKILL",
+      "gateway": 1119174,
+      "old": 1139862,
+      "fresh": 1140689
+    }
+  ],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T19:14:10.191Z",
+      "gatewayPid": 1119174,
+      "serverPid": 1139862,
+      "serverSha256": "fdac539098a6d83ca4f0fb2c89d44b632c7529ba7ac0e3617b4554a2a4686316"
+    }
+  ],
+  "failure": "AssertionError [ERR_ASSERTION]: socket closed\n\n3 !== 1\n\n    at wait (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:89:12)\n    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:98:9)\n    at file:///opt/rustmush/dev1/r9b-evidence/acceptance-repair/recipient-transfer-continuation.mjs:71:20"
+}

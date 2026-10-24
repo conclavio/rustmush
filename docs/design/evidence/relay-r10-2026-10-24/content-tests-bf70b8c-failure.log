@@ -1,0 +1,150 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 15.69s
+     Running tests/commerce.rs (target/debug/deps/commerce-eb936a2da1385539)
+
+running 26 tests
+test ic14_the_accept_line_names_the_signatory ... ok
+test ic14_p07_shows_kaseis_funded_balance ... ok
+test ic8_a_draw_accept_is_refused_on_storefront_availability ... ok
+test a8_the_moon_ports_stock_list_and_bid ... ok
+test ic8_a_lapsed_player_listing_is_released_by_the_tick ... ok
+test a8_a_world_on_lane_v7_takes_v8_by_the_shelf ... ok
+test ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched ... ok
+test ic14_a_refused_mint_does_not_stall_the_clerk ... ok
+test ic8_a_no_argument_list_quote_accept_loads_the_hold ... ok
+test ic8_a_reboot_mid_seed_re_mints_nothing ... ok
+test ic8_an_ask_reprice_withdraws_and_the_arm_relists ... ok
+test ic8_an_unreleasable_lapsed_listing_never_blocks_a_later_one ... ok
+test ic8_capacity_refusals_charge_nothing ... ok
+test ic8_a_world_on_lane_v2_takes_v3_by_the_shelf ... ok
+test ic8_plan_is_governed_exactly_where_the_gate_governs ... ok
+test ic8_depth_defaults_to_the_venue_of_the_room ... ok
+test ic8_port_sellers_and_party_caps_are_the_port_institutions ... ok
+test ic8_the_applier_submits_nothing ... ok
+test ic8_the_clerk_may_take_from_every_storefront_and_nothing_else ... ok
+test ic8_the_board_counts_down_to_sold_out ... ok
+test ic8_the_ship_presence_and_the_gate_refusals ... ok
+test ic8_reconcile_draws_mirrors_more_than_64_undrawn_draws ... ok
+test ic8_the_ticks_seed_every_pool_exactly_once ... ok
+test ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh ... ok
+test ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded ... ok
+test ic8_the_venue_gate_refuses_limbo_and_a_hull_at_another_port ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.09s
+
+     Running tests/orders.rs (target/debug/deps/orders-6858104497e66d83)
+
+running 34 tests
+test ic11_a_listed_passenger_ashore_is_left_behind ... ok
+test ic11_a_house_that_cannot_pay_is_skipped ... ok
+test ic11_a_depart_with_no_route_holds_until_edited ... ok
+test ic11_a_depart_short_of_fuel_holds_and_burns_nothing ... ok
+test ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick ... ok
+test ic11_a_false_second_miss_heals_itself ... ok
+test ic11_a_lapsed_charter_holds_and_stages_nothing ... ok
+test ic11_a_pilot_ashore_holds_the_departure ... ok
+test ic11_a_rate_change_relabels_nothing ... ok
+test ic11_a_long_downtime_raises_no_false_second_miss ... ok
+test fill_and_clamp_plan_at_the_depart_instant ... ok
+test ic11_a_new_tenant_files_a_fresh_plan ... ok
+test ic11_a_sold_out_buy_goes_partial ... ok
+test ic11_a_stop_pauses_and_resume_runs_on ... ok
+test ic11_an_unfunded_bid_skips ... ok
+test ic11_a_staff_stand_down_holds_the_order_and_files_nothing ... ok
+test ic11_held_steps_wait_for_resume ... ok
+test ic11_an_unreadable_orders_document_fails_closed ... ok
+test ic11_the_cargo_clamp_reserves_the_next_departures_fuel_and_stores ... ok
+test ic11_the_plan_dry_runs_the_queue ... ok
+test ic11_the_status_line_names_the_departure_hour ... ok
+test ic11_two_pilots_with_the_same_due_time_both_complete ... ok
+test ic11_the_queue_runs_the_day_unattended ... ok
+test ic12_resume_clears_the_refusal_count ... ok
+test ic14_a_full_queue_defers_the_sell_step_and_counts_nothing ... ok
+test ic11_the_verbs_edit_the_plan ... ok
+test ic11_the_clamp_logs_every_bound_that_bit ... ok
+test ic14_a_queued_depart_never_resolves_by_prefix ... ok
+test ic14_a_short_buy_with_a_later_fill_does_not_hold ... ok
+test ic14_a_short_buy_with_later_units_that_cover_does_not_hold ... ok
+test pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne ... ok
+test sm11_await_tv_files_renders_and_runs ... ok
+test ic14_pause_then_resume_over_an_inflight_hold_rearms_the_restage ... ok
+test ic11_a_reboot_mid_step_reruns_nothing ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.05s
+
+     Running tests/plumbing.rs (target/debug/deps/plumbing-12de584103801e33)
+
+running 30 tests
+test sm5_a_lane_has_one_licence_issuer_and_every_site_is_its ... ok
+test sm5_a_fixed_reference_for_an_asked_good_is_refused_at_load ... ok
+test sm5_a_licence_authorizes_extraction_over_a_seeded_claim ... ok
+test sm5_a_hold_of_ore_sells_in_one_act_against_the_cap ... ok
+test sm5_a_bare_buy_previews_and_commits_nothing ... ok
+test sm5_a_buy_while_in_force_or_in_grace_extends_from_the_expiry ... ok
+test sm5_a_lease_needs_a_licence ... ok
+test sm5_a_refused_buy_leaves_no_active_entitlement ... ok
+test sm5_a_pack_apply_brings_a_lapsed_intake_back_at_one_drip ... ok
+test sm5_a_filled_intake_drips_back_within_the_hour ... ok
+test sm5_an_exhausted_intake_takes_nothing_with_all ... ok
+test sm5_a_refused_drip_post_after_its_withdraw_is_reposted_next_fire ... ok
+test sm5_a_sale_on_the_applys_ic_day_drips_nothing_before_the_boundary ... ok
+test sm5_only_ceres_bids_ore ... ok
+test sm5_strip_ore_rebuilds_the_published_v10 ... ok
+test sm5_a_refused_intake_never_stalls_the_others ... ok
+test sm5_an_unrecorded_intake_reads_no_bid_posted_yet ... ok
+test sm5_an_untouched_intake_renews_before_the_market_ttl ... ok
+test sm5_an_unreadable_licence_reads_dark_and_bars_only_its_account ... ok
+test sm5_a_refused_buy_writes_nothing ... ok
+test sm5_one_licence_an_account ... ok
+test sm5_ten_tonnes_of_ore_sell_at_the_bid_with_the_trust_at_a_quarter_of_the_upper_half ... ok
+test sm5_the_fee_is_a_public_contract_the_chronicle_records ... ok
+test sm5_the_drip_never_posts_past_capital ... ok
+test sm5_the_in_verb_help_names_the_preview_all_and_the_licence ... ok
+test sm5_the_licence_lapses_after_its_grace_at_the_next_act ... ok
+test sm5_the_licence_show_lines ... ok
+test sm5_occators_capital_rises_by_a_tranche_on_a_kept_world ... ok
+test sm5_the_readiness_report_names_the_licence_and_the_ore_intakes ... ok
+test sm5_the_licence_line_names_what_is_missing ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.92s
+
+     Running tests/ports.rs (target/debug/deps/ports-fd6b9a1f8da1cc30)
+
+running 21 tests
+test ic3_a_cancelled_tranche_reads_missing_not_pending ... ok
+test ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made ... ok
+test ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write ... ok
+test ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic ... ok
+test ic14_the_marker_headroom_pages_once_past_three_quarters_and_never_gates ... ok
+test ic3_a_kept_world_with_eight_windows_open_still_applies_the_lane ... ok
+test ic3_a_corrupt_port_map_refuses_re_creation ... ok
+test ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row ... ok
+test ic3_a_map_that_stopped_part_way_is_completed ... ok
+test ic3_a_second_boot_posts_nothing ... ok
+test ic3_a_world_on_lane_v1_takes_v2_by_the_shelf ... ok
+test ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once ... ok
+test ic3_the_ic_return_table_agrees_with_the_port_entries ... ok
+test ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital ... ok
+test ic3_port_entries_refuse_what_the_applier_cannot_bind ... ok
+test ic3_boot_opens_two_passive_domains_into_the_galleries ... ok
+test ic3_the_applier_ensures_the_credit_without_the_sheet ... ok
+test ic3_credit_reads_posted_held_and_available ... FAILED
+test ic3_a_mint_cap_below_a_tranche_refuses_the_lane_before_anything_is_made ... ok
+test ic3_the_readiness_report_lists_every_binding_and_flags_the_rate ... ok
+test ic3_an_update_reuses_every_map_row_and_refuses_drift ... ok
+
+failures:
+
+---- ic3_credit_reads_posted_held_and_available stdout ----
+
+thread 'ic3_credit_reads_posted_held_and_available' (1047190) panicked at crates/mush-testkit/src/lib.rs:138:14:
+test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    ic3_credit_reads_posted_held_and_available
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.60s
+
+error: test failed, to rerun pass `-p tacsim --test ports`

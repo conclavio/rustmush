@@ -126,6 +126,47 @@ pub struct ChanMsg {
     pub line: String,
 }
 
+/// **The quarry screen's view** (doc 20 cut SM.9; §10): which picture its Main pane draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuarryMode {
+    /// The drive view around a rig (`site.map` `view: drive`).
+    #[default]
+    Drive,
+    /// The whole site (`site.map` `view: site`).
+    Site,
+    /// The body's ground chart (`body.ground`; the site view is pulled beside it).
+    Ground,
+}
+
+impl QuarryMode {
+    /// The next view `z` steps to (the brief's R-c): drive → site → ground → drive.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            QuarryMode::Drive => QuarryMode::Site,
+            QuarryMode::Site => QuarryMode::Ground,
+            QuarryMode::Ground => QuarryMode::Drive,
+        }
+    }
+}
+
+/// **The quarry screen's client state** (doc 20 cut SM.9; decision D12): kept in the store
+/// because `RenderCtx` already carries the store to every renderer. Nothing here is sent but
+/// the query arguments it shapes; kept across a re-hello.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuarryView {
+    /// The view the Main pane draws.
+    pub mode: QuarryMode,
+    /// The family word asked for (`None`: the server's default).
+    pub family: Option<SmolStr>,
+    /// The rig selected with `t` (`None`: the frame's addressed rig); cleared when a held
+    /// `site.map` frame no longer lists that slot (a reason frame lists none).
+    pub rig: Option<u8>,
+    /// **The client's clock at the paint** (Unix seconds; the 0z ruling 1): the quarry map
+    /// places the viewer's own moving rigs along their legs by it — `TuiApp::draw` sets it.
+    pub now: i64,
+}
+
 /// The store.
 #[derive(Debug, Default)]
 pub struct PanelStore {
@@ -137,6 +178,7 @@ pub struct PanelStore {
     rolls: VecDeque<Value>,
     unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
+    channel_epochs: HashMap<String, String>,
     /// **The cockpit's notices ring** (16b cut B.3, `B-64`), oldest first, at
     /// most [`COCKPIT_NOTICES`]: each seated frame's notices composed by
     /// [`super::render::notice_words`] from their fields, and — while a seated
@@ -146,6 +188,8 @@ pub struct PanelStore {
     /// The match the ring's lines belong to (16b cut B.3, `B-80`'s reset on
     /// the TUI): a frame of another match empties it before its own lines land.
     cockpit_notices_for: Option<i64>,
+    /// **The quarry screen's view** (doc 20 cut SM.9; decision D12).
+    quarry: QuarryView,
 }
 
 impl PanelStore {
@@ -153,6 +197,17 @@ impl PanelStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// **The quarry screen's view** (doc 20 cut SM.9).
+    #[must_use]
+    pub fn quarry(&self) -> &QuarryView {
+        &self.quarry
+    }
+
+    /// Replace the quarry screen's view (doc 20 cut SM.9).
+    pub fn set_quarry(&mut self, view: QuarryView) {
+        self.quarry = view;
     }
 
     /// The latest data of `feed`.
@@ -373,6 +428,19 @@ impl PanelStore {
             .unwrap_or_default()
     }
 
+    /// Ordered live frames and keyframes identify the current membership.
+    pub fn channel_epoch(&mut self, channel: &str, epoch: Option<&str>) {
+        let key = channel.to_lowercase();
+        if self.channel_epochs.get(&key).map(String::as_str) != epoch {
+            self.backlog.remove(&key);
+            if let Some(epoch) = epoch {
+                self.channel_epochs.insert(key, epoch.into());
+            } else {
+                self.channel_epochs.remove(&key);
+            }
+        }
+    }
+
     /// Fold a live channel line into the backlog ring.
     pub fn push_channel(&mut self, channel: &str, msg: ChanMsg) {
         let ring = self.backlog.entry(channel.to_lowercase()).or_default();
@@ -415,6 +483,23 @@ impl PanelStore {
         }
         match kind {
             PanelFrameKind::Keyframe => {
+                if feed.as_str() == "comsys"
+                    && let Some(channels) = data.get("channels").and_then(Value::as_array)
+                {
+                    let names: std::collections::HashSet<_> = channels
+                        .iter()
+                        .filter_map(|c| {
+                            c.get("name").and_then(Value::as_str).map(str::to_lowercase)
+                        })
+                        .collect();
+                    self.backlog.retain(|name, _| names.contains(name));
+                    self.channel_epochs.retain(|name, _| names.contains(name));
+                    for c in channels {
+                        if let Some(name) = c.get("name").and_then(Value::as_str) {
+                            self.channel_epoch(name, c.get("epoch").and_then(Value::as_str));
+                        }
+                    }
+                }
                 if feed.ends_with(".unit") {
                     // A keyframe for another subject makes the journal rows of
                     // the one we held meaningless: drop them. "Held" is the
@@ -639,6 +724,14 @@ impl PanelStore {
         let Some(channel) = backlog.get("channel").and_then(Value::as_str) else {
             return;
         };
+        if self
+            .channel_epochs
+            .get(&channel.to_lowercase())
+            .map(String::as_str)
+            != backlog.get("epoch").and_then(Value::as_str)
+        {
+            return;
+        }
         let Some(messages) = backlog.get("messages").and_then(Value::as_array) else {
             return;
         };
@@ -692,9 +785,50 @@ fn within_bounds(data: &Value) -> bool {
     serde_json::to_vec(data).is_ok_and(|b| b.len() <= MAX_VIEW_DATA_BYTES)
 }
 
+/// The pixel view's pictures read the same held keyframes the panes draw
+/// (doc 21 D-21-1): a picture can show nothing this connection's feeds do not
+/// carry.
+impl mush_pixel::picture::Feeds for PanelStore {
+    fn feed(&self, feed: &str) -> Option<&Value> {
+        self.get(feed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ic_rejoin_clears_history_and_rejects_an_old_backlog_epoch() {
+        let mut st = PanelStore::new();
+        st.channel_epoch("Radio", Some("old"));
+        st.push_channel(
+            "Radio",
+            ChanMsg {
+                seq: 1,
+                actor: "A".into(),
+                line: "old body".into(),
+            },
+        );
+        st.apply_panel(
+            &"comsys".into(),
+            PanelFrameKind::Keyframe,
+            &serde_json::json!({"channels":[{"name":"Radio","epoch":"new"}]}),
+            0,
+        );
+        assert!(st.backlog("Radio").is_empty());
+        st.merge_backlog(&serde_json::json!({"channel":"Radio","epoch":"old","messages":[{"seq":1,"text":"stale"}]}));
+        assert!(st.backlog("Radio").is_empty());
+        st.push_channel(
+            "Radio",
+            ChanMsg {
+                seq: 1,
+                actor: "A".into(),
+                line: "new body".into(),
+            },
+        );
+        assert_eq!(st.backlog("Radio")[0].line, "new body");
+    }
 
     #[test]
     fn keyframes_replace_and_unknown_feeds_are_bounded() {

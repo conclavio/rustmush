@@ -27,7 +27,7 @@ use crate::facility::{CapacityGuardValidator, MAX_FACILITY_SLOTS};
 use crate::families::IndustryFamilies;
 use crate::record::{
     AppliedMarker, ClaimId, ClaimIndex, ClaimRecord, ExtractionRun, MAX_MARKER_ID_BYTES, NS,
-    OreDeposit, OreDepositId, PlaceCensus,
+    OreDeposit, OreDepositId, PlaceCensus, TenureRecord,
 };
 use crate::store::IndustryStore;
 
@@ -82,6 +82,19 @@ pub struct IndustryModule {
     core_origins: Option<Box<crate::core_production::CoreOriginConfig>>,
     core_origin_runtime: Option<Box<crate::core_production::Runtime>>,
     core_factory: Option<Box<crate::core_production::integration::CoreFactoryConfig>>,
+    /// Doc 20 cut SM.6: the composition root's cell this module fills.
+    cell: Option<crate::seams::IndustryHandleCell>,
+    /// Doc 20 cut SM.6 (§3.4): the composed system opener.
+    opener: Option<Arc<dyn crate::seams::SystemOpener>>,
+    /// Doc 20 cut SM.6 (§3.4): the composed external-draws answer.
+    draws: Option<Arc<dyn crate::seams::ExternalDraws>>,
+    /// Doc 20 cut SM.6 (§9.6): the composed jurisdiction row.
+    jurisdiction: Option<Arc<dyn crate::seams::JurisdictionAuthority>>,
+    /// Doc 20 cut SM.10 (§9, D-20-12): the composed tenure authority.
+    tenure: Option<Arc<dyn crate::seams::TenureAuthority>>,
+    /// Doc 20 cut SM.6: the composed owners this crate delegates its typed
+    /// families to.
+    delegates: Vec<SmolStr>,
 }
 
 impl std::fmt::Debug for IndustryModule {
@@ -89,6 +102,10 @@ impl std::fmt::Debug for IndustryModule {
         formatter
             .debug_struct("IndustryModule")
             .field("has_recipes", &self.recipes.is_some())
+            .field("has_system_opener", &self.opener.is_some())
+            .field("has_external_draws", &self.draws.is_some())
+            .field("has_tenure_authority", &self.tenure.is_some())
+            .field("delegates", &self.delegates)
             .finish_non_exhaustive()
     }
 }
@@ -106,6 +123,12 @@ impl IndustryModule {
             core_origins: None,
             core_origin_runtime: None,
             core_factory: None,
+            cell: None,
+            opener: None,
+            draws: None,
+            jurisdiction: None,
+            tenure: None,
+            delegates: Vec::new(),
         }
     }
 
@@ -124,6 +147,80 @@ impl IndustryModule {
         config: crate::core_production::integration::CoreFactoryConfig,
     ) -> Self {
         self.core_factory = Some(Box::new(config));
+        self
+    }
+
+    /// Publish this crate's family handles into a composition-root cell (doc 20
+    /// cut SM.6; `InventoryModule::with_handle_cell`'s shape): `register` fills
+    /// it right after the families are built and before the providers register,
+    /// so a [`SystemOpener`](crate::seams::SystemOpener) composed onto this
+    /// module, and any provider composed after it, can read deposits.
+    #[must_use]
+    pub fn with_handle_cell(mut self, cell: crate::seams::IndustryHandleCell) -> Self {
+        self.cell = Some(cell);
+        self
+    }
+
+    /// Compose the system opener that admits a non-staff actor to
+    /// `DepositOpen` for exactly the one server-authored opening it makes next
+    /// (doc 20 §3.4, D-20-5). Unset, `DepositOpen` stays staff-only.
+    #[must_use]
+    pub fn with_system_opener(mut self, opener: Arc<dyn crate::seams::SystemOpener>) -> Self {
+        self.opener = Some(opener);
+        self
+    }
+
+    /// Compose the answer to "what has the external provider drawn" the 60 s
+    /// sweep checks every externally worked body against (doc 20 §3.4). Unset,
+    /// every such body is quarantined `ExternalUnwired`.
+    #[must_use]
+    pub fn with_external_draws(mut self, draws: Arc<dyn crate::seams::ExternalDraws>) -> Self {
+        self.draws = Some(draws);
+        self
+    }
+
+    /// Compose the contest offer's jurisdiction row (doc 20 §9.6, D-20-12).
+    /// Unset, the module uses [`ActsForJurisdiction`](crate::seams::ActsForJurisdiction)
+    /// on every roster: a deposit with no `jurisdiction` never matches it, so a
+    /// roster with no such deposit sees no change.
+    #[must_use]
+    pub fn with_jurisdiction_authority(
+        mut self,
+        authority: Arc<dyn crate::seams::JurisdictionAuthority>,
+    ) -> Self {
+        self.jurisdiction = Some(authority);
+        self
+    }
+
+    /// Compose the tenure authority (doc 20 §9, D-20-12; cut SM.10) that admits
+    /// an actor to `industry_claim_tenure` for exactly the ONE server-authored
+    /// [`TenureAct`](crate::seams::TenureAct) it vouches for, and stages the
+    /// composing game's own record writes in the same bundle. Unset, the verb
+    /// registers and offers nothing.
+    #[must_use]
+    pub fn with_tenure_authority(
+        mut self,
+        authority: Arc<dyn crate::seams::TenureAuthority>,
+    ) -> Self {
+        self.tenure = Some(authority);
+        self
+    }
+
+    /// Name the composed owners this crate delegates its typed families to
+    /// (doc 20 cut SM.6, D1; the shape of `InventoryModule::with_quantity_delegates`):
+    /// a grantee may **read** this crate's deposits and claims through its own
+    /// module context. A delegation also grants write inside the grantee's
+    /// bundle (`Registrar::delegate_state_families`), so a grantee must reach
+    /// this crate's records only through the exported seams on
+    /// [`IndustryFamilies`] — tacsim's source tripwire holds it to reads. The
+    /// delegation widens the bundle, never the gate.
+    #[must_use]
+    pub fn with_state_delegates<I, S>(mut self, delegates: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<SmolStr>,
+    {
+        self.delegates = delegates.into_iter().map(Into::into).collect();
         self
     }
 
@@ -196,6 +293,7 @@ struct ExtractionFamilies {
     runs: mush_core::StateFamilyHandle<OreDepositId, ExtractionRun>,
     applied: mush_core::StateFamilyHandle<SmolStr, AppliedMarker>,
     place_census: mush_core::StateFamilyHandle<ObjId, PlaceCensus>,
+    tenure: mush_core::StateFamilyHandle<ObjId, TenureRecord>,
 }
 #[inline(never)]
 fn register_extraction_families(reg: &mut Registrar<'_>) -> Result<ExtractionFamilies, ModError> {
@@ -368,6 +466,25 @@ fn register_extraction_families(reg: &mut Registrar<'_>) -> Result<ExtractionFam
         },
         |value: &PlaceCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
+    // ---- doc 20 cut SM.6: one tenure record per block place (§9.2–§9.4) ----
+    let tenure = reg.state_family::<ObjId, TenureRecord, _, _, _, _>(
+        StateFamilyDescriptor::new(
+            family_id("industry_tenure")?,
+            canonical("obj_id.decimal.v1")?,
+            canonical("industry.tenure.v1")?,
+            1,
+            canonical("industry.tenure.decode_json.v1")?,
+            canonical("industry.tenure.bounds.v1")?,
+            canonical("industry.tenure.json.v1")?,
+        )
+        .map_err(|error| ModError::msg(error.to_string()))?,
+        |key: &ObjId| Ok(format!("{:010}", key.0)),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        // The wire already re-ran `check`; this is the descriptor's own
+        // second look.
+        |value: &TenureRecord| value.check().map_err(|e| e.to_string()),
+        |value: &TenureRecord| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )?;
 
     Ok(ExtractionFamilies {
         deposits,
@@ -376,6 +493,7 @@ fn register_extraction_families(reg: &mut Registrar<'_>) -> Result<ExtractionFam
         runs,
         applied,
         place_census,
+        tenure,
     })
 }
 
@@ -620,10 +738,19 @@ impl IndustryModule {
                 "Core factory requires its configured certified Origin owner",
             ));
         }
+        let jurisdiction: Arc<dyn crate::seams::JurisdictionAuthority> = self
+            .jurisdiction
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::seams::ActsForJurisdiction));
         crate::provider::register_with_core_origins(
             reg,
             families,
             self.recipes.clone(),
+            crate::provider::Seams {
+                opener: self.opener.clone(),
+                jurisdiction,
+                tenure: self.tenure.clone(),
+            },
             self.core_origins.as_deref(),
             self.core_factory.as_deref(),
         )?;
@@ -646,6 +773,10 @@ impl GameModule for IndustryModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // ---- doc 20 cut SM.6 (D1): the typed-state delegations, first ----
+        for grantee in &self.delegates {
+            reg.delegate_state_families(grantee.as_str())?;
+        }
         let ExtractionFamilies {
             deposits,
             claims,
@@ -653,6 +784,7 @@ impl GameModule for IndustryModule {
             runs,
             applied,
             place_census,
+            tenure,
         } = register_extraction_families(reg)?;
         let WorkFamilies {
             facility_slots,
@@ -698,7 +830,18 @@ impl GameModule for IndustryModule {
             wo_applied,
             marker_ring,
             wo_marker_ring,
+            tenure,
         };
+        // Doc 20 cut SM.6: publish the handles to the composition root's cell
+        // before anything that may read it registers.
+        if let Some(cell) = &self.cell
+            && cell.set(families.clone()).is_err()
+        {
+            tracing::warn!(
+                target: "industry",
+                "industry: the handle cell was already filled; the second fill is ignored"
+            );
+        }
 
         // ---- E7c4: B1 — the tree's SECOND `Reservation` validator, under
         // `mush-industry`'s own `OwnerId`. The registry is keyed
@@ -722,12 +865,19 @@ impl GameModule for IndustryModule {
         // lines are still the pack's. Cloned into the closure because the tick
         // outlives `register`, and `None` on a server that composed no authority.
         let sweep_recipes = self.recipes.clone();
+        // Doc 20 cut SM.6: the composed draws answer the sweep's invariant reads.
+        let sweep_draws = self.draws.clone();
         reg.tick(
             SWEEP_TAG,
             TickCadence::Coarse(Duration::from_secs(SWEEP_PERIOD_SECS)),
             Arc::new(
                 move |ctx: &mut ModuleCtx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>| {
-                    crate::store::reconcile(ctx, &sweep_families, sweep_recipes.as_deref());
+                    crate::store::reconcile(
+                        ctx,
+                        &sweep_families,
+                        sweep_recipes.as_deref(),
+                        sweep_draws.as_deref(),
+                    );
                     // ---- E7r1: R1 — the budget settlement arm ----
                     //
                     // A SECOND ARM on this EXISTING Coarse tick, never a second
@@ -788,7 +938,12 @@ impl GameModule for IndustryModule {
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             crate::store::hydrate(store, &data.kv);
         }
-        crate::store::reconcile(ctx, &families, self.recipes.as_deref());
+        crate::store::reconcile(
+            ctx,
+            &families,
+            self.recipes.as_deref(),
+            self.draws.as_deref(),
+        );
         Ok(())
     }
 

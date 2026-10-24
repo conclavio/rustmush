@@ -551,6 +551,7 @@ async fn ssh_and_web_user_in_the_same_room() {
             id: 2,
             q: Query::PanelSubscribe {
                 feed: "comsys".into(),
+                params: None,
             },
         },
     )
@@ -606,9 +607,28 @@ async fn ssh_and_web_user_in_the_same_room() {
     );
 
     // God mails Nick; the notice streams live, and MailList shows it.
+    // This minimal roster has no strategic geography. A shared physical room
+    // exercises local transport; unplaced Limbo correctly cannot receive mail.
+    let mark = god.mark();
+    god.send_line("@dig Web Post Office").await;
+    god.expect_after(mark, "created with room number").await;
+    let room = support::parse_id_after(&support::strip_ansi(&god.seen[mark..]), "room number #");
+    for actor in ["Nick", "me"] {
+        let mark = god.mark();
+        god.send_line(&format!("@teleport {actor}=#{room}")).await;
+        god.expect_after(
+            mark,
+            if actor == "me" {
+                "Web Post Office"
+            } else {
+                "Teleported."
+            },
+        )
+        .await;
+    }
     god.send_line("@mail/quick Nick=Web test/A body sent over ssh")
         .await;
-    god.expect("sent to Nick.").await;
+    god.expect("queued for IC transit.").await;
     expect_env(&mut ws, "Web test").await;
     send_cmd(
         &mut ws,
@@ -1229,6 +1249,7 @@ async fn llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text() {
             id: 50,
             q: Query::PanelSubscribe {
                 feed: "llm.dashboard".into(),
+                params: None,
             },
         },
     )
@@ -1266,6 +1287,7 @@ async fn llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text() {
             id: 51,
             q: Query::PanelSubscribe {
                 feed: "llm.dashboard".into(),
+                params: None,
             },
         },
     )

@@ -1,0 +1,42 @@
+{
+  "runtimeCommit": "5bdec3b8232aaf17127990066313a42b160d382e",
+  "passed": true,
+  "linux": [
+    {
+      "command": "cargo test --locked -p mush-server --test relay_registry --test ic_slice_loop --test boot_parity -j4 -- --test-threads=4",
+      "passed": 59,
+      "log": "story-tests.log"
+    },
+    {
+      "command": "REDIS_URL=redis://127.0.0.1:6788/13 cargo test --locked -p mushd --test durability_e2e -j4 relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1",
+      "passed": 1,
+      "log": "process-fault.log"
+    }
+  ],
+  "localGroups": [
+    {
+      "scope": "owner/content and architecture contracts",
+      "passed": 130,
+      "log": "local-owners.log"
+    },
+    {
+      "scope": "faction/propagation/sim libraries",
+      "passed": 66,
+      "log": "local-libraries.log"
+    },
+    {
+      "scope": "full faction suite, includes 12 already counted library tests",
+      "passed": 59,
+      "log": "local-factions.log"
+    },
+    {
+      "scope": "extension census/classes, test-only update after runtime commit",
+      "passed": 13,
+      "log": "local-extension-census.log"
+    }
+  ],
+  "lint": "All changed owner libraries and affected integration test targets passed Clippy -D warnings; changed Rust files formatted; git diff --check clean.",
+  "runtimeBuild": "Linux release server/gateway TLS and web bundle built; web source commit verified.",
+  "runnerCorrections": "Snapshot waits for durable structural migration and hashes backup contents. Historical recovery fixture supplies existing account 1 and scout tier required by config validation. Initial incomplete fixture refused boot before live gameplay. Corrected live run passed on unchanged runtime binaries.",
+  "ci": "Prior R4 test(rest) needless-borrow failure repaired and reproduced; full slow CI remains owner-monitored."
+}

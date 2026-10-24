@@ -1,0 +1,31 @@
+{
+  "passed": true,
+  "transport": "SSH :6789, play front door, in-band login",
+  "channel": null,
+  "checks": [
+    {
+      "command": "+relay",
+      "reply": "+relay\r\nRelay board v1: operator-granted service; no payment charged. One message-unit =\r\n128 content bytes; short limit 1024 bytes.\r\nluna_ceres: Dead; your class Standard; service Served; Standard declared wait 60\r\nIC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC\r\nseconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst\r\n8 units.\r\n__R7_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/status luna_ceres",
+      "reply": "+relay/status luna_ceres\r\nluna_ceres: Served.\r\n__R7_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/policy luna_ceres/#1=suspended,operator.bad,Unauthorized",
+      "reply": "+relay/policy luna_ceres/#1=suspended,operator.bad,Unauthorized\r\nPermission denied.\r\n__R7_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/load luna_ceres",
+      "reply": "+relay/load luna_ceres\r\nPermission denied.\r\n__R7_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/discover luna_ceres",
+      "reply": "+relay/discover luna_ceres\r\nPermission denied.\r\n__R7_SSH_DONE__\r\n"
+    },
+    {
+      "command": "pub R7 SSH OOC immediate",
+      "reply": "pub R7 SSH OOC immediate\r\n[Public] R6bob1b16df: R7 SSH OOC immediate\r\n__R7_SSH_DONE__\r\n"
+    }
+  ]
+}

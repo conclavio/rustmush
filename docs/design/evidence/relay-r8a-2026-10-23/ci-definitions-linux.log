@@ -1,0 +1,65 @@
+   Compiling mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-canon v0.1.0 (/opt/rustmush/dev1/build/crates/mush-canon)
+   Compiling mush-scenes v0.1.0 (/opt/rustmush/dev1/build/crates/mush-scenes)
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+   Compiling mush-llm v0.1.0 (/opt/rustmush/dev1/build/crates/mush-llm)
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-comsys v0.1.0 (/opt/rustmush/dev1/build/crates/mush-comsys)
+   Compiling mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+   Compiling mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+   Compiling mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-mail v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mail)
+   Compiling mush-script v0.1.0 (/opt/rustmush/dev1/build/crates/mush-script)
+   Compiling mush-party v0.1.0 (/opt/rustmush/dev1/build/crates/mush-party)
+   Compiling mush-privileges v0.1.0 (/opt/rustmush/dev1/build/crates/mush-privileges)
+   Compiling mush-roll v0.1.0 (/opt/rustmush/dev1/build/crates/mush-roll)
+   Compiling mush-dice v0.1.0 (/opt/rustmush/dev1/build/crates/mush-dice)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+    Finished `test` profile [unoptimized] target(s) in 3m 12s
+     Running tests/definitions.rs (target/debug/deps/definitions-4ced2fc5f2536a40)
+
+running 25 tests
+test a_sensor_row_refuses_an_impossible_signature_and_an_absurd_comms_reach ... ok
+test a_filled_ecm_hook_refuses ... ok
+test a_value_past_a_bound_refuses_naming_the_field ... ok
+test a_unit_declares_between_one_and_sixteen_sections ... ok
+test an_unknown_key_refuses_naming_the_entry ... ok
+test an_arena_in_a_rules_pack_and_a_unit_in_a_seed_pack_both_refuse ... ok
+test every_shipped_definition_loads_validates_and_binds ... ok
+test an_arena_whose_ground_is_missing_refuses_rather_than_falling_back ... ok
+test a_dangling_reference_refuses_naming_the_entry ... ok
+test q8_build_fielded_refuses_an_edited_pack_wearing_a_shipped_name ... ok
+test q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items ... ok
+test q8_build_fielded_skips_an_extension_pack_offered_again_as_an_operator_pack ... ok
+test the_six_content_kinds_are_the_six_the_pack_format_owns ... ok
+test every_definition_is_registered_with_an_exact_reference ... ok
+test the_two_tracked_rules_readings_agree ... ok
+test two_packs_declaring_one_definition_id_refuse_naming_both ... ok
+test from_pack_yields_the_window_and_the_right_impassable_cells ... ok
+test v1_the_arena_check_refuses_a_bad_spot_name_and_a_twenty_third_spot ... ok
+test m4_an_entry_zone_of_water_is_refused_by_name ... ok
+test a_match_on_the_shipped_arena_is_fought_on_the_authored_ground ... ok
+test the_ten_commodity_families_are_instruments_after_boot ... ok
+test the_production_composition_can_make_the_stock_tank ... ok
+test an_arena_map_past_the_bound_is_refused_by_name_and_the_shipped_ground_is_under_it ... ok
+test a_fresh_boot_makes_the_twelve_tanks_and_a_second_makes_no_thirteenth ... ok
+test u4_the_arena_applier_refuses_an_arena_whose_map_is_past_the_bound ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.59s

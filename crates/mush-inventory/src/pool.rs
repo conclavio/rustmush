@@ -250,6 +250,14 @@ pub struct Moved {
     pub moved: u64,
 }
 
+/// A marker ring's push decided in memory and not yet staged (doc 20 cut SM.8): whether the
+/// ring existed, the ring after every push, and the ids the pushes evicted.
+struct RingAfter {
+    existed: bool,
+    next: crate::record::MarkerRing,
+    evicted: Vec<smol_str::SmolStr>,
+}
+
 impl InventoryFamilies {
     // ---- the pair ----
 
@@ -381,6 +389,22 @@ impl InventoryFamilies {
         commodity: &CanonicalId,
         operation: ResourceOperation,
     ) -> Result<Moved, InventoryError> {
+        self.apply_counted(txn, endpoint, commodity, operation, CensusWrite::Write)
+    }
+
+    /// [`Self::apply`] with the census write named: [`CensusWrite::Write`]
+    /// counts a new pool here (every single-pool verb), [`CensusWrite::Staged`]
+    /// creates a new pair **without** touching `inventory.census`, because the
+    /// caller ([`Self::transfer_many`]) has already staged the count for every
+    /// new pool of its bundle (doc 20 cut SM.6, lead ruling 5).
+    fn apply_counted(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        operation: ResourceOperation,
+        census: CensusWrite,
+    ) -> Result<Moved, InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let existed = pair.is_some();
         let (scalar, book) = match pair {
@@ -389,7 +413,10 @@ impl InventoryFamilies {
                 // E7c2 fold B8: `MAX_POOLS_PER_ENDPOINT` is counted HERE, on the
                 // create path only, so crediting one of the endpoint's existing
                 // pools still succeeds past the cap.
-                self.add_pool(txn, endpoint)?;
+                match census {
+                    CensusWrite::Write => self.add_pool(txn, endpoint)?,
+                    CensusWrite::Staged => {}
+                }
                 self.fresh_pair(endpoint, commodity)?
             }
         };
@@ -506,6 +533,104 @@ impl InventoryFamilies {
         })
     }
 
+    /// Move several commodities between two endpoints in ONE bundle, staging the
+    /// destination's pool census once for every new pool (doc 20 cut SM.6, lead
+    /// ruling 5; SM.3b's round F3).
+    ///
+    /// **Why it exists.** [`Self::transfer`] counts a new destination pool by
+    /// writing `inventory.census` for that endpoint, and an [`ActionTxn`] refuses
+    /// a second mutation of one key (`ActionTxn::require_fresh_mutation`,
+    /// `mush-core/src/action_state.rs`, `ActionStateError::DuplicateMutation`).
+    /// So two `transfer`s that each open a new pool at one endpoint can never
+    /// share a bundle: a two-ore hopper dumped onto a fresh spoil refused. Here
+    /// the new pools are counted first and the census is staged **once**
+    /// (`PoolCensus::checked_add_n`), then each move runs as `transfer` does —
+    /// debit, credit (a new pair created without a second census write), carry
+    /// the lineage.
+    ///
+    /// Refused before anything is staged: `from == to`
+    /// ([`InventoryError::SameEndpoint`]), an empty list or a zero amount
+    /// ([`InventoryRecordError::ZeroQuantity`]), a commodity named twice
+    /// ([`InventoryError::DuplicateCommodity`]), more than
+    /// [`MAX_POOLS_PER_ENDPOINT`](crate::record::MAX_POOLS_PER_ENDPOINT) moves
+    /// or new pools past the destination's cap
+    /// ([`InventoryRecordError::EndpointPools`]).
+    ///
+    /// # Errors
+    /// Those, plus every refusal of the debit, the credit and the lineage carry;
+    /// **nothing is written on an error** (`ActionTxn` discards the bundle).
+    pub fn transfer_many(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        moves: &[(CanonicalId, u64)],
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if moves.is_empty() || moves.iter().any(|(_, amount)| *amount == 0) {
+            return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
+        }
+        if moves.len() > crate::record::MAX_POOLS_PER_ENDPOINT {
+            return Err(InventoryError::Record(
+                InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                },
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (commodity, _) in moves {
+            if !seen.insert(commodity) {
+                return Err(InventoryError::DuplicateCommodity);
+            }
+        }
+        // Which destination pairs are new: counted before any write, so the
+        // census is one staged mutation for the whole bundle.
+        let mut fresh = Vec::with_capacity(moves.len());
+        for (commodity, _) in moves {
+            let (_, pair) = self.load_pair(txn, to, commodity)?;
+            fresh.push(pair.is_none());
+        }
+        let new_pools = fresh.iter().filter(|is_new| **is_new).count();
+        if new_pools > 0 {
+            let n = u32::try_from(new_pools).map_err(|_| {
+                InventoryError::Record(InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                })
+            })?;
+            let existing = txn.get(&self.census, &to)?.copied();
+            let next = existing.unwrap_or_default().checked_add_n(n)?;
+            if existing.is_some() {
+                txn.replace(&self.census, &to, next)?;
+            } else {
+                txn.insert(&self.census, &to, next)?;
+            }
+        }
+        let mut out = Vec::with_capacity(moves.len());
+        for ((commodity, amount), is_new) in moves.iter().zip(fresh) {
+            self.debit(txn, from, commodity, *amount)?;
+            let census = if is_new {
+                CensusWrite::Staged
+            } else {
+                CensusWrite::Write
+            };
+            let moved = self.apply_counted(
+                txn,
+                to,
+                commodity,
+                ResourceOperation::Increase { amount: *amount },
+                census,
+            )?;
+            self.carry_lineage(txn, from, to, commodity, *amount)?;
+            out.push(Moved {
+                moved: *amount,
+                ..moved
+            });
+        }
+        Ok(out)
+    }
+
     /// ---- Doc 18 §4.3 / D-18-26, cut IC10 — a transfer that writes its own fact ----
     ///
     /// [`Self::transfer`] plus the `inventory.transferred` applied marker under a
@@ -568,13 +693,100 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// ---- Doc 20 §7.1, cut SM.8 — several marked moves in one bundle ----
+    ///
+    /// [`Self::transfer_many`] plus one `inventory.transferred` applied marker a
+    /// move, under caller-derived ids ([`derived_marker_id`]), in ONE bundle (doc
+    /// 20 cut SM.8, §7.1: the unload of a hopper that holds two ores). Two
+    /// [`Self::transfer_marked`] calls on one source cannot share a bundle — the
+    /// source's marker ring and the destination's pool census are one key each, and
+    /// `ActionTxn` refuses a second mutation of one key — so the moves run as
+    /// `transfer_many` does (the census staged once) and `from`'s ring is written
+    /// once with every id ([`Self::retain_markers`]).
+    ///
+    /// Every check is made before anything is staged: `from == to`
+    /// ([`InventoryError::SameEndpoint`]); an empty list or a zero amount
+    /// ([`InventoryRecordError::ZeroQuantity`]); a commodity named twice
+    /// ([`InventoryError::DuplicateCommodity`]); a marker id not 1..=96 lowercase
+    /// hex, or one named twice ([`InventoryError::Identity`]); a marker already in
+    /// `inventory.applied` ([`InventoryError::AlreadyExists`] — the replay guard,
+    /// `transfer_marked`'s rule); **the source's ring full of young markers**
+    /// ([`InventoryError::MarkerRingFull`] — the push is made in memory first, so
+    /// a caller may answer this refusal as an outcome: nothing is staged, the cut
+    /// SM.8 fix round's correctness/F2). Then the moves, each marker inserted, and
+    /// the ring written once.
+    ///
+    /// # Errors
+    /// Those, plus every refusal of [`Self::transfer_many`], of
+    /// [`AppliedMarker::new`](crate::record::AppliedMarker::new) and of the ring's
+    /// write; **nothing is written on an error** (`ActionTxn` discards the
+    /// bundle), and none of the checks above has staged anything when it refuses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_many_marked(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        moves: &[(CanonicalId, u64, smol_str::SmolStr)],
+        actor: mush_core::ObjId,
+        now: &ClockStamp,
+        wall: i64,
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if moves.is_empty() || moves.iter().any(|(_, amount, _)| *amount == 0) {
+            return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
+        }
+        let mut commodities = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for (commodity, _, marker) in moves {
+            if !commodities.insert(commodity) {
+                return Err(InventoryError::DuplicateCommodity);
+            }
+            if !is_marker_id(marker) || !ids.insert(marker) {
+                return Err(InventoryError::Identity);
+            }
+        }
+        let mut records = Vec::with_capacity(moves.len());
+        for (commodity, amount, marker) in moves {
+            if txn.get(&self.applied, marker)?.is_some() {
+                return Err(InventoryError::AlreadyExists);
+            }
+            records.push(crate::record::AppliedMarker::new(
+                crate::record::FACT_TRANSFERRED,
+                Some(from),
+                Some(to),
+                commodity.clone(),
+                *amount,
+                actor,
+                now.at,
+            )?);
+        }
+        let marked: Vec<smol_str::SmolStr> =
+            moves.iter().map(|(_, _, marker)| marker.clone()).collect();
+        // The ring's push decided before anything is staged (correctness/F2).
+        let ring = self.ring_after(txn, from, &marked, wall)?;
+        let plain: Vec<(CanonicalId, u64)> = moves
+            .iter()
+            .map(|(commodity, amount, _)| (commodity.clone(), *amount))
+            .collect();
+        let moved = self.transfer_many(txn, from, to, &plain)?;
+        for ((_, _, marker), record) in moves.iter().zip(records) {
+            txn.insert(&self.applied, marker, record)?;
+        }
+        self.stage_ring(txn, from, ring)?;
+        Ok(moved)
+    }
+
     /// ---- Doc 18 §9 risk 19, cut IC14 row 1 — record a marker in its ring ----
     ///
     /// Record the applied marker `id`, just written in this bundle, in
     /// `endpoint`'s [`MarkerRing`](crate::record::MarkerRing), and remove from
     /// `inventory.applied` every marker the push evicts — all in the same
     /// bundle. `wall` is the offer's real-clock stamp, which is also "now" for
-    /// the prepare (a prepare reads no clock).
+    /// the prepare (a prepare reads no clock). Since doc 20 cut SM.8 it is
+    /// [`Self::retain_markers`] of one id: one ring rule, never two.
     ///
     /// **The replay argument.** E7c2 owner decision D1: the applied marker is
     /// the only replay guard that survives a reboot, and for a sale also the
@@ -601,38 +813,101 @@ impl InventoryFamilies {
         id: &smol_str::SmolStr,
         wall: i64,
     ) -> Result<(), InventoryError> {
+        self.retain_markers(txn, endpoint, std::slice::from_ref(id), wall)
+    }
+
+    /// ---- Doc 20 §7.1, cut SM.8 — record several markers in one ring write ----
+    ///
+    /// Record the applied markers `ids`, just written in this bundle, in
+    /// `endpoint`'s [`MarkerRing`](crate::record::MarkerRing) with ONE write:
+    /// each pushed in order in memory (`MarkerRing::push`, the eviction rule
+    /// [`Self::retain_marker`] documents), every evicted id removed from
+    /// `inventory.applied`, the ring staged once — a second ring write in one
+    /// bundle would refuse `DuplicateMutation` (doc 20 cut SM.8's two-ore
+    /// unload). An evicted id that is one of `ids` (impossible under the push
+    /// rule: a just-pushed entry is never older than the horizon) fails closed as
+    /// [`InventoryError::Identity`].
+    ///
+    /// # Errors
+    /// [`InventoryError::MarkerRingFull`] as [`Self::retain_marker`]; the
+    /// `Identity` case above; [`InventoryError::State`] /
+    /// [`InventoryError::Record`] when the ring cannot be read or written.
+    pub fn retain_markers(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ids: &[smol_str::SmolStr],
+        wall: i64,
+    ) -> Result<(), InventoryError> {
+        let ring = self.ring_after(txn, endpoint, ids, wall)?;
+        self.stage_ring(txn, endpoint, ring)
+    }
+
+    /// **[`Self::retain_markers`]' push, in memory** (doc 20 cut SM.8): `endpoint`'s ring
+    /// read, `ids` pushed in order, the evictions collected — nothing staged, so
+    /// [`InventoryError::MarkerRingFull`] here leaves the bundle untouched.
+    fn ring_after(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ids: &[smol_str::SmolStr],
+        wall: i64,
+    ) -> Result<RingAfter, InventoryError> {
         let current = txn.get(&self.marker_ring, &endpoint)?.cloned();
-        let ring = current
+        let mut next = current
             .clone()
             .unwrap_or_else(crate::record::MarkerRing::empty);
-        let pushed = ring.push(
-            crate::record::RingEntry {
-                key: id.clone(),
+        let mut evicted: Vec<smol_str::SmolStr> = Vec::new();
+        for id in ids {
+            let pushed = next.push(
+                crate::record::RingEntry {
+                    key: id.clone(),
+                    wall,
+                },
                 wall,
-            },
-            wall,
-        );
-        let (next, evicted) = match pushed {
-            Ok(pushed) => pushed,
-            Err(InventoryRecordError::MarkerRingFull { .. }) => {
-                tracing::error!(
-                    %endpoint,
-                    "inventory: this endpoint's marker ring is full of markers younger than the \
-                     retention horizon; the move is refused (doc 18 §9 risk 19)"
-                );
-                return Err(InventoryError::MarkerRingFull);
-            }
-            Err(error) => return Err(InventoryError::Record(error)),
-        };
-        for key in &evicted {
+            );
+            let (ring, gone) = match pushed {
+                Ok(pushed) => pushed,
+                Err(InventoryRecordError::MarkerRingFull { .. }) => {
+                    tracing::error!(
+                        %endpoint,
+                        "inventory: this endpoint's marker ring is full of markers younger than \
+                         the retention horizon; the move is refused (doc 18 §9 risk 19)"
+                    );
+                    return Err(InventoryError::MarkerRingFull);
+                }
+                Err(error) => return Err(InventoryError::Record(error)),
+            };
+            next = ring;
+            evicted.extend(gone);
+        }
+        if evicted.iter().any(|key| ids.contains(key)) {
+            return Err(InventoryError::Identity);
+        }
+        Ok(RingAfter {
+            existed: current.is_some(),
+            next,
+            evicted,
+        })
+    }
+
+    /// **[`Self::retain_markers`]' write**: every evicted id removed from `inventory.applied`
+    /// and the ring staged once.
+    fn stage_ring(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ring: RingAfter,
+    ) -> Result<(), InventoryError> {
+        for key in &ring.evicted {
             if txn.get(&self.applied, key)?.is_some() {
                 txn.remove(&self.applied, key)?;
             }
         }
-        if current.is_some() {
-            txn.replace(&self.marker_ring, &endpoint, next)?;
+        if ring.existed {
+            txn.replace(&self.marker_ring, &endpoint, ring.next)?;
         } else {
-            txn.insert(&self.marker_ring, &endpoint, next)?;
+            txn.insert(&self.marker_ring, &endpoint, ring.next)?;
         }
         Ok(())
     }
@@ -1191,6 +1466,28 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// Consume one complete, identified lot into a durable product receipt.
+    /// The caller must validate authority, provenance and absence of a sale, and
+    /// write its receipt in this same transaction. This does not credit a pool.
+    ///
+    /// # Errors
+    /// Refuses a missing, moved or changed lot; census and removal are atomic.
+    pub fn consume_product(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        expected: &Lot,
+    ) -> Result<(), InventoryError> {
+        let actual = txn
+            .get(&self.lots, &expected.id())?
+            .ok_or(InventoryError::NoLot)?;
+        if actual != expected {
+            return Err(InventoryError::NoLot);
+        }
+        self.move_lots(txn, expected.endpoint(), -1)?;
+        txn.remove(&self.lots, &expected.id())?;
+        Ok(())
+    }
+
     /// Merge several lots into one. Every parent is consumed; the child records
     /// all of them.
     ///
@@ -1731,6 +2028,21 @@ pub enum InventoryError {
         "this endpoint has recorded too many moves in the last day to record another; try again later"
     )]
     MarkerRingFull,
+    /// A [`InventoryFamilies::transfer_many`] named one commodity twice (doc 20
+    /// cut SM.6): two moves of one pool would mutate one pair twice in the
+    /// bundle, so the list is refused before anything is staged.
+    #[error("that move names one commodity twice")]
+    DuplicateCommodity,
+}
+
+/// Whether a create path counts its new pool in `inventory.census` itself, or
+/// its caller staged the count for the whole bundle (doc 20 cut SM.6).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CensusWrite {
+    /// Count the new pool here (every single-pool verb).
+    Write,
+    /// The caller staged the census once for every new pool of its bundle.
+    Staged,
 }
 
 impl From<ReservationBookError> for InventoryError {

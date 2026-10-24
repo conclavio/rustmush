@@ -1,0 +1,14 @@
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized] target(s) in 37.11s
+     Running tests/two_process_e2e.rs (target/debug/deps/two_process_e2e-52ed23790e4b610c)
+
+running 4 tests
+test two_process_connect_play_boot_disconnect ... ok
+test split_siteban_reaches_the_gateway_without_a_restart ... ok
+test two_process_multiconnect_linkdead_and_newpassword ... ok
+test split_siteban_expiry_stops_blocking_without_any_command ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.56s

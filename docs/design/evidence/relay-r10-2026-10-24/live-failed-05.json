@@ -1,0 +1,53 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T16:00:22.780Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.lane.ceres_phobos",
+      "reply": "Plan for tacsim.lane.ceres_phobos@13: 0 create, 1 update, 0 retire, 59 unchanged\n update   luna_port (port)\n validator: no findings\n fingerprint 920d247ec7a706bc — @atlas/pack apply 920d247ec7a706bc",
+      "wallMs": 26,
+      "replyBytes": 200
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack apply 920d247ec7a706bc",
+      "reply": "Applied tacsim.lane.ceres_phobos@13: 0 created, 1 updated, 0 retired, 59 unchanged.",
+      "wallMs": 204,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 51,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 44 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 854
+    }
+  ],
+  "milestones": [
+    {
+      "test": "R10-split-d1635c-lane-upgrade",
+      "signal": "SIGKILL",
+      "gateway": 1094772,
+      "old": 1094785,
+      "fresh": 1094832
+    }
+  ],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T16:00:22.833Z",
+      "gatewayPid": 1094772,
+      "serverPid": 1094785,
+      "serverSha256": "902284588df8946fe511614ca14389158da4e313444e3d80e0b0bd984b6b10ad"
+    }
+  ],
+  "failure": "AssertionError [ERR_ASSERTION]: @spatial/unplace #1=R10 acceptance fixture placement: #1 is not placed\n    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:99:16)\n    at async place (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:17:30)\n    at async upgrade (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:30:45)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:102:20"
+}

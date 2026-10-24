@@ -1845,6 +1845,7 @@ pub fn create_system_obligation(
         history: Vec::new(),
         settled_total: 0,
         missed_total: 0,
+        service_terms: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -2017,6 +2018,13 @@ pub fn create_obligation(
     ctx: &mut Ctx<'_>,
     spec: ObligationSpec,
 ) -> Result<ObligationId, EconomyError> {
+    create_obligation_with_terms(ctx, spec, None)
+}
+fn create_obligation_with_terms(
+    ctx: &mut Ctx<'_>,
+    spec: ObligationSpec,
+    service_terms: Option<crate::obligation::ServiceTerms>,
+) -> Result<ObligationId, EconomyError> {
     if !matches!(
         spec.cause,
         crate::obligation::ObligationCause::Ruleset { .. }
@@ -2089,6 +2097,7 @@ pub fn create_obligation(
         history: Vec::new(),
         settled_total: 0,
         missed_total: 0,
+        service_terms,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -2103,6 +2112,137 @@ pub fn create_obligation(
     }
     ctx.gate_on_durable_ack();
     Ok(id)
+}
+
+/// Enroll a quoted recurring service using the ordinary obligation creator.
+/// No class entitlement is implied: consumers wait for a real settled installment.
+/// The optional end is exclusive on World IC time. No fallible work follows the
+/// creator's writes, so terms and the obligation share its durable batch.
+pub fn create_service_obligation(
+    ctx: &mut Ctx<'_>,
+    spec: ObligationSpec,
+    until_ic: Option<i64>,
+) -> Result<ObligationId, EconomyError> {
+    if spec.schedule.clock != crate::EconomicClock::WorldIc
+        || spec.schedule.cadence.is_none_or(|n| n <= 0)
+        || until_ic.is_some_and(|end| end <= ctx.w.game_now_unix() || end <= spec.schedule.next_due)
+    {
+        return Err(EconomyError::Unauthorized);
+    }
+    create_obligation_with_terms(
+        ctx,
+        spec,
+        Some(crate::obligation::ServiceTerms {
+            until_ic,
+            cured_misses: 0,
+            cure_transaction: None,
+        }),
+    )
+}
+
+/// Pay precisely the quoted unpaid service installments and restore only their
+/// missed-payment run. The actor must still debit the actual account; namespace
+/// ownership alone is never authority. External suspension holders survive. A
+/// cancelled/expired service may have debt paid but is never enrolled again.
+/// Money, cure receipt and lifecycle post-images share the same durable step.
+pub fn cure_service_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+    expected_missed: u32,
+    expected_cured: u32,
+) -> Result<PostOutcome, EconomyError> {
+    let mut o = ruleset_obligation_inner(ctx, id, namespace, true)?;
+    let terms = o.service_terms.clone().ok_or(EconomyError::Unauthorized)?;
+    if terms.cured_misses > o.missed_total {
+        return Err(EconomyError::Unauthorized);
+    }
+    if o.missed_total == expected_missed
+        && terms.cured_misses == expected_missed
+        && expected_cured < expected_missed
+        && let Some(tx) = terms.cure_transaction
+    {
+        return Ok(PostOutcome::AlreadyPosted(tx));
+    }
+    if o.missed_total != expected_missed
+        || terms.cured_misses != expected_cured
+        || expected_cured >= expected_missed
+    {
+        return Err(EconomyError::Unauthorized);
+    }
+    let minor = o
+        .amount
+        .minor()
+        .checked_mul(i64::from(expected_missed - expected_cured))
+        .ok_or(EconomyError::Overflow)?;
+    if minor <= 0 {
+        return Err(EconomyError::Unauthorized);
+    }
+    let now = ctx.w.now();
+    let ic_now = ctx.w.game_now_unix();
+    let ended = terms.until_ic.is_some_and(|end| ic_now >= end);
+    // Compute every fallible/preflight part before the post; no post-success error.
+    if ended {
+        o.status = crate::ObligationStatus::Cancelled;
+    } else if o.holders().is_empty() {
+        match o.status {
+            crate::ObligationStatus::Grace { .. } => {
+                o = crate::commands::transition(
+                    &o,
+                    crate::ObligationStatus::Active,
+                    Some(crate::ObligationEvent::Resumed { at: now }),
+                );
+            }
+            crate::ObligationStatus::Delinquent => {
+                o = crate::commands::transition(
+                    &o,
+                    crate::ObligationStatus::Active,
+                    Some(crate::ObligationEvent::Resumed { at: now }),
+                );
+                o.schedule = crate::clock::reanchor(&o.schedule, ic_now);
+            }
+            _ => {}
+        }
+    }
+    let mut plan = EconomyPlan::new(
+        crate::IdempotencyKey::new("obligation.cure", format!("{id}/{expected_missed}")),
+        PrincipalId::Object(ctx.actor),
+        EconomicCause::Internal {
+            kind: namespace.into(),
+            id: id.0,
+        },
+        vec![
+            crate::RequestedLine {
+                account: o.debit_account,
+                delta: Amount::from_minor(-minor),
+                memo: "service arrears".into(),
+            },
+            crate::RequestedLine {
+                account: o.credit_account,
+                delta: Amount::from_minor(minor),
+                memo: "service arrears".into(),
+            },
+        ],
+    );
+    plan.description = format!(
+        "service obligation #{id}: cure {} missed installments",
+        expected_missed - expected_cured
+    );
+    let outcome = post(ctx, &plan)?;
+    let transaction = match outcome {
+        PostOutcome::Posted(tx) => tx,
+        PostOutcome::AlreadyPosted(_) => return Err(EconomyError::IdempotencyConflict),
+        PostOutcome::NeedsApproval(_) => return Ok(outcome),
+    };
+    o.service_terms = Some(crate::obligation::ServiceTerms {
+        cured_misses: expected_missed,
+        cure_transaction: Some(transaction),
+        ..terms
+    });
+    o.revision = o.revision.saturating_add(1);
+    put_obligation(ctx, o);
+    ctx.gate_on_durable_ack();
+    Ok(outcome)
 }
 
 /// Fetch a **live** obligation `namespace` owns, for its own seams — the lock
@@ -2126,6 +2266,14 @@ fn ruleset_obligation(
     ctx: &Ctx<'_>,
     id: ObligationId,
     namespace: &str,
+) -> Result<crate::obligation::Obligation, EconomyError> {
+    ruleset_obligation_inner(ctx, id, namespace, false)
+}
+fn ruleset_obligation_inner(
+    ctx: &Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+    allow_terminal: bool,
 ) -> Result<crate::obligation::Obligation, EconomyError> {
     let store = ctx
         .w
@@ -2153,11 +2301,13 @@ fn ruleset_obligation(
     if !(WorldAuth { w: ctx.w }).authorize(&PrincipalId::Object(ctx.actor), account, debit) {
         return Err(EconomyError::Unauthorized);
     }
-    if matches!(
-        o.status,
-        crate::obligation::ObligationStatus::Cancelled
-            | crate::obligation::ObligationStatus::Satisfied
-    ) {
+    if !allow_terminal
+        && matches!(
+            o.status,
+            crate::obligation::ObligationStatus::Cancelled
+                | crate::obligation::ObligationStatus::Satisfied
+        )
+    {
         return Err(EconomyError::ObligationTerminal(id));
     }
     Ok(o.clone())
@@ -2817,6 +2967,7 @@ pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &[
     "campaign.operation",
     "industry.workorder",
     "tacsim.tv.deposit",
+    "relay.message",
 ];
 
 /// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
@@ -3287,7 +3438,8 @@ mod engine_reservation_tests {
             [
                 "campaign.operation",
                 "industry.workorder",
-                "tacsim.tv.deposit"
+                "tacsim.tv.deposit",
+                "relay.message"
             ]
         );
         for kind in ENGINE_OWNED_RESERVATIONS {

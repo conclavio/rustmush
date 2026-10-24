@@ -111,6 +111,22 @@
 //!   repossession a charter's end makes;
 //! - [`refit`] — `+coop/refit prospector|standard`: the Co-op's yard re-binds a
 //!   chartered hull's unit, in place, between the Dray and the Dray-P.
+//!
+//! **Doc 20 cut SM.5** — legal and market plumbing (doc 20 §7.2–§7.4, §9.1):
+//!
+//! - [`licence`] — `+licence`, `+licence/buy [go]`: the Freeport Registry's
+//!   prospecting licence, an entitlement account plus one `tacsim:licence:{account}`
+//!   record, bought through a Public fee contract; [`licence::licence_gate`] is what
+//!   every licence-gated act reads first;
+//! - the Ceres ore bids' intake drip is a step of [`stock`]'s arm, and the fixed
+//!   reference for the Co-op's share on ore is [`proceeds`]'s.
+//!
+//! **Doc 20 cut SM.10** — claims (doc 20 §9):
+//!
+//! - [`claims`] — `+claim/stake|renew|release|contest|list` and `+registry <site>`: the
+//!   player's own tenure acts under the site's issuer, each ONE `industry_claim_tenure` the
+//!   composed authority vouches for, with its fee as a Public contract into the Registry;
+//!   the one public word of a block's tenure (`claims::block_tenure_now`).
 
 pub mod apply;
 pub mod board;
@@ -122,13 +138,19 @@ pub mod capacity;
 pub mod chart;
 /// Doc 19 cut A.3b: the `sky.chart` panel — one frame, three renders (doc 19 §5).
 pub mod chart_panel;
+/// Doc 20 cut SM.10: the Registry's mining claims (doc 20 §9).
+pub mod claims;
 pub mod coop;
 pub mod credit;
 pub mod def;
 pub mod executor;
 pub mod families;
 pub mod gauges;
+/// Doc 20 cut SM.9: the `body.ground` panel and `+chart/ground` — the Registry's survey of a
+/// body as a list and a flat map (doc 20 §3.1, §10).
+pub mod ground_chart;
 pub mod hull;
+pub mod licence;
 pub mod map;
 pub mod market;
 pub mod orders;
@@ -143,6 +165,8 @@ pub mod ship;
 /// Doc 20 cut SM.2: a mining site's pure reads, its lay-up and its stores line
 /// (doc 20 §3.1, §3.3, §3.4).
 pub mod site;
+/// Doc 20 cut SM.4b: the `site.map` feed and `+tv/map` (doc 20 §10).
+pub mod site_map;
 pub mod stock;
 pub mod tv;
 pub mod vehicle;
@@ -164,11 +188,12 @@ pub use coop::{
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, MAX_EMERGENCY_GOODS,
-    MAX_EMERGENCY_RATIO_PERMILLE, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR,
-    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, SITE_BLOCK_COUNT, SiteDef,
-    SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone, check_ports, room_key,
-    tranches,
+    AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, LicenceDef,
+    MAX_CAPITAL_RAISES, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE, MAX_LICENCE_FEE_MAJOR,
+    MAX_LICENCE_TERM_IC_DAYS, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR,
+    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef,
+    SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone,
+    capital_schedule, check_ports, room_key, tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -179,6 +204,11 @@ pub use executor::{
 pub use families::{
     LegPlan, Manifest, PassagePlan, PortFamilies, PortHandles, StockIssueId, StockReceipt, Ticket,
     TicketId,
+};
+pub use licence::{
+    LICENCE_PREFIX, LICENCE_SCHEMA, LICENCE_SETTLE_WINDOW_SECS, LICENCE_VERB, Licence,
+    LicenceStanding, LicenceState, ic_stamp, licence_gate, licence_key, licence_standing,
+    standing_at,
 };
 pub use map::{
     BidRow, ClerkRow, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, RigRow, SiteRow,

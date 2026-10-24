@@ -1,0 +1,42 @@
+{
+  "runtimeCandidate": "97b4106b7325af709b4bbfc06b1a4bbada30d92f",
+  "commands": {
+    "owner-tests.log": "cargo test -p mush-propagation -p mush-faction -p mush-npc",
+    "contracts.log": "cargo test -p mush-contract-tests --test state_slot_owners --test panic_budget --test schedule_source --test ci_gated_test_inventory --test provider_rng_policy",
+    "focused-tests.log": "cargo test -p mush-server --test relay_registry r3_",
+    "story-tests.log": "cargo test --locked -p mush-server --test relay_registry --test ic_slice_loop --test boot_parity -j4 -- --test-threads=4",
+    "clippy.log": "cargo clippy --locked -p mush-propagation -p mush-faction -p mush-npc -p tacsim --lib -j4 -- -D warnings",
+    "test-clippy.log": "cargo clippy -p mush-server --test relay_registry -- -D warnings"
+  },
+  "results": {
+    "owner-tests.log": {
+      "passed": 313,
+      "failed": 0,
+      "ignored": 0
+    },
+    "contracts.log": {
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    "focused-tests.log": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    "story-tests.log": {
+      "passed": 52,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "format": "Changed Rust files checked with rustfmt --edition 2024 --config skip_children=true --check; Windows cargo fmt --all exceeds the command-line length limit.",
+  "linuxProfile": "CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0",
+  "release": "cargo build --locked --release -j4 -p mush-server -p mush-gateway --features mush-gateway/tls",
+  "baseCi": {
+    "commit": "5b4bb04259f9c6713ff9e43ebd69fba9e6aa0700",
+    "conclusion": "success",
+    "url": "https://github.com/conclavio/rustmush/actions/runs/40044645014"
+  },
+  "r3Ci": "Triggered by main push; owner monitored, not awaited by this live gate."
+}

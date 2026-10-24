@@ -1,0 +1,65 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.72s
+     Running tests\ci_gated_test_inventory.rs (target\debug\deps\ci_gated_test_inventory-8f0d895d8d6ec940.exe)
+
+running 6 tests
+test an_ignored_test_is_covered_only_by_an_unfiltered_invocation_of_its_target ... ok
+test vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane ... ok
+test vf_g6_every_proof_10b_section_14_names_exists_in_the_file_it_is_attributed_to ... ok
+test the_gated_suffix_census_is_stable_and_every_live_backend_proof_names_its_backend ... ok
+test paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run ... ok
+test every_backend_gated_proof_is_named_by_a_ci_job ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+     Running tests\module_ns_owners.rs (target\debug\deps\module_ns_owners-110000551d8374cf.exe)
+
+running 4 tests
+test every_declared_delegation_is_pinned_and_every_pinned_row_is_declared ... ok
+test m6_author_services_are_registered_under_the_game_owner ... ok
+test booting_a_production_roster_refuses_no_module_write ... ok
+test every_production_module_claims_its_own_namespace ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests\panic_budget.rs (target\debug\deps\panic_budget-db81c0faacfd846f.exe)
+
+running 8 tests
+test only_production_code_counts_toward_the_budget ... ok
+test a_ratchet_crate_cannot_be_raised_without_a_reason ... ok
+test the_gate_names_the_crate_and_the_delta ... ok
+test only_a_leading_file_test_fence_exempts_an_out_of_line_module ... ok
+test bless_writes_files_the_gate_accepts_and_refuses_a_silent_ratchet_raise ... ok
+test no_profile_turns_a_world_panic_into_an_abort ... ok
+test the_walk_skips_tests_benches_and_build_scripts ... ok
+test no_crate_exceeds_its_production_panic_budget ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests\provider_rng_policy.rs (target\debug\deps\provider_rng_policy-dc06e182f972ea0e.exe)
+
+running 1 test
+test authoritative_provider_files_have_no_ambient_rng_access ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\schedule_source.rs (target\debug\deps\schedule_source-03a542c98f4550fe.exe)
+
+running 3 tests
+test restart_skip_is_still_actionable_and_owner_freeze_fails_closed ... ok
+test discovery_pages_canonical_durable_state_without_a_private_index ... ok
+test stale_discovery_cannot_mutate_cursor_or_domain_state ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\state_slot_owners.rs (target\debug\deps\state_slot_owners-63fa741ada0b1e4d.exe)
+
+running 5 tests
+test paired_and_triple_access_census_every_owner_argument ... ok
+test the_observed_census_is_empty_now_that_the_refusal_is_live ... ok
+test no_baselined_site_reaches_through_the_checked_accessor ... ok
+test every_production_state_slot_has_exactly_one_owner ... ok
+test every_cross_owner_state_site_is_baselined ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+

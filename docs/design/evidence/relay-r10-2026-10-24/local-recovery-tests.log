@@ -1,0 +1,56 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running tests\driving.rs (target\debug\deps\driving-792ff35bc0ad73f7.exe)
+
+running 21 tests
+test sm4b_the_lane_sites_hold_only_footings_and_passable_craters ... ok
+test sm4b_the_freeze_census ... ok
+test ap_every_lane_leg_costs_the_least_and_what_it_did ... ok
+test sm4b_a_forged_or_stale_drive_start_is_refused ... ok
+test sm4b_a_kilometre_of_regolith_costs_its_cells_in_the_world ... ok
+test sm4b_an_act_that_would_strand_the_rig_is_refused ... ok
+test sm4b_every_target_kind_lands_where_it_says ... ok
+test sm4b_a_drive_is_one_start_a_projected_leg_and_an_arrival ... ok
+test sm4b_the_map_shows_only_its_own_sites_rigs ... ok
+test sm4b_the_site_map_fixtures_are_blessed ... ok
+test sm4b_a_dark_site_still_warms_its_way_home ... ok
+test sm4b_the_map_shows_your_readings_and_nothing_else ... ok
+test sm4b_a_second_principal_sees_no_ore_glyph ... ok
+test sm4b_a_drive_refuses_cold_ground_and_warms_it ... ok
+test sm4b_recover_from_afar_drives_home_and_climbs_aboard ... ok
+test sm4b_the_drive_planner_is_measured ... ok
+test sm4b_no_licence_drives_and_recovers_on_a_held_block ... ok
+test sm4b_a_home_is_warmed_after_its_site_and_read_by_pointer ... ok
+test sm4b_the_cheap_gates_answer_before_the_search ... ok
+test sm4b_a_drive_from_the_bay_implies_the_launch ... ok
+test sm4b_a_restart_mid_drive_equals_an_uninterrupted_run ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.06s
+
+     Running tests\mining.rs (target\debug\deps\mining-20f9295c17c6348e.exe)
+
+running 23 tests
+test sm7_a_started_run_is_seen_at_once_and_holds_the_lift ... ok
+test sm7_the_hopper_and_the_hold_bound_every_run ... ok
+test sm7_the_reading_names_the_family ... ok
+test sm7_a_dark_registry_ends_the_run_with_the_dark_line ... ok
+test sm7_stop_lets_the_running_cycle_yield ... ok
+test sm7_a_cycle_that_cannot_happen_ends_the_run ... ok
+test sm7_terrain_sets_the_pace ... ok
+test sm7_the_cycle_line_fixture_is_blessed ... ok
+test sm7_a_second_rig_on_the_pocket_refuses_with_the_public_line ... ok
+test sm7_an_unread_pocket_cores_blind_and_never_tells_the_class ... ok
+test sm7_a_replayed_cycle_is_a_hit ... ok
+test sm7_a_fair_seven_tonne_pocket_yields_two_two_two_one_then_worked_out ... ok
+test sm7_reserved_total_counts_the_run ... ok
+test sm7_a_run_admits_only_knowledge_acts ... ok
+test sm7_the_hold_counts_every_outstanding_cycle ... ok
+test sm7_two_starts_race_at_the_prepare ... ok
+test sm7_the_sweep_finds_the_books_balanced ... ok
+test sm7_a_late_landing_judges_the_lapse_at_the_due ... ok
+test sm7_pits_render_for_everyone ... ok
+test sm7_a_cycle_writes_one_mined_fact ... ok
+test sm7_held_and_commons_blocks ... ok
+test sm7_rights_gate_mining_and_never_the_way_home ... ok
+test sm7_a_restart_mid_run_equals_an_uninterrupted_run ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.44s

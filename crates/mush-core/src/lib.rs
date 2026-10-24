@@ -62,6 +62,8 @@ pub mod behavior;
 pub mod clock;
 pub mod clock_provider;
 pub mod cmd;
+pub mod communication;
+pub use communication::{RelayRepresentation, TransportRefusal};
 pub mod commands;
 pub mod composed;
 pub mod connection_completion;

@@ -200,9 +200,9 @@ impl Roster {
             None => mods
                 .push(comp::content_module_with(true, true).expect("the content module composes")),
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -802,6 +802,11 @@ fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRo
     let (pilot, row) = chartered(rig, who, seed, name);
     let out = refit(rig, pilot, "prospector");
     assert!(out.contains("as a Dray-P"), "{out}");
+    // Doc 20 cut SM.5: a lease needs a prospecting licence in force; bought once here, and
+    // its fee settled by the economy's next sweep, so no licence escrow stands among the
+    // held funds the rig tests read.
+    support::licence::buy_licence(&mut rig.tw, pilot);
+    sweep(&mut rig.tw, 31);
     (pilot, row)
 }
 
@@ -1472,8 +1477,10 @@ fn sm3a_lease_takes_two_rigs_into_the_bay() {
 }
 
 /// **The lease refuses** (A2): a standard Dray (`NO_BAY`), away from the counter, short of
-/// funds, under way and away from Ceres — each with its exact line, and nothing written. It
-/// is not refused for want of a licence (the seam is SM.5's).
+/// funds, under way and away from Ceres — each with its exact line, and nothing written. The
+/// Dray-P pilots hold a prospecting licence (`prospector` buys one through `+licence/buy go`,
+/// `support::licence`), so none of these refusals is the licence's; a lease refused for want
+/// of one is `plumbing.rs`'s `sm5_a_lease_needs_a_licence`.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3a_lease_is_refused_without_a_bay_away_from_ceres_away_from_the_counter_and_short_of_funds() {
@@ -2069,8 +2076,8 @@ fn sm3a_release_holds_with_a_rig_aboard() {
 /// parts.
 ///
 /// 1. The brief's path exactly: booted on the v9 shape (`strip_vehicles`, the published v9
-///    digest), rebooted into the shipped roster, the plan and apply are one update
-///    (`ceres_port`); every hull gains its bay, a live space with `rigs` at two, and no other
+///    digest), rebooted into the shipped roster, the plan and apply are two updates
+///    (`ceres_port`, and `occator_port` for SM.10's papers); every hull gains its bay, a live space with `rigs` at two, and no other
 ///    room or exit; eight rigs are made, titled to Occator, their hoppers the system
 ///    principal's; a second apply changes nothing.
 /// 2. **With an enrolled hull.** A v9-latched world cannot enrol: its Lane line reads
@@ -2123,20 +2130,29 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 0 create, 1 update, 0 retire, {} unchanged",
-            entries - 1
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 0 create, 3 update, 0 retire, {} unchanged",
+            entries - 3
         )),
         "{plan}"
     );
-    assert!(
-        plan.lines()
-            .any(|l| l.contains("update") && l.contains("ceres_port (port)")),
-        "{plan}"
-    );
+    // Doc 20 cut SM.10: the shipped lane also carries Occator Rim's papers, so
+    // `occator_port` is the second update (`strip_vehicles` strips the claims first).
+    // R9b also updates Luna with the Fleet programme.
+    for port in [
+        "ceres_port (port)",
+        "occator_port (port)",
+        "luna_port (port)",
+    ] {
+        assert!(
+            plan.lines()
+                .any(|l| l.contains("update") && l.contains(port)),
+            "{plan}"
+        );
+    }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 0 created, 1 updated, 0 retired, {} unchanged.",
-            entries - 1
+            "Applied {LANE_PACK}@{LANE_VERSION}: 0 created, 3 updated, 0 retired, {} unchanged.",
+            entries - 3
         )),
         "{plan}\n{apply}"
     );
@@ -2178,9 +2194,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, {} unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 3 updated, 0 retired, {} unchanged.",
             LANE_VERSION + 1,
-            entries - 1
+            entries - 3
         )),
         "{plan}\n{apply}"
     );
@@ -2483,9 +2499,10 @@ fn sm3a_a_filed_passage_burns_with_its_rigs() {
     board(&mut rig, other);
     let hull = ObjId(row.hull);
     let hull_o = ObjId(row_o.hull);
-    // Doc 20 cut SM.3b: a loaded hopper holds the hull.
+    // Doc 20 cut SM.3b: a loaded hopper holds the hull. Doc 20 cut SM.8 (reviewer F6, decision
+    // R5): at a port neither the unload nor the dump works, so the line names staff.
     let (out, queued) = command(&mut rig, pilot, "+ship/undock stickney");
-    let loaded = tacsim::port::voyage::HOPPER_LOADED
+    let loaded = tacsim::port::voyage::HOPPER_LOADED_AWAY
         .replace("{n}", "1")
         .replace("{t}", "2")
         .replace("{name}", "Salt Moth");

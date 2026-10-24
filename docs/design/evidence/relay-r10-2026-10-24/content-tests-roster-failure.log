@@ -1,0 +1,80 @@
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 1m 42s
+     Running tests/content.rs (target/debug/deps/content-83413e8771d6aca3)
+
+running 36 tests
+test ic2_logistics_refuses_a_rail_below_the_stowage_maxima ... ok
+test ic2_a_dray_note_past_the_bound_fails_the_load ... ok
+test ic2_an_interior_refuses_what_the_template_cannot_build ... ok
+test every_shipped_pack_carries_its_own_digest ... ok
+test ic2_the_dray_is_pinned_and_checks ... ok
+test ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena ... ok
+test m2_every_fielded_units_substep_divides_the_three_periods ... ok
+test m3_the_stock_class_table_is_the_doc_17_table ... ok
+test ic2_the_goods_table_is_pinned ... ok
+test m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved ... ok
+test no_building_stands_on_a_road ... ok
+test o1_the_shipped_ground_declares_hold_at_the_crossroads ... ok
+test ic2_the_dray_is_a_hauler_and_binds_class_zero ... ok
+test sm3a_a_bay_refuses_what_the_template_cannot_build ... ok
+test sm3a_a_tool_out_of_bounds_is_refused ... ok
+test q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_order ... ok
+test sm3a_the_dray_p_is_the_dray_with_a_bay ... ok
+test m3_every_shipped_chassis_binds_its_core ... ok
+test m4_every_fielded_tanks_two_tracks_carry_the_pair_rule ... ok
+test sm3a_the_tools_are_pinned_and_check ... ok
+test the_band_word_the_shipped_content_can_print ... ok
+test the_ford_is_the_only_way_across_the_river ... ok
+test the_authored_map_is_the_map_the_arena_entry_describes ... ok
+test the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford ... ok
+test the_pinned_digests_are_the_shipped_ones ... ok
+test the_ten_commodity_families_decode ... ok
+test sm3a_the_terrain_vehicle_is_pinned_and_checks ... ok
+test sm3a_nothing_fielded_before_the_vehicles_moved ... ok
+test z3_the_arena_fields_six_a_side_in_the_authored_order ... ok
+test the_shipped_atlas_pack_is_this_generators_output ... ok
+test e1_the_ranges_the_shipped_machines_fight_at ... ok
+test z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing ... ok
+test z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made ... ok
+test m2_the_standard_doctrine_source_is_pinned ... ok
+test ae1_the_bluff_is_where_and_what_the_note_says ... FAILED
+test g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged ... FAILED
+
+failures:
+
+---- ae1_the_bluff_is_where_and_what_the_note_says stdout ----
+
+thread 'ae1_the_bluff_is_where_and_what_the_note_says' (1022006) panicked at crates/mush-testkit/src/lib.rs:138:14:
+test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged stdout ----
+
+thread 'g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged' (1022010) panicked at crates/mush-testkit/src/lib.rs:138:14:
+test module boot must not fail: Msg("Fleet/Postmaster receipt missing")
+
+
+failures:
+    ae1_the_bluff_is_where_and_what_the_note_says
+    g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged
+
+test result: FAILED. 34 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.91s
+
+error: test failed, to rerun pass `-p tacsim --test content`

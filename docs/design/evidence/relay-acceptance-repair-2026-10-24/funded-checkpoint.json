@@ -1,0 +1,23 @@
+{
+  "atUtc": "2026-10-24T18:57:56Z",
+  "programmeObservedBeforeSnapshot": {
+    "consent": 3,
+    "fleet": 24,
+    "front": 1,
+    "hull": 706,
+    "launch": null,
+    "next_payment": null,
+    "payments": [
+      88,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "postmaster": 728,
+    "refit": 4647675931937795308
+  },
+  "snapshotSha256": "7cecd71fe01a116829d3342fa7e6658da763f6c95528ecb74dcdd6d91a9a9c16",
+  "purpose": "Genuine dev1 state after six actual payments; retained privately for future targeted acceptance, never edited or committed."
+}

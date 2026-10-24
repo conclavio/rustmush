@@ -1,0 +1,13 @@
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 9.21s
+     Running tests/durability_e2e.rs (target/debug/deps/durability_e2e-92f709036e5367bf)
+
+running 4 tests
+test clean_shutdown_drains_and_snapshots ... ok
+test kill9_journey_local_twin_in_memory ... ok
+test kill9_mid_play_world_survives_redis_gated ... ok
+test relay_queue_and_frozen_leg_survive_process_death_redis_gated ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.35s

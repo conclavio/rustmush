@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 10,
+    "version": 13,
     "kind": "campaign_seed",
-    "digest": "3f49d1764cf10ff5ac1b43f0f88b06d47ba9bd89d7633fa8808f95121b0156c1",
+    "digest": "34d47907dd42dbcd5192aae05d6eaf76c89dd40abd877845ac83ec35968e47c1",
     "requires": []
   },
   "entries": {
@@ -2556,9 +2556,10 @@
           { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport" },
           { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport" },
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
-          { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport" },
+          { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
-          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" }
+          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" },
+          { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2580,6 +2581,7 @@
             "instrument_boards": "luna_port/crisium_instruments",
             "carbon_feedstock": "titan_port/titan_concession"
           },
+          "reference_minor": { "carbon_ore": 2500, "ice_ore": 1750, "metal_ore": 3500, "strategic_ore": 30000 },
           "buyout_major": 90000,
           "dormancy_real_days": 7,
           "per_account": 1,
@@ -2590,13 +2592,17 @@
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.sondergaard",
             "stock": [ { "good": "metals", "qty": 4000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "metals", "price_major": 200, "boards": ["exchange"] } ],
-            "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works", "boards": ["exchange"] } ] },
+            "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works", "boards": ["exchange"] },
+                       { "good": "metal_ore", "price_major": 70, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } },
+                       { "good": "carbon_ore", "price_major": 50, "intake": 120, "boards": ["exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } },
+                       { "good": "strategic_ore", "price_major": 600, "intake": 12, "boards": ["exchange"], "refresh": { "per_ic_day": 2, "cap": 12 } } ] },
           { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
             "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
                        { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "volatiles", "price_major": 100, "boards": ["exchange"] },
-                       { "good": "propellant", "price_major": 40, "boards": ["exchange"] } ] },
+                       { "good": "propellant", "price_major": 40, "boards": ["exchange"] } ],
+            "bids":  [ { "good": "ice_ore", "price_major": 35, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } } ] },
           { "org": "coop", "storefront": "neighborhood.ceres_freeport.item.chandlery_cage",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.akintola",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
@@ -2611,7 +2617,9 @@
         "vehicles": { "id": "occator.rig_lease", "org": "occator", "unit": "tacsim.unit.tv_prospector",
           "issuer": "tacsim.registry", "counter": "exchange", "shed": "Occator Vehicle Shed", "pool": 8,
           "registry_prefix": "OWP-TV-", "fee_major": 1400, "deposit_major": 5000, "term_ic_days": 168,
-          "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ] }
+          "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ] },
+        "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
+                     "claim_stake_major": 2000, "claim_term_major": 2000 }
       }
     },
     "stickney_port": {
@@ -2678,12 +2686,14 @@
         },
         "treasury": "tacsim.treasury",
         "orgs": [
+          {"id": "concord_fleet", "name": "Concord Fleet Relief Command", "capital_major": 100000, "faction": "concord"},
           { "id": "orbital_access", "name": "Concord Orbital Access", "capital_major": 50000, "faction": "concord" },
           { "id": "cabeus_works", "name": "Cabeus Works", "capital_major": 250000, "faction": "concord" },
           { "id": "habitat_board", "name": "Lunar Habitat Board", "capital_major": 1000000, "faction": "concord" },
           { "id": "crisium_instruments", "name": "Crisium Instruments", "capital_major": 50000, "faction": "concord" },
           { "id": "highport_victualling", "name": "Highport Victualling Office", "capital_major": 50000, "faction": "concord" }
         ],
+        "programme": {"id": "concord.relief", "org": "concord_fleet", "office": "neighborhood.aitken_highport.room.l01_berth_gallery", "floor_major": 1, "unit": "tacsim.unit.halcyon", "issuer": "tacsim.registry", "pool": 1, "registry_prefix": "CF-H-", "hull_names": ["Long Vigil"], "stake_major": 1, "share_permille": 0, "reference": {}, "buyout_major": 1, "dormancy_real_days": 7, "per_account": 1},
         "vendors": [
           { "org": "cabeus_works", "storefront": "neighborhood.aitken_highport.item.cabeus_cage",
             "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.mwangi_eriksen",
@@ -2871,23 +2881,24 @@
         "routes": { "ceres": [ "occator_ceres" ] },
         "site": { "name": "Occator Rim", "issuer": "freeport_registry", "zone": "core",
                   "tenure": { "default": "open" },
+                  "papers": { "occator_outer": { "bond_major": 5000 } },
                   "blocks": {
-                        "A": { "prospectivity": 1 },
-                        "B": { "prospectivity": 1 },
-                        "C": { "prospectivity": 1 },
-                        "D": { "prospectivity": 1 },
-                        "E": { "prospectivity": 1 },
+                        "A": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "B": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "C": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "D": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "E": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "F": { "tenure": "held", "holder": "occator" },
                         "G": { "tenure": "held", "holder": "occator" },
-                        "H": { "prospectivity": 1 },
-                        "I": { "prospectivity": 1 },
+                        "H": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "I": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "J": { "tenure": "held", "holder": "occator" },
                         "K": { "tenure": "held", "holder": "occator" },
-                        "L": { "prospectivity": 1 },
-                        "M": { "prospectivity": 1 },
-                        "N": { "prospectivity": 1 },
-                        "O": { "prospectivity": 1 },
-                        "P": { "prospectivity": 1 }
+                        "L": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "M": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "N": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "O": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "P": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } }
                       } }
       }
     },

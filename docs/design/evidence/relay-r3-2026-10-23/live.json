@@ -1,0 +1,744 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T01:39:27.344Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 32 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4064 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn evening",
+      "wallMs": 52,
+      "replyBytes": 663
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 52,
+      "replyBytes": 83
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay",
+      "reply": "Relay board v1: operator-granted service; no payment charged. One message-unit = 128 content bytes; short limit 1024 bytes.\nluna_ceres: Live; your class Standard; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 26,
+      "replyBytes": 354
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": "relay.board",
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "relay.board",
+          "kind": "keyframe",
+          "data": {
+            "lines": [
+              "Relay board v1: operator-granted service; no payment charged. One message-unit = 128 content bytes; short limit 1024 bytes.",
+              "luna_ceres: Live; your class Standard; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units."
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load luna_ceres",
+      "reply": "Permission denied.",
+      "wallMs": 52,
+      "replyBytes": 18
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load/publish luna_ceres",
+      "reply": "Choose one relay command switch.",
+      "wallMs": 52,
+      "replyBytes": 32
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/grant luna_ceres/#678=sovereign",
+      "reply": "Permission denied.",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 26,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-standard-77cf95/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 88 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=deferred",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 24,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-deferred-c2ee9a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 89 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 25,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-priority-14c7db/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 90 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=sovereign",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 26,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-sovereign-36c43f/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 91 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "+relay/load luna_ceres",
+      "reply": "luna_ceres: actual queued 4; oldest IC age 3; spent 0 units at 74167131873; scanned at most 4096 envelopes; retained receipts 0.",
+      "wallMs": 26,
+      "replyBytes": 128
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 52,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 26,
+      "replyBytes": 101
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 33 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4063 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 34 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4062 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 24,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover luna_ceres",
+      "reply": "Permission denied.",
+      "wallMs": 50,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=22 relay.inspect",
+      "reply": "Granted relay.inspect to R6carol1f8127 over org #22's scope tree (grant #15).",
+      "wallMs": 26,
+      "replyBytes": 77
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/load luna_ceres",
+      "reply": "luna_ceres: actual queued 0; oldest IC age 0; spent 0 units at 74167146331; scanned at most 4096 envelopes; retained receipts 7.",
+      "wallMs": 52,
+      "replyBytes": 128
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover luna_ceres",
+      "reply": "Evidence filed in your intel; publication requires separate authority.",
+      "wallMs": 53,
+      "replyBytes": 70
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+intel",
+      "reply": "Your intel log — 1 record, newest first:\n    0s ago  Malapert relay endpoint [service_evidence] in Operator service ledger: luna_ceres: Standard queued at 74167135531, free capacity observed at 74167135531, transmitted at 74167139131; declared wait 60 IC seconds. No message content inspected.  (relay.service.v1:luna_ceres:365)",
+      "wallMs": 51,
+      "replyBytes": 330
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+intel",
+      "reply": "You have no intel on file. Your informants report here when they have something to tell you.",
+      "wallMs": 25,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish luna_ceres",
+      "reply": "Permission denied.",
+      "wallMs": 53,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=22 relay.publish",
+      "reply": "Granted relay.publish to R6carol1f8127 over org #22's scope tree (grant #16).",
+      "wallMs": 26,
+      "replyBytes": 77
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish luna_ceres",
+      "reply": "Evidence published; scandal front 0 is open.",
+      "wallMs": 52,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish luna_ceres",
+      "reply": "Evidence already published; front 0.",
+      "wallMs": 51,
+      "replyBytes": 36
+    },
+    {
+      "actor": "God",
+      "line": "@front",
+      "reply": "Fronts:\n  #0  The Exchange congestion board [Malapert Exchange]  (1 clock)",
+      "wallMs": 25,
+      "replyBytes": 74
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 35 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4061 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 50,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create R3Radio869145",
+      "reply": "Channel R3Radio869145 created (id 8).  Join it with: addcom <alias>=R3Radio869145",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R3Radio869145=ic",
+      "reply": "Flag ic set on R3Radio869145.",
+      "wallMs": 25,
+      "replyBytes": 29
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R3Radio869145=logged",
+      "reply": "Flag logged set on R3Radio869145.",
+      "wallMs": 50,
+      "replyBytes": 33
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R3Radio869145=persist",
+      "reply": "Flag persist set on R3Radio869145.",
+      "wallMs": 51,
+      "replyBytes": 34
+    },
+    {
+      "actor": "God",
+      "line": "delcom r3",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 51,
+      "replyBytes": 44
+    },
+    {
+      "actor": "God",
+      "line": "addcom r3=R3Radio869145",
+      "reply": "Channel R3Radio869145 added with alias 'r3'.",
+      "wallMs": 51,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "delcom r3",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 26,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "addcom r3=R3Radio869145",
+      "reply": "Channel R3Radio869145 added with alias 'r3'.",
+      "wallMs": 52,
+      "replyBytes": 44
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-0-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 25,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "+order #678=R3-order-0-oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+      "reply": "Queued revision 1 to R6bob1b16df as envelope #367. It is not their order until it arrives.",
+      "wallMs": 50,
+      "replyBytes": 90
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-0/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 92 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-1/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 93 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-2-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-2/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 94 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-3-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-3/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 95 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-4-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 52,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-4/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 96 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "r3 R3-channel-5-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R3-mixed-5/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "reply": "MAIL: Message 97 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "God",
+      "line": "+relay/load luna_ceres",
+      "reply": "luna_ceres: actual queued 14; oldest IC age 28; spent 0 units at 74167146407; scanned at most 4096 envelopes; retained receipts 7.",
+      "wallMs": 26,
+      "replyBytes": 130
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (15 visited).\nDetection pass: nothing due.",
+      "wallMs": 50,
+      "replyBytes": 293
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 50,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 36 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4060 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@channel/recall r3",
+      "reply": "-- R3Radio869145: last 6 messages --\n[R3Radio869145] God: R3-channel-0-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n[R3Radio869145] God: R3-channel-1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n[R3Radio869145] God: R3-channel-2-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n[R3Radio869145] God: R3-channel-3-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n[R3Radio869145] God: R3-channel-4-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n[R3Radio869145] God: R3-channel-5-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n-- End of recall --",
+      "wallMs": 25,
+      "replyBytes": 2666
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Channel Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Channel Priority: queued 74167146405, transmitted 74167146409, arrived 74167146409; 4 units.\nluna_ceres Channel Priority: queued 74167146405, transmitted 74167146409, arrived 74167146409; 4 units.\nluna_ceres Channel Priority: queued 74167146405, transmitted 74167146408, arrived 74167146408; 4 units.\nluna_ceres Channel Priority: queued 74167146405, transmitted 74167146408, arrived 74167146408; 4 units.\nluna_ceres Channel Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 50,
+      "replyBytes": 1635
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "delcom r3",
+      "reply": "Channel R3Radio869145 removed (alias 'r3').",
+      "wallMs": 50,
+      "replyBytes": 43
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1011
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "addcom r3=R3Radio869145",
+      "reply": "Channel R3Radio869145 added with alias 'r3'.",
+      "wallMs": 50,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1011
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "pub R3 OOC remains immediate",
+      "reply": "Public #678 R6bob1b16df say R3 OOC remains immediate",
+      "wallMs": 51,
+      "replyBytes": 52
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 25,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 50,
+      "replyBytes": 56
+    }
+  ],
+  "milestones": [
+    {
+      "test": "web-board-query-line-parity"
+    },
+    {
+      "test": "all-four-classes-queued",
+      "signal": "SIGKILL",
+      "gateway": 746698,
+      "old": 746710,
+      "fresh": 746820
+    },
+    {
+      "test": "restart-preserves-all-four-tickets"
+    },
+    {
+      "test": "declared-delay-and-priority-advantage",
+      "standard": {
+        "arrived": 74167131930,
+        "envelope": 359,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167131870,
+        "recipient": 678,
+        "reference": "mail:v1:88:678:out",
+        "ticket": {
+          "actual_ready": 74167131880,
+          "class": "standard",
+          "declared_s": 60,
+          "eligible_at": 74167131930,
+          "units": 8,
+          "version": 1
+        },
+        "transmitted": 74167131930
+      },
+      "priority": {
+        "arrived": 74167131879,
+        "envelope": 361,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167131872,
+        "recipient": 678,
+        "reference": "mail:v1:90:678:out",
+        "ticket": {
+          "actual_ready": 74167131878,
+          "class": "priority",
+          "declared_s": 60,
+          "eligible_at": 74167131872,
+          "units": 8,
+          "version": 1
+        },
+        "transmitted": 74167131879
+      },
+      "sovereign": {
+        "arrived": 74167131878,
+        "envelope": 362,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167131873,
+        "recipient": 678,
+        "reference": "mail:v1:91:678:out",
+        "ticket": {
+          "actual_ready": 74167131878,
+          "class": "sovereign",
+          "declared_s": 60,
+          "eligible_at": 74167131873,
+          "units": 8,
+          "version": 1
+        },
+        "transmitted": 74167131878
+      }
+    },
+    {
+      "test": "capacity-and-deferred-window",
+      "deferred": {
+        "arrived": 74167142731,
+        "envelope": 360,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167131871,
+        "recipient": 678,
+        "reference": "mail:v1:89:678:out",
+        "ticket": {
+          "actual_ready": 74167131878,
+          "class": "deferred",
+          "declared_s": 60,
+          "eligible_at": 74167139071,
+          "units": 8,
+          "version": 1
+        },
+        "transmitted": 74167142731
+      },
+      "maxUnitsPerSecond": 8,
+      "retainedReceipts": 7
+    },
+    {
+      "test": "publication-commit",
+      "signal": "SIGKILL",
+      "gateway": 746698,
+      "old": 746820,
+      "fresh": 747205
+    },
+    {
+      "test": "permissioned-knowledge-and-single-publication",
+      "front": 0
+    },
+    {
+      "test": "mixed-producers-and-membership-safe-receipts",
+      "copies": 13,
+      "maxUnitsPerSecond": 8,
+      "classes": [
+        "channel",
+        "mail",
+        "order"
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T01:39:27.387Z",
+      "gatewayPid": 746698,
+      "serverPid": 746710,
+      "serverSha256": "e181957752c3d17c0ec7711256d2fad535537d45d91922f3d9ea03ba54585671"
+    }
+  ],
+  "policy": {
+    "aging_s": 300,
+    "burst_units": 8,
+    "bytes_per_unit": 128,
+    "deferred_min_s": 7200,
+    "short_message_bytes": 1024,
+    "standard_delay_s": 60,
+    "version": 1,
+    "window_duration_s": 3600,
+    "window_period_s": 86400,
+    "window_start_s": 0
+  },
+  "messages": {
+    "standard": {
+      "id": 88,
+      "envelope": 359,
+      "subject": "R3-standard-77cf95",
+      "ticket": {
+        "actual_ready": null,
+        "class": "standard",
+        "declared_s": 60,
+        "eligible_at": 74167131930,
+        "units": 8,
+        "version": 1
+      },
+      "queued": {
+        "at": 74167131870,
+        "clock": {
+          "generation": 32,
+          "kind": "world_ic"
+        }
+      }
+    },
+    "deferred": {
+      "id": 89,
+      "envelope": 360,
+      "subject": "R3-deferred-c2ee9a",
+      "ticket": {
+        "actual_ready": null,
+        "class": "deferred",
+        "declared_s": 60,
+        "eligible_at": 74167139071,
+        "units": 8,
+        "version": 1
+      },
+      "queued": {
+        "at": 74167131871,
+        "clock": {
+          "generation": 32,
+          "kind": "world_ic"
+        }
+      }
+    },
+    "priority": {
+      "id": 90,
+      "envelope": 361,
+      "subject": "R3-priority-14c7db",
+      "ticket": {
+        "actual_ready": null,
+        "class": "priority",
+        "declared_s": 60,
+        "eligible_at": 74167131872,
+        "units": 8,
+        "version": 1
+      },
+      "queued": {
+        "at": 74167131872,
+        "clock": {
+          "generation": 32,
+          "kind": "world_ic"
+        }
+      }
+    },
+    "sovereign": {
+      "id": 91,
+      "envelope": 362,
+      "subject": "R3-sovereign-36c43f",
+      "ticket": {
+        "actual_ready": null,
+        "class": "sovereign",
+        "declared_s": 60,
+        "eligible_at": 74167131873,
+        "units": 8,
+        "version": 1
+      },
+      "queued": {
+        "at": 74167131873,
+        "clock": {
+          "generation": 32,
+          "kind": "world_ic"
+        }
+      }
+    }
+  },
+  "channel": "R3Radio869145",
+  "passed": true
+}

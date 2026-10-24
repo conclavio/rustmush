@@ -84,6 +84,25 @@ Every figure below is one you read off the game, not one to remember.
   way — bulky first if money is tight — then bunker for the return and fly home.
   At Ceres, the Co-op's chit and Freeport Works' alloy bid buy them.
 
+## Ore at Ceres
+
+Ore is bought only at Ceres Freeport, by standing bids on the Exchange Hall's
+board, and only the hold sells ore: a rig's hopper never does (`help mining`).
+The Freeport Exchange takes metal ore, carbon ore and strategic ore, and Occator
+takes ice ore. Each intake refreshes once an IC day: metal ore by 40 t a
+day to 240 t, ice ore by 40 t to 240 t, carbon ore by 20 t to 120 t, and strategic
+ore by 2 t to 12 t, never past what the house can pay for. Each time an intake
+refreshes its bid is posted afresh under a new listing number, so read the
+current one off `+market`'s list.
+
+`+market/sell <listing>` says what a bid still wants, what you hold in the hold
+the sale would come from, and what selling all of it would take and pay; it sells
+nothing. `+market/sell <listing>=all` sells what the bid takes and leaves the
+rest aboard; `+market/sell <listing>=<tonnes>` sells that many.
+
+The Co-op's share on ore is a quarter of the margin over half the bid: no port
+sells ore, so its reference price is fixed at half the bid (`help coop`).
+
 ## The moons
 
 No lane runs from a moon to Ceres (`help ports`): a run comes home on the

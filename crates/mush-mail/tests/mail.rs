@@ -27,11 +27,46 @@ const NOW: i64 = 1_700_000_000;
 // Harness
 // ----------------------------------------------------------------------
 
+/// Mail-owner unit tests provide local receipts explicitly. Production routing,
+/// not-before times and crash boundaries are covered by relay_registry tests.
+#[derive(Debug)]
+struct LocalReceiptFixture;
+impl mush_mail::transit::Transport for LocalReceiptFixture {
+    fn capacity(
+        &self,
+        _: &World,
+        _: ObjId,
+        _: Option<mush_core::RelayRepresentation>,
+        _: usize,
+    ) -> Result<(), mush_core::TransportRefusal> {
+        Ok(())
+    }
+    fn endpoints(&self, _: &mush_core::Ctx<'_>, actors: &[ObjId]) -> Vec<Option<ObjId>> {
+        actors.iter().map(|_| Some(LIMBO)).collect()
+    }
+    fn receipt(&self, world: &World, key: &str) -> Option<mush_mail::transit::Receipt> {
+        mush_mail::transit::intents(world)?
+            .iter()
+            .any(|i| i.key == key)
+            .then_some(mush_mail::transit::Receipt {
+                arrived: true,
+                origin: Some(LIMBO),
+            })
+    }
+}
+
 fn engine_from(world: World) -> Engine {
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
-    Engine::with_modules(world, registry, vec![Box::new(MailModule)]).unwrap()
+    Engine::with_modules(
+        world,
+        registry,
+        vec![Box::new(
+            MailModule.with_transport(std::sync::Arc::new(LocalReceiptFixture)),
+        )],
+    )
+    .unwrap()
 }
 
 /// Engine + Alice and Bob (both world-side connected), booted with no
@@ -66,6 +101,10 @@ fn run(engine: &mut Engine, actor: ObjId, line: &str) -> Outbox {
         &mut out,
         &mut fx,
     );
+    for _ in 0..2 {
+        let due = engine.sched.next_due().unwrap();
+        engine.fire_due(due, &mut out, &mut fx);
+    }
     out
 }
 
@@ -121,7 +160,11 @@ fn apply_ops(kv: &mut BTreeMap<SmolStr, serde_json::Value>, ops: Vec<ModuleOp>) 
 fn quick_send_delivers_and_notifies() {
     let (mut engine, alice, bob) = setup();
     let out = run(&mut engine, alice, "@mail/quick Bob=Lunch/Meet at noon?");
-    assert_actor_saw(out.events(), alice, "MAIL: Message 1 sent to Bob.");
+    assert_actor_saw(
+        out.events(),
+        alice,
+        "MAIL: Message 1 queued for IC transit.",
+    );
     // Live MailNotice to the recipient, with their unread count.
     assert!(out.events().iter().any(|(aud, e)| {
         matches!(aud, mush_core::Audience::Actor(a) if *a == bob)
@@ -156,7 +199,7 @@ fn multi_recipient_fan_out_stores_once() {
         .create(ObjKind::Player, "Carol", GOD, Some(LIMBO))
         .unwrap();
     let out = run(&mut engine, alice, "@mail/quick Bob, Carol=Hi/all of you");
-    assert_actor_saw(out.events(), alice, "sent to Bob, Carol");
+    assert_actor_saw(out.events(), alice, "queued for IC transit");
     let st = mail(&engine);
     assert_eq!(st.message(1).unwrap().to, vec![bob, carol]);
     assert!(st.entry(bob, 1).is_some());
@@ -208,7 +251,11 @@ fn compose_multiline_preview_and_send() {
     assert!(mail(&engine).message(1).is_none(), "preview does not send");
     // "--" alone sends and pops back to the normal prompt.
     let out = run(&mut engine, alice, "--");
-    assert_actor_saw(out.events(), alice, "MAIL: Message 1 sent to Bob.");
+    assert_actor_saw(
+        out.events(),
+        alice,
+        "MAIL: Message 1 queued for IC transit.",
+    );
     assert!(
         prompts(&out)
             .iter()
@@ -413,7 +460,7 @@ fn forward_copies_the_body() {
         .unwrap();
     run(&mut engine, alice, "@mail/quick Bob=Secret/the plans");
     let out = run(&mut engine, bob, "@mail/fwd 1=Carol");
-    assert_actor_saw(out.events(), bob, "sent to Carol");
+    assert_actor_saw(out.events(), bob, "queued for IC transit");
     let st = mail(&engine);
     let m2 = st.message(2).unwrap();
     assert_eq!(m2.subject, "Fwd: Secret");
@@ -543,23 +590,26 @@ fn quota_bounces_with_notice_and_staff_are_exempt() {
         .module_state_mut::<MailState>()
         .unwrap()
         .set_quota(1);
+    engine.world.set_flag(alice, Flags::WIZARD, true).unwrap();
     run(&mut engine, alice, "@mail/quick Bob=One/fits");
     let sent_before = mail(&engine).folder_ids(alice, SENT).len();
     let out = run(&mut engine, alice, "@mail/quick Bob=Two/bounces");
-    assert_actor_saw(out.events(), alice, "Bob's mailbox is full.");
-    assert_actor_saw(out.events(), alice, "Nobody could receive your message.");
+    assert_actor_saw(out.events(), alice, "mailbox full at arrival");
     let st = mail(&engine);
     assert_eq!(st.entry_count(bob), 1, "nothing delivered");
-    assert!(st.message(2).is_none(), "bounced message is not stored");
+    assert!(
+        st.message(2).is_some(),
+        "accepted letter and returned failure remain in Sent"
+    );
     assert_eq!(
         st.folder_ids(alice, SENT).len(),
-        sent_before,
-        "no sent copy for a fully-bounced message"
+        sent_before + 1,
+        "accepted copy remains after remote failure"
     );
     // Staff are exempt: a wizard's mailbox never fills.
     engine.world.set_flag(bob, Flags::WIZARD, true).unwrap();
     let out = run(&mut engine, alice, "@mail/quick Bob=Three/lands");
-    assert_actor_saw(out.events(), alice, "sent to Bob");
+    assert_actor_saw(out.events(), alice, "queued for IC transit");
     assert_eq!(mail(&engine).entry_count(bob), 2);
 }
 
@@ -579,15 +629,19 @@ fn mail_lock_refusals_are_reported_per_recipient() {
         .insert(LockType::Mail, LockExpr::Is(carol));
     // Partial fan-out: Carol gets it, Bob's refusal is reported.
     let out = run(&mut engine, alice, "@mail/quick Bob,Carol=Hi/there");
-    assert_actor_saw(out.events(), alice, "MAIL: Message 1 sent to Carol.");
-    assert_actor_saw(out.events(), alice, "Bob is refusing your mail.");
+    assert_actor_saw(
+        out.events(),
+        alice,
+        "MAIL: Message 1 queued for IC transit.",
+    );
+    assert_actor_saw(out.events(), alice, "refused at destination");
     let st = mail(&engine);
     assert!(st.entry(bob, 1).is_none());
     assert!(st.entry(carol, 1).is_some());
-    assert_eq!(st.message(1).unwrap().to, vec![carol]);
+    assert_eq!(st.message(1).unwrap().to, vec![bob, carol]);
     // Carol passes the lock.
     let out = run(&mut engine, carol, "@mail/quick Bob=Ping/pong");
-    assert_actor_saw(out.events(), carol, "sent to Bob");
+    assert_actor_saw(out.events(), carol, "queued for IC transit");
 }
 
 // ----------------------------------------------------------------------
@@ -734,14 +788,15 @@ fn quota_excludes_trash_and_purge_frees_it() {
         .module_state_mut::<MailState>()
         .unwrap()
         .set_quota(1);
+    engine.world.set_flag(alice, Flags::WIZARD, true).unwrap();
     run(&mut engine, alice, "@mail/quick Bob=One/fills the box");
     let out = run(&mut engine, alice, "@mail/quick Bob=Two/bounces");
-    assert_actor_saw(out.events(), alice, "Bob's mailbox is full.");
+    assert_actor_saw(out.events(), alice, "mailbox full at arrival");
     // Bob trashes the message: it immediately stops counting.
     run(&mut engine, bob, "@mail/delete 1");
     assert_eq!(mail(&engine).entry_count(bob), 0, "trash is quota-free");
     let out = run(&mut engine, alice, "@mail/quick Bob=Three/lands now");
-    assert_actor_saw(out.events(), alice, "sent to Bob");
+    assert_actor_saw(out.events(), alice, "queued for IC transit");
     // Purge deletes the trash entry outright and drops the message doc
     // once nothing references it (Alice's sent copy still does here, so
     // the doc survives until she purges too).

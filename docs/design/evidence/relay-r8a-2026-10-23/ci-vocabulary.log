@@ -1,0 +1,8 @@
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized] target(s) in 10.35s
+     Running unittests src/lib.rs (target/debug/deps/mush_server-92170ad3d8ad5386)
+
+running 1 test
+test modules::tests::the_org_capability_vocabulary_covers_every_economy_capability ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 303 filtered out; finished in 0.00s

@@ -1,0 +1,37 @@
+{
+  "units": ["tacsim.unit.scout_mk1"],
+  "label": "Scout car",
+  "short": "SC",
+  "weapons": {
+    "autocannon": "30MM",
+    "machine_gun": "MG"
+  },
+  "doll": {
+    "view": "top",
+    "rows": [
+      "....FFFFFFFFFFFFFFFF....",
+      "ll..FFFFFFFTTFFFFFFF..rr",
+      "ll..LHHHHHHTTHHHHHHR..rr",
+      "ll..LHHHTTTTTTTTHHHR..rr",
+      "....LHHHTTTTTTTTHHHR....",
+      "....LHHHTTTTTTTTHHHR....",
+      "....LHHHHHHHHHHHHHHR....",
+      "....LHHHHEEEEEEHHHHR....",
+      "ll..LHHHHEEEEEEHHHHR..rr",
+      "ll..LHHHHHHHHHHHHHHR..rr",
+      "ll..BBBBBBBBBBBBBBBB..rr",
+      "....BBBBBBBBBBBBBBBB...."
+    ],
+    "legend": {
+      "F": { "section": "hull", "facet": "front" },
+      "B": { "section": "hull", "facet": "rear" },
+      "L": { "section": "hull", "facet": "left" },
+      "R": { "section": "hull", "facet": "right" },
+      "H": { "section": "hull" },
+      "T": { "section": "turret" },
+      "E": { "section": "engine" },
+      "l": { "section": "left_wheels" },
+      "r": { "section": "right_wheels" }
+    }
+  }
+}

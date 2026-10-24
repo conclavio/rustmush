@@ -1,0 +1,409 @@
+{
+  "passed": true,
+  "customFixtureSourceTree": "bf70b8c3cf83cf8233f4c0960f03dee1ddb9492b",
+  "regressionBaselineSourceTree": "4efb7d542134045745c8acb1705e298e4fd77b33",
+  "liveHarnessSourceTree": "87c6d6f9bfaa260b4441c7a12429af74286aa403",
+  "storyTestsSourceTree": "21a6f9b154c59a88c5c5aa9c4c8ec80d21dc2c47",
+  "liveHarnessSha256": "c9210b13e8d956bbe80a8c4741fac68903042525e7d56018c3ed1a2a473216f1",
+  "sourceParent": "a517e74f02ad965cd602305cb00022ceee902a86",
+  "sourceTree": "1b5a6dd1906e2bbb9b3c1f90ad90e00ddfa81c70",
+  "sourceArchiveSha256": "41d000afce3ffa9b5cc340fa1b880d5c9a4be58e1f0db29bcf7b1a25aa5a9274",
+  "linuxTests": {
+    "story-tests": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 49,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "content-baseline-tests": [
+      {
+        "passed": 183,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 36,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 25,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 89,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 143,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "content-custom-tests": [
+      {
+        "passed": 26,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 34,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 30,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "content-tests": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 25,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 41,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 25,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "metric-tests": [
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "owner-tests": [
+      {
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "org-tests": [
+      {
+        "passed": 24,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "content-frame-tests": [
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "fixture-smokes": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "core-tests": [
+      {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "contracts": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-observer": [
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 32,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "process-tests": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "linuxTestsPassed": 1046,
+  "modes": {
+    "split": {
+      "commands": 308,
+      "queries": 23,
+      "processCrashes": 8,
+      "commandLatencyMs": {
+        "median": 51.0,
+        "p95": 532,
+        "max": 1055
+      },
+      "soak": {
+        "test": "bounded-four-client-concurrent-soak",
+        "clients": 4,
+        "mail": 72,
+        "channelLines": 24,
+        "channelCopies": 72,
+        "wallMs": 34763,
+        "observedInboxLatencyMs": {
+          "p50": 14543,
+          "p95": 24292,
+          "max": 24646
+        },
+        "maxPending": 17,
+        "maxQueue": 5,
+        "maxOldestIcSeconds": 72,
+        "maxVisited": 32,
+        "maxMetric": 11,
+        "maxEdges": 32,
+        "states": {},
+        "unchangedLimits": {
+          "pending": 128,
+          "perLink": 64,
+          "visited": 64,
+          "metricReads": 65,
+          "edgeVisits": 512
+        }
+      }
+    },
+    "allinone": {
+      "commands": 220,
+      "queries": 23,
+      "processCrashes": 4,
+      "commandLatencyMs": {
+        "median": 52.0,
+        "p95": 318,
+        "max": 652
+      },
+      "soak": {
+        "test": "bounded-four-client-concurrent-soak",
+        "clients": 4,
+        "mail": 72,
+        "channelLines": 24,
+        "channelCopies": 72,
+        "wallMs": 31831,
+        "observedInboxLatencyMs": {
+          "p50": 14088,
+          "p95": 23541,
+          "max": 23905
+        },
+        "maxPending": 13,
+        "maxQueue": 3,
+        "maxOldestIcSeconds": 2922,
+        "maxVisited": 25,
+        "maxMetric": 11,
+        "maxEdges": 32,
+        "states": {},
+        "unchangedLimits": {
+          "pending": 128,
+          "perLink": 64,
+          "visited": 64,
+          "metricReads": 65,
+          "edgeVisits": 512
+        }
+      }
+    }
+  },
+  "sshCommands": 18,
+  "health": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "gatewayPid": 1105891,
+  "serverPid": 1105904,
+  "binaryHashes": {
+    "mushd": "72105227139a7f8196a856833609841d259def3039320dcc07fa72c86c1ad01a",
+    "mush-server": "902284588df8946fe511614ca14389158da4e313444e3d80e0b0bd984b6b10ad",
+    "mush-gateway": "c53d95967583e1d3cbd7033a9f53dd341881a00c47b0a7ca149bc24ef6170f14"
+  },
+  "dev2": "MainPID=539467",
+  "freshDatabase": 2,
+  "retainedBaselineDatabase": 1,
+  "restoredBaseline": {
+    "nodes": 2,
+    "pairs": 1,
+    "laneVersion": 12,
+    "relayVersion": 1,
+    "mobile": null,
+    "terms": null,
+    "bootAppliedGeography": {
+      "region.kirkwood_depot": 1,
+      "region.mercury_relay": 1,
+      "neighborhood.malapert_exchange": 1,
+      "neighborhood.phobos_exchange": 1,
+      "neighborhood.kirkwood_depot": 1,
+      "neighborhood.mercury_relay": 1
+    },
+    "keysAfterBoot": 4889
+  },
+  "note": "Acceptance documentation and sanitized evidence are added after the tested source tree. Inbox latency is a polling upper bound. The snapshot restore is exact before boot; the R10 boot then seeds its new Atlas geography while preserving the old lane/relay versions. The live harness uses normal commands and read-only Redis inspection; it never writes clock anchors or manufactures receipts."
+}

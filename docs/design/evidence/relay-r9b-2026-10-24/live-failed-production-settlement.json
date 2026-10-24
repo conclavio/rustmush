@@ -1,0 +1,380 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T11:32:22.454Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.lane.ceres_phobos",
+      "reply": "Plan for tacsim.lane.ceres_phobos@13: 0 create, 1 update, 0 retire, 59 unchanged\n update   luna_port (port)\n validator: no findings\n fingerprint 920d247ec7a706bc — @atlas/pack apply 920d247ec7a706bc",
+      "wallMs": 25,
+      "replyBytes": 200
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack apply 920d247ec7a706bc",
+      "reply": "Applied tacsim.lane.ceres_phobos@13: 0 created, 1 updated, 0 retired, 59 unchanged.",
+      "wallMs": 177,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 economy.account.post",
+      "reply": "Granted economy.account.post to R6bob1b16df over org #11's scope tree (grant #18).",
+      "wallMs": 25,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 economy.account.view",
+      "reply": "Granted economy.account.view to R6bob1b16df over org #11's scope tree (grant #19).",
+      "wallMs": 50,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 vault.deposit",
+      "reply": "Granted vault.deposit to R6bob1b16df over org #11's scope tree (grant #20).",
+      "wallMs": 51,
+      "replyBytes": 75
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 vault.withdraw",
+      "reply": "Granted vault.withdraw to R6bob1b16df over org #11's scope tree (grant #21).",
+      "wallMs": 52,
+      "replyBytes": 76
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=24 economy.account.post",
+      "reply": "Granted economy.account.post to R6bob1b16df over org #24's scope tree (grant #22).",
+      "wallMs": 52,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=24 economy.account.view",
+      "reply": "Granted economy.account.view to R6bob1b16df over org #24's scope tree (grant #23).",
+      "wallMs": 51,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=24 vault.deposit",
+      "reply": "Granted vault.deposit to R6bob1b16df over org #24's scope tree (grant #24).",
+      "wallMs": 52,
+      "replyBytes": 75
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=24 vault.withdraw",
+      "reply": "Granted vault.withdraw to R6bob1b16df over org #24's scope tree (grant #25).",
+      "wallMs": 52,
+      "replyBytes": 76
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relayfleet/fund",
+      "reply": "Fleet treasury authority required",
+      "wallMs": 26,
+      "replyBytes": 33
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relayfleet/consent yes",
+      "reply": "The Postmaster's Exchange authority is required",
+      "wallMs": 50,
+      "replyBytes": 47
+    },
+    {
+      "actor": "God",
+      "line": "@asset/assign #685=#678 Fleet command",
+      "reply": "Assigned (transaction #86).",
+      "wallMs": 26,
+      "replyBytes": 27
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #684 Lunar entanglement foundry#685 Long Vigil#707 Postmaster Solveig Adebayo-Krishnan Pressure Lobby <PL> pllobbyin autumn afternoon",
+      "wallMs": 52,
+      "replyBytes": 752
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#202",
+      "reply": "emit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 43
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship",
+      "reply": "Long Vigil (Halcyon): docked Aitken Highport, Visiting Berth Gallery.\nHold: cargo 0/100 t · 0.0/120 m³ · tank 0/1800 t · locker 0/1200 crew-days.\nProgramme: Concord Fleet; current economic command assignment.",
+      "wallMs": 26,
+      "replyBytes": 212
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #678=tacsim.credit",
+      "reply": "Opened account #27 (tacsim.credit).",
+      "wallMs": 52,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 4000000",
+      "reply": "Paid: transaction #87 posted.",
+      "wallMs": 25,
+      "replyBytes": 29
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 44 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 857
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relayfleet/fund",
+      "reply": "Monthly Fleet appropriation authorized: six payments of 10000 cr, at most one per 30 IC days.",
+      "wallMs": 26,
+      "replyBytes": 93
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/stock",
+      "reply": "Foundry action submitted. Use +relaypair to inspect the committed receipt.\nQueued.\nDone.",
+      "wallMs": 26,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #24=2",
+      "reply": "Quote #14: 2 × 900.00cr = 1800.00cr — good until 1792845181 (real time). It reserves nothing; take it up with +market/accept #14.",
+      "wallMs": 26,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #14=127",
+      "reply": "Queued.\nContract #17 has been offered to you (@contract/show #17).\nContract #17 is active: every party has accepted.\nAgreed. Contract #17 carries it; your payment is escrowed and settles when the terms are met. Anneliese Okafor-Thistlewood signs for Crisium Instruments.\nDone.",
+      "wallMs": 50,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/draft tacsim.relay.manufacture/private_pair/1=684 1 27 127 127",
+      "reply": "Queued.\nDrafted wo#8861a1f3f35237b6.",
+      "wallMs": 26,
+      "replyBytes": 36
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/submit wo#8861a1f3f35237b6",
+      "reply": "Queued.\nSubmitted wo#8861a1f3f35237b6; production started.",
+      "wallMs": 26,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/deliver wo#8861a1f3f35237b6",
+      "reply": "Queued.\nDelivered wo#8861a1f3f35237b6.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/claim wo#8861a1f3f35237b6=4373878420604036358",
+      "reply": "The production budget is still settling; try again after the industry sweep.",
+      "wallMs": 26,
+      "replyBytes": 76
+    }
+  ],
+  "milestones": [
+    {
+      "test": "explicit-lane-v12-to-v13-upgrade",
+      "signal": "SIGKILL",
+      "gateway": 984575,
+      "old": 984587,
+      "fresh": 984890
+    },
+    {
+      "test": "explicit-upgrade-preserves-relays-and-foundry",
+      "from": 12,
+      "to": 13,
+      "registry": {
+        "losses": {},
+        "nodes": {
+          "ceres": {
+            "coverage": [
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113
+            ],
+            "label": "Ceres relay endpoint",
+            "object": 664,
+            "operator": 22,
+            "place": 112
+          },
+          "malapert": {
+            "coverage": [
+              202,
+              203,
+              212,
+              209,
+              213,
+              204,
+              205,
+              206,
+              207,
+              208,
+              210,
+              211
+            ],
+            "label": "Malapert relay endpoint",
+            "object": 665,
+            "operator": 22,
+            "place": 213
+          }
+        },
+        "operator": 22,
+        "pairs": {
+          "luna_ceres": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.luna",
+                "node": "malapert",
+                "object": 666,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.ceres",
+                "node": "ceres",
+                "object": 667,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          }
+        },
+        "revision": 33,
+        "source_entry": "network",
+        "source_pack": "tacsim.relay.luna_ceres",
+        "structural_version": 1,
+        "version": 1
+      },
+      "programme": {
+        "consent": null,
+        "fleet": 24,
+        "front": 1,
+        "hull": 685,
+        "launch": null,
+        "next_payment": null,
+        "payments": [],
+        "postmaster": 707,
+        "refit": null
+      }
+    },
+    {
+      "test": "first-real-monthly-payment",
+      "programme": {
+        "consent": null,
+        "fleet": 24,
+        "front": 1,
+        "hull": 685,
+        "launch": null,
+        "next_payment": 74171440429,
+        "payments": [
+          88
+        ],
+        "postmaster": 707,
+        "refit": null
+      },
+      "fleetAccount": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 26,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 85,
+        "name": "Concord Fleet Relief Command/root",
+        "owner": {
+          "Organization": 24
+        },
+        "posted_balance": 10000000,
+        "revision": 2,
+        "scope": 24,
+        "status": "Active"
+      },
+      "fleetAfter": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 26,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 88,
+        "name": "Concord Fleet Relief Command/root",
+        "owner": {
+          "Organization": 24
+        },
+        "posted_balance": 9000000,
+        "revision": 3,
+        "scope": 24,
+        "status": "Active"
+      },
+      "firstAt": 74168848429
+    },
+    {
+      "test": "funding-and-paid-production-running",
+      "signal": "SIGKILL",
+      "gateway": 984575,
+      "old": 984890,
+      "fresh": 987124
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T11:32:22.493Z",
+      "gatewayPid": 984575,
+      "serverPid": 984587,
+      "serverSha256": "b23b1845ded154dda7ecc3f15155e19fee1e149a766089a295e1015294680f75"
+    }
+  ],
+  "failure": "Error: Timed out: claimed output consumed\n    at until (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:98:9)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-r9b-live.mjs:57:69"
+}

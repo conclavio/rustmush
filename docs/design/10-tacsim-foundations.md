@@ -575,7 +575,9 @@ formation belongs elsewhere.
 Consequential commands, sensor reports, market intelligence and operational messages traverse a
 deterministic communications path. Owners may conduct legitimate administration remotely, but see
 only telemetry that has actually reached them. Ordinary OOC communication is not constrained by
-IC propagation. The server never supplies a universal live owner map.
+IC propagation. **Doc 15 D-15-12 (2026-10-23) classifies all mail as IC:** it must
+transit, with no OOC mail mode; OOC channels remain unconstrained. The server never
+supplies a universal live owner map.
 
 ### 18.3 Crew and multicrew
 

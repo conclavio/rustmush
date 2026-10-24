@@ -62,7 +62,7 @@ use tacsim::surface::reading::read_r0;
 use tacsim::surface::{GeologyBoot, OreFamily, Word, installed_bodies};
 use tacsim::{TacsimConfig, TacsimStore};
 
-use geology_keyed::{CERES_TABLE, KEY_1, VESTA_TABLE, boot_keyed, mac, secret};
+use geology_keyed::{CERES_TABLE, KEY_1, VESTA_TABLE, boot_keyed, mac, reboot_keyed, secret};
 use support::ground::{UNSIGNED, sign};
 use support::sites::{SITE_PORTS, SITE_VENUES, strip_sites};
 
@@ -356,9 +356,9 @@ impl Roster {
             None => mods
                 .push(comp::content_module_with(true, true).expect("the content module composes")),
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -677,7 +677,14 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             .filter(|line| {
-                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+                // Doc 20 cut SM.6 (D2): a keyed site laid up and still opening is the site
+                // clerk's work, not the stock clerks'; a rig that hops to a site opens it.
+                line.ends_with(']')
+                    && !line.starts_with("sky: ")
+                    && !line.starts_with("geology: ")
+                    && !(line.contains(" site: ")
+                        && (line.contains("; opening, ")
+                            || line.contains("; opening: its ground is still being mapped")))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -1013,10 +1020,13 @@ fn plan_and_apply(tw: &mut TestWorld) -> (String, String) {
 fn sm2_the_lane_carries_six_sites() {
     let pack = lane();
     assert_eq!(pack.manifest().version(), LANE_VERSION);
-    // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry).
+    // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry). Doc 20 cut
+    // SM.5: v11 (the ore bids, the fixed references, the licence, Occator's raise; no new
+    // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
+    // paper; no new entry).
     assert_eq!(
-        LANE_VERSION, 10,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a"
+        LANE_VERSION, 13,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -1102,7 +1112,20 @@ fn sm2_the_lane_carries_six_sites() {
             "{venue}"
         );
     }
-    let last = ceres.orgs.last().expect("orgs");
+    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry.
+    let [.., registry, last] = ceres.orgs.as_slice() else {
+        panic!("orgs");
+    };
+    assert_eq!(
+        (
+            registry.id.as_str(),
+            registry.name.as_str(),
+            registry.capital_major,
+            registry.faction.as_str()
+        ),
+        ("freeport_registry", "Freeport Registry", 50_000, "freeport"),
+        "appended last at v9, before SM.10's Syndicate"
+    );
     assert_eq!(
         (
             last.id.as_str(),
@@ -1110,8 +1133,8 @@ fn sm2_the_lane_carries_six_sites() {
             last.capital_major,
             last.faction.as_str()
         ),
-        ("freeport_registry", "Freeport Registry", 50_000, "freeport"),
-        "appended last"
+        ("pallas_syndicate", "Pallas Syndicate", 50_000, "syndicate"),
+        "appended last at v12"
     );
     let Some(PackEntry::Location(freeport)) = pack.entry(&cid("ceres_freeport")) else {
         panic!("the Freeport");
@@ -1669,7 +1692,7 @@ fn sm2_the_lane_tables_are_section_3_2s() {
     // A restart (reviewer T2): the lane is latched and never re-applied, so the boot pass
     // (lib.rs, after the key) is the only installer — the tables stand and the survey reads.
     let folded = mush_testkit::fold_module_ops(tw.take_module_ops());
-    let mut rebooted = boot_keyed(Some(GeologyBoot::Key(secret(KEY_1))), folded, true);
+    let mut rebooted = reboot_keyed(tw, Some(GeologyBoot::Key(secret(KEY_1))), folded, true);
     assert_eq!(
         installed_bodies(rebooted.world()),
         vec![cid("ceres"), cid("vesta")],
@@ -1821,8 +1844,12 @@ fn sm2_each_site_lays_up_sixteen_places_and_a_clerk() {
             (line.state, line.text.as_str()),
             (
                 LineState::Ready,
-                format!("{entry} site: 16 block places, the site clerk and the spoil laid up.")
-                    .as_str()
+                // Doc 20 cut SM.6 (D2, D3): the block vaults counted; the layer is dark here.
+                format!(
+                    "{entry} site: 16 block places, the site clerk, the spoil and 16 block \
+                     vaults laid up; no deposits while the geology layer is dark."
+                )
+                .as_str()
             )
         );
         assert!(report.sites.contains(&cid(entry)), "{entry}");
@@ -1875,7 +1902,9 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 15 of 16 block places, the site clerk and the spoil laid up."
+            // Doc 20 cut SM.6 (D3): a block's vault counts only with its place live.
+            "kerwan_port site: 15 of 16 block places, the site clerk, the spoil and 15 of 16 \
+             block vaults laid up."
         )
     );
     assert!(!report.is_ready(), "the summary counts it");
@@ -1904,7 +1933,8 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 16 of 16 block places, no site clerk and the spoil laid up."
+            "kerwan_port site: 16 of 16 block places, no site clerk, the spoil and 16 of 16 \
+             block vaults laid up."
         )
     );
     assert!(tacsim::port::enrol_gate(&report).is_ok());
@@ -2931,7 +2961,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 24 create, 10 update, 0 retire, 26 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 24 create, 11 update, 0 retire, 25 unchanged"
         )),
         "{plan}"
     );
@@ -2942,7 +2972,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 10 updated, 0 retired, 26 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -2959,11 +2989,12 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     no_refused_writes(&rig.tw);
 }
 
-/// **The apply installs the lane's tables** (reviewer T2; the `PortApplier`'s part (g)): a
-/// world seeded on lane v8 alone boots with no body table (v8 authors none, and its store
-/// loads no other version for the boot pass to read); applying v9 off the shelf lays the sites
-/// up and installs Ceres's and Vesta's tables before any reboot — from the applied pack
-/// itself, since the store does not load v9 (part (g)'s decode, the builder's decision 3).
+/// **The apply installs the lane's tables** (reviewer T2; since doc 20 cut SM.5 the definition
+/// applier's, not the `PortApplier`'s part (g)): a world seeded on lane v8 alone boots with no
+/// body table (v8 authors none, and its store loads no other version for the boot pass to
+/// read); applying the shipped lane off the shelf lays the sites up and installs Ceres's and
+/// Vesta's tables before any reboot — from the applied pack itself, as the body applier
+/// creates or updates each `body` entry (`surface::body_geology_of`).
 #[test]
 fn sm2_the_apply_installs_the_lane_tables() {
     let roster = Roster {
@@ -2985,13 +3016,58 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 10 updated, 0 retired, 26 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );
     assert_eq!(
         installed_bodies(rig.tw.world()),
         vec![cid("ceres"), cid("vesta")],
-        "part (g) installs them at the apply"
+        "the body applier installs them at the apply"
     );
+}
+
+/// **Doc 20 cut SM.5 (lead ruling 9; SM.2's residual): a body table edit installs at
+/// apply.** A lane one version past the shipped one that edits only Ceres's geology table
+/// (one province weight moved, still summing to 1,000) and touches no port, planned and
+/// applied through `@atlas/pack`, leaves the edited table installed for Ceres with no reboot:
+/// the definition applier installs a body's table wherever its entry is applied.
+#[test]
+fn sm5_a_body_table_edit_installs_at_apply() {
+    let edit = |doc: &mut Value| {
+        doc["entries"]["ceres"]["def"]["geology"]["province"]["metals"] =
+            serde_json::json!({ "lean": 550, "fair": 450 });
+    };
+    let variant = lane_variant(LANE_VERSION + 1, edit);
+    let edited =
+        tacsim::surface::lane_geologies(&load_pack(&variant).expect("the variant verifies"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|body| body.body == cid("ceres"))
+            .expect("Ceres's edited table builds");
+    let roster = Roster {
+        shelf: Some(vec![
+            mush_content::load_pack(&variant).expect("the variant loads"),
+        ]),
+        ..Roster::default()
+    };
+    let mut rig = boot(roster);
+    let shipped = tacsim::surface::body_geology(rig.tw.world(), &cid("ceres"))
+        .expect("the boot installs Ceres's table");
+    assert_ne!(*shipped, edited, "the variant moves the table");
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired,",
+            LANE_VERSION + 1
+        )),
+        "{plan}\n{apply}"
+    );
+    let installed =
+        tacsim::surface::body_geology(rig.tw.world(), &cid("ceres")).expect("Ceres's table");
+    assert_eq!(
+        *installed, edited,
+        "installed at the apply, before any reboot"
+    );
+    no_refused_writes(&rig.tw);
 }

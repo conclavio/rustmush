@@ -1199,6 +1199,18 @@ Historical landed amendments follow unchanged.
   disjoint key ownership and resume from the snapshot are built (16b cut AF, the AF.1 to AF.3 entries
   above; the ledger tail is abandoned behind a marker rather than replayed, 16c Q40 amended); the 10 km
   arena remains. AI takeover of dropped human slots is already built (N.1 and Q.7).
+- **§5 (the cockpit's surfaces)**: as built (doc 21 cut G.1a, 2026-10-22; the pixel spike of
+  2026-10-21 promoted): the cockpit has a fourth surface beside line mode, the TUI's screen 0 and the
+  web's cockpit tab — the **picture**, `Ctrl-G` in `@tui` on a terminal whose probe answered the kitty
+  graphics protocol (doc 21 §4.1). It is a first-person raycast of `arena.map` from the frame's own
+  `x_cm`, `y_cm` and `heading_mdeg`, the frame's contacts drawn as billboards where the pilot's scope
+  plots them (red hostile, blue friendly, khaki unclassified, brown `reads_dead`), with the instruments
+  drawn into the picture: a minimap with the named spots, heat, the weapons with their cycles, the
+  armour doll, a status strip. It reads those two feeds and nothing else, rendered in the gateway half
+  per connection (D-21-1), so §5's rule holds for pixels: a unit the pilot's scope does not hold is not
+  drawn. Its own turn keys move a look, not the tank, and the line over the picture prints the look
+  against the sim's heading until doc 21 G.4 makes a turn a helm order. No feed, frame or version moved;
+  `help cockpit` gains "The picture".
 
 ---
 

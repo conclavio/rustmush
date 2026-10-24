@@ -57,6 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_ansi::AnsiTheme;
+use mush_pixel::caps::{Encoder, EncoderChoice};
 use mush_proto::{ClientCaps, InputMode, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
 use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
@@ -66,7 +67,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
-use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, SshHooks};
+use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, PixelEvent, SshHooks};
 use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
@@ -108,6 +109,12 @@ const HISTORY_DEFAULT: u32 = 20;
 /// against [`WRITE_TIMEOUT`] and is rendered under the connection lock.
 const HISTORY_MAX: u32 = 100;
 const HISTORY_USAGE: &str = "Usage: @history [<1-100>] [more]";
+
+/// Doc 21 cut G.10: `@sounds`' usage line.
+const SOUNDS_USAGE: &str = "Usage: @sounds [on|off]";
+
+/// Doc 21 cut G.2: `@pixel/encoder`'s usage line.
+const PIXEL_ENCODER_USAGE: &str = "Usage: @pixel/encoder [auto|kitty|sixel|off]";
 
 const WELCOME_HELP: &str = "\
   connect <account> <password>   connect to an existing account\n\
@@ -297,12 +304,16 @@ impl russh::server::Server for Ingress {
                 manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
                 history: HistoryCursor::default(),
+                pixel_choice: EncoderChoice::Auto,
+                sounds_on: true,
             })),
             route: Route::PreAuth,
             auth_method: AuthMethod::None,
             exec_input: None,
             exec_submitted: false,
             channel: None,
+            sftp: None,
+            sftp_started: false,
             pty_seen: false,
             shell_started: false,
             connected: Arc::new(AtomicBool::new(false)),
@@ -391,6 +402,13 @@ struct Shared {
     repaint: Arc<Notify>,
     /// Where line mode's `@history` has read back to (interface plan I12).
     history: HistoryCursor,
+    /// `@pixel/encoder` for this connection (doc 21 cut G.2; Q-21-2 asks
+    /// for it per account, which waits on a per-account store). Kept here,
+    /// not in the TUI, so it survives `@notui` and applies at the next `@tui`.
+    pixel_choice: EncoderChoice,
+    /// `@sounds on|off` for this connection (doc 21 cut G.10), kept here for
+    /// the same reason.
+    sounds_on: bool,
 }
 
 /// Per-connection `@history` paging state. The resume ring is per-session;
@@ -445,6 +463,13 @@ struct ConnHandler {
     channel: Option<ChannelId>,
     pty_seen: bool,
     shell_started: bool,
+    /// **The asset pack's channel** (doc 21 cut G.11): a second session
+    /// channel, opened by a client in game, held until it asks for the
+    /// `sftp` subsystem — the one thing it may ask for.
+    sftp: Option<Channel<Msg>>,
+    /// The pack's `sftp` session has started on this connection (one a
+    /// connection).
+    sftp_started: bool,
     /// Set just before `connect_character` is attempted (cleared again on
     /// refusal); gates the `disconnected` hook (fired exactly once, from
     /// `Drop`). Armed *before* the await so a handler future dropped
@@ -496,6 +521,106 @@ fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+/// What `@pixel/stats` says outside `@tui`, where no picture is drawn.
+const PIXEL_STATS_OUTSIDE_TUI: &str =
+    "The picture is drawn inside @tui (Ctrl-G there); its numbers are told there.";
+
+/// `@pixel/stats` (doc 21 cut G.1b), read transport-side: this connection's
+/// picture in numbers. Whatever follows the verb is ignored.
+fn is_pixel_stats(line: &str) -> bool {
+    strip_verb(line.trim(), "@pixel/stats").is_some()
+}
+
+/// `@sounds [on|off]`, read transport-side (doc 21 cut G.10): the cockpit's
+/// sounds for this connection. `Some(None)` is the bare verb (say what is
+/// set), `Some(Some(on))` a setting; anything else after the verb is `Err`.
+fn parse_sounds(line: &str) -> Option<Result<Option<bool>, ()>> {
+    let rest = strip_verb(line.trim(), "@sounds")?;
+    let mut words = rest.split_whitespace();
+    Some(match (words.next(), words.next()) {
+        (None, _) => Ok(None),
+        (Some(word), None) if word.eq_ignore_ascii_case("on") => Ok(Some(true)),
+        (Some(word), None) if word.eq_ignore_ascii_case("off") => Ok(Some(false)),
+        _ => Err(()),
+    })
+}
+
+/// `@sounds`' answer: on or off, and — inside `@tui`, where the probe ran —
+/// whether the terminal hears them by name (w11term) or as its bell.
+fn sounds_reply(on: bool, report: Option<(bool, Option<String>, bool)>) -> String {
+    let set = if on {
+        "Sounds are on for this connection."
+    } else {
+        "Sounds are off for this connection."
+    };
+    let then = match report {
+        Some((_, Some(terminal), true)) => {
+            format!(" Your terminal ({terminal}) plays them by name.")
+        }
+        Some((_, Some(terminal), false)) => {
+            format!(" Your terminal ({terminal}) hears them as its bell.")
+        }
+        Some((_, None, _)) => " Your terminal hears them as its bell.".to_string(),
+        None => " The cockpit's sounds are played inside @tui.".to_string(),
+    };
+    format!("{set}{then}")
+}
+
+/// `@pixel/encoder [auto|kitty|sixel|off]`, read transport-side (doc 21 cut
+/// G.2): the picture's encoder for this connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PixelEncoderReq {
+    /// Bare: say what is set and what this terminal showed.
+    Show,
+    /// Set it.
+    Set(EncoderChoice),
+    /// Anything else after the verb.
+    Usage,
+}
+
+/// Read `@pixel/encoder`; `None` for any other line.
+fn parse_pixel_encoder(line: &str) -> Option<PixelEncoderReq> {
+    let rest = strip_verb(line.trim(), "@pixel/encoder")?;
+    let mut words = rest.split_whitespace();
+    Some(match (words.next(), words.next()) {
+        (None, _) => PixelEncoderReq::Show,
+        (Some(word), None) => {
+            EncoderChoice::parse(word).map_or(PixelEncoderReq::Usage, PixelEncoderReq::Set)
+        }
+        _ => PixelEncoderReq::Usage,
+    })
+}
+
+/// `@pixel/encoder`'s answer: what is set, and — inside `@tui`, where the
+/// probe ran — what the terminal showed and what `^G` draws in.
+fn pixel_encoder_reply(
+    req: PixelEncoderReq,
+    choice: EncoderChoice,
+    report: Option<(&str, Option<Encoder>)>,
+) -> String {
+    let set = match req {
+        PixelEncoderReq::Usage => return PIXEL_ENCODER_USAGE.to_string(),
+        PixelEncoderReq::Set(_) => {
+            format!("Picture encoder for this connection: {}.", choice.name())
+        }
+        PixelEncoderReq::Show => format!("Picture encoder: {}.", choice.name()),
+    };
+    let then = match report {
+        Some((probe, Some(encoder))) => {
+            format!(
+                " Your terminal: {probe}. Ctrl-G draws the picture in {}.",
+                encoder.name()
+            )
+        }
+        Some((probe, None)) if choice == EncoderChoice::Off => {
+            format!(" Your terminal: {probe}. Ctrl-G draws nothing until you set it back.")
+        }
+        Some((probe, None)) => format!(" Your terminal: {probe}. Ctrl-G draws nothing here."),
+        None => " Your terminal is asked what it can show when you enter @tui.".to_string(),
+    };
+    set + &then
 }
 
 /// What an `@history` line asks for (interface plan I12).
@@ -705,6 +830,21 @@ impl ConnHandler {
                 if let Some(req) = parse_history(&line) {
                     return self.history_line(session, req).await;
                 }
+                // Doc 21 cut G.2: the picture's encoder is the front end's,
+                // never the world's.
+                if let Some(req) = parse_pixel_encoder(&line) {
+                    let text = self.pixel_encoder(req);
+                    return self.write_sys(session, &text);
+                }
+                // Doc 21 cut G.10: so are its sounds.
+                if let Some(req) = parse_sounds(&line) {
+                    let text = self.sounds(req);
+                    return self.write_sys(session, &text);
+                }
+                // Doc 21 cut G.1b: the picture's numbers live in `@tui`.
+                if is_pixel_stats(&line) {
+                    return self.write_sys(session, PIXEL_STATS_OUTSIDE_TUI);
+                }
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
             }
@@ -743,8 +883,15 @@ impl ConnHandler {
             let mut sh = self.lock();
             let caps = sh.caps;
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
+            tui.set_pixel_choice(sh.pixel_choice);
+            tui.set_sounds(sh.sounds_on);
+            tui.set_pixel_config(self.hooks.pixel_config());
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
+            // Pixel cockpit spike (2026-10-21): ask the terminal whether it
+            // speaks the kitty graphics protocol; the answer comes back
+            // through the input path as marker keys.
+            out.extend_from_slice(&tui.probe_bytes());
             let queries = tui.entry_queries();
             sh.tui = Some(tui);
             sh.mode = Mode::Tui;
@@ -767,17 +914,35 @@ impl ConnHandler {
         let Some(channel) = self.channel else {
             return Ok(());
         };
+        let stop_orders: Vec<String>;
         let bytes = {
             let mut sh = self.lock();
+            // Pixel cockpit spike (2026-10-21): free the picture's image
+            // before the screen it sits on goes away.
+            let mut out = sh
+                .tui
+                .as_ref()
+                .map(|t| t.pixel_close_bytes())
+                .unwrap_or_default();
+            // Doc 21 cut G.4: a turn in progress stops where it was shown.
+            stop_orders = sh
+                .tui
+                .as_mut()
+                .map(|t| t.pixel_leave_orders())
+                .unwrap_or_default();
             sh.tui = None;
             sh.mode = Mode::InGame;
-            let mut out = TuiSession::leave_bytes().to_vec();
+            out.extend_from_slice(TuiSession::leave_bytes());
             // Repaint the line editor's prompt + in-progress buffer so the
             // resumed line client is not left on a blank line.
             sh.editor.redraw(&mut out);
             out
         };
-        session.data(channel, bytes)
+        session.data(channel, bytes)?;
+        for line in stop_orders {
+            self.hooks.line(self.conn_id, line).await;
+        }
+        Ok(())
     }
 
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
@@ -805,6 +970,36 @@ impl ConnHandler {
                 if line.trim().eq_ignore_ascii_case("@notui") {
                     return self.leave_tui(session).await;
                 }
+                // Doc 21 cut G.2: answered here, into the TUI's own
+                // scrollback, as `@history` is in line mode.
+                if let Some(req) = parse_pixel_encoder(&line) {
+                    let text = self.pixel_encoder(req);
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
+                // Doc 21 cut G.10: the sounds, answered the same way.
+                if let Some(req) = parse_sounds(&line) {
+                    let text = self.sounds(req);
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
+                // Doc 21 cut G.1b: this connection's picture in numbers.
+                if is_pixel_stats(&line) {
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        for text in tui.pixel_stats_lines() {
+                            let _ =
+                                tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                        }
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
                 self.hooks.line(self.conn_id, line).await;
             }
             return Ok(());
@@ -824,6 +1019,42 @@ impl ConnHandler {
             self.fire_repaint();
         }
         Ok(())
+    }
+
+    // ---- the picture's encoder (doc 21 cut G.2) ---------------------------
+
+    /// `@pixel/encoder`: set or show this connection's choice, applied to an
+    /// open TUI at once (a change closes the picture), and the answer's text.
+    fn pixel_encoder(&self, req: PixelEncoderReq) -> String {
+        let mut sh = self.lock();
+        if let PixelEncoderReq::Set(choice) = req {
+            sh.pixel_choice = choice;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_pixel_choice(choice);
+            }
+        }
+        let choice = sh.pixel_choice;
+        let report = sh.tui.as_mut().map(|t| t.pixel_report());
+        pixel_encoder_reply(req, choice, report)
+    }
+
+    // ---- the sounds (doc 21 cut G.10) ---------------------------------------
+
+    /// `@sounds [on|off]`: set or show this connection's sounds, applied to
+    /// an open TUI at once, and the answer's text.
+    fn sounds(&self, req: Result<Option<bool>, ()>) -> String {
+        let Ok(req) = req else {
+            return SOUNDS_USAGE.to_string();
+        };
+        let mut sh = self.lock();
+        if let Some(on) = req {
+            sh.sounds_on = on;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_sounds(on);
+            }
+        }
+        let report = sh.tui.as_ref().map(|t| t.sounds_report());
+        sounds_reply(sh.sounds_on, report)
     }
 
     // ---- line-mode scene history (interface plan I12) --------------------
@@ -1497,9 +1728,20 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel.is_some() {
-            // One session channel per connection; dropping the handle
-            // rejects the request.
-            drop(reply);
+            // One session channel per connection — and (doc 21 cut G.11)
+            // one more, for the asset pack's `sftp`, once the connection is
+            // in game and the pack is served. Dropping the handle rejects
+            // the request.
+            if self.connected.load(Ordering::SeqCst)
+                && self.sftp.is_none()
+                && !self.sftp_started
+                && crate::assets::AssetPack::shipped().is_some()
+            {
+                self.sftp = Some(channel);
+                reply.accept().await;
+            } else {
+                drop(reply);
+            }
             return Ok(());
         }
         self.channel = Some(channel.id());
@@ -1699,13 +1941,34 @@ impl Handler for ConnHandler {
         Ok(())
     }
 
+    /// **`sftp` on the asset pack's channel** (doc 21 cut G.11): the pack's
+    /// read-only tree, served from memory ([`crate::assets::AssetsSftp`]).
+    /// Any other subsystem, or `sftp` on the game's own channel, is refused.
     async fn subsystem_request(
         &mut self,
         channel: ChannelId,
-        _name: &str,
+        name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_failure(channel)?;
+        let ours = self.sftp.as_ref().is_some_and(|c| c.id() == channel);
+        let pack = crate::assets::AssetPack::shipped();
+        match (name, ours, pack) {
+            ("sftp", true, Some(pack)) if self.connected.load(Ordering::SeqCst) => {
+                if let Some(chan) = self.sftp.take() {
+                    self.sftp_started = true;
+                    session.channel_success(channel)?;
+                    tracing::info!(conn = self.conn_id, "asset pack sftp session started");
+                    russh_sftp::server::run(
+                        crate::assets::EndOnError(chan.into_stream()),
+                        crate::assets::AssetsSftp::new(pack),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                session.channel_failure(channel)?;
+            }
+            _ => session.channel_failure(channel)?,
+        }
         Ok(())
     }
 
@@ -2016,20 +2279,48 @@ fn spawn_output_pump(
         // The first interval tick fires immediately; swallow it so the timer
         // does not kick a query before the connection even enters the TUI.
         who_timer.tick().await;
+        // Pixel cockpit spike (2026-10-21): the frame clock. It ticks for
+        // every TUI connection and costs a lock and a bool when the view is
+        // closed; a spike's price, noted in its NOTES. The wait is read from
+        // the view each time round (20 Hz, or ~1 ms while `u` uncaps it for
+        // the load experiment); a deadline, not an interval, so the view can
+        // change it, and a deadline rather than a plain sleep so the render
+        // and the write do not stretch the period (an 8 ms frame on a 50 ms
+        // sleep measured 17 Hz on dev2). A tick that falls behind resyncs to
+        // now instead of bursting.
+        let mut next_frame = tokio::time::Instant::now() + crate::tui::pixel::FRAME_INTERVAL;
+        // Doc 21 cut G.1b: whether this connection's picture view is open, as
+        // the box's viewer count last heard it.
+        let mut viewing = false;
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
             Repaint,
             Tick,
+            Frame,
         }
 
         loop {
+            // A poisoned lock here only picks the idle wait; the next wake's
+            // own lock reports it.
+            let frame_wait = shared
+                .lock()
+                .map_or(crate::tui::pixel::FRAME_INTERVAL, |sh| {
+                    match (&sh.mode, sh.tui.as_ref()) {
+                        (Mode::Tui, Some(t)) if t.pixel_active() => t.pixel_interval(),
+                        _ => crate::tui::pixel::FRAME_INTERVAL,
+                    }
+                });
             let wake = tokio::select! {
                 biased;
                 ev = rx.recv() => Wake::Event(ev),
                 () = repaint.notified() => Wake::Repaint,
                 _ = who_timer.tick() => Wake::Tick,
+                () = tokio::time::sleep_until(next_frame) => Wake::Frame,
             };
+            if matches!(wake, Wake::Frame) {
+                next_frame = std::cmp::max(next_frame + frame_wait, tokio::time::Instant::now());
+            }
 
             // WHO refresh: submit a read-only query while a TUI is active
             // (design M15 D5 — never types the WHO command, never stamps
@@ -2067,8 +2358,13 @@ fn spawn_output_pump(
             }
 
             let mut done = false;
+            // Doc 21 cut G.1b: this wake's bytes carry a picture, whose write
+            // is timed for the step-down.
+            let mut picture = false;
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
-            let (bytes, invokes) = {
+            // Doc 21 cut G.4: the pixel view's helm orders, sent as typed lines.
+            let mut lines: Vec<String> = Vec::new();
+            let (bytes, invokes, now_viewing) = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 let bytes = match wake {
                     Wake::Repaint => {
@@ -2117,14 +2413,52 @@ fn spawn_output_pump(
                         }
                     }
                     Wake::Tick => Vec::new(), // handled above
+                    // The frame clock: advance the camera and take the tick's
+                    // bytes, which are NOTHING unless the picture changed.
+                    Wake::Frame => {
+                        if matches!(sh.mode, Mode::Tui) {
+                            match sh.tui.as_mut() {
+                                Some(t) if t.pixel_active() => {
+                                    t.pixel_tick();
+                                    let skipped = t.pixel_stats().slow_skips;
+                                    let bytes = t.pixel_frame();
+                                    if t.pixel_stats().slow_skips > skipped {
+                                        hooks.pixel_event(PixelEvent::SlowSkip);
+                                    }
+                                    picture = !bytes.is_empty();
+                                    lines.extend(t.pixel_take_orders());
+                                    bytes
+                                }
+                                Some(t) => {
+                                    // A view that just closed may still owe
+                                    // its stop order.
+                                    lines.extend(t.pixel_take_orders());
+                                    Vec::new()
+                                }
+                                None => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
                 };
                 let invokes = sh
                     .tui
                     .as_mut()
                     .map(|t| t.take_invokes())
                     .unwrap_or_default();
-                (bytes, invokes)
+                let now_viewing = matches!(sh.mode, Mode::Tui)
+                    && sh.tui.as_ref().is_some_and(|t| t.pixel_active());
+                (bytes, invokes, now_viewing)
             };
+            if now_viewing != viewing {
+                viewing = now_viewing;
+                hooks.pixel_event(if viewing {
+                    PixelEvent::Opened
+                } else {
+                    PixelEvent::Closed
+                });
+            }
 
             // A cursor mismatch or an unmergeable delta is never patched
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
@@ -2136,9 +2470,34 @@ fn spawn_output_pump(
             for (name, args) in queries {
                 hooks.query(conn_id, name, args).await;
             }
+            for line in lines {
+                hooks.line(conn_id, line).await;
+            }
 
             if !bytes.is_empty() {
-                match tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await {
+                let sent = bytes.len();
+                let started = std::time::Instant::now();
+                let wrote = tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await;
+                // Doc 21 cut G.1b (§3.4): a picture write that waited means the
+                // client's window is full — russh stops taking a channel's data
+                // while it cannot send it — so the view skips a frame, and
+                // steps down if it keeps happening.
+                if picture && matches!(wrote, Ok(Ok(()))) {
+                    hooks.pixel_event(PixelEvent::Sent(sent));
+                    let change = shared.lock().ok().and_then(|mut sh| {
+                        sh.tui
+                            .as_mut()
+                            .map(|t| t.pixel_write_took(started.elapsed()))
+                    });
+                    if change == Some(crate::tui::pixel::StepChange::Down) {
+                        tracing::info!(
+                            conn = conn_id,
+                            "picture stepped down: the link is not keeping up"
+                        );
+                        hooks.pixel_event(PixelEvent::SteppedDown);
+                    }
+                }
+                match wrote {
                     Ok(Ok(())) => {}
                     // Transport gone: nothing left to close.
                     Ok(Err(_)) => return,
@@ -2155,6 +2514,9 @@ fn spawn_output_pump(
             }
         }
 
+        if viewing {
+            hooks.pixel_event(PixelEvent::Closed);
+        }
         // If the connection tore down while still on the alternate screen,
         // restore it so the client is never stuck there (invariant T5).
         let was_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
@@ -2344,6 +2706,82 @@ mod tests {
         ));
     }
 
+    /// Doc 21 cut G.1b: `@pixel/stats` is read transport-side, case-folded,
+    /// whatever follows it ignored, and nothing else is it.
+    #[test]
+    fn pixel_stats_is_read_transport_side() {
+        assert!(is_pixel_stats("@pixel/stats"));
+        assert!(is_pixel_stats("  @PIXEL/Stats now "));
+        assert!(!is_pixel_stats("@pixel/statsx"));
+        assert!(!is_pixel_stats("say @pixel/stats"));
+        assert!(!is_pixel_stats("@pixel/encoder"));
+    }
+
+    /// Doc 21 cut G.2: `@pixel/encoder` is read transport-side, case-folded,
+    /// and answered from the connection's own state.
+    /// Doc 21 cut G.10: `@sounds` is read transport-side, case-folded, and
+    /// answered with what is set and how the terminal hears them.
+    #[test]
+    fn sounds_reads_and_answers() {
+        assert_eq!(parse_sounds("@sounds"), Some(Ok(None)));
+        assert_eq!(parse_sounds("  @SOUNDS Off "), Some(Ok(Some(false))));
+        assert_eq!(parse_sounds("@sounds on"), Some(Ok(Some(true))));
+        assert_eq!(parse_sounds("@sounds loud"), Some(Err(())));
+        assert_eq!(parse_sounds("@sounds on now"), Some(Err(())));
+        assert_eq!(parse_sounds("@soundsx"), None);
+        assert_eq!(parse_sounds("say @sounds"), None);
+        assert_eq!(
+            sounds_reply(true, None),
+            "Sounds are on for this connection. The cockpit's sounds are played inside @tui."
+        );
+        assert_eq!(
+            sounds_reply(true, Some((true, Some("w11term 1".into()), true))),
+            "Sounds are on for this connection. Your terminal (w11term 1) plays them by name."
+        );
+        assert_eq!(
+            sounds_reply(false, Some((false, None, false))),
+            "Sounds are off for this connection. Your terminal hears them as its bell."
+        );
+    }
+
+    #[test]
+    fn pixel_encoder_reads_and_answers() {
+        use PixelEncoderReq::{Set, Show, Usage};
+        assert_eq!(parse_pixel_encoder("@pixel/encoder"), Some(Show));
+        assert_eq!(
+            parse_pixel_encoder("  @PIXEL/ENCODER Sixel "),
+            Some(Set(EncoderChoice::Forced(Encoder::Sixel)))
+        );
+        assert_eq!(
+            parse_pixel_encoder("@pixel/encoder off"),
+            Some(Set(EncoderChoice::Off))
+        );
+        assert_eq!(parse_pixel_encoder("@pixel/encoder png"), Some(Usage));
+        assert_eq!(parse_pixel_encoder("@pixel/encoder auto now"), Some(Usage));
+        assert_eq!(parse_pixel_encoder("@pixel/encoders"), None);
+        assert_eq!(parse_pixel_encoder("say @pixel/encoder"), None);
+        assert_eq!(
+            pixel_encoder_reply(Show, EncoderChoice::Auto, None),
+            "Picture encoder: auto. Your terminal is asked what it can show when you enter @tui."
+        );
+        assert_eq!(
+            pixel_encoder_reply(
+                Set(EncoderChoice::Auto),
+                EncoderChoice::Auto,
+                Some(("sixel graphics OK", Some(Encoder::Sixel)))
+            ),
+            "Picture encoder for this connection: auto. Your terminal: sixel graphics OK. Ctrl-G draws the picture in sixel."
+        );
+        assert!(
+            pixel_encoder_reply(Show, EncoderChoice::Off, Some(("kitty graphics OK", None)))
+                .ends_with("Ctrl-G draws nothing until you set it back.")
+        );
+        assert_eq!(
+            pixel_encoder_reply(Usage, EncoderChoice::Auto, None),
+            PIXEL_ENCODER_USAGE
+        );
+    }
+
     /// A connection's shared state as a fresh line-mode session holds it.
     fn line_mode_shared() -> Shared {
         Shared {
@@ -2360,6 +2798,8 @@ mod tests {
             manifest: TuiManifest::default(),
             repaint: Arc::new(Notify::new()),
             history: HistoryCursor::default(),
+            pixel_choice: EncoderChoice::Auto,
+            sounds_on: true,
         }
     }
 

@@ -1,0 +1,577 @@
+{
+  "passed": true,
+  "boots": [
+    {
+      "story": {
+        "facts": [],
+        "front": 1,
+        "postmaster": 721,
+        "version": 1
+      },
+      "registry": {
+        "losses": {},
+        "nodes": {
+          "ceres": {
+            "coverage": [
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113
+            ],
+            "label": "Ceres relay endpoint",
+            "object": 707,
+            "operator": 23,
+            "place": 112
+          },
+          "kirkwood": {
+            "coverage": [
+              699,
+              700
+            ],
+            "label": "Kirkwood relay endpoint",
+            "object": 708,
+            "operator": 23,
+            "place": 700
+          },
+          "malapert": {
+            "coverage": [
+              202,
+              203,
+              212,
+              209,
+              213,
+              204,
+              205,
+              206,
+              207,
+              208,
+              210,
+              211,
+              686,
+              687,
+              688
+            ],
+            "label": "Malapert relay endpoint",
+            "object": 709,
+            "operator": 23,
+            "place": 688
+          },
+          "mercury": {
+            "coverage": [
+              703,
+              704
+            ],
+            "label": "Mercury relay endpoint",
+            "object": 710,
+            "operator": 23,
+            "place": 704
+          },
+          "phobos": {
+            "coverage": [
+              693,
+              694,
+              156,
+              157,
+              158,
+              159,
+              160,
+              161,
+              162,
+              163,
+              164,
+              165,
+              166,
+              167,
+              261,
+              262,
+              263,
+              264,
+              265,
+              266,
+              268,
+              269,
+              270,
+              267,
+              271
+            ],
+            "label": "Phobos relay endpoint",
+            "object": 711,
+            "operator": 23,
+            "place": 694
+          }
+        },
+        "operator": 23,
+        "pairs": {
+          "luna_ceres": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.luna",
+                "node": "malapert",
+                "object": 712,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.ceres",
+                "node": "ceres",
+                "object": 713,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_kirkwood": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.luna",
+                "node": "malapert",
+                "object": 714,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.kirkwood",
+                "node": "kirkwood",
+                "object": 715,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_mercury": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.luna",
+                "node": "malapert",
+                "object": 716,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.mercury",
+                "node": "mercury",
+                "object": 717,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_phobos": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.luna",
+                "node": "malapert",
+                "object": 718,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.phobos",
+                "node": "phobos",
+                "object": 719,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          }
+        },
+        "revision": 1,
+        "source_entry": "network",
+        "source_pack": "tacsim.relay.luna_ceres",
+        "structural_version": 1,
+        "version": 1
+      },
+      "mobile": {
+        "consent": null,
+        "fleet": 11,
+        "front": 0,
+        "hull": 626,
+        "launch": null,
+        "next_payment": null,
+        "payments": [],
+        "postmaster": 721,
+        "refit": null
+      },
+      "foundry": {
+        "facility": 720,
+        "machines": {},
+        "owner": 12,
+        "place": 202,
+        "vault": 125
+      },
+      "billing": {
+        "cursor": 0,
+        "next": 1,
+        "subscriptions": {},
+        "tariff": {
+          "period_secs": 86400,
+          "priority_minor": 10000,
+          "quote_secs": 600,
+          "sovereign_minor": 50000,
+          "standard_minor": 2500,
+          "version": 1
+        },
+        "treaties": {}
+      },
+      "pid": 1074235,
+      "database": 2,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "market": {
+        "capital_transaction": 53,
+        "legacy_before": 1,
+        "next": 1,
+        "operator": 23,
+        "payee": 24,
+        "purchases": {},
+        "tariff": {
+          "priority_minor": 500,
+          "quote_secs": 600,
+          "reservation_secs": 86400,
+          "standard_minor": 100,
+          "version": 1
+        }
+      },
+      "operatingBalance": 100000,
+      "nodes": 5,
+      "pairs": 4
+    },
+    {
+      "story": {
+        "facts": [],
+        "front": 1,
+        "postmaster": 721,
+        "version": 1
+      },
+      "registry": {
+        "losses": {},
+        "nodes": {
+          "ceres": {
+            "coverage": [
+              101,
+              102,
+              103,
+              104,
+              105,
+              106,
+              107,
+              108,
+              109,
+              110,
+              111,
+              112,
+              113
+            ],
+            "label": "Ceres relay endpoint",
+            "object": 707,
+            "operator": 23,
+            "place": 112
+          },
+          "kirkwood": {
+            "coverage": [
+              699,
+              700
+            ],
+            "label": "Kirkwood relay endpoint",
+            "object": 708,
+            "operator": 23,
+            "place": 700
+          },
+          "malapert": {
+            "coverage": [
+              202,
+              203,
+              212,
+              209,
+              213,
+              204,
+              205,
+              206,
+              207,
+              208,
+              210,
+              211,
+              686,
+              687,
+              688
+            ],
+            "label": "Malapert relay endpoint",
+            "object": 709,
+            "operator": 23,
+            "place": 688
+          },
+          "mercury": {
+            "coverage": [
+              703,
+              704
+            ],
+            "label": "Mercury relay endpoint",
+            "object": 710,
+            "operator": 23,
+            "place": 704
+          },
+          "phobos": {
+            "coverage": [
+              693,
+              694,
+              156,
+              157,
+              158,
+              159,
+              160,
+              161,
+              162,
+              163,
+              164,
+              165,
+              166,
+              167,
+              261,
+              262,
+              263,
+              264,
+              265,
+              266,
+              268,
+              269,
+              270,
+              267,
+              271
+            ],
+            "label": "Phobos relay endpoint",
+            "object": 711,
+            "operator": 23,
+            "place": 694
+          }
+        },
+        "operator": 23,
+        "pairs": {
+          "luna_ceres": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.luna",
+                "node": "malapert",
+                "object": 712,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_ceres.ceres",
+                "node": "ceres",
+                "object": 713,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_kirkwood": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.luna",
+                "node": "malapert",
+                "object": 714,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_kirkwood.kirkwood",
+                "node": "kirkwood",
+                "object": 715,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_mercury": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.luna",
+                "node": "malapert",
+                "object": 716,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_mercury.mercury",
+                "node": "mercury",
+                "object": 717,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          },
+          "luna_phobos": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.luna",
+                "node": "malapert",
+                "object": 718,
+                "powered": true,
+                "staffed": true
+              },
+              {
+                "damaged": false,
+                "destroyed": false,
+                "enabled": true,
+                "id": "luna_phobos.phobos",
+                "node": "phobos",
+                "object": 719,
+                "powered": true,
+                "staffed": true
+              }
+            ]
+          }
+        },
+        "revision": 1,
+        "source_entry": "network",
+        "source_pack": "tacsim.relay.luna_ceres",
+        "structural_version": 1,
+        "version": 1
+      },
+      "mobile": {
+        "consent": null,
+        "fleet": 11,
+        "front": 0,
+        "hull": 626,
+        "launch": null,
+        "next_payment": null,
+        "payments": [],
+        "postmaster": 721,
+        "refit": null
+      },
+      "foundry": {
+        "facility": 720,
+        "machines": {},
+        "owner": 12,
+        "place": 202,
+        "vault": 125
+      },
+      "billing": {
+        "cursor": 0,
+        "next": 1,
+        "subscriptions": {},
+        "tariff": {
+          "period_secs": 86400,
+          "priority_minor": 10000,
+          "quote_secs": 600,
+          "sovereign_minor": 50000,
+          "standard_minor": 2500,
+          "version": 1
+        },
+        "treaties": {}
+      },
+      "pid": 1075234,
+      "database": 2,
+      "policy": {
+        "aging_s": 300,
+        "burst_units": 8,
+        "bytes_per_unit": 128,
+        "deferred_min_s": 7200,
+        "short_message_bytes": 1024,
+        "standard_delay_s": 60,
+        "version": 1,
+        "window_duration_s": 3600,
+        "window_period_s": 86400,
+        "window_start_s": 0
+      },
+      "market": {
+        "capital_transaction": 53,
+        "legacy_before": 1,
+        "next": 1,
+        "operator": 23,
+        "payee": 24,
+        "purchases": {},
+        "tariff": {
+          "priority_minor": 500,
+          "quote_secs": 600,
+          "reservation_secs": 86400,
+          "standard_minor": 100,
+          "version": 1
+        }
+      },
+      "operatingBalance": 100000,
+      "nodes": 5,
+      "pairs": 4
+    }
+  ]
+}

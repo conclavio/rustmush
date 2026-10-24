@@ -650,6 +650,23 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
         page_unresolvable_clock(ctx, o, now);
         return;
     };
+    // R8b: expiry is checked by the posting owner, before calculating any due
+    // periods. A slower service timer or a restart cannot charge an expired term.
+    if o.service_terms
+        .as_ref()
+        .is_some_and(|t| t.until_ic.is_some_and(|end| ic_now >= end))
+    {
+        o.status = ObligationStatus::Cancelled;
+        o.revision = o.revision.saturating_add(1);
+        notify_both(
+            ctx,
+            &o,
+            format!("Service obligation #{id} expired; no further installments."),
+        );
+        api::put_obligation(ctx, o);
+        ctx.gate_on_durable_ack();
+        return;
+    }
     let before = o.status.clone();
     let intent = plan_sweep(&o, clock_now);
     if intent.is_empty() {

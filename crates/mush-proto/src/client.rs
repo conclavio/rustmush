@@ -75,6 +75,13 @@ pub enum Query {
     PanelSubscribe {
         /// Panel feed id, e.g. `"wod.roll"`.
         feed: SmolStr,
+        /// **A pulled feed's query parameters** (doc 20 cut SM.9; the brief's 3.8, decision
+        /// D2): an object — `site.map`'s `view`/`rig`/`family`, `body.ground`'s
+        /// `body`/`family` — forwarded as the feed query's arguments; absent is `{}`, and a
+        /// subscribe without it is byte-identical on the wire to one before the field existed.
+        /// The gateway refuses a non-object or one past its size bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
     },
 }
 
@@ -169,6 +176,22 @@ pub enum ClientCommand {
     Pong {
         /// The nonce from the server's ping.
         nonce: u64,
+    },
+    /// The web client's pixel view (doc 21 cut G.3): ask the gateway for the
+    /// first-person picture of the cockpit, change its look, or stop it.
+    /// While it is on, the gateway sends binary WebSocket messages, each one
+    /// PNG frame (640x480) drawn from this connection's own `arena.cockpit`
+    /// and `arena.map` keyframes, only when the picture changed and at most
+    /// at the picture's clock (20 a second). Handled by the web transport; it
+    /// never reaches the world.
+    Picture {
+        /// Whether the picture is wanted.
+        on: bool,
+        /// The look: the camera's offset from the tank's heading,
+        /// millidegrees. A look, not a turn: turning the tank is a
+        /// `HEADING` line like any other.
+        #[serde(default)]
+        look_mdeg: i64,
     },
     /// Declare or update this connection's capabilities. The web transport
     /// sends it on connect and again on viewport resize; SSH never sends it

@@ -1,0 +1,61 @@
+{
+  "runtimeBase": "42f610ecb83e9eec6a00051becd7e039c07cac38",
+  "runtimeTree": "7376f2c61b5bcce6b2a9b4adc73038be4a4961e4",
+  "runtimeCommittedBeforeAcceptance": false,
+  "linux": {
+    "story-tests.log": {
+      "passed": 39,
+      "failed": 0,
+      "ignored": 0
+    },
+    "contracts.log": {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ci-vocabulary.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ci-gateway.log": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "process-fault.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ci-definitions-linux.log": {
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "notes": [
+    "The prior a15a06fb4b7800ca21bd4f7e903bdb361deb3a20 tree passed 21 boot, 7 IC voyage, and 39 relay stories. Final private-operator default correction reran all 39 affected relay stories and focused local lint.",
+    "The definition census correction is test-only and was made after the runtime archive.",
+    "Normal CI will run after the accepted milestone is committed and pushed; the owner monitors the long suite."
+  ],
+  "local": {
+    "economyLibraryAndE4aE4b1": 206,
+    "propagationLibrary": 17,
+    "extensions": 89,
+    "definitionCensus": 25,
+    "definitionCensusLint": "passed",
+    "targetedChangedLibraryAndIntegrationLint": "passed",
+    "format": "passed",
+    "additionalLogsInWorkspace": "target/r8a-*.log"
+  },
+  "liveAccepted": true,
+  "live": {
+    "websocketCommands": 298,
+    "sshChecks": 8,
+    "processKills": 4,
+    "freshBoots": 2,
+    "reset": true,
+    "dev2Unchanged": true
+  }
+}

@@ -126,6 +126,7 @@ fn fixture_app() -> TuiApp {
         ]),
     });
     app.apply_event(&OutputEvent::Channel {
+        epoch: None,
         channel: "pub".into(),
         seq: 12,
         actor: ObjRef::new("#7", "Zoe"),

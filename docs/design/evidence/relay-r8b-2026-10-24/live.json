@@ -1,0 +1,1405 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T07:01:53.279Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 44 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 53,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#101",
+      "reply": "Visiting Berth Gallery #101 The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby. #431 Ninth Ledger#450 Patience Wen#469 Kirkwood Lamp#488 Long Division#507 Dry Season#526 Tally Ho Pressure Lobby <N> nnorthlobbydoors autumn night",
+      "wallMs": 51,
+      "replyBytes": 801
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#101",
+      "reply": "emit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 43
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#678=deferred",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #678=tacsim.credit",
+      "reply": "Opened account #26 (tacsim.credit).",
+      "wallMs": 52,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#679=deferred",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #679=tacsim.credit",
+      "reply": "Opened account #27 (tacsim.credit).",
+      "wallMs": 51,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=26 10000",
+      "reply": "Paid: transaction #84 posted.",
+      "wallMs": 26,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/subscribe #679=priority,26",
+      "reply": "No such represented IC principal.",
+      "wallMs": 26,
+      "replyBytes": 33
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/subscribe #678=priority,27",
+      "reply": "No usable payer account.",
+      "wallMs": 51,
+      "replyBytes": 24
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/subscribe #678=priority,26",
+      "reply": "Subscription 1 for #678: Priority, 100.00 cr per 1 IC day(s) from account 26; Quoted, obligation None, paid=false, Served, missed=0, cured=0, term end None. Quote expires IC 74168447942. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 51,
+      "replyBytes": 390
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/enroll 1",
+      "reply": "Subscription 1 for #678: Priority, 100.00 cr per 1 IC day(s) from account 26; Active, obligation Some(37), paid=false, Served, missed=0, cured=0, term end None. Quote expires IC 74168447942. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 25,
+      "replyBytes": 394
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/enroll 1",
+      "reply": "Subscription 1 for #678: Priority, 100.00 cr per 1 IC day(s) from account 26; Active, obligation Some(37), paid=false, Served, missed=0, cured=0, term end None. Quote expires IC 74168447942. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 394
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Priority; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 50,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8b-paid-priority-edcb7d/live subscription crossing",
+      "reply": "MAIL: Message 103 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 1 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 45 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 46 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4050 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 47 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4049 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 48 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4048 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 2 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 2 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 2 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 724
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Throttled.\nbilling.subscription.1 Throttled: 1 unpaid installment(s); +relay/cure 1. Other sanctions are independent.",
+      "wallMs": 51,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8b-throttled-standard-bee659/live subscription crossing",
+      "reply": "MAIL: Message 104 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 49 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4047 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 50 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4046 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 51 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4045 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 52 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4044 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 2 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 2 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 580
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\nbilling.subscription.1 Suspended: 2 unpaid installment(s); +relay/cure 1. Other sanctions are independent.",
+      "wallMs": 28,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8b-suspended-fallback-90b25d/live subscription crossing",
+      "reply": "MAIL: Message 105 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 79,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "+relay/policy luna_ceres/#678=suspended,operator.r8b,independent incident",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cure 1",
+      "reply": "Subscription 1: 200.00 cr owed for 2 missed installments from account 26. Confirm +relay/cure 1=2,0. A changed debt refuses this quote; cancellation/expiry is not reversed and other sanctions are not cleared.",
+      "wallMs": 26,
+      "replyBytes": 208
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/cure 1=2,0",
+      "reply": "No such represented subscription.",
+      "wallMs": 51,
+      "replyBytes": 33
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cure 1=2,0",
+      "reply": "Cure refused; obtain a current quote: account 26 would breach its credit policy",
+      "wallMs": 26,
+      "replyBytes": 79
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=26 30000",
+      "reply": "Paid: transaction #86 posted.",
+      "wallMs": 25,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cure 1=1,0",
+      "reply": "Cure refused; obtain a current quote: unauthorized",
+      "wallMs": 27,
+      "replyBytes": 50
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cure 1=2,0",
+      "reply": "Arrears paid; transaction 87. Incident sanctions and anathema remain independent.",
+      "wallMs": 50,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cure 1=2,0",
+      "reply": "Arrears paid; transaction 87. Incident sanctions and anathema remain independent.",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\nbilling.subscription.1 Served: 0 unpaid installment(s); +relay/cure 1. Other sanctions are independent.\noperator.r8b Suspended: independent incident (IC 74168620314).",
+      "wallMs": 50,
+      "replyBytes": 189
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@econ/history 26",
+      "reply": "tx #87 at 1792825443: other accounts, account #26 -200.00cr\n  “service obligation #37: cure 2 missed installments”\ntx #86 at 1792825443: other accounts, account #26 300.00cr\ntx #85 at 1792825349: other accounts, account #26 -100.00cr\n  “obligation #37 period 0”\ntx #84 at 1792825314: other accounts, account #26 100.00cr",
+      "wallMs": 51,
+      "replyBytes": 328
+    },
+    {
+      "actor": "God",
+      "line": "@econ/audit",
+      "reply": "  tx #68 seq 68 (2 line(s))\n  tx #69 seq 69 (0 line(s))\n  tx #70 seq 70 (0 line(s))\n  tx #71 seq 71 (0 line(s))\n  tx #72 seq 72 (0 line(s))\n  tx #73 seq 73 (0 line(s))\n  tx #74 seq 74 (0 line(s))\n  tx #75 seq 75 (0 line(s))\n  tx #76 seq 76 (2 line(s))\n  tx #77 seq 77 (2 line(s))\n  tx #78 seq 78 (2 line(s))\n  tx #79 seq 79 (2 line(s))\n  tx #80 seq 80 (2 line(s))\n  tx #81 seq 81 (2 line(s))\n  tx #82 seq 82 (2 line(s))\n  tx #83 seq 83 (2 line(s))\n  tx #84 seq 84 (2 line(s))\n  tx #85 seq 85 (2 line(s))\n  tx #86 seq 86 (2 line(s))\n  tx #87 seq 87 (2 line(s))",
+      "wallMs": 26,
+      "replyBytes": 559
+    },
+    {
+      "actor": "God",
+      "line": "+relay/policy luna_ceres/#678=served,operator.r8b,incident resolved",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 52,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Served.\nbilling.subscription.1 Served: 0 unpaid installment(s); +relay/cure 1. Other sanctions are independent.",
+      "wallMs": 26,
+      "replyBytes": 123
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Priority; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8b-cured-priority-237564/live subscription crossing",
+      "reply": "MAIL: Message 106 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 1 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 53 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4043 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 54 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4042 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 3 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 52,
+      "replyBytes": 436
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/unsubscribe 1",
+      "reply": "Subscription 1 for #678: Priority, 100.00 cr per 1 IC day(s) from account 26; Cancelled, obligation Some(37), paid=true, Served, missed=2, cured=2, term end None. Quote expires IC 74168447942. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 396
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/subscribe #679=standard,27",
+      "reply": "Subscription 2 for #679: Standard, 25.00 cr per 1 IC day(s) from account 27; Quoted, obligation None, paid=false, Served, missed=0, cured=0, term end None. Quote expires IC 74168707321. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 389
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/enroll 2",
+      "reply": "Subscription 2 for #679: Standard, 25.00 cr per 1 IC day(s) from account 27; Active, obligation Some(38), paid=false, Served, missed=0, cured=0, term end None. Quote expires IC 74168707321. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 393
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Throttled; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 26,
+      "replyBytes": 1234
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 5000",
+      "reply": "Paid: transaction #89 posted.",
+      "wallMs": 51,
+      "replyBytes": 29
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 55 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4041 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 56 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4040 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 436
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Throttled.\nbilling.subscription.2 Throttled: 1 unpaid installment(s); +relay/cure 2. Other sanctions are independent.",
+      "wallMs": 25,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/cure 2=1,0",
+      "reply": "Arrears paid; transaction 91. Incident sanctions and anathema remain independent.",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 57 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4039 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 58 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4038 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 1 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 436
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/unsubscribe 2",
+      "reply": "Subscription 2 for #679: Standard, 25.00 cr per 1 IC day(s) from account 27; Cancelled, obligation Some(38), paid=true, Throttled, missed=2, cured=1, term end None. Quote expires IC 74168707321. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 398
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/subscribe #679=standard,27",
+      "reply": "Cancel or cure this principal's existing subscription first.",
+      "wallMs": 52,
+      "replyBytes": 60
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 2500",
+      "reply": "Paid: transaction #92 posted.",
+      "wallMs": 26,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/cure 2=2,1",
+      "reply": "Arrears paid; transaction 93. Incident sanctions and anathema remain independent.",
+      "wallMs": 52,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/subscribe org:6=sovereign,7",
+      "reply": "No such represented IC principal.",
+      "wallMs": 53,
+      "replyBytes": 33
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=6 economy.account.post",
+      "reply": "Granted economy.account.post to R6carol1f8127 over org #6's scope tree (grant #18).",
+      "wallMs": 26,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=6 economy.account.view",
+      "reply": "Granted economy.account.view to R6carol1f8127 over org #6's scope tree (grant #19).",
+      "wallMs": 52,
+      "replyBytes": 83
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/subscribe org:6=sovereign,7",
+      "reply": "No treaty with at least one full billing period remaining.",
+      "wallMs": 26,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/treaty org:6=2,unauthorized",
+      "reply": "Permission denied.",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "+relay/treaty org:22=2,not a government",
+      "reply": "No recognized government authority for Sovereign service.",
+      "wallMs": 26,
+      "replyBytes": 57
+    },
+    {
+      "actor": "God",
+      "line": "+relay/treaty org:6=2,Registry public service",
+      "reply": "Treaty offered to org:6 until IC 74169052364; its authorized representative must accept quoted Sovereign subscription terms.",
+      "wallMs": 52,
+      "replyBytes": 124
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/treaty org:6",
+      "reply": "Treaty offer org:6, IC 74168879564..74169052364: Registry public service. Current",
+      "wallMs": 26,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/subscribe org:6=sovereign,7",
+      "reply": "Subscription 3 for org:6: Sovereign, 500.00 cr per 1 IC day(s) from account 7; Quoted, obligation None, paid=false, Served, missed=0, cured=0, term end Some(74169052364). Quote expires IC 74168880164. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 52,
+      "replyBytes": 404
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/enroll 3",
+      "reply": "Obligation #39 has been created (@obligation/show #39).\ninfo inbox Obligation #39 has been created (@obligation/show #39).\nSubscription 3 for org:6: Sovereign, 500.00 cr per 1 IC day(s) from account 7; Active, obligation Some(39), paid=false, Served, missed=0, cured=0, term end Some(74169052364). Quote expires IC 74168880164. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 50,
+      "replyBytes": 531
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "God",
+      "line": "@create R8bRegistryDispatch",
+      "reply": "Created: R8bRegistryDispatch(#684).",
+      "wallMs": 50,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #684=#202",
+      "reply": "Teleported.",
+      "wallMs": 51,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@asset/title #684=org:6",
+      "reply": "Title recorded (transaction #95).",
+      "wallMs": 52,
+      "replyBytes": 33
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #684=#101",
+      "reply": "emit R8bRegistryDispatch has arrived.\nTeleported.",
+      "wallMs": 50,
+      "replyBytes": 49
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #678 R6bob1b16df Pressure Lobby <PL> pllobbyin autumn night",
+      "wallMs": 51,
+      "replyBytes": 678
+    },
+    {
+      "actor": "God",
+      "line": "+order #684=R8b treaty dispatch",
+      "reply": "Queued revision 1 to R8bRegistryDispatch as envelope #410. It is not their order until it arrives.",
+      "wallMs": 25,
+      "replyBytes": 98
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 59 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4037 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 60 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4036 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 61 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4035 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 62 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4034 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/treaty org:6",
+      "reply": "Treaty offer org:6, IC 74168879564..74169052364: Registry public service. Expired",
+      "wallMs": 25,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/subscriptions",
+      "reply": "Subscription 3 for org:6: Sovereign, 500.00 cr per 1 IC day(s) from account 7; Ended, obligation Some(39), paid=true, Served, missed=0, cured=0, term end Some(74169052364). Quote expires IC 74168880164. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.\nSubscription 2 for #679: Standard, 25.00 cr per 1 IC day(s) from account 27; Cancelled, obligation Some(38), paid=true, Served, missed=2, cured=2, term end None. Quote expires IC 74168707321. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 51,
+      "replyBytes": 802
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/subscriptions",
+      "reply": "Subscription 1 for #678: Priority, 100.00 cr per 1 IC day(s) from account 26; Cancelled, obligation Some(37), paid=true, Served, missed=2, cured=2, term end None. Quote expires IC 74168447942. First collection is due at enrollment; later collections follow full IC periods. Unpaid periods remain owed after cancellation. Downtime catch-up is bounded by the economy; no charge after treaty expiry.",
+      "wallMs": 51,
+      "replyBytes": 396
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@obligation/show 39",
+      "reply": "obligation #39 — account #7 owes an account 500.00cr [cancelled]\n  every 86400 on WorldIc (next due 74168965964, catch-up 2)\n  1 settled, 0 missed, 0 forgiven; 1 period(s) closed\n  period 0 settled at 74168879593 (transaction #94)",
+      "wallMs": 52,
+      "replyBytes": 232
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "pub R8b OOC immediate",
+      "reply": "Public #678 R6bob1b16df say R8b OOC immediate",
+      "wallMs": 26,
+      "replyBytes": 45
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 63 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4033 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 855
+    }
+  ],
+  "milestones": [
+    {
+      "test": "quoted-before-enrollment",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 888664,
+      "fresh": 888847
+    },
+    {
+      "test": "enrolled-before-first-settlement",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 888847,
+      "fresh": 888882
+    },
+    {
+      "test": "settled-installment-and-transmitted-message",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 888882,
+      "fresh": 889196
+    },
+    {
+      "test": "real-priority-installment-delivery-restarts-and-rate-idempotency",
+      "subscription": {
+        "amount_minor": 10000,
+        "class": "priority",
+        "id": 1,
+        "issuer": 678,
+        "obligation": 37,
+        "observed": {
+          "cured": 0,
+          "missed": 0,
+          "paid": true,
+          "paused": false,
+          "terminal": false
+        },
+        "payer": 26,
+        "phase": "active",
+        "principal": {
+          "object": 678
+        },
+        "quote_until": 74168447942,
+        "quoted_at": 74168447342,
+        "until_ic": null
+      },
+      "obligation": {
+        "amount": 10000,
+        "cause": {
+          "Ruleset": {
+            "namespace": "relay.billing"
+          }
+        },
+        "credit_account": 25,
+        "creditor": {
+          "Organization": 22
+        },
+        "debit_account": 26,
+        "debtor": {
+          "Object": 678
+        },
+        "forgiven_total": 0,
+        "grace": {
+          "periods": 1
+        },
+        "history": [
+          {
+            "Settled": {
+              "at": 74168447376,
+              "period": 0,
+              "transaction": 85
+            }
+          }
+        ],
+        "id": 37,
+        "minted_by": null,
+        "missed_total": 0,
+        "notify_on_success": false,
+        "periods_settled": 1,
+        "revision": 2,
+        "schedule": {
+          "cadence": 86400,
+          "clock": "WorldIc",
+          "manual_now": 0,
+          "maximum_catch_up": 2,
+          "next_due": 74168533745
+        },
+        "service_terms": {
+          "cure_transaction": null,
+          "cured_misses": 0,
+          "until_ic": null
+        },
+        "settled_total": 1,
+        "status": "Active",
+        "suspensions": []
+      },
+      "payer": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 26,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 85,
+        "name": "R6bob1b16df",
+        "owner": {
+          "Object": 678
+        },
+        "posted_balance": 0,
+        "revision": 3,
+        "scope": null,
+        "status": "Active"
+      },
+      "payee": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 25,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 85,
+        "name": "Malapert Exchange/operating",
+        "owner": {
+          "Organization": 22
+        },
+        "posted_balance": 110000,
+        "revision": 3,
+        "scope": 22,
+        "status": "Active"
+      },
+      "receipt": {
+        "arrived": 74168447377,
+        "envelope": 402,
+        "issuer": 678,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74168447376,
+        "recipient": 679,
+        "reference": "mail:v1:103:679:out",
+        "ticket": {
+          "actual_ready": 74168447376,
+          "base_class": "priority",
+          "class": "priority",
+          "declared_s": 60,
+          "eligible_at": 74168447376,
+          "throttled": false,
+          "units": 1,
+          "version": 1
+        },
+        "transmitted": 74168447377
+      },
+      "total": "0"
+    },
+    {
+      "test": "suspension-uses-conventional-transit-and-notifies-principal",
+      "envelope": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74168620313,
+          "clock": {
+            "generation": 52,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 55,
+          "fallback": 101,
+          "key": "mail:v1:105:679:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 406,
+        "issued": {
+          "at": 74168620313,
+          "clock": {
+            "generation": 52,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 678,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:105:679:out",
+        "recipient": 679,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 101,
+          "flight": {
+            "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74168620313",
+            "due": {
+              "at": 74168621869,
+              "clock": {
+                "generation": 52,
+                "kind": "world_ic"
+              }
+            },
+            "seconds": 1556,
+            "started": {
+              "at": 74168620313,
+              "clock": {
+                "generation": 52,
+                "kind": "world_ic"
+              }
+            }
+          },
+          "forwardings": 0,
+          "history": [],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 101
+            }
+          ],
+          "next": 0,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 33,
+          "version": 1
+        }
+      },
+      "notices": [
+        "Relay subscription 1 for #678: Throttled; 1 unpaid installment(s), paid=true. +relay/subscriptions; +relay/cure 1. Other restrictions remain independent.",
+        "Relay subscription 1 for #678: Suspended; 2 unpaid installment(s), paid=true. +relay/subscriptions; +relay/cure 1. Other restrictions remain independent."
+      ]
+    },
+    {
+      "test": "paid-cure-with-independent-sanction",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 889196,
+      "fresh": 889906
+    },
+    {
+      "test": "missed-bills-real-cure-source-isolation-and-recovered-delivery",
+      "subscription": {
+        "amount_minor": 10000,
+        "class": "priority",
+        "id": 1,
+        "issuer": 678,
+        "obligation": 37,
+        "observed": {
+          "cured": 2,
+          "missed": 2,
+          "paid": true,
+          "paused": false,
+          "terminal": false
+        },
+        "payer": 26,
+        "phase": "cancelled",
+        "principal": {
+          "object": 678
+        },
+        "quote_until": 74168447942,
+        "quoted_at": 74168447342,
+        "until_ic": null
+      },
+      "obligation": {
+        "amount": 10000,
+        "cause": {
+          "Ruleset": {
+            "namespace": "relay.billing"
+          }
+        },
+        "credit_account": 25,
+        "creditor": {
+          "Organization": 22
+        },
+        "debit_account": 26,
+        "debtor": {
+          "Object": 678
+        },
+        "forgiven_total": 0,
+        "grace": {
+          "periods": 1
+        },
+        "history": [
+          {
+            "Settled": {
+              "at": 74168447376,
+              "period": 0,
+              "transaction": 85
+            }
+          },
+          {
+            "Missed": {
+              "at": 74168533838,
+              "period": 1
+            }
+          },
+          {
+            "Missed": {
+              "at": 74168620313,
+              "period": 2
+            }
+          },
+          {
+            "Resumed": {
+              "at": 1792825443
+            }
+          },
+          {
+            "Settled": {
+              "at": 74168706721,
+              "period": 3,
+              "transaction": 88
+            }
+          }
+        ],
+        "id": 37,
+        "minted_by": null,
+        "missed_total": 2,
+        "notify_on_success": false,
+        "periods_settled": 4,
+        "revision": 8,
+        "schedule": {
+          "cadence": 86400,
+          "clock": "WorldIc",
+          "manual_now": 0,
+          "maximum_catch_up": 2,
+          "next_due": 74168792945
+        },
+        "service_terms": {
+          "cure_transaction": 87,
+          "cured_misses": 2,
+          "until_ic": null
+        },
+        "settled_total": 2,
+        "status": "Cancelled",
+        "suspensions": []
+      },
+      "cure": 87,
+      "standardReceipt": {
+        "arrived": 74168533910,
+        "envelope": 404,
+        "issuer": 678,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74168533838,
+        "recipient": 679,
+        "reference": "mail:v1:104:679:out",
+        "ticket": {
+          "actual_ready": 74168533838,
+          "base_class": "priority",
+          "class": "standard",
+          "declared_s": 60,
+          "eligible_at": 74168533898,
+          "throttled": true,
+          "units": 1,
+          "version": 1
+        },
+        "transmitted": 74168533910
+      },
+      "recoveredReceipt": {
+        "arrived": 74168620318,
+        "envelope": 407,
+        "issuer": 678,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74168620318,
+        "recipient": 679,
+        "reference": "mail:v1:106:679:out",
+        "ticket": {
+          "actual_ready": 74168620318,
+          "base_class": "priority",
+          "class": "priority",
+          "declared_s": 60,
+          "eligible_at": 74168620318,
+          "throttled": false,
+          "units": 1,
+          "version": 1
+        },
+        "transmitted": 74168620318
+      },
+      "total": "0"
+    },
+    {
+      "test": "later-normal-payment-keeps-old-debt-and-cancelled-cure-stays-terminal",
+      "obligation": {
+        "amount": 2500,
+        "cause": {
+          "Ruleset": {
+            "namespace": "relay.billing"
+          }
+        },
+        "credit_account": 25,
+        "creditor": {
+          "Organization": 22
+        },
+        "debit_account": 27,
+        "debtor": {
+          "Object": 679
+        },
+        "forgiven_total": 0,
+        "grace": {
+          "periods": 1
+        },
+        "history": [
+          {
+            "Missed": {
+              "at": 74168706751,
+              "period": 0
+            }
+          },
+          {
+            "Settled": {
+              "at": 74168793157,
+              "period": 1,
+              "transaction": 90
+            }
+          },
+          {
+            "Missed": {
+              "at": 74168879563,
+              "period": 2
+            }
+          }
+        ],
+        "id": 38,
+        "minted_by": null,
+        "missed_total": 2,
+        "notify_on_success": false,
+        "periods_settled": 3,
+        "revision": 7,
+        "schedule": {
+          "cadence": 86400,
+          "clock": "WorldIc",
+          "manual_now": 0,
+          "maximum_catch_up": 2,
+          "next_due": 74168965921
+        },
+        "service_terms": {
+          "cure_transaction": 93,
+          "cured_misses": 2,
+          "until_ic": null
+        },
+        "settled_total": 1,
+        "status": "Cancelled",
+        "suspensions": []
+      },
+      "total": "0"
+    },
+    {
+      "test": "real-government-authority-treaty-and-inbound-titled-unit-delivery",
+      "organization": 6,
+      "subscription": {
+        "amount_minor": 50000,
+        "class": "sovereign",
+        "id": 3,
+        "issuer": 679,
+        "obligation": 39,
+        "observed": {
+          "cured": 0,
+          "missed": 0,
+          "paid": true,
+          "paused": false,
+          "terminal": false
+        },
+        "payer": 7,
+        "phase": "active",
+        "principal": {
+          "organization": 6
+        },
+        "quote_until": 74168880164,
+        "quoted_at": 74168879564,
+        "until_ic": 74169052364
+      },
+      "obligation": {
+        "amount": 50000,
+        "cause": {
+          "Ruleset": {
+            "namespace": "relay.billing"
+          }
+        },
+        "credit_account": 25,
+        "creditor": {
+          "Organization": 22
+        },
+        "debit_account": 7,
+        "debtor": {
+          "Organization": 6
+        },
+        "forgiven_total": 0,
+        "grace": {
+          "periods": 1
+        },
+        "history": [
+          {
+            "Settled": {
+              "at": 74168879593,
+              "period": 0,
+              "transaction": 94
+            }
+          }
+        ],
+        "id": 39,
+        "minted_by": null,
+        "missed_total": 0,
+        "notify_on_success": false,
+        "periods_settled": 1,
+        "revision": 2,
+        "schedule": {
+          "cadence": 86400,
+          "clock": "WorldIc",
+          "manual_now": 0,
+          "maximum_catch_up": 2,
+          "next_due": 74168965964
+        },
+        "service_terms": {
+          "cure_transaction": null,
+          "cured_misses": 0,
+          "until_ic": 74169052364
+        },
+        "settled_total": 1,
+        "status": "Active",
+        "suspensions": []
+      },
+      "receipt": {
+        "arrived": 74168958793,
+        "envelope": 410,
+        "issuer": 1,
+        "kind": "order",
+        "pair": "luna_ceres",
+        "queued": 74168879593,
+        "recipient": 684,
+        "reference": null,
+        "ticket": {
+          "actual_ready": 74168879593,
+          "base_class": "deferred",
+          "class": "deferred",
+          "declared_s": 60,
+          "eligible_at": 74168886793,
+          "throttled": false,
+          "units": 1,
+          "version": 1
+        },
+        "transmitted": 74168958793
+      },
+      "treasury": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 7,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 94,
+        "name": "Freeport Registry/root",
+        "owner": {
+          "Organization": 6
+        },
+        "posted_balance": 4950000,
+        "revision": 3,
+        "scope": 6,
+        "status": "Active"
+      }
+    },
+    {
+      "test": "sovereign-settlement-before-exclusive-expiry",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 889906,
+      "fresh": 891694
+    },
+    {
+      "test": "expired-treaty-reboot",
+      "signal": "SIGKILL",
+      "gateway": 888652,
+      "old": 891694,
+      "fresh": 892033
+    },
+    {
+      "test": "exclusive-treaty-expiry-no-rebilling-notices-and-conservation",
+      "obligation": {
+        "amount": 50000,
+        "cause": {
+          "Ruleset": {
+            "namespace": "relay.billing"
+          }
+        },
+        "credit_account": 25,
+        "creditor": {
+          "Organization": 22
+        },
+        "debit_account": 7,
+        "debtor": {
+          "Organization": 6
+        },
+        "forgiven_total": 0,
+        "grace": {
+          "periods": 1
+        },
+        "history": [
+          {
+            "Settled": {
+              "at": 74168879593,
+              "period": 0,
+              "transaction": 94
+            }
+          }
+        ],
+        "id": 39,
+        "minted_by": null,
+        "missed_total": 0,
+        "notify_on_success": false,
+        "periods_settled": 1,
+        "revision": 3,
+        "schedule": {
+          "cadence": 86400,
+          "clock": "WorldIc",
+          "manual_now": 0,
+          "maximum_catch_up": 2,
+          "next_due": 74168965964
+        },
+        "service_terms": {
+          "cure_transaction": null,
+          "cured_misses": 0,
+          "until_ic": 74169052364
+        },
+        "settled_total": 1,
+        "status": "Cancelled",
+        "suspensions": []
+      },
+      "treasury": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 7,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 94,
+        "name": "Freeport Registry/root",
+        "owner": {
+          "Organization": 6
+        },
+        "posted_balance": 4950000,
+        "revision": 3,
+        "scope": 6,
+        "status": "Active"
+      },
+      "payee": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 25,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 94,
+        "name": "Malapert Exchange/operating",
+        "owner": {
+          "Organization": 22
+        },
+        "posted_balance": 197500,
+        "revision": 9,
+        "scope": 22,
+        "status": "Active"
+      },
+      "total": "0",
+      "expectedTotal": "0"
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T07:01:53.322Z",
+      "gatewayPid": 888652,
+      "serverPid": 888664,
+      "serverSha256": "b896c9efd1c0dc4b4b5553de949ee7a137239bab5a6c3a6d52d0917bda0d7f28"
+    }
+  ],
+  "passed": true
+}

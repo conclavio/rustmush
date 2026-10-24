@@ -1,0 +1,102 @@
+{
+  "at": "2026-10-24T03:37:56.269692+00:00",
+  "target": "https://conclav.io:6790",
+  "redisPort": 6788,
+  "tlsVerification": true,
+  "sourceCommit": "5bdec3b8232aaf17127990066313a42b160d382e",
+  "sourceTree": "02307738c98dbd4a7a03566107322572f75d5a82",
+  "gatewayPid": 792231,
+  "serverPid": 792244,
+  "runtimeHashes": {
+    "server": "8408606d646a6afa55027df405aca15ec091361a6701b2f3fe4f4fe69c041971",
+    "gateway": "20b4492f4f55c4039c1a03ec9b3bb88542a81c79a904d3597fda6a5e8b46933a"
+  },
+  "runnerHashes": {
+    "relay-r7-live.mjs": "c0a5a05451da01ef0a88609d0a4a26b6df9565c9c5816d10a7e872c2ca42bcad",
+    "relay-r7-ssh.py": "f34f073d6526209457be0183304880ddc26b5d8f75d33a07bf3de880e975e9eb",
+    "relay-r7-world-fixture.py": "2f72590e33bbe677376fb9f1a8483f03f4abfb01ca0a22c12e2d79409a7cac5f",
+    "relay-r7-fresh.py": "725ebec00d9bc5ff68469994f4021d6f49b53f1106595f77aeeb187d0a8f12ac",
+    "relay-live-client.mjs": "2b9e6eeb59f04f8a1f1b9c2a56eb274fa80789c9814d7d0cd973fce9f5908ded"
+  },
+  "dev2Unchanged": true,
+  "dev2Pid": 539467,
+  "commandChecks": 39,
+  "latencyMs": {
+    "median": 51,
+    "max": 52
+  },
+  "maxReplyBytes": 856,
+  "remainingPending": 0,
+  "pendingByKind": {},
+  "worldReset": {
+    "restored": true,
+    "keys": 4806,
+    "keyDigest": "7cc9d9b421b2469637b8b2ab2b75751b310d28fc93b6be7e47a35797dfe9069f"
+  },
+  "structuralVersion": 1,
+  "activeRestrictions": [],
+  "maxSpentPerICSecond": 8,
+  "duplicatePairReceipts": 0,
+  "retainedReceipts": 34,
+  "retainedEvidence": 1,
+  "publishedFronts": {
+    "luna_ceres": 0
+  },
+  "policy": {
+    "aging_s": 300,
+    "burst_units": 8,
+    "bytes_per_unit": 128,
+    "deferred_min_s": 7200,
+    "short_message_bytes": 1024,
+    "standard_delay_s": 60,
+    "version": 1,
+    "window_duration_s": 3600,
+    "window_period_s": 86400,
+    "window_start_s": 0
+  },
+  "clock": {
+    "generation": 43,
+    "ic_anchor": 74168066749,
+    "rate": 24,
+    "real_anchor": 1792809456
+  },
+  "channelProgress": {
+    "cursor": [
+      8,
+      6
+    ],
+    "delivered": 34,
+    "expired": 2,
+    "refused": 4,
+    "visited": 1
+  },
+  "links": {
+    "luna_ceres": {
+      "capacity_units_per_ic_second": 8,
+      "class_policy": "exchange",
+      "halves": [
+        {
+          "damaged": false,
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.luna",
+          "node": "malapert",
+          "object": 666,
+          "powered": true,
+          "staffed": true
+        },
+        {
+          "damaged": false,
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.ceres",
+          "node": "ceres",
+          "object": 667,
+          "powered": true,
+          "staffed": true
+        }
+      ]
+    }
+  },
+  "command": "relay-r7-live.mjs https://conclav.io:6790 /opt/rustmush/dev1/r1-evidence/credentials.json /opt/rustmush/dev1/r7-evidence 6788"
+}

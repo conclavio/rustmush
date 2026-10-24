@@ -860,7 +860,7 @@ pub fn eligible(
         // second cycle can only be covered by a second *recorded* approved-operation
         // loss.
         if let Some(ended) = grant.ended_at()
-            && !grant.loss_covered()
+            && (!grant.loss_covered() || mush_sim::relay::cover_voided(world, applicant))
         {
             let until = ended.saturating_add(cfg.cooldown_secs);
             if now < until {
@@ -1097,6 +1097,9 @@ pub fn cooldown_until(cfg: &RecoveryConfig, grant: Option<&RecoveryGrant>) -> Op
 /// cooldown applies.
 #[must_use]
 pub fn loss_is_covered(world: &World, applicant: ObjId) -> bool {
+    if mush_sim::relay::cover_voided(world, applicant) {
+        return false;
+    }
     let Some(economy) = world.module_state::<EconomyStore>() else {
         return false;
     };

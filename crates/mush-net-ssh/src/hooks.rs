@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_proto::{ClientCaps, OutputEvent, RespondChoice};
+
+use crate::tui::pixel::PixelConfig;
 use tokio::sync::mpsc;
 
 /// One character on an account, as shown on the character-select screen.
@@ -226,4 +228,30 @@ pub trait SshHooks: Send + Sync {
     /// connection (the binary typically forwards to
     /// `SessionManager::update_caps`). Default: ignored.
     fn caps_changed(&self, _conn: u64, _caps: ClientCaps) {}
+
+    /// The terminal picture's knobs, from `[pixel]` (doc 21 cut G.1b): read
+    /// when a connection enters `@tui`. Default: the built-in defaults.
+    fn pixel_config(&self) -> PixelConfig {
+        PixelConfig::default()
+    }
+
+    /// One thing the terminal picture did, for the box's counters (doc 21
+    /// cut G.1b). Default: ignored.
+    fn pixel_event(&self, _event: PixelEvent) {}
+}
+
+/// What the terminal picture reports to the box's counters (doc 21 cut
+/// G.1b; [`SshHooks::pixel_event`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelEvent {
+    /// A view opened.
+    Opened,
+    /// A view closed (or its connection went).
+    Closed,
+    /// A picture went out, this many bytes on the wire.
+    Sent(usize),
+    /// A tick was skipped because the write before it was slow.
+    SlowSkip,
+    /// A view stepped down to the narrow frame and the low clock.
+    SteppedDown,
 }

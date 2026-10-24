@@ -30,7 +30,7 @@ use tacsim::port::{Binding, LineState, ReadinessLine};
 use tacsim::surface::geology::{
     BodyGeology, FieldGround, GeologyError, GeologyTable, GeologyTableWire, Lattice, OreFamily,
     POCKETS_PER_FIELD_SIDE, PROVINCE_COLUMNS, PROVINCE_ROWS, Word, field_ground, pocket_at,
-    province_at,
+    province_at, province_word,
 };
 use tacsim::surface::ground::{
     SITE_CACHE_CAPACITY, SiteGeologySpec, SiteGround, SiteGroundCache, SiteGroundKey,
@@ -45,7 +45,7 @@ use tacsim::surface::{GEOLOGY_PIN_KEY, GeologyBoot, GeologyDisabled, GeologyStat
 mod geology_keyed;
 use geology_keyed::{
     CERES_RADIUS_KM, CERES_TABLE, KEY_1, KEY_2, VESTA_RADIUS_KM, VESTA_TABLE, boot_keyed, mac,
-    secret,
+    reboot_keyed, secret,
 };
 
 // ---------------------------------------------------------------------------
@@ -297,6 +297,35 @@ fn sm1_the_province_words_say_what_section_3_2_says() {
         count(&vesta, OreFamily::CarbonFeedstock, &|w| w == Word::Barren),
         1_568
     );
+}
+
+/// **Doc 20 cut SM.9 (the brief's 3.1)**: `province_word` is `province_at`'s word of each
+/// family, over every province of both test tables under the fixed key (the ground chart's wash
+/// draws one family, one HMAC a province), and refuses off the chart as `province_at` does.
+#[test]
+fn sm9_province_word_is_province_at_per_family() {
+    let k = mac(KEY_1);
+    for body in [ceres(), vesta()] {
+        for c in 0..PROVINCE_COLUMNS {
+            for r in 0..PROVINCE_ROWS {
+                let whole = province_at(&k, &body, (c, r)).expect("a province");
+                for family in OreFamily::ALL {
+                    assert_eq!(
+                        province_word(&k, &body, (c, r), family),
+                        Ok(by(whole.words, family)),
+                        "{} ({c}, {r}) {family:?}",
+                        body.body
+                    );
+                }
+            }
+        }
+        for off in [(PROVINCE_COLUMNS, 0), (0, PROVINCE_ROWS)] {
+            assert_eq!(
+                province_word(&k, &body, off, OreFamily::Metals),
+                Err(GeologyError::OffLattice)
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +783,77 @@ fn sm1_the_site_cache_holds_sixteen_and_evicts_the_least_recent() {
     );
 }
 
+/// **The revision is cached beside the ground** (doc 20 cut SM.4a's pre-commit round, item 1;
+/// the SM.4a brief's K14 STOP): an input no entry was built over reads its full
+/// `site_revision`; once an entry is inserted with its capture, the same input (and spec, under
+/// the same key version) reads **the entry's** revision — inserted here under a marker no hash
+/// gives, so the hit proves the warm path neither serialises nor hashes — and the warm peek is
+/// that entry's `Arc`; another key version, another spec or a changed input reads its own full
+/// revision (a new one) and no warm hit; an entry inserted without its capture is found by its
+/// key alone.
+#[test]
+fn sm4a_the_site_cache_keeps_the_revision_beside_the_ground() {
+    let input = site_input();
+    let spec = site_spec();
+    let ground = site_ground();
+    let full = site_revision(&input, &spec).expect("a revision");
+    let mut cache = SiteGroundCache::default();
+    assert_eq!(
+        cache.revision_of(&input, &spec, 1),
+        Ok(full),
+        "not seen yet"
+    );
+    assert!(cache.peek_captured(&input, &spec, 1).is_none());
+    let marker = full ^ 0x5a5a_5a5a;
+    let key = SiteGroundKey {
+        region: input.frame.region.clone(),
+        revision: marker,
+        key_version: 1,
+    };
+    let held = cache.insert_captured(key.clone(), ground.clone(), input.clone(), spec.clone());
+    assert_eq!(
+        cache.revision_of(&input, &spec, 1),
+        Ok(marker),
+        "the unchanged input reads the cached revision, never a re-hash"
+    );
+    let hit = cache
+        .peek_captured(&input, &spec, 1)
+        .expect("the warm peek hits");
+    assert!(Arc::ptr_eq(&hit, &held));
+    assert_eq!(cache.revision_of(&input.clone(), &spec, 1), Ok(marker));
+    // Another key version or spec: not this entry.
+    assert_eq!(cache.revision_of(&input, &spec, 2), Ok(full));
+    assert!(cache.peek_captured(&input, &spec, 2).is_none());
+    let mut moved = spec.clone();
+    moved.origin.0 += 8;
+    assert_eq!(
+        cache.revision_of(&input, &moved, 1),
+        site_revision(&input, &moved)
+    );
+    assert!(cache.peek_captured(&input, &moved, 1).is_none());
+    // A changed input (the window shrunk, a region record bumped): a new revision, no hit.
+    let mut shrunk = input.clone();
+    shrunk.frame.bbox.max.x -= 1_000;
+    let mut bumped = input.clone();
+    bumped.region.revision += 1;
+    for changed in [shrunk, bumped] {
+        let new = site_revision(&changed, &spec).expect("a revision");
+        assert_ne!(new, full);
+        assert_eq!(cache.revision_of(&changed, &spec, 1), Ok(new));
+        assert!(cache.peek_captured(&changed, &spec, 1).is_none());
+    }
+    // An entry inserted without its capture: only its key finds it.
+    let mut plain = SiteGroundCache::default();
+    let plain_key = SiteGroundKey {
+        revision: full,
+        ..key
+    };
+    plain.insert(plain_key.clone(), ground);
+    assert!(plain.peek_captured(&input, &spec, 1).is_none());
+    assert_eq!(plain.revision_of(&input, &spec, 1), Ok(full));
+    assert!(plain.peek(&plain_key).is_some());
+}
+
 /// The site table refuses what is not a site: an origin off a field corner, a shift past ±3, a
 /// spec for another body, rows past either pole (the boundaries exact); and the build refuses a
 /// window that is not 256 × 256 cells of 10 m.
@@ -893,7 +993,12 @@ fn sm1_the_first_boot_pins_the_key_and_the_next_compares_it() {
 
     // A reboot over the folded store with the same key: Ready, and no second pin.
     let folded = fold_module_ops(ops);
-    let mut again = boot_keyed(Some(GeologyBoot::Key(one.clone())), folded.clone(), true);
+    let mut again = reboot_keyed(
+        tw,
+        Some(GeologyBoot::Key(one.clone())),
+        folded.clone(),
+        true,
+    );
     assert!(
         pin_writes(&again.take_module_ops()).is_empty(),
         "no rewrite"
@@ -901,7 +1006,7 @@ fn sm1_the_first_boot_pins_the_key_and_the_next_compares_it() {
     assert_eq!(geology_line(&again).state, LineState::Ready);
 
     // A third boot with another key: Flagged with the mismatch, nothing written.
-    let mut wrong = boot_keyed(Some(GeologyBoot::Key(two.clone())), folded, true);
+    let mut wrong = reboot_keyed(again, Some(GeologyBoot::Key(two.clone())), folded, true);
     assert!(
         pin_writes(&wrong.take_module_ops()).is_empty(),
         "no rewrite"
@@ -1147,7 +1252,8 @@ fn sm1_geology_answers_staff_with_the_truth_and_refuses_everyone_else() {
     let events = tw.run(pat, "@geology ceres 1200,-340");
     assert_eq!(said(&tw, &events, pat), "Permission denied.");
 
-    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]";
+    // Doc 20 cut SM.4b: the usage names the site form too.
+    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]  or  @geology <site> <pocket>|<field> [province|field|pocket]";
     for bad in ["@geology ceres 1200", "@geology ceres 1200,-340 seam"] {
         let events = tw.run(GOD, bad);
         assert_eq!(said(&tw, &events, GOD), usage, "{bad}");
@@ -1175,6 +1281,152 @@ fn sm1_geology_answers_staff_with_the_truth_and_refuses_everyone_else() {
     assert_eq!(
         said(&keyless, &events, GOD),
         "Geology is disabled: no [tacsim.geology].key_dir is configured."
+    );
+}
+
+/// Ahuna Flank's spec from the lane and the world's installed Ceres table (`knowing.rs`'s
+/// `spec_of`).
+fn ahuna_spec(tw: &TestWorld) -> (SiteGeologySpec, std::sync::Arc<BodyGeology>) {
+    use tacsim::pack::PackEntry;
+    let pack = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON).expect("the lane");
+    let def = match pack.entry(&cid("ahuna_port")) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        other => panic!("ahuna_port is a port entry: {other:?}"),
+    };
+    let location = match pack.entry(&def.location) {
+        Some(PackEntry::Location(location)) => location.clone(),
+        other => panic!("{} is a location: {other:?}", def.location),
+    };
+    let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
+        .expect("the body's table is installed");
+    let spec =
+        tacsim::port::site::geology_spec(def.site.as_ref().expect("a site"), &location, &body)
+            .expect("a spec");
+    (spec, body)
+}
+
+/// **`@geology <site> <addr>` reads a site address** (doc 20 cut SM.4b; the brief's 3.12): on a
+/// keyed world with the lane's sites, `@geology ahuna flank C117` prints the header naming the
+/// site, the address, the lattice pocket, the key, the reading rule and the block's authored
+/// shift, then the province, field and pocket lines of that lattice pocket **under the shift** —
+/// built here from `field_ground` at the site's own field with the block's shift, never from the
+/// handler's formatter. `C-NW` prints the header, the province and the field; a level word
+/// narrows; `pocket` with a field address and an unknown site refuse; a non-staff actor is
+/// refused; nothing is written.
+#[test]
+fn sm4b_geology_reads_a_site_address() {
+    let mut tw = boot_keyed(Some(GeologyBoot::Key(secret(KEY_1))), HashMap::new(), true);
+    let _ = tw.take_module_ops();
+    let k = mac(KEY_1);
+    let (spec, body) = ahuna_spec(&tw);
+    // C117 is site pocket (36, 56): field (4, 7), block C (bx 2, by 3), shift index 14.
+    let (px, py) = (36_i64, 56_i64);
+    let (fx, fy) = (px / 8, py / 8);
+    let shift = spec.shifts[usize::try_from((fy / 2) * 4 + fx / 2).expect("a block")];
+    let ground = field_ground(
+        &k,
+        &body,
+        (spec.origin.0 / 8 + fx, spec.origin.1 / 8 + fy),
+        shift,
+    )
+    .expect("the field's ground");
+    let row = ground.pocket(px % 8, py % 8).expect("the pocket");
+    let lattice = (spec.origin.0 + px, spec.origin.1 + py);
+    let words = |words: [Word; 4], counts: Option<[u8; 4]>| -> String {
+        OreFamily::ALL
+            .iter()
+            .map(|family| {
+                let at = usize::from(family.code());
+                let label = family.label();
+                match counts {
+                    Some(counts) => {
+                        let n = counts[at];
+                        let noun = if n == 1 { "pocket" } else { "pockets" };
+                        format!("{label} {} ({n} {noun})", words[at].name())
+                    }
+                    None => format!("{label} {}", words[at].name()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let pocket_words = {
+        let ore: Vec<String> = OreFamily::ALL
+            .iter()
+            .filter_map(|family| {
+                let at = usize::from(family.code());
+                (row.classes[at] != Word::Barren).then(|| {
+                    format!(
+                        "{} {} {} t",
+                        family.label(),
+                        row.classes[at].name(),
+                        row.tonnes[at]
+                    )
+                })
+            })
+            .collect();
+        if ore.is_empty() {
+            "barren".to_owned()
+        } else {
+            ore.join("; ")
+        }
+    };
+    let header = format!(
+        "Geology of Ahuna Flank C117 — pocket {},{} of ceres (key v1; reading rule v1; block C \
+         shift {shift}):",
+        lattice.0, lattice.1
+    );
+    let province = format!(
+        "  province {},{}: {}.",
+        ground.province.province.0,
+        ground.province.province.1,
+        words(ground.province.words, None)
+    );
+    let field = format!(
+        "  field {},{}: {}.",
+        ground.field.0,
+        ground.field.1,
+        words(ground.words, Some(ground.counts))
+    );
+    let pocket = format!("  pocket {},{}: {pocket_words}.", lattice.0, lattice.1);
+    let events = tw.run(GOD, "@geology ahuna flank C117");
+    assert_eq!(
+        said(&tw, &events, GOD),
+        [
+            header.clone(),
+            province.clone(),
+            field.clone(),
+            pocket.clone()
+        ]
+        .join("\n")
+    );
+    let events = tw.run(GOD, "@geology ahuna_port c117 pocket");
+    assert_eq!(said(&tw, &events, GOD), [header, pocket].join("\n"));
+    // The field form: header, province and field.
+    let events = tw.run(GOD, "@geology Ahuna Flank C-NW");
+    let field_header = format!(
+        "Geology of Ahuna Flank C-NW — field {},{} of ceres (key v1; reading rule v1; block C \
+         shift {shift}):",
+        ground.field.0, ground.field.1
+    );
+    assert_eq!(
+        said(&tw, &events, GOD),
+        [field_header, province, field].join("\n")
+    );
+    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]  or  @geology <site> <pocket>|<field> [province|field|pocket]";
+    let events = tw.run(GOD, "@geology ahuna flank C-NW pocket");
+    assert_eq!(said(&tw, &events, GOD), usage);
+    let events = tw.run(GOD, "@geology nowhere at all C117");
+    assert_eq!(
+        said(&tw, &events, GOD),
+        "There is no mining site called nowhere at all."
+    );
+    let pat = tw.spawn_player("Pat");
+    let events = tw.run(pat, "@geology ahuna flank C117");
+    assert_eq!(said(&tw, &events, pat), "Permission denied.");
+    assert!(
+        tw.take_module_ops().iter().all(|op| op.ns != tacsim::NS),
+        "no command writes a document"
     );
 }
 
@@ -1295,4 +1547,250 @@ fn sm1_the_site_door_builds_once_and_refuses_what_it_cannot_build() {
         Some("no [tacsim.geology].key_dir is configured".to_owned())
     );
     assert_eq!(cached_sites(&keyless), 0);
+}
+
+/// **G1 — reading rule v1, pinned literally** (doc 20 cut SM.4a; the brief's lead ruling 4 and
+/// its reviewer finding F7; SM.1's residual T8). Under `KEY_1` and **the fixed test table**
+/// `CERES_TABLE` (through `ceres()`, never the lane's: a later lane version may edit Ceres's
+/// geology and must not move this pin; `sites.rs`'s `sm2_the_lane_tables_are_section_3_2s`
+/// separately pins that today's lane equals it), sixteen fields of the body's own ground (shift
+/// 0) spread over the lattice — one every 577 field columns (about one province in three across
+/// the 56-column chart) and every 120 field rows north and south alternately, so the provinces
+/// and their survey words differ — print their true words, `read_r1` from regolith (words and
+/// the pocket counts admitted), from rock and from ice; eight pockets with ore in the first
+/// eight print `read_r2`'s classes; the four words' pocket and tonne ranges and
+/// `READING_RULE_VERSION` are pinned. Since the cut's pre-commit round (item 9) the pin also
+/// holds the province level — each field's province and its `read_r0` survey words, literally —
+/// the footing's sharpness order (ice, regolith, rock) and the three classes that give one, and
+/// the R1 legs as rules over the sixteen fields: rock reads the true word exactly, ice no
+/// return, regolith two adjacent words that never exclude the truth (barren–lean and fair–rich at
+/// the edges). **A change to any of these literals is a new
+/// `READING_RULE_VERSION` (and a re-read of every chart row), never a re-bless.**
+#[test]
+fn sm4a_reading_rule_v1_is_pinned_literally() {
+    assert_eq!(READING_RULE_VERSION, 1);
+    let body = ceres();
+    let mac = mac(KEY_1);
+    let fields: [((i64, i64), &str); 16] = [
+        (
+            (0, 0),
+            "barren,rich,lean,barren; regolith barren–lean (0-4), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock barren (0-0), rich (9-16), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (577, 120),
+            "fair,lean,barren,barren; regolith lean–fair (1-8), lean–fair (1-8), barren–lean (0-4), barren–lean (0-4); rock fair (5-8), lean (1-4), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (1154, -240),
+            "barren,fair,lean,barren; regolith barren–lean (0-4), fair–rich (5-16), lean–fair (1-8), barren–lean (0-4); rock barren (0-0), fair (5-8), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (1731, 360),
+            "lean,rich,barren,barren; regolith barren–lean (0-4), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock lean (1-4), rich (9-16), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (2308, -480),
+            "lean,lean,barren,barren; regolith lean–fair (1-8), lean–fair (1-8), barren–lean (0-4), barren–lean (0-4); rock lean (1-4), lean (1-4), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (2885, 600),
+            "lean,lean,fair,barren; regolith lean–fair (1-8), lean–fair (1-8), fair–rich (5-16), barren–lean (0-4); rock lean (1-4), lean (1-4), fair (5-8), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (3462, -720),
+            "barren,lean,lean,barren; regolith barren–lean (0-4), lean–fair (1-8), lean–fair (1-8), barren–lean (0-4); rock barren (0-0), lean (1-4), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (4039, 840),
+            "barren,lean,lean,barren; regolith barren–lean (0-4), barren–lean (0-4), lean–fair (1-8), barren–lean (0-4); rock barren (0-0), lean (1-4), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (4616, -960),
+            "fair,rich,barren,barren; regolith lean–fair (1-8), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock fair (5-8), rich (9-16), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (5193, 1080),
+            "barren,fair,lean,barren; regolith barren–lean (0-4), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock barren (0-0), fair (5-8), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (5770, -1200),
+            "lean,rich,barren,barren; regolith lean–fair (1-8), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock lean (1-4), rich (9-16), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (6347, 1320),
+            "lean,lean,lean,barren; regolith lean–fair (1-8), barren–lean (0-4), barren–lean (0-4), barren–lean (0-4); rock lean (1-4), lean (1-4), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (6924, -1440),
+            "fair,lean,lean,barren; regolith fair–rich (5-16), lean–fair (1-8), barren–lean (0-4), barren–lean (0-4); rock fair (5-8), lean (1-4), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (7501, 1560),
+            "barren,fair,lean,barren; regolith barren–lean (0-4), fair–rich (5-16), barren–lean (0-4), barren–lean (0-4); rock barren (0-0), fair (5-8), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (8078, -1680),
+            "fair,fair,barren,barren; regolith lean–fair (1-8), lean–fair (1-8), barren–lean (0-4), barren–lean (0-4); rock fair (5-8), fair (5-8), barren (0-0), barren (0-0); ice no return, no return, no return, no return",
+        ),
+        (
+            (8655, 1800),
+            "lean,lean,lean,barren; regolith lean–fair (1-8), lean–fair (1-8), barren–lean (0-4), barren–lean (0-4); rock lean (1-4), lean (1-4), lean (1-4), barren (0-0); ice no return, no return, no return, no return",
+        ),
+    ];
+    for (field, pinned) in fields {
+        assert_eq!(g1_describe(&mac, &body, field), pinned, "{field:?}");
+    }
+    // The pre-commit round's item 9: every leg the literals carry, asserted as a rule too, so a
+    // quantiser edit that happened to keep these sixteen strings still fails here. Footing sets
+    // sharpness (ice 0, regolith 1, rock 2; the three classes a scan is taken from); rock reads
+    // each family's true word exactly; ice no return; regolith a band of two adjacent words that
+    // never excludes the truth, barren and rich at their own edges.
+    assert_eq!(
+        [Footing::Ice, Footing::Regolith, Footing::Rock].map(Footing::sharpness),
+        [0, 1, 2]
+    );
+    assert_eq!(
+        [
+            TerrainClass::Rock,
+            TerrainClass::Regolith,
+            TerrainClass::Ice
+        ]
+        .map(Footing::of),
+        [
+            Some(Footing::Rock),
+            Some(Footing::Regolith),
+            Some(Footing::Ice)
+        ]
+    );
+    let mut provinces = Vec::new();
+    for (field, _) in fields {
+        let ground = field_ground(&mac, &body, field, 0).expect("the field's ground");
+        let rock = read_r1(&mac, &body, &ground, Footing::Rock);
+        let regolith = read_r1(&mac, &body, &ground, Footing::Regolith);
+        let ice = read_r1(&mac, &body, &ground, Footing::Ice);
+        for (n, truth) in ground.words.into_iter().enumerate() {
+            assert_eq!(rock[n], FieldReading::Exact(truth), "{field:?} rock");
+            assert_eq!(ice[n], FieldReading::NoReturn, "{field:?} ice");
+            let FieldReading::Band(low, high) = regolith[n] else {
+                panic!("{field:?}: a regolith reading is a band: {:?}", regolith[n]);
+            };
+            assert_eq!(low.shifted(1), high, "{field:?}: two adjacent words");
+            assert!(
+                low == truth || high == truth,
+                "{field:?}: the band holds the truth"
+            );
+            match truth {
+                Word::Barren => assert_eq!((low, high), (Word::Barren, Word::Lean)),
+                Word::Rich => assert_eq!((low, high), (Word::Fair, Word::Rich)),
+                Word::Lean | Word::Fair => {}
+            }
+        }
+        // The province level (R0, the Registry's survey): the field's province and its words.
+        let province = &ground.province;
+        provinces.push(format!(
+            "{:?} {}",
+            province.province,
+            read_r0(province).map(Word::name).join(",")
+        ));
+    }
+    assert_eq!(
+        provinces,
+        vec![
+            "(0, 14) fair,rich,lean,barren",
+            "(3, 14) fair,rich,lean,barren",
+            "(7, 12) fair,rich,lean,barren",
+            "(10, 16) lean,fair,lean,barren",
+            "(14, 11) lean,fair,lean,barren",
+            "(17, 17) lean,rich,lean,barren",
+            "(21, 9) lean,fair,lean,barren",
+            "(24, 19) lean,rich,lean,barren",
+            "(28, 8) fair,rich,lean,barren",
+            "(31, 20) lean,fair,lean,barren",
+            "(35, 6) lean,rich,lean,barren",
+            "(38, 22) fair,rich,lean,barren",
+            "(42, 5) fair,fair,lean,barren",
+            "(45, 23) lean,fair,lean,barren",
+            "(49, 3) lean,fair,lean,barren",
+            "(52, 24) fair,lean,lean,barren",
+        ]
+    );
+    let pockets: [((i64, i64), [Word; 4]); 8] = [
+        (
+            (0, 1),
+            [Word::Barren, Word::Rich, Word::Barren, Word::Barren],
+        ),
+        (
+            (4617, 960),
+            [Word::Fair, Word::Barren, Word::Barren, Word::Barren],
+        ),
+        (
+            (9236, -1919),
+            [Word::Barren, Word::Barren, Word::Lean, Word::Barren],
+        ),
+        (
+            (13848, 2880),
+            [Word::Barren, Word::Fair, Word::Barren, Word::Barren],
+        ),
+        (
+            (18466, -3839),
+            [Word::Barren, Word::Rich, Word::Barren, Word::Barren],
+        ),
+        (
+            (23080, 4800),
+            [Word::Barren, Word::Rich, Word::Barren, Word::Barren],
+        ),
+        (
+            (27697, -5760),
+            [Word::Barren, Word::Lean, Word::Barren, Word::Barren],
+        ),
+        (
+            (32312, 6720),
+            [Word::Barren, Word::Fair, Word::Barren, Word::Barren],
+        ),
+    ];
+    for (pocket, pinned) in pockets {
+        let (_, row) = pocket_at(&mac, &body, pocket).expect("the pocket");
+        assert_eq!(read_r2(&row), pinned, "{pocket:?}");
+    }
+    let ranges: Vec<String> = Word::ALL
+        .iter()
+        .map(|w| {
+            let (plo, phi) = w.pocket_range();
+            let (tlo, thi) = w.tonnes_range();
+            format!("{} {plo}-{phi} pockets {tlo}-{thi} t", w.name())
+        })
+        .collect();
+    assert_eq!(
+        ranges,
+        vec![
+            "barren 0-0 pockets 0-0 t",
+            "lean 1-4 pockets 3-6 t",
+            "fair 5-8 pockets 6-12 t",
+            "rich 9-16 pockets 12-24 t",
+        ]
+    );
+}
+
+/// One field's G1 description: its true words, then `read_r1` from regolith (words and the
+/// pocket counts admitted), from rock and from ice.
+fn g1_describe(mac: &GeologyMac, body: &BodyGeology, field: (i64, i64)) -> String {
+    let ground = field_ground(mac, body, field, 0).expect("the field's ground");
+    let words = |w: [Word; 4]| w.map(Word::name).join(",");
+    let reads = |footing: Footing| {
+        read_r1(mac, body, &ground, footing)
+            .iter()
+            .map(|r| match r.pockets() {
+                Some((lo, hi)) => format!("{} ({lo}-{hi})", r.words()),
+                None => r.words(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "{}; regolith {}; rock {}; ice {}",
+        words(ground.words),
+        reads(Footing::Regolith),
+        reads(Footing::Rock),
+        reads(Footing::Ice)
+    )
 }

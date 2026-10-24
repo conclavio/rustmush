@@ -4,7 +4,6 @@
 //! All handlers work purely against the [`ComsysState`] slot and mirror
 //! every mutation to module ops — no object writes, no I/O.
 
-use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 use mush_core::commands::movement;
@@ -183,12 +182,21 @@ fn addcom_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let (mem, is_new) = {
         let st = state(ctx);
-        match st.members.entry((actor, c.id)) {
-            Entry::Occupied(mut e) => {
-                e.get_mut().alias = SmolStr::new(&alias);
-                (e.get().clone(), false)
+        match st.members.get_mut(&(actor, c.id)) {
+            Some(m) => {
+                m.alias = SmolStr::new(&alias);
+                (m.clone(), false)
             }
-            Entry::Vacant(v) => {
+            None => {
+                if c.flags.ic
+                    && st
+                        .indexed_members(c.id)
+                        .take(crate::transit::MAX_MEMBERS)
+                        .count()
+                        >= crate::transit::MAX_MEMBERS
+                {
+                    return Err(CmdError::msg("IC channel member limit reached."));
+                }
                 let m = Membership {
                     player: actor,
                     channel: c.id,
@@ -198,8 +206,9 @@ fn addcom_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     // New joiners start read-up-to-date: history before the
                     // join is never "unread".
                     last_read: c.seq,
+                    ic: None,
                 };
-                (v.insert(m).clone(), true)
+                (st.insert_member(m), true)
             }
         }
     };
@@ -251,7 +260,9 @@ fn delcom_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(actor),
         &format!("{who} has left this channel."),
     );
-    state(ctx).members.remove(&(actor, mem.channel));
+    if let Some(st) = ctx.w.module_state_mut::<ComsysState>() {
+        st.remove_member(ctx.out, actor, mem.channel);
+    }
     persist_del(ctx.out, member_key(actor, mem.channel));
     match chan_name {
         Some(n) => ctx
@@ -426,8 +437,37 @@ fn channel_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "gag" => channel_gag(ctx, true),
         "ungag" => channel_gag(ctx, false),
         "list" => channel_list(ctx),
+        "transit" => channel_transit(ctx),
         _ => unreachable!("dispatch rejects unknown switches"),
     }
+}
+
+fn channel_transit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !perm::has_role(ctx.w, ctx.actor, Role::Wizard) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    let st = ctx
+        .w
+        .module_state::<ComsysState>()
+        .ok_or_else(|| CmdError::msg("Comsys unavailable."))?;
+    let copies: usize = st
+        .ic
+        .pending
+        .iter()
+        .filter_map(|id| st.ic.messages.get(id))
+        .map(|m| m.pending.len())
+        .sum();
+    let oldest = st
+        .ic
+        .pending
+        .iter()
+        .filter_map(|id| st.ic.messages.get(id))
+        .map(|m| m.at.at)
+        .min()
+        .map_or(0, |at| ctx.w.world_ic_now().at.saturating_sub(at));
+    let p = &st.ic.progress;
+    ctx.out.info(ctx.actor,format!("IC channel transport: {} pending lines, {copies} copies; oldest {oldest} IC seconds. Last fire visited {} copies (limit {}). Delivered {}, refused {}, expired {}.",st.ic.pending.len(),p.visited,crate::transit::MAX_COPIES,p.delivered,p.refused,p.expired));
+    Ok(())
 }
 
 fn channel_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -487,10 +527,13 @@ fn channel_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         &format!("Channel destroyed by {who}."),
     );
     let removed: Vec<ObjId> = {
-        let st = state(ctx);
+        let st = ctx
+            .w
+            .module_state_mut::<ComsysState>()
+            .ok_or_else(|| CmdError::msg("Comsys unavailable."))?;
         let members: Vec<ObjId> = st.members_of(c.id).map(|m| m.player).collect();
         for &p in &members {
-            st.members.remove(&(p, c.id));
+            st.remove_member(ctx.out, p, c.id);
         }
         st.channels.remove(&c.id);
         st.rings.remove(&c.id);
@@ -502,6 +545,20 @@ fn channel_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     persist_del(ctx.out, chan_key(c.id));
     // Del is type-agnostic: this also drops the history stream.
     persist_del(ctx.out, hist_key(c.id));
+    if let Some(st) = ctx.w.module_state_mut::<ComsysState>() {
+        let ids: Vec<_> = st
+            .ic
+            .messages
+            .range((c.id, 0)..=(c.id, u64::MAX))
+            .map(|(k, _)| *k)
+            .collect();
+        for id in ids {
+            st.ic.messages.remove(&id);
+            st.ic.pending.remove(&id);
+            st.ic.references.remove(&id);
+            persist_del(ctx.out, format!("ic:msg:{}:{}", id.0.0, id.1).into());
+        }
+    }
     ctx.out
         .info(actor, format!("Channel {} destroyed.", c.name));
     Ok(())
@@ -653,7 +710,14 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "loud" => ch.flags.loud = on,
                 "no_titles" => ch.flags.no_titles = on,
                 "logged" => ch.flags.logged = on,
-                "ic" => ch.flags.ic = on,
+                "ic" => {
+                    if ch.flags.ic != on && ch.seq != 0 {
+                        return Err(CmdError::msg(
+                            "IC/OOC mode cannot change after a channel has carried traffic. Create a new channel.",
+                        ));
+                    }
+                    ch.flags.ic = on;
+                }
                 // Programme D4: the staff's declaration that this channel's
                 // lines may leave the world for the mapped Discord channel,
                 // and that linked Discord users may speak on it.
@@ -670,6 +734,30 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     };
     persist_channel(ctx.out, &updated);
+    if updated.flags.ic
+        && updated.history.cap < c.history.cap
+        && let Some(st) = ctx.w.module_state_mut::<ComsysState>()
+    {
+        for m in st.members.values_mut().filter(|m| m.channel == c.id) {
+            if let Some(k) = m.ic.as_mut() {
+                while k.received.len() > updated.history.cap as usize {
+                    if let Some(old) = k.received.pop_front() {
+                        st.ic.release(ctx.out, (c.id, old.message));
+                    }
+                }
+                persist_membership(ctx.out, m);
+            }
+        }
+    }
+    if c.flags.ic != updated.flags.ic
+        && let Some(st) = ctx.w.module_state_mut::<ComsysState>()
+    {
+        for m in st.members.values_mut().filter(|m| m.channel == c.id) {
+            m.ic = updated.flags.ic.then(crate::transit::Knowledge::default);
+            m.last_read = 0;
+            persist_membership(ctx.out, m);
+        }
+    }
     ctx.out.info(actor, note);
     Ok(())
 }
@@ -750,13 +838,14 @@ fn channel_recall(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .w
             .module_state::<ComsysState>()
             .ok_or_else(|| CmdError::msg("Comsys is not loaded."))?;
-        st.rings.get(&mem.channel).map_or_else(Vec::new, |ring| {
+        let ring = crate::transit::history(st, &mem);
+        {
             let skip = ring.len().saturating_sub(n);
             ring.iter()
                 .skip(skip)
                 .map(|m| format!("[{}] {}", c.name, render_recall(m)))
                 .collect()
-        })
+        }
     };
     if lines.is_empty() {
         ctx.out
@@ -951,6 +1040,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "gag".into(),
                 "ungag".into(),
                 "list".into(),
+                "transit".into(),
             ],
             shape: ArgShape::EqPair,
             help: "@channel/<switch>  --  Channel administration and utilities.\n\
@@ -962,8 +1052,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @channel/color <channel>=<ansi name>,<#rrggbb> -- set colors.\n\
                    @channel/set <channel>=[!]loud|no_titles|logged|persist|ic|relay \
                    or =cap=<n> -- flags and history policy; `ic` marks the \
-                   channel in-character (listed apart, set as prose); `relay` \
-                   mirrors the channel to its mapped Discord channel and back \
+                   channel in-character: lines queue for physical transit; only \
+                   arrived lines appear in recall, unread and reconnect. `relay` \
+                   enables linked Discord ingress; shared mirrors are OOC only \
                    (see `help discord`).\n\
                    @channel/who <channel> -- list members.\n\
                    @channel/recall <alias>[=<n>] -- replay logged history.\n\

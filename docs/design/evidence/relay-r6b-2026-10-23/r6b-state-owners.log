@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests\state_slot_owners.rs (target\debug\deps\state_slot_owners-63fa741ada0b1e4d.exe)
+
+running 5 tests
+test paired_and_triple_access_census_every_owner_argument ... ok
+test no_baselined_site_reaches_through_the_checked_accessor ... ok
+test the_observed_census_is_empty_now_that_the_refusal_is_live ... ok
+test every_production_state_slot_has_exactly_one_owner ... ok
+test every_cross_owner_state_site_is_baselined ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+

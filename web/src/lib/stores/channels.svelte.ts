@@ -35,6 +35,8 @@ export interface ChannelMeta {
   /** In-character traffic (interface plan I7): listed apart from the OOC
    * channels and set as prose on the scene screen. */
   ic: boolean;
+  /** Opaque IC membership identity; changes on leave/rejoin. */
+  epoch: string | null;
 }
 
 /** One channel message — live `channel` envelopes and backlog entries share
@@ -79,7 +81,7 @@ function parseMsg(v: unknown): Omit<ChanMsg, "id"> | null {
     return null;
   }
   const kind = str(o.kind) ?? "say";
-  const text = Array.isArray(o.text) ? (o.text as RichText) : [];
+  const text = Array.isArray(o.text) ? (o.text as RichText) : typeof o.text === "string" ? [{ text: o.text }] : [];
   return {
     seq: num(o.seq),
     actor: { id: str(actor.id) ?? "#-1", name: str(actor.name) ?? "?" },
@@ -163,7 +165,13 @@ export class ChannelsStore {
           : {};
       const seq = num(o.seq);
       const serverRead = num(o.last_read, seq);
-      const existing = this.byName(name);
+      const epoch = str(o.epoch);
+      const old = this.byName(name);
+      const existing = old?.epoch === epoch ? old : undefined;
+      if (old && !existing) {
+        delete this.messages[this.#key(name)];
+        delete this.backlogFetched[this.#key(name)];
+      }
       next.push({
         name,
         alias: str(o.alias) ?? name,
@@ -177,6 +185,7 @@ export class ChannelsStore {
         loud: o.loud === true,
         logged: o.logged === true,
         ic: o.ic === true,
+        epoch,
       });
     }
     next.sort((a, b) => a.name.localeCompare(b.name));
@@ -200,9 +209,19 @@ export class ChannelsStore {
    * re-echoed to scrollback. `id` is assigned by the store on insert (see
    * `#nextMsgId`), not supplied by the caller.
    */
-  live(msg: Omit<ChanMsg, "id"> & { channel: string }): boolean {
+  live(msg: Omit<ChanMsg, "id"> & { channel: string; epoch?: string | null }): boolean {
     const k = this.#key(msg.channel);
     let meta = this.byName(msg.channel);
+    const epoch = msg.epoch ?? null;
+    // Live frames are ordered by the session envelope sequence. A new
+    // membership cannot share the old arrival cursor or cached backlog.
+    if (meta && meta.epoch !== epoch) {
+      delete this.messages[k];
+      delete this.backlogFetched[k];
+      meta.epoch = epoch;
+      meta.seq = 0;
+      meta.readSeq = msg.seq - 1;
+    }
     if (!meta) {
       // Joined mid-session (addcom) before the next keyframe: stub it.
       meta = {
@@ -215,7 +234,8 @@ export class ChannelsStore {
         readSeq: msg.seq - 1,
         loud: false,
         logged: false,
-        ic: false,
+        ic: epoch !== null,
+        epoch,
       };
       this.list.push(meta);
       this.list.sort((a, b) => a.name.localeCompare(b.name));
@@ -264,6 +284,7 @@ export class ChannelsStore {
       return 0;
     }
     const k = this.#key(name);
+    if ((this.byName(name)?.epoch ?? null) !== str(b.epoch)) return 0;
     const existing = this.messages[k] ?? [];
     const bySeq = new Map<number, ChanMsg>();
     for (const m of existing) {

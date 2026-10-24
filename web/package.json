@@ -6,9 +6,11 @@
   "description": "rustmush web client \u2014 Svelte 5 + Vite + TypeScript SPA, embedded into mush-net-web via rust-embed",
   "scripts": {
     "dev": "vite",
-    "build": "svelte-check --tsconfig ./tsconfig.json && vite build && node scripts/stamp-commit.mjs",
+    "wasm": "node scripts/build-wasm.mjs",
+    "build": "node scripts/build-wasm.mjs && svelte-check --tsconfig ./tsconfig.json && vite build && node scripts/stamp-commit.mjs",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "pretest": "node scripts/build-wasm.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

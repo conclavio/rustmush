@@ -58,6 +58,22 @@ pub enum NarrativeKind {
     Whisper,
 }
 
+/// **The asset pack a client may fetch** (doc 21 cut G.11, w11term's
+/// `docs/game-client-protocol.md`): the manifest's schema version, the pack's
+/// version (the one OSC 440 `pack` announces), and the fixed path of its
+/// manifest in the SSH server's read-only `sftp` tree. Metadata only: it
+/// grants no fetch of any other path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AssetPackInfo {
+    /// The manifest's schema version (1).
+    pub version: u32,
+    /// The pack's version, e.g. `"pack_da2e01a3b6e0e328"`.
+    pub pack_version: String,
+    /// The manifest's path, `"/assets/manifest.json"`.
+    pub manifest: String,
+}
+
 /// One exit as shown in a room: primary name plus aliases (`north`/`n`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1017,7 +1033,10 @@ pub enum OutputEvent {
     Channel {
         /// Channel name, e.g. `"pub"`.
         channel: SmolStr,
-        /// Per-channel message sequence number (monotonic).
+        /// Opaque IC membership identity. A new identity resets local cursors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<String>,
+        /// Member-local arrival sequence for IC; channel sequence for OOC.
         seq: u64,
         /// The speaker.
         actor: ObjRef,
@@ -1184,6 +1203,11 @@ pub enum OutputEvent {
         /// Panel feed ids the server can publish.
         #[serde(default)]
         panels: Vec<String>,
+        /// The asset pack this connection may fetch (doc 21 cut G.11), when
+        /// one is served; absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        asset_pack: Option<AssetPackInfo>,
     },
     /// Sent after attach: who and what this session is.
     SessionInfo {

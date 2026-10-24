@@ -1,0 +1,37 @@
+{
+  "manifest": {
+    "id": "tacsim.relay.manufacture",
+    "version": 1,
+    "kind": "rules_definition",
+    "requires": [],
+    "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6"
+  },
+  "entries": {
+    "private_pair": {
+      "kind": "recipe",
+      "def": {
+        "label": "Low-bandwidth entangled relay pair",
+        "inputs": [
+          {
+            "commodity": "relay_blank",
+            "units": 1
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          }
+        ],
+        "outputs": [
+          {
+            "commodity": "relay_pair",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "relay.entanglement"
+        ],
+        "work_units": 120
+      }
+    }
+  }
+}

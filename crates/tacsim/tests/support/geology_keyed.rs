@@ -147,7 +147,35 @@ pub fn boot_keyed(
     store: HashMap<SmolStr, ModuleBootData>,
     enabled: bool,
 ) -> TestWorld {
-    let (world, registry) = mush_testkit::boot_world();
+    boot_keyed_world(mush_testkit::boot_world().0, boot, store, enabled)
+}
+
+/// A kept store must be paired with its kept objects, including relay hardware.
+pub fn reboot_keyed(
+    tw: TestWorld,
+    boot: Option<GeologyBoot>,
+    store: HashMap<SmolStr, ModuleBootData>,
+    enabled: bool,
+) -> TestWorld {
+    let mut world = tw.into_engine().world;
+    let connected: Vec<_> = world
+        .iter()
+        .map(|o| o.id)
+        .filter(|id| world.is_connected(*id))
+        .collect();
+    for id in connected {
+        world.set_connected(id, false);
+    }
+    boot_keyed_world(world, boot, store, enabled)
+}
+
+fn boot_keyed_world(
+    world: mush_core::World,
+    boot: Option<GeologyBoot>,
+    store: HashMap<SmolStr, ModuleBootData>,
+    enabled: bool,
+) -> TestWorld {
+    let (_, registry) = mush_testkit::boot_world();
     let mut engine = mush_core::Engine::with_modules(
         world,
         registry,

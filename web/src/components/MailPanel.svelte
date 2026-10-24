@@ -49,7 +49,7 @@
             {#if e.status === "urgent"}<span class="urgent" title="urgent">!</span>{/if}
             {e.from.name}
           </span>
-          <span class="subject">{e.subject}</span>
+          <span class="subject">{e.subject}{#if e.delivery}<br /><small>{e.delivery}</small>{/if}</span>
           <span class="when">{fmtClock(e.sentAt)}</span>
         </button>
       {/each}
@@ -62,7 +62,7 @@
     {:else if app.mail.loaded}
       <span class="muted">no quota (staff)</span>
     {/if}
-    <span class="muted hint">Full compose: `@mail/send` in the terminal.</span>
+    <span class="muted hint">All mail travels in character. Full compose: `@mail/send`.</span>
   </div>
 </div>
 

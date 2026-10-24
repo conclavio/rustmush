@@ -1,0 +1,44 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T11:58:36.665Z",
+  "checks": [
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/100 t · 0.0/120 m³ — 100 t free and 120.0 m³ free.\nRoom on this board: structural alloy stock 100 t (mass), instrument boards, crated 47 t (packed volume), reaction mass 1800 t (mass), voyage provisions 1200 crew-days (mass and packed volume).\nPayload 5.1 t of 1920 t.\nBurn 384 t (tank 0 t; 384 t short). Flip and burn at 0.72 m/s² (50 milli-g rated, throttle 1000‰): Δv 605 km/s, peak 302 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 10 crew-days (locker 0; 10 short).\nPassage 9.6 IC days ≈ 3 min real; arrives about 12:02 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 52,
+      "replyBytes": 678
+    }
+  ],
+  "milestones": [],
+  "runs": [
+    {
+      "at": "2026-10-24T11:58:36.705Z",
+      "gatewayPid": 989919,
+      "serverPid": 993009,
+      "serverSha256": "b23b1845ded154dda7ecc3f15155e19fee1e149a766089a295e1015294680f75"
+    }
+  ],
+  "passed": true,
+  "account": {
+    "approval": null,
+    "credit": {
+      "allow_negative": false,
+      "floor": 0
+    },
+    "held_amount": 0,
+    "id": 27,
+    "instrument": "tacsim.credit",
+    "last_hold_seq": 92,
+    "last_journal_seq": 92,
+    "name": "R6bob1b16df",
+    "owner": {
+      "Object": 678
+    },
+    "posted_balance": 3819997,
+    "revision": 6,
+    "scope": null,
+    "status": "Active"
+  },
+  "note": "Read-only preflight while the real monthly programme runs; no test-state or economic writes."
+}

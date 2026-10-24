@@ -1,0 +1,1219 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T00:08:55.024Z",
+  "checks": [
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bLegacy7c2799",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bLegacy7c2799",
+              "epoch": "c2cdf2b913bdb43ea40a39f96286a2cc",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#1",
+                    "name": "God"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "legacy-already-delivered",
+                  "title": null,
+                  "ts": 1792797723000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn morning",
+      "wallMs": 26,
+      "replyBytes": 663
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#161",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 24 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4072 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 52,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 created (id 7).  Join it with: addcom <alias>=R6bRadio2d4775",
+      "wallMs": 52,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bRadio2d4775=ic",
+      "reply": "Flag ic set on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 30
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bRadio2d4775=logged",
+      "reply": "Flag logged set on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 34
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bRadio2d4775=persist",
+      "reply": "Flag persist set on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bRadio2d4775=loud",
+      "reply": "Flag loud set on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 32
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bRadio2d4775=relay",
+      "reply": "Flag relay set on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 33
+    },
+    {
+      "actor": "God",
+      "line": "delcom r6b",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 52,
+      "replyBytes": 44
+    },
+    {
+      "actor": "God",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 53,
+      "replyBytes": 46
+    },
+    {
+      "actor": "R6alice41b953",
+      "line": "delcom r6b",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 26,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6alice41b953",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "delcom r6b",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 26,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "delcom r6b",
+      "reply": "No channel is on that alias.  (See comlist.)",
+      "wallMs": 25,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 52,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 28.",
+      "wallMs": 25,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "r6b first-hidden-00c491 R6bob1b16df R6carol1f8127",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "panel_subscribe",
+        "d": {
+          "feed": "comsys",
+          "params": {}
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "keyframe",
+          "data": {
+            "channels": [
+              {
+                "alias": "pub",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": null,
+                "gagged": false,
+                "ic": false,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "Public",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "legacy",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "c2cdf2b913bdb43ea40a39f96286a2cc",
+                "gagged": false,
+                "ic": true,
+                "last_read": 1,
+                "logged": true,
+                "loud": false,
+                "name": "R6bLegacy7c2799",
+                "seq": 1,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "r6b",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "3115d91239b6480e80dbe95b50477997",
+                "gagged": false,
+                "ic": true,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "R6bRadio2d4775",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "3115d91239b6480e80dbe95b50477997",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@channel/recall r6b",
+      "reply": "No messages recorded on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 39
+    },
+    {
+      "actor": "R6carol1f8127",
+      "query": {
+        "t": "panel_subscribe",
+        "d": {
+          "feed": "comsys",
+          "params": {}
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "keyframe",
+          "data": {
+            "channels": [
+              {
+                "alias": "r6b",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "b61c79234da0599c1f1207739f06d9c7",
+                "gagged": false,
+                "ic": true,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "R6bRadio2d4775",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "b61c79234da0599c1f1207739f06d9c7",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@channel/recall r6b",
+      "reply": "No messages recorded on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 39
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "panel_subscribe",
+        "d": {
+          "feed": "comsys",
+          "params": {}
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "keyframe",
+          "data": {
+            "channels": [
+              {
+                "alias": "pub",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": null,
+                "gagged": false,
+                "ic": false,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "Public",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "legacy",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "c2cdf2b913bdb43ea40a39f96286a2cc",
+                "gagged": false,
+                "ic": true,
+                "last_read": 1,
+                "logged": true,
+                "loud": false,
+                "name": "R6bLegacy7c2799",
+                "seq": 1,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "r6b",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "3115d91239b6480e80dbe95b50477997",
+                "gagged": false,
+                "ic": true,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "R6bRadio2d4775",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "3115d91239b6480e80dbe95b50477997",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@channel/recall r6b",
+      "reply": "No messages recorded on R6bRadio2d4775.",
+      "wallMs": 52,
+      "replyBytes": 39
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: enable=true; revision 29.",
+      "wallMs": 27,
+      "replyBytes": 53
+    },
+    {
+      "actor": "God",
+      "line": "r6b second-fast",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 78,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "panel_subscribe",
+        "d": {
+          "feed": "comsys",
+          "params": {}
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "keyframe",
+          "data": {
+            "channels": [
+              {
+                "alias": "pub",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": null,
+                "gagged": false,
+                "ic": false,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "Public",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "legacy",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "c2cdf2b913bdb43ea40a39f96286a2cc",
+                "gagged": false,
+                "ic": true,
+                "last_read": 1,
+                "logged": true,
+                "loud": false,
+                "name": "R6bLegacy7c2799",
+                "seq": 1,
+                "title": null,
+                "unread": 0
+              },
+              {
+                "alias": "r6b",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "3115d91239b6480e80dbe95b50477997",
+                "gagged": false,
+                "ic": true,
+                "last_read": 1,
+                "logged": true,
+                "loud": true,
+                "name": "R6bRadio2d4775",
+                "seq": 1,
+                "title": null,
+                "unread": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "3115d91239b6480e80dbe95b50477997",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#1",
+                    "name": "God"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "second-fast",
+                  "title": null,
+                  "ts": 1792800542000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@channel/recall r6b",
+      "reply": "-- R6bRadio2d4775: last 1 message --\n[R6bRadio2d4775] God: second-fast\n-- End of recall --",
+      "wallMs": 52,
+      "replyBytes": 90
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "3115d91239b6480e80dbe95b50477997",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#1",
+                    "name": "God"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "second-fast",
+                  "title": null,
+                  "ts": 1792800542000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "query": {
+        "t": "panel_subscribe",
+        "d": {
+          "feed": "comsys",
+          "params": {}
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "keyframe",
+          "data": {
+            "channels": [
+              {
+                "alias": "r6b",
+                "color": {
+                  "ansi": "cyan",
+                  "web_hex": "#00ffff"
+                },
+                "epoch": "b61c79234da0599c1f1207739f06d9c7",
+                "gagged": false,
+                "ic": true,
+                "last_read": 0,
+                "logged": true,
+                "loud": true,
+                "name": "R6bRadio2d4775",
+                "seq": 0,
+                "title": null,
+                "unread": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "b61c79234da0599c1f1207739f06d9c7",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@channel/recall r6b",
+      "reply": "No messages recorded on R6bRadio2d4775.",
+      "wallMs": 50,
+      "replyBytes": 39
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 25 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4071 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "3115d91239b6480e80dbe95b50477997",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#1",
+                    "name": "God"
+                  },
+                  "kind": "say",
+                  "seq": 2,
+                  "text": "first-hidden-00c491 R6bob1b16df R6carol1f8127",
+                  "title": null,
+                  "ts": 1792800537000
+                },
+                {
+                  "actor": {
+                    "id": "#1",
+                    "name": "God"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "second-fast",
+                  "title": null,
+                  "ts": 1792800542000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 26 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4070 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 52,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 30.",
+      "wallMs": 52,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "r6b before-rejoin",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 52,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "delcom r6b",
+      "reply": "Channel R6bRadio2d4775 removed (alias 'r6b').",
+      "wallMs": 25,
+      "replyBytes": 45
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 51,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 27 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4069 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "16ea564edc8ef518f6a98d46af4272d3",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 28 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4068 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "r6b revoked-on-arrival",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 50,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@channel/perm R6bRadio2d4775=see=#FALSE",
+      "reply": "see lock on R6bRadio2d4775 set to: #FALSE",
+      "wallMs": 25,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 29 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4067 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 52,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@channel/perm R6bRadio2d4775=see=#TRUE",
+      "reply": "see lock on R6bRadio2d4775 set to: #TRUE",
+      "wallMs": 52,
+      "replyBytes": 40
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "16ea564edc8ef518f6a98d46af4272d3",
+              "messages": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: enable=true; revision 31.",
+      "wallMs": 51,
+      "replyBytes": 53
+    },
+    {
+      "actor": "R6alice41b953",
+      "line": "r6b from-underway-hull",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 52,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "16ea564edc8ef518f6a98d46af4272d3",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#677",
+                    "name": "R6alice41b953"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "from-underway-hull",
+                  "title": null,
+                  "ts": 1792800731000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "pub R6b OOC immediate",
+      "reply": "Public #678 R6bob1b16df say R6b OOC immediate",
+      "wallMs": 50,
+      "replyBytes": 45
+    },
+    {
+      "actor": "God",
+      "line": "@channel/transit",
+      "reply": "IC channel transport: 1 pending lines, 2 copies; oldest 120 IC seconds. Last fire visited 3 copies (limit 128). Delivered 14, refused 4, expired 0.",
+      "wallMs": 26,
+      "replyBytes": 147
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 30 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4066 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "r6b source-survives-object-loss",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 31 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4065 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6bob1b16df",
+      "query": {
+        "t": "channel_backlog",
+        "d": {
+          "channel": "R6bRadio2d4775",
+          "before_seq": null,
+          "limit": 200
+        }
+      },
+      "reply": {
+        "t": "panel",
+        "d": {
+          "feed": "comsys",
+          "kind": "delta",
+          "data": {
+            "backlog": {
+              "before_seq": null,
+              "channel": "R6bRadio2d4775",
+              "epoch": "16ea564edc8ef518f6a98d46af4272d3",
+              "messages": [
+                {
+                  "actor": {
+                    "id": "#679",
+                    "name": "R6carol1f8127"
+                  },
+                  "kind": "say",
+                  "seq": 2,
+                  "text": "source-survives-object-loss",
+                  "title": null,
+                  "ts": 1792800736000
+                },
+                {
+                  "actor": {
+                    "id": "#677",
+                    "name": "R6alice41b953"
+                  },
+                  "kind": "say",
+                  "seq": 1,
+                  "text": "from-underway-hull",
+                  "title": null,
+                  "ts": 1792800731000
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "addcom pub=Public",
+      "reply": "[Public] R6carol1f8127 has joined this channel.\nChannel Public added with alias 'pub'.",
+      "wallMs": 51,
+      "replyBytes": 86
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "addcom r6b=R6bRadio2d4775",
+      "reply": "Channel R6bRadio2d4775 added with alias 'r6b'.",
+      "wallMs": 51,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 25,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.luna",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 51,
+      "replyBytes": 46
+    }
+  ],
+  "milestones": [
+    {
+      "test": "upgrade",
+      "channel": "R6bLegacy7c2799",
+      "id": 6
+    },
+    {
+      "test": "restart-fanout",
+      "signal": "SIGKILL",
+      "gateway": 717427,
+      "old": 717440,
+      "fresh": 717497
+    },
+    {
+      "test": "overtake-and-moving-recipient",
+      "frozen": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74167001894",
+        "due": {
+          "at": 74167003319,
+          "clock": {
+            "generation": 24,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1425,
+        "started": {
+          "at": 74167001894,
+          "clock": {
+            "generation": 24,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "ship": {
+        "basis": "ship.v1:f4638c2bda41976e65a9d28d813881573c77587d598a52235c6f55e7bb788d49",
+        "due": {
+          "at": 74167001952,
+          "clock": {
+            "generation": 24,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 52,
+        "started": {
+          "at": 74167001900,
+          "clock": {
+            "generation": 24,
+            "kind": "world_ic"
+          }
+        }
+      },
+      "bob": {
+        "backlog": {
+          "before_seq": null,
+          "channel": "R6bRadio2d4775",
+          "epoch": "3115d91239b6480e80dbe95b50477997",
+          "messages": [
+            {
+              "actor": {
+                "id": "#1",
+                "name": "God"
+              },
+              "kind": "say",
+              "seq": 1,
+              "text": "second-fast",
+              "title": null,
+              "ts": 1792800542000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "test": "offline-arrival-and-uncovered",
+      "backlog": {
+        "backlog": {
+          "before_seq": null,
+          "channel": "R6bRadio2d4775",
+          "epoch": "3115d91239b6480e80dbe95b50477997",
+          "messages": [
+            {
+              "actor": {
+                "id": "#1",
+                "name": "God"
+              },
+              "kind": "say",
+              "seq": 2,
+              "text": "first-hidden-00c491 R6bob1b16df R6carol1f8127",
+              "title": null,
+              "ts": 1792800537000
+            },
+            {
+              "actor": {
+                "id": "#1",
+                "name": "God"
+              },
+              "kind": "say",
+              "seq": 1,
+              "text": "second-fast",
+              "title": null,
+              "ts": 1792800542000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "test": "leave-rejoin",
+      "oldEpoch": "3115d91239b6480e80dbe95b50477997",
+      "newEpoch": "16ea564edc8ef518f6a98d46af4272d3"
+    },
+    {
+      "test": "arrival-revocation"
+    },
+    {
+      "test": "ship-source-and-ooc",
+      "outbound": {
+        "basis": "ship.v1:43efeaec1964ccbf5006a6db8bbb22a97679731a85ce0a9d0eabde4567f8f7a5",
+        "due": {
+          "at": 74167006372,
+          "clock": {
+            "generation": 29,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 52,
+        "started": {
+          "at": 74167006320,
+          "clock": {
+            "generation": 29,
+            "kind": "world_ic"
+          }
+        }
+      }
+    },
+    {
+      "test": "source-object-loss",
+      "source": 679,
+      "controlledFault": true,
+      "restored": true
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T00:08:55.069Z",
+      "gatewayPid": 717427,
+      "serverPid": 717440,
+      "serverSha256": "d79ec40a465bce030c02c2c6923257a9e0ebf84ffb8543e8c2df0a943b853040"
+    }
+  ],
+  "channel": {
+    "id": 7,
+    "name": "R6bRadio2d4775"
+  },
+  "open": [
+    "Live Discord provider integration: dev1 has no enabled bot or configured relay mapping; real bridge controlled-provider test is recorded separately."
+  ],
+  "passed": true
+}

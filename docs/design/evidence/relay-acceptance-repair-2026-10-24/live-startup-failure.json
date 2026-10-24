@@ -1,0 +1,16 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T17:41:07.206Z",
+  "checks": [],
+  "milestones": [],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T17:41:07.244Z",
+      "gatewayPid": 1107902,
+      "serverPid": 1107913,
+      "serverSha256": "902284588df8946fe511614ca14389158da4e313444e3d80e0b0bd984b6b10ad"
+    }
+  ],
+  "failure": "TypeError: fetch failed\n    at Object.fetch (node:internal/deps/undici/undici:11360:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async auth (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:50:22)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-r9b-live.mjs:36:10"
+}

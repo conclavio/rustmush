@@ -79,12 +79,13 @@ impl QueryHandler for StateQuery {
                 "title": m.title,
                 "gagged": m.gagged,
                 "color": { "ansi": c.color.ansi, "web_hex": c.color.web_hex },
-                "seq": c.seq,
+                "seq": crate::transit::sequence(c,m),
                 "last_read": m.last_read,
-                "unread": c.seq.saturating_sub(m.last_read),
+                "unread": crate::transit::sequence(c,m).saturating_sub(m.last_read),
                 "loud": c.flags.loud,
                 "logged": c.flags.logged,
                 "ic": c.flags.ic,
+                "epoch": m.ic.as_ref().map(|k| &k.epoch),
             }));
         }
         Ok(OutputEvent::Panel {
@@ -155,7 +156,7 @@ impl QueryHandler for BacklogQuery {
             })
             .clamp(1, MAX_BACKLOG_LIMIT);
 
-        let Some((c, _m)) = Self::resolve(st, actor, spec) else {
+        let Some((c, membership)) = Self::resolve(st, actor, spec) else {
             // Membership-gated like recall: not distinguishing "no such
             // channel" from "not joined" keeps see-locked channels
             // unenumerable.
@@ -171,20 +172,22 @@ impl QueryHandler for BacklogQuery {
                 c.name
             )));
         }
-        let messages: Vec<serde_json::Value> = st.rings.get(&c.id).map_or_else(Vec::new, |ring| {
+        let ring = crate::transit::history(st, membership);
+        let messages: Vec<serde_json::Value> = {
             ring.iter()
                 .rev() // newest-first
                 .filter(|m| before_seq.is_none_or(|b| m.seq < b))
                 .take(limit as usize)
                 .map(msg_json)
                 .collect()
-        });
+        };
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static("comsys"),
             kind: PanelFrameKind::Delta,
             data: serde_json::json!({
                 "backlog": {
                     "channel": c.name,
+                    "epoch": membership.ic.as_ref().map(|k| &k.epoch),
                     "before_seq": before_seq,
                     "messages": messages,
                 }

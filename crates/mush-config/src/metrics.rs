@@ -144,6 +144,18 @@ pub struct Metrics {
     /// supervisor, so it reads false for ever).
     supervision_abandoned: AtomicBool,
 
+    // -- the terminal picture (doc 21 G.1b; the SSH TUI's ^G view) --
+    /// Pictures sent to terminals since boot.
+    pixel_frames_total: AtomicU64,
+    /// Their bytes on the wire since boot.
+    pixel_bytes_total: AtomicU64,
+    /// Frames skipped because the write before them was slow.
+    pixel_slow_skips_total: AtomicU64,
+    /// Views stepped down to the narrow frame and the low clock.
+    pixel_step_downs_total: AtomicU64,
+    /// Views open now.
+    pixel_viewers: AtomicI64,
+
     // -- world loop (published each sample) --
     loop_lag_last_ms: AtomicU64,
     loop_lag_max_ms: AtomicU64,
@@ -362,6 +374,31 @@ impl Metrics {
     #[must_use]
     pub fn supervision_abandoned(&self) -> bool {
         self.supervision_abandoned.load(Ordering::Relaxed)
+    }
+
+    // -- the terminal picture (doc 21 G.1b) --------------------------------
+
+    /// One picture sent to a terminal, `bytes` on the wire.
+    pub fn pixel_frame_sent(&self, bytes: usize) {
+        self.pixel_frames_total.fetch_add(1, Ordering::Relaxed);
+        self.pixel_bytes_total
+            .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    /// One picture skipped because the write before it was slow.
+    pub fn pixel_slow_skip(&self) {
+        self.pixel_slow_skips_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One view stepped down to the narrow frame and the low clock.
+    pub fn pixel_stepped_down(&self) {
+        self.pixel_step_downs_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A picture view opened (`true`) or closed (`false`).
+    pub fn pixel_view(&self, open: bool) {
+        self.pixel_viewers
+            .fetch_add(if open { 1 } else { -1 }, Ordering::Relaxed);
     }
 
     // -- world-loop sampling ----------------------------------------------
@@ -760,6 +797,11 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
             supervision_abandoned: self.supervision_abandoned.load(Ordering::Relaxed),
+            pixel_frames_total: self.pixel_frames_total.load(Ordering::Relaxed),
+            pixel_bytes_total: self.pixel_bytes_total.load(Ordering::Relaxed),
+            pixel_slow_skips_total: self.pixel_slow_skips_total.load(Ordering::Relaxed),
+            pixel_step_downs_total: self.pixel_step_downs_total.load(Ordering::Relaxed),
+            pixel_viewers: self.pixel_viewers.load(Ordering::Relaxed),
             loop_lag_last_ms: self.loop_lag_last_ms.load(Ordering::Relaxed),
             loop_lag_max_ms: self.loop_lag_max_ms.load(Ordering::Relaxed),
             lag_buckets: std::array::from_fn(|i| self.lag_buckets[i].load(Ordering::Relaxed)),
@@ -955,6 +997,16 @@ pub struct MetricsSnapshot {
     /// Whether the gateway supervisor has given up on the server half — see
     /// [`Metrics::abandon_supervision`].
     pub supervision_abandoned: bool,
+    /// Pictures sent to terminals since boot (doc 21 G.1b).
+    pub pixel_frames_total: u64,
+    /// Their bytes on the wire since boot.
+    pub pixel_bytes_total: u64,
+    /// Pictures skipped behind a slow write since boot.
+    pub pixel_slow_skips_total: u64,
+    /// Views stepped down since boot.
+    pub pixel_step_downs_total: u64,
+    /// Picture views open now.
+    pub pixel_viewers: i64,
     /// Most recent loop lag, ms.
     pub loop_lag_last_ms: u64,
     /// Worst loop lag since boot, ms.
@@ -1219,6 +1271,43 @@ impl MetricsSnapshot {
             "gauge",
             "1 when the gateway supervisor gave up on the server half: players are connected, every input is refused, and no restart is coming.",
             &[(&[], f64::from(u8::from(self.supervision_abandoned)))],
+        );
+
+        // The terminal picture (doc 21 G.1b).
+        metric(
+            &mut o,
+            "mush_pixel_viewers",
+            "gauge",
+            "Terminal picture views open now.",
+            &[(&[], self.pixel_viewers as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_pixel_frames_total",
+            "counter",
+            "Terminal pictures sent since boot.",
+            &[(&[], self.pixel_frames_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_pixel_bytes_total",
+            "counter",
+            "Terminal picture bytes on the wire since boot.",
+            &[(&[], self.pixel_bytes_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_pixel_slow_skips_total",
+            "counter",
+            "Terminal pictures skipped because the write before them was slower than a frame.",
+            &[(&[], self.pixel_slow_skips_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_pixel_step_downs_total",
+            "counter",
+            "Terminal picture views stepped down to the narrow frame and the low clock.",
+            &[(&[], self.pixel_step_downs_total as f64)],
         );
 
         // Loop lag: last/max gauges + a native histogram.
@@ -2306,6 +2395,8 @@ mod tests {
         assert!(text.contains("mush_store_read_only 0"));
         assert!(text.contains("mush_integrity_frozen 0"));
         assert!(text.contains("# TYPE mush_supervision_abandoned gauge"));
+        assert!(text.contains("# TYPE mush_pixel_frames_total counter"));
+        assert!(text.contains("mush_pixel_viewers 0"));
         assert!(text.contains("mush_supervision_abandoned 0"));
         assert!(text.contains("mush_store_write_queue_depth 6"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"legacy\"} 3"));

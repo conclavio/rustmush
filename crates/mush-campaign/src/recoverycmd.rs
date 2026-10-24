@@ -127,7 +127,15 @@ fn recovery_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let grant = store.recovery_grant(me).cloned();
     let assets = accessible_operational_assets(ctx.w, me);
     let verdict = eligible(ctx.w, &cfg, me, grant.as_ref(), now);
-    let cooldown = cooldown_until(&cfg, grant.as_ref());
+    let voided = mush_sim::relay::cover_voided(ctx.w, me);
+    let cooldown = if voided {
+        grant
+            .as_ref()
+            .and_then(RecoveryGrant::ended_at)
+            .map(|at| at.saturating_add(cfg.cooldown_secs))
+    } else {
+        cooldown_until(&cfg, grant.as_ref())
+    };
 
     let mut rows = vec![format!(
         "Recovery: {waiting} waiting, {} loaners out, tiers [{}].",
@@ -169,13 +177,16 @@ fn recovery_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // is the whole reason their cooldown line reads the way it does. A grant
         // without it says nothing extra — the cooldown row below already is the
         // sentence.
-        if grant.loss_covered() {
+        if grant.loss_covered() && !voided {
             rows.push(
                 "That loss was recorded as an approved-operation loss, so no cooldown \
                  applies to it."
                     .to_owned(),
             );
         }
+    }
+    if voided {
+        rows.push("Tycho cover voided: permanent relay-destruction sanction; no insured-loss cooldown waiver.".to_owned());
     }
     rows.push(match verdict {
         Ok(()) => format!("You are eligible ({assets} accessible operational assets)."),

@@ -1,0 +1,46 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 7.59s
+     Running tests/deliberation.rs (target/debug/deps/deliberation-a8189bf02c632afc)
+
+running 3 tests
+test l2_a_pilots_own_order_lapse_is_told_to_them_alone ... ok
+test l2_the_world_says_the_leaders_order_lapsed_once ... ok
+test l2_status_prints_the_leaders ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 10.88s
+
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 6.12s
+     Running tests/driving.rs (target/debug/deps/driving-570c1982983245fe)
+
+running 1 test
+test sm4b_recover_from_afar_drives_home_and_climbs_aboard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 27.34s
+
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 6.22s
+     Running tests/mining.rs (target/debug/deps/mining-b5128f9309bacf81)
+
+running 1 test
+test sm7_rights_gate_mining_and_never_the_way_home ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 48.04s
+
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 5.32s
+     Running tests/resolution.rs (target/debug/deps/resolution-2f91f7be4cefb023)
+
+running 1 test
+test money::no_instrument_moves_while_a_match_runs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 6.58s
+
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 8.55s
+     Running tests/harness.rs (target/debug/deps/harness-466504010f308439)
+
+running 1 test
+test m4_2_the_load_mind_is_calibrated_to_the_class_iii_row ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 4.48s

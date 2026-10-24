@@ -30,6 +30,7 @@ import CockpitScreen from "./CockpitScreen.svelte";
 import { NOT_IN_A_COCKPIT } from "$lib/cockpit";
 import type { GameApp } from "$lib/game.svelte";
 import { CockpitStore } from "$lib/stores/cockpit.svelte";
+import { PictureStore } from "$lib/stores/picture.svelte";
 
 const DIR = "src/lib/fixtures/cockpit";
 
@@ -127,13 +128,26 @@ afterEach(() => {
   HTMLCanvasElement.prototype.getContext = original;
 });
 
-/** Mount the screen on a bare cockpit store; nothing fed yet. */
-function mount(): { app: GameApp; cockpit: CockpitStore; focusComposer: ReturnType<typeof vi.fn> } {
+/** Mount the screen on a bare cockpit store; nothing fed yet. Doc 21 cut
+ * G.3c: the picture above the map reaches for its own store and two spies,
+ * `setPicture` (ask for it or stop it) and `helm` (its arrow keys' orders). */
+function mount(): {
+  app: GameApp;
+  cockpit: CockpitStore;
+  focusComposer: ReturnType<typeof vi.fn>;
+  setPicture: ReturnType<typeof vi.fn>;
+  unmount: () => void;
+} {
   const cockpit = new CockpitStore();
   const focusComposer = vi.fn();
-  const app = { cockpit, focusComposer } as unknown as GameApp;
-  render(CockpitScreen, { props: { app } });
-  return { app, cockpit, focusComposer };
+  const picture = new PictureStore();
+  const setPicture = vi.fn((on: boolean, look: number) => {
+    picture.on = on;
+    picture.lookMdeg = look;
+  });
+  const app = { cockpit, focusComposer, picture, setPicture, helm: vi.fn() } as unknown as GameApp;
+  const { unmount } = render(CockpitScreen, { props: { app } });
+  return { app, cockpit, focusComposer, setPicture, unmount };
 }
 
 /** Mount and feed the fixture frame and its ground. */
@@ -483,3 +497,35 @@ describe("CockpitScreen, 17b cut M5.5", () => {
     expect(document.querySelector("button.profile")).toBeNull();
   });
 });
+
+// Doc 21 cut G.3c: the first-person picture above the map is the viewer's to
+// ask for — 100 KB/s a viewer — and is stopped when the screen goes.
+describe("the picture", () => {
+  it("is asked for only on the viewer's word, and stopped when the screen goes", async () => {
+    localStorage.removeItem("rustmush.picture");
+    const m = await seated();
+    const asks = (): unknown[][] => m.setPicture.mock.calls.filter((c) => c[0] === true);
+    expect(asks()).toHaveLength(0);
+    await fireEvent.click(screen.getByRole("button", { name: "Show the picture" }));
+    await tick();
+    expect(asks()).toEqual([[true, 0]]);
+    expect(localStorage.getItem("rustmush.picture")).toBe("on");
+    expect(screen.getByText("Waiting for the first picture…")).toBeTruthy();
+    m.unmount();
+    expect(m.setPicture.mock.calls.at(-1)).toEqual([false, 0]);
+    localStorage.removeItem("rustmush.picture");
+  });
+});
+
+// Doc 22 cut U.4: the damage pane opens with the pilot's own doll, the look
+// grid the terminal draws, one square a drawn cell.
+describe("the doll", () => {
+  it("draws the fixture tank's look grid at the top of the damage pane", async () => {
+    await seated();
+    const doll = screen.getByRole("img", { name: "Tracked tank armour" });
+    expect(doll.getAttribute("viewBox")).toBe("0 0 24 16");
+    // 24 x 16 less the gaps between the tracks and the hull.
+    expect(doll.querySelectorAll("rect").length).toBe(24 * 16 - 2 * 16);
+  });
+});
+

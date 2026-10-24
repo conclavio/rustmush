@@ -6,19 +6,14 @@
 //! **current folder** listing — the classic MUSH convention (they shift
 //! when messages are filed elsewhere; ids in headers are stable).
 
-use mush_core::lock::MAX_LOCK_DEPTH;
 use mush_core::output::display_name;
-use mush_core::{
-    CmdError, ContextOutcome, Ctx, InputContext, LockType, ObjId, Role, World, eval_lock, obj_ref,
-    perm,
-};
-use mush_proto::{InputMode, OutputEvent, PromptSpec, RichText};
+use mush_core::{CmdError, ContextOutcome, Ctx, InputContext, ObjId, World};
+use mush_proto::{InputMode, PromptSpec, RichText};
 use smol_str::SmolStr;
 
 use crate::data::{
     self, ARCHIVE, INBOX, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES, MAX_MAIL_RECIPIENTS,
-    MAX_USER_FOLDERS, MailMsg, MailState, MailStatus, MailboxEntry, SENT, TRASH, is_builtin_folder,
-    valid_folder_name,
+    MAX_USER_FOLDERS, MailState, MailStatus, SENT, TRASH, is_builtin_folder, valid_folder_name,
 };
 use crate::date::{format_date, format_datetime};
 
@@ -165,13 +160,7 @@ fn parse_recipients(w: &World, spec: &str) -> Result<Vec<ObjId>, CmdError> {
 // Delivery (send/quick/fwd and compose completion all land here)
 // ----------------------------------------------------------------------
 
-/// Deliver one message: fan out to every recipient that passes their
-/// `@lock/mail` and quota, store the message once plus one mailbox entry
-/// per accepted recipient (and the sender's `sent` copy), queue the
-/// write-through ops, and emit live [`OutputEvent::MailNotice`]s.
-///
-/// Refused recipients are reported to the sender; if nobody accepts,
-/// nothing is stored and an error is returned.
+/// Queue all mail paths through the durable source/transport handoff.
 pub(crate) fn deliver(
     ctx: &mut Ctx<'_>,
     to: &[ObjId],
@@ -180,118 +169,7 @@ pub(crate) fn deliver(
     reply_to: Option<u64>,
     urgent: bool,
 ) -> Result<(), CmdError> {
-    data::validate_message_content(to, subject, body)
-        .map_err(|detail| CmdError::msg(format!("MAIL: Invalid message: {detail}.")))?;
-    let from = ctx.actor;
-    let quota = state(ctx).quota();
-    let mut accepted: Vec<ObjId> = Vec::new();
-    let mut refused: Vec<String> = Vec::new();
-    for &r in to {
-        let Some(lock_opt) = ctx.w.get(r).map(|o| o.locks.get(&LockType::Mail).cloned()) else {
-            refused.push(format!("{r} no longer exists."));
-            continue;
-        };
-        let name = display_name(ctx.w, r);
-        if let Some(l) = lock_opt
-            && !eval_lock(ctx.w, &l, from, MAX_LOCK_DEPTH)
-        {
-            refused.push(format!("{name} is refusing your mail."));
-            continue;
-        }
-        // Quota gates delivery; staff mailboxes are exempt.
-        if !perm::has_role(ctx.w, r, Role::Wizard) && state(ctx).entry_count(r) >= quota {
-            refused.push(format!("{name}'s mailbox is full."));
-            continue;
-        }
-        accepted.push(r);
-    }
-
-    if accepted.is_empty() {
-        for line in refused {
-            ctx.out.abort_info(from, format!("MAIL: {line}"));
-        }
-        return Err(CmdError::msg("MAIL: Nobody could receive your message."));
-    }
-
-    let now = ctx.w.now();
-    let mut ops = Vec::new();
-    let mut notices: Vec<(ObjId, u32)> = Vec::new();
-    let id = {
-        let st = state_mut(ctx);
-        let id = st
-            .alloc_id()
-            .ok_or_else(|| CmdError::msg("MAIL: Message id space is exhausted."))?;
-        let msg = MailMsg {
-            id,
-            from,
-            to: accepted.clone(),
-            subject: subject.to_string(),
-            body: body.to_string(),
-            reply_to,
-            sent_at: now,
-        };
-        ops.push(data::msg_op(&msg));
-        st.insert_msg(msg);
-        for &r in &accepted {
-            let entry = MailboxEntry {
-                owner: r,
-                msg: id,
-                folder: SmolStr::new(INBOX),
-                status: if urgent {
-                    MailStatus::Urgent
-                } else {
-                    MailStatus::Unread
-                },
-                read_at: None,
-            };
-            ops.push(data::entry_op(&entry));
-            st.box_mut(r).entries.insert(id, entry);
-            notices.push((r, st.unread_counts(r).0));
-        }
-        // The sender's copy files under `sent`, pre-read — unless the
-        // sender mailed themselves, in which case the inbox entry wins
-        // (entries are keyed `(owner, msg)`).
-        if st.entry(from, id).is_none() {
-            let entry = MailboxEntry {
-                owner: from,
-                msg: id,
-                folder: SmolStr::new(SENT),
-                status: MailStatus::Read,
-                read_at: Some(now),
-            };
-            ops.push(data::entry_op(&entry));
-            st.box_mut(from).entries.insert(id, entry);
-        }
-        ops.push(data::next_id_op(st.next_id()));
-        id
-    };
-    for op in ops {
-        ctx.persist(op);
-    }
-
-    let names = name_list(ctx.w, &accepted);
-    ctx.out
-        .info(from, format!("MAIL: Message {id} sent to {names}."));
-    for line in refused {
-        ctx.out.info(from, format!("MAIL: {line}"));
-    }
-    let from_ref = obj_ref(ctx.w, from);
-    for (r, unread) in notices {
-        ctx.out.to_actor(
-            r,
-            OutputEvent::MailNotice {
-                from: from_ref.clone(),
-                subject: subject.to_string(),
-                id,
-                unread,
-            },
-        );
-    }
-    // Mail send is durability-critical (PLAN): "MAIL: Message N sent."
-    // must not reach the sender until the store has acknowledged the
-    // batch that carries the message.
-    ctx.gate_on_durable_ack();
-    Ok(())
+    crate::transit::submit(ctx, to, subject, body, reply_to, urgent)
 }
 
 // ----------------------------------------------------------------------
@@ -556,6 +434,9 @@ fn read_cmd(ctx: &mut Ctx<'_>, arg: &str) -> Result<(), CmdError> {
     if let Some(r) = msg.reply_to {
         ctx.out.info(me, format!("In-Reply-To: message id {r}"));
     }
+    if let Some(delivery) = state(ctx).delivery_text(me, msg_id) {
+        ctx.out.info(me, format!("Transit: {delivery}"));
+    }
     ctx.out.info(me, "----");
     for line in msg.body.lines() {
         ctx.out.info(me, line);
@@ -601,7 +482,9 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     i + 1,
                     flag,
                     m.from,
-                    m.subject.clone(),
+                    state(ctx)
+                        .delivery_text(me, id)
+                        .map_or_else(|| m.subject.clone(), |d| format!("{} [{d}]", m.subject)),
                     format_date(m.sent_at),
                 )
             })
@@ -617,10 +500,8 @@ fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.info(me, format!("--- MAIL: {folder} ---"));
     for (n, flag, from, subject, date) in rows {
         let from = display_name(ctx.w, from);
-        ctx.out.info(
-            me,
-            format!("{n:>3} {flag} {from:<14.14} {subject:<30.30} {date}"),
-        );
+        ctx.out
+            .info(me, format!("{n:>3} {flag} {from:<14.14} {subject} {date}"));
     }
     ctx.out.info(
         me,

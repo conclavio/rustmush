@@ -163,9 +163,9 @@ impl Roster {
                 );
             }
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -1410,9 +1410,10 @@ fn ic8_the_board_counts_down_to_sold_out() {
         ),
         "{report}"
     );
-    // C07 lines: the three asks, then the alloy bid.
+    // C07 lines: the three asks, then the alloy bid and (doc 20 cut SM.5) the four ore
+    // intakes.
     let lines = board(&out);
-    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(lines.len(), 8, "{out}");
     assert!(
         lines[1].starts_with("  water ice: 100.00cr/t, 9,600 t left (Occator"),
         "{out}"
@@ -1427,6 +1428,15 @@ fn ic8_the_board_counts_down_to_sold_out() {
         ),
         "{out}"
     );
+    // Doc 20 cut SM.5: the Exchange's three ore intakes in authored order, then Occator's.
+    for (line, want) in lines[4..8].iter().zip([
+        "  wanted, metal ore, run-of-mine: 70.00cr/t, 240 t more (Freeport Exchange",
+        "  wanted, carbon ore, run-of-mine: 50.00cr/t, 120 t more (Freeport Exchange",
+        "  wanted, strategic ore, run-of-mine: 600.00cr/t, 12 t more (Freeport Exchange",
+        "  wanted, ice ore, run-of-mine: 35.00cr/t, 240 t more (Occator Water & Propellant",
+    ]) {
+        assert!(line.starts_with(want), "{want}:\n{out}");
+    }
     // C08: only the Co-op's fittings bid.
     let c08 = station_room(&rig.tw, "ceres_port", "room.c08_chandlery");
     let out = look_in(&mut rig.tw, pilot, c08);
@@ -2115,6 +2125,11 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
             "  water ice: not yet on the board (Occator Water & Propellant).".to_owned(),
             "  reaction mass: not yet on the board (Occator Water & Propellant).".to_owned(),
             "  wanted, structural alloy stock: not buying (Freeport Works).".to_owned(),
+            // Doc 20 cut SM.5: the four ore intakes, in the same form.
+            "  wanted, metal ore, run-of-mine: not buying (Freeport Exchange).".to_owned(),
+            "  wanted, carbon ore, run-of-mine: not buying (Freeport Exchange).".to_owned(),
+            "  wanted, strategic ore, run-of-mine: not buying (Freeport Exchange).".to_owned(),
+            "  wanted, ice ore, run-of-mine: not buying (Occator Water & Propellant).".to_owned(),
         ],
         "{out}"
     );
@@ -2193,7 +2208,12 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
         .values()
         .flat_map(|row| row.bids.values().map(|b| ListingId(b.listing)))
         .collect();
-    assert_eq!(bids.len(), 2, "the alloy and fittings bids");
+    // Doc 20 cut SM.5: and the four ore intakes.
+    assert_eq!(
+        bids.len(),
+        6,
+        "the alloy and fittings bids and the four ore intakes"
+    );
     // A buyer's Draw from the Exchange, accepted into their own crate and unsettled.
     let buyer = rig.tw.spawn_player("Buyer");
     let exchange = c07(&rig.tw);
@@ -2309,7 +2329,12 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
         .values()
         .flat_map(|row| row.bids.values().map(|b| ListingId(b.listing)))
         .collect();
-    assert_eq!(reposted.len(), 2, "both bids recorded again");
+    // Doc 20 cut SM.5: the four ore intakes with them.
+    assert_eq!(
+        reposted.len(),
+        6,
+        "both bids and the four ore intakes recorded again"
+    );
     for listing in &reposted {
         assert!(
             !bids.contains(listing),

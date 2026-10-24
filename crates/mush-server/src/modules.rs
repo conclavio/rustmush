@@ -1968,7 +1968,14 @@ mod tests {
     /// (`crate::boot::game_modules`) composes the TacSim layer, so `mush-inventory`
     /// names `tacsim` its THIRD quantity delegate there — and nowhere else: the
     /// delegation travels with the layer (`server_modules_with_tacsim`). It is
-    /// one-directional like the other two, and the three grantees are strangers.
+    /// one-directional like the other two.
+    ///
+    /// **Doc 20 cut SM.6 (D1) moves the pin from three pairs to five**: on this roster
+    /// only, `mush-industry` delegates its typed families to `tacsim` (the port tick and
+    /// readiness read deposits) and `tacsim` delegates its own to `industry` (the
+    /// sweep's `ExternalDraws` reads `tacsim.pockets`) — each widens the bundle, never
+    /// the gate. The market stays a stranger to both, and the non-TacSim roster's two
+    /// pairs are unmoved ([`e7c3_wiring_the_quantity_delegation_is_declared_and_narrow`]).
     #[test]
     fn ic5_wiring_tacsim_is_the_third_quantity_delegate_on_the_game_roster() {
         use mush_testkit::TestWorld;
@@ -1992,11 +1999,14 @@ mod tests {
         assert_eq!(
             families.delegations(),
             vec![
+                (industry.clone(), tacsim.clone()),
                 (inventory.clone(), industry.clone()),
                 (inventory.clone(), market.clone()),
                 (inventory.clone(), tacsim.clone()),
+                (tacsim.clone(), industry.clone()),
             ],
-            "the game roster carries exactly three delegations, all from `inventory` outward"
+            "the game roster carries exactly five delegations: the three from `inventory` \
+             outward and doc 20 cut SM.6's two between industry and tacsim"
         );
         assert!(
             families.delegates(&inventory, &tacsim),
@@ -2006,12 +2016,18 @@ mod tests {
             !families.delegates(&tacsim, &inventory),
             "and the delegation is NOT symmetric"
         );
-        for other in [&industry, &market] {
-            assert!(
-                !families.delegates(&tacsim, other) && !families.delegates(other, &tacsim),
-                "tacsim and {other:?} are strangers in both directions"
-            );
-        }
+        assert!(
+            families.delegates(&industry, &tacsim) && families.delegates(&tacsim, &industry),
+            "doc 20 cut SM.6: industry and tacsim delegate to each other on the game roster"
+        );
+        assert!(
+            !families.delegates(&tacsim, &market) && !families.delegates(&market, &tacsim),
+            "tacsim and market are strangers in both directions"
+        );
+        assert!(
+            !families.delegates(&industry, &market) && !families.delegates(&market, &industry),
+            "industry and market are strangers in both directions"
+        );
     }
 
     /// **Doc 18 cut IC8 — the game roster hands the layer a filled inventory cell**
@@ -2352,7 +2368,17 @@ mod tests {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
         }
-        for c in ["org.role.manage", "org.grant.delegate"] {
+        let administrative = [
+            "org.role.manage",
+            "org.grant.delegate",
+            "relay.manage",
+            "relay.inspect",
+            "relay.publish",
+            "relay.discover",
+            "relay.use",
+            "relay.speak",
+        ];
+        for c in administrative {
             assert!(
                 vocab.contains(&mush_org::CapabilityId::new(c).expect("well-formed")),
                 "{c}"
@@ -2364,7 +2390,7 @@ mod tests {
                 + mush_housing::CAPABILITIES.len()
                 + mush_campaign::CAPABILITIES.len()
                 + registry_capabilities.len()
-                + 2
+                + administrative.len()
         );
         // …and a `force.*` id that is NOT declared is absent, so a typo'd grant
         // still fails loudly rather than becoming an inert record.

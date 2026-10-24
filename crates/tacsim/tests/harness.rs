@@ -811,7 +811,7 @@ fn production_roster_with(atlas: AtlasConfig, boot_packs: bool) -> Vec<Box<dyn G
         &mush_config::config::NpcCfg::default(),
     ));
     mods.extend(comp::sheet_modules(&onboarding, &game));
-    mods.push(comp::tacsim_module(tacsim_cfg));
+    mods.push(comp::tacsim_module_with(tacsim_cfg, boot_packs));
     // `[game].starter_area` off: the harness's own region is the content under
     // test, and the shipped lot would only add rooms the window must not anchor
     // on. The module itself is composed exactly as production composes it.
@@ -6729,7 +6729,7 @@ fn fan_out_roster() -> Vec<Box<dyn GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

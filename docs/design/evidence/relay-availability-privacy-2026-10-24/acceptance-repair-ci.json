@@ -1,0 +1,122 @@
+{
+  "conclusion": "failure",
+  "headSha": "1a0565cd2b274f416ca4c0de2754ae294863b2fc",
+  "jobs": [
+    {
+      "name": "Deployable release binaries",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199034"
+    },
+    {
+      "name": "Toggleable features compile",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199098"
+    },
+    {
+      "name": "Workspace documentation",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199165"
+    },
+    {
+      "name": "K8 truth-serialization policy",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199176"
+    },
+    {
+      "name": "test (tacsim-integration)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199180"
+    },
+    {
+      "name": "K8 kernel contracts",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199197"
+    },
+    {
+      "name": "K8 definition and wire fixtures",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199210"
+    },
+    {
+      "name": "Instance provisioning acceptance",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199212"
+    },
+    {
+      "name": "test (tacsim-lib)",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199216"
+    },
+    {
+      "name": "K8 direct-rand policy",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199218"
+    },
+    {
+      "name": "test (rest)",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199247"
+    },
+    {
+      "name": "K8 Redis and process-fault matrix",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199262"
+    },
+    {
+      "name": "web",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199290"
+    },
+    {
+      "name": "16b cut H TacSim harness",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199694"
+    },
+    {
+      "name": "M6 full-duration Class III replay",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199822"
+    },
+    {
+      "name": "Bot win rate from the muster (report-only)",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199983"
+    },
+    {
+      "name": "H3 scale harness",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965200068"
+    },
+    {
+      "name": "M6 author story and fresh external pilot comparison",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965200162"
+    },
+    {
+      "name": "Bot win rate against the machine (report-only)",
+      "status": "completed",
+      "conclusion": "skipped",
+      "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965230659"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/conclavio/rustmush/actions/runs/40125259513"
+}

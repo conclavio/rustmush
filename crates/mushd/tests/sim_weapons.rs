@@ -121,7 +121,7 @@ fn module_list(
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config()));
+    mods.push(modules::tacsim_module_with(tacsim_config(), true));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }

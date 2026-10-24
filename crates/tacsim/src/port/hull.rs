@@ -246,7 +246,7 @@ pub(crate) fn refit_bays<'a>(
     programme: &ProgrammeDef,
 ) -> Vec<(&'a BayDef, &'a InteriorRoomDef)> {
     let mut out: Vec<(&'a BayDef, &'a InteriorRoomDef)> = Vec::new();
-    for unit in programme.refits.values() {
+    for unit in std::iter::once(&programme.unit).chain(programme.refits.values()) {
         let Some((interior, _)) = spec_for(store, unit) else {
             continue;
         };

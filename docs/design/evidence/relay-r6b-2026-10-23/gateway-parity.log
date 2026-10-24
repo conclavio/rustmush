@@ -1,0 +1,11 @@
+   Compiling mush-server v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.52s
+     Running tests\gateway_link_parity.rs (target\debug\deps\gateway_link_parity-f2472cdc932ee39f.exe)
+
+running 3 tests
+test both_links_answer_identically_on_a_dead_world ... ok
+test the_disposition_table_is_pinned ... ok
+test both_links_answer_identically_under_commit_pending ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

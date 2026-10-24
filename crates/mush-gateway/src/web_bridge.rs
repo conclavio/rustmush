@@ -76,6 +76,14 @@ use crate::poison::locked;
 /// pushes expiry out to `now + TOKEN_TTL_S`).
 pub const TOKEN_TTL_S: i64 = 7 * 24 * 60 * 60;
 
+/// **The largest `PanelSubscribe.params` the bridge forwards** (doc 20 cut SM.9; the brief's
+/// 3.8), serialised bytes: a pulled feed's few query words, never a payload.
+pub const MAX_PANEL_PARAMS_BYTES: usize = 512;
+
+/// The reply to a `PanelSubscribe` whose `params` is not an object or is past
+/// [`MAX_PANEL_PARAMS_BYTES`].
+pub const PANEL_PARAMS_REFUSED: &str = "Panel parameters must be a small object.";
+
 /// Why [`WebBridge::authorize_character`] could not hand back a character:
 /// the same split [`TokenVerdict`] draws, carried one level up so each
 /// caller can map it onto its own transport vocabulary
@@ -710,7 +718,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     SmolStr::new_static("market.original_minds"),
                     serde_json::json!(request),
                 ),
-                Query::PanelSubscribe { feed } => {
+                Query::PanelSubscribe { feed, params } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {
                         self.direct_error_reply(
                             conn_id,
@@ -746,7 +754,28 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                             SmolStr::new_static("mail.list"),
                             serde_json::json!({ "folder": null }),
                         ),
-                        _ => (feed.clone(), serde_json::json!({})),
+                        // Doc 20 cut SM.9 (the brief's 3.8): a pulled feed's parameters ride as
+                        // its query's arguments — an object, at most `MAX_PANEL_PARAMS_BYTES`
+                        // serialised, else refused before anything is sent.
+                        _ => match params {
+                            None => (feed.clone(), serde_json::json!({})),
+                            Some(params)
+                                if params.is_object()
+                                    && serde_json::to_vec(&params).is_ok_and(|bytes| {
+                                        bytes.len() <= MAX_PANEL_PARAMS_BYTES
+                                    }) =>
+                            {
+                                (feed.clone(), params)
+                            }
+                            Some(_) => {
+                                self.direct_error_reply(
+                                    conn_id,
+                                    id,
+                                    PANEL_PARAMS_REFUSED.to_owned(),
+                                );
+                                return;
+                            }
+                        },
                     }
                 }
                 // Answered locally above (before the flood check), so it never

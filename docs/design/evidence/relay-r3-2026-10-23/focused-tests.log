@@ -1,0 +1,14 @@
+   Compiling mush-propagation v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-propagation)
+   Compiling tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+   Compiling mush-server v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.42s
+     Running tests\relay_registry.rs (target\debug\deps\relay_registry-6fc37fb918999edb.exe)
+
+running 5 tests
+test r3_expired_queue_tickets_do_not_inflate_private_load ... ok
+test r3_aged_standard_work_precedes_new_high_class_traffic ... ok
+test r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership ... ok
+test r3_four_classes_restart_capacity_receipts_and_scandal ... ok
+test r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_policy ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 5.24s

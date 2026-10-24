@@ -20,6 +20,7 @@ last lines of its log, each signed with your name.
   buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold]
   depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm]
   stop
+  await tv [<slot>|all] [until=<IC hours>]
   del <n> | move <n>=<pos> | clear | pause | resume | skip <n>
 
 A good is named by its id (metals, volatiles, propellant, provisions,
@@ -40,6 +41,11 @@ gets a number that never changes; the plan's revision goes up with every edit.
                   at most 24 hours; a daily departure that misses it waits for the
                   next day
   stop            the plan stops there, as filed, until you resume it
+  await tv        the plan waits there until every rig of the Dray-P (or the slot
+                  you name) is parked: in the bay with nothing to do, or stopped
+                  on the ground with its fill plan ended; until= caps the wait in
+                  IC hours (288, the longest a fill plan runs, when you name none),
+                  and once it passes the plan runs on (`help mining`)
 
 A departure plans its passage at its hour, over the load the plan will make, and
 burns nothing until it is cleared. It takes the fastest listed route, by way of a
@@ -94,5 +100,14 @@ return, buys the fittings and as much alloy as your money and the hold allow,
 and clears her for Ceres. With `depart ceres at=daily 19:30` in place of the
 last line she would wait for 19:30 UTC instead, and you could log in before
 then to change the plan.
+
+On a mining site's pad with the rigs working fill plans (`help mining`):
+
+  await tv all
+  depart ceres
+  sell metal_ore all
+
+waits for every rig to park with its hopper unloaded, flies the ore home and
+sells it to the standing bids at Ceres.
 
 See also: `help ships`, `help trade`, `help ports`.

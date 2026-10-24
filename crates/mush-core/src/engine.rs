@@ -855,6 +855,19 @@ impl Engine {
         text: &str,
         out: &mut Outbox,
     ) -> Result<(), crate::RelayRefusal> {
+        self.relay_speak_identified(actor, channel, kind, text, None, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn relay_speak_identified(
+        &mut self,
+        actor: ObjId,
+        channel: &str,
+        kind: mush_proto::NarrativeKind,
+        text: &str,
+        message_id: Option<u64>,
+        out: &mut Outbox,
+    ) -> Result<(), crate::RelayRefusal> {
         crate::module::apply_relay_speak(
             &self.registry,
             &mut self.world,
@@ -863,6 +876,32 @@ impl Engine {
             channel,
             kind,
             text,
+            message_id,
+            false,
+            crate::action_state::TypedStateLens::Live(&self.action_state),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn relay_alias_identified(
+        &mut self,
+        actor: ObjId,
+        alias: &str,
+        kind: mush_proto::NarrativeKind,
+        text: &str,
+        message_id: Option<u64>,
+        out: &mut Outbox,
+    ) -> Result<(), crate::RelayRefusal> {
+        crate::module::apply_relay_speak(
+            &self.registry,
+            &mut self.world,
+            out,
+            actor,
+            alias,
+            kind,
+            text,
+            message_id,
+            true,
             crate::action_state::TypedStateLens::Live(&self.action_state),
         )
     }
@@ -2462,6 +2501,9 @@ impl Engine {
             .registry
             .schedule_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let completes = schedules.completes(candidate, self).map_err(|source| {
+            crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+        })?;
         providers.prepare_typed_authoritative_invocation_seeded(
             candidate.action(),
             invocation,
@@ -2469,9 +2511,11 @@ impl Engine {
             &mut self.action_state,
             self.resolution_keys.as_ref(),
             |txn| {
-                schedules.seed_advance(candidate, txn).map_err(|source| {
-                    crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
-                })
+                schedules
+                    .seed_advance(candidate, completes, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                    })
             },
         )
     }
@@ -2883,6 +2927,9 @@ impl Engine {
             .registry
             .schedule_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let completes = schedules.completes(candidate, self).map_err(|source| {
+            crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+        })?;
         providers.prepare_authoritative_invocation_seeded(
             candidate.action(),
             invocation,
@@ -2903,9 +2950,11 @@ impl Engine {
                 self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
-                schedules.seed_advance(candidate, txn).map_err(|source| {
-                    crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
-                })
+                schedules
+                    .seed_advance(candidate, completes, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                    })
             },
         )
     }
@@ -3646,6 +3695,12 @@ impl Engine {
     #[must_use]
     pub fn module_ops(&self) -> &[ModuleOp] {
         &self.module_ops
+    }
+
+    /// Complete a driver-invoked module service using the ordinary deferred
+    /// boundary, before the driver assembles its durable write batch.
+    pub fn finish_external_step(&mut self, out: &mut Outbox, fx: &mut Effects) {
+        self.drain_deferred(out, fx);
     }
 
     /// Feed wall time in (unix seconds) — forwarded to [`World::set_now`].

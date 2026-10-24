@@ -34,6 +34,9 @@
 //     (admission full). A store outage or an ordinary server-half reload must
 //     never log a web player out, so do not widen the fatal branch below.
 //   - clean close: `close()` never triggers a reconnect
+//   - binary frames (doc 21 cut G.3c): the gateway sends the cockpit's
+//     picture, when asked for with `picture`, as one PNG a binary message;
+//     they go to `onBinary` and never through the envelope dispatch
 //
 // The class takes injectable seams (WebSocket factory, RNG) so the vitest
 // suite can drive it without a browser or a server.
@@ -75,6 +78,9 @@ export const SUBPROTO_PREFIX = "rustmush.v1.";
  */
 export interface WebSocketLike {
   readyState: number;
+  /** How binary messages arrive (`"blob"` in a browser); optional so a test
+   * socket need not carry it. */
+  binaryType?: string;
   send(data: string): void;
   close(code?: number, reason?: string): void;
   onopen: (() => void) | null;
@@ -135,6 +141,11 @@ export interface WsClientOptions {
   onTokenCooloff?: () => void;
   /** Connection lifecycle notifications (drive a status indicator). */
   onStatus?: (status: ConnStatus) => void;
+  /**
+   * A binary message (doc 21 cut G.3c): one PNG of the cockpit's picture,
+   * sent only while the client has asked for it with `picture`.
+   */
+  onBinary?: (data: Blob | ArrayBuffer) => void;
   /**
    * Capability provider; declared to the server right after its `hello`.
    * Return `null` to skip declaring caps.
@@ -312,6 +323,7 @@ export class WsClient {
 
     this.#setStatus(this.#attempt > 0 ? "reconnecting" : "connecting");
     const ws = this.#makeSocket(url, protocols);
+    ws.binaryType = "blob";
     this.#ws = ws;
     ws.onopen = () => {
       this.#attempt = 0;
@@ -350,7 +362,14 @@ export class WsClient {
 
   #onMessage(data: unknown): void {
     if (typeof data !== "string") {
-      return; // binary frames are not part of the protocol
+      // Doc 21 cut G.3c: the picture's frames are the one binary message.
+      if (
+        (typeof Blob !== "undefined" && data instanceof Blob) ||
+        data instanceof ArrayBuffer
+      ) {
+        this.#opts.onBinary?.(data);
+      }
+      return;
     }
     let parsed: unknown;
     try {

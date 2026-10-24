@@ -90,6 +90,8 @@ pub const LEGGED_RULES_SCHEMA: &str = "tacsim.mobility.legged";
 pub const WHEELED_RULES_SCHEMA: &str = "tacsim.mobility.wheeled";
 
 /// The `schema` definition the power capability's rules blob is bound to.
+pub const RELAY_RULES_SCHEMA: &str = "tacsim.relay.mobile";
+
 pub const POWER_RULES_SCHEMA: &str = "tacsim.power.states";
 
 /// **The capability a core grants** (17b cut M3.1; doc 17 §9, D-UM-33): its
@@ -517,6 +519,14 @@ pub enum ComponentRole {
     /// [`ComponentRole::Power`], the other role that grants a capability. A
     /// unit carries at most one ([`UnitSpec::check`]); a unit with none is
     /// Class 0, the ROM alone.
+    /// A capital hull's checked socket; installing a manufactured half and
+    /// completing the launch front are separate runtime requirements.
+    Relay {
+        /// Maximum local radio coverage, kilometres.
+        radius_km: u32,
+        /// Walkable room containing the installation.
+        room: CanonicalId,
+    },
     Core {
         /// The core definition it is — an entry id, checked at load.
         core: CanonicalId,
@@ -742,6 +752,10 @@ pub enum UnitClass {
     /// caps and never fielded in phase 1, exactly as [`UnitClass::Hauler`];
     /// the promotion cut (doc 20 §17) flips [`UnitClass::fieldable`] for it.
     Vehicle,
+    /// A fixed structural installation, never offered by the simulator lobby.
+    Station,
+    /// A strategic capital ship with real logistics and interiors.
+    Capital,
 }
 
 impl UnitClass {
@@ -750,12 +764,14 @@ impl UnitClass {
     /// Doc 18 cut IC2 appends [`UnitClass::Hauler`] and doc 20 cut SM.3a
     /// [`UnitClass::Vehicle`], so [`UnitClass::parse`] and [`UnitClass::read`]
     /// know the words; the arena's doors ask [`UnitClass::fieldable`].
-    pub const ALL: [UnitClass; 5] = [
+    pub const ALL: [UnitClass; 7] = [
         UnitClass::Armour,
         UnitClass::Walker,
         UnitClass::Drone,
         UnitClass::Hauler,
         UnitClass::Vehicle,
+        UnitClass::Station,
+        UnitClass::Capital,
     ];
 
     /// The class word, as content and the operator's config write it.
@@ -767,6 +783,8 @@ impl UnitClass {
             UnitClass::Drone => "drone",
             UnitClass::Hauler => "hauler",
             UnitClass::Vehicle => "vehicle",
+            UnitClass::Station => "station",
+            UnitClass::Capital => "capital",
         }
     }
 
@@ -778,7 +796,9 @@ impl UnitClass {
     pub const fn fieldable(self) -> bool {
         match self {
             UnitClass::Armour | UnitClass::Walker | UnitClass::Drone => true,
-            UnitClass::Hauler | UnitClass::Vehicle => false,
+            UnitClass::Hauler | UnitClass::Vehicle | UnitClass::Station | UnitClass::Capital => {
+                false
+            }
         }
     }
 
@@ -807,6 +827,10 @@ impl UnitClass {
             (UnitClass::Hauler, false) => "haulers",
             (UnitClass::Vehicle, true) => "terrain vehicle",
             (UnitClass::Vehicle, false) => "terrain vehicles",
+            (UnitClass::Station, true) => "station",
+            (UnitClass::Station, false) => "stations",
+            (UnitClass::Capital, true) => "capital ship",
+            (UnitClass::Capital, false) => "capital ships",
         }
     }
 
@@ -1201,6 +1225,23 @@ impl UnitSpec {
             } = &component.role
             {
                 thermal.check(entry, component.id.as_str())?;
+            }
+            if let ComponentRole::Relay { radius_km, room } = &component.role
+                && (self.class != Some(UnitClass::Capital)
+                    || !(1..=1_000_000).contains(radius_km)
+                    || self.interior.as_ref().and_then(|i| i.room(room)).is_none()
+                    || self.logistics.as_ref().is_none_or(|l| l.dry_mass_t < 1_000)
+                    || self
+                        .components
+                        .iter()
+                        .filter(|c| matches!(c.role, ComponentRole::Relay { .. }))
+                        .count()
+                        != 1)
+            {
+                return Err(DefinitionError::value(
+                    entry,
+                    "mobile relay requires one capital-hull socket, a real interior and bounded coverage",
+                ));
             }
             if let ComponentRole::Power {
                 states, initial, ..
@@ -1610,302 +1651,331 @@ pub fn bind(
     let mut capabilities: Vec<CapabilityInit> = Vec::new();
     for component in &spec.components {
         let component_id = format!("{name}.{}", component.id);
-        let (payload, references, cells) =
-            match &component.role {
-                ComponentRole::Weapon { weapon, coaxial } => {
-                    let def = cx.weapons.get(weapon).ok_or_else(|| {
-                        DefinitionError::reference(name, "weapon", weapon.as_str())
-                    })?;
-                    let rounds = cx
-                        .ammunition
-                        .get(&def.ammunition)
-                        .ok_or_else(|| {
-                            DefinitionError::reference(name, "ammunition", def.ammunition.as_str())
-                        })?
-                        .count_per_load;
-                    let weapon_ref = cx.weapon_refs.get(weapon).ok_or_else(|| {
-                        DefinitionError::reference(name, "weapon", weapon.as_str())
-                    })?;
-                    let mut cells = vec![
-                        CellSpec {
-                            id: tactics_id!(name, "cell", AMMO_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(rounds),
-                            init: i64::from(rounds),
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", READY_AT_CELL, CellId)?,
-                            min: 0,
-                            max: MAX_READY_AT_MS,
-                            init: 0,
-                        },
-                    ];
-                    // **16b cut X.1**: what one shot of this weapon adds, and only
-                    // for a weapon that authors any — so both stock weapons'
-                    // components are what they were.
-                    if def.heat_per_shot > 0 {
+        let (payload, references, cells) = match &component.role {
+            ComponentRole::Weapon { weapon, coaxial } => {
+                let def = cx
+                    .weapons
+                    .get(weapon)
+                    .ok_or_else(|| DefinitionError::reference(name, "weapon", weapon.as_str()))?;
+                let rounds = cx
+                    .ammunition
+                    .get(&def.ammunition)
+                    .ok_or_else(|| {
+                        DefinitionError::reference(name, "ammunition", def.ammunition.as_str())
+                    })?
+                    .count_per_load;
+                let weapon_ref = cx
+                    .weapon_refs
+                    .get(weapon)
+                    .ok_or_else(|| DefinitionError::reference(name, "weapon", weapon.as_str()))?;
+                let mut cells = vec![
+                    CellSpec {
+                        id: tactics_id!(name, "cell", AMMO_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(rounds),
+                        init: i64::from(rounds),
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", READY_AT_CELL, CellId)?,
+                        min: 0,
+                        max: MAX_READY_AT_MS,
+                        init: 0,
+                    },
+                ];
+                // **16b cut X.1**: what one shot of this weapon adds, and only
+                // for a weapon that authors any — so both stock weapons'
+                // components are what they were.
+                if def.heat_per_shot > 0 {
+                    cells.push(CellSpec {
+                        id: tactics_id!(name, "cell", HEAT_PER_SHOT_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(def.heat_per_shot),
+                        init: i64::from(def.heat_per_shot),
+                    });
+                }
+                (
+                    serde_json::json!({
+                        "role": "weapon",
+                        "weapon": weapon.as_str(),
+                        "coaxial": coaxial,
+                    }),
+                    vec![weapon_ref.clone()],
+                    cells,
+                )
+            }
+            ComponentRole::Sensor { sensor, thermal } => {
+                if !cx.sensors.contains_key(sensor) {
+                    return Err(DefinitionError::reference(name, "sensor", sensor.as_str()));
+                }
+                let sensor_ref = cx
+                    .sensor_refs
+                    .get(sensor)
+                    .ok_or_else(|| DefinitionError::reference(name, "sensor", sensor.as_str()))?;
+                let mut payload =
+                    serde_json::json!({ "role": "sensor", "sensor": sensor.as_str() });
+                let mut cells = vec![CellSpec {
+                    id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
+                    min: 0,
+                    max: MAX_CONDITION,
+                    init: MAX_CONDITION,
+                }];
+                // **16b cut X.3**: the two thermal factors, and only for a
+                // mount that authors them — so every stock sight's component
+                // is the definition, the cells and the digest it was.
+                if let Some(thermal) = thermal {
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert(
+                            "thermal".to_owned(),
+                            serde_json::json!({
+                                "powered_permille": thermal.powered_permille,
+                                "cold_permille": thermal.cold_permille,
+                            }),
+                        );
+                    }
+                    for (cell, permille) in [
+                        (THERMAL_POWERED_CELL, thermal.powered_permille),
+                        (THERMAL_COLD_CELL, thermal.cold_permille),
+                    ] {
                         cells.push(CellSpec {
-                            id: tactics_id!(name, "cell", HEAT_PER_SHOT_CELL, CellId)?,
+                            id: tactics_id!(name, "cell", cell, CellId)?,
                             min: 0,
-                            max: i64::from(def.heat_per_shot),
-                            init: i64::from(def.heat_per_shot),
+                            max: i64::from(MAX_SIGNATURE_PERMILLE),
+                            init: i64::from(permille),
                         });
                     }
-                    (
-                        serde_json::json!({
-                            "role": "weapon",
-                            "weapon": weapon.as_str(),
-                            "coaxial": coaxial,
-                        }),
-                        vec![weapon_ref.clone()],
-                        cells,
-                    )
                 }
-                ComponentRole::Sensor { sensor, thermal } => {
-                    if !cx.sensors.contains_key(sensor) {
-                        return Err(DefinitionError::reference(name, "sensor", sensor.as_str()));
-                    }
-                    let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
-                        DefinitionError::reference(name, "sensor", sensor.as_str())
-                    })?;
-                    let mut payload =
-                        serde_json::json!({ "role": "sensor", "sensor": sensor.as_str() });
-                    let mut cells = vec![CellSpec {
+                (payload, vec![sensor_ref.clone()], cells)
+            }
+            // **16b cut X.4**: the jamming pod (doc 16 §9 item 4). Its three
+            // numbers are the sensor row's `jamming` block, laid down as cells
+            // so the arena reads them off the unit that crosses the custody
+            // seam anyway.
+            ComponentRole::Ecm { sensor } => {
+                let def = cx
+                    .sensors
+                    .get(sensor)
+                    .ok_or_else(|| DefinitionError::reference(name, "sensor", sensor.as_str()))?;
+                let sensor_ref = cx
+                    .sensor_refs
+                    .get(sensor)
+                    .ok_or_else(|| DefinitionError::reference(name, "sensor", sensor.as_str()))?;
+                // A pod that radiates a row with no `jamming` block jams
+                // nothing, and would do it silently for a whole match. The two
+                // are authored in different files and neither can check the
+                // other alone, so the cross-reference is checked here — the
+                // same place cut X.1 checks that a laser's tank declares a heat
+                // ceiling.
+                let jamming = def.jamming.as_ref().ok_or_else(|| {
+                    DefinitionError::value(
+                        name,
+                        format!(
+                            "component `{}` is an `ecm` pod radiating `{}`, which declares \
+                                 no `jamming`",
+                            component.id, sensor
+                        ),
+                    )
+                })?;
+                let cells = vec![
+                    CellSpec {
                         id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
                         min: 0,
                         max: MAX_CONDITION,
                         init: MAX_CONDITION,
-                    }];
-                    // **16b cut X.3**: the two thermal factors, and only for a
-                    // mount that authors them — so every stock sight's component
-                    // is the definition, the cells and the digest it was.
-                    if let Some(thermal) = thermal {
-                        if let Some(object) = payload.as_object_mut() {
-                            object.insert(
-                                "thermal".to_owned(),
-                                serde_json::json!({
-                                    "powered_permille": thermal.powered_permille,
-                                    "cold_permille": thermal.cold_permille,
-                                }),
-                            );
-                        }
-                        for (cell, permille) in [
-                            (THERMAL_POWERED_CELL, thermal.powered_permille),
-                            (THERMAL_COLD_CELL, thermal.cold_permille),
-                        ] {
-                            cells.push(CellSpec {
-                                id: tactics_id!(name, "cell", cell, CellId)?,
-                                min: 0,
-                                max: i64::from(MAX_SIGNATURE_PERMILLE),
-                                init: i64::from(permille),
-                            });
-                        }
-                    }
-                    (payload, vec![sensor_ref.clone()], cells)
-                }
-                // **16b cut X.4**: the jamming pod (doc 16 §9 item 4). Its three
-                // numbers are the sensor row's `jamming` block, laid down as cells
-                // so the arena reads them off the unit that crosses the custody
-                // seam anyway.
-                ComponentRole::Ecm { sensor } => {
-                    let def = cx.sensors.get(sensor).ok_or_else(|| {
-                        DefinitionError::reference(name, "sensor", sensor.as_str())
-                    })?;
-                    let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
-                        DefinitionError::reference(name, "sensor", sensor.as_str())
-                    })?;
-                    // A pod that radiates a row with no `jamming` block jams
-                    // nothing, and would do it silently for a whole match. The two
-                    // are authored in different files and neither can check the
-                    // other alone, so the cross-reference is checked here — the
-                    // same place cut X.1 checks that a laser's tank declares a heat
-                    // ceiling.
-                    let jamming = def.jamming.as_ref().ok_or_else(|| {
-                        DefinitionError::value(
-                            name,
-                            format!(
-                                "component `{}` is an `ecm` pod radiating `{}`, which declares \
-                                 no `jamming`",
-                                component.id, sensor
-                            ),
-                        )
-                    })?;
-                    let cells = vec![
-                        CellSpec {
-                            id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
-                            min: 0,
-                            max: MAX_CONDITION,
-                            init: MAX_CONDITION,
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", JAM_RADIUS_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(MAX_JAM_RADIUS_CELLS),
-                            init: i64::from(jamming.radius_cells),
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", JAM_ATTENUATION_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(MAX_ATTENUATION_COST),
-                            init: i64::from(jamming.attenuation_cost),
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", JAM_SIGNATURE_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(MAX_SIGNATURE_PERMILLE),
-                            init: i64::from(jamming.signature_permille),
-                        },
-                    ];
-                    // The block itself is deliberately **not** copied into the
-                    // payload the way cut X.3's thermal band is. X.3's band is
-                    // authored on the mount, so the mount is the only place it
-                    // exists; a pod's three numbers are the *sensor row's*, and
-                    // that row is `sensor_ref` — a reference with its own digest
-                    // in it. Change the block and the row's digest moves, so this
-                    // component's does, so the unit's does. Copying the numbers in
-                    // as well would hash them twice and give two places to
-                    // disagree.
-                    (
-                        serde_json::json!({ "role": "ecm", "sensor": sensor.as_str() }),
-                        vec![sensor_ref.clone()],
-                        cells,
-                    )
-                }
-                // **16b cut X.5**: the counter-jamming filter (doc 16 §9 item 5).
-                // Its two numbers are the sensor row's `emission` block, laid down
-                // as cells for the reason the pod's three are, and beside the
-                // `condition` cell that says whether the filter is still there —
-                // which is what the arena reads to decide that it counts.
-                ComponentRole::Eccm { sensor } => {
-                    let def = cx.sensors.get(sensor).ok_or_else(|| {
-                        DefinitionError::reference(name, "sensor", sensor.as_str())
-                    })?;
-                    let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
-                        DefinitionError::reference(name, "sensor", sensor.as_str())
-                    })?;
-                    // A filter fitted to a row with no `emission` block recovers
-                    // nothing, and would do it silently for a whole match — the
-                    // same failure cut X.4's pod has, checked in the same place and
-                    // for the same reason: the two are authored in different files
-                    // and neither can check the other alone.
-                    let eccm = def.eccm().ok_or_else(|| {
-                        DefinitionError::value(
-                            name,
-                            format!(
-                                "component `{}` is an `eccm` filter fitted to `{}`, which \
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", JAM_RADIUS_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(MAX_JAM_RADIUS_CELLS),
+                        init: i64::from(jamming.radius_cells),
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", JAM_ATTENUATION_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(MAX_ATTENUATION_COST),
+                        init: i64::from(jamming.attenuation_cost),
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", JAM_SIGNATURE_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(MAX_SIGNATURE_PERMILLE),
+                        init: i64::from(jamming.signature_permille),
+                    },
+                ];
+                // The block itself is deliberately **not** copied into the
+                // payload the way cut X.3's thermal band is. X.3's band is
+                // authored on the mount, so the mount is the only place it
+                // exists; a pod's three numbers are the *sensor row's*, and
+                // that row is `sensor_ref` — a reference with its own digest
+                // in it. Change the block and the row's digest moves, so this
+                // component's does, so the unit's does. Copying the numbers in
+                // as well would hash them twice and give two places to
+                // disagree.
+                (
+                    serde_json::json!({ "role": "ecm", "sensor": sensor.as_str() }),
+                    vec![sensor_ref.clone()],
+                    cells,
+                )
+            }
+            // **16b cut X.5**: the counter-jamming filter (doc 16 §9 item 5).
+            // Its two numbers are the sensor row's `emission` block, laid down
+            // as cells for the reason the pod's three are, and beside the
+            // `condition` cell that says whether the filter is still there —
+            // which is what the arena reads to decide that it counts.
+            ComponentRole::Eccm { sensor } => {
+                let def = cx
+                    .sensors
+                    .get(sensor)
+                    .ok_or_else(|| DefinitionError::reference(name, "sensor", sensor.as_str()))?;
+                let sensor_ref = cx
+                    .sensor_refs
+                    .get(sensor)
+                    .ok_or_else(|| DefinitionError::reference(name, "sensor", sensor.as_str()))?;
+                // A filter fitted to a row with no `emission` block recovers
+                // nothing, and would do it silently for a whole match — the
+                // same failure cut X.4's pod has, checked in the same place and
+                // for the same reason: the two are authored in different files
+                // and neither can check the other alone.
+                let eccm = def.eccm().ok_or_else(|| {
+                    DefinitionError::value(
+                        name,
+                        format!(
+                            "component `{}` is an `eccm` filter fitted to `{}`, which \
                                  declares no `emission`",
-                                component.id, sensor
-                            ),
-                        )
-                    })?;
-                    let cells = vec![
-                        CellSpec {
-                            id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
-                            min: 0,
-                            max: MAX_CONDITION,
-                            init: MAX_CONDITION,
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", ECCM_ATTENUATION_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(MAX_ATTENUATION_COST),
-                            init: i64::from(eccm.attenuation_recovery),
-                        },
-                        CellSpec {
-                            id: tactics_id!(name, "cell", ECCM_SIGNATURE_CELL, CellId)?,
-                            min: 0,
-                            max: i64::from(MAX_SIGNATURE_PERMILLE),
-                            init: i64::from(eccm.signature_recovery_permille),
-                        },
-                    ];
-                    // The block is **not** copied into the payload, for the reason
-                    // cut X.4's is not: a filter's two numbers are the *sensor
-                    // row's*, and that row is `sensor_ref` — a reference carrying
-                    // its own digest. Change the block and the row's digest moves,
-                    // so this component's does, so the unit's does.
-                    (
-                        serde_json::json!({ "role": "eccm", "sensor": sensor.as_str() }),
-                        vec![sensor_ref.clone()],
-                        cells,
+                            component.id, sensor
+                        ),
                     )
-                }
-                ComponentRole::Power {
-                    capability,
-                    states,
-                    initial,
-                } => {
-                    let schema = schema_ref(name, cx.schemas, POWER_RULES_SCHEMA)?;
-                    let words: Vec<&str> = states.iter().map(CanonicalId::as_str).collect();
-                    capabilities.push(CapabilityInit {
-                        key: CapabilityKey {
-                            id: tactics_id!(name, "capability", capability.as_str(), CapabilityId)?,
-                            source: Some(tactics_id!(
-                                name,
-                                "component",
-                                component.id.as_str(),
-                                ComponentId
-                            )?),
-                        },
-                        rules: RulesValue::new(
-                            schema,
-                            serde_json::json!({ "states": words, "state": initial.as_str() }),
-                        )
-                        .map_err(|error| DefinitionError::value(name, error.to_string()))?,
-                    });
-                    (
-                        serde_json::json!({
-                            "role": "power",
-                            "capability": capability.as_str(),
-                            "states": states.iter().map(CanonicalId::as_str).collect::<Vec<_>>(),
-                            "initial": initial.as_str(),
-                        }),
-                        Vec::new(),
-                        Vec::new(),
-                    )
-                }
-                // **17b cut M3.1** (doc 17 §9, D-UM-33): the core. One cell —
-                // the class NOW, born at the fitted class's ordinal, what
-                // `degrade_core` will lower — and the `tacsim.core` capability
-                // sourced on this component, whose payload is the fitting's
-                // record: the class, the governed bit and that class's row of
-                // the compiled-in `ClassTable::STOCK`, through the ONE helper
-                // every test hull uses too (`core::profile_payload`). The class
-                // a mind thinks at is read live off the cell
-                // (`crate::arena::core::read_core`), never off the payload.
-                ComponentRole::Core { core } => {
-                    let def = cx
-                        .cores
-                        .get(core)
-                        .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
-                    let core_ref = cx
-                        .core_refs
-                        .get(core)
-                        .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
-                    let schema = schema_ref(name, cx.schemas, CORE_RULES_SCHEMA)?;
-                    let source =
-                        tactics_id!(name, "component", component.id.as_str(), ComponentId)?;
-                    let unbuilt = || {
-                        DefinitionError::value(
+                })?;
+                let cells = vec![
+                    CellSpec {
+                        id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
+                        min: 0,
+                        max: MAX_CONDITION,
+                        init: MAX_CONDITION,
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", ECCM_ATTENUATION_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(MAX_ATTENUATION_COST),
+                        init: i64::from(eccm.attenuation_recovery),
+                    },
+                    CellSpec {
+                        id: tactics_id!(name, "cell", ECCM_SIGNATURE_CELL, CellId)?,
+                        min: 0,
+                        max: i64::from(MAX_SIGNATURE_PERMILLE),
+                        init: i64::from(eccm.signature_recovery_permille),
+                    },
+                ];
+                // The block is **not** copied into the payload, for the reason
+                // cut X.4's is not: a filter's two numbers are the *sensor
+                // row's*, and that row is `sensor_ref` — a reference carrying
+                // its own digest. Change the block and the row's digest moves,
+                // so this component's does, so the unit's does.
+                (
+                    serde_json::json!({ "role": "eccm", "sensor": sensor.as_str() }),
+                    vec![sensor_ref.clone()],
+                    cells,
+                )
+            }
+            ComponentRole::Relay { radius_km, room } => {
+                let schema = schema_ref(name, cx.schemas, RELAY_RULES_SCHEMA)?;
+                capabilities.push(CapabilityInit {
+                    key: CapabilityKey {
+                        id: tactics_id!(name, "capability", "tacsim.relay.mobile", CapabilityId)?,
+                        source: Some(tactics_id!(
                             name,
-                            format!("component `{}`'s core will not bind", component.id),
-                        )
-                    };
-                    capabilities.push(
-                        crate::definitions::core::core_capability(
-                            &source,
-                            def.class,
-                            def.governed,
-                            schema,
-                        )
-                        .ok_or_else(unbuilt)?,
-                    );
-                    (
-                        serde_json::json!({ "role": "core", "core": core.as_str() }),
-                        vec![core_ref.clone()],
-                        vec![crate::definitions::core::core_cell(def.class).ok_or_else(unbuilt)?],
+                            "component",
+                            component.id.as_str(),
+                            ComponentId
+                        )?),
+                    },
+                    rules: RulesValue::new(
+                        schema,
+                        serde_json::json!({"radius_km":radius_km,"room":room}),
                     )
-                }
-            };
+                    .map_err(|e| DefinitionError::value(name, e.to_string()))?,
+                });
+                (
+                    serde_json::json!({"role":"relay","radius_km":radius_km,"room":room}),
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+            ComponentRole::Power {
+                capability,
+                states,
+                initial,
+            } => {
+                let schema = schema_ref(name, cx.schemas, POWER_RULES_SCHEMA)?;
+                let words: Vec<&str> = states.iter().map(CanonicalId::as_str).collect();
+                capabilities.push(CapabilityInit {
+                    key: CapabilityKey {
+                        id: tactics_id!(name, "capability", capability.as_str(), CapabilityId)?,
+                        source: Some(tactics_id!(
+                            name,
+                            "component",
+                            component.id.as_str(),
+                            ComponentId
+                        )?),
+                    },
+                    rules: RulesValue::new(
+                        schema,
+                        serde_json::json!({ "states": words, "state": initial.as_str() }),
+                    )
+                    .map_err(|error| DefinitionError::value(name, error.to_string()))?,
+                });
+                (
+                    serde_json::json!({
+                        "role": "power",
+                        "capability": capability.as_str(),
+                        "states": states.iter().map(CanonicalId::as_str).collect::<Vec<_>>(),
+                        "initial": initial.as_str(),
+                    }),
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+            // **17b cut M3.1** (doc 17 §9, D-UM-33): the core. One cell —
+            // the class NOW, born at the fitted class's ordinal, what
+            // `degrade_core` will lower — and the `tacsim.core` capability
+            // sourced on this component, whose payload is the fitting's
+            // record: the class, the governed bit and that class's row of
+            // the compiled-in `ClassTable::STOCK`, through the ONE helper
+            // every test hull uses too (`core::profile_payload`). The class
+            // a mind thinks at is read live off the cell
+            // (`crate::arena::core::read_core`), never off the payload.
+            ComponentRole::Core { core } => {
+                let def = cx
+                    .cores
+                    .get(core)
+                    .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
+                let core_ref = cx
+                    .core_refs
+                    .get(core)
+                    .ok_or_else(|| DefinitionError::reference(name, "core", core.as_str()))?;
+                let schema = schema_ref(name, cx.schemas, CORE_RULES_SCHEMA)?;
+                let source = tactics_id!(name, "component", component.id.as_str(), ComponentId)?;
+                let unbuilt = || {
+                    DefinitionError::value(
+                        name,
+                        format!("component `{}`'s core will not bind", component.id),
+                    )
+                };
+                capabilities.push(
+                    crate::definitions::core::core_capability(
+                        &source,
+                        def.class,
+                        def.governed,
+                        schema,
+                    )
+                    .ok_or_else(unbuilt)?,
+                );
+                (
+                    serde_json::json!({ "role": "core", "core": core.as_str() }),
+                    vec![core_ref.clone()],
+                    vec![crate::definitions::core::core_cell(def.class).ok_or_else(unbuilt)?],
+                )
+            }
+        };
         let descriptor = descriptor(
             "component",
             &component_id,

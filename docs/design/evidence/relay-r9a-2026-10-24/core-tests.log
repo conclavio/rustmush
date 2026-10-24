@@ -1,0 +1,43 @@
+   Compiling rustix v1.1.4
+   Compiling bitflags v2.13.1
+   Compiling tracing-core v0.1.36
+   Compiling linux-raw-sys v0.12.1
+   Compiling regex-syntax v0.8.11
+   Compiling fastrand v2.5.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling wait-timeout v0.2.1
+   Compiling quick-error v1.2.3
+   Compiling bit-vec v0.8.0
+   Compiling rand_chacha v0.9.0
+   Compiling bit-set v0.8.0
+   Compiling tracing-log v0.2.0
+   Compiling tracing v0.1.44
+   Compiling tracing-serde v0.2.0
+   Compiling rand v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling unarray v0.1.4
+   Compiling smallvec v1.15.2
+   Compiling regex-automata v0.4.18
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling proptest v1.11.0
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+    Finished `test` profile [unoptimized] target(s) in 32.12s
+     Running unittests src/lib.rs (target/debug/deps/mush_core-3267fe49d474551f)
+
+running 11 tests
+test durable_schedule::tests::incomparable_observation_and_stale_revision_fail_without_a_plan ... ok
+test durable_schedule::tests::restart_skip_and_suspend_are_explicit_durable_transitions ... ok
+test durable_schedule::tests::final_representable_tick_exhausts_instead_of_wrapping ... ok
+test durable_schedule::tests::restart_policy_does_not_turn_live_lag_into_an_implicit_skip ... ok
+test durable_schedule::tests::occurrence_identity_is_stable_and_generation_scoped ... ok
+test durable_schedule::tests::oldest_first_selects_prefix_but_still_records_the_skipped_suffix ... ok
+test durable_schedule::tests::latest_first_catch_up_forgives_old_excess_and_advances_past_all_due ... ok
+test durable_schedule::tests::strict_decode_revalidates_clock_cadence_and_bounds ... ok
+test schedule_source::tests::vf_t2c_the_scan_pause_covers_domain_and_scene_provider_stalls_and_nothing_else ... ok
+test durable_schedule::tests::waits_without_revision_change_and_one_shot_completes_once ... ok
+test engine::tests::wait_schedules_and_fires_through_engine ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 395 filtered out; finished in 0.00s

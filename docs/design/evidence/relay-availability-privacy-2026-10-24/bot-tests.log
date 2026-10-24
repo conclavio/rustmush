@@ -1,0 +1,884 @@
+   Compiling mush-bot v0.1.0 (/opt/rustmush/dev1/build/crates/mush-bot)
+    Finished `test` profile [unoptimized] target(s) in 1m 34s
+     Running unittests src/lib.rs (target/debug/deps/mush_bot-abbce15b1759256a)
+
+running 469 tests
+test analysis::tests::null_probe_reports_and_ungraded_attempts_remain_unknown ... ok
+test analysis::tests::actor_order_does_not_split_variants_but_other_authored_inputs_do ... ok
+test analysis::tests::conversation_policy_content_and_floor_mode_distinguish_variants ... ok
+test analysis::tests::unknown_data_is_null_and_unknown_outcome_is_a_ci_error ... ok
+test analysis::tests::debug_runs_preserve_hold_timing_and_missing_classification ... ok
+test arena::commander::tests::a_doctrine_is_clamped_and_its_target_checked ... ok
+test arena::commander::tests::a_doctrine_reads_plain_and_fenced ... ok
+test analysis::tests::repeated_variants_merge_exact_session_costs_and_keep_coverage ... ok
+test arena::commander::tests::a_hunt_answer_parses ... ok
+test arena::commander::tests::a_cancelled_call_asks_again_at_once ... ok
+test analysis::tests::simulation_requires_evidence_and_conflicting_success_is_rejected ... ok
+test arena::commander::tests::a_doctrine_refuses_an_unknown_or_missing_field_and_a_bad_word ... ok
+test arena::commander::tests::a_long_note_is_cut_on_a_character_boundary ... ok
+test arena::commander::tests::a_ready_ask_is_neither_marked_nor_counted_so_a_budget_stop_leaves_no_call ... ok
+test arena::commander::tests::an_answer_later_than_twice_the_period_is_dropped ... ok
+test arena::commander::tests::an_ask_is_given_up_at_its_stale_bound ... ok
+test arena::commander::tests::a_picture_with_nothing_read_is_small_and_counts_from_power_online ... ok
+test arena::commander::tests::an_invalid_answer_keeps_the_doctrine_and_is_recorded ... ok
+test arena::commander::tests::an_error_records_its_cause_and_an_unsent_request_is_not_a_call ... ok
+test arena::commander::tests::an_unbegun_or_disabled_schedule_never_asks ... ok
+test arena::commander::tests::five_abandoned_asks_stop_the_commander ... ok
+test arena::commander::tests::five_stale_answers_in_a_row_stop_it_and_a_timely_one_resets_the_count ... ok
+test arena::commander::tests::one_call_in_flight_and_the_cadence_after_each_reply ... ok
+test arena::commander::tests::hold_s_is_clamped_defaulted_for_withdraw_and_dropped_otherwise ... ok
+test arena::commander::tests::five_errors_in_a_row_stop_it_and_an_answer_resets_the_count ... ok
+test arena::commander::tests::the_band_clamps_to_the_sight ... ok
+test arena::commander::tests::the_budget_gate_reads_the_commanders_own_currency ... ok
+test arena::commander::tests::the_budget_holds_for_the_rest_of_the_lane_and_the_match_end_is_not_early ... ok
+test arena::commander::tests::the_call_limit_stops_it_for_the_match ... ok
+test arena::commander::tests::the_commander_model_resolves_from_its_table_or_the_session_only_by_opt_in ... ok
+test arena::commander::tests::an_overlong_picture_drops_the_oldest_events_first ... ok
+test arena::commander::tests::the_commanders_timeout_is_at_most_ten_seconds ... ok
+test analysis::tests::failed_or_malformed_probe_grades_cannot_claim_success ... ok
+test arena::commander::tests::the_lock_broken_and_not_held_again_for_three_seconds_asks_at_once ... ok
+test arena::commander::tests::the_commanders_picture_is_bounded_and_holds_only_what_the_picture_does ... ok
+test arena::commander::tests::the_capture_carries_the_policy_and_validates ... ok
+test arena::commander::tests::the_policy_names_hold_the_facets_and_the_sight ... ok
+test arena::commander::tests::the_picture_carries_the_rows_relative_bearing ... ok
+test arena::commander::tests::the_policy_names_the_opening_the_halt_and_the_reapproach ... ok
+test arena::commander::tests::the_policy_names_the_room ... ok
+test arena::commander::tests::the_picture_names_its_own_side_and_sends_no_note ... ok
+test arena::commander::tests::the_commanders_client_answers_from_the_sessions_tape_never_its_endpoint ... ok
+test arena::commander::tests::the_policy_names_the_follow ... ok
+test arena::commander::tests::the_policy_names_the_side_the_hunt_and_the_withdraw_rule ... ok
+test analysis::tests::probes_aggregate_each_evaluation_and_keep_rubric_and_variant_boundaries ... ok
+test analysis::tests::partial_cost_data_is_missing_and_failure_exports_are_bounded ... ok
+test arena::commander::tests::vet_flies_a_withdraw_during_the_rest_as_hunt_or_the_engagement ... ok
+test arena::lane::tests::the_ledger_expects_the_lock_line_and_the_lobbys_answers ... ok
+test arena::lane::tests::the_ledger_pops_in_order_lapses_and_follows_the_lobby ... ok
+test arena::lane::tests::a_chain_lasts_one_output_and_runs_through_an_echo ... ok
+test arena::lane::tests::a_brief_answers_only_its_own_line ... ok
+test arena::lines::tests::a_line_that_would_not_fit_continues_a_full_width_channel_line ... ok
+test arena::commander::tests::vet_flies_a_withdraw_on_a_sound_hull_as_hunt_or_the_engagement ... ok
+test arena::lines::tests::acks ... ok
+test arena::lines::tests::ap4_the_briefs_own_empty_sentence_and_end_line ... ok
+test arena::commander::tests::vet_flies_an_overruled_withdraw_as_the_engagement ... ok
+test arena::commander::tests::vet_keeps_a_withdraw_on_a_failing_hull ... ok
+test arena::lines::tests::answer_to_maps_every_cockpit_answer ... ok
+test arena::lines::tests::contact_rows_read_every_designator_width ... ok
+test arena::lines::tests::held_receiver_emcon_power_and_refusals ... ok
+test arena::lines::tests::contact_and_fire_notices ... ok
+test arena::lines::tests::indented_continuations_are_never_game_sentences ... ok
+test arena::lines::tests::locks_and_weapon_rows ... ok
+test arena::lines::tests::m1a3_contact_rows_read_the_optional_tail ... ok
+test arena::lines::tests::range_bearing_and_spots ... ok
+test arena::lines::tests::rooms_hints_and_transients ... ok
+test arena::lines::tests::the_assembler_keeps_tails_and_flushes_stale_prompts ... ok
+test arena::lines::tests::split_utf8_and_crlf_through_the_decoder ... ok
+test arena::lines::tests::the_no_such_weapon_answer ... ok
+test arena::lines::tests::the_status_block ... ok
+test arena::lines::tests::the_victims_lines ... ok
+test arena::lines::tests::unseated_reclaim_resume_and_login ... ok
+test arena::lines::tests::the_view_brief_lines ... ok
+test arena::lines::tests::the_help_examples_read_as_what_they_say ... ok
+test arena::lines::tests::the_lobby_and_the_centre ... ok
+test arena::lobby::tests::a_claim_under_another_name_is_confirmed_by_already_hold ... ok
+test arena::lobby::tests::a_busy_answer_to_sim_leave_types_it_again_inside_its_three_seconds ... ok
+test arena::lobby::tests::a_busy_centre_is_read_again_every_ten_seconds_then_blocks ... ok
+test arena::lobby::tests::a_drop_mid_fight_reboards_every_three_seconds_until_taken_back ... ok
+test arena::lobby::tests::a_board_answered_no_slot_in_a_running_match_loses_it ... ok
+test arena::commander::tests::the_view_names_the_pilot_rule ... ok
+test arena::lobby::tests::a_foreign_matchs_lines_move_nothing ... ok
+test arena::lobby::tests::a_late_look_answer_never_blocks_the_walk ... ok
+test arena::lobby::tests::a_filled_row_with_no_window_is_not_lead_until_they_leave ... ok
+test arena::lobby::tests::a_non_lead_waits_for_somebody_to_start_then_blocks ... ok
+test arena::lobby::tests::a_queued_start_is_dropped_when_the_lead_is_lost ... ok
+test arena::lobby::tests::a_refused_claim_neither_waits_nor_leaves ... ok
+test arena::lobby::tests::a_reboard_outside_the_team_room_walks_there_first_and_restarts_a_dark_tank ... ok
+test arena::lobby::tests::a_foreign_rooms_description_is_not_the_walks_answer ... ok
+test arena::lobby::tests::a_refused_start_closes_the_window_and_waits ... ok
+test arena::lobby::tests::a_stop_answered_by_the_other_sides_slot_types_no_leave ... ok
+test arena::lobby::tests::a_running_match_is_never_blocked_by_startup ... ok
+test arena::lobby::tests::a_stop_with_a_claim_in_flight_waits_then_leaves_once ... ok
+test arena::lobby::tests::a_rematch_the_bot_claims_first_leads_though_a_human_led_match_one ... ok
+test arena::lobby::tests::a_stop_whose_claim_is_never_answered_leaves_at_the_step_timeout ... ok
+test arena::lobby::tests::a_survey_of_a_running_centre_flown_by_its_mind_reboards ... ok
+test arena::lobby::tests::a_walk_waits_for_its_own_room ... ok
+test arena::lobby::tests::a_tank_that_reads_dark_mid_fight_is_started_again ... ok
+test arena::lobby::tests::a_tank_left_for_good_ends_the_match_as_left ... ok
+test arena::lobby::tests::a_stop_with_a_start_in_flight_leaves_after_its_answer ... ok
+test arena::lobby::tests::an_ooc_that_does_not_reach_the_hall_blocks ... ok
+test arena::lobby::tests::an_abort_before_running_ends_the_match_as_abort ... ok
+test arena::lobby::tests::an_empty_other_side_waits_for_a_claim_there_then_blocks ... ok
+test arena::lobby::tests::each_transient_resends_the_same_line_after_two_hundred_ms ... ok
+test arena::lobby::tests::forty_transients_running_block ... ok
+test arena::lobby::tests::from_the_hall_only_simulator_and_from_the_centre_nothing ... ok
+test arena::lobby::tests::another_claim_first_keeps_it_not_lead_until_that_name_gives_up ... ok
+test arena::lobby::tests::forty_busy_startups_never_give_a_running_match_up ... ok
+test arena::lobby::tests::shift_moves_every_wait ... ok
+test arena::lobby::tests::no_answer_within_the_step_timeout_blocks ... ok
+test arena::lobby::tests::no_window_means_not_lead ... ok
+test arena::lobby::tests::lines_read_while_paused_wait_from_the_resume ... ok
+test arena::lobby::tests::every_answer_to_a_claim_queues_the_leave ... ok
+test arena::lobby::tests::the_callsign_letters ... ok
+test arena::lobby::tests::the_connected_line_names_the_pilot_before_it_claims ... ok
+test arena::lobby::tests::the_centre_refusals_block_with_their_sentences ... ok
+test arena::lobby::tests::every_line_on_every_path_is_in_the_closed_vocabulary ... ok
+test arena::lobby::tests::sim_leave_once_on_stop_in_selection_holding_a_slot ... ok
+test arena::lobby::tests::the_first_claim_after_an_empty_row_leads ... ok
+test arena::lobby::tests::the_grace_restarts_on_another_claim_or_give_up ... ok
+test arena::lobby::tests::the_matchs_own_times_stay_real_while_paused ... ok
+test arena::lobby::tests::the_hatch_then_outside_cockpit_is_the_end_not_a_drop ... ok
+test arena::lobby::tests::the_whole_walk_from_limbo_to_the_fight ... ok
+test arena::lobby::tests::the_waiting_steps_block_on_their_own_bounds ... ok
+test arena::lobby::tests::startup_knows_every_answer ... ok
+test arena::picture::tests::a_fire_is_pending_until_its_own_answer ... ok
+test arena::picture::tests::a_contacts_reply_is_the_whole_list ... ok
+test arena::picture::tests::a_cycling_row_bounds_the_clock_both_ways ... ok
+test arena::picture::tests::a_cycling_row_never_pulls_a_lattice_clock_early ... ok
+test arena::picture::tests::a_cycling_row_and_a_refusal_count_the_rounded_up_seconds ... ok
+test arena::picture::tests::a_brief_stays_open_across_chatter_and_wrapped_pieces ... ok
+test arena::picture::tests::a_followed_match_ends_every_way_it_can ... ok
+test arena::picture::tests::a_friendly_hit_event_says_so ... ok
+test arena::picture::tests::a_held_row_still_reads_its_chance ... ok
+test arena::picture::tests::a_gun_the_tank_no_longer_carries_is_struck ... ok
+test arena::picture::tests::a_lock_line_split_from_its_rows_still_heads_them ... ok
+test arena::picture::tests::a_lock_fix_is_as_fine_as_its_plot_is_fresh ... ok
+test arena::picture::tests::a_learned_gun_fires_a_guard_past_the_next_lattice_point ... ok
+test arena::picture::tests::a_page_never_writes_status_rows ... ok
+test arena::picture::tests::a_ready_row_inside_the_guard_is_ready_now ... ok
+test arena::picture::tests::a_ready_row_whose_rounds_show_the_shot_left_is_read ... ok
+test arena::picture::tests::a_ready_row_never_pulls_a_lattice_clock_early ... ok
+test arena::picture::tests::a_new_followed_match_starts_clean ... ok
+test arena::picture::tests::a_moving_target_read_through_the_lock_gets_a_track ... ok
+test arena::picture::tests::a_shot_the_arena_refused_leaves_the_gun_ready ... ok
+test arena::picture::tests::a_refusal_that_answers_a_sent_fire_is_the_pre_check ... ok
+test arena::picture::tests::a_rename_and_back_keep_the_fixes_and_the_lock ... ok
+test arena::picture::tests::a_reply_split_by_a_gap_keeps_its_contacts ... ok
+test arena::picture::tests::a_second_reply_starts_at_a_designator_already_read ... ok
+test arena::picture::tests::a_slow_round_trip_or_an_unlearned_cycle_keeps_als_clock ... ok
+test arena::picture::tests::a_transient_takes_its_guns_mark ... ok
+test arena::picture::tests::a_still_cycling_refusal_is_retried_inside_its_second ... ok
+test arena::picture::tests::a_weapons_reply_with_and_without_a_lock_and_a_bare_lock_notice ... ok
+test arena::picture::tests::a_view_brief_is_read_into_the_ground_and_adds_no_contact ... ok
+test arena::picture::tests::an_ack_sets_the_clock_from_the_learned_cycle ... ok
+test arena::picture::tests::an_ack_sets_the_clock_one_cycle_and_the_slack_on ... ok
+test arena::picture::tests::contacts_read_counts_each_reply_once ... ok
+test arena::picture::tests::chatter_inside_a_reply_is_read_as_itself ... ok
+test arena::picture::tests::an_empty_gun_is_struck ... ok
+test arena::picture::tests::cycles_are_learned_from_cycling_rows_only ... ok
+test arena::picture::tests::each_clause_of_the_track_gate_decides_on_its_own ... ok
+test arena::picture::tests::fire_marks_are_kept_per_weapon ... ok
+test arena::picture::tests::hits_taken_are_split_by_facet ... ok
+test arena::picture::tests::indented_rows_count_only_inside_their_block ... ok
+test arena::picture::tests::in_order_notices_after_a_reply_stand ... ok
+test arena::picture::tests::dead_reckoning_and_the_plot_fix ... ok
+test arena::picture::tests::its_weapons_are_gone_holds_every_gun_until_weaponstatus ... ok
+test arena::picture::tests::power_ms_is_set_by_every_sentence_that_says_power_is_up ... ok
+test arena::picture::tests::no_line_but_a_contact_row_or_notice_adds_a_contact ... ok
+test arena::picture::tests::the_board_says_the_mode ... ok
+test arena::picture::tests::powered_here_only_from_the_own_power_online ... ok
+test arena::picture::tests::rounds_come_down_by_acks_between_rows ... ok
+test arena::picture::tests::only_the_close_drops_clears_and_replaces ... ok
+test arena::picture::tests::only_the_followed_match_moves_the_phase ... ok
+test arena::picture::tests::the_cycle_is_bounded_by_the_fire_not_the_ack ... ok
+test arena::picture::tests::the_last_facet_hit_is_kept ... ok
+test arena::picture::tests::the_lattice_is_forgotten_at_a_new_match ... ok
+test arena::picture::tests::the_cycle_is_read_inside_the_first_second ... ok
+test arena::picture::tests::the_first_times_are_set_once_in_a_running_match ... ok
+test arena::picture::tests::the_reclaim_sentences_flip_aboard ... ok
+test arena::picture::tests::a_stopped_target_read_through_the_rounded_scope_never_gets_a_track ... ok
+test arena::picture::tests::the_slack_falls_to_nothing_and_never_passes_one_pulse ... ok
+test arena::picture::tests::the_journal_flag_for_every_kind_of_line ... ok
+test arena::picture::tests::the_slack_rises_on_its_own_refusal_and_falls_on_an_ack ... ok
+test arena::picture::tests::the_status_block ... ok
+test arena::picture::tests::the_lattice_phase_is_read_from_the_arenas_notices ... ok
+test arena::picture::tests::the_tally_pairs_refusals_with_acks ... ok
+test arena::picture::tests::two_refusals_bench_the_gun ... ok
+test arena::picture::tests::the_summary_fits_the_terminal_and_the_picture_serialises ... ok
+test arena::pilot::tests::a_broken_machine_inside_the_keep_out_is_not_followed ... ok
+test arena::pilot::tests::a_broken_machine_ends_a_reapproach_or_a_halt_and_is_followed ... ok
+test arena::pilot::tests::a_broken_machine_is_followed_from_behind_at_the_band ... ok
+test arena::pilot::tests::a_crossfire_turns_to_the_nearest_shooter_and_never_off_the_target ... ok
+test arena::pilot::tests::a_heading_goes_again_only_eight_degrees_off_or_after_four_seconds ... ok
+test arena::pilot::tests::a_held_line_ends_a_hunt_leg ... ok
+test arena::pilot::tests::a_fresh_hostile_ends_the_hunt ... ok
+test arena::pilot::tests::a_followed_machine_lost_backs_off_from_its_trail ... ok
+test arena::pilot::tests::a_followed_row_is_flown_to_the_stale_limit_under_hunt ... ok
+test arena::pilot::tests::a_doctrine_naming_a_row_too_old_to_fight_gives_way_to_a_fresh_hostile ... ok
+test arena::pilot::tests::a_held_stop_orders_speed_again ... ok
+test arena::pilot::tests::a_hold_stops_again_after_flying_anything_else ... ok
+test arena::pilot::tests::a_held_stop_while_backing_off_ends_the_back_off ... ok
+test arena::pilot::tests::a_kill_drops_the_trail ... ok
+test arena::pilot::tests::a_held_notice_turns_forty_five_degrees_by_sense_for_three_seconds ... ok
+test arena::pilot::tests::a_hurt_machine_leaving_with_no_track_is_broken ... ok
+test arena::pilot::tests::a_lost_hostile_is_hunted_to_its_last_plot ... ok
+test arena::pilot::tests::a_held_stop_marks_its_ground_and_the_search_steers_round_it ... ok
+test arena::pilot::tests::a_one_track_tank_never_turns_the_dead_way_into_a_hit ... ok
+test arena::pilot::tests::a_stale_hostile_is_hunted_not_orbited ... ok
+test arena::pilot::tests::a_stale_row_does_not_block_the_search_after_a_hunt ... ok
+test arena::pilot::tests::a_stop_while_reversing_marks_behind_and_stops_the_reverse ... ok
+test arena::pilot::tests::a_return_held_short_waits_out_a_machine_still_leaving ... ok
+test arena::pilot::tests::a_one_track_tank_turns_only_the_live_way ... ok
+test arena::pilot::tests::a_side_or_rear_hit_turns_the_bow_to_the_shooter ... ok
+test arena::pilot::tests::a_reapproach_at_the_edge_slants_then_holds ... ok
+test arena::pilot::tests::after_a_shot_the_weapon_waits_for_its_own_clock ... ok
+test arena::pilot::tests::a_wreck_neither_holds_nor_ends_a_hunt ... ok
+test arena::pilot::tests::a_stopped_broken_machine_ends_the_follow ... ok
+test arena::pilot::tests::a_turn_into_a_hit_is_said_only_when_flown ... ok
+test arena::pilot::tests::a_tracked_hostile_is_hunted_along_its_course ... ok
+test arena::pilot::tests::a_tank_still_held_turns_further_from_where_it_stopped_then_backs_off ... ok
+test arena::pilot::tests::a_wingman_keeps_its_opening_beside_a_teammate ... ok
+test arena::pilot::tests::after_the_fall_back_the_doctrine_still_steers ... ok
+test arena::pilot::tests::an_immobile_tank_orders_no_motion_and_a_destroyed_one_nothing ... ok
+test arena::pilot::tests::an_implausible_track_is_no_evidence ... ok
+test arena::pilot::tests::an_unblamed_hit_mid_turn_does_not_send_the_bow_round_again ... ok
+test arena::pilot::tests::an_unidentified_contact_neither_starts_nor_ends_a_hunt ... ok
+test arena::pilot::tests::an_unhurt_machine_driving_off_is_not_broken ... ok
+test arena::pilot::tests::auto_sense_circles_toward_a_tracked_targets_rear_with_no_timed_flip ... ok
+test arena::pilot::tests::an_untold_return_does_not_end_the_opening ... ok
+test arena::pilot::tests::close_and_hunt_end_in_a_hold ... ok
+test arena::pilot::tests::close_hold_and_withdraw_headings ... ok
+test arena::pilot::tests::blocking_ground_behind_is_no_room ... ok
+test arena::lines::tests::classify_is_total ... ok
+test arena::pilot::tests::an_unidentified_return_stops_the_tank_facing_it ... ok
+test arena::pilot::tests::blocking_ground_ahead_cuts_the_move_in ... ok
+test arena::pilot::tests::fireable_skips_a_struck_an_empty_and_a_doubted_gun ... ok
+test arena::pilot::tests::falling_back_on_half_the_hull_withdraws_then_widens_the_band ... ok
+test arena::pilot::tests::fire_is_gated_on_readiness_rounds_freshness_and_chance ... ok
+test arena::pilot::tests::never_a_friend_or_an_unknown_locked_or_fired_on ... ok
+test arena::pilot::tests::falling_back_on_a_quarter_facet_from_a_hit_line ... ok
+test arena::pilot::tests::no_follow_without_a_muster ... ok
+test arena::pilot::tests::no_opening_without_a_muster_a_skirmish_or_a_clear_start ... ok
+test arena::pilot::tests::no_reapproach_while_a_follow_or_a_return_is_in_force ... ok
+test arena::pilot::tests::nothing_unless_aboard_powered_and_running ... ok
+test arena::pilot::tests::the_back_off_stops_short_of_held_ground_behind ... ok
+test arena::pilot::tests::no_reapproach_on_an_even_exchange_a_mover_or_an_orbit ... ok
+test arena::pilot::tests::orbit_takes_the_tangent_at_the_band_and_bends_outside_and_inside_it ... ok
+test arena::pilot::tests::only_the_hulls_own_plates_fall_back ... ok
+test arena::pilot::tests::the_course_leg_ends_at_the_edge_or_past_its_aim ... ok
+test arena::pilot::tests::on_cover_the_opening_holds_where_it_stands ... ok
+test arena::pilot::tests::the_exchange_counts_with_the_reapproach_off ... ok
+test arena::pilot::tests::the_fall_back_band_never_narrows_and_stays_inside_the_sight ... ok
+test arena::pilot::tests::the_crossroads_is_plotted_from_a_status_block_never_from_a_bearing_answer ... ok
+test arena::pilot::tests::the_fall_back_and_a_kept_withdraw_reverse_bow_on ... ok
+test arena::pilot::tests::orbit_is_a_stance_and_no_longer_the_default ... ok
+test arena::pilot::tests::the_follow_ends_when_the_pilot_turns_to_another_machine ... ok
+test arena::pilot::tests::the_hunt_never_aims_past_the_arena_edge ... ok
+test arena::pilot::tests::the_follow_stops_short_of_the_entry_line_and_backs_out_of_sight ... ok
+test arena::pilot::tests::the_hunt_stance_drives_in_to_the_band_then_holds ... ok
+test arena::pilot::tests::the_follow_names_only_held_designators ... ok
+test arena::pilot::tests::the_first_speed_order_is_nine_nine_nine ... ok
+test arena::pilot::tests::the_halt_holds_still_beyond_the_band ... ok
+test arena::pilot::tests::the_hunt_stance_with_nothing_held_hunts_the_trail_at_once ... ok
+test arena::pilot::tests::the_hunt_sweeps_then_hands_over_to_the_search ... ok
+test arena::pilot::tests::the_lock_keeps_its_target_until_another_is_a_hundred_metres_nearer ... ok
+test arena::pilot::tests::the_new_notes_name_only_designators_the_stream_named ... ok
+test arena::pilot::tests::the_new_rules_name_only_held_designators ... ok
+test arena::pilot::tests::the_new_notes_name_only_held_designators ... ok
+test arena::pilot::tests::the_hunt_stops_short_of_its_estimate_and_waits_once ... ok
+test arena::pilot::tests::the_opening_never_steps_toward_the_other_entry ... ok
+test arena::pilot::tests::the_opening_moves_in_for_room_behind ... ok
+test arena::pilot::tests::the_opening_steps_off_the_road_and_faces_the_other_entry ... ok
+test arena::pilot::tests::the_other_entry_is_the_muster_mirrored ... ok
+test arena::pilot::tests::the_reapproach_backs_off_bow_on_past_the_sight_and_waits ... ok
+test arena::pilot::tests::the_opening_ends_on_a_hostile_a_hit_or_its_time ... ok
+test arena::pilot::tests::the_default_engagement_holds_bow_on_at_the_band ... ok
+test arena::pilot::tests::the_halt_ends_when_it_stops_finds_us_or_reaches_the_band ... ok
+test arena::pilot::tests::the_return_wait_ends_into_the_search ... ok
+test arena::pilot::tests::the_returns_back_keeps_its_bow_and_its_plot ... ok
+test arena::pilot::tests::the_reapproach_gives_up_rests_and_counts_per_match ... ok
+test arena::pilot::tests::the_reapproach_wait_ends_into_what_the_precedence_flies ... ok
+test arena::pilot::tests::the_return_is_fired_on_from_the_halt ... ok
+test arena::pilot::tests::the_search_drives_for_b_past_it_eight_hundred_metres_and_back ... ok
+test arena::pilot::tests::the_time_bounds_cover_the_drive ... ok
+test arena::pilot::tests::the_trail_names_only_a_designator_the_stream_named ... ok
+test arena::pilot::tests::the_room_rule_needs_a_back_off_to_serve ... ok
+test arena::pilot::tests::with_follow_off_a_hurt_machine_is_held_and_hunted_as_before ... ok
+test arena::pilot::tests::with_no_track_the_orbit_reverses_every_twenty_seconds ... ok
+test arena::pilot::tests::with_no_brief_the_opening_holds_after_its_wait ... ok
+test arena::pilot::tests::the_waits_name_only_designators_the_stream_named ... ok
+test arena::pilot::tests::with_the_knobs_off_the_pilot_is_as_it_was ... ok
+test arena::pilot::tests::the_waits_end_while_immobile ... ok
+test arena::report::tests::a_blocked_run_after_flown_matches_names_its_blocker ... ok
+test arena::pilot::tests::with_room_behind_the_opening_steps_off_the_road_at_once ... ok
+test arena::report::tests::fire_gaps_follow_the_leads_count ... ok
+test arena::report::tests::commander_overruled_is_written_and_folded_from_the_tally ... ok
+test arena::report::tests::shot_gaps_count_accepted_shots_only ... ok
+test arena::report::tests::the_match_key_is_match ... ok
+test arena::report::tests::the_sentences_and_the_counts ... ok
+test arena::report::tests::the_first_times_are_after_power_online ... ok
+test arena::settings::tests::engagement_defaults_to_hold_reads_orbit_and_refuses_anything_else ... ok
+test arena::settings::tests::the_band_stops_at_the_sight ... ok
+test arena::report::tests::hits_taken_by_facet_is_always_written_and_read_back ... ok
+test arena::settings::tests::the_defaults_are_legal_and_each_bound_refuses ... ok
+test arena::tests::a_side_reads_both_ways ... ok
+test arena::settings::tests::the_follow_and_the_lattice_read_and_refuse ... ok
+test arena::settings::tests::the_table_reads_from_toml_and_refuses_an_unknown_key ... ok
+test attention::tests::self_echo_ooc_channels_and_acknowledged_mentions_do_not_retrigger ... ok
+test arena::settings::tests::the_commander_keys_default_and_the_commander_model_reads_as_a_table ... ok
+test attention::tests::speech_survives_room_noise_fragmentation_and_uses_whole_name_tokens ... ok
+test attention::tests::bounded_window_retains_latest_long_speech_and_ignoring_a_mention_does_not_start_a_conversation ... ok
+test budget::tests::defaults_are_unrestricted_and_request_caps_include_zero ... ok
+test budget::tests::exact_decimal_boundary_and_remaining_cost_never_round ... ok
+test budget::tests::unknown_charges_and_currency_coverage_are_explicit_and_independent ... ok
+test arena::settings::tests::the_knobs_read_and_refuse ... ok
+test cast_debug::tests::expired_controls_cannot_release_a_hold_and_rejections_are_observable ... ok
+test budget::tests::policy_json_is_strict_and_keeps_decimal_strings ... ok
+test cast_debug::tests::hold_is_deferred_and_continue_consumes_a_breakpoint_once ... ok
+test cast_debug::tests::hold_clock_is_separate_and_resets_only_between_boundaries ... ok
+test cast_debug::tests::stale_commands_do_not_cross_matrix_runs_and_invalid_settings_fail ... ok
+test cast_debug::tests::step_releases_one_whole_phase_and_holds_before_final_cleanup ... ok
+test checkpoint::tests::fence_fragments_do_not_acknowledge_early_or_enter_character_knowledge ... ok
+test character::tests::json_preserves_authored_voice_backstory_and_notes ... ok
+test checkpoint::tests::stale_invalid_or_nonterminal_fences_refuse_certification ... ok
+test character::tests::temporary_conditions_expire_without_rewriting_biography ... ok
+test character::tests::checked_in_json_character_is_valid ... ok
+test blind_review::tests::small_review_and_ratings_binding ... ok
+test character::tests::appearance_is_optional_bounded_authored_portrayal_without_creating_game_evidence ... ok
+test comparison::tests::excluded_lore_changes_only_profile_provenance_without_disclosing_text ... ok
+test comparison::tests::rejects_tampering_and_ambiguous_component_ids ... ok
+test composition::tests::budgets_keep_required_speech_atomic_and_placement_is_independent_of_priority ... ok
+test config::tests::the_pass_through_objects_read_from_toml_inline_tables ... ok
+test contracts::tests::assertions_require_order_evidence_and_detect_fragmented_forbidden_output ... ok
+test comparison::tests::reordered_added_and_removed_blocks_have_stable_id_differences ... ok
+test contracts::tests::json_pointer_escapes_are_validated_before_matching ... ok
+test contracts::tests::missing_data_is_distinct_from_explicit_null_and_kind_only_events ... ok
+test comparison::tests::model_settings_change_without_message_or_provenance_changes ... ok
+test contracts::tests::rejected_or_missing_observation_fragments_cannot_be_spliced_into_a_match ... ok
+test contracts::tests::observation_tails_are_utf8_bounded_and_survive_unrelated_local_events ... ok
+test contracts::tests::repeated_ordered_matchers_require_distinct_later_events ... ok
+test conversation::tests::burst_and_cancelled_request_allowances_are_separate_from_speech ... ok
+test contracts::tests::text_pointer_distinguishes_world_output_from_the_sent_command ... ok
+test conversation::tests::checkpoint_keeps_cooldowns_allowances_and_actor_delay_sequence ... ok
+test conversation::tests::pacing_is_repeatable_but_not_correlated_between_actors ... ok
+test conversation::tests::spectator_never_becomes_eligible_and_limits_expire ... ok
+test costs::tests::decimal_costs_are_exact_zero_is_known_and_missing_is_not_zero ... ok
+test costs::tests::regression_costs_require_complete_single_currency_receipts ... ok
+test composition::tests::lore_requires_a_knowledge_grant_and_scans_content_without_speaker_labels ... ok
+test costs::tests::authoring_costs_remain_separate_and_include_unusable_drafts ... ok
+test costs::tests::session_budget_usage_counts_started_cancelled_and_late_receipts_exactly ... ok
+test experiment::tests::ablations_filter_only_the_supplied_view_and_preserve_authored_inputs ... ok
+test config::tests::a_pass_through_object_is_bounded_in_bytes_and_depth ... ok
+test experiment::tests::prompt_hashes_cover_exact_effective_text_and_replacements_are_explicit ... ok
+test floor::tests::oldest_aged_waiter_outranks_other_aged_direct_addresses ... ok
+test floor::tests::expired_grant_is_never_reassigned_without_ack ... ok
+test experiment::tests::voice_selection_keeps_relevant_examples_without_mutating_the_sheet_or_undoing_ablations ... ok
+test floor::tests::priority_aging_and_alternation_allow_other_speakers ... ok
+test harness::tests::independent_overlap_metric_is_bounded_scoped_and_unknown_without_sends ... ok
+test harness::tests::phase_fences_exclude_queued_events_and_wait_for_every_acknowledgment ... ok
+test harness::tests::probe_evaluations_cannot_be_started_as_unawaited_raw_controls ... ok
+test comparison::tests::legacy_and_mixed_captures_compare_content_and_roles_exactly ... ok
+test campaign_cli::tests::branch_tree_and_both_sibling_scenes_render_and_resize_without_terminal_controls ... ok
+test knowledge::tests::the_minds_help_is_bundled ... ok
+test memory::tests::current_room_facts_reassemble_wrapped_exit_names_and_record_actual_walks ... ok
+test memory::tests::conflicting_beliefs_keep_evidence_and_explicit_corrections_keep_history ... ok
+test knowledge::tests::retrieves_large_corpus_and_replaces_live_help ... ok
+test memory::tests::current_look_targets_and_teleports_do_not_fabricate_walkable_routes ... ok
+test memory::tests::payment_claims_and_attempts_are_not_confirmed_transactions ... ok
+test memory::tests::names_need_character_evidence_but_can_already_be_known_from_prior_knowledge ... ok
+test memory::tests::room_refs_in_speech_and_object_lists_do_not_establish_location ... ok
+test composition::tests::captures_preserve_both_legacy_requests_and_composed_provenance ... ok
+test memory::tests::the_room_shown_at_connect_counts_once_until_the_first_command ... ok
+test memory::tests::routes_use_visited_directed_exits_not_look_targets_teleports_or_guessed_returns ... ok
+test memory::tests::unsolicited_room_headers_never_move_the_character ... ok
+test memory::tests::recall_budgets_preserve_whole_records_and_report_missing_evidence ... ok
+test model::tests::invalid_actions_cannot_type_multiple_lines_or_terminal_controls ... ok
+test model::tests::omitted_bookkeeping_keeps_memory_and_defaults_only_the_wait_duration ... ok
+test model::tests::optional_bookkeeping_does_not_relax_actions_or_accept_invalid_field_values ... ok
+test memory::tests::recall_policies_choose_real_evidence_and_break_ties_by_journal_order ... ok
+test model::tests::recall_is_a_local_action_with_a_bounded_query_and_no_game_command ... ok
+test model::tests::the_arena_action_takes_a_side_and_nothing_else_may ... ok
+test model::tests::the_goal_policy_names_the_arena_action ... ok
+test memory::tests::recall_absence_and_diagnostics_are_bounded_and_truthful ... ok
+test models::tests::a_json_profile_carries_the_pass_through_objects ... ok
+test models::tests::a_profile_may_not_take_a_reserved_name ... ok
+test organization::tests::checked_in_group_and_prompt_examples_use_the_live_json_schemas ... ok
+test model::tests::captured_requests_reject_modification_and_model_overrides_preserve_messages ... ok
+test memory::tests::recalls_old_payments_and_observed_conversations_with_place_and_attempts ... ok
+test organization::tests::membership_never_includes_another_members_private_briefing ... ok
+test organization::tests::grants_are_projected_before_delivery_and_roster_membership_does_not_grant_a_fact ... ok
+test probe::tests::questions_never_include_expected_values_or_private_evidence_predicates ... ok
+test memory::tests::journal_survives_restart_locks_writers_and_rejects_wrong_owner_or_partial_records ... ok
+test probe::tests::rejects_duplicate_or_incompatible_definition_fields_checks_and_modified_captures ... ok
+test model::tests::with_model_swaps_the_pass_through_objects ... ok
+test model::tests::the_pass_through_objects_ride_only_when_set_and_move_the_fingerprint ... ok
+test probe::tests::rejects_fabricated_absent_duplicate_or_foreign_episode_citations_without_echoing_text ... ok
+test probe::tests::grades_exact_primitives_null_and_captured_citations_in_legacy_and_composed_requests ... ok
+test probe::tests::citations_cannot_escape_retrieval_ablations_through_lore_terminal_text_or_beliefs ... ok
+test probe::tests::source_contains_and_distinct_citation_counts_are_structural_constraints ... ok
+test model::tests::a_capture_may_carry_the_two_objects_and_no_third_key ... ok
+test costs::tests::costs_survive_restart_include_unusable_responses_and_preserve_cancellation_receipts ... ok
+test regression::tests::decimal_cost_comparisons_preserve_the_eighteenth_place ... ok
+test regression::tests::checked_capacity_and_missing_measurements_are_inconclusive ... ok
+test regression::tests::fingerprints_and_ci_outcomes_are_separate_from_source_success ... ok
+test probe::tests::strict_response_schema_and_limits_reject_ambiguous_or_unbounded_answers ... ok
+test regression::tests::policy_rejects_ambiguous_and_unbounded_thresholds_and_selectors ... ok
+test runner::tests::a_paused_flying_lane_is_due ... ok
+test regression::tests::means_count_actor_sessions_and_ledger_requests_across_goal_resets ... ok
+test runner::tests::pause_action_follows_the_status ... ok
+test runner::tests::the_arena_pilot_names_itself_from_the_ssh_username_else_the_sheet ... ok
+test regression::tests::exact_rates_use_both_cohorts_and_do_not_inherit_run_failure ... ok
+test regression::tests::interactive_and_unclassified_runs_cannot_pass_regression_gates ... ok
+test runner::tests::a_paused_lanes_tick_never_ends_the_runners ... ok
+test script::tests::checked_in_json_examples_are_valid ... ok
+test script::tests::json_preserves_literal_commands_assertions_and_wait_defaults ... ok
+test social::tests::background_is_lazy_immutable_and_not_model_authored ... ok
+test regression::tests::matrix_scopes_are_explicit_and_simulation_must_be_comparable ... ok
+test scene::tests::bookmark_roundtrip_rejects_corruption_unsupported_state_and_restore_claims ... ok
+test script::tests::malformed_scripts_fail_instead_of_silently_skipping_steps ... ok
+test social::tests::consent_needs_observed_complete_utterance_from_a_proposed_participant ... ok
+test social::tests::counteroffers_do_not_rewrite_terms_and_completion_is_only_reported ... ok
+test regression::tests::missing_currency_or_receipts_never_become_a_zero_cost ... ok
+test social::tests::fulfilled_missed_uncertain_and_withdrawn_are_distinct ... ok
+test social::tests::ooc_and_channel_examples_do_not_create_ic_proposals ... ok
+test social::tests::previous_accomplishments_cannot_fulfill_new_obligations ... ok
+test social::tests::directed_assessments_require_local_evidence_and_scoped_corrections ... ok
+test social::tests::rumors_preserve_corrections_and_observer_gaps ... ok
+test social::tests::incremental_view_and_fresh_projection_agree_after_new_events_and_restore ... ok
+test scene::tests::recap_uses_only_current_observations_and_exact_bounded_citations ... ok
+test studio::tests::single_character_export_is_live_schema_json_and_bad_bindings_create_nothing ... ok
+test studio::tests::group_rosters_and_model_response_shapes_are_strict ... ok
+test studio_tui::tests::preview_is_local_and_selection_uses_stable_numbers_until_acknowledged ... ok
+test studio::tests::export_preserves_private_affiliations_and_requires_exact_runner_bindings ... ok
+test tape::checkpoint_tests::cancelling_an_unpolled_reserved_request_cannot_restore_its_response ... ok
+test terminal::tests::fragmented_utf8_csi_and_osc_never_reach_terminal ... ok
+test trace::tests::associations_use_one_hop_explicit_ids_and_never_cross_actors_or_null_ids ... ok
+test trace::tests::bounded_parser_fails_whole_artifact_instead_of_returning_partial_events ... ok
+test trace::tests::explicit_session_clock_does_not_turn_a_standalone_trace_into_a_joined_trace ... ok
+test trace::tests::filters_are_exact_inclusive_and_combined_before_pagination ... ok
+test trace::tests::metadata_reports_omit_payloads_and_only_explicit_content_exports_raw_rows ... ok
+test trace::tests::query_rejects_unknown_fields_duplicate_names_and_invalid_bounds ... ok
+test trace::tests::reads_current_log_and_joined_shapes_without_reordering_or_invented_clocks ... ok
+test trace::tests::rejects_malformed_tails_mixed_formats_and_bad_numbers_without_content ... ok
+test studio_runtime::tests::oversized_instructions_and_wrong_replay_mode_make_no_model_request ... ok
+test trace::tests::rejects_recursive_duplicate_keys_without_rounding_precise_payload_numbers ... ok
+test trace_tui::tests::authored_scope_survives_filters_and_navigation_ignores_export_limit ... ok
+test studio_tui::tests::quit_is_queued_once_and_later_events_preserve_pending_accounting_notice ... ok
+test trace_tui::tests::related_view_is_one_hop_same_actor_and_cannot_escape_authored_scope ... ok
+test trace_tui::tests::unicode_search_edits_apply_cancel_and_clear_without_mutating_the_trace ... ok
+test transport::tests::credential_account_and_session_verbs_are_refused_in_any_case ... ok
+test transport::tests::refused_verbs_are_only_refused_as_the_verb ... ok
+test studio_runtime::tests::failed_checkpoints_stop_commands_without_changing_selection_or_drafts ... ok
+test studio::tests::candidate_numbers_are_transactional_and_refinements_retain_their_basis ... ok
+test replay::tests::a_replay_records_the_pass_through_objects_the_request_carried ... ok
+test regression::tests::probes_require_complete_matching_rubrics_including_under_id_filters ... ok
+test trace_tui::tests::detail_is_bounded_unicode_safe_and_scroll_resets_on_selection ... ok
+test tui::tests::cast_queue_busy_and_stale_rejections_remain_visible_without_replaying_commands ... ok
+test tui::tests::budget_editor_validates_without_resetting_usage_or_optimistically_changing_state ... ok
+test tui::tests::cast_cost_panel_includes_selected_budget_and_final_report_refreshes_it ... ok
+test tui::tests::editor_handles_unicode_and_multiline_without_splitting_characters ... ok
+test tui::tests::cast_phase_keys_use_acknowledged_revisions_and_never_optimistically_change_mode ... ok
+test trace_tui::tests::no_match_and_small_screens_stay_navigable_and_controls_are_sanitized ... ok
+test tui::tests::conversation_editor_and_panels_use_acknowledged_actor_state ... ok
+test studio_tui::tests::rendering_is_bounded_and_sanitized_and_empty_sessions_accept_commands ... ok
+test tui::tests::social_panel_and_repl_results_display_only_acknowledged_perspective ... ok
+test tui::tests::cast_debug_panes_preserve_actor_and_run_boundaries_even_when_display_events_are_stale ... ok
+test tui::tests::terminal_layout_renders_at_small_and_normal_sizes ... ok
+test tui::tests::cast_monitor_keeps_actor_sessions_separate_and_renders_all_details ... ok
+
+test result: ok. 469 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running unittests src/main.rs (target/debug/deps/mush_bot-8b6be5f9c59d1592)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/arena_commander.rs (target/debug/deps/arena_commander-b28ac971aa6bc03c)
+
+running 5 tests
+test an_error_status_is_an_error_reply_and_still_filed ... ok
+test a_commander_call_carries_its_routing_and_is_filed_under_arena_commander ... ok
+test a_tape_shared_with_the_goal_loop_is_consumed_in_admission_order ... ok
+test recorded_live_pictures_reach_the_stub_under_the_new_policy ... ok
+test recorded_withdraws_are_flown_by_the_pilots_rule ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/arena_configs.rs (target/debug/deps/arena_configs-c55f14cda62878d2)
+
+running 1 test
+test the_example_arena_configs_load ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/arena_contract.rs (target/debug/deps/arena_contract-1251a7c045291d91)
+
+running 19 tests
+test m5_1_the_selection_fog_reads_as_the_bot_reads_it ... ok
+test m3_the_turret_lost_with_its_core_words_raises_the_weapons_doubt_and_nothing_else ... ok
+test m3_the_core_dropped_sentences_read_as_neutral_lines_and_open_no_reply ... ok
+test m5_3_the_release_words_read_as_the_bot_reads_them ... ok
+test m1b4_the_arming_its_line_and_its_sentences_read_as_the_bot_reads_them ... ok
+test m5_6_the_reworded_acknowledgements_and_the_mind_hint_read_as_the_bot_reads_them ... ok
+test m5rules_a_landing_refusal_does_not_invent_an_odds_floor ... ok
+test m5_6_the_your_mind_block_and_the_release_line_read_as_neutral_lines ... ok
+test the_briefs_empty_sentence_and_end_line_read_as_the_game_prints_them ... ok
+test the_drive_notices_read_as_neutral_lines_and_open_no_reply ... ok
+test the_view_brief_header_reads_as_the_game_prints_it ... ok
+test the_watch_digest_reads_as_neutral_lines_and_opens_no_reply ... ok
+test the_order_lapse_sentences_read_as_neutral_lines_and_open_no_reply ... ok
+test the_parser_reads_what_the_cockpit_formatters_print ... ok
+test m5_2_the_profile_refusal_and_the_seal_lines_read_as_the_bot_reads_them ... ok
+test m5_4_the_mind_lines_read_as_the_bot_reads_them ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+test m5rules_the_bot_reads_native_rules_over_its_own_ssh_client ... ok
+test the_bot_reads_a_live_centre_over_its_own_ssh_client ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.22s
+
+     Running tests/arena_e2e.rs (target/debug/deps/arena_e2e-0b150f4bcd7fd5c9)
+
+running 10 tests
+test the_command_line_refuses_what_the_pilot_cannot_fly ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+test a_refused_pose_answers_at_once ... ok
+test a_plain_goal_hands_the_pod_to_the_pilot ... ok
+test the_bot_flies_a_match_alone_against_one_machine has been running for over 60 seconds
+test the_bot_flies_as_a_wingman_beside_a_human has been running for over 60 seconds
+test the_commander_runs_through_the_runner has been running for over 60 seconds
+test the_commander_sets_doctrine_on_a_stub has been running for over 60 seconds
+test the_opening_reads_the_ground_at_the_muster has been running for over 60 seconds
+test the_repl_pauses_and_resumes_a_flight has been running for over 60 seconds
+test the_bot_flies_a_match_alone_against_one_machine ... ok
+test the_commander_sets_doctrine_on_a_stub ... ok
+test the_bot_flies_as_a_wingman_beside_a_human ... ok
+test the_commander_runs_through_the_runner ... ok
+test the_opening_reads_the_ground_at_the_muster ... ok
+test the_repl_pauses_and_resumes_a_flight ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 266.64s
+
+     Running tests/arena_lane.rs (target/debug/deps/arena_lane-3cbe619ad04bdb5e)
+
+running 87 tests
+test a_chain_ends_with_its_output ... ok
+test a_blocked_second_match_reports_the_blocker ... ok
+test a_drop_mid_fight_boards_again ... ok
+test a_full_width_channel_line_never_swallows_a_lock_line_or_a_claim ... ok
+test a_held_tank_makes_way_again ... ok
+test a_chain_runs_on_through_whatever_its_pieces_read ... ok
+test a_lane_started_after_the_sessions_budget_block_never_asks ... ok
+test a_lobby_transient_never_reaches_the_cockpit ... ok
+test a_lobby_transient_resends_the_same_line_after_two_hundred_ms ... ok
+test a_lane_that_has_read_no_gun_keeps_the_unlearned_cadence ... ok
+test a_full_width_channel_line_never_swallows_an_expected_answer ... ok
+test a_lock_broken_and_not_held_again_for_three_seconds_asks_at_once ... ok
+test a_hold_faces_the_hostile_and_changes_range_along_the_line_of_fire ... ok
+test a_lost_contact_is_hunted_in_the_lane ... ok
+test a_due_fire_beats_a_due_poll ... ok
+test a_match_ending_mid_pause_rematches_after_the_resume ... ok
+test a_padded_channel_line_never_ends_the_match ... ok
+test a_lock_line_after_the_rows_brings_back_the_locked_cadence ... ok
+test a_pause_longer_than_the_step_timeout_does_not_block ... ok
+test a_pause_through_the_boarding_and_the_start_loses_that_match ... ok
+test a_mover_is_fired_on_from_the_halt ... ok
+test a_paused_lane_reads_and_settles ... ok
+test a_reboard_while_locked_types_no_early_range ... ok
+test a_broken_machine_is_followed_on_the_scripted_server ... ok
+test a_posed_start_has_no_opening ... ok
+test a_resume_mid_fight_reads_the_tank_and_orders_again ... ok
+test a_side_hit_turns_the_bow ... ok
+test a_one_track_tank_never_circles_for_a_small_turn ... ok
+test a_start_into_a_running_match_follows_nothing ... ok
+test a_start_into_a_running_match_has_no_opening ... ok
+test a_stop_racing_a_claim_never_holds_the_slot ... ok
+test a_reapproach_at_the_edge_holds_rather_than_backing_into_it ... ok
+test a_round_trip_over_the_bound_keeps_als_clock ... ok
+test a_trackless_broken_machine_is_followed_on_the_scripted_server ... ok
+test a_due_gun_keeps_its_slot_from_a_poll ... ok
+test a_transient_answer_to_fire_rearms_that_gun ... ok
+test a_refused_fire_is_the_exception ... ok
+test a_withdraw_doctrine_backs_away_bow_on ... ok
+test a_withdraw_on_a_sound_hull_is_flown_as_a_hunt ... ok
+test a_withdraw_is_cleared_when_the_commander_stops ... ok
+test a_wrapped_board_row_never_swallows_a_claim ... ok
+test a_steady_wire_learns_the_lattice ... ok
+test an_identified_hostile_and_a_lost_section_ask_at_once ... ok
+test an_invalid_answer_keeps_the_doctrine ... ok
+test a_withdraw_episode_answered_away_early_still_ends_on_time_and_rests ... ok
+test an_empty_gun_is_not_fired_again ... ok
+test an_unidentified_contact_is_faced_stopped ... ok
+test an_overruled_withdraw_is_flown_as_the_lanes_engagement ... ok
+test a_withdraw_on_a_failing_hull_holds_then_lapses ... ok
+test each_unlearned_gun_is_read_inside_its_own_first_second ... ok
+test m5_3_a_fresh_run_reads_its_row_flown_by_its_mind_and_boards_back ... ok
+test no_commander_means_no_ask ... ok
+test a_tank_held_again_escalates_then_backs_off ... ok
+test a_five_minute_fight_keeps_under_four_lines_a_second_and_the_vocabulary ... ok
+test a_refused_fire_is_tried_again_inside_its_second ... ok
+test stop_in_selection_types_exactly_one_sim_leave ... ok
+test the_budget_stop_holds_for_the_rest_of_the_lane ... ok
+test no_second_fire_while_the_first_is_unanswered ... ok
+test the_commander_asks_at_power_online_one_call_at_a_time_on_its_cadence ... ok
+test no_fire_for_a_gun_the_tank_has_lost ... ok
+test late_answers_are_dropped_at_twice_the_contact_period_and_five_stop_the_commander ... ok
+test the_journal_keeps_notices_speech_and_rooms_and_drops_the_rest ... ok
+test the_doubts_weaponstatus_skips_the_poll_gap ... ok
+test the_match_end_stops_the_commander_and_the_next_match_starts_it_again ... ok
+test the_lane_flies_the_engagement_it_is_given ... ok
+test the_opening_moves_in_from_the_muster_and_holds_with_room ... ok
+test full_rate_on_each_guns_own_cycle ... ok
+test full_rate_on_the_arenas_lattice ... ok
+test the_opening_types_view_brief_once_and_steps_off_the_road ... ok
+test the_fire_clock_holds_on_a_slow_wire ... ok
+test the_poll_cadence ... ok
+test the_search_does_not_drive_back_into_held_ground ... ok
+test the_tank_destroyed_voids_the_call_and_stops_the_commander ... ok
+test the_walk_and_the_claim_hold_on_a_slow_wire ... ok
+test an_identification_never_starts_a_hunt ... ok
+test the_walk_from_limbo_to_power_online ... ok
+test the_reapproach_backs_off_and_waits_on_the_scripted_server ... ok
+test two_matches_reclaim_a_second_after_the_is_over_line ... ok
+test the_report_says_won_lost_draw_timeout_and_blocked ... ok
+test with_the_knobs_off_the_lane_is_as_it_was ... ok
+test the_picture_holds_on_a_slow_wire ... ok
+test weaponstatus_thins_on_the_arenas_lattice ... ok
+test past_the_guard_the_bench ... ok
+test the_wire_is_ordered_seeded_and_does_what_it_says ... ok
+test weaponstatus_thins_once_every_cycle_is_known ... ok
+test the_slow_wire_is_as_it_was_with_the_lattice ... ok
+test the_lattice_at_the_live_edge ... ok
+
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/arena_live_commander.rs (target/debug/deps/arena_live_commander-584c3b03a44fee84)
+
+running 3 tests
+test arena_live_commander_five_matches ... ignored, spends real model money: the lead runs it by hand with MUSH_BOT_LIVE_COMMANDER=1 and OPENROUTER_API_KEY exported (16c Q-AK4); no CI job runs it
+test the_live_lane_config_loads_and_resolves ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests/arena_mind_author_story.rs (target/debug/deps/arena_mind_author_story-290c1f4c0abfeac3)
+
+running 3 tests
+test field_pilot_complete_production_author_story ... ignored, full M6 author story and thirty private MUSTER games; explicit acceptance run
+test retained_frozen_game_decoder_preserves_exact_state_and_rejects_stream_tail ... ok
+test rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests/arena_mind_isolation.rs (target/debug/deps/arena_mind_isolation-8fb35de035d1dde5)
+
+running 2 tests
+test rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+test two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progressing has been running for over 60 seconds
+test two_proving_accounts_share_one_worker_while_the_live_arena_keeps_progressing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 309.55s
+
+     Running tests/arena_mind_port_rate.rs (target/debug/deps/arena_mind_port_rate-a4b800adce805ce8)
+
+running 3 tests
+test field_pilot_fresh_external_muster_interval ... ignored, fresh 30-match real SSH interval; concurrent sides allow 210 minutes, explicit acceptance run only
+test opening_evidence_uses_actual_physical_sides_and_heading ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running tests/arena_muster_rate.rs (target/debug/deps/arena_muster_rate-8b939cd6f910ad8b)
+
+running 5 tests
+test arena_win_rate_from_the_muster ... ignored, report-only, up to about two hours: CI's manual bot-muster-rate job runs it
+test arena_win_rate_pooled ... ignored, report-only, reads kept runs: set MUSH_BOT_WIN_RATE_POOL to the kept directories
+test the_muster_lane_reads_its_match_lines ... ok
+test the_interval_and_the_pool_read_their_lines ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+
+test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+     Running tests/arena_win_rate.rs (target/debug/deps/arena_win_rate-3be4fadf5176756e)
+
+running 9 tests
+test arena_win_rate_over_ten_matches ... ignored, report-only, about seventy-five minutes: CI's manual bot-win-rate job runs it (16c Q-AJ1, Q-AK3)
+test the_bot_against_a_conditioned_t1_over_thirty_pooled_matches ... ignored, report-only, about two to four hours: the M1b gate's pooled measure (17b cut M1b.5)
+test the_lanes_print_the_interval ... ok
+test the_mind_rate_lines_print_from_hand_written_figures ... ok
+test the_knobs_line_is_the_flown_value ... ok
+test the_lane_reads_the_lobby_and_flags_a_match_by_its_id ... ok
+test the_knob_variable_reads_and_refuses ... ok
+test the_reading_lines_are_the_leads_count ... ok
+test arena_rig::m6_server_fixture_declares_roll_writer_before_preparation ... ok
+
+test result: ok. 7 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests/budgets_offline.rs (target/debug/deps/budgets_offline-6c3dc6d42cf91a3e)
+
+running 4 tests
+test check_budget_normalizes_exact_json_without_loading_runtime_or_environment ... ok
+test budget_artifacts_require_json_and_refuse_to_overwrite_input_or_output ... ok
+test budget_flags_cannot_fall_through_to_other_offline_or_live_modes ... ok
+test invalid_budget_policies_fail_before_creating_reports ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/campaign.rs (target/debug/deps/campaign-4f3126f037c6cf4b)
+
+running 4 tests
+test campaign_fixture_process ... ok
+test inherited_session_budget_survives_restore_and_goal_change ... ok
+test quiesce_cancels_inflight_work_and_branch_turn_resets_cannot_bypass_campaign_quota ... ok
+test three_playable_continuations_keep_shared_history_private_knowledge_and_spend ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.16s
+
+     Running tests/e2e.rs (target/debug/deps/e2e-f4468907b1781fde)
+
+running 49 tests
+test cast_debug::cast_debug_helper ... ok
+test budgets::replay_checks_session_limits_before_dispatch_and_records_the_final_receipt ... ok
+test budgets::zero_request_limit_does_not_prevent_command_scripts ... ok
+test budgets::cost_gate_uses_exact_receipts_and_requires_an_explicit_unknown_cost_override ... ok
+test budgets::session_request_limit_survives_goal_and_model_changes_and_covers_questions_and_probes ... ok
+test cast_debug::live_joined_reader_waits_for_the_newline_but_rejects_corrupt_completed_records ... ok
+test budgets::denied_and_cancelled_calls_preserve_controls_and_invalid_replies_still_consume_requests ... ok
+test cast_debug::controller_disconnect_and_explicit_cancel_persist_owned_bot_reports ... ok
+test builder_bot_digs_generates_reviews_retries_accepts_and_walks_both_exits ... ok
+test cast_debug::cast_step_holds_after_one_serial_group_phase_and_rejects_stale_controls_across_runs ... ok
+test addressed_speech_refreshes_unsent_action_with_profile_and_last_completed_memory ... ok
+test cast_debug::held_cast_still_observes_world_speech_and_enforces_global_forbidden_assertions ... ok
+test conversation::cancelled_floor_intent_cannot_be_revived_by_late_grant ... ok
+test conversation::managed_cast_disconnect_stops_grants_and_preserves_failure_artifacts ... ok
+test cast_debug::hold_deadline_is_bounded_and_held_time_is_excluded_from_active_run_budget ... ok
+test conversation::slow_social_work_is_cancelled_by_uncued_speech_without_request_storm ... ok
+test dotenv_credentials_reach_auth_from_parent_and_shell_takes_precedence ... ok
+test conversation::spectator_observes_addresses_without_a_model_and_recap_excludes_authored_priors ... ok
+test invalid_dotenv_is_redacted_and_offline_commands_skip_loading_it ... ok
+test json_validation_needs_no_config_and_rejects_other_formats_and_partial_scripts ... ok
+test conversation::uncued_correction_cancels_held_reply_before_memory_or_send_and_preserves_cost ... ok
+test durable_memory_answers_old_conversations_after_restart_and_accepts_prior_knowledge ... ok
+test lab::harness_owned_server_helper ... ok
+test conversation::harness_revokes_expired_leases_and_stops_if_the_owner_cannot_acknowledge ... ok
+test conversation::three_managed_bots_and_pc_take_turns_with_private_context_and_cited_scene_artifacts ... ok
+test completed_bot_converses_without_restarting_goal_and_explicit_pause_blocks_attention ... ok
+test lab::context_profiles_switch_private_recall_policy_without_rewriting_memory ... ok
+test lab::harness_waits_for_owned_server_readiness_and_releases_it_after_the_run ... ok
+test lab::harness_accepts_clean_listener_shutdown_and_expected_headless_budget_exit ... ok
+test lab::prompt_context_edits_stage_decisions_and_exact_capture_replays_without_ssh ... ok
+test lab::prompt_preview_is_free_and_composed_capture_replays_the_exact_request_without_ssh ... ok
+test lab::organized_cast_keeps_briefings_private_coordinates_travel_and_totals_session_costs ... ok
+test lab::harness_rejects_self_reported_success_without_world_evidence_and_handles_disconnect_fault ... ok
+test model_navigates_real_world_and_confirms_inventory_through_bot_binary ... ok
+test lab::held_decision_rejects_new_observations_and_watch_cancels_slow_tape ... ok
+test json_source_scripts_replay_the_same_record_repeatedly ... ok
+test model_switching_preserves_state_and_accounts_for_costs_across_sessions ... ok
+test probes::serial_group_probes_grade_private_evidence_and_stop_on_a_fabricated_quote ... ok
+test omitted_memory_while_waiting_for_worldgen_preserves_notes_and_finishes_goal ... ok
+test probes::pausing_a_probe_cancels_its_grade_and_keeps_unreceived_cost_unpriced ... ok
+test repl_single_step_question_and_passthrough_share_the_live_session ... ok
+test repl_can_cancel_a_slow_model_and_replace_goal_without_stale_action ... ok
+test untrusted_host_is_rejected_before_model_or_commands ... ok
+test provider_charges_are_recorded_for_truncated_invalid_and_error_responses ... ok
+test studio_cast::exported_studio_cast_reaches_real_players_with_only_their_private_profiles ... ok
+test lab::cast_matrix_coordinates_real_speech_interruptions_with_isolated_memory_and_joined_evidence ... ok
+test turn_limit_and_invalid_model_commands_stop_without_executing ... ok
+test world_creation_keeps_server_permission_ownership_and_generation_gates ... ok
+test scenarios_assert_fresh_output_and_fail_on_timeout_rejection_and_echo ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 34.10s
+
+     Running tests/life.rs (target/debug/deps/life-73ca516e5c30cb59)
+
+running 9 tests
+test life_fixture_process ... ok
+test coalesced_lesson_observations_preserve_order_and_frozen_policy_keeps_suggestions_separate ... ok
+test map_invalidates_only_observed_failures_and_reestablishes_new_travel ... ok
+test activity_is_quiet_coalesces_windows_and_never_promotes_echo_or_speech_to_work ... ok
+test corrections_control_transfer_and_growth_cannot_take_over_pcs ... ok
+test interrupted_receipts_reconcile_but_unsettled_reconnects_never_replay ... ok
+test activity_budgets_and_prerequisites_do_not_reset_on_reload ... ok
+test quiet_work_study_cycle_uses_ssh_and_restores_receipts_without_replaying_work ... ok
+test pc_and_bot_teach_both_directions_and_corrected_knowledge_reaches_later_model_actions ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.52s
+
+     Running tests/offline.rs (target/debug/deps/offline-51d93d00c286206c)
+
+running 6 tests
+test tampered_capture_cannot_produce_an_offline_comparison_report ... ok
+test conversation_validation_is_offline_strict_and_does_not_create_runtime_artifacts ... ok
+test comparison_cli_is_offline_and_content_is_opt_in ... ok
+test phase_debug_settings_validate_offline_and_require_an_interactive_cast ... ok
+test offline_modes_reject_conflicts_and_preserve_existing_artifacts ... ok
+test harness_plan_expands_matrix_and_scoped_serial_phases_without_private_briefings ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/playtesting.rs (target/debug/deps/playtesting-aff3464dd6019ef8)
+
+running 9 tests
+test playtest_fixture_process ... ok
+test mission_binds_endpoint_and_retains_permission_allowance ... ok
+test reviews_reject_fabricated_future_and_sent_citations_and_cannot_act ... ok
+test failed_fixture_is_inconclusive_and_exhausted_budget_cannot_start ... ok
+test offline_docket_batches_and_disagreement_preserve_all_claims ... ok
+test cancelled_review_and_denied_command_leave_no_success_evidence ... ok
+test additional_adversaries_use_only_public_scene_commands ... ok
+test ssh_mission_feedback_refutation_triage_and_restore ... ok
+test adversarial_reduction_final_rerun_and_blind_packet has been running for over 60 seconds
+test adversarial_reduction_final_rerun_and_blind_packet ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 131.87s
+
+     Running tests/probes_offline.rs (target/debug/deps/probes_offline-62b531d748d82fdf)
+
+running 6 tests
+test offline_grading_rejects_duplicate_answer_keys_without_normalizing_them ... ok
+test wrong_answers_return_a_failed_grade_without_copying_answer_or_expected_values ... ok
+test revised_rubrics_can_regrade_the_same_capture_without_changing_its_prompt ... ok
+test foreign_or_invented_quotes_cannot_satisfy_the_grading_cli ... ok
+test check_and_grade_probe_work_offline_with_legacy_and_composed_captures ... ok
+test probe_cli_rejects_mode_conflicts_and_never_overwrites_an_existing_report ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/regression_offline.rs (target/debug/deps/regression_offline-7ce256640e284740)
+
+running 7 tests
+test explicit_gate_thresholds_can_pass_even_when_source_runs_failed ... ok
+test cost_limits_compare_the_last_decimal_digit_without_float_rounding ... ok
+test probe_rubric_drift_and_ungraded_evidence_do_not_produce_a_quality_verdict ... ok
+test quality_and_cost_regressions_fail_the_cli_and_junit ... ok
+test regression_policy_and_improved_runs_export_offline_json_and_junit ... ok
+test regression_modes_reject_conflicts_and_preserve_existing_outputs ... ok
+test missing_unknown_and_insufficient_samples_are_inconclusive ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/social_campaign.rs (target/debug/deps/social_campaign-466a1ce3b088dcdf)
+
+running 3 tests
+test social_fixture_process ... ok
+test native_renderer_hanging_wrap_preserves_agreements_without_promoting_speech_to_truth ... ok
+test band_negotiates_through_ssh_and_preserves_private_perspectives_across_branches ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.71s
+
+     Running tests/studio.rs (target/debug/deps/studio-45be24ea692cd1f5)
+
+running 4 tests
+test studio_budget_zero_and_existing_output_prevent_generation ... ok
+test rejected_drafts_keep_prior_choices_and_provider_charges_when_generation_is_retried ... ok
+test headless_group_draft_exports_a_runnable_plan_and_member_scoped_briefings ... ok
+test ten_alternatives_refine_with_stable_numbers_and_resume_without_ssh_or_auto_generation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running tests/trace_offline.rs (target/debug/deps/trace_offline-9833ad42b263c6ed)
+
+running 7 tests
+test malformed_tail_reports_its_exact_line_without_publishing_a_partial_result ... ok
+test standalone_trace_metadata_is_offline_and_omits_payloads_by_default ... ok
+test opt_in_content_exports_exact_standalone_and_joined_records ... ok
+test joined_trace_filters_and_pagination_use_actor_kind_and_elapsed_time ... ok
+test trace_artifacts_require_explicit_extensions_and_cannot_overwrite_existing_files ... ok
+test invalid_queries_fail_before_writing_reports ... ok
+test trace_modes_reject_conflicts_and_noninteractive_tui_without_loading_runtime ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Doc-tests mush_bot
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

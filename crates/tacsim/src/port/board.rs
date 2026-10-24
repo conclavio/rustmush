@@ -159,6 +159,34 @@ pub(crate) fn vendor_funds(
         })
 }
 
+/// **How many whole units `vendor`'s org can fund at `price`** (doc 20 cut SM.5; the
+/// intake drip's funds bound, §7.3): its account's available funds (posted less held)
+/// over the price, floored — [`crate::port::executor::funds_units`]' arithmetic with no
+/// reserve. 0 when anything is unreadable or the price is not positive.
+pub(crate) fn vendor_fundable_units(
+    w: &World,
+    market: &MarketStore,
+    vendor: mush_market::VendorId,
+    price: Amount,
+) -> u64 {
+    let Some(vendor) = market.vendor(vendor) else {
+        return 0;
+    };
+    let Some(account) = w
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().account(vendor.account).cloned())
+    else {
+        return 0;
+    };
+    let available = Amount::from_minor(
+        account
+            .posted_balance
+            .minor()
+            .saturating_sub(account.held_amount.minor()),
+    );
+    crate::port::executor::funds_units(available, Amount::ZERO, price)
+}
+
 /// What a vendor's stock rows for one good read as: `Some((seeded, receipted qty))`
 /// when every row's receipt reads (seeded = every receipt present and its lot gone),
 /// `None` when anything is unreadable.

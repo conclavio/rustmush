@@ -1,0 +1,487 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T03:37:03.955Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 44 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn afternoon",
+      "wallMs": 51,
+      "replyBytes": 665
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 33: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange",
+      "wallMs": 52,
+      "replyBytes": 160
+    },
+    {
+      "actor": "God",
+      "line": "@unit/show #664",
+      "reply": "Ceres relay endpoint — schema tacsim:unit:tacsim.unit.relay_station@1#203481d828f3aeeaa595d15b2558f3f73f38b4e6d5f79d2f776dbbcb0e3efe34, revision 0, mobility ground.tracked\n  section core: intact\n  section power: intact\n  cell section/core/internals: 1000/1000\n  cell section/power/internals: 200/200\n  cell facet/core/front/armor: 400/400\n  cell facet/core/left/armor: 250/250\n  cell facet/core/rear/armor: 150/150\n  cell facet/core/right/armor: 250/250\n  cell facet/core/top/armor: 100/100\n  component power: intact (tacsim:component:tacsim.unit.relay_station.power@1#5ebf6a74fc0e9bd62bf81d6a4132f5a98ae2b3bd29f186ed80fbaba3b71dd109)\n  capability tacsim.power (source power)",
+      "wallMs": 52,
+      "replyBytes": 677
+    },
+    {
+      "actor": "God",
+      "line": "@recovery/status",
+      "reply": "Recovery: 0 waiting, 0 loaners out, tiers [scout].\nYou have no application.\nYour last loaner (#412) was returned.\nThat loss was recorded as an approved-operation loss, so no cooldown applies to it.\nYou are eligible (0 accessible operational assets).\n[staff] pool #1 balance Some(5000000), floor 0, fundable.",
+      "wallMs": 51,
+      "replyBytes": 307
+    },
+    {
+      "actor": "God",
+      "line": "@faction/create R7 Attention Fixture",
+      "reply": "Created faction R7 Attention Fixture (id 1).",
+      "wallMs": 51,
+      "replyBytes": 44
+    },
+    {
+      "actor": "God",
+      "line": "@faction/add R7 Attention Fixture=God",
+      "reply": "Added God to R7 Attention Fixture (level 1, public).",
+      "wallMs": 51,
+      "replyBytes": 52
+    },
+    {
+      "actor": "God",
+      "line": "@faction/resource R7 Attention Fixture=attention/999/controlled gate",
+      "reply": "R7 Attention Fixture: attention +999 -> 999 (controlled gate).",
+      "wallMs": 52,
+      "replyBytes": 62
+    },
+    {
+      "actor": "God",
+      "line": "@faction/resource R7 Attention Fixture=legitimacy/5/controlled gate",
+      "reply": "R7 Attention Fixture: legitimacy +5 -> 5 (controlled gate).",
+      "wallMs": 50,
+      "replyBytes": 59
+    },
+    {
+      "actor": "God",
+      "line": "@front/create R7 Attention Fixture=R7 legitimacy crisis",
+      "reply": "Created front #1 (R7 legitimacy crisis).",
+      "wallMs": 51,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@clock/create 1=R7 public condemnation/4",
+      "reply": "Created clock #1 (R7 public condemnation) on front #1, 0/4. Configure with @clock/set.",
+      "wallMs": 26,
+      "replyBytes": 86
+    },
+    {
+      "actor": "God",
+      "line": "@clock/set 1=on:relay.node_destroyed",
+      "reply": "Updated clock #1.",
+      "wallMs": 25,
+      "replyBytes": 17
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"power\",\"cell\":\"internals\"}},\"value\":0}}]}",
+      "reply": "tactics.unit delta section/power/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 0 -> 1).",
+      "wallMs": 51,
+      "replyBytes": 182
+    },
+    {
+      "actor": "God",
+      "line": "@relay/power luna_ceres.ceres=on",
+      "reply": "Relay availability already matches; no change.",
+      "wallMs": 51,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R7-pending-physical-leg-e49fb2/R7 real loss acceptance",
+      "reply": "MAIL: Message 103 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"power\",\"cell\":\"internals\"}},\"value\":200}}]}",
+      "reply": "tactics.unit delta section/power/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 1 -> 2).",
+      "wallMs": 26,
+      "replyBytes": 182
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 52,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R7-queued-at-destruction-602520/R7 real loss acceptance",
+      "reply": "MAIL: Message 104 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":0}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 2 -> 3).",
+      "wallMs": 25,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@relay/show luna_ceres",
+      "reply": "luna_ceres: Dead; revision 36\nhalf luna_ceres.luna #666 node malapert #665 (Malapert relay endpoint) place #213 coverage [#202, #203, #212, #209, #213, #204, #205, #206, #207, #208, #210, #211]; enabled=true powered=true staffed=true destroyed=false damaged=false orphaned=true\nhalf luna_ceres.ceres #667 node ceres #664 (Ceres relay endpoint) place #112 coverage [#101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112, #113]; enabled=true powered=true staffed=true destroyed=true damaged=false orphaned=false",
+      "wallMs": 26,
+      "replyBytes": 526
+    },
+    {
+      "actor": "God",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\nrelay.loss.v1:664:3: permanent Exchange anathema; Tycho cover voided (IC 74168152384).",
+      "wallMs": 51,
+      "replyBytes": 109
+    },
+    {
+      "actor": "God",
+      "line": "+relay/policy luna_ceres/#1=served,operator.gate,manual cure cannot lift anathema",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 52,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\nrelay.loss.v1:664:3: permanent Exchange anathema; Tycho cover voided (IC 74168152384).",
+      "wallMs": 52,
+      "replyBytes": 109
+    },
+    {
+      "actor": "God",
+      "line": "@recovery/status",
+      "reply": "Recovery: 0 waiting, 0 loaners out, tiers [scout].\nYou have no application.\nYour last loaner (#412) was returned.\nTycho cover voided: permanent relay-destruction sanction; no insured-loss cooldown waiver.\nYou are inside the recovery cooldown from your last loaner.\nYour cooldown runs to IC second 74169356796.\n[staff] pool #1 balance Some(5000000), floor 0, fundable.",
+      "wallMs": 51,
+      "replyBytes": 367
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@relay/show luna_ceres",
+      "reply": "luna_ceres: Dead; revision 36\nhalf luna_ceres.luna #666 node malapert #665 (Malapert relay endpoint) place #213 coverage [#202, #203, #212, #209, #213, #204, #205, #206, #207, #208, #210, #211]; enabled=true powered=true staffed=true destroyed=false damaged=false orphaned=true\nhalf luna_ceres.ceres #667 node ceres #664 (Ceres relay endpoint) place #112 coverage [#101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112, #113]; enabled=true powered=true staffed=true destroyed=true damaged=false orphaned=false",
+      "wallMs": 25,
+      "replyBytes": 526
+    },
+    {
+      "actor": "God",
+      "line": "@recovery/status",
+      "reply": "Recovery: 0 waiting, 0 loaners out, tiers [scout].\nYou have no application.\nYour last loaner (#412) was returned.\nTycho cover voided: permanent relay-destruction sanction; no insured-loss cooldown waiver.\nYou are inside the recovery cooldown from your last loaner.\nYour cooldown runs to IC second 74169356796.\n[staff] pool #1 balance Some(5000000), floor 0, fundable.",
+      "wallMs": 52,
+      "replyBytes": 367
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":1000}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 3 -> 4).",
+      "wallMs": 51,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":0}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 4 -> 5).",
+      "wallMs": 52,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":1000}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 5 -> 6).",
+      "wallMs": 51,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":0}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 6 -> 7).",
+      "wallMs": 51,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@unit/damage #664={\"ops\":[{\"SetCell\":{\"addr\":{\"Section\":{\"section\":\"core\",\"cell\":\"internals\"}},\"value\":1000}}]}",
+      "reply": "tactics.unit delta section/core/internals cell #664 Ceres relay endpoint\ntactics.vitals keyframe #664 Ceres relay endpoint\nApplied 1 op(s) to Ceres relay endpoint (revision 7 -> 8).",
+      "wallMs": 51,
+      "replyBytes": 181
+    },
+    {
+      "actor": "God",
+      "line": "@relay/enable luna_ceres.ceres",
+      "reply": "A destroyed half cannot be repaired; manufacture a replacement pair.",
+      "wallMs": 26,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\nrelay.loss.v1:664:3: permanent Exchange anathema; Tycho cover voided (IC 74168152384).",
+      "wallMs": 51,
+      "replyBytes": 109
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=240",
+      "reply": "World time generation 45 opens at 240 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 856
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 46 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4050 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "pub R7 OOC remains immediate",
+      "reply": "Public #678 R6bob1b16df say R7 OOC remains immediate",
+      "wallMs": 25,
+      "replyBytes": 52
+    }
+  ],
+  "milestones": [
+    {
+      "test": "power-disablement-and-repair",
+      "node": 664,
+      "physicalEnvelope": 402,
+      "frozen": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74168152383",
+        "due": {
+          "at": 74168153903,
+          "clock": {
+            "generation": 44,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1520,
+        "started": {
+          "at": 74168152383,
+          "clock": {
+            "generation": 44,
+            "kind": "world_ic"
+          }
+        }
+      }
+    },
+    {
+      "test": "physical-loss-and-single-political-insurance-response",
+      "loss": {
+        "at": 74168152384,
+        "canon": 1,
+        "object": 664,
+        "responsible": 1,
+        "revision": 3
+      },
+      "queued": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74168152384,
+          "clock": {
+            "generation": 44,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 54,
+          "fallback": 101,
+          "key": "mail:v1:104:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 403,
+        "issued": {
+          "at": 74168152383,
+          "clock": {
+            "generation": 44,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:104:678:out",
+        "recipient": 678,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 101,
+          "flight": {
+            "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74168152385",
+            "due": {
+              "at": 74168153905,
+              "clock": {
+                "generation": 44,
+                "kind": "world_ic"
+              }
+            },
+            "seconds": 1520,
+            "started": {
+              "at": 74168152385,
+              "clock": {
+                "generation": 44,
+                "kind": "world_ic"
+              }
+            }
+          },
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74168152384,
+                "clock": {
+                  "generation": 44,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74168152384,
+                  "clock": {
+                    "generation": 44,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74168152384,
+                  "clock": {
+                    "generation": 44,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 213
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 8,
+            "metric_reads": 5
+          },
+          "legs": [
+            {
+              "from": 213,
+              "pair": null,
+              "relay": null,
+              "to": 101
+            }
+          ],
+          "next": 0,
+          "physical_legs": 2,
+          "position": 213,
+          "queued_at": null,
+          "registry_revision": 36,
+          "version": 1
+        }
+      },
+      "coveredBefore": "Recovery: 0 waiting, 0 loaners out, tiers [scout].\nYou have no application.\nYour last loaner (#412) was returned.\nThat loss was recorded as an approved-operation loss, so no cooldown applies to it.\nYou are eligible (0 accessible operational assets).\n[staff] pool #1 balance Some(5000000), floor 0, fundable.",
+      "coverAfter": "Recovery: 0 waiting, 0 loaners out, tiers [scout].\nYou have no application.\nYour last loaner (#412) was returned.\nTycho cover voided: permanent relay-destruction sanction; no insured-loss cooldown waiver.\nYou are inside the recovery cooldown from your last loaner.\nYour cooldown runs to IC second 74169356796.\n[staff] pool #1 balance Some(5000000), floor 0, fundable.",
+      "factions": [
+        {
+          "id": 1,
+          "condemnations": 1
+        },
+        {
+          "id": 0,
+          "condemnations": 1
+        }
+      ],
+      "attention": 1000,
+      "legitimacy": 4
+    },
+    {
+      "test": "terminal-half-death-and-frozen-leg-restart",
+      "signal": "SIGKILL",
+      "gateway": 791992,
+      "old": 792005,
+      "fresh": 792094
+    },
+    {
+      "test": "repair-and-replay-cannot-resurrect-or-repeat",
+      "loss": {
+        "at": 74168152384,
+        "canon": 1,
+        "object": 664,
+        "responsible": 1,
+        "revision": 3
+      },
+      "clock": {
+        "advance_on": "relay.node_destroyed",
+        "completed": false,
+        "consequence": "",
+        "faction": 1,
+        "filled": 1,
+        "front": 1,
+        "id": 1,
+        "on_complete_control": null,
+        "segments": 4,
+        "title": "R7 public condemnation",
+        "visibility": "officers_know"
+      },
+      "resources": {
+        "attention": 1000,
+        "legitimacy": 4
+      }
+    },
+    {
+      "test": "real-mail-delivered-on-fallback",
+      "mail": [
+        104,
+        103
+      ],
+      "pending": 0
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T03:37:03.999Z",
+      "gatewayPid": 791992,
+      "serverPid": 792005,
+      "serverSha256": "8408606d646a6afa55027df405aca15ec091361a6701b2f3fe4f4fe69c041971"
+    }
+  ],
+  "passed": true
+}

@@ -51,6 +51,13 @@ receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_l
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
 
+[pixel]                            # (doc 21 G.1b) the SSH TUI's ^G picture
+frame_interval_ms = 50             #   the clock: 20 Hz
+low_interval_ms = 100              #   the clock after a step-down: 10 Hz
+step_down_after = 3                #   picture writes slower than a frame, in a row, before stepping down
+step_up_after_s = 10               #   seconds of writes that kept up before stepping back up
+diagnostics = false                #   staff diagnostics box-wide: the `u` key and the numbers on the status line
+
 [ipc]                              # (M16b) forked gateway<->server boundary socket
 listen = "127.0.0.1:6791"          #   mush-gateway connects here; mush-server binds it.
 #                                  #   A localhost TCP address works everywhere (Windows too);
@@ -414,6 +421,9 @@ max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena s
 
 [tacsim.geology]                   # (doc 20 cut SM.1) the geology key family: one key, never rotated
 # key_dir = "./data/geology-keys"   # absent: the mining layer is disabled (doc 20 SM.1)
+
+[tacsim.surface]                   # (doc 20 cut SM.10) surface mining's claims
+registry_interlock = true          # the Registry interlock: phase 1's only claim enforcement (doc 20 §9.4); false is refused at boot
 
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as

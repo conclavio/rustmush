@@ -1,0 +1,44 @@
+{
+  "baseCommit": "749e0f9808171314941f43fabec7792718b822e9",
+  "recordedAtUtc": "2026-10-24T22:22:17.919736+00:00",
+  "sourceNormalization": "CRLF to LF",
+  "sourceFiles": 1495,
+  "sourceManifestSha256": "4025e79961b657e7001195a03133c5bf42f05269b2a82c9b0cd6f3f36bdebd99",
+  "serverSha256": "6bdf7529856b6d00d5e27027da9373f62539b7b7c4e16f2a7aa6919dcdf9f8a4",
+  "tests": {
+    "relay-registry.log": {
+      "passed": 63,
+      "failed": 0,
+      "ignored": 0
+    },
+    "producer-tests.log": {
+      "passed": 206,
+      "failed": 0,
+      "ignored": 0
+    },
+    "server-integration.log": {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    "tacsim-lib.log": {
+      "passed": 1480,
+      "failed": 0,
+      "ignored": 1
+    },
+    "help-commands.log": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "server-lib.log": {
+      "passed": 302,
+      "failed": 0,
+      "ignored": 2
+    }
+  },
+  "livePassed": true,
+  "liveChecks": 93,
+  "liveCrashes": 6,
+  "testScope": "Final source: production relay, producer/transport, server boot/IC/library, TacSim library and help contracts. GitHub CI is separate."
+}

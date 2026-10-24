@@ -1,0 +1,36 @@
+{
+  "reviewedCommit": "57c5747dc02370e6854188e009dda61b9108df94",
+  "recordedAtUtc": "2026-10-24T16:30:22.103869+00:00",
+  "reviewOnly": true,
+  "testCommand": "CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 /root/.cargo/bin/cargo test --locked -p mush-server --test relay_retro_review retro_ -j4 -- --nocapture",
+  "testLocation": "conclav.io /opt/rustmush/dev1/build; isolated in-memory test target; no live-world mutation",
+  "testResult": {
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "filteredOut": 49,
+    "meaning": "Assertions reproduce current behavior; these are characterization probes, not fixes or new live acceptance."
+  },
+  "matchingLocalAndRemoteSourceSha256": {
+    "crates/mush-propagation/src/routing.rs": "173082736ac380f40b9ca1719174a4e31164e4c9d88bd1982f057eeaa19da33c",
+    "crates/mush-propagation/src/service.rs": "371f375a0ba764db48d58fa026aa25297c90e743c7b1f115903929d7963edb17",
+    "crates/mush-propagation/src/dispatch.rs": "faac267bb2fdc07298c76776e9e669d79cfa3c467ce2cad6909494433b7b64e8",
+    "crates/mush-mail/src/transit.rs": "8ff3c65b31fa51f3d02231f7ad7da01a3bdcf9ecee4644c4a32c8a58999126ee",
+    "crates/tacsim/src/relay_service.rs": "d2a25cfcb3a73813fb4825056c155776ce8e1d81e595d7828591a2eaa47e793d",
+    "crates/mush-server/tests/relay_registry.rs": "e9886e5d62abc5825ad0a809578ba9d344407269d2723965c9861895aa60ab8b"
+  },
+  "ciRun": "https://github.com/conclavio/rustmush/actions/runs/40110674650",
+  "failedJob": "https://github.com/conclavio/rustmush/actions/runs/40110674650/job/120921544228",
+  "ciLibraryResult": {
+    "passed": 1477,
+    "failed": 3,
+    "ignored": 1
+  },
+  "r9bTransferEvidence": {
+    "file": "../relay-r9b-2026-10-24/live.json",
+    "commandLine": 518,
+    "refusalLine": 519,
+    "forwardingsLine": 1265,
+    "forwardings": 0
+  }
+}

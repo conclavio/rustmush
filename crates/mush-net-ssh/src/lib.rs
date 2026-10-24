@@ -41,6 +41,7 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::unwrap_used, clippy::panic, clippy::panic_in_result_fn)]
 
+pub mod assets;
 mod backlog;
 mod caps;
 mod editor;
@@ -54,7 +55,8 @@ mod welcome;
 
 pub use caps::{DEFAULT_HEIGHT, DEFAULT_WIDTH, detect_caps, detect_color_depth, detect_utf8};
 pub use editor::{EchoMode, EditorAction, HISTORY_CAP, LineEditor, MAX_LINE_CHARS};
-pub use hooks::{AuthResult, BlockReason, CharSummary, CreateErr, NewConn, SshHooks};
+pub use hooks::{AuthResult, BlockReason, CharSummary, CreateErr, NewConn, PixelEvent, SshHooks};
 pub use line::LineBuffer;
 pub use server::{BoundSshServer, SshConfig, SshError, SshServer};
+pub use tui::pixel::PixelConfig;
 pub use welcome::{WelcomeCmd, parse_welcome};

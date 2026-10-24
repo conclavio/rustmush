@@ -38,6 +38,13 @@ const CLI: CliSpec = CliSpec {
     bootstrap_staff: true,
 };
 
+/// How long a booting server waits for the quarantine spool's lifetime lock
+/// while another process holds it: long enough for a predecessor to finish
+/// exiting (a 900 MB world unmaps in well under a second), short enough that
+/// a second live server is refused before the supervisor's own connect
+/// timeout.
+const QUARANTINE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// This binary's ending, in the one exit vocabulary both halves speak
 /// (`mush_config::exit`): 0 clean, 1 a fatal error including a world fault, 3 a
 /// world task that never joined. Split out from `main` so the mapping is
@@ -101,8 +108,20 @@ fn main() -> ExitCode {
     // Logging may create/append files, so integrity storage is structurally
     // validated first. Retain this exact instance (and its exclusive lifetime
     // lock) through the zero-write exact-target pass and into the writer.
-    let quarantine_spool = match mush_server::quarantine::QuarantineSpool::open(
+    //
+    // A predecessor still exiting may hold the spool's lifetime lock for a
+    // moment (a unit restart that did not wait for the old child), so the
+    // lock is waited for, bounded; a second live server is still refused.
+    let quarantine_spool = match mush_server::quarantine::QuarantineSpool::open_waiting(
         config.server.data_dir.join("quarantine"),
+        QUARANTINE_LOCK_WAIT,
+        || {
+            eprintln!(
+                "mush-server: the quarantine spool's lock is held by another process; \
+                 waiting up to {} s for it to exit",
+                QUARANTINE_LOCK_WAIT.as_secs()
+            );
+        },
     ) {
         Ok(spool) => spool,
         Err(error) => {

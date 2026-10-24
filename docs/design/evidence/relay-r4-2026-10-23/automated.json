@@ -1,0 +1,51 @@
+{
+  "runtimeCandidate": "c5a393b17f85fba21602dc573c1552cc432d336d",
+  "commands": {
+    "story-tests.log": "cargo test --locked -p mush-server --test relay_registry --test ic_slice_loop --test boot_parity -j4 -- --test-threads=4",
+    "process-fault.log": "REDIS_URL=redis://127.0.0.1:6788/13 cargo test --locked -p mushd --test durability_e2e -j4 relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1",
+    "clippy.log": "cargo clippy --locked -p mush-propagation -p mush-sim -p tacsim --lib -j4 -- -D warnings",
+    "test-clippy.log": "cargo clippy --locked -p mush-server --test relay_registry -p mushd --test durability_e2e -- -D warnings"
+  },
+  "results": {
+    "story-tests.log": {
+      "passed": 55,
+      "failed": 0,
+      "ignored": 0
+    },
+    "process-fault.log": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "local-story-tests.log": {
+      "passed": 55,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "localAdditional": {
+    "ownerTests": {
+      "passed": 419,
+      "failed": 0,
+      "note": "418 full mush-propagation/mush-sim tests, followed by the added restriction-bound/legacy test in the 17-test propagation library run; no owner production changes afterward."
+    },
+    "contracts": {
+      "passed": 23,
+      "failed": 0,
+      "command": "cargo test -p mush-contract-tests --test state_slot_owners --test panic_budget --test schedule_source --test ci_gated_test_inventory --test provider_rng_policy"
+    },
+    "finalNpcStories": {
+      "passed": 3,
+      "failed": 0
+    }
+  },
+  "format": "Changed Rust files checked with rustfmt --edition 2024 --config skip_children=true --check; Windows workspace cargo fmt exceeds command-line size.",
+  "linuxProfile": "CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0",
+  "release": "cargo build --locked --release -j4 -p mush-server -p mush-gateway --features mush-gateway/tls",
+  "priorCiFailure": {
+    "url": "https://github.com/conclavio/rustmush/actions/runs/40051264494/job/120744249446",
+    "cause": "R2 crash test used a 60-second wall timeout for a returning ACK with R3 Standard service waiting 60 IC seconds; now explicitly Priority for both endpoints.",
+    "reproducedCorrection": "process-fault.log passed against real dev1 Redis db13 and three real child processes."
+  },
+  "liveGate": "passed; see live.json, ssh.json, fresh.json, environment.json"
+}

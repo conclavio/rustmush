@@ -203,6 +203,10 @@ fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::CanonRecorded { kind, entities, .. } = ev else {
         return;
     };
+    // R7's owner API advances these once alongside its durable cause receipt.
+    if kind == "relay.node_destroyed" {
+        return;
+    }
     let to_advance: Vec<ClockId> = {
         let (Some(sim), Some(fac)) = (
             ctx.w.module_state::<SimState>(),
@@ -414,6 +418,22 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                     f.id
                 )));
             }
+            if f.relay_condemnations.len() > data::MAX_RELAY_CONDEMNATIONS
+                || f.relay_condemnations.iter().any(|r| r.source.len() > 96)
+                || f.relay_condemnations
+                    .iter()
+                    .map(|r| r.object)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != f.relay_condemnations.len()
+                || f.resources
+                    .get("attention")
+                    .is_some_and(|n| !(0..=data::MAX_ATTENTION).contains(n))
+            {
+                return Err(ModError::msg(format!(
+                    "faction: invalid bounded relay/attention data in {key}"
+                )));
+            }
             factions.insert(f.id, f);
         } else if let Some(id) = key.strip_prefix("region:") {
             let id = id
@@ -564,4 +584,430 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .module_state_mut::<FactionState>()
         .expect("faction state slot installed at registration") = st;
     Ok(())
+}
+
+/// Open a content-authored front after a permissioned publication. The producer
+/// supplies an authorized canon draft; all fallible planning precedes that append.
+/// The title is the stable content identity within this operator's faction.
+pub fn publish_front(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    title: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_front_clock(
+        ctx,
+        operator,
+        title,
+        "Public accounting demanded",
+        4,
+        1,
+        Some("scene.concluded"),
+        "The Exchange must account publicly for its declared congestion.",
+        draft,
+    )
+}
+
+/// Content-authored front clock. Planning precedes its canon append.
+#[allow(clippy::too_many_arguments)]
+fn publish_front_clock(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    title: &str,
+    clock_title: &str,
+    segments: u8,
+    initial: u8,
+    advance_on: Option<&str>,
+    consequence: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    if title.is_empty()
+        || title.len() > 128
+        || clock_title.len() > 128
+        || segments == 0
+        || initial >= segments
+    {
+        return Err("Invalid front title/clock.".into());
+    }
+    let org_name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().org(operator))
+        .map(|o| o.name.clone())
+        .ok_or("Operator unavailable.")?;
+    let mut factions = ctx
+        .w
+        .module_state::<FactionState>()
+        .cloned()
+        .ok_or("Factions unavailable.")?;
+    let mut simulation = ctx
+        .w
+        .module_state::<SimState>()
+        .cloned()
+        .ok_or("Fronts unavailable.")?;
+    let faction = if let Some(f) = factions.factions.values().find(|f| f.org == Some(operator)) {
+        f.clone()
+    } else {
+        if factions.faction_by_name(&org_name).is_some() || factions.factions.len() >= 4096 {
+            return Err("Operator faction conflicts or is full.".into());
+        }
+        let id = FactionId(factions.next_faction_id);
+        factions.next_faction_id = factions
+            .next_faction_id
+            .checked_add(1)
+            .ok_or("Faction ids exhausted.")?;
+        let mut f = Faction::new(id, &org_name);
+        f.org = Some(operator);
+        factions.factions.insert(id, f.clone());
+        f
+    };
+    if let Some(f) = simulation
+        .fronts
+        .values()
+        .find(|f| f.faction == faction.id && f.title == title)
+    {
+        return Ok(f.id);
+    }
+    if simulation.fronts.len() >= 4096 || simulation.clocks.len() >= 4096 {
+        return Err("Front ledger full.".into());
+    }
+    let id = FrontId(simulation.next_front_id);
+    simulation.next_front_id = simulation
+        .next_front_id
+        .checked_add(1)
+        .ok_or("Front ids exhausted.")?;
+    let clock_id = ClockId(simulation.next_clock_id);
+    simulation.next_clock_id = simulation
+        .next_clock_id
+        .checked_add(1)
+        .ok_or("Clock ids exhausted.")?;
+    let front = Front {
+        id,
+        faction: faction.id,
+        title: title.into(),
+        resolved: false,
+    };
+    let clock = Clock {
+        id: clock_id,
+        front: id,
+        faction: faction.id,
+        title: clock_title.into(),
+        segments,
+        filled: initial,
+        visibility: Visibility::Public,
+        advance_on: advance_on.map(Into::into),
+        consequence: consequence.into(),
+        on_complete_control: None,
+        completed: false,
+    };
+    simulation.fronts.insert(id, front.clone());
+    simulation.clocks.insert(clock_id, clock.clone());
+    if mush_canon::commit(ctx, draft).is_none() {
+        return Err("Canon publication unavailable.".into());
+    }
+    // No fallible operation follows the canon boundary. The composed owner slots
+    // were checked above; the synchronous canon observers cannot remove them.
+    if let Some(state) = ctx.w.module_state_mut::<FactionState>() {
+        state
+            .factions
+            .entry(faction.id)
+            .or_insert_with(|| faction.clone());
+        state.next_faction_id = factions.next_faction_id;
+    }
+    // Preserve any clocks advanced synchronously by the canon observer.
+    if let Some(state) = ctx.w.module_state_mut::<SimState>() {
+        state.next_front_id = simulation.next_front_id;
+        state.next_clock_id = simulation.next_clock_id;
+        state.fronts.insert(id, front.clone());
+        state.clocks.insert(clock_id, clock.clone());
+    }
+    data::persist_faction(ctx.out, &faction);
+    data::persist_meta(ctx.out, factions.next_faction_id, factions.next_region_id);
+    sim::persist_front(ctx.out, &front);
+    sim::persist_clock(ctx.out, &clock);
+    sim::persist_sim_meta(ctx.out, &simulation);
+    ctx.out.pin_deferred();
+    Ok(id)
+}
+
+/// R7's institutional response, through the faction owner. The receipt makes a
+/// retry harmless; attention is opt-in and ratings never create money pools.
+pub fn condemn_relay_loss(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    responsible: Option<ObjId>,
+    source: &str,
+) -> Result<(), String> {
+    let state = ctx
+        .w
+        .module_state::<FactionState>()
+        .ok_or("Factions unavailable")?;
+    let sim = ctx
+        .w
+        .module_state::<SimState>()
+        .ok_or("Fronts unavailable")?;
+    if state.factions.len() > 4096 || sim.clocks.len() > 4096 || source.len() > 96 {
+        return Err("Relay political response exceeds bounded census".into());
+    }
+    let mut updates = Vec::new();
+    for f in state.factions.values() {
+        if f.relay_condemnations.iter().any(|r| r.object == object) {
+            continue;
+        }
+        if f.relay_condemnations.len() >= data::MAX_RELAY_CONDEMNATIONS {
+            return Err("Relay condemnation ledger full".into());
+        }
+        let mut f = f.clone();
+        let affiliated =
+            responsible.is_some_and(|a| state.is_member(a, f.id) || f.principals.contains(&a));
+        f.relay_condemnations.push(data::RelayCondemnation {
+            object,
+            responsible,
+            source: source.into(),
+        });
+        if affiliated {
+            if f.resources.contains_key("legitimacy") && !f.migrated.contains("legitimacy") {
+                f.apply_resource("legitimacy", -1, source, ctx.actor, ctx.w.now());
+            }
+            if f.resources.contains_key("attention") && !f.migrated.contains("attention") {
+                f.apply_resource("attention", 1, source, ctx.actor, ctx.w.now());
+            }
+        }
+        updates.push(f);
+    }
+    let fresh: std::collections::BTreeSet<_> = updates.iter().map(|f| f.id).collect();
+    let clocks: Vec<_> = sim
+        .clocks_watching("relay.node_destroyed")
+        .into_iter()
+        .filter(|id| {
+            sim.clocks
+                .get(id)
+                .is_some_and(|c| fresh.contains(&c.faction))
+        })
+        .collect();
+    for f in updates {
+        data::persist_faction(ctx.out, &f);
+        if let Some(state) = ctx.w.module_state_mut::<FactionState>() {
+            state.factions.insert(f.id, f);
+        }
+    }
+    for id in clocks {
+        advance_clock(ctx, id, 1);
+    }
+    ctx.out.pin_deferred();
+    Ok(())
+}
+
+/// Consume an authenticated private-pair discovery into the Concord front.
+/// The producer's durable pair receipt is the once-only gate, in the same batch.
+pub fn record_relay_discovery(
+    ctx: &mut Ctx<'_>,
+    concord: mush_org::OrgId,
+    mut draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    const TITLE: &str = "The Concord's anti-proliferation campaign";
+    let faction = ctx
+        .w
+        .module_state::<FactionState>()
+        .and_then(|s| s.factions.values().find(|f| f.org == Some(concord)))
+        .map(|f| f.id);
+    let front = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| {
+            s.fronts
+                .values()
+                .find(|f| Some(f.faction) == faction && f.title == TITLE)
+        })
+        .cloned();
+    let Some(front) = front else {
+        return publish_front_clock(
+            ctx,
+            concord,
+            TITLE,
+            "Private entanglement networks discovered",
+            8,
+            1,
+            None,
+            "The Concord orders a general interdiction of unauthorized entanglement foundries.",
+            draft,
+        );
+    };
+    let mut clock = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| s.clocks.values().find(|c| c.front == front.id))
+        .cloned()
+        .ok_or("Anti-proliferation clock missing")?;
+    let completed = clock.advance(1);
+    if completed {
+        draft.summary.push_str(&format!(" {}", clock.consequence));
+    }
+    if mush_canon::commit(ctx, draft).is_none() {
+        return Err("Discovery canon unavailable".into());
+    }
+    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+        s.clocks.insert(clock.id, clock.clone());
+    }
+    sim::persist_clock(ctx.out, &clock);
+    if completed {
+        let mut resolved = front.clone();
+        resolved.resolved = true;
+        if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+            s.fronts.insert(resolved.id, resolved.clone());
+        }
+        sim::persist_front(ctx.out, &resolved);
+    }
+    ctx.out.pin_deferred();
+    Ok(front.id)
+}
+
+/// R9b's dormant authored clock. Treasury, consent and refit producers own their
+/// durable receipts; only this module writes the corresponding front clock.
+pub fn seed_mobile_relay_front(
+    ctx: &mut Ctx<'_>,
+    fleet: mush_org::OrgId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_front_clock(
+        ctx,
+        fleet,
+        "A Half Afloat",
+        "Fleet relief relay programme",
+        8,
+        0,
+        None,
+        "The Concord relief relay is commissioned; its cruiser is ready to sail.",
+        draft,
+    )
+}
+
+/// An attributed programme fact advances one segment after its caller's checks.
+/// The expected count refuses drift instead of overwriting staff/story changes.
+pub fn advance_mobile_relay_front(
+    ctx: &mut Ctx<'_>,
+    front: FrontId,
+    expected: u8,
+) -> Result<(), String> {
+    let clock = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| s.clocks.values().find(|c| c.front == front))
+        .cloned()
+        .ok_or("Fleet front missing")?;
+    if clock.segments != 8 || clock.filled != expected || clock.completed {
+        return Err("Fleet front differs from its producer receipts".into());
+    }
+    advance_clock(ctx, clock.id, 1);
+    ctx.out.pin_deferred();
+    Ok(())
+}
+
+/// Register a content-authored NPC as the voice of an already established faction.
+pub fn register_programme_principal(
+    ctx: &mut Ctx<'_>,
+    org: mush_org::OrgId,
+    npc: ObjId,
+) -> Result<(), String> {
+    if ctx
+        .w
+        .get(npc)
+        .is_none_or(|o| o.kind != mush_core::ObjKind::Npc)
+    {
+        return Err("Principal must be an NPC".into());
+    }
+    let name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().org(org))
+        .map(|o| o.name.clone())
+        .ok_or("Principal organization absent")?;
+    let s = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable")?;
+    if !s.factions.values().any(|f| f.org == Some(org)) {
+        if s.factions.len() >= 4096 || s.faction_by_name(&name).is_some() {
+            return Err("Principal faction conflicts or is full".into());
+        }
+        let id = FactionId(s.next_faction_id);
+        s.next_faction_id = s
+            .next_faction_id
+            .checked_add(1)
+            .ok_or("Faction ids exhausted")?;
+        let mut f = Faction::new(id, &name);
+        f.org = Some(org);
+        s.factions.insert(id, f);
+        data::persist_meta(ctx.out, s.next_faction_id, s.next_region_id);
+    }
+    let f = s
+        .factions
+        .values_mut()
+        .find(|f| f.org == Some(org))
+        .ok_or("Principal faction unavailable")?;
+    if !f.principals.contains(&npc) {
+        f.principals.push(npc);
+        data::persist_faction(ctx.out, f);
+    }
+    Ok(())
+}
+
+/// R10's original four-segment case, driven only by typed service decisions.
+pub fn seed_relay_terms_front(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_front_clock(
+        ctx,
+        operator,
+        "Terms of Service",
+        "Named service case",
+        4,
+        0,
+        None,
+        "The named service case has a confirmed suspension; cure and independent sanctions remain with their service owners.",
+        draft,
+    )
+}
+/// The caller owns bounded attributed facts; this owner changes only its clock.
+/// One preflighted canon append and the exact clock post-image share the commit.
+pub fn advance_relay_terms_front(
+    ctx: &mut Ctx<'_>,
+    front: FrontId,
+    expected: u8,
+    next: u8,
+    draft: mush_canon::CanonDraft,
+) -> Result<u64, String> {
+    let sim = ctx
+        .w
+        .module_state::<SimState>()
+        .ok_or("Fronts unavailable")?;
+    if !sim
+        .fronts
+        .get(&front)
+        .is_some_and(|f| f.title == "Terms of Service")
+    {
+        return Err("Terms front identity differs".into());
+    }
+    let mut clocks = sim.clocks.values().filter(|c| c.front == front);
+    let mut clock = clocks.next().cloned().ok_or("Terms clock missing")?;
+    if clocks.next().is_some()
+        || clock.segments != 4
+        || clock.filled != expected
+        || clock.completed
+        || clock.advance_on.is_some()
+        || !matches!((expected, next), (0, 2) | (0, 4) | (2, 4))
+    {
+        return Err("Terms front differs from its producer receipts".into());
+    }
+    let canon = mush_canon::commit(ctx, draft).ok_or("Canon unavailable")?;
+    clock.filled = next;
+    clock.completed = next == 4;
+    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+        s.clocks.insert(clock.id, clock.clone());
+    }
+    sim::persist_clock(ctx.out, &clock);
+    ctx.out.pin_deferred();
+    Ok(canon.0)
 }

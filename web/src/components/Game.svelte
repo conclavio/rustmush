@@ -16,6 +16,7 @@
   import ActionsPanel from "./ActionsPanel.svelte";
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChartScreen from "./ChartScreen.svelte";
+  import QuarryScreen from "./QuarryScreen.svelte";
   import ChannelView from "./ChannelView.svelte";
   import CockpitScreen from "./CockpitScreen.svelte";
   import ReplayScreen from "./ReplayScreen.svelte";
@@ -157,7 +158,7 @@
           class:active={active.id === s.id}
           aria-current={active.id === s.id ? "page" : undefined}
           title="{s.label} (key {s.digit ?? `Alt+${s.hotkey ?? ''}`})"
-          onclick={() => app.screens.switchTo(s.id, gate)}
+          onclick={() => app.switchScreen(s.id)}
         >
           <kbd>{s.digit ?? `⌥${s.hotkey ?? ""}`}</kbd>
           {s.label}
@@ -226,6 +227,9 @@
         {:else if active.id === "chart"}
           <!-- Doc 19 cut A.3b: the sky chart, on the letter hotkey c. -->
           <ChartScreen {app} />
+        {:else if active.id === "quarry"}
+          <!-- Doc 20 cut SM.9: the quarry, on the letter hotkey q. -->
+          <QuarryScreen {app} />
         {:else if active.id === "cockpit" && app.pictureShown}
           <!-- 16b cut I.2: a finished match on screen 0 — a replay is open
                and no seat is held. A seat closes the replay. -->

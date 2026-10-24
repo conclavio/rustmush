@@ -21,13 +21,18 @@
 
 mod support;
 
+/// Doc 20 cut SM.4a: test 8 boots keyed, so a scan and a sounding plan (the retired probe's
+/// replacement).
+#[path = "support/geology_keyed.rs"]
+mod geology_keyed;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
     AccountId, AccountIdentity, ActionStateBootRecord, Audience, AuthoritativeSubmit, CanonicalId,
-    CommitToken, GOD, IdempotencyKey, IdempotencyKeyText, IdempotencyScope, ModuleWrite, ObjId,
-    OfferExecutionContext, OfferSubmission, PerceivedRef, RequestUid, ScopedIdempotencyKey,
+    CommitToken, GOD, IdempotencyKey, IdempotencyScope, ModuleWrite, ObjId, OfferExecutionContext,
+    OfferSubmission, PerceivedRef, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{EconomyConfig, EconomyStore, HoldId, VaultId};
 use mush_inventory::{EndpointRef, Grade, InventoryHandles, LotId};
@@ -38,9 +43,9 @@ use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
 use tacsim::definitions::content::LANE_PACK;
 use tacsim::port::tv::{
-    ACT_FAILED, CAP_OPERATOR, DUMP_EMPTY, DUMP_NO_SPOIL, DUMP_NOT_SITE, DUMPED, LAUNCH_CLEARED,
-    LAUNCH_ENDED, LAUNCH_FORFEIT, LAUNCH_NOT_SITE, LAUNCH_OPEN, LAUNCH_OUT, LAUNCH_PREVIEW,
-    LAUNCH_UNDER_WAY, LAUNCHED, LEASE_FAILED, NO_RIG, RECOVER_ELSEWHERE, RECOVER_FAR,
+    ACT_FAILED, CAP_OPERATOR, DUMP_EMPTY, DUMP_NO_SPOIL, DUMP_NOT_SITE, DUMPED, GROUND_DARK_LINE,
+    LAUNCH_CLEARED, LAUNCH_ENDED, LAUNCH_FORFEIT, LAUNCH_NOT_SITE, LAUNCH_OPEN, LAUNCH_OUT,
+    LAUNCH_PREVIEW, LAUNCH_UNDER_WAY, LAUNCHED, LEASE_FAILED, NO_RIG, RECOVER_ELSEWHERE,
     RECOVER_IN_BAY, RECOVER_PREVIEW_UNREAD, RECOVERED, RIG_BUSY, RIG_LOGGED_OUT, TV_DARK,
     TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT, WHY_HOPPER_CHANGED,
     WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
@@ -196,6 +201,17 @@ fn reboot(rig: Rig) -> Rig {
         store,
         typed,
     }
+}
+
+/// [`reboot`], then `reconnect` come back (a real restart drops every session).
+fn reboot_with(rig: Rig, reconnect: &[ObjId]) -> Rig {
+    let mut rig = reboot(rig);
+    for who in reconnect {
+        if !rig.tw.world().is_connected(*who) {
+            let _ = rig.tw.connect(*who);
+        }
+    }
+    rig
 }
 
 /// Everything due `secs` on.
@@ -403,7 +419,14 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             .filter(|line| {
-                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+                // Doc 20 cut SM.6 (D2): a keyed site laid up and still opening is the site
+                // clerk's work, not the stock clerks'; a rig that hops to a site opens it.
+                line.ends_with(']')
+                    && !line.starts_with("sky: ")
+                    && !line.starts_with("geology: ")
+                    && !(line.contains(" site: ")
+                        && (line.contains("; opening, ")
+                            || line.contains("; opening: its ground is still being mapped")))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -458,6 +481,8 @@ fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRo
         .expect("the hull's row");
     let out = run(&mut rig.tw, pilot, "+coop/refit prospector");
     assert!(out.contains("as a Dray-P"), "{out}");
+    // Doc 20 cut SM.5: a lease needs a prospecting licence in force; bought once here.
+    support::licence::buy_licence(&mut rig.tw, pilot);
     (pilot, row)
 }
 
@@ -667,6 +692,9 @@ fn on_pad_as(
     );
     board(rig, pilot);
     let hull = ObjId(row.hull);
+    // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
+    // deposit (an unkeyed site reads Ready at once, and this fires nothing).
+    open_ahuna(rig);
     let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
     let _ = to_ic(rig, arrival_of(&t));
     assert!(
@@ -679,6 +707,19 @@ fn on_pad_as(
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
+}
+
+/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
+/// bundles' typed post-images for a reboot; the port fires it took (0 when it is open already,
+/// as an unkeyed site always is).
+fn open_ahuna(rig: &mut Rig) -> u32 {
+    let mut kept = Vec::new();
+    let fires =
+        support::sites::open_site_keeping(&mut rig.tw, "ahuna_port", &mut |ops| kept.push(ops));
+    for ops in kept {
+        keep(rig, ops);
+    }
+    fires
 }
 
 /// [`on_pad_as`] for the usual pilot.
@@ -992,6 +1033,13 @@ fn sm3b_launch_previews_bare_and_go_sends_the_rig_down_the_ramp() {
         ),
         "{status}"
     );
+    // Doc 20 cut SM.4a: the rig on the ground gains the status's ground line; this world is
+    // unkeyed, so the instruments read dark (the ramp cell is block K's, field K-NW).
+    let dark = GROUND_DARK_LINE
+        .replace("{block}", "K")
+        .replace("{tenure}", "open")
+        .replace("{field}", "K-NW");
+    assert!(status.contains(&dark), "{status}");
     no_refused_writes(&rig.tw);
 }
 
@@ -1089,27 +1137,31 @@ fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
     placed.expect("staff place the rig in the bay");
 }
 
-/// **A recover from beside the ramp; refused from two cells** (A3): staff place the launched
-/// rig two cells south of the ramp — `RECOVER_FAR` naming 20 m, nothing queued; one cell off —
+/// **A recover from beside the ramp; driven home from two cells** (A3): staff place the launched
+/// rig two cells south of the ramp — since doc 20 cut SM.4b the preview drives the one cell (10 m)
+/// to beside the ramp first (it was `RECOVER_FAR`), nothing queued; one cell off —
 /// the preview, `go`, and at the due instant the rig stands `Interior` in the bay's `rigs`
 /// compartment, the excursion is closed, the charge is back in the bay and the pilot hears
 /// `RECOVERED` once; a recover with the rig in the bay answers `RECOVER_IN_BAY`.
 #[test]
-fn sm3b_recover_from_beside_the_ramp_and_refused_from_two_cells() {
+fn sm3b_recover_from_beside_the_ramp_and_driven_home_from_two_cells() {
     let mut rig = stocked();
     let (pilot, row, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
     let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
     let _ = finish(&mut rig, tv, pilot);
     staff_place(&mut rig, tv, RAMP.0, RAMP.1 - 2_000);
+    // Doc 20 cut SM.4b (lead ruling 5): two cells off, the recover no longer refuses
+    // `RECOVER_FAR` — it drives the one cell to beside the ramp first, in the same one act.
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
-    assert_eq!(
-        out.trim(),
-        RECOVER_FAR
-            .replace("{n}", "1")
-            .replace("{m}", "20")
-            .replace("{ramp}", "stern ramp")
+    assert!(
+        out.trim().starts_with(
+            "Rig 1 (OWP-TV-01) would drive 10 m to the stern ramp and climb into the Salt Moth's \
+             bay: "
+        ),
+        "{out}"
     );
+    assert!(!out.contains("climbs aboard from beside it"), "{out}");
     assert!(queued.is_empty());
     staff_place(&mut rig, tv, RAMP.0, RAMP.1 - 1_000);
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
@@ -1180,7 +1232,10 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
     let tv = tvs_b[0];
     let _ = act_go(&mut b, pilot_b, "+tv/1 launch go");
     let due = due_of(&mut b.tw, tv);
-    let mut b = reboot(b);
+    // Doc 20 cut SM.11 (the brief's §6, the reviewer's F17): the pilot reconnects after the
+    // restart, so "told exactly once across a restart" is pinned on what they hear — offline, a
+    // `LAUNCHED` line is never queued (the notice budget; `sm11_an_offline_launch_line_is_not_queued`).
+    let mut b = reboot_with(b, &[pilot_b]);
     assert_eq!(due_of(&mut b.tw, tv), due, "the act survives the restart");
     let (events, queued) = advance_to(&mut b, due + 40);
     let mut heard = said(&b.tw, &events, pilot_b);
@@ -1209,15 +1264,12 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
         .iter()
         .filter(|line| **line == launched)
         .count();
-    assert_eq!(
-        count(&heard, &launched) + queued_notice,
-        1,
-        "{heard}\n{queued_notice}"
-    );
+    assert_eq!(count(&heard, &launched), 1, "{heard}");
+    assert_eq!(queued_notice, 0, "heard, never queued");
     // A told act stays told across a restart (review finding tests/T5): the tick's projection
     // folds, reloads and still reads `told`, so a second reboot re-tells nothing — no
     // `LAUNCHED` heard, none queued beyond the first — and the projection is unchanged.
-    let mut b = reboot(b);
+    let mut b = reboot_with(b, &[pilot_b]);
     assert_eq!(
         projection(&b.tw, tv).as_ref(),
         Some(&rec_b),
@@ -1237,6 +1289,96 @@ fn sm3b_a_restart_mid_launch_completes_at_the_due_instant() {
     assert!(queued_again <= queued_notice, "nothing re-queued");
     assert_eq!(projection(&b.tw, tv), Some(rec_b), "told once, still");
     no_refused_writes(&b.tw);
+}
+/// Drop every connection of `who` and end their session (`orders.rs`'s helper).
+fn disconnect(tw: &mut TestWorld, who: ObjId) {
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    let conns: Vec<u64> = (1..=64)
+        .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
+        .collect();
+    assert!(!conns.is_empty(), "{who} holds a connection");
+    for conn in conns {
+        tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: who,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    tw.engine_mut().step(
+        mush_core::Inbound::SessionGone { actor: who },
+        &mut out,
+        &mut fx,
+    );
+}
+
+/// **An offline launch line is not queued** (doc 20 cut SM.11, lead ruling 7 and D13; the
+/// brief's §6, the reviewer's F17): the pilot launches and logs off before the act is due; the
+/// launch lands and its line goes to the rig's projection log, but nothing is queued for the
+/// reconnect — a launch is a `Live` line, and offline only a trip-level line is queued. **The
+/// budget's other half** (the lead's pre-commit round, item 6, the judge's T12): the same rig left
+/// a day on the ground comes home by itself, and that trip-level line (`IDLE_HOME`) IS queued —
+/// exactly it, the launch's line still not — and read on reconnect after the heading.
+#[test]
+fn sm11_an_offline_launch_line_is_not_queued() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
+    disconnect(&mut rig.tw, pilot);
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    assert_eq!(finishes(&queued).len(), 1);
+    land_all(&mut rig, &queued);
+    for _ in 0..2 {
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    assert!(on_ground_at(&rig.tw, tv, RAMP), "the launch landed");
+    let launched = LAUNCHED
+        .replace("{n}", "1")
+        .replace("{ramp}", "stern ramp")
+        .replace("{site}", "Ahuna Flank");
+    let pending = tacsim::port_tick::pending_notices(rig.tw.world(), pilot);
+    assert!(
+        !pending.iter().any(|line| line.contains(&launched)),
+        "{pending:?}"
+    );
+    let rec = projection(&rig.tw, tv).expect("the projection");
+    assert!(
+        rec.log.iter().any(|line| line.text.contains(&launched)),
+        "the projection still logs it: {:?}",
+        rec.log
+    );
+    // The positive control: a day idle, the rig's return is a trip-level line, queued offline.
+    let since = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.idle_since())
+        .expect("idle since");
+    let (_, queued) = advance_to(&mut rig, since + tacsim::surface::plan::IDLE_PARK_IC_SECS);
+    land_all(&mut rig, &queued);
+    let _ = finish(&mut rig, tv, pilot);
+    assert!(in_bay(&rig.tw, tv, &row), "the idle return brought it in");
+    let home = tacsim::port::tv::IDLE_HOME
+        .replace("{n}", "1")
+        .replace("{site}", "Ahuna Flank")
+        .replace("{name}", "Salt Moth")
+        .replace("{then}", "");
+    let pending = tacsim::port_tick::pending_notices(rig.tw.world(), pilot);
+    assert_eq!(pending, vec![home.clone()], "exactly the trip's line");
+    let events = rig.tw.connect(pilot);
+    let heard = said(&rig.tw, &events, pilot);
+    let lines: Vec<&str> = heard.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == tacsim::port_tick::NOTICE_HEADING)
+        .expect("the heading");
+    assert_eq!(lines.get(at + 1).copied(), Some(home.as_str()), "{heard}");
+    assert!(!heard.contains(&launched), "{heard}");
+    no_refused_writes(&rig.tw);
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,52 +1699,122 @@ fn sm3b_a_bare_act_commits_nothing() {
 // 8. Two acts cannot spend one margin (A7)
 // ---------------------------------------------------------------------------
 
-/// A test-world probe of `cost_cu` at `ordinal`, as `pilot` (the brief's 3.7).
-fn probe(rig: &Rig, pilot: ObjId, tv: ObjId, ordinal: u32, cost_cu: u32) -> AuthoritativeSubmit {
-    AuthoritativeSubmit {
-        actor: pilot,
-        action: handles(&rig.tw)
-            .surface_act
-            .expect("the start is registered"),
-        subject: PerceivedRef::SelfActor,
-        targets: Vec::new(),
-        parameters: serde_json::json!({
-            "tv": tv.0.to_string(),
-            "act": "probe",
-            "ordinal": ordinal,
-            "probe_cu": cost_cu,
-            "probe_s": 0,
-        }),
-        key: IdempotencyKeyText::parse_canonical(format!(
-            "tacsim.surface/{}/{ordinal}/probe{cost_cu}",
-            tv.0
-        ))
-        .expect("a key"),
-    }
+/// **Boot, settle and stock every port with the geology key handed in** (doc 20 cut SM.4a):
+/// `stocked`'s rig, composed, keyed between composition and the boot pass (`build_engine`'s
+/// order), so a scan and a sounding plan.
+fn stocked_keyed() -> Rig {
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+        .expect("the roster composes");
+    assert!(tacsim::surface::install_geology(
+        &mut engine.world,
+        tacsim::surface::GeologyBoot::Key(geology_keyed::secret(geology_keyed::KEY_1))
+    ));
+    let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .expect("the world boots");
+    let mut tw = TestWorld::from_engine(engine);
+    no_refused_writes(&tw);
+    with_offer_keys(&mut tw);
+    let oracle = Arc::new(MapOracle::default());
+    install_oracle(&mut tw, &oracle);
+    let mut rig = Rig {
+        tw,
+        oracle,
+        store: HashMap::new(),
+        typed: BTreeMap::new(),
+    };
+    sweep(&mut rig.tw, 120);
+    stock(&mut rig);
+    set_rate(&mut rig.tw, 1);
+    rig
 }
 
-/// **Two acts cannot spend one margin** (A7; §4.1, §19 item 4; decision 4): on a launched rig
-/// (100,000 cu, out of the bay, so the charge is flat) at ordinal N: (a) two 60,000 cu probes
-/// both at N+1, built before either lands — the first lands, the second refuses "that rig's
-/// orders moved on" and changes nothing; (b) the first finished, the charge reads 40,000 and
-/// a 60,000 cu probe at N+2 refuses "the rig's charge is under the reserve"; (c) a 35,000 cu
-/// probe at N+2 lands and finishes — 5,000 left, exactly the floor — and a 1 cu probe at N+3
-/// refuses with the reserve message; (d) staff leave the rig under the floor (4,000 cu): a
-/// 1 cu probe refuses, and a recover from beside the ramp (a zero spend) previews, lands and
-/// finishes — the exemption, in the world.
+/// Set a rig's charge out of the bay at the world's IC now (staff's hand, `put_record`).
+fn put_charge(rig: &mut Rig, tv: ObjId, value_cu: u32) {
+    let mut record = record_of(&mut rig.tw, tv).expect("the record");
+    record.charge = Charge {
+        value_cu,
+        at_ic: ic_now(&rig.tw),
+        in_bay: false,
+    };
+    put_record(rig, record);
+}
+
+/// Staff move `tv` to the centre of site cell `(x, y)`.
+fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
+    staff_place(rig, tv, x * 1_000 + 500, y * 1_000 + 500);
+}
+
+/// Fire until Ahuna Flank's ground is warm (the arrival hook asked for it; the surface tick
+/// builds one site a fire) — and, since doc 20 cut SM.4b, its home field (a scan or a sounding
+/// from the ground reserves the real trip home; the tick builds the home the fire after).
+fn warm_ahuna(rig: &mut Rig) {
+    for _ in 0..8 {
+        let warm = rig
+            .tw
+            .world()
+            .module_state::<tacsim::surface::GeologyState>()
+            .is_some_and(|state| !state.sites().is_empty() && !state.homes().is_empty());
+        if warm {
+            return;
+        }
+        let (_, queued) = fire(rig);
+        land_quietly(rig, &queued);
+    }
+    panic!("Ahuna Flank's ground was not warmed");
+}
+
+/// **The charge home from a site cell** (doc 20 cut SM.4b): the Dray-P's ramp cell's home field
+/// on Ahuna Flank and the TV's rates (300 cm/s, 15 cu a nominal cell) — what the reserve rule
+/// now adds to a scan's or a sounding's spend from the ground.
+fn home_cu_from(rig: &Rig, cell: (i64, i64)) -> u32 {
+    let field = rig
+        .tw
+        .world()
+        .module_state::<tacsim::surface::GeologyState>()
+        .and_then(|state| state.home_field(&cid("ahuna_port"), (128, 124)))
+        .expect("Ahuna Flank's home field is built");
+    tacsim::surface::drive::home_cu_to(
+        &field,
+        cell,
+        &tacsim::surface::drive::DriveRates {
+            max_speed_cms: 300,
+            cu_per_nominal_cell: 15,
+        },
+    )
+    .expect("a way home")
+}
+
+/// **Two acts cannot spend one margin** (A7; §4.1, §19 item 4; decision 4) — **rewritten by doc
+/// 20 cut SM.4a on the real kinds** (the test-world probe is retired, D15; a keyed boot so the
+/// scan and the sounding plan): on a launched rig (100,000 cu, out of the bay, so the charge is
+/// flat) at ordinal N: (a) two soundings both at N+1, built before either lands — the first
+/// lands, the second refuses "that rig's orders moved on" and changes nothing; (b) the first
+/// finished, staff set the charge to 6,500 cu and move the rig to a new cell (the same-cell
+/// rule refuses a repeat before the reserve is read): a sounding (2,000) refuses "the rig's
+/// charge is under the reserve" (4,500 < 5,000), while a scan (1,000) lands and finishes leaving
+/// 5,500; (c) staff set 7,000 plus the real trip home from the next stand (doc 20 cut SM.4b:
+/// the reserve counts it) and move it there: a sounding lands and finishes leaving exactly the
+/// 5,000 floor plus that trip home, and a scan from a new cell then refuses with the reserve
+/// message (4,000);
+/// (d) staff leave the rig at the ramp **under** the floor (4,000 cu): a scan refuses, and a
+/// recover (a zero spend) previews, lands and finishes — the exemption, in the world.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3b_two_acts_cannot_spend_one_margin() {
-    let mut rig = stocked();
+    let mut rig = stocked_keyed();
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
     let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
     let _ = finish(&mut rig, tv, pilot);
+    warm_ahuna(&mut rig);
     let n = record_of(&mut rig.tw, tv).expect("the record").ordinal;
     // (a)
-    let first = probe(&rig, pilot, tv, n + 1, 60_000);
-    let second = probe(&rig, pilot, tv, n + 1, 60_001);
-    land(&mut rig, &first).expect("the first probe lands");
+    let first = start(&rig, pilot, tv, "sound", n + 1);
+    let second = start(&rig, pilot, tv, "sound", n + 1);
+    land(&mut rig, &first).expect("the first sounding lands");
     let landed = record_of(&mut rig.tw, tv);
     let refused = land(&mut rig, &second).expect_err("the second refuses");
     assert!(refused.contains("that rig's orders moved on"), "{refused}");
@@ -1614,45 +1826,56 @@ fn sm3b_two_acts_cannot_spend_one_margin() {
     // (b)
     let _ = finish(&mut rig, tv, pilot);
     let record = record_of(&mut rig.tw, tv).expect("the record");
-    assert_eq!(record.charge.value_cu, 40_000);
+    assert_eq!(record.charge.value_cu, FULL - 2_000);
     assert!(!record.charge.in_bay);
-    let over = probe(&rig, pilot, tv, n + 2, 60_000);
+    put_charge(&mut rig, tv, 6_500);
+    to_cell(&mut rig, tv, (133, 124));
+    let over = start(&rig, pilot, tv, "sound", n + 2);
     let refused = land(&mut rig, &over).expect_err("reserve");
     assert!(
         refused.contains("the rig's charge is under the reserve"),
         "{refused}"
     );
-    // (c)
-    let fits = probe(&rig, pilot, tv, n + 2, 35_000);
-    land(&mut rig, &fits).expect("35,000 fits");
+    let scan = start(&rig, pilot, tv, "scan", n + 2);
+    land(&mut rig, &scan).expect("a scan of 1,000 fits");
     let _ = finish(&mut rig, tv, pilot);
     assert_eq!(
         record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
-        Some(5_000),
-        "exactly the floor"
+        Some(5_500)
     );
-    let one = probe(&rig, pilot, tv, n + 3, 1);
-    let refused = land(&mut rig, &one).expect_err("4,999");
+    // (c) Doc 20 cut SM.4b (lead ruling 4): the reserve now counts the real trip home from the
+    // stand, so "exactly the floor" is 7,000 plus that trip: the sounding leaves the floor plus
+    // the charge home, which the reserve kept back.
+    let home = home_cu_from(&rig, (138, 124));
+    assert!(home > 0, "a real trip home from ten cells off");
+    put_charge(&mut rig, tv, 7_000 + home);
+    to_cell(&mut rig, tv, (138, 124));
+    let fits = start(&rig, pilot, tv, "sound", n + 3);
+    land(&mut rig, &fits).expect("2,000 and the trip home from 7,000 + home fits");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(
+        record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
+        Some(5_000 + home),
+        "exactly the floor after the trip home"
+    );
+    to_cell(&mut rig, tv, (143, 124));
+    let one = start(&rig, pilot, tv, "scan", n + 4);
+    let refused = land(&mut rig, &one).expect_err("4,000");
     assert!(
         refused.contains("the rig's charge is under the reserve"),
         "{refused}"
     );
     // (d) The way home is never refused by the rule (decision 21; review finding tests/T2):
     // at exactly the floor a zero spend fits without the exemption, so staff leave the rig
-    // **under** it (4,000 cu, out of the bay, as a tools-data change might). A 1 cu probe
-    // there refuses — the rule is live — yet the recover (a zero spend) previews, lands and
-    // finishes `Done`.
+    // **under** it (4,000 cu, out of the bay, as a tools-data change might), at the ramp. A
+    // scan there refuses — the rule is live — yet the recover (a zero spend) previews, lands
+    // and finishes `Done`.
+    staff_place(&mut rig, tv, RAMP.0, RAMP.1);
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
     assert!(out.contains("charge 5 → 5 %"), "{out}");
     assert!(queued.is_empty());
-    let mut under = record_of(&mut rig.tw, tv).expect("the record");
-    under.charge = Charge {
-        value_cu: 4_000,
-        at_ic: ic_now(&rig.tw),
-        in_bay: false,
-    };
-    put_record(&mut rig, under);
-    let one = probe(&rig, pilot, tv, n + 3, 1);
+    put_charge(&mut rig, tv, 4_000);
+    let one = start(&rig, pilot, tv, "scan", n + 4);
     let refused = land(&mut rig, &one).expect_err("under the floor");
     assert!(
         refused.contains("the rig's charge is under the reserve"),
@@ -1887,13 +2110,15 @@ fn sm3b_the_slot_selector() {
 /// and `may_take` refuses it; a reboot lays nothing twice, and nor does the real lay-up pass
 /// run again — the `PortApplier`'s update over each of the six site entries of the shipped
 /// lane, the path a lane version that touches a site takes (the fixer round's item 10a):
-/// objects, vaults, the six spoil vaults and the map rows all as they were.
+/// objects, vaults, the six spoil vaults and the map rows all as they were. Since doc 20 cut
+/// SM.6 the same holds for each site's sixteen block vaults (D3), each backed by its block place.
 #[test]
 fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
     let mut rig = stocked();
     let owner = PrincipalId::System(SystemPrincipalId::new("tacsim.sites").expect("an id"));
     let report = tacsim::port::readiness(rig.tw.world());
     let mut spoils = Vec::new();
+    let mut blocks = Vec::new();
     for entry in [
         "commons_port",
         "kerwan_port",
@@ -1945,19 +2170,57 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
                     && line.port.as_ref().is_some_and(|p| p.as_str() == entry)
             })
             .expect("the site line");
+        // Doc 20 cut SM.6 (D2, D3): the line counts the block vaults too, and this unkeyed
+        // world's layer is dark, so nothing opens and the pad stays open.
         assert_eq!(
             line.text,
-            format!("{entry} site: 16 block places, the site clerk and the spoil laid up.")
+            format!(
+                "{entry} site: 16 block places, the site clerk, the spoil and 16 block vaults \
+                 laid up; no deposits while the geology layer is dark."
+            )
         );
         spoils.push(vault.id);
+        // Doc 20 cut SM.6 (D3; review T7): the sixteen block vaults — every surface
+        // deposit's pool — are the sites' too, each backed by its own block place.
+        assert_eq!(row.vaults.len(), 16, "{entry}: sixteen block vaults");
+        for (letter, id) in &row.vaults {
+            let place = ObjId(*row.blocks.get(letter).expect("the block's place"));
+            let vault = economy(&rig.tw)
+                .snapshot()
+                .vault(VaultId(*id))
+                .cloned()
+                .expect("the block vault");
+            assert_eq!(vault.owner, owner, "{entry} {letter}");
+            assert_eq!(vault.scope, None, "{entry} {letter}");
+            assert_eq!(
+                vault.backing,
+                mush_economy::CustodyRef::Container(place),
+                "{entry} {letter}"
+            );
+            assert_eq!(vault.status, mush_economy::VaultStatus::Active);
+            blocks.push(vault.id);
+        }
     }
     assert_eq!(spoils.len(), 6, "six sites");
+    assert_eq!(blocks.len(), 6 * 16, "96 block vaults");
     let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     let stranger = rig.tw.spawn_player("Stranger");
     for who in [pilot, stranger] {
         let endpoints = mush_inventory::provider::live_endpoints(rig.tw.world(), who);
         for vault in &spoils {
             assert!(!endpoints.contains(vault), "#{} reaches a spoil", who.0);
+            assert!(!mush_economy::may_take_from_vault(
+                rig.tw.world(),
+                who,
+                *vault
+            ));
+        }
+        for vault in &blocks {
+            assert!(
+                !endpoints.contains(vault),
+                "#{} reaches a block vault",
+                who.0
+            );
             assert!(!mush_economy::may_take_from_vault(
                 rig.tw.world(),
                 who,
@@ -1986,7 +2249,13 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
         )
     };
     let before = census(&rig.tw);
-    assert_eq!(before.2.len(), 6, "six spoil vaults, owned by the sites");
+    // Doc 20 cut SM.6 (D3): six spoil vaults and sixteen block vaults a site, owned by the
+    // sites.
+    assert_eq!(
+        before.2.len(),
+        6 * 17,
+        "six spoil vaults and 96 block vaults, owned by the sites"
+    );
     let mut rig = reboot(rig);
     assert_eq!(census(&rig.tw), before, "a reboot lays nothing");
     // The real lay-up pass, run again over every site entry.
@@ -2106,6 +2375,7 @@ fn sm3b_a_rig_on_the_ground_holds_the_revoke() {
         due_ic: now + 1_000_000,
         reserved_cu: 0,
         params: ActParams::None {},
+        by: None,
     });
     let held = format!(
         "{}{}",
@@ -2864,6 +3134,8 @@ fn sm3b_a_rig_is_never_stranded_by_its_battery() {
             .replace("{secs}", "300")
             .replace("{real}", ", about 5 min")
             .replace("{hopper}", "empty")
+            // Doc 20 cut SM.8: an empty hopper's recover names no unload.
+            .replace("{then}", "")
     );
     assert!(queued.is_empty());
     let _ = act_go(&mut rig, pilot, "+tv/1 recover go");
@@ -2933,11 +3205,16 @@ fn sm3b_a_rig_is_never_stranded_by_its_battery() {
 ///   finish lands `Refused { SpoilGone }` at the act's own instant, nothing moved, the pilot
 ///   hears `ACT_FAILED` with `WHY_SPOIL_GONE` once, the rig is free (a later dump, the spoil
 ///   mended, starts and finishes `Done`) and the hull reads `HOPPER_LOADED`, never `TV_BUSY`;
-/// - (b) a transfer the spoil side refuses mid-bundle — two ores the site's spoil has never
-///   held, so the inventory would mint two pools on one endpoint in one bundle and refuses the
-///   second: the first finish does not land and writes nothing (the hopper's two pools exact,
-///   the act still in flight); the next fire's finish records `SpoilGone` and lands, the hopper
-///   still exact, the act released, the hull held only by `HOPPER_LOADED`.
+/// - (b1) **doc 20 cut SM.6 (lead ruling 5; SM.3b's round F3, fixed inventory-side)**: two ores
+///   the site's spoil has never held now land in **one** bundle (`transfer_many` stages the
+///   spoil's pool census once): the first finish lands `Done`, the spoil holds 2 and 1, the
+///   hopper is empty;
+/// - (b2) a transfer the spoil side refuses mid-bundle, by another real cause: the spoil's pool
+///   census filled to `MAX_POOLS_PER_ENDPOINT − 1` with seeded test commodities, two ores it has
+///   never held would make it 65: the first finish does not land and writes nothing (the
+///   hopper's two pools exact, the act still in flight); the next fire's finish records
+///   `SpoilGone` and lands, the hopper still exact, the act released, the hull held only by
+///   `HOPPER_LOADED`.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
@@ -3001,7 +3278,7 @@ fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
     assert_eq!(pool(&mut rig.tw, hopper_v, "metal_ore"), 0);
     assert_eq!(pool(&mut rig.tw, spoil, "metal_ore"), 2);
 
-    // (b)
+    // (b1) Doc 20 cut SM.6: two new pools on the spoil land in one bundle.
     let mut rig = stocked();
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
@@ -3012,6 +3289,56 @@ fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
             .and_then(|row| row.spoil_vault)
             .expect("the spoil vault"),
     );
+    fill_hopper(&mut rig, tv, 2, 9_870);
+    seed_pool(&mut rig, hopper_v, "ice_ore", 1, LotId(9_875));
+    let held = |rig: &mut Rig| {
+        (
+            pool(&mut rig.tw, hopper_v, "metal_ore"),
+            pool(&mut rig.tw, hopper_v, "ice_ore"),
+            pool(&mut rig.tw, spoil, "metal_ore"),
+            pool(&mut rig.tw, spoil, "ice_ore"),
+        )
+    };
+    assert_eq!(held(&mut rig), (2, 1, 0, 0));
+    let _ = act_go(&mut rig, pilot, "+tv/1 dump go");
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    let done = finishes(&queued);
+    assert_eq!(done.len(), 1);
+    land(&mut rig, done[0]).expect("a two-ore dump onto a fresh spoil lands in one bundle");
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert_eq!(record.act, None, "the act is released");
+    assert_eq!(
+        record.last.map(|last| last.result),
+        Some(ActResult::Done),
+        "the dump is done"
+    );
+    assert_eq!(
+        held(&mut rig),
+        (0, 0, 2, 1),
+        "the spoil holds both, the hopper is empty"
+    );
+
+    // (b2) The spoil's pool census one short of the cap: two new ores refuse mid-bundle.
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hopper_v = hopper(&rig.tw, tv);
+    let spoil = VaultId(
+        port_map(&rig.tw, "ahuna_port")
+            .site
+            .and_then(|row| row.spoil_vault)
+            .expect("the spoil vault"),
+    );
+    for n in 0..(mush_inventory::MAX_POOLS_PER_ENDPOINT - 1) {
+        seed_pool(
+            &mut rig,
+            spoil,
+            &format!("filler_{n:02}"),
+            1,
+            LotId(9_900 + u64::try_from(n).expect("small")),
+        );
+    }
     fill_hopper(&mut rig, tv, 2, 9_870);
     seed_pool(&mut rig, hopper_v, "ice_ore", 1, LotId(9_875));
     let held = |rig: &mut Rig| {
@@ -3204,5 +3531,153 @@ fn sm3b_every_act_answers_tv_unwired_without_the_tools_table() {
         status.contains("Rig 1: OWP-TV-01, in the bay; charge ? %; "),
         "{status}"
     );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// 21. A drilling rig is busy to the return and the repossession (doc 20 cut SM.7)
+// ---------------------------------------------------------------------------
+
+/// **A drilling rig holds the return and the repossession** (doc 20 cut SM.7; the SM.7 lead's
+/// pre-commit round, item 2): a second pilot's Dray-P docked at Ceres, its rig in the bay with a
+/// staff-seeded `tacsim.excursion` record holding a mining run and **no excursion** — the one way
+/// a run can meet Occator's counter, and a record `rig_flight` once read as idle. It reads busy
+/// now: the lease return at the counter, bare and with `go`, answers `RIG_BUSY` with `drilling
+/// <pocket>` and the `+tv/1 mine stop` remedy and changes nothing (the lease record, the deposit
+/// hold, the rig aboard, the record); the revoke reaches `repossess`, which holds — exactly
+/// `NOT_REVOKED` + `RECALL_BAY`, the rig aboard, its lease Active, the record and the charter
+/// standing. The same record with the run cleared is the control: the revoke repossesses.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
+    use tacsim::surface::address::{block_letter, pocket_address, pocket_number};
+    use tacsim::surface::{LockRow, OreFamily, Run};
+    let mut rig = stocked();
+    let (other, row_o) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    lease_one(&mut rig, other);
+    let tv_o = rigs_of(&rig.tw, other)[0];
+    let hull_o = ObjId(row_o.hull);
+    assert!(in_bay(&rig.tw, tv_o, &row_o));
+    let now = ic_now(&rig.tw);
+    let (px, py) = (36_i64, 56_i64);
+    let addr = pocket_address(px, py).expect("an address");
+    let number = pocket_number(px, py).expect("a number");
+    let mut drilling = RigRecord::fresh(tv_o, &battery());
+    drilling.ordinal = 1;
+    drilling.run = Some(Run {
+        ordinal: 1,
+        operator: other,
+        hull: hull_o,
+        slot: 1,
+        site: cid("ahuna_port"),
+        body: cid("ceres"),
+        stand: [px * 4 + 1, py * 4 + 1],
+        pocket: [px, py],
+        number,
+        letter: block_letter(px, py).expect("a letter"),
+        family: OreFamily::Metals,
+        deposit: mush_industry::OreDepositId(77),
+        good: cid("metal_ore"),
+        source: Some(12),
+        hopper: 13,
+        cycles: 4,
+        k: 1,
+        secs: 1_800,
+        cost_cu: 2_000,
+        reserve_t: vec![2, 2, 2, 1],
+        class_t: 2,
+        pocket_t: 7,
+        blind: false,
+        stop: false,
+        lapses_ic: None,
+        lock_rows: vec![LockRow {
+            deposit: mush_industry::OreDepositId(77),
+            pocket: number,
+        }],
+        // Far off, so no surface fire lands a cycle while the test reads.
+        due_ic: now + 1_000_000,
+        reserved_cu: 8_000,
+        by: None,
+    });
+    assert_eq!(drilling.check(), Ok(()), "a well-formed staff record");
+    put_record(&mut rig, drilling.clone());
+
+    // The lease return at the counter: busy, with the stop as the remedy.
+    let lease = store(&rig.tw)
+        .tv_lease_on(tv_o)
+        .cloned()
+        .expect("the live lease record");
+    let hold = hold_status(&rig.tw, lease.hold);
+    let counter = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, other, counter);
+    let busy = RIG_BUSY
+        .replace("{n}", "1")
+        .replace("{doing}", &format!("drilling {addr}"));
+    let head = busy.split("{when}").next().unwrap_or_default();
+    let remedy = tacsim::port::tv::RUN_STOP_REMEDY.replace("{n}", "1");
+    assert_eq!(
+        remedy, " +tv/1 mine stop ends the run after this cycle.",
+        "the remedy names the stop"
+    );
+    for line in ["+tv/1 lease return", "+tv/1 lease return go"] {
+        let (out, queued) = command(&mut rig, other, line);
+        let out = out.trim();
+        assert!(
+            out.starts_with(head) && out.contains(" UTC (IC ") && out.ends_with(&remedy),
+            "{line}: {out}"
+        );
+        assert!(queued.is_empty(), "{line} queued nothing");
+        assert_eq!(
+            store(&rig.tw).tv_lease_on(tv_o),
+            Some(&lease),
+            "{line}: the lease record"
+        );
+        assert_eq!(
+            hold_status(&rig.tw, lease.hold),
+            hold,
+            "{line}: the deposit hold"
+        );
+        assert!(
+            in_bay(&rig.tw, tv_o, &row_o),
+            "{line}: the rig stays aboard"
+        );
+        assert_eq!(
+            record_of(&mut rig.tw, tv_o).map(|record| record.run),
+            Some(drilling.run.clone()),
+            "{line}: the run stands"
+        );
+    }
+
+    // The repossession holds.
+    let held = format!(
+        "{}{}",
+        tacsim::port::recall::NOT_REVOKED,
+        tacsim::port::recall::RECALL_BAY.replace("{name}", "Tally Moth")
+    );
+    let out = run(&mut rig.tw, GOD, "@coop/revoke Other=test");
+    assert_eq!(out.trim(), held);
+    assert!(in_bay(&rig.tw, tv_o, &row_o), "the rig stays aboard");
+    assert_eq!(
+        store(&rig.tw).tv_lease_on(tv_o).map(|lease| lease.status),
+        Some(TvLeaseStatus::Active),
+        "the lease stands"
+    );
+    assert_eq!(
+        record_of(&mut rig.tw, tv_o).map(|record| record.run),
+        Some(drilling.run.clone()),
+        "the run stands"
+    );
+    assert!(
+        tacsim::port::live_charter(rig.tw.world(), other).is_some(),
+        "the charter stands"
+    );
+    // The control: the run cleared — the revoke repossesses the rig.
+    put_record(&mut rig, RigRecord::fresh(tv_o, &battery()));
+    let out = run(&mut rig.tw, GOD, "@coop/revoke Other=test");
+    assert!(
+        out.contains("Charter of the Tally Moth (") && out.contains(") revoked from Other: test."),
+        "{out}"
+    );
+    assert!(!in_bay(&rig.tw, tv_o, &row_o), "repossessed");
     no_refused_writes(&rig.tw);
 }

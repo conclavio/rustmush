@@ -566,6 +566,14 @@ blessed by `tests/chart.rs` and decoded by the web tests. The panel plans the po
 empty; `+chart` from a docked helm plans the charter's load. `+chart` and `+chart/map` joined the
 read-only verb allowlist (both copies and the fixture).
 
+**The chart as a picture (doc 21 cut G.5, 2026-10-22).** `^G` on the TUI's chart screen draws the
+frame as a picture (`mush_pixel::chart`, a scene on this section's log scale): orbits, the bodies
+with the vantage ringed, the passages as dashed legs bent by the scale, light-lag rings at 3, 6, 12
+and 24 light-minutes about the vantage body, fetched again every minute while open; the web's
+`ChartScreen` draws the same rings on its SVG and its caption now names the scale it draws
+(logarithmic, where it had said "square root"). A ship under way is still not on the chart: the
+frame is built from a port; ships along their tickets' legs remain this section's to add.
+
 **The moon ports on the chart (cut A.8, 2026-10-19).** Three ports now stand on moons — Aitken
 Highport on Luna, Voltaire Anchorage on Deimos, Ligeia Terminal on Titan — and the chart still draws
 each on its parent's cell, named in the legend and the table; Ceres's frame gains the Luna route, its

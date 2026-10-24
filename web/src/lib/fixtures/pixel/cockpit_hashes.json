@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "hash": "246dcc87adbd08d4",
+      "look_mdeg": 0,
+      "map": "flat"
+    },
+    {
+      "hash": "cd0c55cc5f2699c0",
+      "look_mdeg": 45000,
+      "map": "flat"
+    },
+    {
+      "hash": "0de8b40f6f5f4034",
+      "look_mdeg": -90000,
+      "map": "flat"
+    },
+    {
+      "hash": "2e99200f3cab3387",
+      "look_mdeg": 0,
+      "map": "relief"
+    },
+    {
+      "hash": "b8a35c932b72153d",
+      "look_mdeg": 45000,
+      "map": "relief"
+    },
+    {
+      "hash": "e6f55e813cc9bdfb",
+      "look_mdeg": -90000,
+      "map": "relief"
+    }
+  ],
+  "height": 480,
+  "width": 640
+}

@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "signal": "SIGKILL",
+  "old_pid": 559435,
+  "new_pid": 559783,
+  "gateway_pid": 559424
+}

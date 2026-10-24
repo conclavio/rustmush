@@ -1,9 +1,19 @@
 # 15 — Communications: the relay backbone and the Malapert Exchange
 
-**Draft 0.1, 2026-09-12.** The owner decisions in §9 are binding. The engine backlog in §8 is not
-started; nothing in this document changes shipped behavior. Companion edits made with it: doc 10 §3
-(the amendment), doc 11 §4.11 (the Exchange), §5 (a pointer), §6 (two fronts), §10 (counts), and the
-README index.
+**Draft 0.3, 2026-10-23.** The owner decisions in §9 are binding and all seven questions
+in §10 are answered. **All mail is IC and must transit; there is no OOC mail mode.**
+R1–R10 are implemented. Each milestone's automated and real dev1 integration
+results are recorded in [15b](15b-comms-relay-cut-notes.md). The full star now has
+five nodes, four pairs and eight halves, with checked existing-world upgrades,
+real economic service, structural loss, private/mobile relays and both original
+fronts. R10 passed fresh/upgrade, split/all-in-one, crash, traffic, billing, voyage
+and bounded-load checks. The implementation train stops for programme acceptance.
+Normal candidate CI remains owner-monitored. The Discord bridge passed controlled
+provider tests; live Discord remains open because dev1 has no enabled bot/mapping.
+[15a](15a-comms-relay-implementation-plan.md) retains the sequence and gate criteria.
+The [retrospective](15c-comms-relay-retrospective.md) reopened the original R9b
+recipient-transfer proof and identified R10 CI failures. Their acceptance repair
+is recorded in [15b](15b-comms-relay-cut-notes.md#acceptance-repair--r10-ci-and-r9b-recipient-transfer).
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require
@@ -42,7 +52,7 @@ fragile — makes the limits feel like physics rather than rules.
 | IC traffic rides a deterministic path; OOC is never constrained; owners see only telemetry that reached them | doc 10 §18.2 | The IC/OOC boundary — untouched here |
 | T15: envelopes are queued, transmitted, delivered, acknowledged, expired or superseded; "relays, couriers, store-and-forward, interception, encryption and forged orders extend the envelope later" | doc 10 §13 | The envelope this document extends |
 | `Medium::{Vacuum, Interior, Surface}` with `seconds_per_range`, `PropagationContext::time_of_flight`, `Envelope.path` of `HopRef` via `Envelope::relayed`, `MAX_ENVELOPE_HOPS`, store-and-forward for a ship in the in-transit room | `crates/mush-propagation` | The hop model a zero-cost link slots into; the constant-work discipline (the K lens) the routing step must keep |
-| Strategic travel is a node-and-route graph with no ephemerides (1A); a journey is a record, not a coordinate | doc 10 §12, `mush-atlas`, `mush-sim::journey` | Where a ship's lag comes from (§3.4) |
+| Strategic travel uses the moving sky and a passage plan frozen at departure; a journey is a record, not a ship coordinate | docs 18–19, `tacsim::sky`, `tacsim::port`, `mush-sim::journey` | Where stationary light-time and a ship's lag come from (§3.4); supersedes the original no-ephemerides baseline |
 | The world timeline runs at a rate; scenes decouple from it | `mush-core::clock`, doc 10 6A | Minutes of IC lag compress between scenes and schedule inside them |
 | Kirkwood Depot is "propellant depot and relay" | doc 11 §5 | One node already named |
 
@@ -108,7 +118,7 @@ Luna hub means Earth's own traffic first crosses to Luna at light speed.
 | Earth surface → Luna | 1.3 s | 1.3 s (Earth uplinks to Luna conventionally) |
 | Earth surface → Mars surface | 3–22 min | ≈ 1.4 s |
 | Luna → Mars surface | 3–22 min | ≈ 0.1 s |
-| Phobos → Ceres (two hops, one queue) | 8–38 min | ≈ 0.1 s plus the Luna queue |
+| Phobos → Ceres (two hops, one admission) | 8–38 min | ≈ 0.1 s plus operator admission and both pair queues |
 | Earth → Ceres | 14–33 min | ≈ 1.4 s |
 | Luna → Mercury | 4–12 min | ≈ 0.1 s |
 | Earth → a Jovian moon (no node at start) | 35–54 min | 35–54 min |
@@ -124,17 +134,17 @@ positions.
 **As built (doc 19 cut A.5, 2026-10-18):** the sky side of this table is live — `Sky::light_lag_s(a,
 ta, b, tb)` (cut A.1; one-way, whole seconds up, over the Kepler positions) and `+chart`'s lag column
 (cut A.3: every lane body's light lag from the port you stand at, e.g. Pallas from Ceres), so the
-"fallback" column's ranges are now read off the moving sky rather than authored. The backbone itself
-(R1–R10, the coverage, queues and node hops of the "in coverage" column) is not started; when R5 is
-built it reads a ship's lag from `light_lag_s` at the end bodies and the ticket's frozen legs, as
-D-15-11 says, and nothing in doc 19 forecloses it.
+"fallback" column's ranges are now read off the moving sky rather than authored. R1 now records
+installed nodes, pairs and coverage. R2 now routes stationary traffic through those
+nodes with bounded FIFO capacity and timed fallback. R5 reads a ship's lag from the
+sky at the end bodies and the ticket's frozen legs, as D-15-11 says.
 
 ## 4. Topology at world start: the Luna star (D-15-6)
 
 Every world-start link terminates at **Malapert**, the Luna hub next door to the Concord Executive
 at Shackleton. No spoke-to-spoke pair exists. The star is the Concord's deliberate instrument of
 control, in the same spirit as the Registry: a Republic order to Ceres, a Freeport tip to Kirkwood,
-a Co-op invoice to Phobos — all of it transits Luna's queue and Luna's eyes.
+a Co-op invoice to Phobos — all of it transits Luna's admission policy, pair queues and oversight.
 
 ```text
                  Mercury (Solar Authority)
@@ -144,10 +154,12 @@ a Co-op invoice to Phobos — all of it transits Luna's queue and Luna's eyes.
                       Kirkwood
 ```
 
+There are **five nodes, four pairs and eight halves**: four halves at Malapert and
+one at each of its four spokes. Earlier references to "five halves" counted nodes.
 The halves are assets inside doc 11 §5's regions, not regions of their own. Control kinds as in
 doc 11 §5: **J** de jure · **F** de facto · **C** covert · **E** economic.
 
-| Half | Hosted at | J | F | C | E | Contest at start |
+| Node (installed halves) | Hosted at | J | F | C | E | Contest at start |
 |---|---|---|---|---|---|---|
 | **Malapert hub** (four halves) | Luna, Malapert | Concord charter | the Exchange | the Concord | Concord treasury (the original build); the Exchange (upkeep) | none; under Concord Fleet's guns |
 | **Phobos half** | Phobos, the Exchange compound | the 2312 Settlement's extraterritoriality clause, inherited by the Republic | the Exchange (own staff) | OTS wants a tap; whether it has one is a seed-pack secret | the Exchange | the Republic wants to nationalize it — the Concession's twin |
@@ -157,18 +169,20 @@ doc 11 §5: **J** de jure · **F** de facto · **C** covert · **E** economic.
 
 Consequences that fall out of the star:
 
-- **No private channel between the Republic and the Freeport.** Two instant hops, one queue, one
-  operator. Encryption (T15, later) hides content but not volume and timing, and metadata is
+- **No private channel between the Republic and the Freeport.** Two relay hops, one admission,
+  one operator. Encryption (T15, later) hides content but not volume and timing, and metadata is
   intelligence.
-- **The Luna queue is everyone's queue.** Congestion at one node — real or declared (§5.2) — delays
-  the whole corridor.
+- **The Exchange controls every public route.** Physical capacity and queues belong to each
+  pair. Declared admission is paid once per operator per envelope, at its first used link.
+  Congestion on one pair delays routes through that pair; there is no aggregate Luna bandwidth
+  bucket or automatic corridor-wide delay. A hub bottleneck would be a separate gameplay change.
 - **Cutting Malapert partitions everyone from everyone** (§6.2). It is the one node the Concord's
   expensive navy unambiguously exists to guard.
 - **Future pairs may bypass Luna.** A Phobos–Ceres pair, whoever makes it, is the strategic
   transformation of §7.1. The Concord treats that prospect the way it treats Registry divergence.
 
-**As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19; lore only — the backbone, R1–R10,
-is not started):** three trade-run ports stand on the moons, and the star covers two of them.
+**As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19; coverage promises below remain
+lore until routing is built):** three trade-run ports stand on the moons, and the star covers two of them.
 **Aitken Highport**, the Concord's drum in low polar orbit over the South Pole–Aitken basin, lies
 under **Malapert's** coverage — instant to Phobos, Ceres and Kirkwood through the hub, 67–92
 light-minutes to Titan (§3.5). **Voltaire Anchorage** on Deimos lies inside the **Phobos half's**
@@ -204,13 +218,21 @@ Every envelope carries a class; the class decides its queue position at each nod
 
 The Exchange publishes a **congestion board** per link: the load it *declares*. Standard traffic
 waits by the board; Priority and Sovereign wait by the truth. The board overstates the truth: the
-gap is the upsell. The board is computed by Malapert's licensed scheduling mind (doc 11 §2, the
-Compact); in whose interest it overstates is a fair question for a scene. Two facts therefore
+gap is the upsell. An authorized operator sets the board through the checked scheduling interface.
+A future licensed scheduling mind (doc 11 §2, the Compact) can use that same interface; in whose
+interest it overstates is a fair question for a scene. Two facts therefore
 exist for every link — `declared_congestion` (public,
 operator-set) and the actual load (private, derived from real traffic) — and the gap between them is
 exactly the kind of secret the epistemic engine is built to hold: discoverable by comparing one's own
 timestamps across classes, by an insider, or by an OTS tap, and worth a scandal front when published
 (§10 q5).
+
+**Policy/bandwidth follow-up (RR-5–RR-7):** [design 15e](15e-comms-policy-bandwidth.md)
+defines audited, versioned per-link schedules and immutable accepted admission/window terms.
+Delay is once per operator per envelope, including across replans; physical rate, burst and
+maximum message size are independent. Multi-unit messages serialize over narrow links with
+durable partial progress and no early recipient visibility. Public two-spoke routes use both
+pair budgets, without repeating the operator's declared admission wait.
 
 ### 5.3 Service state: Served, Throttled, Suspended
 
@@ -300,10 +322,86 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (not started)
+## 8. Engine scope (R1–R10 implemented)
 
-Numbered R-items with crate homes; nothing here is scheduled. Sequencing: R1–R2 first (the backbone
-exists), then R5–R6 (players feel the lag), then R3–R4 (the Exchange has powers), then R7–R10.
+The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
+is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
+R8a → R8b → R9a → R9b → R10. Every cut has a mandatory integration stop.
+R2 pulls forward stationary light-time from R5; R10 content is introduced alongside
+its first consumers, beginning with a real Luna–Ceres pair in R1.
+
+**R1 as built (2026-10-23):** `mush_sim::relay` owns the versioned, bounded
+`relay:registry` document. `tacsim.relay.luna_ceres@1` installs the Exchange,
+Malapert's endpoint in Aitken's service spine and Ceres's endpoint in its maintenance
+room, with two physical halves and explicit room coverage. `@relay` provides staff
+inspection and availability controls. Startup reconciles records against the real
+objects and refuses contradictory evidence. The full Malapert compound and star
+were completed in R10. See [15b](15b-comms-relay-cut-notes.md) for implementation, test results
+and CI status.
+
+**R2 as built (2026-10-23):** the existing propagation delivery pass now persists
+stationary itineraries, frozen Sky light-time, shared FIFO pair capacity and
+bounded forwarding. Orders, contact reports and returning ACKs use that path;
+typed dispatch kinds keep messages out of standing-order supersession. Staff
+inspect routes with `@prop/route`. The dev1 live gate passed; full CI status and
+limits are recorded in 15b. The owner continued to R5 after the corrective dev1
+rerun. Mail/channels, service classes and billing remain later cuts.
+
+**R5 as built (2026-10-23):** the metric adapter reads the real typed passage ticket
+and journey cursor, interpolates the frozen leg distance to its nearer endpoint,
+and freezes each physical radio flight. Hull membership covers passengers and
+nested rooms; disembarkation uses bounded forwarding. Missing tickets wait.
+An aboard-only `+ship` estimate states one-way physical lag. A real Dray completed
+the Ceres–Kirkwood–Stickney passage on dev1 with delayed traffic and ACKs, restart,
+rate-change, ticket-loss and docking checks. See 15b for evidence and CI status.
+
+**R7 as built (2026-10-23):** checked fixed station units feed the real persistent
+damage and arena-custody writers into irreversible pair loss. Power damage disables
+service; core loss orphans counterparts and drives idempotent canon, Exchange
+anathema, faction/front consequences and recovery insurance cancellation. Existing
+attention pools are bounded; no seeker is seeded. Real dev1 loss/restart/fallback
+acceptance passed. Stations are not arena-fieldable; no strategic siege UI is added.
+R3/R4/R6 class, policy, all-IC mail and IC-channel acceptance are recorded in 15b.
+
+**R8a as built (2026-10-23):** one Exchange operating account receives finite
+charter capital from Ceres Clearing. Normal per-recipient quotes, protected holds,
+first-transmission settlement, cancellation and expiry sell Standard/Priority
+short-message service; unpaid new traffic remains free Deferred. The real dev1
+payment/crash/conservation gate passed.
+
+**R8b as built (2026-10-24):** daily Standard/Priority subscriptions and recognized
+government Sovereign treaties use actual economy obligations. Missed installments
+throttle then suspend; full debt cure preserves independent sanctions and cannot
+reactivate cancelled service. Exclusive expiry prevents rebilling. The dev1 gate
+passed through six process crashes, a real treasury, cancellation and arrears;
+fresh/reboot and upgraded-state checks passed. See 15b for
+exact source, executable hashes, live evidence and CI repairs.
+
+**R9a as built (2026-10-24):** finite foundry inputs, know-how and actual paid
+industry work orders yield unique titled five-tonne halves. Real carrier bays,
+frozen voyage payload and local authorized installation establish an independent,
+low-bandwidth private link. Discovery advances the anti-proliferation front once.
+The dev1 gate passed manufacture, three freight legs, private mail, cargo refusals,
+seven crashes and baseline restoration. See 15b for evidence.
+
+**R9b as built (2026-10-24):** the dormant Concord relief programme funds six real
+monthly installments, records the Postmaster's consent and consumes a paid physical
+refit. Its Halcyon cruiser carries a checked 300,000-km relay socket; first launch
+requires actual departure. Removal/remount preserves identities, the installed half
+adds five tonnes to the voyage, and carrier power/destruction drives service and
+terminal loss. The dev1 gate passed the hour-long funding cadence, moving coverage,
+nine crashes, finite-money/material audits and restoration. The original recipient-
+transfer proof was invalidated in retrospective; its corrected rerun is recorded
+in 15b’s acceptance-repair entry.
+See 15b for exact evidence.
+
+**R10 as built (2026-10-24):** the five-node/four-pair/eight-half Luna star adds
+Malapert's compound, Phobos, Kirkwood and Mercury, retaining Aitken/Voltaire
+coverage. Checked explicit migration preserves the original identities, losses,
+money, private additions and frozen traffic. The existing Postmaster/Fleet front
+are reused; Terms of Service records one named case from real billing or operator
+facts. Fresh/upgraded worlds, split/all-in-one service, actual daily billing,
+a voyage, crashes and bounded concurrent mail/channel load passed on dev1.
 
 | # | Item | Home | Shape |
 |---|---|---|---|
@@ -311,18 +409,18 @@ exists), then R5–R6 (players feel the lag), then R3–R4 (the Exchange has pow
 | **R2** | **Routing step in the delivery pass** | `mush_propagation::pass::delivery_pass` | Nearest reachable node by the existing context and `Medium` time-of-flight; a **bounded** walk over links (a `MAX_LINK_HOPS` beside `MAX_ENVELOPE_HOPS`); the far node; the recipient. Each hop is an ordinary `HopRef` via `Envelope::relayed`. Constant work: a miss and a hit walk the same branches, so a route lookup never leaks whether a node exists. |
 | **R3** | **Class queue and the congestion board** | `mush_propagation::policy` plus an operator-set posture record | Class on the envelope; Sovereign and Priority wait by actual load, Standard by `declared_congestion`, Deferred off-peak. Queue and delivery stamps recorded on the envelope so the gap is discoverable. |
 | **R4** | **Service state per principal** | interim: a staff/operator table; final: the ownership and permissions layer (doc 08) | `Served / Throttled / Suspended` with a reason. Suspended routes to the fallback (the existing conventional time-of-flight or store-and-forward). Every change is a ledger event. |
-| **R5** | **Ship-under-way lag** | `mush-atlas` travel; `mush_sim::journey::CarrierJourney` | Progress times the route's light-distance to the nearer end, plus the node hop; replaces "waits" with "waits N" for a ship in the in-transit room. The first real metric at strategic scale — the swap `PropagationContext` reserved. |
-| **R6** | **IC channels and IC mail over envelopes** | `mush-comsys` (the `ic` flag); `mush-mail` (no IC/OOC split today — §10 q4) | A coverage check on both ends; lag invisible when both are covered, a visible delay when one is not; OOC untouched (doc 10 §18.2). The Discord scene bridge consumes the same per-observer stream. |
+| **R5** | **Ship-under-way lag** | `mush-atlas` travel; `mush_sim::journey::CarrierJourney` | Progress times the route's light-distance to the nearer end, plus the node hop; replaces "waits" with "waits N" for a ship in the in-transit room. The ship-progress extension of the strategic metric adapter introduced for stationary routes in R2. |
+| **R6** | **IC channels and all mail over envelopes** | `mush-comsys` (the `ic` flag); `mush-mail` | All mail transits, including quick mail, replies and forwards; no OOC mail path. OOC channels stay unconstrained. Arrival gates inbox/history/unread/notifications as well as live text. Discord consumes the authorized per-observer delivered stream. Split into R6a mail and R6b channels/bridges by 15a. |
 | **R7** | **Nodes as structural units; pair death** | `mush-tactics` (the `TacticalUnit` family); `mush-canon`; `mush-faction` | A node is a station-class unit; destruction sets the link `Dead` and orphans the partner; a canon event; the condemnation consequence and the Exchange's anathema; an `attention` pool kind for actors who value notoriety. |
 | **R8** | **The Exchange as an economic principal** | `mush-org`; `mush-economy`; doc 08 E8 | Tariffs by class, subscriptions, the Sovereign treaty rate; arrears → Throttled → Suspended on a cadence clock. The service market's first product. |
-| **R9** | **Pair manufacturing and the mobile half** | a gated `mush-industry` recipe; a unit capability in `ruleset-tacsim` | Foundry plus inputs plus know-how yields a low-bandwidth pair; a mobile half as an opaque capability on a hull; the Concord's anti-proliferation front. |
-| **R10** | **Seed pack** | doc 11 §10, cut 11 | The Exchange organization, the five halves, two fronts, one principal. Doc 11 §10's counts were updated in this change. |
+| **R9** | **Pair manufacturing and the mobile half** | a gated `mush-industry` recipe; a unit capability in `tacsim` | Foundry plus inputs plus know-how yields a low-bandwidth pair; a mobile half as an opaque capability on a hull; the Concord's anti-proliferation front. |
+| **R10** | **Seed pack** | doc 11 §10, cut 11 | The Exchange organization, five nodes / four pairs / eight halves, two fronts, one principal; seeded incrementally with earlier cuts. Doc 11 §10's counts were updated in this change. |
 
 Constants to keep straight: `Medium::Vacuum` at four seconds per abstract range unit and
-`ADJACENT_RANGE = 2` are the tactical scale's placeholders; strategic light-time arrives with R5 and
-only there.
+`ADJACENT_RANGE = 2` are the tactical scale's placeholders. Under 15a, R2 brings
+forward stationary strategic light-time; R5 adds ships from their frozen passage plans.
 
-## 9. Decisions (owner, 2026-09-12, binding)
+## 9. Decisions (owner, 2026-09-12 and 2026-10-23, binding)
 
 | # | Decision |
 |---|---|
@@ -337,32 +435,29 @@ only there.
 | D-15-9 | Building private, low-bandwidth pairs is end-game faction content. |
 | D-15-10 | Cut 1 exclusions: no occlusion geometry for uplinks; no entanglement depletion or resupply; coverage is a set of places. |
 | D-15-11 | A ship under way takes its lag from journey progress along its route, not from a coordinate. |
+| D-15-12 | **2026-10-23:** all mail is IC and must transit. No OOC mail mode. OOC channels remain unconstrained. |
+| D-15-13 | **2026-10-23:** all other recommended answers in §10 are accepted; prices remain seed data. |
+| D-15-14 | **2026-10-23:** pause and integration-test after every milestone; 15a defines the gates and the stop before the next milestone. |
 
-## 10. Open questions for the owner (recommended defaults marked)
+## 10. Owner answers (2026-10-23; all seven questions closed)
 
-1. **Names.** *Malapert Exchange* ("Malapert" — the real Malapert massif at the lunar south pole has
-   near-continuous Earth line-of-sight, was proposed as a relay site, and is next door to
-   Shackleton), *Postmaster* as the title, *Solveig Adebayo-Krishnan* as the principal, and the
-   four class names. Answer `names ok`, or list replacements.
-2. **Mercury at world start.** **A (recommended):** a half at the Mercury Solar Authority
-   (Concord-chartered); none at Venus, Titan, Pallas or Vesta — the outer system stays months away
-   by ship *and* an hour away by radio. **B:** Luna and the corridor only.
-   **As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19):** the lore takes A — Ligeia
-   Terminal at Titan has no half and its prices reach Luna by light; Aitken Highport is under
-   Malapert's coverage and Voltaire Anchorage inside the Phobos half's (§4). Nothing is built; the
-   question's answer still waits on the owner.
-3. **The Concord's lever.** **A (recommended):** informal — Shackleton *requests*, the Exchange
-   *decides*, both deny it; the neutrality theater is the point. **B:** a treaty right to order a
-   suspension, on the record.
-4. **IC mail.** `mush-mail` has no IC/OOC split. **A (recommended):** an IC mail form that rides
-   envelopes; ordinary mail stays OOC and instant. **B:** mail is OOC only; IC correspondence is a
-   scene prop.
-5. **The board is lying at world start.** **A (recommended):** yes, mildly, undiscovered; the true
-   figures are a scoop that opens a scandal front when published. **B:** honest at start; the fraud
-   is a later Exchange decision.
-6. **Prices.** Standard per message-unit, Priority as a multiple, Sovereign flat, Deferred free with
-   an IC-hours wait. **Recommended:** defer the numbers to the seed pack (10b §3.11) with those
-   shapes.
-7. **Who hosts the first half afloat.** **A (recommended):** a Concord Fleet hull refitted at Luna
-   and sent to the corridor as the Belt Squadron's relief — Vance's leverage doubles the day it
-   arrives. **B:** the *Halcyon* itself, refitted in place: slower, riskier, more scenes.
+The owner accepted every recommended default except Q4, which received a new ruling.
+These are design decisions. R1 now implements topology only; later cuts implement
+the transport, commercial and world-content consequences.
+
+| Question | Binding answer |
+|---|---|
+| Q1 — Names | Malapert Exchange; Postmaster Solveig Adebayo-Krishnan; Sovereign, Priority, Standard and Deferred. |
+| Q2 — Mercury at world start | A: Mercury has a half; Venus, Titan, Pallas and Vesta do not. Aitken Highport uses Malapert's coverage and Voltaire Anchorage uses Phobos's. |
+| Q3 — The Concord's lever | A: informal requests from Shackleton; the Exchange decides and owns the reasoned audit line. |
+| Q4 — Mail | **All mail is IC and must transit the communications network. There is no OOC mail mode, including ordinary, urgent or staff-authored mail.** This supersedes both original alternatives; OOC channels remain unconstrained. |
+| Q5 — The congestion board | A: mildly dishonest and undiscovered at world start. Publishing evidence can open the scandal front. |
+| Q6 — Prices | Keep Standard per message-unit, Priority a multiple, Sovereign flat and Deferred free with an IC-hours wait. The numbers are versioned seed-pack data. |
+| Q7 — First half afloat | A: a Concord Fleet hull refitted at Luna and sent to the corridor as the Belt Squadron's relief. No mobile half is active at world start. |
+
+**Implementation cadence.** The owner also requires a pause and integration test after
+each milestone. [15a](15a-comms-relay-implementation-plan.md) defines thirteen
+integration gates, splitting R6, R8 and R9 and bringing real seed content forward.
+Each gate includes its production composition, durable/restart path and live-server
+evidence. Stop and report after the gate; continue on the owner's instruction.
+Integration is never deferred to R10.

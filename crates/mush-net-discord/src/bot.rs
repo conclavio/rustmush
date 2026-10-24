@@ -373,7 +373,7 @@ async fn handle_event(
                         "look" => "look".to_string(),
                         _ => "+scene".to_string(),
                     };
-                    match hooks.dm_line(user_id, &line).await {
+                    match hooks.dm_message(user_id, handle.id, &line).await {
                         LineOutcome::Accepted => reply(api, &handle, "Sent.").await,
                         LineOutcome::Closed => reply(api, &handle, "Detached.").await,
                         LineOutcome::NotFollowing => reply(api, &handle, NOT_FOLLOWING).await,
@@ -404,6 +404,7 @@ async fn handle_event(
                 .interaction(
                     user_id,
                     Interaction {
+                        interaction_id: handle.id,
                         custom_id,
                         values,
                         fields: Vec::new(),
@@ -428,6 +429,7 @@ async fn handle_event(
                 .interaction(
                     user_id,
                     Interaction {
+                        interaction_id: handle.id,
                         custom_id,
                         values: Vec::new(),
                         fields,
@@ -441,6 +443,7 @@ async fn handle_event(
             }
         }
         DiscordEvent::Message {
+            message_id,
             user_id,
             channel_id,
             guild_id,
@@ -460,7 +463,10 @@ async fn handle_event(
                 // D4: a line in a relayed channel speaks on the game channel;
                 // an unlinked author is hinted once per interval, a refusal is
                 // told once per interval, everything else is silent.
-                match hooks.relay_line(user_id, channel_id, &content).await {
+                match hooks
+                    .relay_message(user_id, channel_id, message_id, &content)
+                    .await
+                {
                     RelayLineOutcome::Ignored | RelayLineOutcome::Accepted => {}
                     RelayLineOutcome::NotLinked => {
                         if state.hint_due(user_id) {
@@ -475,7 +481,7 @@ async fn handle_event(
                 }
                 return;
             }
-            match hooks.dm_line(user_id, &content).await {
+            match hooks.dm_message(user_id, message_id, &content).await {
                 LineOutcome::Accepted | LineOutcome::Closed => {}
                 LineOutcome::NotFollowing => {
                     if state.hint_due(user_id)
@@ -665,6 +671,7 @@ mod tests {
 
     fn dm(user_id: u64, content: &str) -> DiscordEvent {
         DiscordEvent::Message {
+            message_id: 100,
             user_id,
             channel_id: 900,
             guild_id: None,
@@ -756,6 +763,7 @@ mod tests {
             dm(1, "+roll 3"),
             DiscordEvent::Message {
                 user_id: 1,
+                message_id: 101,
                 channel_id: 901,
                 guild_id: Some(42),
                 content: "guild chatter is not a line".into(),
@@ -839,6 +847,7 @@ mod tests {
     #[tokio::test]
     async fn guild_lines_route_to_the_relay_and_only_the_unlinked_or_refused_are_told() {
         let guild = |user: u64, channel: u64, text: &str| DiscordEvent::Message {
+            message_id: 102,
             user_id: user,
             channel_id: channel,
             guild_id: Some(42),

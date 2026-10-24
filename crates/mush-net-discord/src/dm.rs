@@ -403,6 +403,24 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
             );
             Rendered::Line(escape_md(&line))
         }
+        // IC channel frames are addressed to this observer only after arrival.
+        // Shared OOC relay traffic retains its existing separate mirror path.
+        OutputEvent::Channel {
+            channel,
+            epoch: Some(_),
+            actor,
+            kind,
+            text,
+            ..
+        } if !quiet => {
+            let line = narrative_line(
+                *kind,
+                Some(&actor.name),
+                actor.id == state.self_id,
+                &text.to_plain_text(),
+            );
+            Rendered::Line(escape_md(&format!("[{channel}] {line}")))
+        }
         OutputEvent::Sys(text) => match first_tag(text) {
             Some("scene" | "discord") => Rendered::Line(escape_md(&text.to_plain_text())),
             Some("error" | "system" | "channel" | "privilege") if !quiet => {
@@ -1158,6 +1176,7 @@ mod tests {
                 active: true,
             },
             OutputEvent::Channel {
+                epoch: None,
                 channel: SmolStr::new("pub"),
                 seq: 1,
                 actor: ObjRef::new("#7", "Nick"),

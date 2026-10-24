@@ -147,9 +147,9 @@ impl Roster {
                 );
             }
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -4331,4 +4331,81 @@ fn ic14_pause_then_resume_over_an_inflight_hold_rearms_the_restage() {
     let inflight = resumed.inflight.expect("still in flight");
     assert_eq!(inflight.restaged, 0, "the re-stage clock is re-armed");
     assert_eq!(inflight.staged_utc, rig.tw.world().now());
+}
+
+// ---- doc 20 cut SM.11: await tv -------------------------------------------------
+
+/// **`await tv` files, renders and runs** (doc 20 cut SM.11; the brief's 3.13): `await tv` and
+/// `await tv 1 until=12h` file with their summaries; `+ship/orders` lists them with the await's
+/// next-due words; `await rig` is `ORDER_USAGE` and `board` still `NOT_ORDERABLE` (its new text);
+/// on a hull with no rigs both awaits complete on the first fires (`AWAIT_DONE`) and the plan's
+/// next order runs.
+#[test]
+fn sm11_await_tv_files_renders_and_runs() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let dockmaster = station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    teleport(&mut rig.tw, pilot, dockmaster);
+    let out = order(&mut rig, pilot, "await tv");
+    assert!(
+        out.contains(
+            "Order 1 filed: await every rig, at most 288 IC h. The sailing plan is at revision 1."
+        ),
+        "{out}"
+    );
+    let out = order(&mut rig, pilot, "await tv 1 until=12h");
+    assert!(
+        out.contains(
+            "Order 2 filed: await rig 1, at most 12 IC h. The sailing plan is at revision 2."
+        ),
+        "{out}"
+    );
+    let _ = order(&mut rig, pilot, "stop");
+    let out = run(&mut rig.tw, pilot, "+ship/orders");
+    for want in [
+        "  1. await every rig, at most 288 IC h — next",
+        "  2. await rig 1, at most 12 IC h — pending",
+        "Next due: order 1, waiting for every rig to park.",
+    ] {
+        assert!(out.lines().any(|l| l == want), "missing {want:?}:\n{out}");
+    }
+    let rev = orders(&rig.tw, hull).rev;
+    for (line, want) in [
+        ("await rig", tacsim::port::orders::ORDER_USAGE),
+        ("await tv 5", tacsim::port::orders::ORDER_USAGE),
+        ("await tv until=289", tacsim::port::orders::ORDER_USAGE),
+        ("board", NOT_ORDERABLE),
+    ] {
+        let out = order(&mut rig, pilot, line);
+        assert!(out.contains(want), "{line}: {out}");
+    }
+    assert_eq!(orders(&rig.tw, hull).rev, rev, "the refusals wrote nothing");
+    assert_eq!(
+        NOT_ORDERABLE,
+        "The sailing plan takes sell, buy, depart, await tv and stop. Boarding, leaving, \
+         enrolling and buying out are done in person."
+    );
+    let _ = drive(&mut rig, 6);
+    let log = log_texts(&rig.tw, hull);
+    assert!(
+        log.iter()
+            .any(|l| l.ends_with("Every rig parked; the sailing plan runs on.")),
+        "{log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.ends_with("Rig 1 parked; the sailing plan runs on.")),
+        "{log:?}"
+    );
+    assert_eq!(order_state(&rig.tw, hull, 1), Some(OrderState::Done));
+    assert_eq!(order_state(&rig.tw, hull, 2), Some(OrderState::Done));
+    assert!(
+        orders(&rig.tw, hull)
+            .orders
+            .iter()
+            .all(|o| o.awaited.is_none()),
+        "no await's start stays on a done order"
+    );
+    no_refused_writes(&rig.tw);
 }

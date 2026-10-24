@@ -323,10 +323,24 @@ pub struct HopRef {
     pub at: ClockStamp,
 }
 
+/// Typed dispatch semantics. Only orders participate in revision supersession.
+/// The mail/channel values reserve that boundary; their producers arrive in R6.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchKind {
+    Order,
+    Report,
+    Acknowledgement,
+    Mail,
+    Channel,
+}
+
 /// A delivery envelope: an order, a report or an acknowledgement in flight.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    representation: Option<mush_core::RelayRepresentation>,
     id: u64,
     issuer: ObjId,
     recipient: ObjId,
@@ -348,11 +362,18 @@ pub struct Envelope {
     /// true rather than aspirational. Propagation never writes the share — it
     /// states the intent, and `mush-tactics`' ingress commits it.
     shares: Option<mush_core::ContactId>,
+    kind: DispatchKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transit: Option<crate::routing::Transit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch: Option<crate::dispatch::DispatchRef>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvelopeWire {
+    #[serde(default)]
+    representation: Option<mush_core::RelayRepresentation>,
     id: u64,
     issuer: ObjId,
     recipient: ObjId,
@@ -366,6 +387,12 @@ struct EnvelopeWire {
     ack_of: Option<u64>,
     #[serde(default)]
     shares: Option<mush_core::ContactId>,
+    #[serde(default)]
+    kind: Option<DispatchKind>,
+    #[serde(default)]
+    transit: Option<crate::routing::Transit>,
+    #[serde(default)]
+    dispatch: Option<crate::dispatch::DispatchRef>,
 }
 
 impl<'de> Deserialize<'de> for Envelope {
@@ -374,7 +401,7 @@ impl<'de> Deserialize<'de> for Envelope {
         D: serde::Deserializer<'de>,
     {
         let wire = EnvelopeWire::deserialize(deserializer)?;
-        Self::from_parts(
+        let mut envelope = Self::from_parts(
             wire.id,
             wire.issuer,
             wire.recipient,
@@ -386,8 +413,75 @@ impl<'de> Deserialize<'de> for Envelope {
             wire.advanced,
             wire.ack_of,
             wire.shares,
+            matches!(wire.kind, Some(DispatchKind::Mail | DispatchKind::Channel)),
         )
-        .map_err(serde::de::Error::custom)
+        .map_err(serde::de::Error::custom)?;
+        envelope.representation = wire.representation;
+        if let Some(kind) = wire.kind {
+            if (kind == DispatchKind::Acknowledgement) != envelope.ack_of.is_some()
+                || (kind == DispatchKind::Report) != envelope.shares.is_some()
+            {
+                return Err(serde::de::Error::custom(
+                    "dispatch kind contradicts its payload reference",
+                ));
+            }
+            envelope.kind = kind;
+        }
+        if let Some(reference) = wire.dispatch {
+            if !reference.valid()
+                || !matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel)
+            {
+                return Err(serde::de::Error::custom("invalid dispatch reference"));
+            }
+            envelope.dispatch = Some(reference);
+        } else if matches!(envelope.kind, DispatchKind::Mail | DispatchKind::Channel) {
+            return Err(serde::de::Error::custom(
+                "message dispatch reference missing",
+            ));
+        }
+        if let Some(transit) = wire.transit {
+            transit.validate().map_err(serde::de::Error::custom)?;
+            if transit
+                .flight
+                .as_ref()
+                .is_some_and(|f| f.started.clock != envelope.issued.clock)
+                || transit
+                    .queued_at
+                    .as_ref()
+                    .is_some_and(|at| at.clock != envelope.issued.clock)
+                || transit
+                    .history
+                    .iter()
+                    .any(|h| h.arrived.clock != envelope.issued.clock)
+                || transit
+                    .legs
+                    .iter()
+                    .skip(transit.next)
+                    .filter(|l| l.pair.is_some())
+                    .count()
+                    + envelope.path.len()
+                    > crate::routing::MAX_LINK_HOPS
+            {
+                return Err(serde::de::Error::custom(
+                    "itinerary contradicts envelope clock or hop budget",
+                ));
+            }
+            if transit
+                .service
+                .as_ref()
+                .is_some_and(|t| t.units != crate::service::units(&envelope))
+                || transit
+                    .serialization
+                    .as_ref()
+                    .is_some_and(|p| p.total != crate::service::units(&envelope))
+            {
+                return Err(serde::de::Error::custom(
+                    "service units contradict content accounting",
+                ));
+            }
+            envelope.transit = Some(transit);
+        }
+        Ok(envelope)
     }
 }
 
@@ -418,6 +512,7 @@ impl Envelope {
             issued,
             None,
             None,
+            false,
         )
     }
 
@@ -446,6 +541,7 @@ impl Envelope {
             issued,
             None,
             Some(contact),
+            false,
         )
     }
 
@@ -467,6 +563,7 @@ impl Envelope {
             at,
             Some(original.id),
             None,
+            false,
         )
     }
 
@@ -483,6 +580,7 @@ impl Envelope {
         advanced: ClockStamp,
         ack_of: Option<u64>,
         shares: Option<mush_core::ContactId>,
+        allow_self: bool,
     ) -> Result<Self, RecordError> {
         if payload.is_empty() || payload.len() > MAX_ENVELOPE_PAYLOAD_BYTES {
             return Err(RecordError::Payload {
@@ -493,7 +591,7 @@ impl Envelope {
         if revision == 0 {
             return Err(RecordError::ZeroRevision);
         }
-        if issuer == recipient {
+        if issuer == recipient && !allow_self {
             return Err(RecordError::SelfAddressed);
         }
         if path.len() > usize::from(MAX_ENVELOPE_HOPS) {
@@ -521,7 +619,60 @@ impl Envelope {
             advanced,
             ack_of,
             shares,
+            kind: if ack_of.is_some() {
+                DispatchKind::Acknowledgement
+            } else if shares.is_some() {
+                DispatchKind::Report
+            } else {
+                DispatchKind::Order
+            },
+            representation: None,
+            transit: None,
+            dispatch: None,
         })
+    }
+
+    /// A source-owned message reference; self-mail is a legitimate local route.
+    pub fn dispatch(
+        id: u64,
+        issuer: ObjId,
+        recipient: ObjId,
+        kind: DispatchKind,
+        reference: crate::dispatch::DispatchRef,
+        issued: ClockStamp,
+    ) -> Result<Self, RecordError> {
+        if !reference.valid() || !matches!(kind, DispatchKind::Mail | DispatchKind::Channel) {
+            return Err(RecordError::DispatchReference);
+        }
+        let mut envelope = Self::from_parts(
+            id,
+            issuer,
+            recipient,
+            reference.key.clone(),
+            1,
+            EnvelopeState::Queued,
+            Vec::new(),
+            issued.clone(),
+            issued,
+            None,
+            None,
+            true,
+        )?;
+        envelope.kind = kind;
+        envelope.dispatch = Some(reference);
+        Ok(envelope)
+    }
+
+    #[must_use]
+    pub fn representation(&self) -> Option<mush_core::RelayRepresentation> {
+        self.representation
+    }
+    pub fn with_representation(mut self, r: Option<mush_core::RelayRepresentation>) -> Self {
+        self.representation = r;
+        self
+    }
+    pub fn dispatch_ref(&self) -> Option<&crate::dispatch::DispatchRef> {
+        self.dispatch.as_ref()
     }
 
     /// The id.
@@ -580,6 +731,23 @@ impl Envelope {
     pub const fn shares(&self) -> Option<mush_core::ContactId> {
         self.shares
     }
+
+    #[must_use]
+    pub const fn kind(&self) -> DispatchKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn transit(&self) -> Option<&crate::routing::Transit> {
+        self.transit.as_ref()
+    }
+
+    #[must_use]
+    pub fn with_transit(&self, transit: crate::routing::Transit) -> Self {
+        let mut next = self.clone();
+        next.transit = Some(transit);
+        next
+    }
     /// Its age at `at`, in IC seconds. Incomparable clocks answer 0 rather than
     /// producing a nonsense age; use [`Self::checked_age`] where the difference
     /// matters, because 0 renders as **fresher than the truth**.
@@ -612,6 +780,9 @@ impl Envelope {
         for hop in &mut next.path {
             hop.at.clock = clock.clone();
         }
+        if let Some(transit) = &mut next.transit {
+            transit.reanchor(clock);
+        }
         next
     }
 
@@ -638,7 +809,14 @@ impl Envelope {
             at,
             self.ack_of,
             self.shares,
+            self.dispatch.is_some(),
         )
+        .map(|mut next| {
+            next.kind = self.kind;
+            next.transit = self.transit.clone();
+            next.dispatch = self.dispatch.clone();
+            next
+        })
     }
 
     /// Move to a new state. Terminal states are **idempotent**: re-applying one
@@ -968,6 +1146,8 @@ fn fold_digest(
 /// A record that will not construct or will not load.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RecordError {
+    #[error("invalid message dispatch reference")]
+    DispatchReference,
     #[error("a phantom id is at most {max} bytes")]
     PhantomId { max: usize },
     #[error("a phantom's holder set size {actual} is outside 1..={max}")]
@@ -1071,9 +1251,17 @@ pub struct PropagationStore {
     /// Documents that would not decode, kept verbatim so a later fix can read
     /// them and a boot never destroys the only copy.
     held: BTreeMap<SmolStr, serde_json::Value>,
+    /// Shared pair bandwidth, committed atomically with envelope transitions.
+    pub(crate) transport: crate::routing::TransportState,
 }
 
 impl PropagationStore {
+    /// Internal read-only service/transport projection; public player views must
+    /// go through the actor-scoped service board and arrived receipts.
+    pub fn relay_transport(&self) -> &crate::routing::TransportState {
+        &self.transport
+    }
+
     /// Every live envelope, in id order.
     pub fn envelopes(&self) -> impl Iterator<Item = &Envelope> {
         self.envelopes.values()

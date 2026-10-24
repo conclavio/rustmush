@@ -170,10 +170,13 @@ fn module_list(
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    // The old tacsim_module(cfg) used game_content=false; preserve that pack
-    // choice while wiring the same owner capabilities as the production root.
-    mods.push(modules::tacsim_module_wired(cfg, false, inventory));
-    mods.push(modules::content_module_with(true, true).expect("the content module composes"));
+    // Runtime definitions and applied packs must agree, as in production. The
+    // full relay star requires the Fleet/Postmaster programme from game content.
+    let game_content = cfg.enabled;
+    mods.push(modules::tacsim_module_wired(cfg, game_content, inventory));
+    mods.push(
+        modules::content_module_with(true, game_content).expect("the content module composes"),
+    );
     mods
 }
 

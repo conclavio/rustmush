@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::definitions::GoodsTable;
+use crate::definitions::logistics::MAX_BAY_ITEMS;
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::board::{label_of, money, unit_of};
 use crate::port::coop::{helm_of, name_of, port_name};
@@ -49,6 +50,7 @@ use crate::port::when::{
     MAX_WINDOW_SECS, NotBefore, hhmm_minutes, parse_at, parse_until, render_due, resolve_due,
 };
 use crate::store::{TacsimStore, put_orders};
+use crate::surface::plan::MAX_AWAIT_IC_HOURS;
 
 // ---- the document ------------------------------------------------------------------
 
@@ -162,6 +164,11 @@ pub struct Order {
     pub reached: Option<Reached>,
     /// What it does.
     pub what: What,
+    /// **The IC instant an `await tv` became the cursor** (doc 20 cut SM.11; the brief's 3.10, the
+    /// depart's `reached` precedent): only an open await carries it, and every path that ends or
+    /// skips the order clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaited: Option<i64>,
 }
 
 /// **Where and when a depart was first found runnable** (L9): valid only while the
@@ -239,6 +246,17 @@ pub enum What {
     },
     /// A barrier: when reached it marks itself done and pauses the plan (owner item O5).
     Stop,
+    /// **Wait for the rigs to park** (doc 20 cut SM.11; §4.3, §8; the brief's lead ruling 5): done
+    /// when every rig of the hull (or the named slot's) is parked — in this hull's bay idle, or on
+    /// the ground stranded with nothing in flight — or when `until_ic_h` IC hours have passed since
+    /// it became the cursor.
+    AwaitTv {
+        /// The rig's bay slot, `None` for every rig.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<u8>,
+        /// The most IC hours it waits, `1..=MAX_AWAIT_IC_HOURS`.
+        until_ic_h: u16,
+    },
 }
 
 /// **An order's quantity**: `all` (sell), `fill` (a consumable buy) or a count.
@@ -412,6 +430,8 @@ impl Orders {
             for order in &mut self.orders {
                 if Some(order.id) != cursor {
                     order.reached = None;
+                    // Doc 20 cut SM.11: an await's start is the cursor's alone too.
+                    order.awaited = None;
                 }
             }
         }
@@ -540,6 +560,15 @@ impl Orders {
             if order.reached.is_some() && !depart_open {
                 return Err(format!(
                     "order {} carries a reach, which only an open depart does",
+                    order.id
+                ));
+            }
+            // Doc 20 cut SM.11 (the reviewer's F19): only an open await carries its start.
+            let await_open = matches!(order.what, What::AwaitTv { .. })
+                && !matches!(order.state, OrderState::Done | OrderState::Skipped);
+            if order.awaited.is_some() && !await_open {
+                return Err(format!(
+                    "order {} carries an await's start, which only an open await does",
                     order.id
                 ));
             }
@@ -701,6 +730,19 @@ fn check_what(id: u32, what: &What) -> Result<(), String> {
             }
         }
         What::Stop => {}
+        // Doc 20 cut SM.11: a bay slot and a bound of 1 to 288 IC hours.
+        What::AwaitTv { slot, until_ic_h } => {
+            if slot.is_some_and(|n| n == 0 || u32::from(n) > MAX_BAY_ITEMS) {
+                return Err(format!(
+                    "order {id} awaits a rig of slot 1 to {MAX_BAY_ITEMS}"
+                ));
+            }
+            if *until_ic_h == 0 || *until_ic_h > MAX_AWAIT_IC_HOURS {
+                return Err(format!(
+                    "order {id} waits 1 to {MAX_AWAIT_IC_HOURS} IC hours"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -731,9 +773,9 @@ pub fn orders_state(w: &World, hull: ObjId) -> OrdersState<'_> {
 // ---- the texts (the planner's wording, owner item O1) ------------------------------
 
 /// `+ship/order`'s grammar.
-pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm] [via=<place>] [throttle=<permille>] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
-/// Anything the vocabulary does not take (lead note 2g).
-pub const NOT_ORDERABLE: &str = "The sailing plan takes sell, buy, depart and stop. Boarding, leaving, enrolling and buying out are done in person.";
+pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm] [via=<place>] [throttle=<permille>] | stop | await tv [<slot>|all] [until=<IC hours>] | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
+/// Anything the vocabulary does not take (lead note 2g; doc 20 cut SM.11 adds `await tv`).
+pub const NOT_ORDERABLE: &str = "The sailing plan takes sell, buy, depart, await tv and stop. Boarding, leaving, enrolling and buying out are done in person.";
 /// Away from the hull and its port (Q-18-28): `{name}`.
 pub const ORDERS_WHERE: &str =
     "You file the {name}'s sailing plan aboard her, or in the port where she is docked.";
@@ -918,7 +960,16 @@ pub(crate) fn order_summary(w: &World, goods: &GoodsTable, what: &What) -> Strin
             )
         }
         What::Stop => "stop".to_owned(),
+        What::AwaitTv { slot, until_ic_h } => {
+            format!("await {}, at most {until_ic_h} IC h", await_which(*slot))
+        }
     }
+}
+
+/// **`{which}` of an `await tv`** (doc 20 cut SM.11): `every rig` or `rig {n}`.
+#[must_use]
+pub(crate) fn await_which(slot: Option<u8>) -> String {
+    slot.map_or_else(|| "every rig".to_owned(), |n| format!("rig {n}"))
 }
 
 /// The layer's goods table.
@@ -998,7 +1049,7 @@ pub(crate) fn depart_due(w: &World, hull: ObjId, order: &Order) -> Option<i64> {
             *not_after_s,
             render_reach(w, hull, order),
         )),
-        What::Buy { .. } | What::Sell { .. } | What::Stop => None,
+        What::Buy { .. } | What::Sell { .. } | What::Stop | What::AwaitTv { .. } => None,
     }
 }
 
@@ -1161,6 +1212,10 @@ fn next_due(w: &World, orders: &Orders, ports: &[Option<String>]) -> String {
         }
         (What::Stop, _) | (What::Buy { .. } | What::Sell { .. }, Berth::Docked { .. }) => {
             format!("order {id} on the next tick.")
+        }
+        // Doc 20 cut SM.11.
+        (What::AwaitTv { slot, .. }, _) => {
+            format!("order {id}, waiting for {} to park.", await_which(*slot))
         }
         (What::Buy { .. } | What::Sell { .. }, Berth::UnderWay | Berth::Elsewhere) => {
             let port = orders
@@ -1381,6 +1436,52 @@ fn parse_depart(w: &World, args: &[&str]) -> Result<What, CmdError> {
     })
 }
 
+/// **`await tv [<slot>|all] [until=<N>|until=<N>h]`** (doc 20 cut SM.11; the brief's 3.10): the
+/// next word must be `tv`; then optionally a slot (`1..=MAX_BAY_ITEMS`) or `all`; then optionally
+/// `until=` IC hours (`1..=MAX_AWAIT_IC_HOURS`, a bare or `h`-suffixed strict decimal) —
+/// [`MAX_AWAIT_IC_HOURS`] when omitted. Anything else is [`ORDER_USAGE`].
+fn parse_await(args: &[&str]) -> Result<What, CmdError> {
+    let usage = || CmdError::msg(ORDER_USAGE);
+    let mut words = args.iter().copied();
+    if !words
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("tv"))
+    {
+        return Err(usage());
+    }
+    let mut slot: Option<u8> = None;
+    let mut all = false;
+    let mut until: Option<u16> = None;
+    for word in words {
+        let lower = word.to_ascii_lowercase();
+        if let Some(value) = lower.strip_prefix("until=") {
+            if until.is_some() {
+                return Err(usage());
+            }
+            let digits = value.strip_suffix('h').unwrap_or(value);
+            let hours = strict_decimal_u32(digits)
+                .and_then(|h| u16::try_from(h).ok())
+                .filter(|h| (1..=MAX_AWAIT_IC_HOURS).contains(h))
+                .ok_or_else(usage)?;
+            until = Some(hours);
+        } else if lower == "all" && !all && slot.is_none() && until.is_none() {
+            all = true;
+        } else if slot.is_none() && !all && until.is_none() {
+            let n = strict_decimal_u32(&lower)
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| *n >= 1 && u32::from(*n) <= MAX_BAY_ITEMS)
+                .ok_or_else(usage)?;
+            slot = Some(n);
+        } else {
+            return Err(usage());
+        }
+    }
+    Ok(What::AwaitTv {
+        slot,
+        until_ic_h: until.unwrap_or(MAX_AWAIT_IC_HOURS),
+    })
+}
+
 /// Parse one `+ship/order` line (grammar only; the document's rules come after).
 fn parse_edit(w: &World, goods: &GoodsTable, raw: &str) -> Result<Edit, CmdError> {
     let words: Vec<&str> = raw.split_whitespace().collect();
@@ -1400,6 +1501,8 @@ fn parse_edit(w: &World, goods: &GoodsTable, raw: &str) -> Result<Edit, CmdError
         "buy" => parse_trade(goods, false, &rest).map(Edit::File),
         "depart" => parse_depart(w, &rest).map(Edit::File),
         "stop" => none_more(Edit::File(What::Stop)),
+        // Doc 20 cut SM.11 (the brief's 3.10): `await tv [<slot>|all] [until=<N>[h]]`.
+        "await" => parse_await(&rest).map(Edit::File),
         "clear" => none_more(Edit::Clear),
         "pause" => none_more(Edit::Pause),
         "resume" => none_more(Edit::Resume),
@@ -1548,7 +1651,7 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let due_now = match &what {
                 What::Buy { .. } | What::Sell { .. } => true,
                 What::Depart { not_before, .. } => *not_before == NotBefore::Now,
-                What::Stop => false,
+                What::Stop | What::AwaitTv { .. } => false,
             };
             orders.orders.push(Order {
                 id,
@@ -1559,6 +1662,7 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 announced: false,
                 reached: None,
                 what,
+                awaited: None,
             });
             orders.derive_cursor();
             let rev = orders.rev.checked_add(1).ok_or_else(dark)?;
@@ -1601,6 +1705,7 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 order.state = OrderState::Skipped;
                 order.refusals = 0;
                 order.reached = None;
+                order.awaited = None;
             }
             replies.push(SKIPPED.replace("{n}", &n.to_string()));
         }
@@ -1758,6 +1863,7 @@ mod tests {
             announced: false,
             reached: None,
             what,
+            awaited: None,
         }
     }
 
@@ -2246,5 +2352,167 @@ mod tests {
         let mut depart = wire;
         depart["orders"][2]["what"]["depart"]["extra"] = serde_json::json!(1);
         assert!(serde_json::from_value::<Orders>(depart).is_err());
+    }
+    /// **`await tv` parses and checks** (doc 20 cut SM.11; the brief's 3.10): the five good forms
+    /// and their defaults; every malformed form is `ORDER_USAGE`; `check` bounds the slot and the
+    /// hours; an `awaited` on a depart is refused, on a `Done` await refused, and the same order
+    /// with `awaited: None` passes; the summary words.
+    #[test]
+    fn sm11_await_tv_parses_and_checks() {
+        let parse = |line: &str| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            parse_await(&words).map_err(|e| e.to_string())
+        };
+        let all = |until_ic_h| What::AwaitTv {
+            slot: None,
+            until_ic_h,
+        };
+        assert_eq!(parse("tv"), Ok(all(MAX_AWAIT_IC_HOURS)));
+        assert_eq!(parse("tv all"), Ok(all(288)));
+        assert_eq!(
+            parse("tv 2"),
+            Ok(What::AwaitTv {
+                slot: Some(2),
+                until_ic_h: 288
+            })
+        );
+        assert_eq!(parse("tv until=48"), Ok(all(48)));
+        assert_eq!(
+            parse("TV 1 until=12h"),
+            Ok(What::AwaitTv {
+                slot: Some(1),
+                until_ic_h: 12
+            })
+        );
+        assert_eq!(parse("tv all until=288"), Ok(all(288)));
+        for bad in [
+            "",
+            "rig",
+            "tv 5",
+            "tv 0",
+            "tv until=0",
+            "tv until=289",
+            "tv until=+4h",
+            "tv until=4hh",
+            "tv until=",
+            "tv 1 2",
+            "tv all 1",
+            "tv 1 all",
+            "tv until=4 1",
+            "tv until=4 until=5",
+            "tv soon",
+        ] {
+            assert_eq!(parse(bad), Err(ORDER_USAGE.to_owned()), "{bad:?}");
+        }
+        // The document's bounds.
+        let mut orders = Orders::fresh(ObjId(5011), ObjId(42), 1);
+        orders.orders = vec![pending(1, all(288)), pending(2, depart_ceres())];
+        orders.next_id = 3;
+        orders.derive_cursor();
+        assert_eq!(orders.check(), Ok(()));
+        let with = |edit: &dyn Fn(&mut Orders)| {
+            let mut changed = orders.clone();
+            edit(&mut changed);
+            changed.check()
+        };
+        assert_eq!(
+            with(&|o| {
+                if let Some(order) = o.order_mut(1) {
+                    order.awaited = Some(1_000);
+                }
+            }),
+            Ok(()),
+            "an open await carries its start"
+        );
+        for (case, what) in [
+            (
+                "slot 0",
+                What::AwaitTv {
+                    slot: Some(0),
+                    until_ic_h: 1,
+                },
+            ),
+            (
+                "slot 5",
+                What::AwaitTv {
+                    slot: Some(5),
+                    until_ic_h: 1,
+                },
+            ),
+            ("0 hours", all(0)),
+            ("289 hours", all(289)),
+        ] {
+            assert!(
+                with(&|o| {
+                    if let Some(order) = o.order_mut(1) {
+                        order.what = what.clone();
+                    }
+                })
+                .is_err(),
+                "{case}"
+            );
+        }
+        assert!(
+            with(&|o| {
+                if let Some(order) = o.order_mut(2) {
+                    order.awaited = Some(1_000);
+                }
+            })
+            .is_err(),
+            "an awaited on a depart"
+        );
+        assert!(
+            with(&|o| {
+                if let Some(order) = o.order_mut(1) {
+                    order.state = OrderState::Done;
+                }
+                o.derive_cursor();
+                if let Some(order) = o.order_mut(1) {
+                    order.awaited = Some(1_000);
+                }
+            })
+            .is_err(),
+            "an awaited on a Done await"
+        );
+        assert_eq!(
+            with(&|o| {
+                if let Some(order) = o.order_mut(1) {
+                    order.state = OrderState::Done;
+                    order.awaited = None;
+                }
+                o.derive_cursor();
+            }),
+            Ok(()),
+            "the same order with awaited cleared"
+        );
+        // The words.
+        assert_eq!(await_which(None), "every rig");
+        assert_eq!(await_which(Some(2)), "rig 2");
+        let tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::fixture::config()),
+        )]);
+        let w = &tw.engine().world;
+        let goods = crate::definitions::goods::goods_table().expect("the compiled-in goods table");
+        assert_eq!(
+            order_summary(w, &goods, &all(288)),
+            "await every rig, at most 288 IC h"
+        );
+        assert_eq!(
+            order_summary(
+                w,
+                &goods,
+                &What::AwaitTv {
+                    slot: Some(1),
+                    until_ic_h: 12
+                }
+            ),
+            "await rig 1, at most 12 IC h"
+        );
+        assert!(ORDER_USAGE.contains(" | stop | await tv [<slot>|all] [until=<IC hours>] | "));
+        assert_eq!(
+            NOT_ORDERABLE,
+            "The sailing plan takes sell, buy, depart, await tv and stop. Boarding, leaving, \
+             enrolling and buying out are done in person."
+        );
     }
 }

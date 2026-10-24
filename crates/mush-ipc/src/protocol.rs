@@ -783,6 +783,12 @@ pub enum ServiceReq {
 /// own oracle agrees.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelaySpeak {
+    /// Stable Discord message snowflake, retained across provider retries.
+    #[serde(default)]
+    pub message_id: Option<u64>,
+    /// Authenticated follow connection when the line names a personal IC alias.
+    #[serde(default)]
+    pub dm_conn: Option<u64>,
     /// The Discord user's snowflake. Never rendered; `Debug` redacts it.
     pub user_id: u64,
     /// The account the user is linked to, as the store's minted id.
@@ -814,6 +820,8 @@ impl std::fmt::Debug for RelaySpeak {
 /// viewer-safe; the bridge may show it to the Discord author.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum RelayError {
+    #[error("not an IC channel alias")]
+    NotChannelAlias,
     /// The server's oracle does not pair the character with the account (a
     /// stale or forged claim, or a character created since boot).
     #[error("that character is not on your account as far as the game knows")]

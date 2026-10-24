@@ -657,6 +657,155 @@ and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
 radio is not on this screen: its lines are on the channel screen with every
 other channel's, and the notices list does not repeat them.
 
+## The picture
+
+In `@tui`, `Ctrl-G` opens a first-person picture of the arena from your seat,
+drawn in the terminal itself across the top two-thirds of the screen. Over the
+picture: a heading tape along the top (your heading read out under it, your
+contacts as coloured marks above it), the reticle in the middle with a box
+around the machine you have locked (its designator, range and your chance
+under it, or an arrow at the edge when it is off to one side), and your speed
+as a bar on the right. `Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still
+detaches.
+
+Under the picture, in plain text: your armour as a small picture of your own
+machine — a tank from above, a walker standing — each part coloured by what is
+left of it (green, yellow, red, grey when gone; parts that touch are told apart
+by a lighter shade), with a line a section; your heat and your weapons (ready, or the seconds to the
+next shot, rounds left, your chance on the lock); your contacts, nearest
+first, with an arrow for where each one lies from where you are looking and
+`friend` beside one of your own side; the
+arena's notices; and the comms, the tail of everything said around you, so
+you read chat while you drive.
+
+**Chat while you drive.** `Enter` opens the chat line at the bottom. While it
+is open your keys type, they never steer, and opening it stops a turn you were
+holding. `Enter` sends the line exactly as you typed it (`say`, `:`, a channel
+alias, any command) and puts you back at the controls; `Esc` puts you back
+without sending and keeps what you typed for the next `Enter`. Up and Down
+walk your history, as in the input box.
+
+It shows what your cockpit screen shows and nothing more. A contact is drawn
+where your own scope plots it, as what it is once your scope has told it apart
+(a tank, a walker), showing the face your scope last saw — its front, its back,
+a side — rolling or striding while it moves, with a shadow under it; until then
+it is a plain grey shape. It is drawn **in its team's colour** — the red team red and
+the blue team blue, whichever side you are on, grey while your scope has not
+told it apart yet, dark brown a wreck — so the colour never says friend or foe:
+the contacts list does (`friend`), and the lock's box is yellow whoever it is
+on. A machine your scope does not hold is not drawn at all, however close it
+is.
+
+While the picture is open:
+
+  Left, Right    turn the tank. Hold the key down and let go to stop, on a
+                 terminal that tells the game when a key is let go (WezTerm,
+                 kitty, Ghostty, Windows Terminal 1.25 and later); elsewhere
+                 press once to start and again to stop
+  a, d           turn the tank too, press to start and again to stop
+  , and .        swing your look left or right without turning the tank;
+                 the same key again stops it
+  c              look along your tank's heading again
+  space          stop turning, and stop the look swinging
+  Enter          open the chat line
+  r              a smaller picture (320 pixels wide rather than 640), for a
+                 slow link
+  Esc or q       close the picture
+
+Every other key does nothing while you are at the controls. **The turn keys
+steer the tank**:
+each turn is a `HEADING` order, exactly as if you had typed it, so it needs your
+seat to hold the helm and the power to be online, and you will see the
+`Steering to …` lines in the comms. The tank turns at its own rate
+and the arena moves it on its pulses; between them the picture shows where the
+tank will be, and lets go of that guess if the order was refused. The line over
+the picture says the camera's heading, the tank's and the one it was ordered to,
+and your look: `camera 120° (tank 090° → 135°, look +30°)`; on the heading tape a
+green mark is where your tank points when your look has swung away from it,
+and a yellow box is a heading it was ordered to and has not reached. Letting
+go of a turn orders the heading the picture was showing, so the tank stops
+about where you saw it.
+
+**Which terminals show it.** The picture is sent one of two ways, whichever
+your terminal can show: as a kitty graphics image, or as sixel.
+
+  w11term          the Windows terminal that ships beside the game: kitty
+  Windows Terminal `ssh` from PowerShell or cmd: sixel
+  WezTerm          through `wezterm ssh` or an SSH domain: kitty (on Windows,
+                   run it with `front_end = "Software"`)
+  kitty, Ghostty   through their own SSH: kitty
+  foot, xterm, mintty, mlterm   sixel
+
+On Windows, a kitty picture does not survive a console window (`ssh` in
+PowerShell or cmd, even inside WezTerm), but sixel does, which is why Windows
+Terminal gets sixel. A sixel picture is two to three times the bytes of a kitty
+one unless your SSH link is compressed: `ssh -C` turns that on, and it is worth
+it here. **tmux is not supported**: it swallows the terminal's answer. Run
+`@tui` outside it.
+
+When you enter `@tui` the game asks your terminal, for half a second at most,
+what it can show, and the line over the picture says what it found and what it
+is drawing: `kitty graphics OK, drawing kitty`, `sixel graphics OK, drawing
+sixel`, or `no terminal graphics`. If `Ctrl-G` does nothing, your terminal
+answered no.
+
+`@pixel/encoder` says what this connection uses. `@pixel/encoder sixel` (or
+`kitty`) forces one for a terminal that answers wrongly, `@pixel/encoder off`
+turns the picture off, and `@pixel/encoder auto` goes back to asking the
+terminal. It lasts until you disconnect.
+
+**On a slow link** the picture looks after itself: when your connection cannot
+take the pictures as fast as they are drawn, it skips one, and if that keeps
+happening it drops to a narrower picture ten times a second (the line over the
+picture says `slow link: stepped down`), coming back up once the link has kept
+up for ten seconds. `r` picks the narrower picture yourself.
+
+**The ground has height.** The picture draws the hills, the crater and the
+valleys as the sim has them, coloured by slope and the light from the
+north-west, with buildings and tree lines standing on them, out to a
+kilometre and a half. Your eye is your machine's own sight, at its own height:
+a tank's a metre and a half off the ground, a walker's nine. A contact the sim
+reports that a hill hides in the picture is still bracketed where it stands.
+
+**In the web client** the cockpit tab has the same picture above its map:
+`Show the picture` asks for it (the browser remembers your choice), and it
+stops while the tab is hidden or you leave the seat. Your browser draws it
+itself, from what the game already sends you, so it costs the game nothing; the
+button beside it (`drawn here`) switches to a picture drawn by the game
+instead, which is also what you get if your browser cannot draw it. Click the picture to give
+it the keys: the arrows turn the tank (hold), `,` and `.` swing your look (again
+to stop), `c` centres it, space stops both. The map, the panes and the orders
+below it work as before, and the damage pane opens with the same small picture
+of your machine the terminal draws, each part coloured by what is left of it.
+
+`@pixel/stats` tells this connection's picture in numbers: what your terminal
+showed and what it draws, the picture's size and clock, what the last frame
+cost to draw and send, and how many were sent, unchanged, skipped on a slow
+link and stepped down.
+
+## Sounds
+
+In `@tui` the cockpit makes sounds as its notices land. On most terminals that
+is the terminal's bell, for the things you must hear: a new contact, your lock
+lost, your tank struck or losing a part, your power up, a kill, your tank
+disabled or destroyed, and the overheat alarm, which sounds again every two
+seconds while you run hot. The bell rings once at most every two seconds,
+however much happens.
+
+In w11term each notice has its own sound by name (a hit, a miss, a lock, a
+contact lost, and the rest), played from the game's sound pack. When several
+notices land at once you hear the one that matters most — your tank hit
+before a kill, a kill before a hit, a hit before a new contact — and the
+others are not queued up after it. The game knows w11term
+because it asks your terminal its name when you enter `@tui`, and then tells
+it which sound pack is current: w11term fetches whatever it does not already
+have over your own connection (nothing to install, no second login) and plays
+from it once every file has arrived and checked out.
+
+`@sounds off` silences this connection, `@sounds on` brings them back, and
+`@sounds` says which it is and how your terminal hears them. It lasts until you
+disconnect.
+
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type
 often).

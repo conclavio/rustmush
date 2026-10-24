@@ -95,7 +95,8 @@ pub struct MailMsg {
     pub id: u64,
     /// The sender.
     pub from: ObjId,
-    /// Every recipient it was actually delivered to.
+    /// Addressed recipients. For new IC mail, arrival and returned knowledge are
+    /// separate; this list does not imply that a destination has received it.
     pub to: Vec<ObjId>,
     /// Subject line.
     pub subject: String,
@@ -106,6 +107,10 @@ pub struct MailMsg {
     pub reply_to: Option<u64>,
     /// Unix send time, UTC seconds.
     pub sent_at: i64,
+    /// Sender knowledge learned only from returning transport receipts. None is
+    /// legacy, already-delivered mail; an empty map means queued/unconfirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<BTreeMap<ObjId, crate::transit::Outcome>>,
 }
 
 /// Per-recipient read status.
@@ -180,6 +185,8 @@ pub struct MailState {
     boxes: BTreeMap<ObjId, Mailbox>,
     next_id: u64,
     quota: usize,
+    pub(crate) pending: BTreeMap<u64, crate::transit::Dispatch>,
+    pub(crate) handoff_cursor: u64,
 }
 
 impl Default for MailState {
@@ -189,11 +196,37 @@ impl Default for MailState {
             boxes: BTreeMap::new(),
             next_id: 1,
             quota: DEFAULT_QUOTA,
+            pending: BTreeMap::new(),
+            handoff_cursor: 0,
         }
     }
 }
 
 impl MailState {
+    /// Only the sender's confirmed knowledge is rendered; recipient rows never
+    /// expose transport truth or other recipients' outcomes.
+    pub fn delivery_text(&self, actor: ObjId, id: u64) -> Option<String> {
+        let msg = self.message(id)?;
+        if msg.from != actor {
+            return None;
+        }
+        let known = msg.delivery.as_ref()?;
+        Some(
+            msg.to
+                .iter()
+                .map(|to| {
+                    format!(
+                        "{to}: {}",
+                        known.get(to).map_or(
+                            "queued / awaiting confirmation",
+                            crate::transit::Outcome::text
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
     /// The message with this id, if it exists.
     #[must_use]
     pub fn message(&self, id: u64) -> Option<&MailMsg> {
@@ -316,7 +349,7 @@ impl MailState {
     /// Whether ANY mailbox still holds an entry for message `msg`.
     #[must_use]
     pub fn msg_referenced(&self, msg: u64) -> bool {
-        self.boxes.values().any(|b| b.entries.contains_key(&msg))
+        self.pending.contains_key(&msg) || self.boxes.values().any(|b| b.entries.contains_key(&msg))
     }
 
     /// Remove one entry outright (purge path). Returns it.
@@ -419,6 +452,13 @@ pub(crate) fn validate_message(msg: &MailMsg) -> Result<(), String> {
     if msg.id == 0 {
         return Err("message id zero is reserved".to_string());
     }
+    if msg
+        .delivery
+        .as_ref()
+        .is_some_and(|known| known.keys().any(|to| !msg.to.contains(to)))
+    {
+        return Err("delivery knowledge names an unaddressed recipient".into());
+    }
     validate_message_content(&msg.to, &msg.subject, &msg.body)
         .map_err(|detail| format!("message {} {detail}", msg.id))
 }
@@ -434,6 +474,9 @@ pub(crate) fn validate_message_content(
             "has {} recipients; expected 1..={MAX_MAIL_RECIPIENTS}",
             to.len()
         ));
+    }
+    if to.iter().collect::<std::collections::BTreeSet<_>>().len() != to.len() {
+        return Err("has duplicate recipients".into());
     }
     if subject.trim().is_empty() || subject.len() > MAX_MAIL_SUBJECT_BYTES {
         return Err(format!(
@@ -465,7 +508,17 @@ pub(crate) fn rebuild(data: &ModuleBootData) -> Result<MailState, ModError> {
     let mut stored_next: u64 = 1;
 
     for (key, value) in &data.kv {
-        if key == CONFIG_KEY {
+        if key == "handoff_cursor" {
+            st.handoff_cursor = value
+                .as_u64()
+                .ok_or_else(|| ModError::msg("mail: invalid handoff cursor"))?;
+        } else if key.starts_with("dispatch:") {
+            let d: crate::transit::Dispatch = serde_json::from_value(value.clone())
+                .map_err(|e| ModError::msg(format!("mail: bad dispatch: {e}")))?;
+            if key != &crate::transit::dispatch_key(d.id) || st.pending.insert(d.id, d).is_some() {
+                return Err(ModError::msg("mail: contradictory dispatch key"));
+            }
+        } else if key == CONFIG_KEY {
             if let Some(q) = value.get("quota").and_then(serde_json::Value::as_u64) {
                 st.quota = usize::try_from(q).unwrap_or(usize::MAX);
             }
@@ -495,11 +548,43 @@ pub(crate) fn rebuild(data: &ModuleBootData) -> Result<MailState, ModError> {
         // Unknown keys: ignored (additive evolution).
     }
 
+    if st.pending.len() > crate::transit::MAX_PENDING_LETTERS
+        || st.pending.values().map(|d| d.copies.len()).sum::<usize>()
+            > crate::transit::MAX_PENDING_COPIES
+        || st
+            .pending
+            .values()
+            .any(|d| st.message(d.id).is_none_or(|msg| !d.validate(msg)))
+    {
+        return Err(ModError::msg(
+            "mail: invalid pending dispatches or missing payload",
+        ));
+    }
     for e in pending {
         if st.msgs.contains_key(&e.msg) {
             st.box_mut(e.owner).entries.insert(e.msg, e);
         }
         // Orphan entry (message doc gone): dropped, see above.
+    }
+
+    for msg in st.msgs.values() {
+        if let Some(known) = &msg.delivery
+            && known.len() != msg.to.len()
+            && !st.pending.contains_key(&msg.id)
+        {
+            return Err(ModError::msg(
+                "mail: incomplete delivery knowledge without a dispatch",
+            ));
+        }
+    }
+    for d in st.pending.values() {
+        if d.copies.iter().any(|copy| {
+            copy.result.is_none() && copy.to != d.from && st.entry(copy.to, d.id).is_some()
+        }) {
+            return Err(ModError::msg(
+                "mail: destination entry precedes its arrival receipt",
+            ));
+        }
     }
 
     let max_msg = st.msgs.keys().next_back().copied().unwrap_or(0);
@@ -540,6 +625,7 @@ mod tests {
             body: "there".into(),
             reply_to: None,
             sent_at: 100,
+            delivery: None,
         };
         let entry = MailboxEntry {
             owner: ObjId(3),
@@ -602,6 +688,7 @@ mod tests {
             body: "x".repeat(MAX_MAIL_BODY_BYTES + 1),
             reply_to: None,
             sent_at: 100,
+            delivery: None,
         };
         let data = ModuleBootData {
             kv: vec![(msg_key(1), serde_json::to_value(oversized).unwrap())],
@@ -618,6 +705,7 @@ mod tests {
             body: "there".into(),
             reply_to: None,
             sent_at: 100,
+            delivery: None,
         };
         let data = ModuleBootData {
             kv: vec![(msg_key(u64::MAX), serde_json::to_value(exhausted).unwrap())],
@@ -645,5 +733,82 @@ mod tests {
         assert!(MailStatus::Unread.is_unread());
         assert!(MailStatus::Urgent.is_unread());
         assert!(!MailStatus::Read.is_unread());
+    }
+
+    #[test]
+    fn rebuild_refuses_broken_handoffs_and_early_mailboxes() {
+        use crate::transit::{Copy, Dispatch};
+        let msg = MailMsg {
+            id: 1,
+            from: ObjId(2),
+            to: vec![ObjId(3)],
+            subject: "hi".into(),
+            body: "there".into(),
+            reply_to: None,
+            sent_at: 100,
+            delivery: Some(BTreeMap::new()),
+        };
+        let dispatch = Dispatch {
+            representation: None,
+            version: 1,
+            id: 1,
+            from: msg.from,
+            origin: Some(ObjId(4)),
+            at: mush_core::World::new_minimal().world_ic_now(),
+            bytes: 7,
+            urgent: false,
+            copies: vec![Copy {
+                to: ObjId(3),
+                fallback: Some(ObjId(5)),
+                result: None,
+                return_origin: None,
+                return_at: None,
+                complete: false,
+            }],
+        };
+        let valid = ModuleBootData {
+            kv: vec![
+                (msg_key(1), serde_json::to_value(&msg).unwrap()),
+                (
+                    crate::transit::dispatch_key(1),
+                    serde_json::to_value(&dispatch).unwrap(),
+                ),
+            ],
+            ..Default::default()
+        };
+        assert!(rebuild(&valid).is_ok());
+        for absent in [msg_key(1), crate::transit::dispatch_key(1)] {
+            let mut broken = valid.clone();
+            broken.kv.retain(|(key, _)| key != &absent);
+            assert!(rebuild(&broken).is_err(), "missing {absent}");
+        }
+        let mut early = valid.clone();
+        early.kv.push((
+            box_key(ObjId(3), 1),
+            serde_json::to_value(MailboxEntry {
+                owner: ObjId(3),
+                msg: 1,
+                folder: INBOX.into(),
+                status: MailStatus::Unread,
+                read_at: None,
+            })
+            .unwrap(),
+        ));
+        assert!(rebuild(&early).is_err());
+        let mut invalid = valid;
+        for (key, value) in &mut invalid.kv {
+            if key == &crate::transit::dispatch_key(1) {
+                value["bytes"] = 1.into();
+            }
+        }
+        assert!(rebuild(&invalid).is_err(), "content accounting must match");
+        let mut legacy = msg;
+        legacy.delivery = None;
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("delivery")
+                .is_none()
+        );
     }
 }

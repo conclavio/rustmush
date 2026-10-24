@@ -1,0 +1,6 @@
+AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+  assert(arrived.transit.legs.some(l=>l.pair==='luna_'+n))
+
+    at traffic (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:43:175)
+    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:103:26

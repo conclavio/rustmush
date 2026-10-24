@@ -1,0 +1,56 @@
+{
+  "brief": {
+    "prose": "The Solar Authority hosts the inner-system Exchange stub under Concord charter. This is a strategic relay site, not an additional trade port. No half is seeded at Venus, Titan, Pallas or Vesta."
+  },
+  "entries": {
+    "region.mercury_relay": {
+      "def": {
+        "background": {
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350,
+          "surface": "regolith"
+        },
+        "body": "mercury",
+        "datum_m": 0,
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "ground_resolution_cm": 1000,
+        "kind": "surface",
+        "name": "Mercury",
+        "theme": {
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "name": "TacSim 2350",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      },
+      "kind": "region"
+    }
+  },
+  "manifest": {
+    "digest": "a8732cda91b8e10a9845ff87d879c9cf45983659b98064c8b583d1388b2ff725",
+    "id": "region.mercury_relay",
+    "kind": "region",
+    "requires": [],
+    "version": 1
+  }
+}

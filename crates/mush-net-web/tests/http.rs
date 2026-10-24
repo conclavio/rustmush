@@ -349,6 +349,13 @@ async fn security_headers_are_present_on_every_response() {
         let csp = h["content-security-policy"].to_str().unwrap();
         assert!(csp.contains("default-src 'self'"), "{url}: {csp}");
         assert!(csp.contains("connect-src 'self' ws: wss:"), "{url}: {csp}");
+        // Doc 21 cut G.3b: WebAssembly compiles (the cockpit picture), and
+        // nothing else that evaluates does.
+        assert!(
+            csp.contains("script-src 'self' 'wasm-unsafe-eval';"),
+            "{url}: {csp}"
+        );
+        assert!(!csp.contains("'unsafe-eval'"), "{url}: {csp}");
     }
 }
 

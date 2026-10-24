@@ -1,0 +1,37 @@
+{
+  "baseCommit": "1a0565cd2b274f416ca4c0de2754ae294863b2fc",
+  "recordedAtUtc": "2026-10-24T20:35:59.734949+00:00",
+  "sourceNormalization": "CRLF to LF",
+  "sourceFiles": 1492,
+  "sourceManifestSha256": "cf574656ad3276650dbd8c75a0ea7faf00d0cc49448f3d06295cf7fea2476571",
+  "serverSha256": "e54fab5075d7fd476943c5557e969ba8cfdf04dba9d85503690ecad8a600c9df",
+  "tests": {
+    "relay-registry.log": {
+      "passed": 56,
+      "failed": 0,
+      "ignored": 0
+    },
+    "producer-tests-final.log": {
+      "passed": 205,
+      "failed": 0,
+      "ignored": 0
+    },
+    "server-integration-final.log": {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    "tacsim-lib-final.log": {
+      "passed": 1480,
+      "failed": 0,
+      "ignored": 1
+    },
+    "bot-tests.log": {
+      "passed": 717,
+      "failed": 0,
+      "ignored": 7
+    }
+  },
+  "livePassed": true,
+  "retainedFailureNote": "Initial live harness attempts: an invalid loose-inventory precondition, insufficient pilot fuel funds, and an oversized proposed clearing transfer. Reset retried after Redis background-save overlap; duplicate failed transcript retained. Final gate used a real 500000-minor transfer from the existing clearing balance with conservation checked."
+}

@@ -1,0 +1,135 @@
+{
+  "passed": true,
+  "sourceParent": "0e8742a5834443ad4ee938871ebab3c970663acb",
+  "sourceTree": "745723b53e9c301cc8328a5d145fb7f9b3b2dd70",
+  "sourceArchiveSha256": "1cb541ff1c356eeabd44d4ae7a56b13c29e3d6d20e55fd884c5059de0983eefa",
+  "runtimeBuildTree": "1d4664e68bbe24765961c74c841264a1436ff317",
+  "buildMarkerNote": "Final source differs from the compiled/tested tree only in the live and SSH harnesses: verify frozen progress and restamp directly; use builder-created, player-owned empty sites; resume the already paid lots after the site fixture refusal. Runtime, release binaries, fresh boot and test sources are identical. The live harness also adds supply margin for boarding and resumes after the pre-burn shortage refusal. Empty builder-created mounts are explicitly placed on the destination floor before installation. SSH board assertions normalize terminal line wrapping. All failed harness checkpoints are retained on dev1. Parent commit is the web build stamp.",
+  "linuxTests": {
+    "story-tests": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 44,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "industry-tests": [
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 41,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 44,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "core-tests": [
+      {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "contracts": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-observer": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "commands": 122,
+  "sshCommands": 9,
+  "processCrashes": 7,
+  "socketLatencyMs": {
+    "median": 50.0,
+    "p95": 53,
+    "max": 78
+  },
+  "health": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "gatewayPid": 946579,
+  "serverPid": 946592,
+  "serverSha256": "fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca",
+  "gatewaySha256": "edb2a5d72dd8c2c6831ec10f9c1294d45877eed688441127e91573446a58f475",
+  "dev2": "MainPID=539467",
+  "freshDatabase": 6,
+  "retainedBaselineDatabase": 5,
+  "restoredBilling": {
+    "cursor": 0,
+    "next": 1,
+    "subscriptions": {},
+    "tariff": {
+      "period_secs": 86400,
+      "priority_minor": 10000,
+      "quote_secs": 600,
+      "sovereign_minor": 50000,
+      "standard_minor": 2500,
+      "version": 1
+    },
+    "treaties": {}
+  },
+  "restoredMarket": {
+    "capital_transaction": 83,
+    "legacy_before": 402,
+    "next": 1,
+    "operator": 22,
+    "payee": 25,
+    "purchases": {},
+    "tariff": {
+      "priority_minor": 500,
+      "quote_secs": 600,
+      "reservation_secs": 86400,
+      "standard_minor": 100,
+      "version": 1
+    }
+  },
+  "nodes": 2,
+  "pairs": 1
+}

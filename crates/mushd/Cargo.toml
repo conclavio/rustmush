@@ -84,6 +84,8 @@ thiserror.workspace = true
 mush-market.workspace = true
 mush-org.workspace = true
 mush-roll.workspace = true
+# R6b: exercise the shipping Discord bridge with its controlled REST adapter.
+mush-net-discord.workspace = true
 # WS01-S7: `tests/world_fault.rs` runs the real `mushd` binary with ONE world
 # turn armed to panic, so it can prove the process exits non-zero and skips the
 # shutdown BGSAVE. Arming lives behind `mush-server`'s `fault-injection`

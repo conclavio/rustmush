@@ -32,9 +32,15 @@ export type KeyAction =
         | "picturePrev"
         | "pictureNext"
         | "pictureFocus"
-        | "pictureClose";
+        | "pictureClose"
+        | "quarryRig"
+        | "quarryZoom"
+        | "quarryLayer";
     }
   | { kind: "prefill"; line: string }
+  /** **Doc 20 cut SM.9**: open the box with `+tv/<n> <act>` for the quarry's rig (`+tv <act>`
+   * with none); nothing is sent. */
+  | { kind: "prefillRig"; act: string }
   | { kind: "run"; cmd: string };
 
 export interface KeyBinding {
@@ -135,6 +141,18 @@ export const RUN_ALLOWLIST: readonly string[] = [
   // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
   "+chart",
   "+chart/map",
+  // Doc 20 cut SM.4b: the site map reads the rig's site and plans nothing.
+  "+tv/map",
+  // Doc 20 cut SM.9: the ground chart reads the Registry's survey, the planner and your own
+  // chart. Never `+tv`: its first word would admit `+tv scan go`.
+  "+chart/ground",
+  // Doc 20 cut SM.10: the Registry's books and your own claims, pure reads. Never `+claim`:
+  // its first word would admit `+claim/stake go`.
+  "+registry",
+  "+claim/list",
+  // Doc 20 cut SM.11 (D11): a read of the rig's fill plan. The switch form, never `+tv/plan`,
+  // whose first word would admit `+tv/plan C117 go`.
+  "+tv/plan/show",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);
@@ -303,6 +321,38 @@ export const CHART_SCREEN: FeedScreen = {
       { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
       { key: "w", label: "window", action: { kind: "prefill", line: "+chart " } },
       { key: "m", label: "flat map", action: { kind: "run", cmd: "+chart/map" } },
+    ],
+    exitsAreKeys: false,
+    // A FeedScreen's own gate is never consulted (`available` filters by
+    // suffix alone); the manifest feed IS the gate.
+    gate: () => true,
+  },
+};
+
+/**
+ * **The quarry** (doc 20 cut SM.9; §10, D-20-13): the hull's rigs, the site map or the body's
+ * ground chart, the viewer's own readings and the log, on the letter hotkey `q` — the TUI's
+ * eight keys, same keys, labels and order: `s` `d` `x` `m` prefill `+tv/<n> scan`, `drive `,
+ * `sound`, `mine` (nothing is sent until the pilot adds `go`), `t` picks the next rig (the
+ * digits are global keys), `z` steps drive → site → ground, `l` the ore family, `r` asks again.
+ * Registered by `GameApp` once, on a hello whose manifest carries `site.map`.
+ */
+export const QUARRY_SCREEN: FeedScreen = {
+  suffix: "site.map",
+  def: {
+    id: "quarry",
+    digit: null,
+    hotkey: "q",
+    label: "quarry",
+    keys: [
+      { key: "s", label: "scan", action: { kind: "prefillRig", act: "scan" } },
+      { key: "d", label: "drive", action: { kind: "prefillRig", act: "drive " } },
+      { key: "x", label: "sound", action: { kind: "prefillRig", act: "sound" } },
+      { key: "m", label: "mine", action: { kind: "prefillRig", act: "mine" } },
+      { key: "t", label: "rig", action: { kind: "local", action: "quarryRig" } },
+      { key: "z", label: "zoom", action: { kind: "local", action: "quarryZoom" } },
+      { key: "l", label: "layer", action: { kind: "local", action: "quarryLayer" } },
+      { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
     ],
     exitsAreKeys: false,
     // A FeedScreen's own gate is never consulted (`available` filters by

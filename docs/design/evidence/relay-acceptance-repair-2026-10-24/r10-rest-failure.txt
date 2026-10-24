@@ -1,0 +1,16 @@
+2026-10-24T16:28:08.9078219Z failures:
+2026-10-24T16:28:08.9078340Z
+2026-10-24T16:28:08.9078567Z ---- every_command_shaped_token_in_the_help_is_a_registered_verb stdout ----
+2026-10-24T16:28:08.9078901Z
+2026-10-24T16:28:08.9079375Z thread 'every_command_shaped_token_in_the_help_is_a_registered_verb' (14874) panicked at crates/mush-contract-tests/tests/help_commands.rs:246:5:
+2026-10-24T16:28:08.9080296Z the help names 1 thing(s) the server does not register. Fix the page, or add a row to help-commands-allowlist.toml with a reason:
+2026-10-24T16:28:08.9081418Z relay.md: `+relay` has no switch /rates; it takes /subscribe /enroll /subscriptions /unsubscribe /cure /treaty /outbox /quote /buy /cancel /purchases /policy /status /receipts /grant /load /audit /discover /publish
+2026-10-24T16:28:08.9082376Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-24T16:28:08.9082681Z
+2026-10-24T16:28:08.9082685Z
+2026-10-24T16:28:08.9082772Z failures:
+2026-10-24T16:28:08.9083396Z     every_command_shaped_token_in_the_help_is_a_registered_verb
+2026-10-24T16:28:08.9083670Z
+2026-10-24T16:28:08.9083936Z test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+2026-10-24T16:28:08.9084432Z
+2026-10-24T16:28:08.9128872Z [1m[91merror[0m: test failed, to rerun pass `-p mush-contract-tests --test help_commands`

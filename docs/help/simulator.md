@@ -223,7 +223,15 @@ Five things worth knowing before you pick one:
 
 The proving ground is 2.56 km square: a river down its western third with one
 ford, an east-west road over the ford and the crossroads, a north-south road
-through the crossroads, three compounds, two woods and one bluff. `VIEW`
+through the crossroads, three compounds, two woods and one bluff. The road and
+the ground either side of it are level going; away from them the land rises
+into hills — the northern highlands up to Signal Hill, some 100 metres over the
+road, a knoll in the north-west, three hills in the open, The Bowl (a crater
+south-west of the crossroads, its rim 23 metres up and its floor 9 down), a ridge through the
+eastern woods and a raised shelf of bare ground in the south-east — and the
+river runs in a valley away from the ford. A tank drives all of it; a car
+keeps to gentler ground, and the roads are always its way through. A hill
+hides what is behind it from everyone, the sim and your picture alike. `VIEW`
 letters the named ground and the legend names it: A The Ford, B The Crossroads,
 C North Barn, E East Compound, F The Bluff. `RANGE F` and `BEARING F` read them.
 

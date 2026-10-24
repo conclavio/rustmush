@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "transport": "SSH :6789, play front door, in-band login",
+  "channel": "R3Radio869145",
+  "checks": [
+    {
+      "command": "+relay",
+      "reply": "+relay\r\nRelay board v1: operator-granted service; no payment charged. One message-unit =\r\n128 content bytes; short limit 1024 bytes.\r\nluna_ceres: Live; your class Standard; Standard declared wait 60 IC seconds.\r\nSovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window\r\n0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.\r\n__R3_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/receipts",
+      "reply": "+relay/receipts\r\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived\r\n74167146412; 4 units.\r\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived\r\n74167146411; 4 units.\r\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived\r\n74167146411; 4 units.\r\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived\r\n74167146410; 4 units.\r\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived\r\n74167146410; 4 units.\r\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived\r\n74167146407; 4 units.\r\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived\r\n74167142731; 8 units.\r\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived\r\n74167131930; 8 units.\r\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived\r\n74167131879; 8 units.\r\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived\r\n74167131878; 8 units.\r\n__R3_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/load luna_ceres",
+      "reply": "+relay/load luna_ceres\r\nPermission denied.\r\n__R3_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/discover luna_ceres",
+      "reply": "+relay/discover luna_ceres\r\nPermission denied.\r\n__R3_SSH_DONE__\r\n"
+    },
+    {
+      "command": "pub R3 SSH OOC immediate",
+      "reply": "pub R3 SSH OOC immediate\r\n[Public] R6bob1b16df: R3 SSH OOC immediate\r\n__R3_SSH_DONE__\r\n"
+    }
+  ]
+}

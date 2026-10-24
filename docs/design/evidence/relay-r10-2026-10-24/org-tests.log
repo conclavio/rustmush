@@ -1,0 +1,31 @@
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+    Finished `test` profile [unoptimized] target(s) in 2.29s
+     Running tests/e1a.rs (target/debug/deps/e1a-aa26419053657425)
+
+running 24 tests
+test default_deny_with_no_grant ... ok
+test charter_revision_is_guarded_and_preserves_identity_lifecycle_and_authority ... ok
+test a_non_active_org_confers_no_authority_on_any_scope ... ok
+test a_retired_scope_confers_no_authority ... ok
+test delegation_grantor_must_hold_the_source_grant ... ok
+test delegation_that_would_widen_is_refused_at_apply ... ok
+test delegation_narrows_and_re_resolves_the_live_source ... ok
+test destroy_scrub_removes_all_authority ... ok
+test explicit_deny_beats_a_grant ... ok
+test direct_grant_authorizes_only_its_scope ... ok
+test grant_replace_reassigns_authority_cleanly ... ok
+test limit_requires_amount_and_enforces_ceiling ... ok
+test nonexistent_scope_denies_not_allows ... ok
+test plan_is_atomic_and_stale_guarded ... ok
+test org_subject_policy_authorizes_no_actor ... ok
+test identical_role_names_different_orgs_different_powers ... ok
+test policy_replace_moving_orgs_leaves_the_old_org ... ok
+test registered_predicate_allows_denies_and_fails_closed ... ok
+test retire_refuses_a_root_scope_and_a_missing_one ... ok
+test scope_creation_refuses_excess_depth ... ok
+test policy_allow_grants_with_no_capability_grant ... ok
+test subtree_live_covers_descendants_frozen_excludes_later_children ... ok
+test scope_creation_stops_at_the_per_org_cap ... ok
+test unresolvable_predicate_satisfies_a_deny ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

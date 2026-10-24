@@ -26,7 +26,7 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::NS;
-use crate::pass::{DeliveryReport, delivery_pass};
+use crate::pass::{DeliveryReport, delivery_pass_with_metric};
 use crate::record::{
     ALLOCATOR_KEY, ContactProvenance, Envelope, EnvelopeState, FalseCause, Phantom,
     PropagationStore, Provenance, envelope_key, phantom_key, provenance_key, sighting_key,
@@ -195,6 +195,37 @@ pub fn render_envelope(
         crate::record::MAX_ENVELOPE_HOPS,
         age,
         attribution.unwrap_or(UNIDENTIFIED_SENDER)
+    )
+}
+
+fn render_party_envelope(
+    envelope: &Envelope,
+    viewer: ObjId,
+    at: &ClockStamp,
+    source: Option<&str>,
+) -> String {
+    if envelope.issuer() != viewer {
+        return render_envelope(envelope, at, true, source);
+    }
+    // A sender's view contains local dispatch knowledge and a received ACK, not
+    // the recipient's arrival state, supersession or remote hop progress.
+    let state = match envelope.state() {
+        EnvelopeState::Queued => EnvelopeState::Queued,
+        EnvelopeState::Acknowledged => EnvelopeState::Acknowledged,
+        EnvelopeState::Expired if envelope.age(at) >= crate::record::ENVELOPE_TTL_SECS => {
+            EnvelopeState::Expired
+        }
+        _ => EnvelopeState::Transmitted,
+    };
+    let age = envelope
+        .checked_age(at)
+        .map_or_else(|| "stale".into(), |n| format!("{n}s"));
+    format!(
+        "#{} rev {} {state:?} age {age} from {}  \"{}\"",
+        envelope.id(),
+        envelope.revision(),
+        source.unwrap_or(UNIDENTIFIED_SENDER),
+        envelope.payload()
     )
 }
 
@@ -417,7 +448,7 @@ fn next_revision(store: &PropagationStore, issuer: ObjId, recipient: ObjId) -> u
         .filter(|envelope| {
             envelope.issuer() == issuer
                 && envelope.recipient() == recipient
-                && envelope.ack_of().is_none()
+                && envelope.kind() == crate::record::DispatchKind::Order
         })
         .map(Envelope::revision)
         .max()
@@ -459,6 +490,60 @@ fn persist_allocator(ctx: &mut Ctx<'_>) {
             value,
         },
     });
+}
+
+fn persist_transport(ctx: &mut Ctx<'_>) {
+    let Some(book) = store(ctx) else {
+        return;
+    };
+    let value = book.transport.to_value();
+    ctx.persist(ModuleOp {
+        ns: NS.into(),
+        op: ModuleWrite::JsonSet {
+            key: crate::routing::STATE_KEY.into(),
+            value,
+        },
+    });
+}
+
+fn route_submission(ctx: &mut Ctx<'_>, envelope: Envelope) -> Result<Envelope, CmdError> {
+    if !crate::routing::enabled(ctx.w) {
+        return Ok(envelope);
+    }
+    let envelope = if envelope.kind() == crate::record::DispatchKind::Acknowledgement {
+        envelope
+    } else {
+        let r = crate::access::selected(ctx.w, envelope.issuer())
+            .map_err(|e| CmdError::msg(e.message()))?;
+        envelope.with_representation(r)
+    };
+    crate::admission::check(
+        ctx.w,
+        envelope.issuer(),
+        envelope.representation(),
+        crate::admission::producer(envelope.kind(), None),
+        1,
+    )
+    .map_err(|e| CmdError::msg(e.message()))?;
+    let metric = crate::routing::snapshot_in(ctx, envelope.issued());
+    let route = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| {
+            crate::routing::prepare_with(
+                ctx.w,
+                state,
+                &envelope,
+                envelope.issued(),
+                metric.as_deref()?,
+            )
+        });
+    if let Some(book) = store(ctx) {
+        crate::routing::admission(book, route.as_ref(), None).map_err(CmdError::msg)?;
+    }
+    persist_transport(ctx);
+    ctx.gate_on_durable_ack();
+    Ok(route.map_or_else(|| envelope.clone(), |r| envelope.with_transit(r)))
 }
 
 /// `+order <recipient>=<order>` and `+order/report <recipient>=<contact>`.
@@ -526,6 +611,11 @@ fn cmd_order(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => Envelope::issue(id, issuer, recipient, body, revision, at),
     }
     .map_err(|error| CmdError::msg(error.to_string()))?;
+    let envelope = route_submission(ctx, envelope)?;
+    let slot = ctx
+        .w
+        .module_state_mut::<PropagationStore>()
+        .ok_or_else(|| CmdError::msg(UNAVAILABLE))?;
     slot.put_envelope(envelope.clone())
         .map_err(|error| CmdError::msg(error.to_string()))?;
     persist_envelope(ctx, &envelope);
@@ -560,7 +650,17 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `MAX_ENVELOPES` and no compaction behind it.
     let mut traffic: Vec<&Envelope> = store
         .envelopes()
-        .filter(|envelope| envelope.issuer() == actor || envelope.recipient() == actor)
+        .filter(|envelope| envelope.dispatch_ref().is_none())
+        .filter(|envelope| {
+            envelope.issuer() == actor
+                || (envelope.recipient() == actor
+                    && matches!(
+                        envelope.state(),
+                        EnvelopeState::Delivered
+                            | EnvelopeState::Acknowledged
+                            | EnvelopeState::Superseded
+                    ))
+        })
         .collect();
     let total = traffic.len();
     traffic.sort_unstable_by_key(|envelope| std::cmp::Reverse(envelope.id()));
@@ -580,7 +680,7 @@ fn cmd_orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         lines.push(format!(
             "{direction} {}",
-            render_envelope(envelope, &at, true, source.as_deref())
+            render_party_envelope(envelope, actor, &at, source.as_deref())
         ));
     }
     if total > MAX_ORDERS_LISTED {
@@ -635,7 +735,11 @@ fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(Envelope::id);
     // An order the actor did not receive, and one that does not exist, are the
     // same refusal.
-    if original.recipient() != actor || original.state() != EnvelopeState::Delivered {
+    if original.recipient() != actor
+        || original.dispatch_ref().is_some()
+        || original.state() != EnvelopeState::Delivered
+        || original.kind() == crate::record::DispatchKind::Acknowledgement
+    {
         info(ctx, NO_SUCH_ENVELOPE);
         return Ok(());
     }
@@ -657,6 +761,11 @@ fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let ack = Envelope::acknowledge(id, &original, at)
         .map_err(|error| CmdError::msg(error.to_string()))?;
+    let ack = route_submission(ctx, ack)?;
+    let slot = ctx
+        .w
+        .module_state_mut::<PropagationStore>()
+        .ok_or_else(|| CmdError::msg(UNAVAILABLE))?;
     slot.put_envelope(ack.clone())
         .map_err(|error| CmdError::msg(error.to_string()))?;
     persist_envelope(ctx, &ack);
@@ -676,7 +785,9 @@ fn order_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn cmd_prop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Every arm is enumerated: an unknown switch REFUSES, it is never silently
     // treated as the read (the fail-open shape this cut is not allowed to have).
-    if ctx.switches.has("pass") {
+    if ctx.switches.has("route") {
+        prop_route(ctx)
+    } else if ctx.switches.has("pass") {
         prop_pass(ctx)
     } else if ctx.switches.has("phantom") {
         prop_phantom(ctx)
@@ -691,6 +802,91 @@ fn cmd_prop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "Usage: @prop/envelopes <subject> | @prop/pass | @prop/phantom <observer>=<cause> |              @prop/jam <place>=<level> | @prop/held",
         ))
     }
+}
+
+/// Staff-only route truth. Ordinary readers never learn a hidden route or ETA.
+fn prop_route(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_admin(ctx) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    let id: u64 = ctx
+        .args
+        .raw()
+        .trim()
+        .trim_start_matches('#')
+        .parse()
+        .map_err(|_| CmdError::msg("Usage: @prop/route <envelope id>"))?;
+    let Some(envelope) = store(ctx).and_then(|s| s.envelope(id)).cloned() else {
+        info(ctx, NO_SUCH_ENVELOPE);
+        return Ok(());
+    };
+    let Some(route) = envelope.transit() else {
+        info(
+            ctx,
+            format!("Envelope #{id}: no route; waiting for a known endpoint."),
+        );
+        return Ok(());
+    };
+    info(
+        ctx,
+        format!(
+            "Envelope #{id} {:?} {:?}: route v{} registry {} at #{} to #{}; leg {}/{}; metric reads {}, edge visits {}.",
+            envelope.kind(),
+            envelope.state(),
+            route.version,
+            route.registry_revision,
+            route.position.0,
+            route.destination.0,
+            route.next,
+            route.legs.len(),
+            route.last_work.metric_reads,
+            route.last_work.edge_visits
+        ),
+    );
+    for (i, leg) in route.legs.iter().enumerate() {
+        info(
+            ctx,
+            format!(
+                "leg {i}: #{} -> #{} {}",
+                leg.from.0,
+                leg.to.0,
+                leg.pair.as_ref().map_or("conventional", |p| p.as_str())
+            ),
+        );
+    }
+    if let Some(flight) = &route.flight {
+        info(
+            ctx,
+            format!(
+                "Frozen leg: started {} due {} lag {} IC seconds; {}.",
+                flight.started.at, flight.due.at, flight.seconds, flight.basis
+            ),
+        );
+    }
+    if let Some(progress) = &route.serialization {
+        info(
+            ctx,
+            format!(
+                "Serialization: {}/{} units, first IC {}, last IC {}; no recipient visibility until complete.",
+                progress.sent, progress.total, progress.started, progress.last
+            ),
+        );
+    }
+    if let Some(queued) = &route.queued_at {
+        info(
+            ctx,
+            format!(
+                "FIFO queued at {} IC; {} bytes, {} units.",
+                queued.at,
+                envelope.payload().len(),
+                envelope
+                    .payload()
+                    .len()
+                    .div_ceil(crate::routing::BYTES_PER_UNIT)
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn prop_envelopes(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -711,7 +907,17 @@ fn prop_envelopes(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let mut matching: Vec<&Envelope> = store
         .envelopes()
-        .filter(|envelope| envelope.issuer() == subject || envelope.recipient() == subject)
+        .filter(|envelope| {
+            (envelope.issuer() == subject || envelope.recipient() == subject)
+                && (staff
+                    || envelope.issuer() == actor
+                    || matches!(
+                        envelope.state(),
+                        EnvelopeState::Delivered
+                            | EnvelopeState::Acknowledged
+                            | EnvelopeState::Superseded
+                    ))
+        })
         .collect();
     let total = matching.len();
     matching.sort_unstable_by_key(|envelope| std::cmp::Reverse(envelope.id()));
@@ -722,7 +928,11 @@ fn prop_envelopes(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .into_iter()
         .map(|envelope| {
             let source = attribution(ctx, actor, envelope.issuer());
-            render_envelope(envelope, &at, party, source.as_deref())
+            if staff {
+                render_envelope(envelope, &at, party, source.as_deref())
+            } else {
+                render_party_envelope(envelope, actor, &at, source.as_deref())
+            }
         })
         .collect();
     if lines.is_empty() {
@@ -808,7 +1018,7 @@ fn decode_error_of(key: &str, value: &serde_json::Value) -> Option<String> {
 
 /// `@prop/pass` — single-step the coarse pass (staff).
 ///
-/// It runs the same [`delivery_pass`] the coarse tick runs and then arms the
+/// It runs the same [`delivery_pass_with_metric`] the coarse tick runs and then arms the
 /// detection pass's intents through **`mush-tactics`' own ingress**: one
 /// `Ctx::submit_authoritative` of the tactics-owned `sensor_arm` action, never a
 /// contact write of its own. Propagation writes **no `ContactState`** — it could
@@ -817,6 +1027,8 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !is_admin(ctx) {
         return Err(CmdError::msg("Permission denied."));
     }
+    crate::commerce::sweep(ctx);
+    crate::billing::maintain(ctx);
     let at = now(ctx);
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         info(ctx, UNAVAILABLE);
@@ -827,7 +1039,23 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, UNAVAILABLE);
         return Ok(());
     };
-    let report = delivery_pass(&mut book, &state, ctx.w, &ledger_snapshot, &at, None);
+    let metric = crate::routing::snapshot_in(ctx, &at);
+    let report = delivery_pass_with_metric(
+        &mut book,
+        &state,
+        ctx.w,
+        &ledger_snapshot,
+        &at,
+        None,
+        metric,
+    );
+    if !crate::commerce::settle_pass(ctx, &mut book) {
+        info(
+            ctx,
+            "Paid relay transmission waits for settlement; routing pass not applied.",
+        );
+        return Ok(());
+    }
     // The pass is given the caller's OWN arm bound, so it books exactly what it
     // emits and the page it reports is true (fold D4(a)).
     let detection = crate::pass::detection_pass(
@@ -906,6 +1134,9 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     persist_allocator(ctx);
     // Anything the TICK paged since the last staff read (fold B3/B7).
+    if !report.routed.is_empty() {
+        persist_transport(ctx);
+    }
     for notice in notices {
         info(ctx, notice);
     }
@@ -1286,12 +1517,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@prop".into(),
             shape: ArgShape::EqPair,
-            switches: ["envelopes", "pass", "phantom", "jam", "held"]
+            switches: ["envelopes", "pass", "phantom", "jam", "held", "route"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
             help: "@prop/envelopes <subject>  --  Traffic on a subject (yours; staff see all).\n\
+                   @prop/route <id>  --  (staff) Frozen legs, FIFO state and route-work bounds.\n\
                    @prop/pass  --  (staff) Single-step the coarse delivery pass and arm the \
                    detection pass through the tactics sensor ingress.\n\
                    @prop/phantom <observer>=artefact|decoy|spoof[,<ttl>]  --  (staff) Mint a \

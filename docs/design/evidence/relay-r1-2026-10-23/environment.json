@@ -1,0 +1,24 @@
+{
+  "at": "2026-10-23T17:02:27.089967+00:00",
+  "source_commit": "916e8feec5d87e27a4be869c6fcdde7ebc98f1ee",
+  "host": "conclav.io",
+  "instance": "/opt/rustmush/dev1",
+  "redis_port": 6788,
+  "ssh_port": 6789,
+  "https_port": 6790,
+  "tls_verification": true,
+  "configured_game_clock": {
+    "ic_ratio": 24,
+    "ic_epoch": "0987-04-20 06:00"
+  },
+  "services": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "dev2_gateway_pid_before": "MainPID=539467",
+  "dev2_gateway_pid_after": "MainPID=539467",
+  "release_binary_sha256": {
+    "mush-server": "1993391ad4ca9af6f570d662c908e55b5779a21d0bb2bd07733859a2c0ec838b",
+    "mush-gateway": "7f2f19b830cc6050ee2193570898389572214c6cd80aaf4d884da10f0bbad566"
+  }
+}

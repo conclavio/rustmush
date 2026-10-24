@@ -1,0 +1,5 @@
+{
+  "passed": true,
+  "transport": "real SSH :6789, play front door and in-band connect",
+  "reply": "connect r1review [redacted]\r\nConnected as God (account r1review, 1 connection).\r\nLimbo #0\r\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\r\nYou see nothing special.\r\n\r\nExits    OOC Area <O>  Staff <S>  Ceres Freeport <C>\r\n@relay/check\r\nRelay registry v1 revision 17: 2 nodes, 1 pairs, 2 halves; operator #22.\r\nBindings OK. R1 topology only; routing not active.\r\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange\r\n"
+}

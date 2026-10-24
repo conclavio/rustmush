@@ -6,6 +6,9 @@ use serde_json::Value;
 /// Remove everything cut SM.3a added to the lane — `ceres_port`'s `vehicles` block and its
 /// programme's `refits` row — the v9 shape (idempotent; the manifest is the caller's).
 pub fn strip_vehicles(doc: &mut Value) {
+    // Doc 20 cut SM.5: v11's additions first, so every strip chain rebuilds its older
+    // lane unchanged.
+    super::ore::strip_ore(doc);
     let Some(ceres) = doc["entries"]
         .as_object_mut()
         .and_then(|entries| entries.get_mut("ceres_port"))

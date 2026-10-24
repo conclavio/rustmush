@@ -43,6 +43,8 @@
 //! finish, submitted by the `tacsim.surface` tick as the operator), each only when the
 //! inventory cell is filled and the tools table built (`crate::surface::act`); and, at the
 //! end of [`crate::port_tick::register`], the surface tick itself (`crate::surface::tick`).
+//! **Doc 20 cut SM.4a** hands both the chart family and adds `+tv/forget`'s own action,
+//! `tacsim_chart_forget` (`crate::surface::chart`), on every roster.
 //!
 //! **The probe** (lead ruling L3) is registered only in a test world: an agent
 //! that acts as its principal once per remaining count, submitting
@@ -202,10 +204,25 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::act::SURFACE_DONE_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the surface finish's outcome did not register"))?;
+    let chart_forget_outcome = outcome_refs
+        .get(crate::surface::chart::CHART_FORGET_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the chart forget's outcome did not register"))?;
+    let site_work_outcome = outcome_refs
+        .get(crate::port::site::SITE_WORK_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the site work's outcome did not register"))?;
+    let relay_outcome = outcome_refs
+        .get(crate::relay_foundry::OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("relay fabrication outcome missing"))?;
     let mut actions = action_descriptors(
         &stock_outcome,
+        &relay_outcome,
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
+        &chart_forget_outcome,
+        &site_work_outcome,
         probe_outcome.as_ref(),
     )?;
     if let Some(ic) = ic {
@@ -311,9 +328,10 @@ pub(crate) fn register_with_coverage(
                     action: act.clone(),
                     outcome: surface_act_outcome,
                     excursions: port_families.excursions.clone(),
+                    charts: port_families.charts.clone(),
+                    pockets: port_families.pockets.clone(),
                     inventory: inventory.clone(),
                     tools: Arc::clone(&tools),
-                    test_world,
                 },
             )?;
             reg.action_provider(
@@ -322,6 +340,8 @@ pub(crate) fn register_with_coverage(
                     action: done.clone(),
                     outcome: surface_done_outcome,
                     excursions: port_families.excursions.clone(),
+                    charts: port_families.charts.clone(),
+                    pockets: port_families.pockets.clone(),
                     inventory,
                     tools,
                 },
@@ -330,7 +350,68 @@ pub(crate) fn register_with_coverage(
         }
         _ => (None, None),
     };
+    // Doc 20 cut SM.4a (D9): `tacsim_chart_forget`, `+tv/forget`'s own action — registered on
+    // every roster, since it needs only the chart family.
+    let chart_forget = match action_refs
+        .get(crate::surface::chart::CHART_FORGET_ACTION)
+        .cloned()
+    {
+        Some(action) => {
+            reg.action_provider(
+                action.clone(),
+                crate::surface::chart::ChartForgetProvider {
+                    action: action.clone(),
+                    outcome: chart_forget_outcome,
+                    charts: port_families.charts.clone(),
+                },
+            )?;
+            Some(action)
+        }
+        None => None,
+    };
+    // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
+    // registered when the inventory cell is filled (the transfer rides the delegated
+    // families; the stock provider's rule); the definitions register regardless.
+    let site_work = match (
+        action_refs
+            .get(crate::port::site::SITE_WORK_ACTION)
+            .cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::site::SiteWorkProvider {
+                    action: action.clone(),
+                    outcome: site_work_outcome,
+                    pockets: port_families.pockets.clone(),
+                    inventory,
+                    warned: std::sync::Mutex::new(BTreeSet::new()),
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
+    let relay_fabricate = if let (Some(action), Some(inventory)) = (
+        action_refs.get(crate::relay_foundry::ACTION).cloned(),
+        inventory_families.clone(),
+    ) {
+        reg.action_provider(
+            action.clone(),
+            crate::relay_foundry::Provider {
+                action: action.clone(),
+                outcome: relay_outcome,
+                inventory,
+                book: port_families.relay_fabrications.clone(),
+            },
+        )?;
+        Some(action)
+    } else {
+        None
+    };
     reg.state(PortHandles {
+        relay_fabricate,
         families: port_families,
         inventory: inventory_families,
         probe,
@@ -338,6 +419,8 @@ pub(crate) fn register_with_coverage(
         surface_act,
         surface_done,
         surface_tools,
+        chart_forget,
+        site_work,
     });
     reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
@@ -377,6 +460,11 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
     let mut descriptors = vec![
         descriptor(
             "outcome",
+            crate::relay_foundry::OUTCOME,
+            json!({"fields":["actor","order","op"]}),
+        )?,
+        descriptor(
+            "outcome",
             crate::port::stock::STOCK_OUTCOME,
             json!({ "fields": ["actor", "issue", "lot", "qty", "vault"] }),
         )?,
@@ -396,6 +484,18 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             crate::surface::act::SURFACE_DONE_OUTCOME,
             json!({ "fields": ["actor", "ordinal", "result", "tv"] }),
         )?,
+        // Doc 20 cut SM.4a (D9): `+tv/forget`'s own action.
+        descriptor(
+            "outcome",
+            crate::surface::chart::CHART_FORGET_OUTCOME,
+            json!({ "fields": ["actor", "rows"] }),
+        )?,
+        // Doc 20 cut SM.6 (§3.4): the site clerk's worked transfer — never a tonne.
+        descriptor(
+            "outcome",
+            crate::port::site::SITE_WORK_OUTCOME,
+            json!({ "fields": ["actor", "deposit", "receipt"] }),
+        )?,
     ];
     if test_world {
         descriptors.push(descriptor(
@@ -414,11 +514,20 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 /// registered (a test world); one validator per kind for the crate.
 fn action_descriptors(
     stock_outcome: &DefinitionRef,
+    relay_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
+    chart_forget_outcome: &DefinitionRef,
+    site_work_outcome: &DefinitionRef,
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "action",
+            crate::relay_foundry::ACTION,
+            json!({"subject":"self_actor","targets":0,"family":crate::relay_foundry::FAMILY}),
+        )?
+        .with_references(vec![relay_outcome.clone()]),
         descriptor(
             "action",
             crate::port::stock::STOCK_ACTION,
@@ -461,6 +570,29 @@ fn action_descriptors(
             }),
         )?
         .with_references(vec![surface_outcomes.1.clone()]),
+        // Doc 20 cut SM.4a (D9): `+tv/forget` strikes the actor's `tacsim.chart` rows.
+        descriptor(
+            "action",
+            crate::surface::chart::CHART_FORGET_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::chart::CHART_FAMILY,
+            }),
+        )?
+        .with_references(vec![chart_forget_outcome.clone()]),
+        // Doc 20 cut SM.6 (§3.4): the site clerk's worked transfer writes the deposit's
+        // `tacsim.pockets` cursor.
+        descriptor(
+            "action",
+            crate::port::site::SITE_WORK_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::cursor::POCKETS_FAMILY,
+            }),
+        )?
+        .with_references(vec![site_work_outcome.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
@@ -562,6 +694,17 @@ pub struct PortTickState {
     /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
     /// good)` — each is logged once.
     pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 20 cut SM.5 (§7.3; reviewer F10): the intake drip's warnings this boot, by
+    /// `(vault, good, kind)` — keyed apart by [`crate::port::stock::DripWarn`], so a
+    /// first warning never hides the second; each is logged once.
+    pub(crate) drip_warned: BTreeSet<(u64, CanonicalId, crate::port::stock::DripWarn)>,
+    /// Doc 20 cut SM.5 (lead ruling L24's rule, applied to the drip): the refresh rows
+    /// whose drip act the market refused having moved nothing, by `(vault, good)`, with
+    /// the IC day of that refusal. The drip passes over such a row for the rest of that
+    /// IC day, so one row's standing refusal (a suspended house, a listing cap) never
+    /// stalls the other intakes or the lapsed-bid re-post behind it. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) drip_refused: BTreeMap<(u64, CanonicalId), i64>,
     /// Doc 19 cut A.4b: when each port's emergency reading was last taken with
     /// nothing to do, by entry id (real seconds); the clerk reads it again
     /// `crate::port::price::EMERGENCY_CHECK_SECS` later.
@@ -879,6 +1022,10 @@ enum Arm {
         /// The hull, `ObjId.0`.
         hull: u32,
     },
+    /// Doc 20 cut SM.6 (§3.4, D-20-5): a latched lane site's clerk — open its next deposit or
+    /// move its next worked share ([`crate::port::site::site_step`]); agent and principal the
+    /// clerk.
+    Site,
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -948,6 +1095,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
                 .collect()
         })
         .unwrap_or_default();
+    let site_clerks = crate::port::site::site_clerks(ctx.w);
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
     // Doc 18 cut IC13 (lead ruling L12): the recall agents read tickets (`&Ctx`), and
@@ -975,6 +1123,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     };
     for clerk in clerks {
         offer(clerk, clerk, Arm::Stock);
+    }
+    // Doc 20 cut SM.6 (§3.4): every latched lane site's live clerk, agent and principal both.
+    for clerk in site_clerks {
+        offer(clerk, clerk, Arm::Site);
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
@@ -1094,6 +1246,7 @@ fn step(
         Arm::Order { hull } => {
             crate::port::executor::order_step(ctx, state, fire, ObjId(hull), principal)
         }
+        Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,
@@ -1883,6 +2036,51 @@ pub fn notify(ctx: &mut Ctx<'_>, who: ObjId, text: &str) {
     }
 }
 
+/// **How a surface line rides the reconnect queue** (doc 20 cut SM.11; the brief's lead ruling 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeLevel {
+    /// A trip-level line — an unload, a plan's parking or end, an idle return, a stranded rig, a
+    /// refused act: queued for an offline operator.
+    Trip,
+    /// Every other surface line — a cycle, a reading, a drive, a launch, a recover: said to a
+    /// connected operator, never queued.
+    Live,
+}
+
+/// **Tell `who` one surface line under the notice budget** (doc 20 §8 "Reconnect notices: at most
+/// one a trip plus a summary", §11 Caps "≤ 1 notice a trip"; cut SM.11 lead ruling 7): connected,
+/// the line is said, as [`notify`] does; offline it is queued only when it is a trip-level line —
+/// an unload, a plan's parking or end, an idle return, a stranded rig, a refused act — never a
+/// cycle, a reading, a drive, a launch or a recover. The ring's cap ([`MAX_NOTICE_LINES`]) stands.
+pub fn notify_budget(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
+    match delivery(ctx.w.is_connected(who), level) {
+        Delivery::Say => ctx.out.sys_to_actor(who, "tacsim", text),
+        Delivery::Queue => queue_notice(ctx, who, text),
+        Delivery::Drop => {}
+    }
+}
+
+/// What [`notify_budget`] does with one line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    /// Said now.
+    Say,
+    /// Queued for the next login.
+    Queue,
+    /// Neither: an offline operator hears no live line.
+    Drop,
+}
+
+/// [`notify_budget`]'s rule, pure: connected, every line is said; offline, a trip-level line is
+/// queued and every other dropped.
+fn delivery(connected: bool, level: NoticeLevel) -> Delivery {
+    match (connected, level) {
+        (true, _) => Delivery::Say,
+        (false, NoticeLevel::Trip) => Delivery::Queue,
+        (false, NoticeLevel::Live) => Delivery::Drop,
+    }
+}
+
 /// Queue a line for `who`'s next login, writing the whole document. PLAYERS ONLY: a non-player
 /// (a Thing principal such as IC8's clerk, which never connects) or a gone object gets nothing
 /// queued, with a `tracing::debug!`. A serialization failure is a `tracing::error!` and writes
@@ -2119,6 +2317,17 @@ mod tests {
         assert!(std::str::from_utf8(line.as_bytes()).is_ok());
         queue.push(0, "a\nb");
         assert_eq!(queue.lines[1].text, "a b");
+    }
+
+    /// **The budget queues a trip, not a cycle** (doc 20 cut SM.11; lead ruling 7): offline a
+    /// trip-level line is queued and a live line is not; connected both are said. The world proof
+    /// is `tests/plans.rs`'s P13.
+    #[test]
+    fn sm11_the_budget_queues_a_trip_not_a_cycle() {
+        assert_eq!(delivery(false, NoticeLevel::Trip), Delivery::Queue);
+        assert_eq!(delivery(false, NoticeLevel::Live), Delivery::Drop);
+        assert_eq!(delivery(true, NoticeLevel::Trip), Delivery::Say);
+        assert_eq!(delivery(true, NoticeLevel::Live), Delivery::Say);
     }
 
     #[test]

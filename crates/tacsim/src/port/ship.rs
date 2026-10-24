@@ -50,7 +50,6 @@ use crate::definitions::{BayDef, GoodsTable, InteriorDef, LogisticsDef};
 use crate::port::capacity::Compartment;
 use crate::port::coop::{
     EnrolmentStatus, NO_CHARTER, ProgrammePort, Standing, helm_of, name_of, port_name,
-    programme_port,
 };
 use crate::port::def::PortDef;
 use crate::port::gauges::{self, DARK, Reading};
@@ -236,7 +235,9 @@ impl HullView<'_> {
     /// [`HULL_CLASS`], or [`HULL_CLASS_PROSPECTOR`] for a refitted hull.
     #[must_use]
     pub fn class_word(&self) -> &'static str {
-        if self.is_prospector() {
+        if self.unit.as_str() == "tacsim.unit.halcyon" {
+            "Halcyon"
+        } else if self.is_prospector() {
             HULL_CLASS_PROSPECTOR
         } else {
             HULL_CLASS
@@ -273,7 +274,9 @@ fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Optio
 /// **The view of one programme hull** by its Thing.
 #[must_use]
 pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
-    let port = programme_port(w)?;
+    let port = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| p.map.hulls.iter().any(|r| r.hull == hull.0))?;
     let row = port.map.hulls.iter().find(|row| row.hull == hull.0)?;
     view_of(w, port, row)
 }
@@ -282,7 +285,14 @@ pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
 /// scan of the programme port's hull rows).
 #[must_use]
 pub fn hull_of_room(w: &World, room: ObjId) -> Option<(HullView<'_>, CanonicalId)> {
-    let port = programme_port(w)?;
+    let port = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| {
+            p.map
+                .hulls
+                .iter()
+                .any(|r| r.rooms.values().any(|id| *id == room.0))
+        })?;
     let (row, tid) = port.map.hulls.iter().find_map(|row| {
         row.rooms
             .iter()
@@ -347,8 +357,115 @@ pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
         .map(|vault| vault.id)
 }
 
+/// **The hold's unreserved room for ore, kilograms** (doc 20 cut SM.4b; the brief's reviewer
+/// resolution R6 and decision P11; §19 item 1): [`hold_unreserved`]'s mass entry — the one rule
+/// the `site.map` frame's `hold.room_t` and the mining plan both read. `None` as
+/// [`hold_unreserved`].
+#[must_use]
+pub(crate) fn hold_unreserved_kg(
+    w: &World,
+    view: &HullView<'_>,
+    rigs: &[ObjId],
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<crate::surface::excursion::RigRecord>, String>,
+) -> Option<u64> {
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    hold_unreserved(w, view, rigs, read, read_rig).map(|room| room.get(&mass).copied().unwrap_or(0))
+}
+
+/// **The hold's unreserved room for ore, per measure** (doc 20 §3.5 and §19 item 1: "a hopper
+/// never carries what the hold cannot take"; cut SM.4b's function, generalised by cut SM.7 — the
+/// brief's decision R8): over the hull's stowage compartments that accept the ore stowage tag
+/// (read from the goods table's `metal_ore` row, never a literal), each one's limit less its
+/// current load in every measure it limits (`capacity::load` over every good it holds, through
+/// `read` at the hold vault), summed per measure — **less each of `rigs`' hopper load** (each good
+/// it holds weighed per measure by the goods table; never the hopper's capacity) — **less each of
+/// `rigs`' outstanding cycles** (a rig whose record, read through `read_rig`, holds a run: its
+/// `Run::outstanding_t` tonnes of the run's good, the cycle in flight included, weighed per
+/// measure) — saturating at 0 in each measure. Packed volume counts as mass does: bulky cargo
+/// beside the ore leaves less room than its tonnes say. `None` when any pool or record does not
+/// read, the goods table is not loaded, a good does not weigh in a measure, or no compartment
+/// accepts ore. **Doc 20 cut SM.8** (decision R16): [`hold_unreserved_with`] over the store's
+/// goods table — its callers byte-unchanged.
+#[must_use]
+pub(crate) fn hold_unreserved(
+    w: &World,
+    view: &HullView<'_>,
+    rigs: &[ObjId],
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<crate::surface::excursion::RigRecord>, String>,
+) -> Option<crate::port::capacity::Load> {
+    let goods = w.module_state::<TacsimStore>()?.goods()?;
+    hold_unreserved_with(goods, w, view, rigs, read, read_rig)
+}
+
+/// **[`hold_unreserved`] over a named goods table** (doc 20 cut SM.8; the brief's decision R16:
+/// the unload weighs its preview, its offer, its prepare and its finish with the one table its
+/// hold plan carries, `crate::port::market::plan_goods`). The arithmetic is
+/// `crate::port::capacity`'s: each ore compartment's room through `room_less` (`limit − load`,
+/// summed per measure), then every reserved load — each of `rigs`' hopper contents and its run's
+/// outstanding tonnes — off the summed room through `take_room` (a union compartment of the ore
+/// compartments' measures and tags), saturating; SM.7's semantics exactly.
+#[must_use]
+pub(crate) fn hold_unreserved_with(
+    goods: &crate::definitions::GoodsTable,
+    w: &World,
+    view: &HullView<'_>,
+    rigs: &[ObjId],
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<crate::surface::excursion::RigRecord>, String>,
+) -> Option<crate::port::capacity::Load> {
+    let ore = CanonicalId::new("metal_ore").ok()?;
+    let tag = goods.good(&ore)?.stowage.clone();
+    let comps: Vec<(CanonicalId, Compartment)> = compartments(view)
+        .into_iter()
+        .filter(|(_, comp)| comp.accepts.contains(&tag))
+        .collect();
+    if comps.is_empty() {
+        return None;
+    }
+    let readings = readings_with(goods, comps, hold_vault(w, view), read).ok()?;
+    let mut room = crate::port::capacity::Load::new();
+    // The union of the ore compartments, for weighing a reserved load off the summed room: its
+    // measures are the room's, its tags every compartment's.
+    let mut union = Compartment {
+        id: ore,
+        accepts: std::collections::BTreeSet::new(),
+        limits: BTreeMap::new(),
+    };
+    for (_, comp, contents) in &readings {
+        let left = crate::port::capacity::room_less(goods, comp, contents, &[]).ok()?;
+        for (measure, free) in left {
+            let slot = room.entry(measure.clone()).or_insert(0);
+            *slot = slot.saturating_add(free);
+            union.limits.insert(measure, 0);
+        }
+        union.accepts.extend(comp.accepts.iter().cloned());
+    }
+    let pool_unit = crate::port::tv::pool_unit(w);
+    for rig in rigs {
+        let contents =
+            crate::port::tv::hopper_contents_with(w, *rig, pool_unit.as_ref(), read).ok()?;
+        for (good, qty) in &contents {
+            crate::port::capacity::take_room(goods, &union, &mut room, good, *qty).ok()?;
+        }
+        // Doc 20 cut SM.7: every outstanding, uncompleted cycle of the rig's run.
+        if let Some(run) = read_rig(*rig).ok()?.and_then(|record| record.run) {
+            crate::port::capacity::take_room(
+                goods,
+                &union,
+                &mut room,
+                &run.good,
+                run.outstanding_t(),
+            )
+            .ok()?;
+        }
+    }
+    Some(room)
+}
+
 /// The hull's stowage compartments, in stowage order.
-fn compartments(view: &HullView<'_>) -> Vec<(CanonicalId, Compartment)> {
+pub(crate) fn compartments(view: &HullView<'_>) -> Vec<(CanonicalId, Compartment)> {
     view.logistics
         .stowage
         .iter()
@@ -585,6 +702,9 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         };
         let programme = match charter.standing {
+            Standing::Fleet => {
+                "Programme: Concord Fleet; current economic command assignment.".into()
+            }
             // Cut IC13: a graduate's line names the hull (the graduated enrolment's
             // name, else the hull's own).
             Standing::Title => {
@@ -628,6 +748,11 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // Doc 20 cut SM.2 (§1 beat 3): on a pad, the stores line after the hold line.
         let stores = crate::port::voyage::settled_stores_line(ctx, &view);
         let mut lines = vec![first, hold];
+        // Only an observer aboard can read the hull's current physical lag.
+        // An ashore charter holder must not gain instant remote telemetry.
+        if crate::port::voyage::aboard(ctx.w, charter.hull, actor) {
+            lines.push(crate::relay_metric::lag_line(ctx, charter.hull));
+        }
         lines.extend(stores);
         lines.push(programme);
         lines

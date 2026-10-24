@@ -1,0 +1,259 @@
+{
+  "brief": {
+    "prose": "The Exchange compound at Malapert on the lunar surface stands beside the Concord's political centre at Shackleton. Aitken Highport uses its communications coverage; no instantaneous foot exit connects the orbital port to the surface."
+  },
+  "entries": {
+    "exit.office": {
+      "def": {
+        "from": "room.counter",
+        "names": [
+          "Postmaster's Office;office",
+          "Exchange Public Counter;counter"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.office"
+      },
+      "kind": "exit"
+    },
+    "exit.relay": {
+      "def": {
+        "from": "room.office",
+        "lock": "staff",
+        "names": [
+          "Malapert Relay Hall;relay",
+          "Postmaster's Office;office"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.relay"
+      },
+      "kind": "exit"
+    },
+    "locality.compound": {
+      "def": {
+        "footprint": [
+          [
+            10,
+            10
+          ],
+          [
+            70,
+            10
+          ],
+          [
+            70,
+            35
+          ],
+          [
+            10,
+            35
+          ]
+        ],
+        "kind": "facility",
+        "name": "Malapert Exchange",
+        "region": "region.aitken_highport"
+      },
+      "kind": "locality"
+    },
+    "neighborhood": {
+      "def": {
+        "footprint": [
+          [
+            10,
+            10
+          ],
+          [
+            70,
+            10
+          ],
+          [
+            70,
+            35
+          ],
+          [
+            10,
+            35
+          ]
+        ],
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "locality": "locality.compound",
+        "name": "Malapert Exchange",
+        "region": "region.aitken_highport",
+        "representation": "authored",
+        "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 3,
+          "target": 3
+        },
+        "setting": "station"
+      },
+      "kind": "neighborhood"
+    },
+    "room.counter": {
+      "def": {
+        "access": "public",
+        "desc": "A tariff board and a row of message terminals face a low counter. The charter promises service to every current account; a separate notice preserves the operator's right to suspend service with a stated reason.",
+        "details": {
+          "charter": "Concord-chartered neutral common carrier under the 2312 Settlement. Every suspension names its principal and reason; independent sanctions survive an arrears cure.",
+          "tariffs": "Published service terms are available with +relay. All mail is IC and transits. Standard pays the declared wait; Priority and Sovereign wait for capacity; Deferred waits for an off-peak window."
+        },
+        "footprint": {
+          "rect": [
+            [
+              10,
+              10
+            ],
+            [
+              30,
+              35
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Exchange Public Counter",
+        "short_desc": "Exchange Public Counter.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.office": {
+      "def": {
+        "access": "public",
+        "desc": "A desk faces the sealed compound corridor. Printed service orders carry a signature line, a named account and a reason. The lunar yards' relief-cruiser request lies in a separate docket.",
+        "footprint": {
+          "rect": [
+            [
+              30,
+              10
+            ],
+            [
+              50,
+              35
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Postmaster's Office",
+        "short_desc": "Postmaster's Office.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.relay": {
+      "def": {
+        "access": "restricted",
+        "desc": "Four isolated cradles stand inside the shielded hall, each fed by its own power trunk. Their destination plates read PHOBOS, CERES, KIRKWOOD and MERCURY. All public links meet here.",
+        "footprint": {
+          "rect": [
+            [
+              50,
+              10
+            ],
+            [
+              70,
+              35
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Malapert Relay Hall",
+        "short_desc": "Malapert Relay Hall.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "site.compound": {
+      "def": {
+        "footprint": [
+          [
+            10,
+            10
+          ],
+          [
+            70,
+            10
+          ],
+          [
+            70,
+            35
+          ],
+          [
+            10,
+            35
+          ]
+        ],
+        "name": "Malapert Exchange",
+        "site_kind": "relay_compound"
+      },
+      "kind": "site"
+    },
+    "structure.compound": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 4,
+            "index": 0,
+            "name": "Exchange Deck",
+            "z_offset_m": 0
+          }
+        ],
+        "footprint": [
+          [
+            10,
+            10
+          ],
+          [
+            70,
+            10
+          ],
+          [
+            70,
+            35
+          ],
+          [
+            10,
+            35
+          ]
+        ],
+        "site": "site.compound"
+      },
+      "kind": "structure"
+    }
+  },
+  "manifest": {
+    "digest": "acad4209e0ded034b989bfbe0ff7311df8e02734d579bd6bcdd6a5abbf0b626c",
+    "id": "neighborhood.malapert_exchange",
+    "kind": "neighborhood",
+    "requires": [
+      {
+        "id": "region.aitken_highport",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

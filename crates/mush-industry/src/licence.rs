@@ -188,6 +188,13 @@ pub fn extraction_authorized(
             best = Some(best.unwrap_or(refusal));
             continue;
         }
+        // Doc 20 §9.2, D-20-12 (cut SM.6): a LAPSED claim (the record half of
+        // `AssetLifecycle::Abandoned`) authorizes nobody, whatever its term
+        // says — it is taken over, never worked.
+        if claim.is_lapsed() {
+            best = Some(best.unwrap_or(ExtractionRefusal::ClaimExpired));
+            continue;
+        }
         // K4a: a stamp on another clock generation **refuses comparison rather
         // than expiring early**. Never `<`, never `partial_cmp`.
         match claim.term().checked_cmp(now) {

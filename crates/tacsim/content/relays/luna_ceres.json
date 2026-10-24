@@ -1,0 +1,387 @@
+{
+  "entries": {
+    "network": {
+      "def": {
+        "nodes": {
+          "ceres": {
+            "coverage": [
+              {
+                "entry": "room.c01_berth_gallery",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c02_pressure",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c03_arrivals",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c04_concourse",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c05_registry",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c06_clearing",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c07_exchange",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c08_chandlery",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c09_tycho",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c10_slack_line",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c14_dockmaster",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c15_maintenance",
+                "pack": "neighborhood.ceres_freeport"
+              },
+              {
+                "entry": "room.c16_authority",
+                "pack": "neighborhood.ceres_freeport"
+              }
+            ],
+            "label": "Ceres relay endpoint",
+            "place": {
+              "entry": "room.c15_maintenance",
+              "pack": "neighborhood.ceres_freeport"
+            }
+          },
+          "kirkwood": {
+            "coverage": [
+              {
+                "entry": "room.counter",
+                "pack": "neighborhood.kirkwood_depot"
+              },
+              {
+                "entry": "room.relay",
+                "pack": "neighborhood.kirkwood_depot"
+              }
+            ],
+            "label": "Kirkwood relay endpoint",
+            "place": {
+              "entry": "room.relay",
+              "pack": "neighborhood.kirkwood_depot"
+            }
+          },
+          "malapert": {
+            "coverage": [
+              {
+                "entry": "room.l01_berth_gallery",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l02_pressure",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l12_dockmaster",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l08_receiving",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l15_spine",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l03_arrivals",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l04_concourse",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l05_registry",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l06_clearing",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l07_exchange",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l09_chandlery",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.l10_cold_trap",
+                "pack": "neighborhood.aitken_highport"
+              },
+              {
+                "entry": "room.counter",
+                "pack": "neighborhood.malapert_exchange"
+              },
+              {
+                "entry": "room.office",
+                "pack": "neighborhood.malapert_exchange"
+              },
+              {
+                "entry": "room.relay",
+                "pack": "neighborhood.malapert_exchange"
+              }
+            ],
+            "label": "Malapert relay endpoint",
+            "place": {
+              "entry": "room.relay",
+              "pack": "neighborhood.malapert_exchange"
+            }
+          },
+          "mercury": {
+            "coverage": [
+              {
+                "entry": "room.counter",
+                "pack": "neighborhood.mercury_relay"
+              },
+              {
+                "entry": "room.relay",
+                "pack": "neighborhood.mercury_relay"
+              }
+            ],
+            "label": "Mercury relay endpoint",
+            "place": {
+              "entry": "room.relay",
+              "pack": "neighborhood.mercury_relay"
+            }
+          },
+          "phobos": {
+            "coverage": [
+              {
+                "entry": "room.counter",
+                "pack": "neighborhood.phobos_exchange"
+              },
+              {
+                "entry": "room.relay",
+                "pack": "neighborhood.phobos_exchange"
+              },
+              {
+                "entry": "room.p01_berth_gallery",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p02_pressure",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p03_customs",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p04_concourse",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p05_harbourmaster",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p07_receiving",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p08_exchange",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p09_commissary",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p10_shift_board",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p11_service",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p12_observation",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.p15_maintenance",
+                "pack": "neighborhood.stickney_yards"
+              },
+              {
+                "entry": "room.d01_berth_gallery",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d02_pressure",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d03_customs",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d04_concourse",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d05_harbourmaster",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d06_moorings",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d08_exchange",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d09_commissary",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d10_long_straw",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d07_receiving",
+                "pack": "neighborhood.voltaire_anchorage"
+              },
+              {
+                "entry": "room.d15_spine",
+                "pack": "neighborhood.voltaire_anchorage"
+              }
+            ],
+            "label": "Phobos relay endpoint",
+            "place": {
+              "entry": "room.relay",
+              "pack": "neighborhood.phobos_exchange"
+            }
+          }
+        },
+        "operator_name": "Malapert Exchange",
+        "pairs": {
+          "luna_ceres": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "id": "luna_ceres.luna",
+                "node": "malapert"
+              },
+              {
+                "id": "luna_ceres.ceres",
+                "node": "ceres"
+              }
+            ]
+          },
+          "luna_kirkwood": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "id": "luna_kirkwood.luna",
+                "node": "malapert"
+              },
+              {
+                "id": "luna_kirkwood.kirkwood",
+                "node": "kirkwood"
+              }
+            ]
+          },
+          "luna_mercury": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "id": "luna_mercury.luna",
+                "node": "malapert"
+              },
+              {
+                "id": "luna_mercury.mercury",
+                "node": "mercury"
+              }
+            ]
+          },
+          "luna_phobos": {
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange",
+            "halves": [
+              {
+                "id": "luna_phobos.luna",
+                "node": "malapert"
+              },
+              {
+                "id": "luna_phobos.phobos",
+                "node": "phobos"
+              }
+            ]
+          }
+        }
+      },
+      "kind": "relay_network"
+    }
+  },
+  "manifest": {
+    "digest": "6d99bd6f999c88285404f05242100945416191a2dc67e18b4838514124d61401",
+    "id": "tacsim.relay.luna_ceres",
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.aitken_highport",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.ceres_freeport",
+        "version": 2
+      },
+      {
+        "id": "neighborhood.malapert_exchange",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.phobos_exchange",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.kirkwood_depot",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.mercury_relay",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.stickney_yards",
+        "version": 4
+      },
+      {
+        "id": "neighborhood.voltaire_anchorage",
+        "version": 1
+      },
+      {
+        "id": "tacsim.lane.ceres_phobos",
+        "version": 13
+      }
+    ],
+    "version": 2
+  }
+}

@@ -1,0 +1,25 @@
+    Finished `test` profile [unoptimized] target(s) in 0.25s
+     Running unittests src/lib.rs (target/debug/deps/mush_propagation-e6643c9097d5e834)
+
+running 19 tests
+test billing::tests::subscription_books_reject_duplicate_claims_corrupt_prices_and_unbounded_records ... ok
+test context::tests::the_media_map_onto_the_base_vocabulary_and_back ... ok
+test context::tests::every_term_saturates_rather_than_overflowing ... ok
+test billing::tests::arrears_counts_cures_without_erasing_independent_pause ... ok
+test record::tests::a_relay_cycle_terminates_at_the_hop_bound ... ok
+test record::tests::a_terminal_transition_is_idempotent ... ok
+test context::tests::a_miss_and_a_hit_are_the_same_shape_and_carry_the_same_lag ... ok
+test context::tests::a_jammed_unit_is_still_detected_and_an_occluded_courier_still_arrives ... ok
+test record::tests::an_over_long_payload_is_refused_at_issue_not_truncated_at_delivery ... ok
+test routing::tests::capacity_post_image_matches_the_wire_at_integer_limits ... ok
+test service::tests::policy_has_strict_bounds_and_utc_independent_ic_windows ... ok
+test routing::tests::corrupt_frozen_time_and_cursor_are_refused_and_generation_change_preserves_due_scalar ... ok
+test routing::tests::cycle_hit_and_miss_visit_the_same_bounded_graph_and_respect_remaining_hops ... ok
+test record::tests::a_phantoms_subject_is_scoped_and_has_no_object_arm_at_all ... ok
+test routing::tests::legacy_dispatch_kind_is_inferred_and_reports_or_messages_are_not_standing_orders ... ok
+test record::tests::every_record_re_enters_through_its_constructor ... ok
+test service::tests::receipt_bounds_and_evidence_require_observed_free_capacity ... ok
+test routing::tests::shared_capacity_is_conserved_across_wire_round_trip_and_clock_rollback ... ok
+test service::tests::restriction_bounds_sources_and_legacy_tickets_are_checked ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

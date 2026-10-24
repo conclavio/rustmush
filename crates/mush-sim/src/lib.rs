@@ -36,6 +36,7 @@ mod handoff;
 pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
+pub mod relay;
 pub mod route;
 pub mod seat;
 pub mod station;
@@ -1062,6 +1063,7 @@ impl GameModule for SimulationModule {
             Arc::new(tick::maintenance_tick),
         )?;
         commands::register(reg)?;
+        relay::register(reg)?;
         Ok(())
     }
 
@@ -1074,6 +1076,7 @@ impl GameModule for SimulationModule {
         if let Some(config) = &self.ic_custody {
             config.loaded(ctx)?;
         }
+        relay::load(ctx, &mut data)?;
         let carriers = journey::extract_carrier_journeys(&mut data);
         ic_exclusion::check_boot_journeys(ctx.w, &carriers)?;
         let workflow = domain::extract_domain_workflow(&mut data);

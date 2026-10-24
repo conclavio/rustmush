@@ -11,8 +11,11 @@ about; a sheet screen; mail; channels; rolls; intel; actions; two
 tactical screens — a damage report and a unit view, whose **grid** pane is
 the map of the window your scene stands on when one is open (`help map`) —
 that show your unit whenever you hold a station on one (they are always in
-the strip); and, on digit **0**, a **cockpit** for a pilot in a simulator
-match, which appears the first time a match sends you a frame.
+the strip); on digit **0**, a **cockpit** for a pilot in a simulator
+match, which appears the first time a match sends you a frame; and two
+**lettered screens**, reached with Alt and the letter where the server
+publishes them: **c**, the sky chart, and **q**, the quarry, for a pilot
+working rigs on a mining site.
 Everything you type still runs the same commands and reaches the same world;
 the TUI is only a different way to *see* it.
 
@@ -38,7 +41,8 @@ columns is the width it is happiest at. Narrower than that no screen is
 drawn: a short message names the floor and your terminal's own width, the
 input box stays, and the moment the window is wide enough again the screen
 you were on comes back as you left it. Line mode has no hard floor, though
-its maps and tables are drawn for 80 columns.
+its maps and tables are drawn for 120 columns: a map prints at most 118
+columns by 32 rows.
 
 ## Two modes: nav and input
 
@@ -102,6 +106,12 @@ From either mode:
   Ctrl-N       On the channel screen, highlight the next channel of the
                focused list (wrapping); Ctrl-O swaps between the IC and OOC
                lists. Elsewhere both do nothing.
+  Ctrl-G       In a tank's seat, open or close the first-person picture of
+               the arena, on a terminal that can show one, with your armour,
+               weapons, contacts and the comms as text under it; Enter there
+               opens a chat line (`help cockpit`, "The picture"). On the
+               chart screen it draws the sky, on a replay the match, and on
+               the damage screen your tank's armour as a page.
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it
@@ -229,10 +239,40 @@ reads the scene back, and is not taken as the line you were composing.
              arena's own, every 5 s, and the TUI draws nothing between them.
              Sitting in a tank closes the replay; a replay never opens over
              a cockpit you are flying.
+             On a terminal that shows pictures, Ctrl-G on a replay draws
+             the match: the whole ground, both sides in their team's colour
+             with their headings and trails, each shot as a line for a
+             moment after it is fired (yellow a hit, grey dashed a miss),
+             the wrecks in grey, the tank in focus ringed, and under it a
+             timeline of the whole match with every shot and wreck marked
+             on it. Space plays it at the arena's own speed (`f` faster:
+             four times, sixteen times), `,` and `.` step a keyframe, `[`
+             and `]` move ten seconds, `u` and `x` work as above, Esc goes
+             back to the panes. Between keyframes the picture moves each
+             tank in a straight line and says under the timeline that it
+             drew them; the panes under it stay on the keyframe before.
              Staff who `@arena/watch` a running match see it live on the
              same screen (`Watching 12 - 1:30 (live)`), every tank with its
              object number, at most once an arena second; only `u` and `p`
              work there, and it closes when the watch ends.
+  c chart    (Alt+c) The sky as a flat map: the Sun, every orbit, the bodies
+             by letter and the listed routes, you at `@`; beside it the
+             passages now and each destination's window. `r` asks again,
+             `w` opens the box with `+chart ` ready, `m` prints the flat map.
+             On a terminal that shows pictures, Ctrl-G here draws the sky as
+             one: the orbits, the bodies by name, your port ringed, the
+             passages as dashed legs, and rings at 3, 6, 12 and 24
+             light-minutes about you; the passages are text under it, the
+             chart is fetched again every minute (`r` at once), Esc closes.
+  q quarry   (Alt+q) Your rigs on a mining site: their status on the left,
+             the map in the middle — the drive view around a rig, then
+             (`z`) the whole site and the body's ground chart — your own
+             readings, the other rigs and the log on the right. `s` `d` `x`
+             `m` open the box with `+tv/<n> scan`, `drive `, `sound` or
+             `mine` for the rig you picked (`t` picks the next); nothing
+             goes until you add `go` (and, for a drive, the target first)
+             and press Enter. `l` shows another kind of ore, `r` asks
+             again; the map follows your rigs while they move.
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they

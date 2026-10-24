@@ -795,6 +795,12 @@ impl ChildServer {
 
 impl Drop for ChildServer {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "Child server log at failed assertion:\n{}",
+                self.log_snapshot()
+            );
+        }
         // Never leave a stray server running after a failed test.
         if self.child.try_wait().ok().flatten().is_none() {
             let _ = self.child.kill();

@@ -58,6 +58,8 @@ pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
 pub mod industry_recipes;
+pub mod industry_seams;
+pub mod mail_transport;
 pub mod mind_commerce;
 pub mod salvage_source;
 pub mod seat_audit;
@@ -344,6 +346,10 @@ fn compose_server_modules<E>(
     // order it already fixes. `mush-inventory` fills it while registering;
     // `mush-industry`, composed after it, takes the handles out.
     let inventory_handles: mush_inventory::InventoryHandleCell = Arc::default();
+    // Doc 20 cut SM.6 (§3.4): `mush-industry`'s own cell, the same wire the other way round —
+    // industry fills it while registering, and the site opener composed onto it reads
+    // deposits through it.
+    let industry_handles: mush_industry::IndustryHandleCell = Arc::default();
     // Doc 18 cut IC5 (D-18-33; §4.4 "Offline execution" prerequisite): the
     // quantity delegates. `tacsim` joins only on a roster that composes the TacSim
     // layer ([`server_modules_with_tacsim`]): the state-family freeze refuses a
@@ -375,7 +381,10 @@ fn compose_server_modules<E>(
         None => (tactics, simulation),
     };
     let modules: Vec<Box<dyn GameModule>> = vec![
-        Box::new(mush_comsys::ComsysModule::new()),
+        Box::new(
+            mush_comsys::ComsysModule::new()
+                .with_transport(Arc::new(mail_transport::MailTransport)),
+        ),
         Box::new(mush_canon::CanonModule::new()),
         // D1: explicit-only privileges and their audit ledger (`@privilege`).
         Box::new(mush_privileges::PrivilegesModule::new()),
@@ -456,7 +465,12 @@ fn compose_server_modules<E>(
         // before propagation's boot. It registers NO contact family and NO
         // contact guard validator — `mush-tactics` is the sole `ContactState`
         // authority (08i answer 1, D-E7-36).
-        Box::new(mush_propagation::PropagationModule::new()),
+        Box::new(
+            mush_propagation::PropagationModule::new()
+                .with_dispatch_sources(Arc::new(mail_transport::MailTransport))
+                .with_metric(Arc::new(crate::relay_metric::RelayMetric))
+                .with_service(Arc::new(crate::relay_service::RelayService)),
+        ),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
@@ -673,7 +687,22 @@ fn compose_server_modules<E>(
                 .with_inventory(Arc::clone(&inventory_handles))
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
-                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority));
+                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority))
+                // Doc 20 cut SM.5 (§9.1, D-20-12): the Freeport Registry's
+                // prospecting licence, `crate::economy::LICENCE_FREEPORT`, named to
+                // the industry authority so `mush_industry::extraction_authorized`'s
+                // licence half (`crates/mush-industry/src/licence.rs`) can at last
+                // answer Ok. Wired only on the roster that composes the TacSim
+                // layer, whose sheet module registers the instrument at boot; on
+                // every other roster industry still answers `NoLicenceInstrument`.
+                .with_licence_if(tacsim_delegate)
+                // Doc 20 cut SM.6 (§3.4): the handle cell, on every roster.
+                .with_handle_cell(Arc::clone(&industry_handles))
+                // Doc 20 cut SM.6 (§3.4, D-20-5, D1, D11, D13): on the roster that composes
+                // the TacSim layer, the site clerks' system opener, the surface draws the
+                // sweep reconciles each surface pool against, and the typed-state delegation
+                // to `tacsim` (the port tick and readiness read deposits).
+                .with_surface_seams_if(tacsim_delegate, &industry_handles);
             match launch {
                 Some(launch) => launch.roster.industry(module),
                 None => module,
@@ -714,7 +743,7 @@ fn compose_server_modules<E>(
                 // the disabled default — fail closed.
                 .with_recovery(recovery),
         ),
-        Box::new(mush_mail::MailModule),
+        Box::new(mush_mail::MailModule.with_transport(Arc::new(mail_transport::MailTransport))),
         Box::new(mush_jobs::JobsModule::new()),
         // E5: housing boots after `{org, sim, tactics, economy, jobs}` (08a decision
         // 19, 08d §2). `on_world_loaded` runs in list order and housing's boot
@@ -850,6 +879,50 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
     }
 }
 
+/// **Doc 20 cut SM.5's licence wiring, composed only where the TacSim layer is**
+/// (the [`PortMarketSeamsExt`] shape): the industry authority is told the
+/// prospecting-licence instrument ([`crate::economy::LICENCE_FREEPORT`]); the
+/// account in it is opened by `+licence/buy go` (`crate::port::licence`), and the
+/// term every licence-gated act reads first lives on tacsim's own record.
+trait IndustryLicenceExt: Sized {
+    fn with_licence_if(self, on: bool) -> Self;
+}
+
+impl IndustryLicenceExt for mush_industry::IndustryModule {
+    fn with_licence_if(self, on: bool) -> Self {
+        match (on, crate::economy::licence_instrument()) {
+            (true, Some(id)) => self.with_extraction_licence(id),
+            _ => self,
+        }
+    }
+}
+
+/// **Doc 20 cut SM.6's industry seams, composed only where the TacSim layer is** (the
+/// [`IndustryLicenceExt`] shape): [`industry_seams::SiteOpener`] as the system opener,
+/// [`industry_seams::SurfaceDraws`] as the external draws, (doc 20 cut SM.10)
+/// [`industry_seams::SurfaceTenure`] as the tenure authority, and the typed-state delegation of
+/// industry's families to `tacsim` (D1) — a capability to read deposits, which tacsim's source
+/// tripwire (`tests/deposits.rs`, D10) holds to reads. Unwired, `DepositOpen` stays staff-only,
+/// the delegation is absent, and a surface deposit (none exists there) would read
+/// `ExternalUnwired`.
+trait IndustrySurfaceExt: Sized {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self;
+}
+
+impl IndustrySurfaceExt for mush_industry::IndustryModule {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self {
+        if on {
+            self.with_system_opener(Arc::new(industry_seams::SiteOpener::new(Arc::clone(cell))))
+                .with_external_draws(Arc::new(industry_seams::SurfaceDraws))
+                // Doc 20 cut SM.10 (§9, D1/D2): the claim acts' composed authority.
+                .with_tenure_authority(Arc::new(industry_seams::SurfaceTenure::new()))
+                .with_state_delegates([crate::NS])
+        } else {
+            self
+        }
+    }
+}
+
 /// The economy observer table this server freezes at wiring (16b cut R-b: the one
 /// game's; the Shadowrun board's mirror left with its ruleset).
 fn econ_observers() -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
@@ -922,7 +995,16 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         // fails LOUDLY at the command instead of storing a grant that authorizes
         // nothing — which is exactly what this non-empty set is for.
         .chain(mush_campaign::CAPABILITIES.iter().copied())
-        .chain(["org.role.manage", "org.grant.delegate"])
+        .chain([
+            "org.role.manage",
+            "org.grant.delegate",
+            "relay.manage",
+            "relay.discover",
+            "relay.use",
+            "relay.speak",
+            "relay.inspect",
+            "relay.publish",
+        ])
         // Vocabulary declaration only; default composition grants nothing.
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
@@ -1111,6 +1193,10 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(lane) => shelf.extend(lane),
         Err(error) => tracing::error!(%error, "atlas: the lane pack did not load"),
     }
+    match crate::relay_content::packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "relay shelf pack refused"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -1167,6 +1253,7 @@ pub fn boot_pack_list(
         packs.extend(crate::definitions::content::boot_packs()?);
         packs.extend(crate::definitions::content::station_packs()?);
         packs.extend(crate::definitions::content::lane_packs()?);
+        packs.extend(crate::relay_content::packs()?);
     }
     Ok(packs)
 }
@@ -1219,6 +1306,13 @@ pub fn content_module_with(
     // proving ground's two, and (cut IC2) the lane after them — the game's thirteen
     // boot packs — from the one list the tests read too.
     let packs = boot_pack_list(starter_area, game_content)?;
+    // A kept Ceres v1 world must remain bootable so staff can explicitly take
+    // Ceres v2 before installing the relay seed. Fresh/current worlds seed now.
+    if game_content {
+        for pack in crate::relay_content::packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
+    }
     if !packs.is_empty() {
         module = module.with_boot_packs(packs);
     }

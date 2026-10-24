@@ -14,7 +14,7 @@
 //! [`ComsysState::rings`] (the in-RAM recall buffers) are **not** a kv doc —
 //! they rebuild from the `hist:{id}` stream tails at boot.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use mush_core::lock::MAX_LOCK_DEPTH;
@@ -267,6 +267,9 @@ pub struct Membership {
     /// this member while they were connected.
     #[serde(default)]
     pub last_read: u64,
+    /// IC arrival knowledge; absent only on OOC or legacy memberships.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ic: Option<crate::transit::Knowledge>,
 }
 
 /// One recorded channel message: the recall-ring entry and the persisted
@@ -307,9 +310,48 @@ pub struct ComsysState {
     pub rings: BTreeMap<ChannelId, VecDeque<ChanMsg>>,
     /// Channel id allocator resume point (persisted in the meta doc).
     pub next_chan_id: u64,
+    pub ic: crate::transit::State,
+    pub channel_members: BTreeSet<(ChannelId, ObjId)>,
 }
 
 impl ComsysState {
+    pub(crate) fn indexed_members(&self, chan: ChannelId) -> impl Iterator<Item = &Membership> {
+        self.channel_members
+            .range((chan, ObjId(0))..=(chan, ObjId(u32::MAX)))
+            .filter_map(move |(_, p)| self.members.get(&(*p, chan)))
+    }
+    pub(crate) fn insert_member(&mut self, mut m: Membership) -> Membership {
+        if let Some(c) = self.channels.get(&m.channel)
+            && c.flags.ic
+            && m.ic.is_none()
+        {
+            m.ic = Some(crate::transit::Knowledge {
+                joined: c.seq,
+                ..Default::default()
+            });
+            m.last_read = 0;
+        }
+        self.channel_members.insert((m.channel, m.player));
+        self.members.insert((m.player, m.channel), m.clone());
+        m
+    }
+    pub(crate) fn remove_member(
+        &mut self,
+        out: &mut Outbox,
+        player: ObjId,
+        chan: ChannelId,
+    ) -> bool {
+        self.channel_members.remove(&(chan, player));
+        let Some(m) = self.members.remove(&(player, chan)) else {
+            return false;
+        };
+        if let Some(k) = m.ic {
+            for r in k.received {
+                self.ic.release(out, (chan, r.message));
+            }
+        }
+        true
+    }
     /// The channel with this (case-insensitive) name.
     #[must_use]
     pub fn channel_by_name(&self, name: &str) -> Option<&Channel> {
@@ -379,29 +421,21 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
     }));
 }
 
-/// Mirror a channel document (comsys docs are plain data; serialization
-/// cannot fail).
+/// Persist a comsys-owned plain-data document. These records contain only
+/// JSON-compatible scalar values, sequences, and string/integer map keys.
+pub(crate) fn persist_json(out: &mut Outbox, key: SmolStr, document: &impl Serialize) {
+    let value = serde_json::to_value(document).expect("comsys plain-data document serializes");
+    push_op(out, ModuleWrite::JsonSet { key, value });
+}
+
+/// Mirror a channel document.
 pub(crate) fn persist_channel(out: &mut Outbox, c: &Channel) {
-    let value = serde_json::to_value(c).expect("channel doc serializes");
-    push_op(
-        out,
-        ModuleWrite::JsonSet {
-            key: chan_key(c.id),
-            value,
-        },
-    );
+    persist_json(out, chan_key(c.id), c);
 }
 
 /// Mirror a membership document.
 pub(crate) fn persist_membership(out: &mut Outbox, m: &Membership) {
-    let value = serde_json::to_value(m).expect("membership doc serializes");
-    push_op(
-        out,
-        ModuleWrite::JsonSet {
-            key: member_key(m.player, m.channel),
-            value,
-        },
-    );
+    persist_json(out, member_key(m.player, m.channel), m);
 }
 
 /// Mirror the meta document (the channel-id allocator resume point).

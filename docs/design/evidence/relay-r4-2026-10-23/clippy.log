@@ -1,0 +1,12 @@
+    Checking mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+    Checking mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+    Checking mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+    Checking mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+    Checking mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+    Checking mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+    Checking mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+    Checking mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+    Checking mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+    Checking mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+    Checking tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `dev` profile [unoptimized] target(s) in 56.02s

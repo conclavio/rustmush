@@ -2175,3 +2175,224 @@ async fn mind_exec_close_before_eof_discards_partial_source_without_invocation()
     assert!(hooks.invokes.lock().unwrap().is_empty());
     assert!(hooks.connected_chars.lock().unwrap().is_empty());
 }
+
+// ---- doc 20 cut SM.4b: the arrival line and the second principal's map over SSH ----------
+
+/// The events `tacsim`'s `tests/driving.rs` blessed from the world (`TACSIM_BLESS=1 cargo test
+/// -p tacsim --test driving sm4b_the_site_map_fixtures_are_blessed`): the operator's real
+/// `ARRIVED` event and a second principal's real `+tv/map site` events, serialised as the world
+/// produced them.
+const SITE_EVENTS: &str = include_str!("../../../web/src/lib/fixtures/site/site_events.json");
+
+/// The text a line-mode event prints.
+fn event_text(event: &OutputEvent) -> String {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|value| {
+            value["d"].as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// **V4 and V5's SSH half — the arrival line and the other principal's map print over SSH**
+/// (doc 20 cut SM.4b; lead ruling 8, the brief's decision P10): a real russh client in line mode,
+/// the world's own events pushed through the session's queue — the operator's `ARRIVED`, then the
+/// second principal's `+tv/map site` lines. The client's screen holds the arrival text verbatim
+/// and every line of the map, and no grid line holds an ore glyph (`1`–`3`, `+`, `.`).
+#[tokio::test]
+async fn sm4b_the_arrival_line_and_the_other_map_print_over_ssh() {
+    let events: serde_json::Value = serde_json::from_str(SITE_EVENTS).expect("the fixture");
+    let arrival: OutputEvent =
+        serde_json::from_value(events["arrival"].clone()).expect("an output event");
+    let other_map: Vec<OutputEvent> =
+        serde_json::from_value(events["other_map"].clone()).expect("output events");
+    let arrival_text = event_text(&arrival);
+    // `tacsim`'s D13 blesses exactly the operator's `ARRIVED` ("Rig {n} arrives at {addr}{reading}.").
+    assert!(
+        arrival_text.starts_with("Rig 1 arrives at ") && arrival_text.ends_with('.'),
+        "{arrival_text}"
+    );
+    let lines: Vec<String> = other_map.iter().map(event_text).collect();
+    assert!(lines.len() > 3 + 32, "{lines:?}");
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sitemap", &hooks).await;
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    let mark = term.seen.len();
+    tx.send(Arc::new(arrival)).await.expect("queue open");
+    for event in other_map {
+        tx.send(Arc::new(event)).await.expect("queue open");
+    }
+    term.expect_after(mark, &arrival_text).await;
+    let last = lines.last().cloned().unwrap_or_default();
+    term.expect_after(mark, &last).await;
+    let seen = strip_ansi(&term.seen[mark..]);
+    for line in &lines {
+        assert!(seen.contains(line.as_str()), "{line:?} reached the client");
+    }
+    // The grid: the 32 rows after the title and the legend's two lines.
+    for row in lines.iter().skip(3).take(32) {
+        assert_eq!(row.chars().count(), 64, "{row}");
+        assert!(
+            !row.chars().any(|c| ['1', '2', '3', '+', '.'].contains(&c)),
+            "an ore glyph reached the second principal: {row}"
+        );
+    }
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.7 — the cycle line over SSH
+// ---------------------------------------------------------------------------
+
+/// `tacsim`'s M14-blessed mining events: the operator's real `CYCLE_DONE` and `CORED` events.
+const MINE_EVENTS: &str = include_str!("../../../web/src/lib/fixtures/site/mine_events.json");
+
+/// **A11 — the cycle line prints over SSH** (doc 20 cut SM.7): a real russh client in line mode,
+/// the world's own events pushed through the session's queue — the operator's cycle line, then
+/// its blind core's line. The client's screen holds both texts verbatim.
+#[tokio::test]
+async fn sm7_the_cycle_line_prints_over_ssh() {
+    let events: serde_json::Value = serde_json::from_str(MINE_EVENTS).expect("the fixture");
+    let cycle: OutputEvent =
+        serde_json::from_value(events["cycle"].clone()).expect("an output event");
+    let cored: OutputEvent =
+        serde_json::from_value(events["cored"].clone()).expect("an output event");
+    let (cycle_text, cored_text) = (event_text(&cycle), event_text(&cored));
+    // `tacsim`'s M14 blesses exactly `CYCLE_DONE` ("Rig {n}, cycle {k} of {cycles}: {t} t {ore};
+    // hopper {hopper}.") and `CORED` ("Rig {n} cored {reading}: {lift}; hopper {hopper}.").
+    assert!(
+        cycle_text.starts_with("Rig 1, cycle 1 of ") && cycle_text.ends_with(" of 12 t."),
+        "{cycle_text}"
+    );
+    assert!(
+        cored_text.starts_with("Rig 1 cored ") && cored_text.ends_with(" of 12 t."),
+        "{cored_text}"
+    );
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("mining", &hooks).await;
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    let mark = term.seen.len();
+    tx.send(Arc::new(cycle)).await.expect("queue open");
+    tx.send(Arc::new(cored)).await.expect("queue open");
+    term.expect_after(mark, &cycle_text).await;
+    term.expect_after(mark, &cored_text).await;
+    let seen = strip_ansi(&term.seen[mark..]);
+    for line in [&cycle_text, &cored_text] {
+        assert!(seen.contains(line.as_str()), "{line:?} reached the client");
+    }
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// **Doc 21 cut G.11**: a player in game opens a second channel on the same
+/// connection, asks for `sftp`, and reads the asset pack's manifest — the
+/// bytes the gateway ships, its pack version the one the TUI announces. A
+/// connection still at the welcome screen is refused the second channel, and
+/// a third channel (or a second `sftp`) is refused too.
+#[tokio::test]
+async fn the_asset_pack_is_served_over_sftp_to_a_player_in_game() {
+    use tokio::io::AsyncReadExt;
+
+    // At the welcome screen: no second channel.
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("sftp-early", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+    let mut early = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        early
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut welcome = Term {
+        channel: open_shell_on(&early).await,
+        seen: String::new(),
+    };
+    welcome.expect("Welcome to rustmush!").await;
+    assert!(
+        early.channel_open_session().await.is_err(),
+        "no second channel before the game"
+    );
+    let _ = early
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+
+    // In game: the pack.
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sftp", &hooks).await;
+    let channel = handle
+        .channel_open_session()
+        .await
+        .expect("a second channel");
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .expect("the sftp subsystem");
+    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await
+        .expect("an sftp session");
+    let mut manifest = Vec::new();
+    sftp.open("/assets/manifest.json")
+        .await
+        .expect("open the manifest")
+        .read_to_end(&mut manifest)
+        .await
+        .expect("read it");
+    let pack = mush_net_ssh::assets::AssetPack::shipped().expect("the shipped pack");
+    assert_eq!(Some(manifest.as_slice()), pack.file("manifest.json"));
+    let doc: serde_json::Value = serde_json::from_slice(&manifest).expect("json");
+    assert_eq!(doc["pack_version"].as_str(), Some(pack.pack_version()));
+    assert!(
+        sftp.open_with_flags(
+            "/assets/manifest.json",
+            russh_sftp::protocol::OpenFlags::WRITE
+        )
+        .await
+        .is_err(),
+        "read-only"
+    );
+    // One pack channel a connection.
+    assert!(
+        handle.channel_open_session().await.is_err(),
+        "no third channel"
+    );
+    // The game's own channel still answers.
+    term.send_line("say still here").await;
+    term.expect("Nick says, \"still here\"").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}

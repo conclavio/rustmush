@@ -1,0 +1,22 @@
+[
+  {
+    "case": "invalid_capacity",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: invalid relay transport capacity state"
+  },
+  {
+    "case": "missing_capacity",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: relay_transport missing beside routed envelopes; restore the committed capacity record"
+  },
+  {
+    "case": "invalid_cursor",
+    "passed": true,
+    "diagnostic": "half=server 2026-10-23T18:10:14.623301Z  WARN mush_propagation: propagation: a record would not load; it is held, not deleted key=envelope:24 error=invalid or over-bound relay itinerary"
+  },
+  {
+    "case": "invalid_clock",
+    "passed": true,
+    "diagnostic": "half=server 2026-10-23T18:10:15.736960Z  WARN mush_propagation: propagation: a record would not load; it is held, not deleted key=envelope:24 error=invalid or over-bound relay itinerary"
+  }
+]

@@ -92,6 +92,16 @@ key_dir = "__DATA_DIR__/resolution-keys"
 [ssh]
 listen = "__EXTERNAL_IP__:__SSH_PORT__"
 
+# The SSH TUI's ^G picture (doc 21 G.1b): its clock, the step-down on a slow
+# link, and the staff diagnostics (the `u` key and the engineering numbers on
+# the picture's status line) — box-wide, off for players' boxes.
+[pixel]
+frame_interval_ms = 50
+low_interval_ms = 100
+step_down_after = 3
+step_up_after_s = 10
+diagnostics = __PIXEL_DIAGNOSTICS__
+
 # The forked gateway<->server boundary (M16b/M16c). IGNORED by the all-in-one
 # `mushd`; bound by `mush-server` and connected to by `mush-gateway` in the
 # split deployment.
@@ -463,6 +473,11 @@ max_snapshot_bytes = 7340032
 # disables mining (the readiness report says so), it corrupts nothing.
 [tacsim.geology]
 key_dir = "__DATA_DIR__/geology-keys"
+
+# Doc 20 cut SM.10 (§9.4): the Registry interlock, phase 1's only claim enforcement until the
+# fight exists. It is stated explicitly; `false` is refused at boot.
+[tacsim.surface]
+registry_interlock = true
 
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is

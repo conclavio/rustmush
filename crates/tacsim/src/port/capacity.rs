@@ -184,8 +184,12 @@ fn room_of(compartment: &Compartment, load: &Load) -> Load {
 }
 
 /// The minimum over limited measures of `room / per_unit`, and every measure
-/// that attains it.
-fn fits_in(room: &Load, figures: &[(CanonicalId, u64)]) -> (u64, Vec<CanonicalId>) {
+/// that attains it. A measure `room` does not name has no room (`0` units): every
+/// caller here builds `figures` from the compartment's own limits. Doc 20 cut SM.7:
+/// mining's fit (`crate::surface::mine::fit`) reads the same rule rather than
+/// restating it, passing only the measures its room names (the SM.7 lead's
+/// pre-commit round, item 6).
+pub(crate) fn fits_in(room: &Load, figures: &[(CanonicalId, u64)]) -> (u64, Vec<CanonicalId>) {
     let mut best: Option<u64> = None;
     let mut bound: Vec<CanonicalId> = Vec::new();
     for (measure, per_unit) in figures {
@@ -270,6 +274,71 @@ pub fn max_more(
     Ok(fits_in(&room_of(compartment, &current), &figures))
 }
 
+/// **Room left, per limited measure** (doc 20 §6, §19 item 1; cuts SM.7 and SM.8): the
+/// compartment's limit less the load of `contents` less the load of every map in `reserved`,
+/// saturating at 0 in each measure — the one rule the hold's unreserved room
+/// (`crate::port::ship::hold_unreserved_with`) and the unload's re-check at the prepare are
+/// computed with. Every good of `contents` and `reserved` weighs through [`load`]'s rule.
+///
+/// # Errors
+///
+/// As [`load`], for `contents` and each reserved map.
+pub fn room_less(
+    goods: &GoodsTable,
+    compartment: &Compartment,
+    contents: &BTreeMap<CanonicalId, u64>,
+    reserved: &[BTreeMap<CanonicalId, u64>],
+) -> Result<Load, CapacityError> {
+    let mut room = room_of(compartment, &load(goods, compartment, contents)?);
+    for held in reserved {
+        let held = load(goods, compartment, held)?;
+        for (measure, left) in &mut room {
+            *left = left.saturating_sub(held.get(measure).copied().unwrap_or(0));
+        }
+    }
+    Ok(room)
+}
+
+/// **How many units of `good` fit in `room`** (doc 20 cut SM.8): `fits_in`'s rule over the
+/// compartment's limited measures — every measure `room` names or not (an unnamed measure has no
+/// room).
+///
+/// # Errors
+///
+/// [`CapacityError`] for a good the table does not know, the compartment does not accept, or
+/// that declares no figure for a limited measure.
+pub fn units_in(
+    goods: &GoodsTable,
+    compartment: &Compartment,
+    room: &Load,
+    good: &CanonicalId,
+) -> Result<u64, CapacityError> {
+    let figures = figures(goods, compartment, good)?;
+    Ok(fits_in(room, &figures).0)
+}
+
+/// **`room` less `qty` units of `good`** (doc 20 cut SM.8): each limited measure less `qty ×
+/// per-unit`, the product checked, the subtraction saturating at 0.
+///
+/// # Errors
+///
+/// As [`units_in`], and [`CapacityError::Overflow`] when the product overflows.
+pub fn take_room(
+    goods: &GoodsTable,
+    compartment: &Compartment,
+    room: &mut Load,
+    good: &CanonicalId,
+    qty: u64,
+) -> Result<(), CapacityError> {
+    for (measure, per_unit) in figures(goods, compartment, good)? {
+        let take = qty.checked_mul(per_unit).ok_or(CapacityError::Overflow)?;
+        if let Some(left) = room.get_mut(&measure) {
+            *left = left.saturating_sub(take);
+        }
+    }
+    Ok(())
+}
+
 /// **Litres as cubic metres to a tenth, truncated** (doc 18 §4.3 UI rule):
 /// `120_400` → `"120.4"`, `99` → `"0.0"`. Never rounded up, so a hold reading
 /// `120.0` is never over its 120 m³.
@@ -301,4 +370,111 @@ pub fn compartment_for(
         .filter(|compartment| compartment.accepts.contains(&def.stowage));
     let only = matching.next()?;
     matching.next().is_none().then(|| only.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::definitions::goods::goods_table;
+    use crate::definitions::logistics::{MASS_KG, VOLUME_L};
+
+    fn cid(text: &str) -> CanonicalId {
+        CanonicalId::new(text).expect("id")
+    }
+
+    /// The Dray-P's `cargo` compartment, from its shipped pack.
+    fn dray_p_cargo() -> Compartment {
+        let pack = crate::pack::load_pack(crate::definitions::content::DRAY_P_JSON)
+            .expect("the Dray-P pack loads");
+        let logistics = match pack.entry(&cid(crate::definitions::content::DRAY_P)) {
+            Some(crate::pack::PackEntry::Unit(spec)) => {
+                spec.logistics.clone().expect("the Dray-P's logistics")
+            }
+            _ => panic!("the Dray-P unit"),
+        };
+        let def = logistics
+            .stowage
+            .get(&cid("cargo"))
+            .expect("its cargo hold");
+        Compartment::from_stowage(&cid("cargo"), def)
+    }
+
+    /// **`room_less`, `units_in` and `take_room`** (doc 20 cut SM.8): an empty reserved list is
+    /// `limit − load`; reserved maps come off per measure and saturate at 0; metal ore is bound by
+    /// mass and carbon ore by packed volume in a room they share; `take_room` takes exactly
+    /// `qty × per-unit` from each measure and saturates.
+    #[test]
+    fn sm8_room_less_units_in_and_take_room() {
+        let goods = goods_table().expect("the goods table");
+        let cargo = dray_p_cargo();
+        let (mass, volume) = (cid(MASS_KG), cid(VOLUME_L));
+        let limit = |m: &CanonicalId| cargo.limits.get(m).copied().expect("a limit");
+        let per = |good: &str, m: &CanonicalId| {
+            goods
+                .good(&cid(good))
+                .and_then(|row| row.per_unit(m))
+                .expect("a figure")
+        };
+        let contents: BTreeMap<CanonicalId, u64> = [(cid("metal_ore"), 10)].into();
+        let bare = room_less(&goods, &cargo, &contents, &[]).expect("a room");
+        assert_eq!(
+            bare,
+            room_of(&cargo, &load(&goods, &cargo, &contents).expect("a load")),
+            "an empty reserved list is limit − load"
+        );
+        assert_eq!(
+            bare.get(&mass).copied(),
+            Some(limit(&mass) - 10 * per("metal_ore", &mass))
+        );
+        let reserved: BTreeMap<CanonicalId, u64> = [(cid("carbon_ore"), 5)].into();
+        let less =
+            room_less(&goods, &cargo, &contents, &[reserved.clone(), reserved]).expect("a room");
+        assert_eq!(
+            less.get(&volume).copied(),
+            Some(limit(&volume) - 10 * per("metal_ore", &volume) - 10 * per("carbon_ore", &volume))
+        );
+        let swamp: BTreeMap<CanonicalId, u64> = [(cid("metal_ore"), 1_000)].into();
+        let none = room_less(&goods, &cargo, &BTreeMap::new(), &[swamp]).expect("a room");
+        assert!(none.values().all(|left| *left == 0), "saturates: {none:?}");
+        // Bound by mass for metal ore, by packed volume for carbon ore, in the same room.
+        let room: Load = [(mass.clone(), 10_000), (volume.clone(), 10_000)].into();
+        let metal = units_in(&goods, &cargo, &room, &cid("metal_ore")).expect("fits");
+        let carbon = units_in(&goods, &cargo, &room, &cid("carbon_ore")).expect("fits");
+        assert_eq!(
+            metal,
+            (10_000 / per("metal_ore", &mass)).min(10_000 / per("metal_ore", &volume))
+        );
+        assert_eq!(
+            carbon,
+            (10_000 / per("carbon_ore", &mass)).min(10_000 / per("carbon_ore", &volume))
+        );
+        assert!(
+            per("carbon_ore", &volume) > per("carbon_ore", &mass),
+            "carbon packs bulkier than it weighs"
+        );
+        assert_eq!(
+            carbon,
+            10_000 / per("carbon_ore", &volume),
+            "volume binds carbon"
+        );
+        let mut taken = room.clone();
+        take_room(&goods, &cargo, &mut taken, &cid("carbon_ore"), 2).expect("takes");
+        assert_eq!(
+            taken.get(&volume).copied(),
+            Some(10_000 - 2 * per("carbon_ore", &volume))
+        );
+        assert_eq!(
+            taken.get(&mass).copied(),
+            Some(10_000 - 2 * per("carbon_ore", &mass))
+        );
+        take_room(&goods, &cargo, &mut taken, &cid("carbon_ore"), 1_000).expect("takes");
+        assert!(
+            taken.values().all(|left| *left == 0),
+            "saturates: {taken:?}"
+        );
+        assert_eq!(
+            take_room(&goods, &cargo, &mut taken, &cid("carbon_ore"), u64::MAX),
+            Err(CapacityError::Overflow)
+        );
+    }
 }

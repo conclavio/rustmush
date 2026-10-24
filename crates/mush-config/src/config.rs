@@ -126,6 +126,7 @@
 //! | `[tacsim.harness].max_path_cells_per_pulse` | `48128` | **16b cut AI.1** (16c `B-84`): A star cells one wake's path searches expand, found or failed; sized on the four-seed measurement with the harness's 16 per cent spread |
 //! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
 //! | `[tacsim.geology].key_dir` | absent | doc 20 SM.1: the geology key family's directory; absent, the mining layer reads disabled |
+//! | `[tacsim.surface].registry_interlock` | `true` | doc 20 SM.10 (§9.4): the Registry interlock, phase 1's only claim enforcement; `false` is refused at boot (the lever is reserved for the fight, §17) |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -671,6 +672,29 @@ pub struct TacsimCfg {
     /// `[tacsim.geology]` — **doc 20 cut SM.1**: where surface mining's geology
     /// key lives (§3.2, Q-20-12). Absent, the mining layer reads disabled.
     pub geology: TacsimGeologyCfg,
+    /// `[tacsim.surface]` — **doc 20 cut SM.10**: the Registry interlock lever (§9.4; lead
+    /// ruling 9). Always `true` in phase 1; `false` is refused at boot.
+    pub surface: TacsimSurfaceCfg,
+}
+
+/// `[tacsim.surface]` — doc 20 cut SM.10 (§9.4; lead ruling 9, D16, OC13): the Registry
+/// interlock, **phase 1's only claim enforcement until the fight exists** (§17). It defaults to
+/// `true`, every shipped config states it, and the host refuses `false` at boot
+/// (`mush_server::config_ext`) with a line naming doc 20 §9.4. Nothing in the game reads the
+/// key: the lever is reserved for the fight, which is what will enforce a claim with it off.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimSurfaceCfg {
+    /// Whether the Registry's interlock enforces claims (phase 1: always).
+    pub registry_interlock: bool,
+}
+
+impl Default for TacsimSurfaceCfg {
+    fn default() -> Self {
+        Self {
+            registry_interlock: true,
+        }
+    }
 }
 
 /// `[tacsim.geology]` — doc 20 cut SM.1 (§3.2, Q-20-12): the geology key family's directory.
@@ -813,6 +837,7 @@ impl Default for TacsimCfg {
             resolution: TacsimResolutionCfg::default(),
             harness: TacsimHarnessCfg::default(),
             geology: TacsimGeologyCfg::default(),
+            surface: TacsimSurfaceCfg::default(),
         }
     }
 }
@@ -1943,6 +1968,44 @@ impl Default for IpcCfg {
     }
 }
 
+/// `[pixel]` section (doc 21 cut G.1b): the terminal picture's clock and its
+/// step-down on a slow link, read by the gateway half (the SSH TUI's `^G`
+/// view). Every key defaults; the whole block may be left out.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PixelCfg {
+    /// The picture's clock, milliseconds a frame. Default `50` (20 Hz, the
+    /// owner's ruling for both encoders). Clamped to `10..=1000` where it is
+    /// used.
+    pub frame_interval_ms: u64,
+    /// The clock after a step-down, milliseconds a frame. Default `100`
+    /// (10 Hz); never faster than `frame_interval_ms`.
+    pub low_interval_ms: u64,
+    /// Picture writes in a row that each took longer than a frame before the
+    /// view steps down to the narrow frame and the low clock. Default `3`.
+    pub step_down_after: u32,
+    /// Seconds of picture writes that kept up before a stepped-down view
+    /// steps back up. Default `10`.
+    pub step_up_after_s: u64,
+    /// The staff diagnostics, box-wide (the owner's ruling of 2026-10-22):
+    /// the `u` key that uncaps the clock and the engineering numbers on the
+    /// picture's status line. Default `false`: players see neither;
+    /// `@pixel/stats` reports the numbers either way.
+    pub diagnostics: bool,
+}
+
+impl Default for PixelCfg {
+    fn default() -> Self {
+        PixelCfg {
+            frame_interval_ms: 50,
+            low_interval_ms: 100,
+            step_down_after: 3,
+            step_up_after_s: 10,
+            diagnostics: false,
+        }
+    }
+}
+
 /// The host and TCP port a `[store].redis_url` points at, when it names one.
 ///
 /// Deliberately small: enough of `redis://[user:pass@]host[:port][/db]` (and
@@ -2056,6 +2119,9 @@ pub struct Config {
     /// `[ipc]` — the M16b forked gateway<->server boundary socket. Ignored by
     /// the all-in-one `mushd`; read by `mush-gateway`/`mush-server`.
     pub ipc: IpcCfg,
+    /// `[pixel]` — the terminal picture's clock, step-down and staff
+    /// diagnostics (doc 21 cut G.1b). Defaults whole.
+    pub pixel: PixelCfg,
 }
 
 impl Default for Config {
@@ -2079,6 +2145,7 @@ impl Default for Config {
             atlas: AtlasCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
+            pixel: PixelCfg::default(),
         }
     }
 }
@@ -2104,6 +2171,7 @@ const CONFIG_SECTIONS: &[&str] = &[
     "atlas",
     "llm",
     "ipc",
+    "pixel",
 ];
 
 /// Levenshtein distance, only when it is at most two. The working row is bounded
@@ -2536,6 +2604,20 @@ scene_turn_dedline_secs = 30
         assert_eq!(
             defaulted.offer_key_dir(),
             PathBuf::from("./world/offer-keys")
+        );
+    }
+
+    #[test]
+    fn surface_interlock_defaults_true_and_refuses_a_misspelt_key() {
+        // Doc 20 cut SM.10 (§9.4, lead ruling 9): the lever defaults on, parses either way (the
+        // host refuses `false` at boot, not the parser), and a near-miss key is refused.
+        let defaulted: Config = toml::from_str("[server]\ndata_dir = \"./world\"").unwrap();
+        assert!(defaulted.tacsim.surface.registry_interlock);
+        let off: Config = toml::from_str("[tacsim.surface]\nregistry_interlock = false").unwrap();
+        assert!(!off.tacsim.surface.registry_interlock);
+        assert!(
+            toml::from_str::<Config>("[tacsim.surface]\nregistry_interlok = true").is_err(),
+            "deny_unknown_fields refuses a misspelt surface key"
         );
     }
 

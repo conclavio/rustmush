@@ -152,6 +152,15 @@ pub mod pack;
 pub mod port;
 pub mod port_tick;
 pub mod record;
+pub mod relay_billing;
+pub mod relay_commerce;
+pub mod relay_content;
+pub mod relay_foundry;
+pub mod relay_loss;
+pub mod relay_metric;
+pub mod relay_mobile;
+mod relay_service;
+pub mod relay_world;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
 /// facts of doc 10 §17–§19, `+sheet`/`+chargen`/`+stat`/`+roll` over
@@ -670,6 +679,17 @@ impl GameModule for TacsimRuleset {
         // It must come before the first `reg.command`, or the production composition
         // refuses.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // Doc 20 cut SM.6 (D1): on the wired roster — the one that hands the inventory cell,
+        // which always composes `mush-industry` — this layer delegates its typed families to
+        // `industry`, so industry's sweep can read `tacsim.pockets` through its own module
+        // context (the composed `ExternalDraws`). It widens the bundle, never the gate:
+        // industry stages no write on a tacsim family — with ONE composed exception (doc 20 cut
+        // SM.10, D2, OC11): `industry_claim_tenure`'s bundle carries `tacsim.claims`, written by
+        // tacsim's own code (`composition::industry_seams::SurfaceTenure::stage`) on tacsim's own
+        // family, so a block's record moves atomically with its industry claims.
+        if self.inventory.is_some() {
+            reg.delegate_state_families(mush_industry::NS)?;
+        }
         let packs = match &self.loaded {
             Ok(packs) => packs.clone(),
             Err(detail) => return Err(ModError::msg(detail.clone())),
@@ -690,6 +710,12 @@ impl GameModule for TacsimRuleset {
         // in after composition (`surface::install_geology`), the status the boot pass decides
         // once, the bodies' tables and the site ground cache. Never persisted.
         reg.state(surface::GeologyState::default());
+        // Doc 20 cut SM.6 (§3.4, D2): the sites' opening states the Site readiness line reads,
+        // RAM only, beside the geology slot (never `PortTickState`, which a fire takes whole).
+        reg.state(surface::opening::SiteOpenings::default());
+        // Doc 20 cut SM.10 (D5): the claim orders the tenure authority re-plans at the offer, RAM
+        // only (the `ActOrders` precedent).
+        reg.state(port::claims::ClaimOrders::default());
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,
@@ -754,9 +780,23 @@ impl GameModule for TacsimRuleset {
              under the tacsim module's identity, and the atlas appliers it runs write the \
              site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
         )?;
+        relay_loss::register(reg)?;
+        relay_commerce::register(reg)?;
+        relay_foundry::register(reg)?;
+        relay_mobile::register(reg)?;
+        reg.persist_delegation(
+            crate::NS,
+            "propagation",
+            "R8 relay market boot uses the transport owner's checked install API",
+        )?;
         commands::register(reg)?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
+        // Doc 20 cut SM.4b (§10, D-20-13): the `site.map` panel feed and its query.
+        port::site_map::register(reg)?;
+        // Doc 20 cut SM.9 (§3.1, §10, D-20-13): the `body.ground` panel feed and its query (the
+        // manifest reads `sky.chart, site.map, tv.status, body.ground`).
+        port::ground_chart::register(reg)?;
         // Doc 20 cut SM.1 (§3.2, D-20-4): `@geology`, staff truth, in its own ReadOnly bracket.
         surface::commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
@@ -958,6 +998,40 @@ impl GameModule for TacsimRuleset {
             .map(surface::lane_geologies)
             .unwrap_or_default();
         surface::install_lane_geology(ctx.w, bodies);
+        // Doc 20 cut SM.4a (lead ruling 6): every site with a programme hull docked on its pad
+        // asks for its ground, so the surface tick warms it (RAM only; nothing with the geology
+        // layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and for the home field of that
+        // hull's ramp cell — wanted whatever the layer's state, so a far rig's way home is built
+        // at the first fire after a restart even without a key.
+        let docked_sites: Vec<(mush_core::CanonicalId, Option<(i64, i64)>)> =
+            port::coop::programme_port(ctx.w)
+                .map(|port| {
+                    port.map
+                        .hulls
+                        .iter()
+                        .filter_map(|row| {
+                            let hull = mush_core::ObjId(row.hull);
+                            match port::ship::berth_of(ctx.w, hull) {
+                                port::ship::Berth::Docked { map, def } if def.site.is_some() => {
+                                    Some((
+                                        map.entry.clone(),
+                                        surface::hull_home(ctx.w, hull).map(|(_, ramp)| ramp),
+                                    ))
+                                }
+                                port::ship::Berth::Docked { .. }
+                                | port::ship::Berth::UnderWay
+                                | port::ship::Berth::Elsewhere => None,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        for (entry, ramp) in docked_sites {
+            match ramp {
+                Some(ramp) => surface::want_home(ctx.w, &entry, ramp),
+                None => surface::want_site_ground(ctx.w, &entry),
+            }
+        }
         // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
         // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by
         // the first boot that finds no document under that key and never
@@ -1025,6 +1099,12 @@ impl GameModule for TacsimRuleset {
     /// radio. The sweep then takes anybody a restart left in a pod off their net
     /// as it gives their seat back.
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        relay_loss::boot(ctx).map_err(ModError::msg)?;
+        relay_commerce::boot(ctx).map_err(ModError::msg)?;
+        relay_billing::boot(ctx).map_err(ModError::msg)?;
+        relay_foundry::boot(ctx).map_err(ModError::msg)?;
+        relay_mobile::boot(ctx).map_err(ModError::msg)?;
+        relay_world::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

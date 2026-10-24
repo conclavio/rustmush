@@ -1,0 +1,12 @@
+{
+  "gatewayConnected": true,
+  "at": "2026-10-24T22:21:29.359843+00:00",
+  "gateway": 1269159,
+  "server": 1269171,
+  "binarySha256": "6bdf7529856b6d00d5e27027da9373f62539b7b7c4e16f2a7aa6919dcdf9f8a4",
+  "https": "200",
+  "dev2Pid": 539467,
+  "nodes": 2,
+  "pairs": 1,
+  "privatePairs": []
+}

@@ -1,0 +1,157 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T15:56:38.233Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 25,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_phobos/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_kirkwood/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_mercury/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#678=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_phobos/#678=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_kirkwood/#678=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_mercury/#678=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_phobos/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_kirkwood/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_mercury/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#677=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_phobos/#677=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 56,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_kirkwood/#677=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 77,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_mercury/#677=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 51,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #684 Lunar entanglement foundry Pressure Lobby <PL> pllobbyin winter dawn",
+      "wallMs": 52,
+      "replyBytes": 692
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "R6bob1b16df is aboard Long Vigil; it moves only between Long Vigil's rooms, or leaves through the simulation or staff recovery (@spatial).",
+      "wallMs": 51,
+      "replyBytes": 138
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R10-all-in-one-0878bd-spoke-ceres/Actual R10 traffic crossing.",
+      "reply": "MAIL: Message 189 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    }
+  ],
+  "milestones": [],
+  "mode": "all-in-one",
+  "runs": [
+    {
+      "at": "2026-10-24T15:56:38.250Z",
+      "gatewayPid": null,
+      "serverPid": 1094174,
+      "serverSha256": "72105227139a7f8196a856833609841d259def3039320dcc07fa72c86c1ad01a"
+    }
+  ],
+  "failure": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert(arrived.transit.legs.some(l=>l.pair==='luna_'+n))\n\n    at traffic (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:43:175)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:103:26"
+}

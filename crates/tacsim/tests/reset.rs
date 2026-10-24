@@ -84,7 +84,8 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
     let cfg = config();
-    let mut mods = comp::server_modules_with(
+    // Reboots audit the foundry through the inventory owner, as production does.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -100,7 +101,8 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    // Match production: load the lane catalog when applying the game boot packs.
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

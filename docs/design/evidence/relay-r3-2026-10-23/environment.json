@@ -1,0 +1,98 @@
+{
+  "at": "2026-10-24T01:42:12.267908+00:00",
+  "target": "https://conclav.io:6790",
+  "redisPort": 6788,
+  "tlsVerification": true,
+  "sourceCommit": "97b4106b7325af709b4bbfc06b1a4bbada30d92f",
+  "sourceTree": "ef856ca4c460ee344d5ed5c24d0fc0248645daa1",
+  "gatewayPid": 746698,
+  "serverPid": 747205,
+  "runtimeHashes": {
+    "server": "e181957752c3d17c0ec7711256d2fad535537d45d91922f3d9ea03ba54585671",
+    "gateway": "eb947c72c9926095e84848981d032844b770a00dd782c02f92c19dcee0b79558"
+  },
+  "runnerHashes": {
+    "relay-r3-ssh.py": "88d5d796fda48c0c10a0ca48650bdc2517cd1daa82591c3a1b0092ec6e7fa468",
+    "relay-r3-fresh.py": "477fc385fd50e56ce1add96244e50179f81d5f92536383aee9bdefc0ebd60b89",
+    "relay-r3-live.mjs": "e851f11dc4dd3e0ec8929255ab35d6ad9db947503d3a4093bce2bf348307949d"
+  },
+  "dev2Unchanged": true,
+  "dev2Pid": 539467,
+  "commandChecks": 71,
+  "latencyMs": {
+    "median": 51,
+    "max": 53
+  },
+  "maxReplyBytes": 2666,
+  "remainingPending": 0,
+  "pendingByKind": {},
+  "upgradeHadNoServiceRecord": true,
+  "maxSpentPerICSecond": 8,
+  "duplicatePairReceipts": 0,
+  "retainedReceipts": 27,
+  "retainedEvidence": 1,
+  "publishedFronts": {
+    "luna_ceres": 0
+  },
+  "policy": {
+    "aging_s": 300,
+    "burst_units": 8,
+    "bytes_per_unit": 128,
+    "deferred_min_s": 7200,
+    "short_message_bytes": 1024,
+    "standard_delay_s": 60,
+    "version": 1,
+    "window_duration_s": 3600,
+    "window_period_s": 86400,
+    "window_start_s": 0
+  },
+  "clock": {
+    "generation": 36,
+    "ic_anchor": 74167146413,
+    "rate": 24,
+    "real_anchor": 1792806047
+  },
+  "channelProgress": {
+    "cursor": [
+      8,
+      6
+    ],
+    "delivered": 34,
+    "expired": 2,
+    "refused": 4,
+    "visited": 1
+  },
+  "links": {
+    "luna_ceres": {
+      "capacity_units_per_ic_second": 8,
+      "class_policy": "exchange",
+      "halves": [
+        {
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.luna",
+          "node": "malapert",
+          "object": 666,
+          "powered": true,
+          "staffed": true
+        },
+        {
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.ceres",
+          "node": "ceres",
+          "object": 667,
+          "powered": true,
+          "staffed": true
+        }
+      ]
+    }
+  },
+  "command": "relay-r3-live.mjs https://conclav.io:6790 /opt/rustmush/dev1/r1-evidence/credentials.json /opt/rustmush/dev1/r3-evidence 6788",
+  "runnerLfHashes": {
+    "relay-r3-ssh.py": "88d5d796fda48c0c10a0ca48650bdc2517cd1daa82591c3a1b0092ec6e7fa468",
+    "relay-r3-fresh.py": "477fc385fd50e56ce1add96244e50179f81d5f92536383aee9bdefc0ebd60b89",
+    "relay-r3-live.mjs": "8b3712247139105502c05851c19af362d04b89bff833b0d9f26d9b68ffbf50e9"
+  },
+  "runnerLineEndings": "Live runner transferred as CRLF; other runners extracted as LF. Raw and LF-normalized hashes are recorded."
+}

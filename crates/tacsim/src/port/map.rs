@@ -142,16 +142,21 @@ pub struct RigRow {
 }
 
 /// **A site's row** (doc 20 cut SM.2; §3.1, §3.4): the sixteen block place
-/// Things and the site clerk the applier laid up in the site's host room. SM.6
-/// makes `tacsim.sites` their industry owner and grants the clerk; nothing is
-/// granted here.
+/// Things and the site clerk the applier laid up in the site's host room, the
+/// spoil (SM.3b) and the sixteen block vaults (SM.6). **Doc 20 cut SM.6 (D13):**
+/// `tacsim.sites` owns the block vaults and the spoil vault — the deposits'
+/// endpoints; the block place Things stay the applying actor's, as SM.2 laid them;
+/// and the clerk acts by its identity in this row, with no grant: the composed
+/// system opener admits exactly the live Thing recorded here as `clerk` of a
+/// latched site, and the site-work provider checks the same row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteRow {
     /// Block letter (`A`..=`P`) → the block's place Thing, `ObjId.0`; sixteen
     /// once complete.
     pub blocks: BTreeMap<String, u32>,
-    /// The site clerk Thing, `ObjId.0` (SM.6's opener grant names it).
+    /// The site clerk Thing, `ObjId.0` — the site's opener, by its identity here
+    /// (doc 20 cut SM.6, D13).
     pub clerk: Option<u32>,
     /// **Doc 20 cut SM.3b (§4.3; decision 6)**: the spoil Thing, `ObjId.0` — a `DARK` Thing
     /// in the host room backing the spoil vault. Skipped when absent, so a row from before
@@ -163,6 +168,12 @@ pub struct SiteRow {
     /// pools into it, conserved and unrecoverable. Skipped when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spoil_vault: Option<u64>,
+    /// **Doc 20 cut SM.6 (§3.4; D3)**: block letter → the block's vault, `VaultId.0` —
+    /// owned by `System(tacsim.sites)` with no scope, backed by `Container(block place)`,
+    /// the endpoint of the block's ≤ 4 deposits (one pool per ore good). Skipped when
+    /// empty, so a row from before the cut decodes unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vaults: BTreeMap<String, u64>,
 }
 
 /// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the
@@ -236,6 +247,11 @@ pub struct BidRow {
     /// a bid that is gone because it lapsed (re-posted by the next apply when its
     /// intake is unchanged) from one gone before it (exhausted — "not buying").
     pub expires: i64,
+    /// **Doc 20 cut SM.5 (§7.3)**: the IC instant of the row's last post, which the
+    /// intake drip (`crate::port::stock`) measures its one-a-day boundary from.
+    /// `None` on a row written before the cut, read as "a boundary has passed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posted_ic: Option<i64>,
 }
 
 impl PortMap {
@@ -284,12 +300,19 @@ pub struct PortOrgRow {
     /// completed (an apply that stopped part way); different, the entry is
     /// refused as drift — never topped up, even when the recorded tranches are
     /// a prefix of the new list (4,000,000 → 4,800,000 is five rows of 800,000
-    /// either way).
+    /// either way). Since doc 20 cut SM.5 capital is added only by an appended
+    /// raise ([`PortOrgRow::raises`]), never by a changed base.
     pub capital_major: u64,
     /// `AccountId.0`: the org's scoped `tacsim.credit` account.
     pub account: Option<u64>,
     /// The tranche obligations made so far, in tranche order.
     pub capital: Vec<TrancheRow>,
+    /// **Doc 20 cut SM.5 (§7.3)**: the capital raises the row has begun, a prefix
+    /// of the authored `PortOrgDef.raises`. The tranche schedule is
+    /// `capital_schedule(capital_major, raises)`; a later apply whose authored raises
+    /// do not extend these is refused as drift.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raises: Vec<u64>,
 }
 
 /// **One capital tranche** (D-18-14): its index in `tranches(capital_major)`,

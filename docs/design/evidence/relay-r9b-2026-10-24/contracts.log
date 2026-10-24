@@ -1,0 +1,56 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+    Finished `test` profile [unoptimized] target(s) in 29.60s
+     Running tests/legacy_handler_allowlist.rs (target/debug/deps/legacy_handler_allowlist-507e69ec0483072f)
+
+running 4 tests
+test vf_b8b_the_wo_note_records_the_money_leg ... ok
+test the_production_composition_carries_the_surface_the_allowlist_watches ... ok
+test every_registered_command_is_pinned_in_the_allowlist_with_a_category ... ok
+test vf_b8a_every_stanzas_category_matches_the_class_the_composition_publishes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/module_ns_owners.rs (target/debug/deps/module_ns_owners-6c8fd193e1f741e8)
+
+running 4 tests
+test every_declared_delegation_is_pinned_and_every_pinned_row_is_declared ... ok
+test m6_author_services_are_registered_under_the_game_owner ... ok
+test every_production_module_claims_its_own_namespace ... ok
+test booting_a_production_roster_refuses_no_module_write ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+
+     Running tests/panic_budget.rs (target/debug/deps/panic_budget-a0db3f22957f23e5)
+
+running 8 tests
+test a_ratchet_crate_cannot_be_raised_without_a_reason ... ok
+test only_a_leading_file_test_fence_exempts_an_out_of_line_module ... ok
+test only_production_code_counts_toward_the_budget ... ok
+test the_gate_names_the_crate_and_the_delta ... ok
+test bless_writes_files_the_gate_accepts_and_refuses_a_silent_ratchet_raise ... ok
+test the_walk_skips_tests_benches_and_build_scripts ... ok
+test no_profile_turns_a_world_panic_into_an_abort ... ok
+test no_crate_exceeds_its_production_panic_budget ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+     Running tests/state_slot_owners.rs (target/debug/deps/state_slot_owners-9c0d24a7b85643fa)
+
+running 5 tests
+test paired_and_triple_access_census_every_owner_argument ... ok
+test the_observed_census_is_empty_now_that_the_refusal_is_live ... ok
+test no_baselined_site_reaches_through_the_checked_accessor ... ok
+test every_production_state_slot_has_exactly_one_owner ... ok
+test every_cross_owner_state_site_is_baselined ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+
+     Running tests/unit_looks.rs (target/debug/deps/unit_looks-e9b143382e8d36d2)
+
+running 2 tests
+test every_shipped_look_parses_and_draws_distinct_units ... ok
+test every_unit_type_has_a_look_and_every_look_fits_its_units ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

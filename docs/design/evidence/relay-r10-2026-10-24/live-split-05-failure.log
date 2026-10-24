@@ -1,0 +1,5 @@
+AssertionError [ERR_ASSERTION]: @spatial/unplace #1=R10 acceptance fixture placement: #1 is not placed
+    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:99:16)
+    at async place (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:17:30)
+    at async upgrade (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:30:45)
+    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:102:20

@@ -1,0 +1,12 @@
+    Checking mush-sim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-sim)
+    Checking mush-atlas v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-atlas)
+    Checking mush-propagation v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-propagation)
+    Checking mush-campaign v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-campaign)
+    Checking mush-faction v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-faction)
+    Checking mush-worldgen v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-worldgen)
+    Checking mush-weather v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-weather)
+    Checking mush-housing v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-housing)
+    Checking mush-npc v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-npc)
+    Checking mush-tactics v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-tactics)
+    Checking tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.10s

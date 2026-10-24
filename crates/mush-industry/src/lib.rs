@@ -83,6 +83,7 @@ pub mod module;
 pub mod money;
 pub mod provider;
 pub mod record;
+pub mod seams;
 pub mod store;
 pub mod workorder;
 
@@ -92,7 +93,10 @@ pub use facility::{
     MAX_FACILITY_SLOTS, facility_capacity_key, facility_key, facility_of_key, facility_resource,
 };
 pub use facts::IndustryFactProvider;
-pub use families::{IndustryError, IndustryFamilies, claim_subject_token, marker_id};
+pub use families::{
+    IndustryError, IndustryFamilies, MAX_RECEIPT_BYTES, claim_subject_token,
+    derive_system_deposit_id, is_receipt, marker_id,
+};
 pub use licence::{ExtractionRefusal, extraction_authorized, licence_accounts};
 pub use module::{
     CLAIM_CATALOG_CODE, CLAIM_CATALOG_RULESET, IndustryHandles, IndustryModule, SWEEP_PERIOD_SECS,
@@ -102,16 +106,26 @@ pub use money::{
     AccountRefusal, HoldError, MAX_WO_SETTLE_PER_FIRE, MAX_WO_VISITED_PER_FIRE, WORK_ORDER_PURPOSE,
     wo_hold_key, wo_settle_key,
 };
-pub use provider::{IndustryVerb, action_ref, deposit_backing, deposit_of_backing};
+pub use provider::{
+    ACTION_CLAIM_TENURE, CLAIM_ADMINISTRABLE, CLAIM_CONTEST_BY, CLAIM_CONTEST_STAFF, IndustryVerb,
+    SYSTEM_OPENER, SYSTEM_OPENINGS, TENURE_ACT, TENURE_ACTOR, action_ref, deposit_backing,
+    deposit_of_backing, jurisdiction_claims,
+};
 pub use record::{
     Accessibility, AppliedMarker, BandId, ClaimId, ClaimIndex, ClaimRecord, ClaimSubject,
-    ContestState, CurvePoint, Exclusivity, ExtractionRun, FACT_EXTRACTION_CYCLED,
+    ContestState, CoolingRow, CurvePoint, Exclusivity, ExtractionRun, FACT_EXTRACTION_CYCLED,
     FACT_WORKORDER_COMPLETED, INDUSTRY_PAGE, IndustryRecordError, MAX_ACCESSIBILITY,
     MAX_APPLIED_MARKERS, MAX_BAND_BYTES, MAX_CLAIM_PRIORITY, MAX_CLAIMS_PER_SUBJECT,
-    MAX_CURVE_POINTS, MAX_CYCLE_YIELD, MAX_EXTRACTION_CYCLES, MAX_LIST_PAGES, MAX_LIST_ROWS,
-    MAX_MARKER_ID_BYTES, MAX_MARKER_PAGES, MAX_ORE_DEPOSITS_PER_PLACE, MAX_ORE_RESERVE,
-    MAX_REASON_BYTES, MAX_SURVEY_BANDS, NS, OreDeposit, OreDepositId, PlaceCensus, RunState,
-    SurveyBands, SurveyDoc, SurveyRow, Transferability, YieldCurve, owner,
+    MAX_COOLING_ROWS, MAX_CURVE_POINTS, MAX_CYCLE_YIELD, MAX_EXTERNAL_BYTES, MAX_EXTRACTION_CYCLES,
+    MAX_LIST_PAGES, MAX_LIST_ROWS, MAX_MARKER_ID_BYTES, MAX_MARKER_PAGES,
+    MAX_ORE_DEPOSITS_PER_PLACE, MAX_ORE_RESERVE, MAX_REASON_BYTES, MAX_SURVEY_BANDS, NS,
+    OreDeposit, OreDepositId, PlaceCensus, RunState, SurveyBands, SurveyDoc, SurveyRow, TenureMark,
+    TenureRecord, Transferability, YieldCurve, is_external_name, owner,
+};
+pub use seams::{
+    ActsForJurisdiction, ClaimRev, ExternalDraws, IndustryHandleCell, JurisdictionAuthority,
+    MAX_TENURE_CLAIMS, MAX_TENURE_GAME_BYTES, MAX_TENURE_SUMMARY_BYTES, SystemOpener,
+    SystemOpening, TenureAct, TenureAuthority, TenureKind, TenureOutcome,
 };
 pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine};
 pub use workorder::{

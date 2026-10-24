@@ -1,0 +1,164 @@
+{
+  "passed": true,
+  "sourceParent": "17a93c7e0885ce031cd610aeef3565963b114a4f",
+  "sourceTree": "d910a66e25f55f5ece31fcbdfb8642a118b258b3",
+  "sourceArchiveSha256": "112db4a717c83db74a0c4ec1c7238abbc26f35c633f3e3036474c3fb135368cc",
+  "linuxTests": {
+    "story-tests": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 44,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "content-tests": [
+      {
+        "passed": 36,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "metric-tests": [
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "industry-tests": [
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 41,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 44,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "core-tests": [
+      {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "contracts": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-observer": [
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 32,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-tacsim": [
+      {
+        "passed": 183,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 143,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "propagation-tests": [
+      {
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "commands": 84,
+  "sshCommands": 12,
+  "processCrashes": 9,
+  "socketLatencyMs": {
+    "median": 50.0,
+    "p95": 52,
+    "max": 204
+  },
+  "health": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "gatewayPid": 1005765,
+  "serverPid": 1005778,
+  "serverSha256": "b23b1845ded154dda7ecc3f15155e19fee1e149a766089a295e1015294680f75",
+  "gatewaySha256": "ac2216d44d36b6451975f840e1d010df50bfdb78342c7595e4522c6b53923e61",
+  "dev2": "MainPID=539467",
+  "freshDatabase": 4,
+  "retainedBaselineDatabase": 3,
+  "restoredProgramme": null,
+  "nodes": 2,
+  "pairs": 1,
+  "note": "The accepted source tree produced the release binaries and every Linux/live test. This commit will add acceptance documentation and sanitized evidence afterward. No database receipt or world-clock anchor was written by the live harness."
+}

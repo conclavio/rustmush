@@ -1,0 +1,13 @@
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized] target(s) in 8.99s
+     Running tests/relay_retro_review.rs (target/debug/deps/relay_retro_review-85b8e19803eef3f7)
+
+running 3 tests
+REVIEW: unprivileged outsider status="independent: Served."; unknown="No such public link."; one-unit traffic uses private pair without grant; two-unit traffic bypasses private pair.
+test retro_private_access_disclosure_and_size ... ok
+REVIEW: Standard two-spoke waits [(CanonicalId("luna_ceres"), 0, 60), (CanonicalId("luna_mercury"), 60, 120)]
+test retro_two_spoke_standard_waits_twice ... ok
+REVIEW: one sender's 128 reserved mail copies block unrelated orders: Transport pending queue is full; try again later.
+test retro_mail_reservations_block_other_producers ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 8.13s

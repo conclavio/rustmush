@@ -212,13 +212,164 @@ pub fn elev_at(bluff: bool, x: u16, y: u16) -> i16 {
     cm
 }
 
+/// **The fought-over ground** (doc 21 cut G.7b, version 3): the rows of the
+/// east-west road's corridor, inclusive. Version 3 leaves every cell here at
+/// version 2's height, so the musters, the road, the ford, the crossroads'
+/// Hold square and every fight the tests seed along them are unchanged.
+pub const V3_CORRIDOR: (u16, u16) = (86, 108);
+/// The cells over which version 3's landscape blends in from the preserved
+/// ground (the corridor, the north-south road, The Bluff).
+pub const V3_BLEND: f64 = 14.0;
+/// The Bluff and its ramp with a margin: version 2's to the centimetre in
+/// version 3.
+pub const V3_BLUFF_KEEP: (u16, u16, u16, u16) = (136, 152, 100, 125);
+/// **The Bowl** (version 3): an impact crater south of the crossroads —
+/// centre column, centre row, rim radius in cells.
+pub const V3_BOWL: (f64, f64, f64) = (88.0, 36.0, 18.0);
+/// **Signal Hill** (version 3): the highlands' summit — column, row.
+pub const V3_SIGNAL_HILL: (f64, f64) = (185.0, 215.0);
+
+fn smoothstep(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn sq(v: f64) -> f64 {
+    v * v
+}
+
+/// Version 3's maths goes through libm (doc 21 cut G.3b's rule): the pack
+/// is pinned byte for byte and its decimetres must not move with a
+/// platform's own last-place `exp` or `sin`.
+fn gauss(dx: f64, dy: f64, sigma: f64) -> f64 {
+    libm::exp(-(dx * dx + dy * dy) / (2.0 * sigma * sigma))
+}
+
+/// Cells from `(x, y)` to `box_`, Chebyshev; 0 inside.
+fn box_distance(x: u16, y: u16, box_: (u16, u16, u16, u16)) -> f64 {
+    let dx = f64::from(box_.0.saturating_sub(x).max(x.saturating_sub(box_.1)));
+    let dy = f64::from(box_.2.saturating_sub(y).max(y.saturating_sub(box_.3)));
+    dx.max(dy)
+}
+
+/// Version 3's landscape at a point, centimetres to add to version 2's relief:
+/// the northern highlands rising to Signal Hill (some 100 m), a knoll in the
+/// north-west, three hills in the open, The Bowl (a crater: its rim 23 m up,
+/// its floor 9 down), the river's valley, The Spine (a ridge through the
+/// eastern woods) and The Shelf (a plateau on the south-east's bare ground).
+fn v3_features(fx: f64, fy: f64) -> f64 {
+    let highlands = 3_500.0
+        * smoothstep((fy - 118.0) / 45.0)
+        * (0.65 + 0.35 * libm::sin(fx / 19.0) * libm::cos(fy / 15.0));
+    let signal = 8_000.0 * gauss(fx - V3_SIGNAL_HILL.0, fy - V3_SIGNAL_HILL.1, 20.0);
+    let knoll = 4_500.0 * gauss(fx - 40.0, fy - 225.0, 16.0);
+    let hills = 3_000.0 * gauss(fx - 205.0, fy - 128.0, 12.0)
+        + 3_500.0 * gauss(fx - 28.0, fy - 58.0, 14.0)
+        + 4_000.0 * gauss(fx - 228.0, fy - 188.0, 15.0);
+    let (bx, by, rim) = V3_BOWL;
+    let r = libm::hypot(fx - bx, fy - by);
+    let bowl = if r < rim {
+        -1_200.0 + 3_200.0 * (r / rim) * (r / rim)
+    } else {
+        2_000.0 * libm::exp(-sq((r - rim) / 9.0))
+    };
+    let valley = -1_200.0 * libm::exp(-sq((fx - 64.0) / 16.0));
+    // East of the southern compound and clear of the corridor's blend: a
+    // ridge nearer either cliffed against the compound's pad or the blend.
+    let spine = 2_000.0
+        * libm::exp(-sq((fy - 66.0) / 6.0))
+        * smoothstep((fx - 180.0) / 12.0)
+        * smoothstep((240.0 - fx) / 12.0);
+    // Edges twelve cells wide: a narrower one on the base's slope passed a
+    // tank's 45 per cent.
+    let shelf = 2_500.0
+        * smoothstep((fx - 206.0) / 12.0)
+        * smoothstep((254.0 - fx) / 12.0)
+        * smoothstep((fy + 2.0) / 12.0)
+        * smoothstep((36.0 - fy) / 12.0);
+    highlands + signal + knoll + hills + bowl + valley + spine + shelf
+}
+
+/// **Version 3's relief** (doc 21 cut G.7b, the owner's "make it the
+/// showcase"): version 2's relief ([`elev_at`] with the bluff), unchanged on
+/// the fought-over ground — the corridor ([`V3_CORRIDOR`]), the north-south
+/// road and The Bluff ([`V3_BLUFF_KEEP`]) — and a landscape
+/// ([`v3_features`]) blending in over [`V3_BLEND`] cells away from them. A
+/// building stands level: its footprint takes the landscape's height at its
+/// centre, blending to the slope round it over six cells. Decimetres.
+#[must_use]
+pub fn elev_v3(x: u16, y: u16) -> i16 {
+    let base = f64::from(elev_at(true, x, y));
+    let corridor = f64::from(
+        V3_CORRIDOR
+            .0
+            .saturating_sub(y)
+            .max(y.saturating_sub(V3_CORRIDOR.1)),
+    );
+    let road = f64::from(x.abs_diff(ROAD_NS.0 + 1)) - 1.0;
+    let keep = corridor
+        .min(road.max(0.0))
+        .min(box_distance(x, y, V3_BLUFF_KEEP));
+    let w = smoothstep(keep / V3_BLEND);
+    let (fx, fy) = (f64::from(x), f64::from(y));
+    let mut feature = v3_features(fx, fy);
+    for b in BUILDINGS {
+        let near = box_distance(
+            x,
+            y,
+            (
+                b.0.saturating_sub(2),
+                b.1 + 2,
+                b.2.saturating_sub(2),
+                b.3 + 2,
+            ),
+        );
+        let pad = v3_features(f64::from(b.0 + b.1) / 2.0, f64::from(b.2 + b.3) / 2.0);
+        let t = smoothstep(near / 6.0);
+        feature = pad + (feature - pad) * t;
+    }
+    let cm = ((base + w * feature) / 10.0).round() * 10.0;
+    #[allow(clippy::cast_possible_truncation)]
+    let cm = cm.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    cm
+}
+
+/// Which relief a pack is built with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relief {
+    /// Version 1: the seeded relief alone.
+    V1,
+    /// Version 2: and The Bluff.
+    V2,
+    /// Version 3: and the landscape (doc 21 cut G.7b).
+    V3,
+}
+
+impl Relief {
+    fn elev(self, x: u16, y: u16) -> i16 {
+        match self {
+            Relief::V1 => elev_at(false, x, y),
+            Relief::V2 => elev_at(true, x, y),
+            Relief::V3 => elev_v3(x, y),
+        }
+    }
+
+    fn version(self) -> u32 {
+        match self {
+            Relief::V1 => 1,
+            Relief::V2 => 2,
+            Relief::V3 => 3,
+        }
+    }
+}
+
 /// One quadrant's samples as base64 over little-endian signed 16-bit
 /// centimetres, the southern row first (`HeightfieldEncoding::Le16`).
-fn quadrant_le16(bluff: bool, qx: u16, qy: u16) -> String {
+fn quadrant_le16(relief: Relief, qx: u16, qy: u16) -> String {
     let mut bytes = Vec::with_capacity(usize::from(QUAD) * usize::from(QUAD) * 2);
     for y in 0..QUAD {
         for x in 0..QUAD {
-            bytes.extend_from_slice(&elev_at(bluff, qx * QUAD + x, qy * QUAD + y).to_le_bytes());
+            bytes.extend_from_slice(&relief.elev(qx * QUAD + x, qy * QUAD + y).to_le_bytes());
         }
     }
     base64_encode(&bytes)
@@ -270,6 +421,19 @@ fn quadrant_classes(qx: u16, qy: u16) -> String {
 /// `y 105..=120 < 128`).
 #[must_use]
 pub fn atlas_pack_at(bluff: bool) -> String {
+    atlas_pack_with(if bluff { Relief::V2 } else { Relief::V1 })
+}
+
+/// **Version 3, the shipped pack** (doc 21 cut G.7b): version 2's classes and
+/// Bluff under [`elev_v3`]'s landscape.
+#[must_use]
+pub fn atlas_pack_v3() -> String {
+    atlas_pack_with(Relief::V3)
+}
+
+/// The pack with `relief`; the classes and the tiles are every version's.
+#[must_use]
+pub fn atlas_pack_with(relief: Relief) -> String {
     let lo = ORIGIN_M;
     let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
     let mut entries = serde_json::Map::new();
@@ -322,7 +486,7 @@ pub fn atlas_pack_at(bluff: bool) -> String {
                         "cols": QUAD,
                         "rows": QUAD,
                         "encoding": "le16",
-                        "data": quadrant_le16(bluff, qx, qy),
+                        "data": quadrant_le16(relief, qx, qy),
                         "scale_cm": 1,
                         "datum_cm": 0,
                         "classes": quadrant_classes(qx, qy)
@@ -334,7 +498,7 @@ pub fn atlas_pack_at(bluff: bool) -> String {
     let doc = serde_json::json!({
         "manifest": {
             "id": content::PROVING_GROUND_ATLAS_PACK,
-            "version": if bluff { 2 } else { 1 },
+            "version": relief.version(),
             "kind": "region",
             "digest": UNSIGNED,
             "requires": []

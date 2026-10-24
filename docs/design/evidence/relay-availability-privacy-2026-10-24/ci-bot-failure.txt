@@ -1,0 +1,8 @@
+https://github.com/conclavio/rustmush/actions/runs/40125259513/job/120965199247
+2026-10-24T20:10:14.9763268Z test the_bot_reads_a_live_centre_over_its_own_ssh_client ... FAILED
+2026-10-24T20:10:14.9784741Z test m5rules_the_bot_reads_native_rules_over_its_own_ssh_client ... FAILED
+2026-10-24T20:10:14.9786527Z thread 'the_bot_reads_a_live_centre_over_its_own_ssh_client' (32847) panicked at crates/mush-bot/tests/support/arena.rs:277:10:
+2026-10-24T20:10:14.9787418Z module boot: "module boot failed: Fleet/Postmaster receipt missing"
+2026-10-24T20:10:14.9790259Z thread 'm5rules_the_bot_reads_native_rules_over_its_own_ssh_client' (32842) panicked at crates/mush-bot/tests/support/arena.rs:277:10:
+2026-10-24T20:10:14.9791128Z module boot: "module boot failed: Fleet/Postmaster receipt missing"
+2026-10-24T20:10:14.9793142Z test result: FAILED. 17 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.87s

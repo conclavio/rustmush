@@ -1,0 +1,13 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+    Finished `test` profile [unoptimized] target(s) in 26.09s
+     Running tests/help_commands.rs (target/debug/deps/help_commands-729693ffdbb99b0d)
+
+running 4 tests
+test the_tokenizer_reads_fences_spans_switches_and_placeholders ... ok
+test every_sim_selector_the_help_writes_is_a_registered_switch ... ok
+test every_verb_a_hint_names_is_a_registered_verb ... ok
+test every_command_shaped_token_in_the_help_is_a_registered_verb ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s

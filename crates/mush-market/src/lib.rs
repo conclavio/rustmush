@@ -183,15 +183,16 @@ pub use store::{
     NS, catalog_key, listing_key, load, owner, quote_key, source_key, vendor_key,
 };
 pub use trade::{
-    BID_LAPSED, BidSale, BidSaleRequest, CAPACITY_UNREADABLE, DEAL_WINDOW_SECS, DELIVER_LANDED,
-    DELIVER_TOO_LATE, DELIVER_UNCONFIRMED, DRAW_SETTLE_MARGIN_SECS, DRAW_TOO_LATE,
+    BID_LAPSED, BidSale, BidSaleRequest, BidTake, CAPACITY_UNREADABLE, DEAL_WINDOW_SECS,
+    DELIVER_LANDED, DELIVER_TOO_LATE, DELIVER_UNCONFIRMED, DRAW_SETTLE_MARGIN_SECS, DRAW_TOO_LATE,
     DRAW_WINDOW_SECS, GRADED_BID, HOLD_ONLY_SOURCE, HOUSE_CANNOT_PAY, MAX_LAPSED_SWEEP_PER_CALL,
     MAX_OPEN_SELLS_PER_VENDOR, NAME_SOURCE, NOT_BUYING, OVER_INTAKE, PORT_ONLY_ENDPOINT,
     QUOTE_TTL_LIVE, QUOTE_TTL_REMOTE, QuoteRequest, QuoteWindow, SALE_DISPUTE_REFUSED, SELL_BUSY,
-    SELL_NEEDS_APPROVAL, SELL_QUEUE_FULL, SELL_REMEDY, SELL_SHORT, SELL_USAGE, SELLS_NOT_BUYS,
-    SOLD_GENERIC, SOURCE_UNREADABLE, STALE_QUOTE, SaleDisputeGuard, UNFUNDED, UNSETTLEABLE,
-    WANTED_IS_A_BID, accept, accept_at, accept_into, artefact_stamp, is_current, quote,
-    restage_deliver, restage_draw, sell, sell_into_bid,
+    SELL_NEEDS_APPROVAL, SELL_NONE_HELD, SELL_PREVIEW, SELL_PREVIEW_ALL, SELL_PREVIEW_NONE,
+    SELL_QUEUE_FULL, SELL_REMEDY, SELL_SHORT, SELL_USAGE, SELLS_NOT_BUYS, SOLD_GENERIC,
+    SOURCE_UNREADABLE, STALE_QUOTE, SaleDisputeGuard, UNFUNDED, UNSETTLEABLE, WANTED_IS_A_BID,
+    accept, accept_at, accept_into, artefact_stamp, bid_take, is_current, quote, restage_deliver,
+    restage_draw, sell, sell_into_bid,
 };
 
 pub mod mind_house;

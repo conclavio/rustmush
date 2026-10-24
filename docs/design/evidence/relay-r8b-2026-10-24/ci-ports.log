@@ -1,0 +1,43 @@
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 2m 09s
+     Running tests/ports.rs (target/debug/deps/ports-fd6b9a1f8da1cc30)
+
+running 21 tests
+test ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic ... ok
+test ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write ... ok
+test ic14_the_marker_headroom_pages_once_past_three_quarters_and_never_gates ... ok
+test ic3_a_cancelled_tranche_reads_missing_not_pending ... ok
+test ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made ... ok
+test ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once ... ok
+test ic3_a_corrupt_port_map_refuses_re_creation ... ok
+test ic3_a_kept_world_with_eight_windows_open_still_applies_the_lane ... ok
+test ic3_a_map_that_stopped_part_way_is_completed ... ok
+test ic3_a_second_boot_posts_nothing ... ok
+test ic3_a_world_on_lane_v1_takes_v2_by_the_shelf ... ok
+test ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row ... ok
+test ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital ... ok
+test ic3_boot_opens_two_passive_domains_into_the_galleries ... ok
+test ic3_a_mint_cap_below_a_tranche_refuses_the_lane_before_anything_is_made ... ok
+test ic3_port_entries_refuse_what_the_applier_cannot_bind ... ok
+test ic3_the_ic_return_table_agrees_with_the_port_entries ... ok
+test ic3_credit_reads_posted_held_and_available ... ok
+test ic3_the_applier_ensures_the_credit_without_the_sheet ... ok
+test ic3_the_readiness_report_lists_every_binding_and_flags_the_rate ... ok
+test ic3_an_update_reuses_every_map_row_and_refuses_drift ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 59.12s

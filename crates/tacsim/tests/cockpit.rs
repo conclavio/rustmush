@@ -69,7 +69,8 @@ fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    // Reboots audit the foundry through the inventory owner, as production does.
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -85,7 +86,8 @@ fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    // Match production: load the lane catalog when applying the game boot packs.
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }
@@ -2538,6 +2540,8 @@ mod fixture {
     pub fn frame() -> Frame {
         Frame {
             unit: UNIT,
+            unit_type: "tacsim.unit.line_tank".into(),
+            sensor_height_cm: 150,
             callsign: Designator::Slot {
                 team: Team::Red,
                 slot: 1,
@@ -2604,6 +2608,7 @@ mod fixture {
                     aspect: Aspect::Left,
                     reads_dead: Some(false),
                     fatal: Some(vec![SmolStr::new_static("hull")]),
+                    unit_type: Some("tacsim.unit.line_tank".into()),
                 },
                 // Classified friendly off the mesh: no reading at all, which is
                 // what keeps its chassis out of `scan_tables`.
@@ -2625,6 +2630,7 @@ mod fixture {
                     aspect: Aspect::Front,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: Some("tacsim.unit.line_tank".into()),
                 },
                 // Unknown, standing ON the building block inside the window: its
                 // marker overwrites the wall glyph.
@@ -2644,6 +2650,7 @@ mod fixture {
                     aspect: Aspect::Front,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: None,
                 },
                 // Unknown, plotted north of the window: on `CONTACTS`, not on
                 // the map, and the reason `VIEW` says its one line.
@@ -2661,6 +2668,7 @@ mod fixture {
                     aspect: Aspect::Rear,
                     reads_dead: Some(false),
                     fatal: None,
+                    unit_type: None,
                 },
             ],
             scan_tables: vec![vec![
@@ -4432,6 +4440,7 @@ async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
         aspect: tacsim::arena::perception::Aspect::Front,
         reads_dead: None,
         fatal: None,
+        unit_type: None,
     };
     let friend = row(
         0xa1a1_a1a1_a1a1_a1a1,

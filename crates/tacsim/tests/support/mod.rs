@@ -45,6 +45,9 @@
 pub mod yard;
 
 mod api4_identity;
+/// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
+/// fixed gateway-account oracle and the deposit-count rig's three geology tables.
+pub mod claims;
 /// **16b cut AE.1**: the proving ground's generator, moved here from
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).
@@ -52,12 +55,19 @@ pub mod ground;
 /// **17b cut M5.1**: the holdings seam's test provider — Standard Doctrine and
 /// two scripted fixture minds, installed through the production seam.
 pub mod holdings;
+/// **Doc 20 cut SM.5**: a prospecting licence bought through `+licence/buy go`, for every
+/// suite whose pilots lease a rig.
+pub mod licence;
 /// **Doc 19 cut A.8**: the moon ports stripped away for the v7-shaped lane variants.
 pub mod moon;
+/// **Doc 20 cut SM.5**: the ore bids, the fixed references, the licence block and
+/// Occator's raise stripped away for the v10-shaped lane variants.
+pub mod ore;
 pub mod rig;
 pub mod scripted;
 pub use api4_identity::Api4SealHashControl;
-/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants.
+/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants; since
+/// SM.6 also the helpers that open a keyed site.
 pub mod sites;
 /// **Doc 20 cut SM.3a**: Occator's rigs and the refit row stripped away for the v9-shaped
 /// lane variants.
@@ -451,7 +461,8 @@ pub fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
         &mush_config::config::NpcCfg::default(),
     ));
     mods.extend(comp::sheet_modules(&onboarding, &game));
-    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
+    // Match production: load the lane catalog when applying the game boot packs.
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     // `[game].starter_area` off: the arena's ground is in a region of its own and
     // the shipped lot would only add rooms no window must anchor on.
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
@@ -1353,6 +1364,67 @@ pub fn with_ctx<T>(tw: &mut TestWorld, f: impl FnOnce(&mut mush_core::Ctx<'_>) -
         typed_state: mush_core::ModuleActionState::unavailable(),
     };
     f(&mut ctx)
+}
+
+/// **Staff place `tv` `Direct` on `domain` at site cell `(x, y)`'s centre, facing south, and hand
+/// back the placement's persisted writes** (doc 20 cut SM.11; the lead's pre-commit round, item 5,
+/// the judge's T15): [`with_ctx`] drops its outbox, so a staff placement's recovery-ledger append
+/// never reaches a test's store and a reboot would come back with the placement missing. The
+/// caller folds the world's own module ops first, then these (`claims.rs`'s and `plans.rs`'s
+/// `to_cell`, which moved here from `claims.rs`'s `to_cell_on`).
+pub fn place_keeping(
+    tw: &mut TestWorld,
+    domain: mush_sim::DomainId,
+    tv: mush_core::ObjId,
+    (x, y): (i64, i64),
+) -> Vec<mush_core::ModuleOp> {
+    place_cm_keeping(tw, domain, tv, (x * 1_000 + 500, y * 1_000 + 500))
+}
+
+/// The same durable placement at exact centimetre coordinates (including ramps).
+pub fn place_cm_keeping(
+    tw: &mut TestWorld,
+    domain: mush_sim::DomainId,
+    tv: mush_core::ObjId,
+    (x, y): (i64, i64),
+) -> Vec<mush_core::ModuleOp> {
+    let mut out = mush_core::Outbox::new();
+    let placed = {
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: None,
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+            .map_err(|e| e.to_string())
+            .expect("a posture");
+        mush_sim::place(
+            &mut ctx,
+            tv,
+            domain,
+            mush_sim::data::Pose {
+                x_cm: x,
+                y_cm: y,
+                z_cm: 0,
+                heading_mdeg: 180_000,
+                posture,
+            },
+        )
+    };
+    placed.expect("staff place the rig");
+    out.take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The cell centre, pose-wise, that the proving ground authors for one slot id
@@ -2517,4 +2589,27 @@ pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
         })
         .unwrap_or(0);
     (fns.len(), depth, widest, width)
+}
+
+/// Historical/operator-edited lanes do not satisfy the full star's exact lane
+/// digest. Keep their old Luna-Ceres seed while testing the lane's own upgrade
+/// and refusal paths; full-star migration is covered by production relay stories.
+pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack> {
+    assert_eq!(
+        lane.manifest().id().as_str(),
+        tacsim::definitions::content::LANE_PACK
+    );
+    let mut packs = tacsim::composition::boot_pack_list(true, true).expect("the boot list");
+    let slot = packs
+        .iter_mut()
+        .find(|p| p.manifest().id() == lane.manifest().id())
+        .expect("lane in boot order");
+    *slot = lane;
+    let relay = packs
+        .iter_mut()
+        .find(|p| p.manifest().id().as_str() == "tacsim.relay.luna_ceres")
+        .expect("relay in boot order");
+    *relay = mush_content::load_pack(tacsim::relay_content::HISTORICAL_JSON)
+        .expect("historical relay verifies");
+    packs
 }

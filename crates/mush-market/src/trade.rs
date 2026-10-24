@@ -1565,9 +1565,20 @@ pub const HOUSE_CANNOT_PAY: &str = "That house cannot pay for that right now. No
 /// The lot arm named a listing that is an ask, not a bid (cut IC10).
 pub const SELLS_NOT_BUYS: &str =
     "That listing is for sale, not a bid; +market/sell sells only into a bid.";
-/// The `+market/sell` grammar (cut IC10).
-pub const SELL_USAGE: &str =
-    "Usage: +market/sell <listing>=<qty> [from=<vault>], or +market/sell <object>=<vendor>.";
+/// The `+market/sell` grammar (cut IC10; doc 20 cut SM.5 adds the bare preview and
+/// `=all`).
+pub const SELL_USAGE: &str = "Usage: +market/sell <listing> to see what a bid takes, +market/sell <listing>=<qty>|all [from=<vault>] to sell into it, or +market/sell <object>=<vendor>.";
+/// **The bare preview's first line** (doc 20 cut SM.5, §7.2): `{listing}`, `{name}`,
+/// `{house}`, `{remaining}` (the bid's unfilled intake), `{price}`, `{held}`.
+pub const SELL_PREVIEW: &str =
+    "#{listing} {name}: {house} wants {remaining} more at {price} each; you hold {held} there.";
+/// The preview's second line when `=all` would sell something: `{listing}`, `{take}`,
+/// `{gross}`.
+pub const SELL_PREVIEW_ALL: &str = "+market/sell {listing}=all sells {take} for {gross}.";
+/// The preview's second line when `=all` would sell nothing.
+pub const SELL_PREVIEW_NONE: &str = "+market/sell {listing}=all would sell nothing now.";
+/// `=all` with nothing held at the source (doc 20 cut SM.5).
+pub const SELL_NONE_HELD: &str = "You have none of that there to sell, so nothing was sold.";
 /// The market's own sale line when no proceeds policy speaks (cut IC10). `{cuts}` is
 /// `"; {label} {amount}"` per cut, and empty with none.
 pub const SOLD_GENERIC: &str = "Sold {qty} × {name} to {shop} at {price} each: {gross}{cuts}; you receive {net} when the goods are in.";
@@ -1729,6 +1740,178 @@ fn sale_name(quote: QuoteId, listing: ListingId, memo: Option<&SmolStr>) -> Smol
     }
 }
 
+/// **What the seller holds for sale at `source`** (cut IC10's step 11, factored by doc
+/// 20 cut SM.5 so the sale and its preview read it one way): the source pool of
+/// `commodity` less every sale from it still in flight (`delivery_pending`).
+///
+/// # Errors
+///
+/// [`SOURCE_UNREADABLE`] when the pool cannot be read — refused, never read as zero.
+fn held_for_sale(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+    source: mush_inventory::EndpointRef,
+    commodity: &mush_core::CanonicalId,
+) -> Result<u64, MarketError> {
+    let Ok(pool) = crate::lot::pool_available(ctx, source, commodity) else {
+        return Err(MarketError::bad(SOURCE_UNREADABLE));
+    };
+    let seller = PrincipalId::Object(actor);
+    let in_flight = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| {
+            s.quotes_of_seller(&seller)
+                .filter(|q| {
+                    q.lot
+                        .as_ref()
+                        .is_some_and(|l| l.source.0 == source && l.commodity.0 == *commodity)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|q| delivery_pending(ctx, q))
+        .fold(0_u64, |sum, q| sum.saturating_add(q.quantity));
+    Ok(pool.saturating_sub(in_flight))
+}
+
+/// What a sale into a standing bid could take now (doc 20 cut SM.5, §7.2): read-only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BidTake {
+    /// The bid listing.
+    pub listing: ListingId,
+    /// The good's name as the listing line prints it.
+    pub name: String,
+    /// The house's name (the vendor's shop name).
+    pub house: String,
+    /// The bid's price per unit.
+    pub price: Amount,
+    /// The bid's unfilled intake (its listing quantity).
+    pub remaining: u64,
+    /// What the seller holds for sale at the source (pool less in-flight sales).
+    pub held: u64,
+    /// How many whole units the house can fund at the price.
+    pub house_units: u64,
+    /// The source the sale would default to (or the one named).
+    pub source: mush_inventory::EndpointRef,
+}
+
+impl BidTake {
+    /// What `=all` sells: `min(remaining, held, house_units)`.
+    #[must_use]
+    pub fn take(&self) -> u64 {
+        self.remaining.min(self.held).min(self.house_units)
+    }
+}
+
+/// **What a sale into a standing bid could take now** (doc 20 cut SM.5, §7.2; lead
+/// ruling 8): exactly [`sell_into_bid`]'s read-only steps 1 (the listing, viewable,
+/// a bid), 2 (the house trades), 3 (the deadline), 5 (the grade floor), 7 (the
+/// source, named or the gate's placement, held by the seller), 8 (the presence gate
+/// and the hold-only rule) and 11 (the pool less every in-flight sale), with the same
+/// refusals — so a preview never says more than a sale would — and the house's
+/// fundable units from its available funds over the price. Writes nothing.
+///
+/// # Errors
+///
+/// [`MarketError`], exactly as [`sell_into_bid`] refuses at those steps.
+pub fn bid_take(
+    ctx: &Ctx<'_>,
+    listing: ListingId,
+    source: Option<mush_inventory::EndpointRef>,
+    presence: crate::module::Presence,
+) -> Result<BidTake, MarketError> {
+    let actor = ctx.actor;
+    // 1.
+    let Some(listing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    if !may_view_listing(ctx.w, actor, &listing) {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    let Supply::Wanted {
+        vault,
+        commodity,
+        min_grade,
+    } = listing.source.clone()
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    let commodity = commodity.0;
+    // 2.
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(listing.vendor).cloned())
+    else {
+        return Err(MarketError::bad(NOT_BUYING));
+    };
+    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(NOT_BUYING));
+    }
+    // 3.
+    if crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
+        return Err(MarketError::bad(BID_LAPSED));
+    }
+    // 5.
+    if min_grade > 0 {
+        return Err(MarketError::bad(GRADED_BID));
+    }
+    // 7.
+    let gate = crate::module::venue_gate(ctx.w);
+    let Some(source) = source.or_else(|| {
+        gate.as_ref()
+            .and_then(|g| g.endpoint_for(ctx.w, actor, &listing.market, presence))
+    }) else {
+        return Err(MarketError::bad(NAME_SOURCE));
+    };
+    if !mush_inventory::may_take(ctx.w, actor, source) || source.vault() == vault {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    // 8.
+    if let Some(gate) = &gate {
+        gate.admit(ctx.w, actor, &listing.market, Some(source), presence)
+            .map_err(|r| MarketError::bad(r.line))?;
+        if gate.port_seller(ctx.w, &listing.market, &listing.seller)
+            && !gate.governed(ctx.w, source)
+        {
+            return Err(MarketError::bad(HOLD_ONLY_SOURCE));
+        }
+    }
+    // 11.
+    let held = held_for_sale(ctx, actor, source, &commodity)?;
+    // The house's fundable units (step 10's funds, read as a count).
+    let price = listing.price.minor();
+    let house_units = match available_of(ctx, vendor.account) {
+        Some(available) if price > 0 && available > 0 => {
+            u64::try_from(available / price).unwrap_or(0)
+        }
+        _ => 0,
+    };
+    // The listing line's own name: the catalogue entry's, else its code.
+    let name = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.entry_of(&listing.catalog).map(|e| e.name.to_string()))
+        .unwrap_or_else(|| listing.catalog.code.to_string());
+    Ok(BidTake {
+        listing: listing.id,
+        name,
+        house: vendor.name.to_string(),
+        price: listing.price,
+        remaining: listing.quantity,
+        held,
+        house_units,
+        source,
+    })
+}
+
 /// **The one sale-into-a-bid path** (doc 18 §4.3 "Bids that take real lots", D-18-26;
 /// cut IC10): the typed `+market/sell <listing>=<qty>` with `Presence::Here`, and IC11's
 /// executor with `Presence::Ship(hull)` and `source: None` (lead ruling (c)).
@@ -1856,28 +2039,8 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         return Err(MarketError::bad(UNFUNDED));
     }
     // 11. Over-selling: the pool, less every sale from it still in flight.
-    let Ok(pool) = crate::lot::pool_available(ctx, source, &commodity) else {
-        return Err(MarketError::bad(SOURCE_UNREADABLE));
-    };
+    let held = held_for_sale(ctx, actor, source, &commodity)?;
     let seller = PrincipalId::Object(actor);
-    let in_flight = ctx
-        .w
-        .module_state::<MarketStore>()
-        .map(|s| {
-            s.quotes_of_seller(&seller)
-                .filter(|q| {
-                    q.lot
-                        .as_ref()
-                        .is_some_and(|l| l.source.0 == source && l.commodity.0 == commodity)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|q| delivery_pending(ctx, q))
-        .fold(0_u64, |sum, q| sum.saturating_add(q.quantity));
-    let held = pool.saturating_sub(in_flight);
     if held < quantity {
         return Err(MarketError::bad(
             SELL_SHORT

@@ -2130,6 +2130,12 @@ pub struct FrameContact {
     /// equality, so doc 17 §17's divergence (4) is measured honestly in 17b cut
     /// M1a.6 and is expected to count nought — declared, not hidden.
     pub reads_dead: Option<bool>,
+    /// **The target's unit type** (doc 22 D-22-5, the owner's ruling of
+    /// 2026-10-22): its definition id, from the moment the contact is
+    /// classified — with its team — and `None` before. It names the look a
+    /// renderer draws the contact with; the section **condition** still waits on
+    /// a close reading ([`FrameContact::condition`]).
+    pub unit_type: Option<SmolStr>,
     /// **The section words of the target's chassis whose destruction kills
     /// it**, in section order (17b cut M1a.3; departure (j)), present only
     /// beside a held reading ([`FrameContact::condition`] is `Some`) and
@@ -2418,6 +2424,7 @@ impl FrameContact {
             aspect,
             reads_dead,
             fatal,
+            unit_type,
         } = self;
         let FrameContact {
             id: their_id,
@@ -2433,6 +2440,7 @@ impl FrameContact {
             aspect: their_aspect,
             reads_dead: their_reads_dead,
             fatal: their_fatal,
+            unit_type: their_unit_type,
         } = other;
         id == their_id
             && designator == their_designator
@@ -2445,6 +2453,7 @@ impl FrameContact {
             && aspect == their_aspect
             && reads_dead == their_reads_dead
             && fatal == their_fatal
+            && unit_type == their_unit_type
             && age_key(*age_ms, pass_ms) == age_key(*their_age_ms, pass_ms)
             && (!locked || lock_range_step_m(*age_ms) == lock_range_step_m(*their_age_ms))
             && match (condition, their_condition) {

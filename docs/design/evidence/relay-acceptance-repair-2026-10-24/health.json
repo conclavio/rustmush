@@ -1,0 +1,25 @@
+{
+  "atUtc": "2026-10-24T19:22:44Z",
+  "services": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "httpsReady": true,
+  "gatewayPid": 1144267,
+  "serverPid": 1144279,
+  "serverSha256": "fdac539098a6d83ca4f0fb2c89d44b632c7529ba7ac0e3617b4554a2a4686316",
+  "gatewaySha256": "c53d95967583e1d3cbd7033a9f53dd341881a00c47b0a7ca149bc24ef6170f14",
+  "dev2": "MainPID=539467",
+  "dev2Before": "MainPID=539467",
+  "restoredBaseline": {
+    "laneVersion": 12,
+    "relayVersion": 1,
+    "nodes": 2,
+    "pairs": 1,
+    "mobile": null,
+    "terms": null,
+    "manufacturedMachines": 0
+  },
+  "baselineDatabase": 3,
+  "note": "Original verified pre-R9b baseline restored with original expiry deadlines; normal R10 boot adds geography while lane/relay upgrades stay explicit."
+}

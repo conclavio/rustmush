@@ -1,0 +1,216 @@
+{
+  "brief": {
+    "prose": "The Mercury stub completes the authored public star. It does not add a player trade port or a half at another inner-system body."
+  },
+  "entries": {
+    "exit.relay": {
+      "def": {
+        "from": "room.counter",
+        "lock": "staff",
+        "names": [
+          "Mercury Relay Chamber;relay",
+          "Solar Authority Message Office;counter"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.relay"
+      },
+      "kind": "exit"
+    },
+    "locality.compound": {
+      "def": {
+        "footprint": [
+          [
+            100,
+            100
+          ],
+          [
+            140,
+            100
+          ],
+          [
+            140,
+            125
+          ],
+          [
+            100,
+            125
+          ]
+        ],
+        "kind": "facility",
+        "name": "Solar Authority Relay Stub",
+        "region": "region.mercury_relay"
+      },
+      "kind": "locality"
+    },
+    "neighborhood": {
+      "def": {
+        "footprint": [
+          [
+            100,
+            100
+          ],
+          [
+            140,
+            100
+          ],
+          [
+            140,
+            125
+          ],
+          [
+            100,
+            125
+          ]
+        ],
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "locality": "locality.compound",
+        "name": "Solar Authority Relay Stub",
+        "region": "region.mercury_relay",
+        "representation": "authored",
+        "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 2,
+          "target": 2
+        },
+        "setting": "station"
+      },
+      "kind": "neighborhood"
+    },
+    "room.counter": {
+      "def": {
+        "access": "public",
+        "desc": "A cooled office holds a message terminal and the published Exchange tariffs. The Solar Authority's charter plate names Luna as the sole paired destination. This outpost is a strategic communications stub.",
+        "details": {
+          "charter": "Concord-chartered neutral common carrier under the 2312 Settlement. Every suspension names its principal and reason; independent sanctions survive an arrears cure.",
+          "tariffs": "Published service terms are available with +relay. All mail is IC and transits. Standard pays the declared wait; Priority and Sovereign wait for capacity; Deferred waits for an off-peak window."
+        },
+        "footprint": {
+          "rect": [
+            [
+              100,
+              100
+            ],
+            [
+              120,
+              125
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Solar Authority Message Office",
+        "short_desc": "Solar Authority Message Office.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.relay": {
+      "def": {
+        "access": "restricted",
+        "desc": "A compact cradle occupies a cooled recess behind the service barrier. Its power and staff registers belong to the Exchange. The destination plate reads MALAPERT; there is no second link.",
+        "footprint": {
+          "rect": [
+            [
+              120,
+              100
+            ],
+            [
+              140,
+              125
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Mercury Relay Chamber",
+        "short_desc": "Mercury Relay Chamber.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "site.compound": {
+      "def": {
+        "footprint": [
+          [
+            100,
+            100
+          ],
+          [
+            140,
+            100
+          ],
+          [
+            140,
+            125
+          ],
+          [
+            100,
+            125
+          ]
+        ],
+        "name": "Solar Authority Relay Stub",
+        "site_kind": "relay_compound"
+      },
+      "kind": "site"
+    },
+    "structure.compound": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 4,
+            "index": 0,
+            "name": "Exchange Deck",
+            "z_offset_m": 0
+          }
+        ],
+        "footprint": [
+          [
+            100,
+            100
+          ],
+          [
+            140,
+            100
+          ],
+          [
+            140,
+            125
+          ],
+          [
+            100,
+            125
+          ]
+        ],
+        "site": "site.compound"
+      },
+      "kind": "structure"
+    }
+  },
+  "manifest": {
+    "digest": "511d9a2997a9c1a05e9249639a680496fdf1439a8777124b7187150bf823ac49",
+    "id": "neighborhood.mercury_relay",
+    "kind": "neighborhood",
+    "requires": [
+      {
+        "id": "region.mercury_relay",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

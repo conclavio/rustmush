@@ -2059,6 +2059,44 @@ fn vf_c12_a_truncated_endpoint_set_is_declared_not_silent() {
     );
 }
 
+/// Doc 20 cut SM.6 (review F2): a machine's vault never pushes a held one out of
+/// the capped list. A world that lays more system-owned vaults than the cap
+/// BEFORE a held vault exists (the lane's 96 block vaults, then a hull's hold)
+/// still lists the held vault for staff, first; machine vaults fill the room
+/// left, in id order, and the truncation is still declared.
+#[test]
+fn sm6_a_held_vault_is_listed_before_any_machine_vault() {
+    let (mut world, _families) = econ_rig();
+    let mut machines = Vec::new();
+    for index in 0..(mush_inventory::MAX_ENDPOINT_CHOICES + 4) {
+        let name = format!("machine{index}");
+        let created = world.run(GOD, &format!("@create {name}"));
+        let object = number_after(&created, "(#").expect("the created object's id");
+        let out = world.run(
+            GOD,
+            &format!("@vault/create {name}=container:#{object} owner=sys:test.machines"),
+        );
+        machines
+            .push(VaultId(number_after(&out, "vault #").unwrap_or_else(
+                || panic!("machine vault id: {:?}", rendered(&out)),
+            )));
+    }
+    let held = make_vault(&mut world, "hold", None);
+    assert!(
+        machines.iter().all(|machine| *machine < held.vault()),
+        "every machine vault was made first"
+    );
+    let live = mush_inventory::live_endpoints(world.world(), GOD);
+    assert_eq!(live.len(), mush_inventory::MAX_ENDPOINT_CHOICES);
+    assert_eq!(live.first(), Some(&held.vault()), "the held vault first");
+    assert_eq!(
+        &live[1..],
+        &machines[..mush_inventory::MAX_ENDPOINT_CHOICES - 1],
+        "then the machines, lowest first"
+    );
+    assert!(mush_inventory::endpoints_truncated(world.world(), GOD));
+}
+
 #[test]
 fn vf_r2_a_revision_mismatched_pair_is_quarantined_and_paged() {
     let (mut world, families) = boot();

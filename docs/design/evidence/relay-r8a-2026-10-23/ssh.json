@@ -1,0 +1,39 @@
+{
+  "passed": true,
+  "transport": "SSH :6789, play front door, in-band login",
+  "channel": null,
+  "checks": [
+    {
+      "command": "+relay",
+      "reply": "+relay\r\nRelay board v1: explicit operator grants are noncommercial courtesy. One\r\nmessage-unit = 128 content bytes; short limit 1024 bytes.\r\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit\r\nper recipient copy. New traffic defaults to free Deferred. +relay/outbox;\r\n+relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel\r\nquote; +relay/purchases. One charge across Exchange hops; release before use, no\r\nrefund after first transmission.\r\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60\r\nIC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC\r\nseconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst\r\n8 units.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/purchases",
+      "reply": "+relay/purchases\r\nQuote 5: envelope 408 to #679; 38 content bytes / 1 units; Priority at 5.00\r\ncr/unit = 5.00 cr from account 26; tariff v1. Released; quote until IC\r\n74168281684, unsent release IC 74168367484. First Exchange transmission consumes\r\nthe whole fee; no later refund.\r\nQuote 4: envelope 408 to #679; 38 content bytes / 1 units; Standard at 1.00\r\ncr/unit = 1.00 cr from account 26; tariff v1. Released; quote until IC\r\n74168281684, unsent release IC 74168367484. First Exchange transmission consumes\r\nthe whole fee; no later refund.\r\nQuote 3: envelope 404 to #1; 147 content bytes / 2 units; Standard at 1.00\r\ncr/unit = 2.00 cr from account 26; tariff v1. Consumed; quote until IC\r\n74168281586, unsent release IC 74168367386. First Exchange transmission consumes\r\nthe whole fee; no later refund.\r\nQuote 2: envelope 405 to #679; 147 content bytes / 2 units; Standard at 1.00\r\ncr/unit = 2.00 cr from account 26; tariff v1. Consumed; quote until IC\r\n74168281586, unsent release IC 74168367386. First Exchange transmission consumes\r\nthe whole fee; no later refund.\r\nQuote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00\r\ncr/unit = 10.00 cr from account 26; tariff v1. Consumed; quote until IC\r\n74168281576, unsent release IC 74168367376. First Exchange transmission consumes\r\nthe whole fee; no later refund.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/buy 99999999",
+      "reply": "+relay/buy 99999999\r\nNo such quote.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/status luna_ceres",
+      "reply": "+relay/status luna_ceres\r\nluna_ceres: Served.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/policy luna_ceres/#1=suspended,operator.bad,Unauthorized",
+      "reply": "+relay/policy luna_ceres/#1=suspended,operator.bad,Unauthorized\r\nPermission denied.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/load luna_ceres",
+      "reply": "+relay/load luna_ceres\r\nPermission denied.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "+relay/discover luna_ceres",
+      "reply": "+relay/discover luna_ceres\r\nPermission denied.\r\n__R8a_SSH_DONE__\r\n"
+    },
+    {
+      "command": "pub R8a SSH OOC immediate",
+      "reply": "pub R8a SSH OOC immediate\r\n[Public] R6bob1b16df: R8a SSH OOC immediate\r\n__R8a_SSH_DONE__\r\n"
+    }
+  ]
+}

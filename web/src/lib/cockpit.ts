@@ -458,6 +458,10 @@ export interface CockpitFrame {
   /** The hull's sealed mind (17b cut M5.4's key, decoded by 17b cut M5.5), or
    * `null` — a hull no seal reached, and an older server. */
   mind: CockpitMind | null;
+  /** The platform's own unit type, its definition id (doc 22) — which look
+   * its doll is drawn from — or `null` from an older server. Never a secret
+   * from its pilot. */
+  unit_type: string | null;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -1015,6 +1019,8 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     odds_floor_permille: optInt(data.odds_floor_permille),
     // 17b cut M5.5 (the key is 17b cut M5.4's).
     mind: decodeMind(data.mind),
+    // Doc 22 cut U.4.
+    unit_type: optStr(data.unit_type, 64),
   };
 }
 

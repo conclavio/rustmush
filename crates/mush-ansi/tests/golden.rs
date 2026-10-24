@@ -433,6 +433,7 @@ fn roll_line_renders_as_is_with_the_marker_styled() {
 
 fn channel(kind: NarrativeKind, title: Option<&str>, text: &str) -> OutputEvent {
     OutputEvent::Channel {
+        epoch: None,
         channel: "pub".into(),
         seq: 1,
         actor: nick(),
@@ -747,6 +748,7 @@ fn hello_session_info_reply_golden() {
         server: "rustmush 0.1".into(),
         features: vec!["channels".into()],
         panels: vec![],
+        asset_pack: None,
     };
     assert_eq!(
         rendered_str(&hello, ColorDepth::None, 0),
@@ -897,6 +899,7 @@ fn all_variant_events() -> Vec<OutputEvent> {
             server: "rustmush 0.1".into(),
             features: vec![],
             panels: vec![],
+            asset_pack: None,
         },
         OutputEvent::SessionInfo {
             character: nick(),

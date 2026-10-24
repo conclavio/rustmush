@@ -1,0 +1,373 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.halcyon",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "a45e9c6ce55fe0fa169d5a1850e38a89f321cb7d70a981fc2f42f476227a0f8f",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.unit.halcyon": {
+      "kind": "unit",
+      "def": {
+        "label": "Halcyon-class relief cruiser",
+        "class": "capital",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 1200
+              },
+              {
+                "id": "left",
+                "armor": 900
+              },
+              {
+                "id": "right",
+                "armor": 900
+              },
+              {
+                "id": "rear",
+                "armor": 700
+              },
+              {
+                "id": "top",
+                "armor": 800
+              }
+            ],
+            "internals": 12000,
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
+          },
+          {
+            "id": "power",
+            "facets": [],
+            "struck_through": {
+              "section": "hull",
+              "facet": "rear"
+            },
+            "internals": 3000,
+            "consequences": [
+              {
+                "kind": "disable_motion"
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "power",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ],
+              "initial": "online"
+            }
+          },
+          {
+            "id": "relay",
+            "section": "power",
+            "role": {
+              "kind": "relay",
+              "radius_km": 300000,
+              "room": "relay"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 0,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 1000,
+            "reverse_factor_pct": 0
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 100
+              }
+            ]
+          }
+        ],
+        "silhouettes": [
+          {
+            "band": "front",
+            "width_cm": 7000,
+            "height_cm": 6000
+          },
+          {
+            "band": "left",
+            "width_cm": 26000,
+            "height_cm": 6000
+          },
+          {
+            "band": "right",
+            "width_cm": 26000,
+            "height_cm": 6000
+          },
+          {
+            "band": "rear",
+            "width_cm": 7000,
+            "height_cm": 6000
+          },
+          {
+            "band": "top",
+            "width_cm": 26000,
+            "height_cm": 7000
+          }
+        ],
+        "sensor_height_cm": 5500,
+        "logistics": {
+          "dry_mass_t": 4000,
+          "stowage": {
+            "cargo": {
+              "accepts": [
+                "stow.bulk"
+              ],
+              "limits": {
+                "si.mass_kg": 100000,
+                "si.volume_l": 120000
+              }
+            },
+            "propellant": {
+              "accepts": [
+                "stow.propellant"
+              ],
+              "limits": {
+                "si.mass_kg": 1800000
+              }
+            },
+            "provisions": {
+              "accepts": [
+                "stow.provisions"
+              ],
+              "limits": {
+                "si.mass_kg": 4800,
+                "si.volume_l": 12000
+              }
+            }
+          },
+          "berths": 8,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 1920000,
+          "drive": {
+            "class": "coast_hauler",
+            "law": {
+              "flip": {
+                "accel_mg": 50,
+                "exhaust_kms": 6000
+              }
+            }
+          }
+        },
+        "interior": {
+          "space": "airlock",
+          "store": "stowage",
+          "berths_slot": {
+            "id": "berths",
+            "maximum_items": 8
+          },
+          "rooms": [
+            {
+              "id": "airlock",
+              "name": "Fleet Airlock",
+              "kind": "walkable",
+              "short_desc": "An eight-place naval transfer lock, pressure doors dogged in sequence.",
+              "desc": "An eight-place naval transfer lock, pressure doors dogged in sequence."
+            },
+            {
+              "id": "passage",
+              "name": "Service Trunk",
+              "kind": "walkable",
+              "short_desc": "A wide service trunk joins the watch stations. Pipes carry Fleet inspection bands.",
+              "desc": "A wide service trunk joins the watch stations. Pipes carry Fleet inspection bands."
+            },
+            {
+              "id": "bridge",
+              "name": "Fleet Bridge",
+              "kind": "walkable",
+              "short_desc": "Acceleration couches surround a passage console. The filed ticket, tankage and relief orders are visible here.",
+              "desc": "Acceleration couches surround a passage console. The filed ticket, tankage and relief orders are visible here."
+            },
+            {
+              "id": "crew",
+              "name": "Watch Quarters",
+              "kind": "walkable",
+              "short_desc": "Eight watch bunks surround a compact mess, water still and labelled provision lockers.",
+              "desc": "Eight watch bunks surround a compact mess, water still and labelled provision lockers."
+            },
+            {
+              "id": "hold",
+              "name": "Stores Deck",
+              "kind": "walkable",
+              "short_desc": "A hundred-tonne stores deck with calibrated load cells and numbered restraint frames.",
+              "desc": "A hundred-tonne stores deck with calibrated load cells and numbered restraint frames."
+            },
+            {
+              "id": "engineering",
+              "name": "Reactor Watch",
+              "kind": "walkable",
+              "short_desc": "Armoured reactor shielding separates the watch station from the main power trunks.",
+              "desc": "Armoured reactor shielding separates the watch station from the main power trunks."
+            },
+            {
+              "id": "stowage",
+              "name": "Stores Frames",
+              "kind": "store",
+              "desc": "Sealed stores frames hold the measured inventory behind the deck plating.",
+              "short_desc": "Sealed stores frames hold the measured inventory behind the deck plating."
+            },
+            {
+              "id": "bay",
+              "name": "Fleet Handling Bay",
+              "kind": "bay",
+              "desc": "An unpressurized handling bay with two cargo cradles and an external transfer ramp.",
+              "short_desc": "An unpressurized handling bay with two cargo cradles and an external transfer ramp."
+            },
+            {
+              "id": "relay",
+              "name": "Relay Compartment",
+              "kind": "walkable",
+              "short_desc": "An empty entanglement socket waits in its shock cradle. Cable runs reach the ship radio mast.",
+              "desc": "An empty entanglement socket waits in its shock cradle. Cable runs reach the ship radio mast."
+            }
+          ],
+          "exits": [
+            {
+              "from": "airlock",
+              "to": "passage",
+              "names": [
+                "Inner Hatch <I>;inner;in;passage",
+                "Airlock <A>;airlock;forward"
+              ]
+            },
+            {
+              "from": "passage",
+              "to": "bridge",
+              "names": [
+                "Bridge <U>;bridge;up;u",
+                "Passage <D>;passage;down;d"
+              ]
+            },
+            {
+              "from": "passage",
+              "to": "crew",
+              "names": [
+                "Crew Compartment <C>;crew;galley;bunks;aft",
+                "Passage <P>;passage;out;forward"
+              ]
+            },
+            {
+              "from": "passage",
+              "to": "hold",
+              "names": [
+                "Cargo Hold <H>;hold;down;d",
+                "Passage <U>;passage;up;u"
+              ]
+            },
+            {
+              "from": "hold",
+              "to": "engineering",
+              "names": [
+                "Engineering <E>;engineering;eng;down;d",
+                "Hold <H>;hold;up;u"
+              ]
+            },
+            {
+              "from": "passage",
+              "to": "relay",
+              "names": [
+                "Relay Compartment <R>;relay",
+                "Service Trunk <P>;passage;out"
+              ]
+            }
+          ],
+          "gauges": {
+            "cargo": [
+              "hold",
+              "passage",
+              "bridge"
+            ],
+            "propellant": [
+              "engineering",
+              "passage",
+              "bridge"
+            ],
+            "provisions": [
+              "crew",
+              "passage",
+              "bridge"
+            ]
+          },
+          "bays": [
+            {
+              "room": "bay",
+              "slot": {
+                "id": "rigs",
+                "maximum_items": 2
+              },
+              "egress": {
+                "label": "stern ramp",
+                "x_cm": 0,
+                "y_cm": -3500,
+                "heading_mdeg": 180000
+              }
+            }
+          ]
+        },
+        "note": "R9b: a 4000-tonne Concord Fleet relief cruiser with actual capital structure, eight watch berths, finite stores and a checked 300000 km relay socket. No manufactured half or active mobile node exists at world start. Installed half mass remains part of voyage payload."
+      }
+    }
+  }
+}

@@ -166,11 +166,20 @@ fn module_list(
     llm: &Arc<LlmService>,
     cfg: tacsim::TacsimConfig,
 ) -> Vec<Box<dyn GameModule>> {
-    let mut mods = modules::server_modules();
+    // The loaded game content includes the foundry. Share the production inventory
+    // capability so a restart can audit its receipts through their actual owner.
+    let (mut mods, inventory) = modules::server_modules_with_tacsim(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        &Default::default(),
+        &Default::default(),
+        Default::default(),
+    );
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(cfg));
+    mods.push(modules::tacsim_module_wired(cfg, true, inventory));
     // 16b cut C.2: the content module last, with `[game].starter_area` off and
     // the game's own boot packs on — the arena's ground has to be in this
     // world's atlas records before `@arena/start` can build its window.

@@ -416,6 +416,15 @@ impl DurableSchedule {
         })
     }
 
+    /// Kernel-only terminalization of an already advanced cursor. Its revision
+    /// and occurrence ordinal belong to that same advance, not a second write.
+    pub(crate) fn completed_post_image(&self) -> Self {
+        Self {
+            state: ScheduleState::Completed,
+            ..self.clone()
+        }
+    }
+
     fn total_due(&self, now: &ClockStamp) -> Result<u64, DurableScheduleError> {
         let Some(cadence) = self.cadence else {
             return Ok(1);

@@ -257,7 +257,7 @@ pub use crate::arena::weapons::DEFAULT_WEAPON;
 
 /// How many cells of the arena window one `VIEW` carries, across.
 ///
-/// **16b cut B.4** (`B-24`): half the seventy-eight columns a line client prints
+/// **16b cut B.4** (`B-24`): half the 78 columns the cap was when the window was sized
 /// (`mush_ansi::panel::GRID_MAX_COLUMNS`), because each cell is drawn two columns
 /// wide so the ground is square — a terminal cell is about twice as tall as it is
 /// wide, and at one column a cell the window drew the ground four times wider than
@@ -266,8 +266,8 @@ pub use crate::arena::weapons::DEFAULT_WEAPON;
 /// ([`beyond_window_line`]) cover the rest of the sight.
 pub const VIEW_COLUMNS: u16 = 39;
 
-/// As [`VIEW_COLUMNS`], up the window: the twenty rows a line client prints
-/// (`mush_ansi::panel::GRID_MAX_ROWS`), one row a cell.
+/// As [`VIEW_COLUMNS`], up the window: the twenty rows a line client printed
+/// (`mush_ansi::panel::GRID_MAX_ROWS`, 20 when the window was sized), one row a cell.
 pub const VIEW_ROWS: u16 = 20;
 
 /// **How many printed columns a line client draws each window cell as** (16b cut
@@ -6467,6 +6467,10 @@ pub fn status_frame_held(
                 // reading would have to show destroyed for `reads_dead`.
                 "aspect": held.map_or("front", |held| held.aspect.as_str()),
                 "fatal": held.and_then(|held| held.fatal.as_ref()),
+                // **Doc 22 D-22-5**: the contact's unit type, its definition
+                // id, from classification on (with its team), `null` before —
+                // the look a renderer draws it with.
+                "unit_type": held.and_then(|held| held.unit_type.as_deref()),
             });
             if armed && let Some(object) = contact.as_object_mut() {
                 // **17b cut M1a.3**: the weapons station's two fields. Every
@@ -6766,6 +6770,13 @@ pub fn status_frame_held(
     // Keep the public objective and own motor facts together. Inserting this
     // block separately keeps the large frame macro within its recursion bound.
     if let Some(object) = payload.as_object_mut() {
+        // **Doc 22**: the pilot's own side and own unit type — never secrets
+        // from the pilot — so a picture draws bodies in team colour and the
+        // doll from the right look.
+        object.insert("team".into(), frame.team.as_str().into());
+        object.insert("unit_type".into(), frame.unit_type.as_str().into());
+        // Doc 21 cut G.7b: the eye the pilot's own sight is traced from.
+        object.insert("sensor_height_cm".into(), frame.sensor_height_cm.into());
         object.insert("mode".into(), frame.mode.as_str().into());
         object.insert(
             "objective".into(),
@@ -7002,6 +7013,46 @@ pub fn map_frame(
         "rows": rows,
         "legend": legend,
         "spots": spots,
+        // Doc 21 cut G.7b: the ground's relief, so the picture draws the
+        // hills the sim already sees with (a field added, not a version).
+        "elev": elev_field(terrain),
+    })
+}
+
+/// The encoding [`elev_field`] writes.
+pub const ELEV_ENCODING: &str = "zigzag-leb128-delta";
+
+/// **The terrain's elevations for the map frame** (doc 21 cut G.7b): every
+/// cell's `elev_cm` in the order `rows` lists them (the south row first, west
+/// to east), each as its difference from the cell before it (the first from
+/// zero), zigzag-folded and written as a LEB128 varint, the bytes base64'd.
+/// Ground that rolls costs about a byte a cell; flat ground compresses to
+/// runs of zero bytes. `{"encoding", "unit_cm", "data"}`, `unit_cm` always 1.
+#[must_use]
+pub fn elev_field(terrain: &ArenaTerrain) -> serde_json::Value {
+    let mut bytes: Vec<u8> = Vec::with_capacity(terrain.cells().len());
+    let mut last: i32 = 0;
+    for y in 0..terrain.height() {
+        for x in 0..terrain.width() {
+            let elev = i32::from(terrain.get(x, y).map_or(0, |cell| cell.elev_cm));
+            let delta = elev - last;
+            last = elev;
+            let mut zig = ((delta << 1) ^ (delta >> 31)) as u32;
+            loop {
+                let low = (zig & 0x7f) as u8;
+                zig >>= 7;
+                if zig == 0 {
+                    bytes.push(low);
+                    break;
+                }
+                bytes.push(low | 0x80);
+            }
+        }
+    }
+    serde_json::json!({
+        "encoding": ELEV_ENCODING,
+        "unit_cm": 1,
+        "data": mush_atlas::cells::base64_encode(&bytes),
     })
 }
 
@@ -12404,6 +12455,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             },
             FrameContact {
                 id: ContactId(2),
@@ -12419,6 +12471,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             },
         ];
         frame.lock = Some(ContactId(1));
@@ -12567,6 +12620,7 @@ mod tests {
                 aspect: crate::arena::perception::Aspect::Front,
                 reads_dead: None,
                 fatal: None,
+                unit_type: None,
             })
             .collect();
         let lines = ap3_lines(&crowded);
@@ -12659,6 +12713,7 @@ mod tests {
             aspect: crate::arena::perception::Aspect::Front,
             reads_dead: None,
             fatal: None,
+            unit_type: None,
         });
         friendly.lock = Some(ContactId(3));
         assert!(

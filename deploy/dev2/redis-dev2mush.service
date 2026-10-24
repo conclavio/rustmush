@@ -1,0 +1,18 @@
+[Unit]
+Description=Redis for rustmush dev2 (127.0.0.1:6791)
+After=network.target
+Documentation=file:/opt/rustmush/dev2/build/deploy/dev2/README.md
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/redis-server /etc/redis/redis-dev2mush.conf
+User=redis
+Group=redis
+RuntimeDirectory=redis-dev2mush
+StateDirectory=redis-dev2mush
+UMask=007
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

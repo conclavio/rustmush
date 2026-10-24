@@ -9,8 +9,15 @@ description = "russh SSH server: auth flows, LineEditor, caps detection"
 [dependencies]
 mush-session.workspace = true
 mush-ansi.workspace = true
+# Pixel cockpit spike (2026-10-21): the raycaster, PNG and kitty framing the
+# TUI streams a first-person view with.
+mush-pixel.workspace = true
 mush-proto.workspace = true
 russh.workspace = true
+# Doc 21 cut G.11: the asset pack over `sftp`, its files checked against the
+# manifest's SHA-256 at boot.
+russh-sftp.workspace = true
+sha2.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -4,7 +4,9 @@
 //! Doc 11 §2: *the corridor settles in the credit (cr), cleared through Luna.*
 //! The instrument is registered create-only at the sheet module's boot, exactly
 //! as the WoD ruleset registered `wod.usd` before it (create-only since the E2-C18
-//! look-back fold); the ten commodity families are cut C's and arrive as content.
+//! look-back fold); the ten commodity families are cut C's and arrive as content;
+//! the Freeport Registry's prospecting licence (doc 20 §9.1, cut SM.5) is one more
+//! create-only row, an entitlement.
 
 use mush_core::{Ctx, ObjId};
 use mush_economy::{
@@ -19,6 +21,26 @@ pub const CREDIT: &str = "tacsim.credit";
 pub const CREDIT_CODE: &str = "cr";
 /// Its minor-unit scale (centicredits).
 pub const CREDIT_SCALE: u8 = 2;
+
+/// **The Freeport Registry's prospecting licence** (doc 20 §9.1, D-20-12; cut
+/// SM.5): an `Entitlement` instrument whose `Active` account in a person's name is
+/// the whole of what `mush_industry::extraction_authorized` asks of a licence
+/// (`crates/mush-industry/src/licence.rs`). Phase 1 has exactly one, because every
+/// site of the lane is the Registry's; the term, the grace and the fee are lane
+/// data (`PortDef.licence`), but the id is this constant, because the composition
+/// root names it to the industry module before any content loads. The term lives
+/// on tacsim's own `tacsim:licence:` record (`crate::port::licence`), never on the
+/// account, which has none.
+pub const LICENCE_FREEPORT: &str = "tacsim.licence.freeport";
+/// The licence instrument's human code.
+pub const LICENCE_CODE: &str = "FPL";
+
+/// The licence instrument's id ([`LICENCE_FREEPORT`]); `None` only if the constant
+/// stopped being a valid id, which a unit test pins never happens.
+#[must_use]
+pub fn licence_instrument() -> Option<InstrumentId> {
+    InstrumentId::new(LICENCE_FREEPORT)
+}
 
 /// `[tacsim.economy]`, mapped by the host (`mush_server::config_ext::tacsim_economy_config`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,7 +124,35 @@ pub fn ensure_instruments(ctx: &mut Ctx<'_>, cfg: &GameEconomyConfig) -> Option<
              was registered"
         ),
     }
+    ensure_licence_instrument(ctx);
     credit
+}
+
+/// **Register the prospecting licence if it is not already there** (doc 20 §9.1,
+/// D-20-12; cut SM.5): an indivisible, untransferable entitlement no account may
+/// hold below zero. Create-only like every instrument here; a refusal is logged and
+/// the caller goes on (the licence verb then answers that the Registry could not
+/// issue one). Called from [`ensure_instruments`] at the sheet module's boot and by
+/// the port applier for an entry that authors a `licence` block (the credit's
+/// [`ensure_instrument`] precedent: a roster without the sheet module still gets
+/// it).
+pub fn ensure_licence_instrument(ctx: &mut Ctx<'_>) -> Option<InstrumentId> {
+    let id = licence_instrument()?;
+    create_only(
+        ctx,
+        InstrumentDef {
+            id,
+            ruleset: SmolStr::new_static("tacsim"),
+            code: SmolStr::new_static(LICENCE_CODE),
+            kind: InstrumentKind::Entitlement,
+            scale: 0,
+            transferable: false,
+            negative_policy: NegativePolicy::Forbid,
+            status: InstrumentStatus::Active,
+            display: None,
+            revision: 1,
+        },
+    )
 }
 
 /// Register one instrument if this world has none by that id.

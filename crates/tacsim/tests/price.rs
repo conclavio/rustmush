@@ -115,9 +115,9 @@ fn roster(mut cfg: TacsimConfig, lane: &Lane<'_>) -> Vec<Box<dyn mush_core::Game
             mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         }
         Lane::Seeded { json, .. } => {
-            let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-            packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-            packs.push(mush_content::load_pack(json).expect("the seeded lane verifies"));
+            let packs = support::boot_packs_with_lane(
+                mush_content::load_pack(json).expect("the seeded lane verifies"),
+            );
             let mut appliers = mush_content::Appliers::new();
             mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
             mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");

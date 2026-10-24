@@ -76,6 +76,7 @@ fn roundtrip_every_output_event_variant() {
         },
         OutputEvent::Sys(styled),
         OutputEvent::Channel {
+            epoch: None,
             channel: "pub".into(),
             seq: 991,
             actor: wizard(),
@@ -151,6 +152,7 @@ fn roundtrip_every_output_event_variant() {
             server: "rustmush 0.1".into(),
             features: vec!["mail".into(), "channels".into(), "wod".into()],
             panels: vec!["wod.roll".into(), "wod.sheet".into()],
+            asset_pack: None,
         },
         OutputEvent::SessionInfo {
             character: wizard(),
@@ -214,6 +216,7 @@ fn roundtrip_every_client_command_variant() {
             id: 7,
             q: Query::PanelSubscribe {
                 feed: "wod.roll".into(),
+                params: None,
             },
         },
         ClientCommand::Req {
@@ -236,6 +239,14 @@ fn roundtrip_every_client_command_variant() {
         },
         ClientCommand::Composing { active: true },
         ClientCommand::Composing { active: false },
+        ClientCommand::Picture {
+            on: true,
+            look_mdeg: -30_000,
+        },
+        ClientCommand::Picture {
+            on: false,
+            look_mdeg: 0,
+        },
         ClientCommand::Resume { last_seq: 4180 },
         ClientCommand::Ack {
             commit: ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").unwrap(),
@@ -373,6 +384,51 @@ fn golden_panel() {
     );
 }
 
+/// **Doc 20 cut SM.9 (the brief's 3.8)**: a `panel_subscribe` carries its pulled feed's
+/// parameters when it has them and is byte-identical to the old wire when it has none; both
+/// round-trip, and a request with no `params` key decodes to `None`.
+#[test]
+fn sm9_panel_subscribe_carries_params() {
+    let bare = ClientCommand::Req {
+        id: 3,
+        q: Query::PanelSubscribe {
+            feed: "site.map".into(),
+            params: None,
+        },
+    };
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"t":"req","d":{"id":3,"q":{"t":"panel_subscribe","d":{"feed":"site.map"}}}}"#
+    );
+    roundtrip(&bare);
+    let with = ClientCommand::Req {
+        id: 4,
+        q: Query::PanelSubscribe {
+            feed: "site.map".into(),
+            params: Some(json!({ "view": "site", "rig": 1, "family": "metals" })),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&with).unwrap()["d"]["q"]["d"]["params"],
+        json!({ "view": "site", "rig": 1, "family": "metals" })
+    );
+    roundtrip(&with);
+    let old: ClientCommand = serde_json::from_str(
+        r#"{"t":"req","d":{"id":5,"q":{"t":"panel_subscribe","d":{"feed":"body.ground"}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        old,
+        ClientCommand::Req {
+            id: 5,
+            q: Query::PanelSubscribe {
+                feed: "body.ground".into(),
+                params: None,
+            },
+        }
+    );
+}
+
 #[test]
 fn golden_semantic_view() {
     let ev = OutputEvent::View(
@@ -433,6 +489,7 @@ fn golden_hello() {
         server: "rustmush 0.1".into(),
         features: vec!["mail".into(), "channels".into()],
         panels: vec!["wod.roll".into()],
+        asset_pack: None,
     };
     assert_eq!(
         serde_json::to_string(&ev).unwrap(),
@@ -440,9 +497,33 @@ fn golden_hello() {
     );
 }
 
+/// Doc 21 cut G.11: a hello naming the asset pack carries it; one naming
+/// none (above) carries no key at all, so older clients see the same bytes.
+#[test]
+fn golden_hello_with_asset_pack() {
+    let ev = OutputEvent::Hello {
+        proto: PROTO_VERSION,
+        server: "rustmush 0.1".into(),
+        features: vec![],
+        panels: vec![],
+        asset_pack: Some(mush_proto::AssetPackInfo {
+            version: 1,
+            pack_version: "pack_0123456789abcdef".into(),
+            manifest: "/assets/manifest.json".into(),
+        }),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    assert_eq!(
+        json,
+        r#"{"t":"hello","d":{"proto":1,"server":"rustmush 0.1","features":[],"panels":[],"asset_pack":{"version":1,"pack_version":"pack_0123456789abcdef","manifest":"/assets/manifest.json"}}}"#
+    );
+    assert_eq!(serde_json::from_str::<OutputEvent>(&json).unwrap(), ev);
+}
+
 #[test]
 fn golden_channel() {
     let ev = OutputEvent::Channel {
+        epoch: None,
         channel: "pub".into(),
         seq: 991,
         actor: wizard(),

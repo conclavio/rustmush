@@ -1,0 +1,168 @@
+   Compiling tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.81s
+     Running tests\e7r2.rs (target\debug\deps\e7r2-7490f4cf42276f7a.exe)
+
+running 5 tests
+test e7r2_p0b_the_loss_visit_bound_is_encoded ... ok
+test e7r2_p0b_the_marker_re_enters_through_the_same_wire_and_defaults_closed ... ok
+test e7r2_p0b_a_captured_hull_is_a_covered_loss_and_title_did_not_move ... ok
+test e7r2_p0b_a_wreck_outside_a_formation_and_a_formation_member_that_is_no_wreck_are_both_uncovered ... ok
+test e7r2_p0b_a_grant_without_the_marker_waits_out_the_cooldown_and_one_with_it_does_not ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\module_ns_owners.rs (target\debug\deps\module_ns_owners-e3bb77d4e605200b.exe)
+
+running 4 tests
+test every_declared_delegation_is_pinned_and_every_pinned_row_is_declared ... ok
+test m6_author_services_are_registered_under_the_game_owner ... ok
+test every_production_module_claims_its_own_namespace ... ok
+test booting_a_production_roster_refuses_no_module_write ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests\state_slot_owners.rs (target\debug\deps\state_slot_owners-1ee309870d2146ec.exe)
+
+running 5 tests
+test paired_and_triple_access_census_every_owner_argument ... ok
+test the_observed_census_is_empty_now_that_the_refusal_is_live ... ok
+test no_baselined_site_reaches_through_the_checked_accessor ... ok
+test every_production_state_slot_has_exactly_one_owner ... ok
+test every_cross_owner_state_site_is_baselined ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+
+     Running tests\module.rs (target\debug\deps\module-d20c61daa60f9b56.exe)
+
+running 75 tests
+test i8_c6_view_rs_opens_no_grant_read ... ok
+test exact_reference_constructor_remains_owner_kind_version_and_digest_bound ... ok
+test destroy_command_cannot_discard_a_unit_while_a_dependency_owner_is_frozen ... ok
+test e7c8_b2_the_contact_count_is_the_viewers_own_never_the_units ... ok
+test i8_b2_truncated_is_false_and_counts_match_for_the_ordinary_unit ... ok
+test destroy_after_owner_freeze_preserves_record_and_only_removes_object_shell ... ok
+test e7c8_b2_unit_status_is_byte_identical_from_the_store_and_from_a_never_persisted_fixture ... ok
+test e7c8_b2_unstationed_not_a_unit_and_nonexistent_all_render_identically ... ok
+test destroying_the_asset_object_scrubs_the_component_pointer ... ok
+test a_live_asset_pointer_survives_boot_and_unrelated_destruction ... ok
+test detach_gate_and_commands_cannot_mutate_held_records ... ok
+test damage_is_atomic_persisted_and_projected ... ok
+test a_unit_envelope_under_a_non_unit_key_is_held_not_silently_filtered ... ok
+test coherent_v2_shape_drift_is_quarantined_against_the_exact_unit_spec ... ok
+test duplicate_subjects_quarantine_every_claim_deterministically ... ok
+test i8_c2_a_params_less_subscribe_with_no_unit_answers_a_null_keyframe_not_a_sys ... ok
+test current_record_with_missing_binding_freezes_without_reattaching ... ok
+test i8_c4_stationed_non_controller_owner_and_royalty_read_and_a_stranger_does_not ... ok
+test destroying_active_unit_deletes_it_but_unrelated_destroy_does_not ... ok
+test dependency_digest_drift_freezes_owner_fans_out_and_leaves_other_owner_active ... ok
+test current_record_requires_the_exact_registered_envelope_schema ... ok
+test exact_record_schema_digest_conflict_freezes_tactics_and_all_intact_records ... ok
+test i8_c3_the_default_subject_is_the_viewers_own_object_then_its_highest_priority_station ... ok
+test boot_scrubs_a_pointer_to_a_missing_object_without_the_event ... ok
+test create_authors_only_v2_with_exact_refs_and_current_binding ... ok
+test generic_behavior_attach_uses_the_registered_binding_schema ... ok
+test i8_c1_the_dto_and_at_unit_show_name_the_same_sections_cells_components_and_capabilities ... ok
+test i8_c5_the_two_queries_write_nothing_and_stamp_no_idle ... ok
+test current_v2_reboots_active_only_with_exact_binding_and_definitions ... ok
+test i8_p3_named_refusals_are_byte_identical_for_stranger_nonexistent_non_unit_malformed_and_staff ... ok
+test i8_f1_a_damage_delta_and_a_vitals_keyframe_reach_each_connected_stationed_viewer_once_and_the_unit_keyframe_is_not_fanned ... ok
+test i8_v2_a_cell_id_over_the_name_cap_is_skipped_and_the_frame_still_ships ... ok
+test i8_f2_the_after_action_audience_caps_at_max_unit_audience ... ok
+test i8_p5_every_surface_of_the_view_is_clean ... ok
+test invalid_object_kind_is_quarantined_with_same_create_boot_eligibility ... ok
+test i8_s1_a_switching_profile_projects_from_to_ready_at_and_the_text_says_so ... ok
+test missing_runtime_definition_freezes_and_preserves_current_record ... ok
+test binding_repair_diagnostics_are_bounded_with_an_exact_total ... ok
+test i8_r1_unit_show_is_still_staff_only ... ok
+test i8_p2_the_delta_projection_carries_no_asset_object_id_and_keeps_to_revision_at_the_root ... ok
+test i8_s3_the_damage_delta_leads_with_the_staffers_frame ... ok
+test miskeyed_record_keeps_both_object_claims_and_cannot_be_overwritten ... ok
+test malformed_unknown_noncanonical_and_miskeyed_records_are_quarantined_not_deleted ... ok
+test i8_v1_tactics_vitals_projects_only_unit_level_cells_with_the_unit_revision ... ok
+test i8_s2_the_create_keyframe_is_exactly_one_frame_to_the_actor_and_carries_no_rules ... ok
+test i8_p1_the_keyframe_carries_no_rules_no_definition_body_and_no_foreign_object_id ... ok
+test parsable_orphan_cannot_mask_an_exact_dependency_digest_conflict ... ok
+test legacy_v1_has_exact_dry_run_but_stays_migrating_and_unwritten ... ok
+test i8_v3_dto_cell_state_and_vital_state_agree_with_pool_state ... ok
+test q8_refit_refuses_an_object_with_no_unit_and_writes_nothing ... ok
+test recovery_command_exposes_bounded_summary_without_raw_payload ... ok
+test q8_refit_refuses_a_spec_the_registry_does_not_hold_and_writes_nothing ... ok
+test q8_a_refit_changes_the_type_and_leaves_the_world_around_it_alone ... ok
+test q8_refit_refuses_a_deployed_unit_and_writes_nothing ... ok
+test stale_binding_is_reported_and_never_detached_at_boot ... ok
+test unit_commands_are_staff_only ... ok
+test i8_p4_a_held_record_answers_state_frozen_with_the_record_key_and_no_incident ... ok
+test vf_a12_a_foreign_owner_grant_renders_unit_status_byte_identically_to_no_grant_at_all ... ok
+test incident_ids_do_not_change_when_an_unrelated_earlier_record_is_added ... ok
+test vf_a12b_the_unit_status_verb_exists_and_hides_existence_for_an_ordinary_viewer ... ok
+test set_component_asset_refuses_an_unknown_component_and_bumps_the_revision ... ok
+test vf_v4_the_effective_cell_id_budget_is_forty_bytes ... ok
+test vf_p6_a_mis_keyed_record_never_names_the_other_object ... ok
+test q8_a_refitted_document_decodes_as_the_new_type_on_the_next_boot ... ok
+test vf_f3_remove_then_create_refreshes_the_stationed_pilot_and_resets_the_revision ... ok
+test vf_r2_an_active_station_outranks_a_held_own_record_for_the_default_subject ... ok
+test vf_f5_a_unit_that_is_its_own_viewer_receives_its_after_action ... ok
+test vf_f4_a_destroyed_asset_refreshes_the_repaired_unit_for_its_stationed_viewers ... ok
+test vf_f6_the_vitals_keyframe_follows_the_viewers_default_subject_only ... ok
+test removing_a_boot_loaded_unit_reconciles_lifecycle_and_allows_recreate ... ok
+test vf_c8_the_grant_helpers_are_called_only_from_view_module_and_status ... ok
+test af3_the_boot_keeps_the_markers_for_the_claim_and_restores_the_unclaimed ... ok
+test vf_b5_a_facet_and_slot_heavy_unit_stays_under_the_hard_bound ... ok
+test i8_b1_the_keyframe_at_max_unit_cells_stays_under_the_view_budget_and_the_record_bound ... ok
+test vf_b4_the_always_emitted_lane_is_admitted_against_the_hard_bound ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests\content.rs (target\debug\deps\content-80864019a890cc2a.exe)
+
+running 36 tests
+test m3_the_stock_class_table_is_the_doc_17_table ... ok
+test no_building_stands_on_a_road ... ok
+test sm3a_a_tool_out_of_bounds_is_refused ... ok
+test ic2_a_dray_note_past_the_bound_fails_the_load ... ok
+test the_ford_is_the_only_way_across_the_river ... ok
+test the_ten_commodity_families_decode ... ok
+test sm3a_the_tools_are_pinned_and_check ... ok
+test ic2_logistics_refuses_a_rail_below_the_stowage_maxima ... ok
+test ic2_the_dray_is_pinned_and_checks ... ok
+test ic2_an_interior_refuses_what_the_template_cannot_build ... ok
+test every_shipped_pack_carries_its_own_digest ... ok
+test sm3a_the_dray_p_is_the_dray_with_a_bay ... ok
+test the_pinned_digests_are_the_shipped_ones ... ok
+test sm3a_a_bay_refuses_what_the_template_cannot_build ... ok
+test the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford ... ok
+test o1_the_shipped_ground_declares_hold_at_the_crossroads ... ok
+test m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved ... ok
+test the_authored_map_is_the_map_the_arena_entry_describes ... ok
+test the_band_word_the_shipped_content_can_print ... ok
+test z3_the_arena_fields_six_a_side_in_the_authored_order ... ok
+test q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_order ... ok
+test sm3a_the_terrain_vehicle_is_pinned_and_checks ... ok
+test m2_every_fielded_units_substep_divides_the_three_periods ... ok
+test m3_every_shipped_chassis_binds_its_core ... ok
+test m4_every_fielded_tanks_two_tracks_carry_the_pair_rule ... ok
+test ic2_the_goods_table_is_pinned ... ok
+test ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena ... ok
+test sm3a_nothing_fielded_before_the_vehicles_moved ... ok
+test ic2_the_dray_is_a_hauler_and_binds_class_zero ... ok
+test the_shipped_atlas_pack_is_this_generators_output ... ok
+test e1_the_ranges_the_shipped_machines_fight_at ... ok
+test z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing ... ok
+test z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made ... ok
+test m2_the_standard_doctrine_source_is_pinned ... ok
+test ae1_the_bluff_is_where_and_what_the_note_says ... ok
+test g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+
+     Running tests\e7r2.rs (target\debug\deps\e7r2-51f23c5234960950.exe)
+
+running 5 tests
+test e7r2_p5_a_hand_edited_v2_digest_fails_naming_both ... ok
+test e7r2_p5_the_v2_pack_is_inside_every_cap ... ok
+test e7r2_p5_v2_is_published_beside_v1_and_re_prices_nothing_already_pinned ... ok
+test e7r2_p5_the_default_fixture_still_seeds_v1_and_only_v1 ... ok
+test e7r2_p5_the_seeded_v2_corridor_carries_the_whole_of_doc10_11 ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+

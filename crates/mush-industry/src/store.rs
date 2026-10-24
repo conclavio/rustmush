@@ -85,6 +85,16 @@ pub enum Quarantine {
     EndpointQuarantined,
     /// The survey document for this deposit failed its wire and was skipped.
     SurveyLost,
+    /// Doc 20 §3.4 (cut SM.6): the external provider's draws do not account
+    /// for this body's pool — `initial_reserve − pool ≠ Σ drawn` — on this body
+    /// or a sibling of its block (same place, same provider).
+    DrawsMismatch,
+    /// Doc 20 §3.4 (cut SM.6): the composed `ExternalDraws` could not answer
+    /// for this body (or a sibling of its block).
+    DrawsUnanswered,
+    /// Doc 20 §3.4 (cut SM.6): the body names an external provider and this
+    /// server composed no `ExternalDraws` to account for it.
+    ExternalUnwired,
 }
 
 /// Why one facility is quarantined (R4, independent verify fold), and the
@@ -186,6 +196,20 @@ impl Quarantine {
                  bands every surveyor was told are lost. Restore the document or accept the \
                  loss with `@deposit/show <id>` — no authority depends on it"
             }
+            Self::DrawsMismatch => {
+                "the surface provider's draws do not account for this body's pool; the whole \
+                 block is closed: reconcile the pool against the cursor sidecar, then let the \
+                 next sweep clear it"
+            }
+            Self::DrawsUnanswered => {
+                "the surface provider could not say what it drew from this body; the whole \
+                 block is closed until it can: check its cursor sidecar, then let the next \
+                 sweep clear it"
+            }
+            Self::ExternalUnwired => {
+                "this body is worked by a provider this server does not compose; nobody may \
+                 work it until the provider is wired"
+            }
         }
     }
 }
@@ -196,6 +220,9 @@ impl Quarantine {
 pub struct IndustryStore {
     /// Deposits whose cross-family state disagreed, and why.
     quarantined: BTreeMap<OreDepositId, Quarantine>,
+    /// Doc 20 cut SM.6: the externally worked bodies whose draws quarantine has
+    /// already paged this boot (bounded by the deposit walk; RAM only).
+    draws_paged: BTreeSet<OreDepositId>,
     /// E7c4 R4: facilities whose live work orders reference a capacity book that
     /// is wholly absent — the fail-open both-absent shape, fenced fail-closed.
     facility_quarantined: BTreeMap<ObjId, FacilityQuarantine>,
@@ -635,8 +662,12 @@ pub fn reconcile(
     ctx: &mut mush_core::ModuleCtx<'_>,
     families: &crate::IndustryFamilies,
     recipes: Option<&dyn crate::workorder::RecipeAuthority>,
+    draws: Option<&dyn crate::seams::ExternalDraws>,
 ) {
     let mut quarantined: BTreeMap<OreDepositId, Quarantine> = BTreeMap::new();
+    // Doc 20 §3.4 (cut SM.6): every body an external provider works, gathered on
+    // the deposit walk (so bounded by it) for the draws invariant below.
+    let mut externals: Vec<OreDeposit> = Vec::new();
     let mut applied: BTreeMap<SmolStr, AppliedMarker> = BTreeMap::new();
     let mut complete = true;
 
@@ -674,11 +705,20 @@ pub fn reconcile(
             if let Some(why) = deposit_quarantine(ctx.w, &deposit) {
                 quarantined.insert(deposit.id(), why);
             }
+            if deposit.external().is_some() {
+                externals.push(deposit);
+            }
         }
         match next {
             Some(next) => cursor = Some(next),
             None => break,
         }
+    }
+
+    // ---- doc 20 §3.4, cut SM.6: the external draws invariant ----
+    let draws_quarantined = external_draws(ctx, families, &externals, draws);
+    for (deposit, why) in &draws_quarantined {
+        quarantined.entry(*deposit).or_insert(*why);
     }
 
     // ---- the marker mirror the facts answer from ----
@@ -938,6 +978,18 @@ pub fn reconcile(
             "industry: an ore body is quarantined"
         );
     }
+    // Doc 20 cut SM.6: a draws quarantine pages once a boot per body, on top of
+    // the per-sweep line above, so an operator's pager is not a metronome.
+    for (deposit, why) in &draws_quarantined {
+        if store.draws_paged.insert(*deposit) {
+            tracing::error!(
+                target: "industry",
+                deposit = %deposit,
+                runbook = why.runbook(),
+                "industry: PAGE — an externally worked ore body's block is quarantined"
+            );
+        }
+    }
     store.quarantined = quarantined;
     store.facility_quarantined = facility_quarantined;
     if orders_complete {
@@ -951,6 +1003,72 @@ pub fn reconcile(
     store.wo_applied = wo_applied;
     store.complete = complete;
     store.reconciliations = store.reconciliations.saturating_add(1);
+}
+
+/// **The external draws invariant** (doc 20 §3.4, D-20-5; cut SM.6; 10b §3.3's
+/// handoff): for every body whose `external` is set, `initial_reserve − pool ==
+/// drawn`, where `drawn` is the composed [`ExternalDraws`](crate::seams::ExternalDraws)'
+/// answer and `pool` the balance at the body's endpoint (absent is 0). No
+/// composed seam is [`Quarantine::ExternalUnwired`]; a `None` answer is
+/// [`Quarantine::DrawsUnanswered`]; anything else that disagrees — a balance
+/// above the reserve included — is [`Quarantine::DrawsMismatch`]. Then **every
+/// body sharing a quarantined body's place and provider** is quarantined with
+/// the same cause: that is the block ("a mismatch quarantines the block
+/// fail-closed"). Bounded by `externals`, which the deposit walk bounded.
+fn external_draws(
+    ctx: &mush_core::ModuleCtx<'_>,
+    families: &crate::IndustryFamilies,
+    externals: &[OreDeposit],
+    draws: Option<&dyn crate::seams::ExternalDraws>,
+) -> BTreeMap<OreDepositId, Quarantine> {
+    let mut blocks: BTreeMap<(ObjId, SmolStr), Quarantine> = BTreeMap::new();
+    for deposit in externals {
+        let Some(provider) = deposit.external() else {
+            continue;
+        };
+        let why = match draws {
+            None => Some(Quarantine::ExternalUnwired),
+            Some(draws) => match draws.drawn(ctx, deposit) {
+                None => Some(Quarantine::DrawsUnanswered),
+                Some(drawn) => {
+                    let balance = mush_inventory::pool_key(deposit.endpoint(), deposit.commodity())
+                        .ok()
+                        .and_then(|key| ctx.action_state(&families.inventory.pools, &key).ok())
+                        .map(|scalar| {
+                            scalar.and_then(|scalar| u64::try_from(scalar.current()).ok())
+                        });
+                    match balance {
+                        // The pool family is unreadable: the invariant cannot be
+                        // checked, so the block is closed.
+                        None => Some(Quarantine::DrawsUnanswered),
+                        Some(balance) => {
+                            let balance = balance.unwrap_or(0);
+                            if deposit.initial_reserve().checked_sub(balance) == Some(drawn) {
+                                None
+                            } else {
+                                Some(Quarantine::DrawsMismatch)
+                            }
+                        }
+                    }
+                }
+            },
+        };
+        if let Some(why) = why {
+            blocks
+                .entry((deposit.place(), provider.clone()))
+                .or_insert(why);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for deposit in externals {
+        let Some(provider) = deposit.external() else {
+            continue;
+        };
+        if let Some(why) = blocks.get(&(deposit.place(), provider.clone())) {
+            out.insert(deposit.id(), *why);
+        }
+    }
+    out
 }
 
 /// Largest number of touched keys one announcement is decoded from — well past
@@ -1083,4 +1201,31 @@ pub fn is_quarantined(world: &World, deposit: OreDepositId) -> bool {
 pub fn is_staff(world: &World, actor: ObjId) -> bool {
     mush_core::perm::has_power(world, actor, mush_core::Powers::SIM_ADMIN)
         || mush_core::perm::has_role(world, actor, mush_core::Role::Royalty)
+}
+
+/// Install a composition-authored facility without replacing an existing identity.
+/// The content owner validates its location and institution before calling.
+pub fn install_authored_facility(
+    ctx: &mut mush_core::Ctx<'_>,
+    facility: FacilityRecord,
+) -> Result<(), String> {
+    let store = ctx
+        .w
+        .module_state::<IndustryStore>()
+        .ok_or("Industry unavailable")?;
+    if let Some(existing) = store.facility(facility.object()) {
+        return if existing == &facility {
+            Ok(())
+        } else {
+            Err("Authored facility identity drift".into())
+        };
+    }
+    if ctx.w.get(facility.object()).is_none() {
+        return Err("Authored facility object missing".into());
+    }
+    persist_facility(ctx.out, &facility);
+    if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+        store.put_facility(facility);
+    }
+    Ok(())
 }

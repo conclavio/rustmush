@@ -1,0 +1,22 @@
+[
+  {
+    "case": "corrupt",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: sim relay: unreadable relay:registry (held, not reseeded): missing field `revision`"
+  },
+  {
+    "case": "duplicate_half",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: sim relay: repair relay:registry: missing node, duplicate half identity or object binding"
+  },
+  {
+    "case": "contradictory_binding",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: sim relay: repair relay:registry: pair luna_ceres half luna_ceres.luna: object #667 has contradictory kind/location/lifecycle"
+  },
+  {
+    "case": "missing_document",
+    "passed": true,
+    "diagnostic": "mush-server: module boot failed: sim relay: unrecorded binding on #664; repair relay:registry before boot"
+  }
+]

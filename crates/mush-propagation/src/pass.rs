@@ -128,6 +128,8 @@ impl Reaped {
 /// recipient.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DeliveryReport {
+    /// Persisted itinerary or queue transitions, including unchanged public state.
+    pub routed: Vec<u64>,
     /// Envelopes that took a relay hop.
     pub relayed: Vec<u64>,
     /// Envelopes that arrived.
@@ -159,6 +161,7 @@ impl DeliveryReport {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.relayed.is_empty()
+            && self.routed.is_empty()
             && self.delivered.is_empty()
             && self.acknowledged.is_empty()
             && self.expired.is_empty()
@@ -172,6 +175,7 @@ impl DeliveryReport {
         let mut ids: Vec<u64> = self
             .relayed
             .iter()
+            .chain(&self.routed)
             .chain(&self.delivered)
             .chain(&self.acknowledged)
             .chain(&self.expired)
@@ -251,6 +255,20 @@ pub fn delivery_pass(
     now: &ClockStamp,
     domain: Option<DomainId>,
 ) -> DeliveryReport {
+    delivery_pass_with_metric(store, state, world, ledger, now, domain, None)
+}
+
+/// The shipping command/tick path supplies its owner's live metric projection.
+#[allow(clippy::too_many_arguments)]
+pub fn delivery_pass_with_metric(
+    store: &mut PropagationStore,
+    state: &SpatialState,
+    world: &World,
+    ledger: &ContactLedgerState,
+    now: &ClockStamp,
+    domain: Option<DomainId>,
+    metric: Option<Box<dyn crate::routing::Metric>>,
+) -> DeliveryReport {
     let mut report = DeliveryReport::default();
     reap(store, ledger, now, &mut report);
     // The declared-interference view is read once, before the book is mutated,
@@ -258,6 +276,7 @@ pub fn delivery_pass(
     // jamming map is snapshotted — a full store clone was up to three deep
     // copies of every book per fire (fold B16).
     let jamming_view = store.jamming_map();
+    let mut router = crate::routing::Pass::new(world, state, store, now, metric);
     let cursor = store.envelope_scan_cursor();
     let mut ordered: Vec<u64> = store
         .envelopes()
@@ -287,7 +306,32 @@ pub fn delivery_pass(
         if envelope.state().is_terminal() {
             continue;
         }
-        let next = step_envelope(&envelope, &jamming_view, state, world, now, &mut report);
+        let next = if matches!(envelope.state(), EnvelopeState::Delivered)
+            && (envelope.dispatch_ref().is_some() || envelope.age(now) < ENVELOPE_TTL_SECS)
+        {
+            // Arrival is a one-time transition, not repeated every delivery fire.
+            None
+        } else if envelope.age(now) < ENVELOPE_TTL_SECS
+            && (envelope.dispatch_ref().is_some() || !is_gone(world, envelope.recipient()))
+            && (router.is_some() || envelope.transit().is_some())
+        {
+            let next = router.as_mut().and_then(|r| r.step(store, &envelope, now));
+            if let Some(next) = &next {
+                report.routed.push(envelope.id());
+                if next.path().len() > envelope.path().len() {
+                    report.relayed.push(envelope.id());
+                }
+                if next.state() == EnvelopeState::Delivered {
+                    report.delivered.push(envelope.id());
+                }
+                if next.state() == EnvelopeState::Expired {
+                    report.expired.push(envelope.id());
+                }
+            }
+            next
+        } else {
+            step_envelope(&envelope, &jamming_view, state, world, now, &mut report)
+        };
         let Some(next) = next else { continue };
         if let Err(error) = store.put_envelope(next.clone()) {
             report.anomalies.push(format!(
@@ -297,6 +341,15 @@ pub fn delivery_pass(
             continue;
         }
         if next.state() == EnvelopeState::Delivered {
+            if let Some(service) = &mut store.transport.service {
+                for receipt in service
+                    .receipts
+                    .iter_mut()
+                    .filter(|r| r.envelope == next.id())
+                {
+                    receipt.arrived = Some(now.at);
+                }
+            }
             settle_arrival(store, &next, now, &mut report);
         }
     }
@@ -332,6 +385,7 @@ fn reap(
         .envelopes()
         .filter(|envelope| {
             envelope.state().is_terminal()
+                && envelope.dispatch_ref().is_none()
                 && envelope
                     .checked_age(now)
                     .is_none_or(|age| age >= ENVELOPE_TTL_SECS)
@@ -424,7 +478,7 @@ fn step_envelope(
     // A recipient that was destroyed mid-flight: expire and attribute, never
     // retry forever. `GOING` counts as gone, because the object is on its way
     // out and a delivery to it would arrive nowhere.
-    if is_gone(world, envelope.recipient()) {
+    if envelope.dispatch_ref().is_none() && is_gone(world, envelope.recipient()) {
         report.expired.push(envelope.id());
         report.anomalies.push(format!(
             "envelope {} expired: its recipient #{} is gone",
@@ -432,6 +486,17 @@ fn step_envelope(
             envelope.recipient().0
         ));
         return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
+    }
+    // External messages without the strategic adapter may settle only a local
+    // physical endpoint. Never substitute the old abstract remote path.
+    if envelope.dispatch_ref().is_some() {
+        let from = crate::context::place_of(state, world, envelope.issuer());
+        let to = crate::context::place_of(state, world, envelope.recipient());
+        if from.is_some() && from == to {
+            report.delivered.push(envelope.id());
+            return Some(envelope.in_state(EnvelopeState::Delivered, now.clone()));
+        }
+        return None;
     }
     let from = envelope
         .path()
@@ -504,6 +569,9 @@ fn settle_arrival(
         }
         return;
     }
+    if arrived.kind() != crate::record::DispatchKind::Order {
+        return;
+    }
     // Newest-valid-revision-wins, in both directions, **per issuer** — the same
     // scope `active_order` reads and `next_revision` allocates in, so the three
     // agree by construction (fold K8).
@@ -513,7 +581,7 @@ fn settle_arrival(
             peer.id() != arrived.id()
                 && peer.issuer() == arrived.issuer()
                 && peer.recipient() == arrived.recipient()
-                && peer.ack_of().is_none()
+                && peer.kind() == crate::record::DispatchKind::Order
                 && matches!(
                     peer.state(),
                     EnvelopeState::Delivered | EnvelopeState::Acknowledged
@@ -571,7 +639,7 @@ pub fn standing_orders(store: &PropagationStore, recipient: ObjId) -> Vec<&Envel
 
 fn is_standing(envelope: &Envelope, recipient: ObjId) -> bool {
     envelope.recipient() == recipient
-        && envelope.ack_of().is_none()
+        && envelope.kind() == crate::record::DispatchKind::Order
         && matches!(
             envelope.state(),
             EnvelopeState::Delivered | EnvelopeState::Acknowledged
@@ -1149,7 +1217,10 @@ fn share_delivered(
         let Some(contact) = envelope.shares() else {
             continue;
         };
-        if envelope.state() != EnvelopeState::Delivered {
+        if !matches!(
+            envelope.state(),
+            EnvelopeState::Delivered | EnvelopeState::Acknowledged
+        ) {
             continue;
         }
         if is_gone(world, envelope.issuer()) || is_gone(world, envelope.recipient()) {
