@@ -11,7 +11,7 @@ passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
 Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
 R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-implemented and its dev1 gate passed. R6b, R3 and R4 have now passed their live gates; the remaining authorized train continues with R7.
+implemented and its dev1 gate passed. R6b, R3, R4, R7 and R8a have now passed their live gates; the remaining authorized train continues with R8b.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -400,6 +400,15 @@ Compare content sizes and multiple recipients against the published unit rule.
 Insufficient funds grants no paid entitlement; duplicate submissions/restart do not
 double-charge; expiry before service releases the hold. Kill on each side of the
 money/transport handoff and reconcile the actual store. Money is conserved. **Stop.**
+
+**Result (2026-10-23):** runtime tree `7376f2c6` passed 39 Linux relay stories,
+15 contracts, the capability test, four split-gateway tests and the real Redis/process
+fault test. The additional definition-census repair passed 25 tests on Windows and
+Linux. Dev1 passed fresh/upgrade/reboot, 298 WS commands, eight SSH checks and four
+payment-boundary SIGKILLs. Actual prices, holds, receipts, refunds and conservation
+agree; the corrected expiry fixture passed in a full rerun. The funded baseline was
+restored and dev2 is unchanged. See 15b for exact source/runtime provenance and scope.
+Commit/push precedes R8b; normal CI remains owner-monitored.
 
 ### Gate 10 — R8b: subscriptions, Sovereign treaty and arrears
 

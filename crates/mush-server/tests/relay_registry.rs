@@ -442,6 +442,22 @@ impl Rig {
         self.store.write(batch).await.unwrap();
         self.serial += 1;
     }
+    async fn flush_money(&mut self, quote: u64, phase: &str) {
+        assert!(
+            self.tw
+                .engine_mut()
+                .take_durable_gate()
+                .is_some_and(|(_, strict)| strict)
+        );
+        let dirty = self.tw.world_mut().take_dirty();
+        let mut batch = persist::batch_from_dirty(self.tw.world(), dirty, self.serial, true);
+        batch.module_ops = self.tw.take_module_ops();
+        assert!(batch.module_ops.iter().any(|o| o.ns == "economy"));
+        assert!(batch.module_ops.iter().any(|o| o.ns == "propagation" && matches!(&o.op,
+            ModuleWrite::JsonSet { key, value } if key == "relay_transport" && value["service"]["commerce"]["purchases"][quote.to_string()]["phase"] == phase)));
+        self.store.write(batch).await.unwrap();
+        self.serial += 1;
+    }
     async fn restart(&mut self) -> Result<(), String> {
         let previous_now = self.tw.world().now();
         let engine = boot::build_engine(&self.cfg, &self.store, &self.spool)
@@ -1674,8 +1690,8 @@ async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
             .len(),
         1
     );
-    // Restoring the default class releases the bounded entitlement slot.
-    rig.run(GOD, &format!("+relay/grant luna_ceres/{receiver}=standard"));
+    // R8 makes Deferred the free default; restoring it releases the courtesy slot.
+    rig.run(GOD, &format!("+relay/grant luna_ceres/{receiver}=deferred"));
     assert!(
         !rig.tw
             .world()
@@ -1842,7 +1858,7 @@ async fn r3_aged_standard_work_precedes_new_high_class_traffic() {
 }
 
 #[tokio::test]
-async fn r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_policy() {
+async fn r3_full_legacy_tickets_preserve_capacity_and_refuse_partial_policy() {
     let mut rig = Rig::new(true).await;
     let bob = rig.endpoints();
     let exit = rig.registry().nodes[&cid("ceres")].place;
@@ -1853,8 +1869,9 @@ async fn r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_pol
                 .contains("queued for IC transit")
         );
     }
-    // Convert a persisted, normally admitted full queue to its R2/R6 shape.
-    // This models an upgrade; it never mutates another owner's live state.
+    // Convert admitted tickets to their R2/R6 shape while preserving the
+    // separately funded R8 market. Dropping the whole service record now loses
+    // real purchase authority and correctly refuses boot, tested below.
     for _ in 0..4 {
         rig.mail_tick();
     }
@@ -1873,7 +1890,22 @@ async fn r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_pol
     );
     let mut transport = serde_json::to_value(book.relay_transport()).unwrap();
     let saved = transport.clone();
-    transport.as_object_mut().unwrap().remove("service");
+    let mut legacy = mush_propagation::service::State::new(
+        book.relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .config
+            .clone(),
+    );
+    legacy.commerce = book
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .commerce
+        .clone();
+    transport["service"] = serde_json::to_value(legacy).unwrap();
     transport["capacity"] =
         serde_json::json!({"luna_ceres":{"at":rig.tw.world().world_ic_now().at,"units":8}});
     let mut ops = vec![ModuleOp {
@@ -2356,6 +2388,43 @@ async fn r4_org_titled_endpoints_and_independent_operator_link() {
         )
         .contains("policy recorded")
     );
+    rig.run(
+        GOD,
+        &format!("+order {bob}=private default remains independent"),
+    );
+    let e = rig.last_envelope();
+    let state = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap();
+    assert_eq!(
+        mush_propagation::commerce::base(
+            state.relay_transport().service.as_ref().unwrap(),
+            rig.tw.world(),
+            &cid("independent"),
+            &e
+        ),
+        mush_propagation::service::Class::Standard
+    );
+    for (class, stored) in [("deferred", true), ("standard", false)] {
+        rig.run(GOD, &format!("+relay/grant independent/#1={class}"));
+        let book = rig
+            .tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap();
+        assert_eq!(
+            book.relay_transport()
+                .service
+                .as_ref()
+                .unwrap()
+                .grants
+                .iter()
+                .any(|g| g.pair == cid("independent") && g.principal == GOD),
+            stored
+        );
+    }
     rig.run(GOD, "+relay/grant independent/#1=priority");
     rig.run(GOD, &format!("+order {bob}=independent private link"));
     let id = rig.last_envelope().id();
@@ -2672,5 +2741,758 @@ async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once()
     assert_eq!(
         mush_tactics::module::unit_of(rig.tw.world(), node).unwrap(),
         &before
+    );
+}
+
+impl Rig {
+    fn retail(&self) -> mush_propagation::commerce::Market {
+        mush_propagation::commerce::current(self.tw.world())
+            .unwrap()
+            .clone()
+    }
+    fn account(&self, id: u64) -> mush_economy::Account {
+        self.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .account(mush_economy::AccountId(id))
+            .unwrap()
+            .clone()
+    }
+    fn money_total(&self) -> i128 {
+        self.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .accounts()
+            .filter(|a| a.instrument.as_str() == "tacsim.credit")
+            .map(|a| a.posted_balance.widen())
+            .sum()
+    }
+    fn retail_ready(&mut self) {
+        for _ in 0..20 {
+            if self.retail().capital_transaction.is_some() {
+                return;
+            }
+            self.mail_tick();
+        }
+        panic!(
+            "Exchange capitalization did not settle: {:?}",
+            self.retail()
+        );
+    }
+    fn retail_sender(&mut self, name: &str, fund: bool) -> (mush_core::ObjId, u64) {
+        let who = self.tw.spawn_player(name);
+        let luna = self.registry().nodes[&cid("malapert")].coverage[0];
+        self.run(GOD, &format!("@teleport {who}={luna}"));
+        self.run(GOD, &format!("@account/open {who}=tacsim.credit"));
+        let account = self
+            .tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .accounts_of(&mush_org::PrincipalId::Object(who))
+            .next()
+            .unwrap()
+            .id
+            .0;
+        if fund {
+            let reply = self.run(GOD, &format!("@econ/pay 1={account} 10000"));
+            assert_eq!(
+                self.account(account).posted_balance.minor(),
+                10_000,
+                "{reply}"
+            );
+        }
+        (who, account)
+    }
+    fn retail_mail(
+        &mut self,
+        who: mush_core::ObjId,
+        to: mush_core::ObjId,
+        body: &str,
+    ) -> (u64, u64) {
+        assert!(
+            self.run(who, &format!("@mail/quick {to}=Paid/{body}"))
+                .contains("queued")
+        );
+        let mail = self.mail().next_id() - 1;
+        for _ in 0..5 {
+            self.mail_tick();
+            if let Some(e) = self.mail_route(mail, to, false) {
+                return (mail, e.id());
+            }
+        }
+        panic!("mail not accepted");
+    }
+    fn retail_quote(
+        &mut self,
+        who: mush_core::ObjId,
+        envelope: u64,
+        class: &str,
+        payer: u64,
+    ) -> u64 {
+        let id = self.retail().next;
+        let reply = self.run(who, &format!("+relay/quote {envelope}={class},{payer}"));
+        assert!(reply.contains(&format!("Quote {id}:")), "{reply}");
+        id
+    }
+}
+#[tokio::test]
+async fn r8a_purchase_reservation_atomic_transmission_restart_and_conservation() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("RetailAlice", true);
+    let (mail, envelope) = rig.retail_mail(alice, bob, &"x".repeat(490));
+    assert!(rig.run(alice, "+relay").contains("free Deferred"));
+    assert!(
+        rig.run(alice, "+relay/outbox")
+            .contains(&format!("Envelope {envelope}"))
+    );
+    let quote = rig.retail_quote(alice, envelope, "priority", payer);
+    let p = rig.retail().purchases[&quote].clone();
+    assert_eq!(p.units, 4);
+    assert_eq!(p.total_minor, 2000);
+    let before = (rig.account(payer), rig.account(p.payee));
+    let total = rig.money_total();
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    let reply = rig.run(alice, &format!("+relay/buy {quote}"));
+    assert!(
+        reply.contains("Reserved"),
+        "{reply}; account={:?}",
+        rig.account(payer)
+    );
+    assert_eq!(rig.account(payer).posted_balance, before.0.posted_balance);
+    assert_eq!(rig.account(payer).held_amount.minor(), 2000);
+    let p = rig.retail().purchases[&quote].clone();
+    let hold = p.hold.unwrap();
+    rig.flush_money(quote, "reserved").await;
+    rig.run(alice, &format!("@hold/release {hold}"));
+    assert_eq!(rig.account(payer).held_amount.minor(), 2000);
+    rig.run(alice, &format!("+relay/buy {quote}"));
+    assert_eq!(rig.account(payer).held_amount.minor(), 2000);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.retail().purchases[&quote], p);
+    // Staff pass is the second production ingress; it must settle the same money.
+    for _ in 0..12 {
+        rig.pass();
+        if rig.retail().purchases[&quote].phase == Phase::Consumed {
+            break;
+        }
+    }
+    assert_eq!(rig.retail().purchases[&quote].phase, Phase::Consumed);
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+    assert_eq!(
+        rig.account(payer).posted_balance.minor(),
+        before.0.posted_balance.minor() - 2000
+    );
+    assert_eq!(
+        rig.account(p.payee).posted_balance.minor(),
+        before.1.posted_balance.minor() + 2000
+    );
+    assert_eq!(rig.money_total(), total);
+    let purchased = rig.retail().purchases[&quote].clone();
+    rig.flush_money(quote, "consumed").await;
+    rig.restart().await.unwrap();
+    rig.run(alice, &format!("+relay/buy {quote}"));
+    rig.pass();
+    assert_eq!(rig.retail().purchases[&quote], purchased);
+    assert!(
+        rig.run(alice, &format!("+relay/cancel {quote}"))
+            .contains("no refund")
+    );
+    rig.finish_mail(mail);
+    assert!(rig.mail().entry(bob, mail).is_some());
+    assert_eq!(rig.money_total(), total);
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
+#[tokio::test]
+async fn r8a_cancel_expiry_no_funds_and_no_payer_alias_bypass() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("Buyer", true);
+    let (poor, empty) = rig.retail_sender("PoorBuyer", false);
+    let (_, ep) = rig.retail_mail(poor, bob, "no funds");
+    assert!(
+        rig.run(poor, &format!("+relay/quote {ep}=priority,{payer}"))
+            .contains("No usable payer")
+    );
+    let q = rig.retail_quote(poor, ep, "priority", empty);
+    let reply = rig.run(poor, &format!("+relay/buy {q}"));
+    assert!(reply.contains("Reservation refused"), "{reply}");
+    assert_eq!(rig.retail().purchases[&q].phase, Phase::Quoted);
+    assert_eq!(rig.account(empty).held_amount.minor(), 0);
+    let (_, env) = rig.retail_mail(alice, bob, "cancel and upgrade");
+    let q = rig.retail_quote(alice, env, "standard", payer);
+    assert!(
+        rig.run(alice, &format!("+relay/buy {q}"))
+            .contains("Reserved")
+    );
+    let before = rig.account(payer).posted_balance;
+    rig.run(alice, &format!("+relay/cancel {q}"));
+    assert_eq!(rig.retail().purchases[&q].phase, Phase::Released);
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+    let upgrade = rig.retail_quote(alice, env, "priority", payer);
+    rig.run(alice, &format!("+relay/buy {upgrade}"));
+    let p = rig.retail().purchases[&upgrade].clone();
+    assert!(p.total_minor > rig.retail().purchases[&q].total_minor);
+    // Receiving endpoint denial wins over a solvent buyer's purchased Priority.
+    rig.run(
+        GOD,
+        &format!("+relay/policy luna_ceres/{bob}=suspended,operator.billingtest,receiver denied"),
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.advance_ic_to(p.service_until);
+    rig.pass();
+    assert_eq!(rig.retail().purchases[&upgrade].phase, Phase::Released);
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+    assert_eq!(rig.account(payer).posted_balance, before);
+    rig.run(alice, &format!("+relay/cancel {upgrade}"));
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+}
+
+#[tokio::test]
+async fn r8a_standard_fanout_prices_real_utf8_content_and_default_deferred_stays_free() {
+    use mush_propagation::{commerce::Phase, service::Class};
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("FanoutBuyer", true);
+    let carol = rig.tw.spawn_player("RetailCarol");
+    let room = rig.registry().nodes[&cid("ceres")].coverage[0];
+    rig.run(GOD, &format!("@teleport {carol}={room}"));
+    rig.run(GOD, &format!("+relay/grant luna_ceres/{carol}=priority"));
+    assert!(
+        rig.run(
+            alice,
+            &format!("@mail/quick {bob},{carol}=Paid/{}", "é".repeat(65))
+        )
+        .contains("queued")
+    );
+    let mail = rig.mail().next_id() - 1;
+    rig.mail_tick();
+    let copies: Vec<_> = [bob, carol]
+        .into_iter()
+        .map(|who| rig.mail_route(mail, who, false).unwrap())
+        .collect();
+    assert!(
+        copies
+            .iter()
+            .all(|e| e.dispatch_ref().unwrap().bytes == 134)
+    );
+    let before = (
+        rig.account(payer).posted_balance,
+        rig.account(rig.retail().payee).posted_balance,
+    );
+    let total = rig.money_total();
+    let mut quotes = vec![];
+    for e in &copies {
+        let q = rig.retail_quote(alice, e.id(), "standard", payer);
+        let reply = rig.run(alice, &format!("+relay/buy {q}"));
+        assert!(reply.contains("Reserved"), "{reply}");
+        quotes.push(q);
+    }
+    assert_eq!(rig.account(payer).held_amount.minor(), 400);
+    for _ in 0..4 {
+        rig.pass();
+    }
+    for q in &quotes {
+        assert_eq!(rig.retail().purchases[q].phase, Phase::Reserved);
+    }
+    let due = copies
+        .iter()
+        .map(|e| {
+            rig.envelope(e.id())
+                .transit()
+                .unwrap()
+                .service
+                .as_ref()
+                .unwrap()
+                .eligible_at
+        })
+        .max()
+        .unwrap();
+    rig.advance_ic_to(due);
+    for _ in 0..12 {
+        rig.mail_tick();
+        if quotes
+            .iter()
+            .all(|q| rig.retail().purchases[q].phase == Phase::Consumed)
+        {
+            break;
+        }
+    }
+    assert!(
+        quotes
+            .iter()
+            .all(|q| rig.retail().purchases[q].phase == Phase::Consumed)
+    );
+    assert_eq!(
+        rig.account(payer).posted_balance.minor(),
+        before.0.minor() - 400
+    );
+    assert_eq!(
+        rig.account(rig.retail().payee).posted_balance.minor(),
+        before.1.minor() + 400
+    );
+    assert_eq!(rig.money_total(), total);
+    let (free, _) = rig.retail_mail(alice, bob, "free copy");
+    let e = rig.mail_route(free, bob, false).unwrap();
+    assert_eq!(
+        e.transit().unwrap().service.as_ref().unwrap().class,
+        Class::Deferred
+    );
+    let policy = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .config
+        .clone();
+    let earliest = e.transit().unwrap().service.as_ref().unwrap().eligible_at;
+    let phase = earliest.rem_euclid(policy.window_period_s);
+    let window = if policy.window_open(earliest) {
+        earliest
+    } else {
+        earliest + policy.window_period_s - phase + policy.window_start_s
+    };
+    rig.advance_ic_to(window);
+    for _ in 0..12 {
+        rig.mail_tick();
+        if rig.mail().entry(bob, free).is_some() {
+            break;
+        }
+    }
+    assert!(rig.mail().entry(bob, free).is_some());
+    assert_eq!(
+        rig.account(payer).posted_balance.minor(),
+        before.0.minor() - 400
+    );
+}
+
+#[tokio::test]
+async fn r8a_pre_retail_upgrade_preserves_accepted_terms_and_missing_market_refuses_boot() {
+    use mush_propagation::service::Class;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let market = rig.retail();
+    assert!(market.capital_transaction.is_none());
+    assert_eq!(rig.account(market.payee).posted_balance.minor(), 0);
+    assert!(
+        rig.run(GOD, &format!("+order {bob}=pre-retail"))
+            .contains("Queued revision")
+    );
+    let old = rig.last_envelope().id();
+    rig.flush().await;
+    let mut transport = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    transport["service"]
+        .as_object_mut()
+        .unwrap()
+        .remove("commerce");
+    transport["service"]["grants"] = serde_json::json!([]);
+    // No capitalization, holds or payments occurred. Remove only the zero-value
+    // R8 account to model the real pre-retail schema; never delete funded money.
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![
+                ModuleOp {
+                    ns: "economy".into(),
+                    op: ModuleWrite::Del {
+                        key: format!("account:{}", market.payee).into(),
+                    },
+                },
+                ModuleOp {
+                    ns: "propagation".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "relay_transport".into(),
+                        value: transport,
+                    },
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert!(rig.retail().legacy_before > old);
+    rig.pass();
+    assert_eq!(
+        rig.envelope(old)
+            .transit()
+            .unwrap()
+            .service
+            .as_ref()
+            .unwrap()
+            .class,
+        Class::Standard
+    );
+    assert!(
+        rig.run(GOD, &format!("+order {bob}=post-retail"))
+            .contains("Queued revision")
+    );
+    let new = rig.last_envelope().id();
+    rig.pass();
+    assert_eq!(
+        rig.envelope(new)
+            .transit()
+            .unwrap()
+            .service
+            .as_ref()
+            .unwrap()
+            .class,
+        Class::Deferred
+    );
+    rig.retail_ready();
+    let funded = rig.account(rig.retail().payee).posted_balance;
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.account(rig.retail().payee).posted_balance, funded);
+    let mut broken = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    broken["service"]
+        .as_object_mut()
+        .unwrap()
+        .remove("commerce");
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "propagation".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "relay_transport".into(),
+                    value: broken,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        rig.restart()
+            .await
+            .unwrap_err()
+            .contains("without its market")
+    );
+}
+
+#[tokio::test]
+async fn r8a_orphaned_reservation_and_forged_quote_refuse_boot() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("AuditBuyer", true);
+    let (_, env) = rig.retail_mail(alice, bob, "audit");
+    let q = rig.retail_quote(alice, env, "priority", payer);
+    rig.run(alice, &format!("+relay/buy {q}"));
+    rig.flush().await;
+    let original = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    for missing in [true, false] {
+        let mut broken = original.clone();
+        if missing {
+            broken["service"]["commerce"]["purchases"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&q.to_string());
+        } else {
+            broken["service"]["commerce"]["purchases"][q.to_string()]["total_minor"] =
+                serde_json::json!(1);
+        }
+        rig.store
+            .write(WriteBatch {
+                serial: rig.serial,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "propagation".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "relay_transport".into(),
+                        value: broken,
+                    },
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        rig.serial += 1;
+        let error = rig.restart().await.unwrap_err();
+        assert!(
+            error.contains(if missing {
+                "orphaned relay reservation"
+            } else {
+                "invalid relay purchases"
+            }),
+            "{error}"
+        );
+    }
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "propagation".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "relay_transport".into(),
+                    value: original,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.account(payer).held_amount.minor(), 500);
+    rig.run(alice, &format!("+relay/cancel {q}"));
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+}
+
+#[tokio::test]
+async fn r8a_failed_capture_keeps_money_capacity_receipt_and_message_unspent() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("FrozenPayeeBuyer", true);
+    let (_, env) = rig.retail_mail(alice, bob, "unspent");
+    let q = rig.retail_quote(alice, env, "priority", payer);
+    rig.run(alice, &format!("+relay/buy {q}"));
+    rig.flush().await;
+    let payee = rig.retail().payee;
+    let key = format!("account:{payee}");
+    let mut account = rig
+        .store
+        .module_json_get("economy", &key)
+        .await
+        .unwrap()
+        .unwrap();
+    // Controlled fault in the account's documented status authority, not money.
+    account["status"] = serde_json::json!("Frozen");
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "economy".into(),
+                op: ModuleWrite::JsonSet {
+                    key: key.into(),
+                    value: account,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    let total = rig.money_total();
+    for _ in 0..4 {
+        rig.pass();
+    }
+    assert_eq!(rig.retail().purchases[&q].phase, Phase::Reserved);
+    assert_eq!(rig.account(payer).held_amount.minor(), 500);
+    assert!(rig.envelope(env).path().is_empty());
+    assert!(
+        !rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .receipts
+            .iter()
+            .any(|r| r.envelope == env)
+    );
+    assert_eq!(rig.money_total(), total);
+    let result = rig.run(GOD, &format!("@account/unfreeze {payee}"));
+    assert!(result.contains("unfrozen"), "{result}");
+    for _ in 0..8 {
+        rig.pass();
+    }
+    assert_eq!(rig.retail().purchases[&q].phase, Phase::Consumed);
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+    assert_eq!(rig.money_total(), total);
+}
+
+#[tokio::test]
+async fn r8a_expired_hold_waiting_in_release_backlog_cannot_be_captured() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("ExpiryBacklogBuyer", true);
+    let (_, env) = rig.retail_mail(alice, bob, "expiry backlog");
+    // The first eight expired quotes fill this pass's bounded release budget.
+    for _ in 0..mush_propagation::commerce::MAX_SETTLEMENTS {
+        rig.retail_quote(alice, env, "standard", payer);
+    }
+    let paid = rig.retail_quote(alice, env, "priority", payer);
+    rig.run(alice, &format!("+relay/buy {paid}"));
+    let p = rig.retail().purchases[&paid].clone();
+    rig.advance_ic_to(p.service_until);
+    let before = rig.account(payer).posted_balance;
+    rig.pass();
+    assert_eq!(rig.retail().purchases[&paid].phase, Phase::Reserved);
+    assert!(rig.envelope(env).path().is_empty());
+    assert_eq!(rig.account(payer).posted_balance, before);
+    rig.pass();
+    assert_eq!(rig.retail().purchases[&paid].phase, Phase::Released);
+    assert_eq!(rig.account(payer).held_amount.minor(), 0);
+    assert_eq!(rig.account(payer).posted_balance, before);
+}
+
+#[tokio::test]
+async fn r8a_two_exchange_hops_use_one_purchase_and_survive_restart_between_hops() {
+    use mush_propagation::commerce::Phase;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let mut catalog = rig.registry();
+    let phobos = rig
+        .tw
+        .world()
+        .iter()
+        .find(|o| o.name == "Kasei Receiving Office")
+        .unwrap()
+        .id;
+    // Controlled topology fixture, using real checked node/unit bindings.
+    // Manufacturing these objects through industry belongs to R9a.
+    let mut node = catalog.nodes[&cid("ceres")].clone();
+    rig.run(GOD, "@create R8HopNode");
+    node.object = rig
+        .tw
+        .world()
+        .iter()
+        .find(|o| o.name == "R8HopNode")
+        .unwrap()
+        .id;
+    node.place = phobos;
+    node.coverage = vec![phobos];
+    rig.run(GOD, &format!("@teleport {}={phobos}", node.object));
+    rig.run(
+        GOD,
+        &format!("@behavior/add {}=sim.relay_node", node.object),
+    );
+    rig.run(
+        GOD,
+        &format!("@unit/create {}=tacsim.unit.relay_station", node.object),
+    );
+    catalog.nodes.insert(cid("r8_phobos"), node.clone());
+    let mut pair = catalog.pairs[&cid("luna_ceres")].clone();
+    for (i, node_key) in ["ceres", "r8_phobos"].iter().enumerate() {
+        let inside = catalog.nodes[&cid(node_key)].object;
+        let half = rig
+            .tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                &format!("R8Half{i}"),
+                GOD,
+                Some(inside),
+            )
+            .unwrap();
+        rig.run(GOD, &format!("@behavior/add {half}=sim.relay_half"));
+        pair.halves[i].object = half;
+        pair.halves[i].node = cid(node_key);
+        pair.halves[i].id = cid(&format!("r8.half{i}"));
+    }
+    catalog.pairs.insert(cid("r8_second"), pair);
+    catalog.revision += 1;
+    catalog.reconcile(rig.tw.world()).unwrap();
+    rig.flush().await;
+    rig.replace_document(serde_json::to_value(catalog).unwrap())
+        .await;
+    rig.restart().await.unwrap();
+    rig.run(GOD, &format!("@teleport {bob}={phobos}"));
+    rig.run(GOD, &format!("@prop/jam {phobos}=100"));
+    let (alice, payer) = rig.retail_sender("TwoHopBuyer", true);
+    let (mail, env) = rig.retail_mail(alice, bob, "two hops");
+    let q = rig.retail_quote(alice, env, "priority", payer);
+    rig.run(alice, &format!("+relay/buy {q}"));
+    for _ in 0..12 {
+        rig.pass();
+    }
+    assert_eq!(rig.retail().purchases[&q].phase, Phase::Consumed);
+    let purchase = rig.retail().purchases[&q].clone();
+    assert_eq!(rig.envelope(env).path().len(), 1);
+    let balances = (
+        rig.account(payer).posted_balance,
+        rig.account(purchase.payee).posted_balance,
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.run(GOD, &format!("@prop/jam {phobos}=0"));
+    // The outbound purchased copy arrives now. Its unpaid return notice is
+    // independently Deferred and is not part of this two-hop charge assertion.
+    for _ in 0..24 {
+        rig.mail_tick();
+        if rig.mail().entry(bob, mail).is_some() {
+            break;
+        }
+    }
+    assert!(
+        rig.mail().entry(bob, mail).is_some(),
+        "{:?}",
+        rig.envelope(env)
+    );
+    assert_eq!(rig.retail().purchases[&q], purchase);
+    assert_eq!(
+        (
+            rig.account(payer).posted_balance,
+            rig.account(purchase.payee).posted_balance
+        ),
+        balances
+    );
+    let book = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap();
+    let receipts: Vec<_> = book
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .receipts
+        .iter()
+        .filter(|r| r.envelope == env)
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    assert!(
+        receipts
+            .iter()
+            .all(|r| r.ticket.class == mush_propagation::service::Class::Priority)
     );
 }

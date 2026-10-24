@@ -1,0 +1,32 @@
+   Compiling tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.47s
+     Running tests\definitions.rs (target\debug\deps\definitions-4fe38837411cd27a.exe)
+
+running 25 tests
+test a_sensor_row_refuses_an_impossible_signature_and_an_absurd_comms_reach ... ok
+test a_filled_ecm_hook_refuses ... ok
+test a_value_past_a_bound_refuses_naming_the_field ... ok
+test an_unknown_key_refuses_naming_the_entry ... ok
+test a_unit_declares_between_one_and_sixteen_sections ... ok
+test two_packs_declaring_one_definition_id_refuse_naming_both ... ok
+test an_arena_in_a_rules_pack_and_a_unit_in_a_seed_pack_both_refuse ... ok
+test v1_the_arena_check_refuses_a_bad_spot_name_and_a_twenty_third_spot ... ok
+test every_shipped_definition_loads_validates_and_binds ... ok
+test the_two_tracked_rules_readings_agree ... ok
+test an_arena_whose_ground_is_missing_refuses_rather_than_falling_back ... ok
+test the_six_content_kinds_are_the_six_the_pack_format_owns ... ok
+test a_dangling_reference_refuses_naming_the_entry ... ok
+test q8_build_fielded_refuses_an_edited_pack_wearing_a_shipped_name ... ok
+test q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items ... ok
+test q8_build_fielded_skips_an_extension_pack_offered_again_as_an_operator_pack ... ok
+test the_ten_commodity_families_are_instruments_after_boot ... ok
+test every_definition_is_registered_with_an_exact_reference ... ok
+test the_production_composition_can_make_the_stock_tank ... ok
+test from_pack_yields_the_window_and_the_right_impassable_cells ... ok
+test a_match_on_the_shipped_arena_is_fought_on_the_authored_ground ... ok
+test m4_an_entry_zone_of_water_is_refused_by_name ... ok
+test an_arena_map_past_the_bound_is_refused_by_name_and_the_shipped_ground_is_under_it ... ok
+test u4_the_arena_applier_refuses_an_arena_whose_map_is_past_the_bound ... ok
+test a_fresh_boot_makes_the_twelve_tanks_and_a_second_makes_no_thirteenth ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s

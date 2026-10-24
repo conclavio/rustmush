@@ -142,6 +142,7 @@ pub mod pack;
 pub mod port;
 pub mod port_tick;
 pub mod record;
+pub mod relay_commerce;
 pub mod relay_content;
 pub mod relay_loss;
 pub mod relay_metric;
@@ -587,6 +588,12 @@ impl GameModule for TacsimRuleset {
              site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
         )?;
         relay_loss::register(reg)?;
+        relay_commerce::register(reg)?;
+        reg.persist_delegation(
+            crate::NS,
+            "propagation",
+            "R8 relay market boot uses the transport owner's checked install API",
+        )?;
         commands::register(reg)?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
@@ -837,6 +844,7 @@ impl GameModule for TacsimRuleset {
     /// as it gives their seat back.
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
         relay_loss::boot(ctx).map_err(ModError::msg)?;
+        relay_commerce::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

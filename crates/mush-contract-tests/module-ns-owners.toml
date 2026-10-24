@@ -391,3 +391,9 @@ writer = "propagation"
 ns = "npc"
 declared_by = "propagation"
 reason = "R3 permissioned service evidence is filed through mush_npc::file_observation; this pins the already-declared production crossing."
+
+[[delegation]]
+writer = "tacsim"
+ns = "propagation"
+declared_by = "tacsim"
+reason = "R8 finite Exchange capitalization installs the checked relay market through the propagation owner API at boot."

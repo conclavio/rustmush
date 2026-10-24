@@ -18,12 +18,37 @@ eligible copies may pass a head that cannot fit the remaining capacity. The pair
 shares one eight-unit bucket across directions; it never accumulates idle credit.
 Delivery is checked on the existing coarse cadence, so these are earliest times.
 
-Class grants currently come from the operator; no purchase or charge exists yet.
-A scoped operator can use `+relay/grant luna_ceres/#character=priority` (or
-`sovereign`, `standard`, `deferred`). This needs `relay.manage` on the Exchange's
-organization scope. Restoring Standard removes the override and frees its grant slot. Grants affect future pair tickets; issued tickets survive
-restart with their base class. Service restrictions are rechecked before transmission. The receiver's class is not used
-for the sender's message.
+New Exchange traffic defaults to free Deferred. Short queued copies can buy Standard at
+1 cr per unit or Priority at 5 cr per unit. One unit is each started 128 content
+bytes (including the subject for mail), up to 1024 bytes. Each recipient copy has
+its own quote and charge. A route across multiple Exchange pairs pays once; each
+pair still consumes physical capacity. Existing accepted traffic keeps its terms.
+
+```
++relay/outbox
++relay/quote <envelope>=standard,<payer account>
++relay/quote <envelope>=priority,<payer account>
++relay/buy <quote>
++relay/purchases
++relay/cancel <quote>
+```
+
+Quotes freeze class, recipient, content units, tariff and payer for 600 IC seconds.
+Buying reserves real funds; the account's normal debit and approval rules apply.
+The first Exchange transmission settles the whole fee. An unsent reservation
+expires after one IC day from quoting or can be cancelled for full release.
+Consumed service has no refund. To upgrade unused Standard, cancel its reservation
+and quote Priority. Repeating a purchase does not reserve or charge again.
+The Exchange's initial capital comes from an existing finite clearing balance;
+paid quotes wait until that transfer lands on the economy cadence.
+
+Scoped operators may still give explicitly noncommercial courtesy service with
+`+relay/grant luna_ceres/#character=priority` (or `sovereign`, `standard`, `deferred`),
+under `relay.manage`. On Exchange links, Deferred removes the override; independent operators default
+to Standard and remove their override by granting Standard. These grants are audited and
+never represented as purchases. Purchased terms override courtesy class for that
+copy. Service restrictions at both endpoints are rechecked before transmission;
+changing the payer cannot evade a receiver's denial.
 
 `+relay/status luna_ceres` shows your service restrictions and reasons. An operator
 with `relay.manage` can set, for example:
@@ -35,7 +60,7 @@ with `relay.manage` can set, for example:
 ```
 
 A policy belongs to the pair's operator and applies to every link that operator
-runs. The strongest sender/receiver restriction wins: Served keeps the granted
+runs. The strongest sender/receiver restriction wins: Served keeps the purchased or courtesy
 class; Throttled demotes once (Sovereign → Priority → Standard → Deferred);
 Suspended uses conventional transport or waits for a known route. Independent
 operators' links remain eligible. Both characters and a titled unit's legal owner

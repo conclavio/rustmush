@@ -59,6 +59,7 @@ use mush_core::{Ctx, ModuleOp, ModuleWrite, SceneId};
 use smol_str::SmolStr;
 
 pub mod commands;
+pub mod commerce;
 pub mod context;
 pub mod dispatch;
 pub mod panel;
@@ -368,6 +369,7 @@ impl GameModule for PropagationModule {
 /// line being written into the dark.
 fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     dispatch::reconcile(ctx);
+    commerce::sweep(ctx);
     let at = ctx.w.world_ic_now();
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         return;
@@ -390,6 +392,9 @@ fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let metric = routing::snapshot_in(ctx, &at);
     let report =
         pass::delivery_pass_with_metric(&mut book, &state, ctx.w, &ledger, &at, None, metric);
+    if !commerce::settle_pass(ctx, &mut book) {
+        return;
+    }
     let allocator = book.allocator();
     if allocator != old_allocator {
         ctx.persist(ModuleOp {

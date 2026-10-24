@@ -2716,6 +2716,7 @@ pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &[
     "campaign.operation",
     "industry.workorder",
     "tacsim.tv.deposit",
+    "relay.message",
 ];
 
 /// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
@@ -3186,7 +3187,8 @@ mod engine_reservation_tests {
             [
                 "campaign.operation",
                 "industry.workorder",
-                "tacsim.tv.deposit"
+                "tacsim.tv.deposit",
+                "relay.message"
             ]
         );
         for kind in ENGINE_OWNED_RESERVATIONS {

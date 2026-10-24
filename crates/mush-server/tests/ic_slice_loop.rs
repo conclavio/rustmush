@@ -2761,6 +2761,20 @@ async fn r5_real_dray_radio_freezes_forwards_and_recovers() {
     sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let pilot = pilot(&mut rig, "RadioPilot", "radioacct").await;
+    // This passage test isolates physical lag; paid/default class timing has
+    // dedicated R8 stories. Explicit courtesy is audited and never billed.
+    for actor in [GOD, pilot] {
+        assert!(
+            run(
+                &mut rig,
+                GOD,
+                &format!("+relay/grant luna_ceres/{actor}=priority")
+            )
+            .await
+            .contains("Class grant recorded")
+        );
+    }
+
     let row = enrol(&mut rig, pilot, "Radio Dray").await;
     let hull = ObjId(row.hull);
     outfit(&mut rig, pilot).await;

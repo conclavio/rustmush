@@ -311,7 +311,7 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (R1–R7 implemented; R8–R10 remaining)
+## 8. Engine backlog (R1–R7 and R8a implemented; R8b–R10 remaining)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
@@ -351,6 +351,13 @@ anathema, faction/front consequences and recovery insurance cancellation. Existi
 attention pools are bounded; no seeker is seeded. Real dev1 loss/restart/fallback
 acceptance passed. Stations are not arena-fieldable; no strategic siege UI is added.
 R3/R4/R6 class, policy, all-IC mail and IC-channel acceptance are recorded in 15b.
+
+**R8a as built (2026-10-23):** one Exchange operating account receives finite
+charter capital from Ceres Clearing. Normal per-recipient quotes, protected holds,
+first-transmission settlement, cancellation and expiry sell Standard/Priority
+short-message service; unpaid new traffic remains free Deferred. The real dev1
+payment/crash/conservation gate passed. Subscriptions, Sovereign treaty and arrears
+remain the next separate R8b gate. See 15b for evidence and CI repairs.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

@@ -638,6 +638,7 @@ pub struct Pass<'a> {
     pub metric: Box<dyn Metric>,
     queues: BTreeMap<CanonicalId, VecDeque<u64>>,
     jamming: BTreeMap<ObjId, u32>,
+    paid_capture: bool,
 }
 
 impl<'a> Pass<'a> {
@@ -684,6 +685,7 @@ impl<'a> Pass<'a> {
             metric: metric.unwrap_or_else(|| services.0.snapshot(world, now)),
             queues,
             jamming: store.jamming_map(),
+            paid_capture: false,
         })
     }
 
@@ -846,7 +848,9 @@ impl<'a> Pass<'a> {
                 if let Some(service) = &store.transport.service {
                     let (class, throttled) =
                         crate::service::effective(service, self.world, pair_id, envelope)?;
-                    let base_class = Some(service.class(pair_id, envelope.issuer()));
+                    let base_class = Some(crate::commerce::base(
+                        service, self.world, pair_id, envelope,
+                    ));
                     let units = message_units(envelope);
                     let available = store.transport.available(
                         pair_id,
@@ -881,7 +885,8 @@ impl<'a> Pass<'a> {
                 let (class, throttled) =
                     crate::service::effective(state, self.world, pair_id, envelope)?;
                 if ticket.class != class || ticket.throttled != throttled {
-                    ticket.base_class = Some(ticket.base_class.unwrap_or(ticket.class));
+                    ticket.base_class =
+                        Some(crate::commerce::base(state, self.world, pair_id, envelope));
                     ticket.class = class;
                     ticket.throttled = throttled;
                     ticket.eligible_at = state.config.eligible_at(class, queued.at);
@@ -966,6 +971,34 @@ impl<'a> Pass<'a> {
             {
                 return None;
             }
+            let needs_capture = store
+                .transport
+                .service
+                .as_ref()
+                .and_then(|s| s.commerce.as_ref())
+                .is_some_and(|m| {
+                    crate::service::integration(self.world)
+                        .and_then(|api| api.operator(self.world, pair_id))
+                        == Some(m.operator)
+                        && m.active(envelope.id())
+                            .is_some_and(|p| p.phase == crate::commerce::Phase::Reserved)
+                });
+            if needs_capture
+                && (self.paid_capture
+                    || !store
+                        .transport
+                        .service
+                        .as_ref()
+                        .and_then(|s| s.commerce.as_ref())
+                        .and_then(|m| m.active(envelope.id()))
+                        .is_some_and(|p| {
+                            now.at < p.service_until
+                                && crate::service::integration(self.world)
+                                    .is_some_and(|api| api.reserved(self.world, p))
+                        }))
+            {
+                return None;
+            }
             let units = message_units(envelope);
             let mut next = match envelope.relayed(leg.relay?, now.clone()) {
                 Ok(next) => next,
@@ -974,6 +1007,10 @@ impl<'a> Pass<'a> {
             if !store.transport.consume(pair_id, now.at, units, limit) {
                 return None;
             }
+            if !crate::commerce::consuming(store, self.world, pair_id, envelope.id()) {
+                return None;
+            }
+            self.paid_capture |= needs_capture;
             queue.retain(|id| *id != envelope.id());
             if let (Some(state), Some(ticket), Some(queued)) = (
                 &mut store.transport.service,

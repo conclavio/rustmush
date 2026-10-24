@@ -1019,3 +1019,116 @@ root-only snapshot; original expiration deadlines were preserved. Dev2 remains P
 539467. Secrets, raw snapshots and configuration are not committed. Prior R4 CI has
 only the already-repaired test(rest) failure at this check; the slow remaining shard
 is owner-monitored. Commit/push completes R7 before automatic continuation to R8a.
+
+## R8a — funded Exchange and per-copy retail (2026-10-23)
+
+Base `42f610ec`; runtime source tree `7376f2c61b5bcce6b2a9b4adc73038be4a4961e4`.
+The runtime candidate is an archive of a staged Git tree, built and
+accepted before its branch commit. The existing web archive checker uses the parent
+commit marker; `.source-tree` and the binary hashes identify the exact candidate.
+The final evidence records both. A descriptive parent marker was refused by the web
+checker on an earlier build, before deployment; the corrected marker is a full hash.
+
+The Exchange owns one real operating account. A once-only, idempotent 1000 cr transfer
+comes from the existing finite Ceres Clearing account, never a new mint. On a fresh
+world that transfer waits for the existing port funding cadence; quotes truthfully
+remain unavailable until it settles. On upgrade it uses available clearing money.
+A missing market beside its operating account refuses boot rather than recreating
+capital. The checked market identity/tariff cannot silently change on reapply.
+
+Normal `+relay/outbox`, `/quote`, `/buy`, `/cancel` and `/purchases` sell one recipient
+copy: actual UTF-8 subject/body bytes, ceil(bytes/128), at most 1024 bytes. Tariff v1
+charges Standard 1 cr/unit and Priority 5 cr/unit. Quotes last 600 IC seconds; unused
+reservations release by 86400 IC seconds from quotation, on cancellation, or when
+the copy terminates without Exchange consumption. Change an unused reservation by
+cancelling then quoting the new class. The first Exchange crossing consumes the
+whole fee; subsequent Exchange hops do not charge again, and consumed service has
+no refund. Large letters remain conventional. New unpaid Exchange traffic uses
+free Deferred. Existing accepted envelopes retain pre-retail class semantics using
+a checked allocator boundary; independent operators retain their own Standard default.
+Explicit, audited courtesy grants remain noncommercial and never claim payment.
+
+Propagation owns at most 256 purchase rows in its existing strictly decoded transport
+document, with 32 live quotes/reservations per issuer, bounded terminal eviction and
+8 release attempts per pass. The injected TacSim adapter calls the existing economy
+post/engine-reservation APIs. The protected `relay.message` purpose prevents direct
+staff/player hold capture/release. Actual authenticated payer authority and account
+approval are enforced by the money owner; a payer never substitutes for either IC
+endpoint. Reserved money and purchase post-images share one strict-durable step.
+Both timer delivery and `@prop/pass` make a provisional route/capacity/receipt update,
+capture at most one new purchase, and install only after successful settlement.
+That whole update shares the money batch. Failed capture advances no paid service.
+Expired reservations still awaiting bounded release cannot be captured.
+
+Restart audits match every live purchase hold and every live protected hold back to
+one purchase. A derived held-reservation purpose index makes the reverse audit
+bounded without walking unrelated holds. It rebuilds from the existing journal and
+is not persisted authority. Terminal hold projections may be garbage-collected after
+the economy's seven-real-day retention; their atomically committed purchase receipts
+remain. Frozen economy repair mode still boots and refuses money writes. No new
+crate edge, state slot, namespace, monetary ledger, or general marketplace is added.
+The new persistence declaration is `tacsim -> propagation`; account ID allocation uses
+the existing economy-owner allocator-only boundary. `+relay` is classified at its
+mixed command's economy ceiling, with the retained transport boundary documented in
+the handler inventory.
+
+The local gate caught a real migration cutoff off-by-one and the bounded-expiry
+backlog bug; both have regressions. It also checks frozen-payee settlement refusal,
+missing market/purchase and forged-price boot refusals, zero-fund/payer refusals,
+normal conservation, fanout and UTF-8 prices, two Exchange hops with a restart,
+and independently delayed free traffic. The legacy tests now explicitly select
+courtesy service when they isolate physics, and retain funded market records when
+modelling old tickets rather than deleting a real account's owner record.
+
+R7 CI run `40059174892`, job `120768743119`, exposed three stale inventories:
+`+relay` absent from the handler list, the station absent from intentional lookless
+units, and three relay capabilities missing from the server's expected count.
+These are corrected and rerun. Its fourth failure required confirmation to arrive
+before a self-ban ejected the caller; the split test now asserts committed ban state,
+ejection, refused admission and lift. Non-self-ban confirmation coverage remains
+in the existing persistence test. No production admission timeout is weakened.
+
+The completed R7 CI run also exposed one stale fielded-definition census in job
+`120768743071`: the expected set omitted `tacsim.unit.relay_station`. Adding that
+explicit schema entry passes all 25 definition tests and lint. This additional
+change is test-only; the live runtime remains the staged tree recorded above.
+
+**Implementation/live gate passed.** Final Linux validation passed 39 production
+relay stories, 15 ownership/handler/look contracts, the capability-vocabulary test,
+four split-gateway tests, the real Redis/process-death test, and 25 definition tests.
+The immediately preceding candidate also passed 21 boot and seven IC-voyage stories;
+the final private-operator default correction reran all affected relay stories.
+Local validation includes 206 economy tests, 17 propagation tests and 89 extension
+tests, plus changed library/test lint and formatting. The web build reports zero
+errors/warnings; the existing bundler size advisory remains. Counts and scope are in
+[automated.json](evidence/relay-r8a-2026-10-23/automated.json).
+
+[Live evidence](evidence/relay-r8a-2026-10-23/live.json) records 298 authenticated TLS
+WebSocket command checks, eight SSH checks, and four actual child SIGKILLs: quoted
+before reservation, held before transmission, captured with the transmission, and
+released before restart. Fresh Redis-10 boot/reboot and upgraded Redis-0 both retain
+one funded market. Real journal/hold receipts, per-copy UTF-8 prices, two-recipient
+Standard fanout, Priority, denied receivers, cancellation/upgrade, expiry, empty
+payers, large conventional letters and free Deferred delivery pass. Money is
+conserved; retries do not charge again. WS latency was 26 ms median and 583 ms max;
+these are observations during the gate, with a Linux regression test also running,
+not an isolated load benchmark or a raised budget.
+
+The initial live expiry fixture jammed the relay station but left the recipient's
+physical room reachable. Receiver suspension correctly chose conventional delivery;
+the fixture's assertion that the letter would still be pending was wrong. The
+corrected fixture jams the station and recipient room for the expiry interval and verifies the
+reservation releases while the copy is still pending. The failed evidence is
+retained root-only; the verified whole-world snapshot was reset and the entire live
+gate rerun successfully on the same runtime binaries. Only runner/test files changed
+after the runtime archive; final runner hashes are recorded in
+[environment.json](evidence/relay-r8a-2026-10-23/environment.json).
+
+The accepted upgraded baseline was restored after testing: Ceres Clearing 49,000 cr,
+Exchange operating capital 1,000 cr, no test purchases or pending traffic, two healthy
+nodes/one pair, no restrictions/losses, world rate 24×. Redis-9 retains the root-only
+snapshot with original expiry deadlines; dev2 remains PID 539467. No credentials,
+configuration or raw database snapshot is committed. R7's completed CI run has only
+the five reproduced and repaired failures described above; R8a's normal CI is
+triggered by its main push and remains owner-monitored. Commit/push completes this
+gate before automatic continuation to R8b.

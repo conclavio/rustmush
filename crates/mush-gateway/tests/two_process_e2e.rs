@@ -578,19 +578,22 @@ async fn split_siteban_reaches_the_gateway_without_a_restart() {
     // Every client in this rig speaks from loopback, so staff ban themselves
     // along with everyone else — which is exactly what makes the eject limb
     // observable on God's own channel.
-    let after_ban = god.mark();
     god.send_line("@siteban 127.0.0.1=1h split-seam proof")
         .await;
-    god.expect_after(after_ban, "@siteban: 127.0.0.1 banned until unix")
-        .await;
-    // The confirmation says out loud that it is gated on the store, not on the
-    // gateway, so staff do not read the refresh window as a bug. (The needle is
-    // short because the note wraps at the 80-column pty.)
-    god.expect_after(after_ban, "ban list every").await;
-    assert_eq!(store.get_bans().await.unwrap().len(), 1, "ban persisted");
-
-    // 1. The established connection from the newly banned address is dropped.
+    // The gateway may eject this very connection as soon as it reads the
+    // committed ban, before its confirmation crosses IPC/SSH. Do not require
+    // output to win that race. The non-self-ban persistence test checks the
+    // confirmation; this test proves committed state, ejection, and admission.
     god.expect_close().await;
+    let bans = store.get_bans().await.unwrap();
+    assert_eq!(bans.len(), 1, "ban persisted");
+    assert_eq!(bans[0].ip, "127.0.0.1");
+    assert_eq!(bans[0].reason, "split-seam proof");
+    assert!(
+        bans[0]
+            .until_unix
+            .is_some_and(|at| at > mush_config::unix_now_s())
+    );
 
     // 2. A NEW connection attempt is refused. THIS is the pre-fix failure: the
     //    gateway's boot-seeded mirror knew nothing about the ban and admitted

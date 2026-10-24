@@ -1,0 +1,2433 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T05:06:21.966Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 44 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#101",
+      "reply": "Visiting Berth Gallery #101 The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby. #431 Ninth Ledger#450 Patience Wen#469 Kirkwood Lamp#488 Long Division#507 Dry Season#526 Tally Ho Pressure Lobby <N> nnorthlobbydoors autumn night",
+      "wallMs": 51,
+      "replyBytes": 801
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#101",
+      "reply": "emit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 43
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#678=deferred",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #678=tacsim.credit",
+      "reply": "Opened account #26 (tacsim.credit).",
+      "wallMs": 51,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#679=deferred",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #679=tacsim.credit",
+      "reply": "Opened account #27 (tacsim.credit).",
+      "wallMs": 51,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=26 10000",
+      "reply": "Paid: transaction #84 posted.",
+      "wallMs": 25,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 26,
+      "replyBytes": 724
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 83
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8a-priority-3b3464/éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "reply": "MAIL: Message 103 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 402=priority,26",
+      "reply": "Quote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00 cr/unit = 10.00 cr from account 26; tariff v1. Quoted; quote until IC 74168281576, unsent release IC 74168367376. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 26,
+      "replyBytes": 259
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 402=priority,27",
+      "reply": "No usable payer account.",
+      "wallMs": 50,
+      "replyBytes": 24
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 1",
+      "reply": "Quote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00 cr/unit = 10.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281576, unsent release IC 74168367376. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 50,
+      "replyBytes": 261
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 1",
+      "reply": "Quote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00 cr/unit = 10.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281576, unsent release IC 74168367376. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 51,
+      "replyBytes": 261
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@hold/release 15",
+      "reply": "Hold #15 is a `relay.message` reservation: it is released by that system's own settlement              and by nothing else.",
+      "wallMs": 50,
+      "replyBytes": 123
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 1 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@econ/history 26",
+      "reply": "tx #86 at 1792818390: other accounts, account #26 -10.00cr, hold #15 captured 10.00cr on account #26\n  “relay quote 1 consumed at first Exchange transmission”\ntx #85 at 1792818387: hold #15 reserved 10.00cr on account #26\n  “relay quote 1: 2 units Priority, tariff v1”\ntx #84 at 1792818383: other accounts, account #26 100.00cr",
+      "wallMs": 26,
+      "replyBytes": 335
+    },
+    {
+      "actor": "God",
+      "line": "@econ/audit",
+      "reply": "  tx #67 seq 67 (0 line(s))\n  tx #68 seq 68 (2 line(s))\n  tx #69 seq 69 (0 line(s))\n  tx #70 seq 70 (0 line(s))\n  tx #71 seq 71 (0 line(s))\n  tx #72 seq 72 (0 line(s))\n  tx #73 seq 73 (0 line(s))\n  tx #74 seq 74 (0 line(s))\n  tx #75 seq 75 (0 line(s))\n  tx #76 seq 76 (2 line(s))\n  tx #77 seq 77 (2 line(s))\n  tx #78 seq 78 (2 line(s))\n  tx #79 seq 79 (2 line(s))\n  tx #80 seq 80 (2 line(s))\n  tx #81 seq 81 (2 line(s))\n  tx #82 seq 82 (2 line(s))\n  tx #83 seq 83 (2 line(s))\n  tx #84 seq 84 (2 line(s))\n  tx #85 seq 85 (0 line(s))\n  tx #86 seq 86 (2 line(s))",
+      "wallMs": 26,
+      "replyBytes": 559
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 1",
+      "reply": "Quote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00 cr/unit = 10.00 cr from account 26; tariff v1. Consumed; quote until IC 74168281576, unsent release IC 74168367376. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 51,
+      "replyBytes": 261
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cancel 1",
+      "reply": "Service already consumed; the tariff has no refund after transmission.",
+      "wallMs": 51,
+      "replyBytes": 70
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #1,#679=R8a-fanout-96af4c/ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "reply": "MAIL: Message 104 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 25,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 405=standard,26",
+      "reply": "Quote 2: envelope 405 to #679; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Quoted; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 25,
+      "replyBytes": 258
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 2",
+      "reply": "Quote 2: envelope 405 to #679; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 50,
+      "replyBytes": 260
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 404=standard,26",
+      "reply": "Quote 3: envelope 404 to #1; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Quoted; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 50,
+      "replyBytes": 256
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 3",
+      "reply": "Quote 3: envelope 404 to #1; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 51,
+      "replyBytes": 258
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 45 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 46 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4050 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 26,
+      "replyBytes": 83
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8a-refund-2a7068/cancel upgrade expiry",
+      "reply": "MAIL: Message 105 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 408=standard,26",
+      "reply": "Quote 4: envelope 408 to #679; 38 content bytes / 1 units; Standard at 1.00 cr/unit = 1.00 cr from account 26; tariff v1. Quoted; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 26,
+      "replyBytes": 257
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 4",
+      "reply": "Quote 4: envelope 408 to #679; 38 content bytes / 1 units; Standard at 1.00 cr/unit = 1.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 50,
+      "replyBytes": 259
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cancel 4",
+      "reply": "Quote 4: envelope 408 to #679; 38 content bytes / 1 units; Standard at 1.00 cr/unit = 1.00 cr from account 26; tariff v1. Released; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 50,
+      "replyBytes": 259
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 408=priority,26",
+      "reply": "Quote 5: envelope 408 to #679; 38 content bytes / 1 units; Priority at 5.00 cr/unit = 5.00 cr from account 26; tariff v1. Quoted; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 51,
+      "replyBytes": 257
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/buy 5",
+      "reply": "Quote 5: envelope 408 to #679; 38 content bytes / 1 units; Priority at 5.00 cr/unit = 5.00 cr from account 26; tariff v1. Reserved; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 51,
+      "replyBytes": 259
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #101=100",
+      "reply": "Interference at Visiting Berth Gallery is now 100. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "+relay/policy luna_ceres/#679=suspended,operator.r8a,recipient denied",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 51,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 47 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4049 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 4 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nA world time-rate change re-anchored 3 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 436
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 5 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 292
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 27,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 27,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 28,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 28,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 27,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 1 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 48 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4048 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #101=0",
+      "reply": "Interference at Visiting Berth Gallery is now 0. Orders already delivered still stand.",
+      "wallMs": 52,
+      "replyBytes": 86
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/cancel 5",
+      "reply": "Quote 5: envelope 408 to #679; 38 content bytes / 1 units; Priority at 5.00 cr/unit = 5.00 cr from account 26; tariff v1. Released; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 52,
+      "replyBytes": 259
+    },
+    {
+      "actor": "God",
+      "line": "+relay/policy luna_ceres/#679=served,operator.r8a,arrears fixture cleared",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=R8a-poor-b7bc1f/empty account",
+      "reply": "MAIL: Message 106 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 25,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/quote 410=priority,27",
+      "reply": "Quote 6: envelope 410 to #678; 28 content bytes / 1 units; Priority at 5.00 cr/unit = 5.00 cr from account 27; tariff v1. Quoted; quote until IC 74168368089, unsent release IC 74168453889. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 25,
+      "replyBytes": 257
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/buy 6",
+      "reply": "Reservation refused: account 27 has insufficient available funds",
+      "wallMs": 53,
+      "replyBytes": 64
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R8a-oversize-1ee90a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 107 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 25,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/quote 411=priority,26",
+      "reply": "This copy uses conventional transport; the relay short limit is 1024 content bytes.",
+      "wallMs": 25,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 49 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4047 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 3 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 52,
+      "replyBytes": 292
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 583,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "A world time-rate change re-anchored 5 propagation record(s); contacts stranded on the older generation are retired by the next detection pass.\nDelivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 292
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 24,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 24,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 27,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 3 relayed, 3 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 50 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4046 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/purchases",
+      "reply": "Quote 5: envelope 408 to #679; 38 content bytes / 1 units; Priority at 5.00 cr/unit = 5.00 cr from account 26; tariff v1. Released; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.\nQuote 4: envelope 408 to #679; 38 content bytes / 1 units; Standard at 1.00 cr/unit = 1.00 cr from account 26; tariff v1. Released; quote until IC 74168281684, unsent release IC 74168367484. First Exchange transmission consumes the whole fee; no later refund.\nQuote 3: envelope 404 to #1; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Consumed; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.\nQuote 2: envelope 405 to #679; 147 content bytes / 2 units; Standard at 1.00 cr/unit = 2.00 cr from account 26; tariff v1. Consumed; quote until IC 74168281586, unsent release IC 74168367386. First Exchange transmission consumes the whole fee; no later refund.\nQuote 1: envelope 402 to #679; 219 content bytes / 2 units; Priority at 5.00 cr/unit = 10.00 cr from account 26; tariff v1. Consumed; quote until IC 74168281576, unsent release IC 74168367376. First Exchange transmission consumes the whole fee; no later refund.",
+      "wallMs": 26,
+      "replyBytes": 1301
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "pub R8a OOC immediate",
+      "reply": "Public #679 R6carol1f8127 say R8a OOC immediate",
+      "wallMs": 26,
+      "replyBytes": 47
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 51 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4045 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 855
+    }
+  ],
+  "milestones": [
+    {
+      "test": "funded-upgrade-and-authorized-payer",
+      "market": {
+        "capital_transaction": 83,
+        "legacy_before": 402,
+        "next": 1,
+        "operator": 22,
+        "payee": 25,
+        "purchases": {},
+        "tariff": {
+          "priority_minor": 500,
+          "quote_secs": 600,
+          "reservation_secs": 86400,
+          "standard_minor": 100,
+          "version": 1
+        }
+      },
+      "payer": 26,
+      "empty": 27,
+      "total": "0",
+      "clearing": 4890000
+    },
+    {
+      "test": "quoted-before-reservation",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 832856,
+      "fresh": 833002
+    },
+    {
+      "test": "reserved-before-transmission",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833002,
+      "fresh": 833036
+    },
+    {
+      "test": "journal-and-consumed-hold",
+      "purchase": {
+        "bytes": 219,
+        "class": "priority",
+        "envelope": 402,
+        "hold": 15,
+        "id": 1,
+        "issuer": 678,
+        "operator": 22,
+        "payee": 25,
+        "payer": 26,
+        "phase": "consumed",
+        "quote_until": 74168281576,
+        "quoted_at": 74168280976,
+        "recipient": 679,
+        "service_until": 74168367376,
+        "tariff": 1,
+        "total_minor": 1000,
+        "transaction": 86,
+        "unit_minor": 500,
+        "units": 2
+      },
+      "hold": {
+        "account": 26,
+        "amount": 1000,
+        "beneficiary": {
+          "Organization": 22
+        },
+        "expires": null,
+        "holder": {
+          "key": "1",
+          "namespace": "relay.reserve"
+        },
+        "id": 15,
+        "last_journal_seq": 86,
+        "placed_by": {
+          "Object": 678
+        },
+        "purpose": {
+          "Reservation": {
+            "id": 1,
+            "kind": "relay.message"
+          }
+        },
+        "revision": 2,
+        "status": {
+          "Consumed": {
+            "amount": 1000,
+            "transaction": 86
+          }
+        }
+      }
+    },
+    {
+      "test": "settled-money-and-transmission",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833036,
+      "fresh": 833071
+    },
+    {
+      "test": "priority-reserve-capture-three-process-deaths",
+      "quote": {
+        "bytes": 219,
+        "class": "priority",
+        "envelope": 402,
+        "hold": 15,
+        "id": 1,
+        "issuer": 678,
+        "operator": 22,
+        "payee": 25,
+        "payer": 26,
+        "phase": "consumed",
+        "quote_until": 74168281576,
+        "quoted_at": 74168280976,
+        "recipient": 679,
+        "service_until": 74168367376,
+        "tariff": 1,
+        "total_minor": 1000,
+        "transaction": 86,
+        "unit_minor": 500,
+        "units": 2
+      },
+      "payer": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 26,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 86,
+        "last_journal_seq": 86,
+        "name": "R6bob1b16df",
+        "owner": {
+          "Object": 678
+        },
+        "posted_balance": 9000,
+        "revision": 4,
+        "scope": null,
+        "status": "Active"
+      },
+      "payee": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 25,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 86,
+        "name": "Malapert Exchange/operating",
+        "owner": {
+          "Organization": 22
+        },
+        "posted_balance": 101000,
+        "revision": 3,
+        "scope": 22,
+        "status": "Active"
+      },
+      "total": "0"
+    },
+    {
+      "test": "standard-utf8-fanout",
+      "bytes": 147,
+      "quotes": [
+        {
+          "bytes": 147,
+          "class": "standard",
+          "envelope": 405,
+          "hold": 16,
+          "id": 2,
+          "issuer": 678,
+          "operator": 22,
+          "payee": 25,
+          "payer": 26,
+          "phase": "consumed",
+          "quote_until": 74168281586,
+          "quoted_at": 74168280986,
+          "recipient": 679,
+          "service_until": 74168367386,
+          "tariff": 1,
+          "total_minor": 200,
+          "transaction": 90,
+          "unit_minor": 100,
+          "units": 2
+        },
+        {
+          "bytes": 147,
+          "class": "standard",
+          "envelope": 404,
+          "hold": 17,
+          "id": 3,
+          "issuer": 678,
+          "operator": 22,
+          "payee": 25,
+          "payer": 26,
+          "phase": "consumed",
+          "quote_until": 74168281586,
+          "quoted_at": 74168280986,
+          "recipient": 1,
+          "service_until": 74168367386,
+          "tariff": 1,
+          "total_minor": 200,
+          "transaction": 89,
+          "unit_minor": 100,
+          "units": 2
+        }
+      ],
+      "total": "0"
+    },
+    {
+      "test": "unused-release-restart",
+      "signal": "SIGKILL",
+      "gateway": 832843,
+      "old": 833071,
+      "fresh": 833443
+    },
+    {
+      "test": "upgrade-cancel-receiver-denial-expiry-release",
+      "standard": {
+        "bytes": 38,
+        "class": "standard",
+        "envelope": 408,
+        "hold": 18,
+        "id": 4,
+        "issuer": 678,
+        "operator": 22,
+        "payee": 25,
+        "payer": 26,
+        "phase": "released",
+        "quote_until": 74168281684,
+        "quoted_at": 74168281084,
+        "recipient": 679,
+        "service_until": 74168367484,
+        "tariff": 1,
+        "total_minor": 100,
+        "transaction": 92,
+        "unit_minor": 100,
+        "units": 1
+      },
+      "priority": {
+        "bytes": 38,
+        "class": "priority",
+        "envelope": 408,
+        "hold": 19,
+        "id": 5,
+        "issuer": 678,
+        "operator": 22,
+        "payee": 25,
+        "payer": 26,
+        "phase": "released",
+        "quote_until": 74168281684,
+        "quoted_at": 74168281084,
+        "recipient": 679,
+        "service_until": 74168367484,
+        "tariff": 1,
+        "total_minor": 500,
+        "transaction": 94,
+        "unit_minor": 500,
+        "units": 1
+      },
+      "total": "0"
+    },
+    {
+      "test": "free-deferred-insufficient-funds-and-large-fallback",
+      "poorQuote": {
+        "bytes": 28,
+        "class": "priority",
+        "envelope": 410,
+        "hold": null,
+        "id": 6,
+        "issuer": 679,
+        "operator": 22,
+        "payee": 25,
+        "payer": 27,
+        "phase": "released",
+        "quote_until": 74168368089,
+        "quoted_at": 74168367489,
+        "recipient": 678,
+        "service_until": 74168453889,
+        "tariff": 1,
+        "total_minor": 500,
+        "transaction": null,
+        "unit_minor": 500,
+        "units": 1
+      },
+      "charged": 1400,
+      "total": "0",
+      "payer": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 26,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 94,
+        "last_journal_seq": 90,
+        "name": "R6bob1b16df",
+        "owner": {
+          "Object": 678
+        },
+        "posted_balance": 8600,
+        "revision": 12,
+        "scope": null,
+        "status": "Active"
+      },
+      "payee": {
+        "approval": null,
+        "credit": {
+          "allow_negative": false,
+          "floor": 0
+        },
+        "held_amount": 0,
+        "id": 25,
+        "instrument": "tacsim.credit",
+        "last_hold_seq": 0,
+        "last_journal_seq": 90,
+        "name": "Malapert Exchange/operating",
+        "owner": {
+          "Organization": 22
+        },
+        "posted_balance": 101400,
+        "revision": 5,
+        "scope": 22,
+        "status": "Active"
+      }
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T05:06:22.017Z",
+      "gatewayPid": 832843,
+      "serverPid": 832856,
+      "serverSha256": "48cb5f5e1d4221246f42f517ae0a583266c1810e1b602d595984ab1d343219fb"
+    }
+  ],
+  "passed": true
+}

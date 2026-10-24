@@ -224,6 +224,8 @@ pub struct Audit {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
+    #[serde(default)]
+    pub commerce: Option<crate::commerce::Market>,
     pub config: Config,
     pub grants: Vec<Grant>,
     #[serde(default)]
@@ -236,6 +238,7 @@ pub struct State {
 impl State {
     pub fn new(config: Config) -> Self {
         Self {
+            commerce: None,
             config,
             grants: vec![],
             restrictions: vec![],
@@ -247,6 +250,9 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
+        if let Some(market) = &self.commerce {
+            market.validate()?;
+        }
         let keys: std::collections::BTreeSet<_> =
             self.grants.iter().map(|g| (&g.pair, g.principal)).collect();
         let restrictions: std::collections::BTreeSet<_> = self
@@ -296,7 +302,14 @@ impl State {
         self.grants
             .iter()
             .find(|g| &g.pair == pair && g.principal == actor)
-            .map_or(Class::Standard, |g| g.class)
+            .map_or(
+                if self.commerce.is_some() {
+                    Class::Deferred
+                } else {
+                    Class::Standard
+                },
+                |g| g.class,
+            )
     }
     pub fn status(&self, operator: u64, principals: &[Principal]) -> ServiceState {
         self.restrictions
@@ -351,6 +364,23 @@ impl State {
 /// This bridge may use organization, knowledge, canon and front owners. It must
 /// preflight all fallible work before mutating, and must never disclose payloads.
 pub trait Integration: Send + Sync + std::fmt::Debug {
+    fn payer(&self, _w: &World, _actor: ObjId, _account: u64) -> Result<(), String> {
+        Err("Relay commerce unavailable.".into())
+    }
+    fn reserve(&self, _ctx: &mut Ctx<'_>, _p: &crate::commerce::Purchase) -> Result<u64, String> {
+        Err("Relay commerce unavailable.".into())
+    }
+    fn reserved(&self, _w: &World, _p: &crate::commerce::Purchase) -> bool {
+        false
+    }
+    fn settle(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _p: &crate::commerce::Purchase,
+        _capture: bool,
+    ) -> Result<u64, String> {
+        Err("Relay commerce unavailable.".into())
+    }
     fn seed(&self) -> Result<Config, String>;
     fn operator(&self, world: &World, pair: &CanonicalId) -> Option<u64>;
     fn principals(&self, world: &World, endpoint: ObjId) -> Vec<Principal>;
@@ -369,7 +399,7 @@ pub trait Integration: Send + Sync + std::fmt::Debug {
     fn discover(&self, ctx: &mut Ctx<'_>, evidence: &Evidence) -> Result<(), String>;
     fn publish(&self, ctx: &mut Ctx<'_>, evidence: &Evidence) -> Result<u64, String>;
 }
-fn integration(world: &World) -> Option<Arc<dyn Integration>> {
+pub(crate) fn integration(world: &World) -> Option<Arc<dyn Integration>> {
     world
         .module_state::<crate::routing::RoutingServices>()?
         .1
@@ -417,13 +447,7 @@ pub fn effective(
     pair: &CanonicalId,
     envelope: &Envelope,
 ) -> Option<(Class, bool)> {
-    let base = envelope
-        .transit()
-        .and_then(|r| r.service.as_ref())
-        .map_or_else(
-            || state.class(pair, envelope.issuer()),
-            |t| t.base_class.unwrap_or(t.class),
-        );
+    let base = crate::commerce::base(state, world, pair, envelope);
     match status(
         state,
         world,
@@ -482,9 +506,19 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
     };
     let cfg = &state.config;
     let mut lines = vec![format!(
-        "Relay board v{}: operator-granted service; no payment charged. One message-unit = {} content bytes; short limit {} bytes.",
+        "Relay board v{}: explicit operator grants are noncommercial courtesy. One message-unit = {} content bytes; short limit {} bytes.",
         cfg.version, cfg.bytes_per_unit, cfg.short_message_bytes
     )];
+    if let Some(m) = &state.commerce {
+        if m.capital_transaction.is_none() {
+            lines.push(
+                "Exchange charter capitalization pending; paid purchases unavailable.".into(),
+            );
+        }
+        lines.push(format!("Retail tariff v{}: Standard {} / Priority {} minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.", m.tariff.version, m.tariff.standard_minor, m.tariff.priority_minor));
+    } else {
+        lines.push("No paid service composed; operator grants only, no payment charged.".into());
+    }
     for (id, p) in &registry.pairs {
         if p.class_policy != mush_sim::relay::ClassPolicy::Exchange {
             continue;
@@ -503,6 +537,9 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one relay command switch."));
+    }
+    if crate::commerce::handles(ctx) {
+        return crate::commerce::command(ctx);
     }
     let api = integration(ctx.w).ok_or_else(|| CmdError::msg("Relay service unavailable."))?;
     let mut state = current(ctx)
@@ -669,7 +706,17 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .rhs()
             .and_then(|s| Class::parse(s.trim()))
             .ok_or_else(|| CmdError::msg("Unknown service class."))?;
-        if class == Class::Standard {
+        if class
+            == if state
+                .commerce
+                .as_ref()
+                .is_some_and(|m| api.operator(ctx.w, &id) == Some(m.operator))
+            {
+                Class::Deferred
+            } else {
+                Class::Standard
+            }
+        {
             state
                 .grants
                 .retain(|g| g.pair != id || g.principal != actor);
@@ -815,13 +862,15 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     drop(reg.panel_feed("relay.board")?);
     reg.query_handler("relay.board", Arc::new(BoardQuery))?;
+    // The mixed verb includes real reservation/settlement commands.
+    reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
     reg.command(
         CommandSpec {
             name: "+relay".into(),
             shape: ArgShape::EqPair,
-            switches: ["policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
+            switches: ["outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
                 .into_iter().map(Into::into).collect(),
-            help: "+relay: public board and your operator-granted class. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
+            help: "+relay: public tariff board. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
             ..Default::default()
         },
         Arc::new(command),

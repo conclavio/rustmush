@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use mush_core::ObjId;
 use mush_org::PrincipalId;
+use smol_str::SmolStr;
 
 use crate::clock::CadenceClock;
 use crate::contract::{ContractState, EconomicContract, TypedCondition};
@@ -19,8 +20,8 @@ use crate::ids::{
 };
 use crate::obligation::Obligation;
 use crate::record::{
-    Account, ApprovalRequest, ApprovalStatus, CustodyRef, EconomicAsset, Hold, IdempotencyKey,
-    IdempotencyRecord, InstrumentDef, Vault,
+    Account, ApprovalRequest, ApprovalStatus, CustodyRef, EconomicAsset, Hold, HoldPurpose,
+    HoldStatus, IdempotencyKey, IdempotencyRecord, InstrumentDef, Vault,
 };
 
 /// The authoritative economic state (pre-image for validation). In the live module
@@ -64,6 +65,9 @@ pub struct EconomySnapshot {
     /// Derived: every hold on an account, in id order — the `held_amount`
     /// re-derivation and the per-account hold cap read it.
     holds_by_account: BTreeMap<AccountId, BTreeSet<HoldId>>,
+    /// Derived from held reservation purposes; lets product owners audit their
+    /// bounded inventory without walking unrelated world holds.
+    held_reservations_by_kind: BTreeMap<SmolStr, BTreeSet<HoldId>>,
     cadences: BTreeMap<CadenceId, CadenceClock>,
     obligations: BTreeMap<ObligationId, Obligation>,
     contracts: BTreeMap<ContractId, EconomicContract>,
@@ -115,6 +119,14 @@ impl EconomySnapshot {
             .get(owner)
             .into_iter()
             .flat_map(|set| set.iter().filter_map(|id| self.accounts.get(id)))
+    }
+    /// Live reservations for one product namespace, in hold-id order. Journal
+    /// replay rebuilds this index through `put_hold`; it is never persisted.
+    pub fn held_reservations(&self, kind: &str) -> impl Iterator<Item = &Hold> {
+        self.held_reservations_by_kind
+            .get(kind)
+            .into_iter()
+            .flat_map(|ids| ids.iter().filter_map(|id| self.holds.get(id)))
     }
     /// Every instrument.
     pub fn instruments(&self) -> impl Iterator<Item = &InstrumentDef> {
@@ -411,6 +423,15 @@ impl EconomySnapshot {
     }
     /// Insert/replace a hold, keeping the per-account index coherent.
     pub fn put_hold(&mut self, hold: Hold) {
+        self.unindex_reservation(hold.id);
+        if hold.status == HoldStatus::Held
+            && let HoldPurpose::Reservation { kind, .. } = &hold.purpose
+        {
+            self.held_reservations_by_kind
+                .entry(kind.clone())
+                .or_default()
+                .insert(hold.id);
+        }
         if let Some(prev) = self.holds.get(&hold.id)
             && prev.account != hold.account
             && let Some(set) = self.holds_by_account.get_mut(&prev.account)
@@ -426,11 +447,25 @@ impl EconomySnapshot {
             .insert(hold.id);
         self.holds.insert(hold.id, hold);
     }
+    fn unindex_reservation(&mut self, id: HoldId) {
+        if let Some(Hold {
+            purpose: HoldPurpose::Reservation { kind, .. },
+            ..
+        }) = self.holds.get(&id)
+            && let Some(ids) = self.held_reservations_by_kind.get_mut(kind)
+        {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.held_reservations_by_kind.remove(kind);
+            }
+        }
+    }
     /// Drop a **terminal** hold from the projection (the sweep's GC, §4.3 step 4).
     /// Its whole history stays in the journal forever; only the read-side record and
     /// its `hold:{id}` doc go. The allocator floor is journal-derived precisely so a
     /// collected id can never be re-minted (D-E4-1).
     pub(crate) fn remove_hold(&mut self, id: HoldId) {
+        self.unindex_reservation(id);
         if let Some(prev) = self.holds.remove(&id)
             && let Some(set) = self.holds_by_account.get_mut(&prev.account)
         {

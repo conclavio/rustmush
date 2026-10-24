@@ -1246,3 +1246,10 @@ header's prior root is missing. Existing roots and immutable source bytes stay
 untouched; a corrected boot rebuilds the owner and is the only way to clear the
 guard. The published refusal carries no character, revision or source detail.
 """
+
+[[site]]
+path = "crates/tacsim/src/relay_commerce.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = "R8a takes the Exchange operating account id from economy's monotonic allocator, then opens its zero-balance account through mush_economy::open_account. Same allocator-only boundary as port/apply.rs; capitalization is an ordinary conserved post, never a direct balance mutation."

@@ -226,6 +226,12 @@ category = "read-only"
 note = "doc 20 cut SM.10 (section 9; reviewer F5): a pure read of the site's sixteen tacsim.claims records (and the block cursors for the worked tonnes) -- each claimed block's holder, term, epoch, declared family, first reading, worked tonnes against the floor and contest state, and the paper over it. Registered in +credit's ReadOnly bracket: no document, no post, no submission; it reads no industry claim and no deposit."
 
 [[handler]]
+name = "+relay"
+category = "economy-carve-out"
+family = "propagation.relay_service"
+note = "Doc 15a R3/R4/R8a: the mixed command takes the ceiling category of its switches. Public board/status/own receipts are reads; operator policy and evidence use the accepted bounded, strictly decoded transport document. Retail quotes and reservations use that same owner record, with real money only through mush_economy::post and settle_engine_reservation. Hold/capture/release and transport post-images share the strict-durable step; failed capture discards provisional routing. No direct ledger balance writer or prepared action authority is added. Doc 15a explicitly retains the existing monolithic transport boundary; a future propagation.relay_service family migrates it with the existing economy boundary, not a parallel money authority."
+
+[[handler]]
 name = "+request"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"

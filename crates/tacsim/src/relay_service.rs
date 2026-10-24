@@ -6,6 +6,7 @@ pub const JSON: &str = include_str!("../content/relays/service-v1.json");
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Seed {
+    retail: mush_propagation::commerce::Tariff,
     policy: Config,
     scandal_title: String,
     scandal_summary: String,
@@ -25,6 +26,28 @@ fn provenance(e: &Evidence) -> String {
     format!("relay.service.v1:{}:{}", e.receipt.pair, e.receipt.envelope)
 }
 impl Integration for RelayService {
+    fn payer(&self, w: &World, actor: ObjId, account: u64) -> Result<(), String> {
+        crate::relay_commerce::payer(w, actor, account)
+    }
+    fn reserve(
+        &self,
+        ctx: &mut Ctx<'_>,
+        p: &mush_propagation::commerce::Purchase,
+    ) -> Result<u64, String> {
+        crate::relay_commerce::reserve(ctx, p)
+    }
+    fn reserved(&self, w: &World, p: &mush_propagation::commerce::Purchase) -> bool {
+        crate::relay_commerce::reserved(w, p)
+    }
+    fn settle(
+        &self,
+        ctx: &mut Ctx<'_>,
+        p: &mush_propagation::commerce::Purchase,
+        capture: bool,
+    ) -> Result<u64, String> {
+        crate::relay_commerce::settle(ctx, p, capture)
+    }
+
     fn operator(&self, world: &World, pair: &CanonicalId) -> Option<u64> {
         operator(world, pair).map(|o| o.0)
     }
@@ -84,7 +107,9 @@ impl Integration for RelayService {
     }
 
     fn seed(&self) -> Result<Config, String> {
-        Ok(seed()?.policy)
+        let seed = seed()?;
+        seed.retail.validate()?;
+        Ok(seed.policy)
     }
     fn visible(&self, w: &World, actor: ObjId, r: &mush_propagation::service::Receipt) -> bool {
         use mush_propagation::record::DispatchKind;

@@ -3089,3 +3089,53 @@ fn vf_14d_the_tallies_outlive_the_bounded_history_tail() {
         (runs, 1, 5)
     );
 }
+
+#[test]
+fn reservation_namespace_index_tracks_capture_release_and_purpose_replacement() {
+    let mut s = snap();
+    for id in 1..=3 {
+        let mut h = hold(id, 1, 100);
+        h.purpose = HoldPurpose::Reservation {
+            kind: "relay.message".into(),
+            id,
+        };
+        with_hold(&mut s, h);
+    }
+    assert_eq!(s.held_reservations("relay.message").count(), 3);
+    let mut capture = plan("indexed-capture", who(1), vec![line(1, -100), line(2, 100)]);
+    capture.hold_ops = vec![HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(100),
+    }];
+    let (s, _) = post(&s, &capture, 7);
+    let (mut s, _) = post(
+        &s,
+        &hold_plan("indexed-release", vec![HoldOp::Release { hold: HoldId(2) }]),
+        8,
+    );
+    assert_eq!(
+        s.held_reservations("relay.message")
+            .map(|h| h.id)
+            .collect::<Vec<_>>(),
+        vec![HoldId(3)]
+    );
+    let mut replacement = s.hold(HoldId(3)).unwrap().clone();
+    replacement.purpose = HoldPurpose::Reservation {
+        kind: "other.product".into(),
+        id: 3,
+    };
+    s.put_hold(replacement);
+    assert_eq!(s.held_reservations("relay.message").count(), 0);
+    assert_eq!(s.held_reservations("other.product").count(), 1);
+    // Replay uses the same insert path, so the derived index survives rebuilding.
+    let mut rebuilt = EconomySnapshot::new();
+    for h in s.holds() {
+        rebuilt.put_hold(h.clone());
+    }
+    assert_eq!(
+        rebuilt
+            .held_reservations("other.product")
+            .collect::<Vec<_>>(),
+        s.held_reservations("other.product").collect::<Vec<_>>()
+    );
+}

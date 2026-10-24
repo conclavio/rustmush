@@ -1003,6 +1003,7 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !is_admin(ctx) {
         return Err(CmdError::msg("Permission denied."));
     }
+    crate::commerce::sweep(ctx);
     let at = now(ctx);
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         info(ctx, UNAVAILABLE);
@@ -1023,6 +1024,13 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None,
         metric,
     );
+    if !crate::commerce::settle_pass(ctx, &mut book) {
+        info(
+            ctx,
+            "Paid relay transmission waits for settlement; routing pass not applied.",
+        );
+        return Ok(());
+    }
     // The pass is given the caller's OWN arm bound, so it books exactly what it
     // emits and the page it reports is true (fold D4(a)).
     let detection = crate::pass::detection_pass(

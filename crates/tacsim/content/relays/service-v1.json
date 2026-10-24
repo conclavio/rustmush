@@ -1,10 +1,23 @@
 {
   "policy": {
-    "version": 1, "bytes_per_unit": 128, "short_message_bytes": 1024,
-    "burst_units": 8, "standard_delay_s": 60, "deferred_min_s": 7200,
-    "window_period_s": 86400, "window_start_s": 0, "window_duration_s": 3600,
+    "version": 1,
+    "bytes_per_unit": 128,
+    "short_message_bytes": 1024,
+    "burst_units": 8,
+    "standard_delay_s": 60,
+    "deferred_min_s": 7200,
+    "window_period_s": 86400,
+    "window_start_s": 0,
+    "window_duration_s": 3600,
     "aging_s": 300
   },
   "scandal_title": "The Exchange congestion board",
-  "scandal_summary": "Published service receipts show that the Malapert Exchange delayed Standard traffic while capacity was available."
+  "scandal_summary": "Published service receipts show that the Malapert Exchange delayed Standard traffic while capacity was available.",
+  "retail": {
+    "version": 1,
+    "standard_minor": 100,
+    "priority_minor": 500,
+    "quote_secs": 600,
+    "reservation_secs": 86400
+  }
 }

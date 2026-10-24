@@ -902,7 +902,7 @@ fn a_match_on_the_shipped_arena_is_fought_on_the_authored_ground() {
 /// Doc 16 §9's five items, the range's target (16b cut O.3), the three
 /// chassis (16b cut AE.1), the drone (16b cut AE.3) and (doc 18 cut IC2) the
 /// Dray, by the definition ids the extension packs declare.
-const FIELDED_EXTRAS: [&str; 13] = [
+const FIELDED_EXTRAS: [&str; 14] = [
     content::LINE_TANK_LASER,
     content::BIPED_MK1,
     content::LINE_TANK_THERMAL,
@@ -920,6 +920,8 @@ const FIELDED_EXTRAS: [&str; 13] = [
     // weapon, ammunition or sensor row (was eleven extras).
     content::TV_PROSPECTOR,
     content::DRAY_P,
+    // Doc 15 R7: the fixed relay installation adds one unit schema only.
+    "tacsim.unit.relay_station",
 ];
 
 /// **The stock game is unmoved, and the fielded game is it plus the five** —
