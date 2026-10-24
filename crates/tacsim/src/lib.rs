@@ -148,6 +148,7 @@ pub mod relay_content;
 pub mod relay_foundry;
 pub mod relay_loss;
 pub mod relay_metric;
+pub mod relay_mobile;
 mod relay_service;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
@@ -592,6 +593,7 @@ impl GameModule for TacsimRuleset {
         relay_loss::register(reg)?;
         relay_commerce::register(reg)?;
         relay_foundry::register(reg)?;
+        relay_mobile::register(reg)?;
         reg.persist_delegation(
             crate::NS,
             "propagation",
@@ -850,6 +852,7 @@ impl GameModule for TacsimRuleset {
         relay_commerce::boot(ctx).map_err(ModError::msg)?;
         relay_billing::boot(ctx).map_err(ModError::msg)?;
         relay_foundry::boot(ctx).map_err(ModError::msg)?;
+        relay_mobile::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

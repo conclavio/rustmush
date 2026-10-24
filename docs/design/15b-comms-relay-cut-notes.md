@@ -1324,3 +1324,109 @@ were verified. Both dev1 services are active. Dev2 remains PID 539467. No creden
 configuration or database snapshot is committed. The source/archive/process hashes
 are in the evidence directory. Normal CI follows the push and remains owner-monitored;
 the authorized next milestone is R9b.
+
+## Gate 12 / R9b: Fleet programme and mobile half
+
+**Implemented; automated and real dev1 integration gate accepted (2026-10-24).**
+Base `17a93c7e0885ce031cd610aeef3565963b114a4f`. Candidate tree
+`d910a66e25f55f5ece31fcbdfb8642a118b258b3` (Rust runtime identical to
+`a6824ceabe3d337b5632c4eb90f35511d1d969a1`; only live harness corrections differ).
+
+### Implementation
+
+Lane v13 adds a finite Concord Fleet organization and one Halcyon relief cruiser,
+Long Vigil. The checked capital hull has a real interior, stores, vehicle bay,
+structural/power sections and a mobile relay socket. It begins without a pair.
+Its command authority comes from the existing economic asset assignment, including
+wall-clock expiry, lifecycle, title and frozen/stolen checks. The Fleet hold is an
+ordinary organization vault; ordinary supply purchases and real voyage tickets apply.
+
+A Half Afloat starts dormant at 0/8. An authorized treasury appropriation pays six
+actual 10,000-credit installments to the Lunar yard, at least 30 IC days apart.
+Insufficient available funds wait; delayed cadence cannot catch up multiple months
+in one fire. The other two segments require an attributed Postmaster decision and
+the actual installation of a paid manufactured pair. The Postmaster is a registered
+Exchange principal. Commissioning permits service; the once-only first-launch canon
+waits for an actual under-way journey, including after restart.
+
+`+relayfleet/refit wo#<16-hex>` accepts the same identifier industry displays. Both
+healthy, titled halves must be physically at the Lunar dock beside the idle cruiser;
+installation moves them into checked stationary/mobile cradles. The mobile half adds
+five tonnes to the frozen passage payload. Removal at Luna disconnects the pair and
+returns both halves to the dock. Refit reuses the same cradles and halves, without
+new front progress or a second launch event. Terminal loss cannot be erased this way.
+
+The routing metric reads the actual frozen journey leg. Coverage extends aboard
+and within 300,000 km along a known shared edge or endpoint, with outward rounding;
+unrelated edges are unknown, never silently co-located. Routes recheck remaining
+coverage legs. Carrier power loss interrupts service; carrier destruction kills the
+half and permanently orphans its mate through R7's existing political/canon pipeline.
+
+### Corrections found by the gate
+
+- Seven legacy CI fixtures (four mushd, three TacSim targets) omitted the shared
+  inventory handle required by the foundry boot audit. They now use production
+  inventory wiring; validation was not relaxed.
+- The presentation contract caught the non-fieldable Halcyon missing from the
+  explicit non-arena list. It uses section rows, like the existing strategic hulls.
+- Final command review caught decimal-only refit input. The implementation and
+  both production/live scenarios now use the shared canonical work-order parser.
+- Existing-world content upgrades are explicit. The live harness plans/applies
+  lane v12 to v13 with the actual fingerprint, restarts, and checks unchanged relay
+  and foundry identities. Restoration returns the exact saved lane-v12 baseline.
+- Test setup uses minor currency units, real market settlement before long clock
+  advances, and preserves historical lane-v11 fixture digests without Fleet content.
+
+### Validation and acceptance
+
+The final Rust runtime passed **662 Linux tests**, zero failures or skips: 75
+production boot/relay/IC stories, 52 content/lane tests, two mobile metric tests,
+91 industry tests, 11 scheduler tests, 23 architecture contracts, 19 propagation
+unit tests and 389 tests across the seven previously failing daemon/TacSim targets.
+Full Linux formatting, targeted Clippy with warnings denied, web build/bundle check
+and release server/TLS gateway build passed. Local final production stories and
+changed test-target Clippy also passed. Windows workspace-wide formatting exceeded
+the OS command-length limit; changed files and the full Linux workspace passed.
+The prior normal CI failure was run `40082594435`; its seven exact failed targets
+were rerun in full after repairing their shared-inventory fixture composition.
+
+[Metadata](evidence/relay-r9b-2026-10-24/metadata.json) records 84 TLS WebSocket
+commands, 12 real SSH checks and nine actual SIGKILL/restart boundaries. The
+[live transcript](evidence/relay-r9b-2026-10-24/live.json) proves explicit lane-v12
+to v13 upgrade without changing the old relay/foundry identities; real paid
+manufacture; consent/refit; funding persistence; commissioning before launch;
+removal/remount; carrier power recovery; passage restart; onboard, outside and
+nearby delivery; recipient transfer; and terminal carrier loss. Repairing the
+carrier afterward did not revive its destroyed half or append another first-launch
+event. Public-board and permission checks passed through the real SSH front door.
+
+The [material audit](evidence/relay-r9b-2026-10-24/material-audit.json) verifies
+one consumed blank, two consumed boards, one completed paid work order, one consumed
+budget hold, no remaining output lot, two unique physical halves and exactly
+5,000 kg of relay payload in the frozen passage ticket. All credits were conserved.
+The six actual treasury receipts are separated by 720, 720, 724, 720 and 720 wall
+seconds: 3,604 seconds from first to last at the maximum supported rate 3600.
+No receipt or clock anchor was synthesized. First-launch canon remained absent at
+8/8 while docked and appeared only after actual departure.
+
+Two harness defects were repaired at observed refusals, with failed evidence kept:
+the atlas fingerprint is 16 hex characters, and industrial completion must wait for
+the real production-budget hold to be consumed before claiming the output. Both
+retries restarted the complete live scenario from the preserved baseline; no
+production safety check was relaxed. Separate read-only fuel preflights confirmed
+that the changing sky still left the voyage within the finite test budget.
+
+Fresh Redis database 4 booted and rebooted with the same identities, balances and
+dormant programme, with no manufactured pair or launch. The 4,814-key baseline in
+database 3 was restored with original expiry deadlines: original lane v12, no Fleet
+programme, no fabricated machines, and the original two-node/one-pair registry.
+The candidate executable remains installed; both dev1 services are healthy and
+dev2 remains PID 539467. Measured command latency was 50 ms median, 52 ms p95 and
+204 ms maximum; this is a scenario observation, not a load benchmark.
+
+Runtime and test-source provenance are recorded in the evidence; this commit adds
+acceptance documentation and sanitized evidence afterward. Text-log trailing
+whitespace is normalized for the repository. No credentials, server configuration
+or database snapshot is committed. Normal CI follows the main push
+and remains owner-monitored. The standing authorization continues to R10 after
+this milestone is committed and pushed.

@@ -601,6 +601,7 @@ pub fn publish_front(
         title,
         "Public accounting demanded",
         4,
+        1,
         Some("scene.concluded"),
         "The Exchange must account publicly for its declared congestion.",
         draft,
@@ -615,11 +616,17 @@ fn publish_front_clock(
     title: &str,
     clock_title: &str,
     segments: u8,
+    initial: u8,
     advance_on: Option<&str>,
     consequence: &str,
     draft: mush_canon::CanonDraft,
 ) -> Result<FrontId, String> {
-    if title.is_empty() || title.len() > 128 || clock_title.len() > 128 || segments == 0 {
+    if title.is_empty()
+        || title.len() > 128
+        || clock_title.len() > 128
+        || segments == 0
+        || initial >= segments
+    {
         return Err("Invalid front title/clock.".into());
     }
     let org_name = ctx
@@ -686,7 +693,7 @@ fn publish_front_clock(
         faction: faction.id,
         title: clock_title.into(),
         segments,
-        filled: 1,
+        filled: initial,
         visibility: Visibility::Public,
         advance_on: advance_on.map(Into::into),
         consequence: consequence.into(),
@@ -820,6 +827,7 @@ pub fn record_relay_discovery(
             TITLE,
             "Private entanglement networks discovered",
             8,
+            1,
             None,
             "The Concord orders a general interdiction of unauthorized entanglement foundries.",
             draft,
@@ -852,4 +860,94 @@ pub fn record_relay_discovery(
     }
     ctx.out.pin_deferred();
     Ok(front.id)
+}
+
+/// R9b's dormant authored clock. Treasury, consent and refit producers own their
+/// durable receipts; only this module writes the corresponding front clock.
+pub fn seed_mobile_relay_front(
+    ctx: &mut Ctx<'_>,
+    fleet: mush_org::OrgId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_front_clock(
+        ctx,
+        fleet,
+        "A Half Afloat",
+        "Fleet relief relay programme",
+        8,
+        0,
+        None,
+        "The Concord relief relay is commissioned; its cruiser is ready to sail.",
+        draft,
+    )
+}
+
+/// An attributed programme fact advances one segment after its caller's checks.
+/// The expected count refuses drift instead of overwriting staff/story changes.
+pub fn advance_mobile_relay_front(
+    ctx: &mut Ctx<'_>,
+    front: FrontId,
+    expected: u8,
+) -> Result<(), String> {
+    let clock = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| s.clocks.values().find(|c| c.front == front))
+        .cloned()
+        .ok_or("Fleet front missing")?;
+    if clock.segments != 8 || clock.filled != expected || clock.completed {
+        return Err("Fleet front differs from its producer receipts".into());
+    }
+    advance_clock(ctx, clock.id, 1);
+    ctx.out.pin_deferred();
+    Ok(())
+}
+
+/// Register a content-authored NPC as the voice of an already established faction.
+pub fn register_programme_principal(
+    ctx: &mut Ctx<'_>,
+    org: mush_org::OrgId,
+    npc: ObjId,
+) -> Result<(), String> {
+    if ctx
+        .w
+        .get(npc)
+        .is_none_or(|o| o.kind != mush_core::ObjKind::Npc)
+    {
+        return Err("Principal must be an NPC".into());
+    }
+    let name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().org(org))
+        .map(|o| o.name.clone())
+        .ok_or("Principal organization absent")?;
+    let s = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable")?;
+    if !s.factions.values().any(|f| f.org == Some(org)) {
+        if s.factions.len() >= 4096 || s.faction_by_name(&name).is_some() {
+            return Err("Principal faction conflicts or is full".into());
+        }
+        let id = FactionId(s.next_faction_id);
+        s.next_faction_id = s
+            .next_faction_id
+            .checked_add(1)
+            .ok_or("Faction ids exhausted")?;
+        let mut f = Faction::new(id, &name);
+        f.org = Some(org);
+        s.factions.insert(id, f);
+        data::persist_meta(ctx.out, s.next_faction_id, s.next_region_id);
+    }
+    let f = s
+        .factions
+        .values_mut()
+        .find(|f| f.org == Some(org))
+        .ok_or("Principal faction unavailable")?;
+    if !f.principals.contains(&npc) {
+        f.principals.push(npc);
+        data::persist_faction(ctx.out, f);
+    }
+    Ok(())
 }

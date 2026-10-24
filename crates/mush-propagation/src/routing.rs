@@ -33,6 +33,17 @@ pub trait MetricProvider: std::fmt::Debug + Send + Sync {
 }
 
 pub trait Metric: std::fmt::Debug {
+    /// None refuses this uplink; Some(true) is within a node's local coverage.
+    /// Moving installations supply a checked snapshot, never mutate the registry.
+    fn coverage(
+        &self,
+        _world: &World,
+        node: &mush_sim::relay::RelayNode,
+        endpoint: ObjId,
+    ) -> Option<bool> {
+        Some(node.coverage.contains(&endpoint))
+    }
+
     fn between(&self, world: &World, from: ObjId, to: ObjId) -> Measurement;
 
     /// A moving carrier remains one receiving endpoint across its interior rooms.
@@ -385,15 +396,15 @@ fn plan_catalog(
         let ingress = measure(metric, world, state, from, node.place, at);
         let egress = measure(metric, world, state, node.place, to, at);
         work.metric_reads += 2;
-        let ingress = if node.coverage.contains(&from) {
-            Some(0)
-        } else {
-            ingress.map(|v| v.0)
+        let ingress = match metric.coverage(world, node, from) {
+            Some(true) => Some(0),
+            Some(false) => ingress.map(|v| v.0),
+            None => None,
         };
-        let egress = if node.coverage.contains(&to) {
-            Some(0)
-        } else {
-            egress.map(|v| v.0)
+        let egress = match metric.coverage(world, node, to) {
+            Some(true) => Some(0),
+            Some(false) => egress.map(|v| v.0),
+            None => None,
         };
         if let Some(cost) = ingress {
             layers.insert(
@@ -800,7 +811,22 @@ impl<'a> Pass<'a> {
                     (envelope.issuer(), envelope.recipient()),
                 )
             });
-        if route.destination != destination || route.registry_revision != catalog.revision || denied
+        let uncovered = route
+            .legs
+            .iter()
+            .skip(route.next)
+            .filter(|l| l.pair.is_none())
+            .any(|l| {
+                catalog.nodes.values().any(|n| {
+                    (n.place == l.to && self.metric.coverage(self.world, n, l.from).is_none())
+                        || (n.place == l.from
+                            && self.metric.coverage(self.world, n, l.to).is_none())
+                })
+            });
+        if route.destination != destination
+            || route.registry_revision != catalog.revision
+            || denied
+            || uncovered
         {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
@@ -1041,8 +1067,9 @@ impl<'a> Pass<'a> {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
             }
             let covered = catalog.nodes.values().any(|n| {
-                (n.place == leg.to && n.coverage.contains(&leg.from))
-                    || (n.place == leg.from && n.coverage.contains(&leg.to))
+                (n.place == leg.to && self.metric.coverage(self.world, n, leg.from) == Some(true))
+                    || (n.place == leg.from
+                        && self.metric.coverage(self.world, n, leg.to) == Some(true))
             });
             let (seconds, basis) = if covered {
                 (0, "relay.coverage.v1".into())

@@ -371,7 +371,16 @@ industry work orders yield unique titled five-tonne halves. Real carrier bays,
 frozen voyage payload and local authorized installation establish an independent,
 low-bandwidth private link. Discovery advances the anti-proliferation front once.
 The dev1 gate passed manufacture, three freight legs, private mail, cargo refusals,
-seven crashes and baseline restoration. R9b is next; see 15b for evidence.
+seven crashes and baseline restoration. See 15b for evidence.
+
+**R9b as built (2026-10-24):** the dormant Concord relief programme funds six real
+monthly installments, records the Postmaster's consent and consumes a paid physical
+refit. Its Halcyon cruiser carries a checked 300,000-km relay socket; first launch
+requires actual departure. Removal/remount preserves identities, the installed half
+adds five tonnes to the voyage, and carrier power/destruction drives service and
+terminal loss. The dev1 gate passed the hour-long funding cadence, moving coverage,
+recipient transfer, nine crashes, finite-money/material audits and restoration.
+R10 completes the public star; see 15b for exact evidence.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

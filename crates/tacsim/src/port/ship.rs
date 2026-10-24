@@ -50,7 +50,6 @@ use crate::definitions::{BayDef, GoodsTable, InteriorDef, LogisticsDef};
 use crate::port::capacity::Compartment;
 use crate::port::coop::{
     EnrolmentStatus, NO_CHARTER, ProgrammePort, Standing, helm_of, name_of, port_name,
-    programme_port,
 };
 use crate::port::def::PortDef;
 use crate::port::gauges::{self, DARK, Reading};
@@ -236,7 +235,9 @@ impl HullView<'_> {
     /// [`HULL_CLASS`], or [`HULL_CLASS_PROSPECTOR`] for a refitted hull.
     #[must_use]
     pub fn class_word(&self) -> &'static str {
-        if self.is_prospector() {
+        if self.unit.as_str() == "tacsim.unit.halcyon" {
+            "Halcyon"
+        } else if self.is_prospector() {
             HULL_CLASS_PROSPECTOR
         } else {
             HULL_CLASS
@@ -273,7 +274,9 @@ fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Optio
 /// **The view of one programme hull** by its Thing.
 #[must_use]
 pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
-    let port = programme_port(w)?;
+    let port = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| p.map.hulls.iter().any(|r| r.hull == hull.0))?;
     let row = port.map.hulls.iter().find(|row| row.hull == hull.0)?;
     view_of(w, port, row)
 }
@@ -282,7 +285,14 @@ pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
 /// scan of the programme port's hull rows).
 #[must_use]
 pub fn hull_of_room(w: &World, room: ObjId) -> Option<(HullView<'_>, CanonicalId)> {
-    let port = programme_port(w)?;
+    let port = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| {
+            p.map
+                .hulls
+                .iter()
+                .any(|r| r.rooms.values().any(|id| *id == room.0))
+        })?;
     let (row, tid) = port.map.hulls.iter().find_map(|row| {
         row.rooms
             .iter()
@@ -692,6 +702,9 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         };
         let programme = match charter.standing {
+            Standing::Fleet => {
+                "Programme: Concord Fleet; current economic command assignment.".into()
+            }
             // Cut IC13: a graduate's line names the hull (the graduated enrolment's
             // name, else the hull's own).
             Standing::Title => {

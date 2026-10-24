@@ -5101,3 +5101,539 @@ async fn r9_bad_cargo(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foun
     run(rig, who, &format!("+relaypair/collect {order}")).await;
     assert_eq!(count, rig.tw.world().next_id());
 }
+
+async fn r9_make_pair(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foundry) -> u64 {
+    set_rate(rig, 12).await;
+    let ask = listing_of(
+        &rig.tw,
+        "luna_port",
+        "crisium_instruments",
+        "instrument_boards",
+    );
+    run(rig, who, &format!("+market/quote {ask}=2")).await;
+    let quote = newest_quote(&rig.tw, who);
+    r9_command(rig, who, &format!("+market/accept {quote}={}", f.vault.0)).await;
+    let payer = credit_account(&rig.tw, &PrincipalId::Object(who));
+    r9_command(
+        rig,
+        who,
+        &format!(
+            "@wo/draft tacsim.relay.manufacture/private_pair/1={} 1 {} {} {}",
+            f.facility.0, payer.0, f.vault.0, f.vault.0
+        ),
+    )
+    .await;
+    let h = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryHandles>()
+        .unwrap()
+        .0
+        .clone();
+    let order = rig
+        .tw
+        .engine()
+        .action_state()
+        .scan_family(&h.work_orders, None, 32)
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| *e.value().state() == mush_industry::WorkOrderState::Draft)
+        .unwrap()
+        .value()
+        .id();
+    r9_command(rig, who, &format!("@wo/submit {order}")).await;
+    for _ in 0..121 {
+        sweep(rig, 301).await;
+        let queued = drain(&mut rig.tw);
+        land_quietly(rig, &queued).await;
+        r9_schedule(rig).await;
+    }
+    r9_command(rig, who, &format!("@wo/deliver {order}")).await;
+    sweep(rig, 61).await;
+    let inv = families(&rig.tw);
+    let lot = rig
+        .tw
+        .engine()
+        .action_state()
+        .scan_family(&inv.lots, None, 256)
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| {
+            e.value().endpoint() == EndpointRef(f.vault)
+                && e.value().commodity().as_str() == "relay_pair"
+        })
+        .unwrap()
+        .value()
+        .id();
+    r9_command(rig, who, &format!("+relaypair/claim {order}={}", lot.0)).await;
+    assert!(
+        run(rig, who, &format!("+relaypair/collect {order}"))
+            .await
+            .contains("titled halves")
+    );
+    order.0
+}
+
+async fn r9b_cell(rig: &mut Rig, object: ObjId, section: &str, value: i64) {
+    let damage = serde_json::json!({"ops":[{"SetCell":{"addr":{"Section":{"section":section,"cell":"internals"}},"value":value}}]});
+    let out = run(rig, GOD, &format!("@unit/damage {object}={damage}")).await;
+    assert!(out.contains("Applied"), "{out}");
+}
+async fn r9b_letter(rig: &mut Rig, recipient: ObjId, title: &str) -> u64 {
+    let out = run(
+        rig,
+        GOD,
+        &format!("@mail/quick {recipient}={title}/Actual Fleet radio"),
+    )
+    .await;
+    assert!(out.contains("queued for IC transit"), "{out}");
+    fire_quietly(rig).await;
+    let id = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelopes()
+        .last()
+        .unwrap()
+        .id();
+    radio_pass(rig).await;
+    id
+}
+fn r9b_uses(rig: &Rig, envelope: u64, pair: &CanonicalId) -> bool {
+    radio_envelope(rig, envelope)
+        .transit()
+        .is_some_and(|r| r.legs.iter().any(|l| l.pair.as_ref() == Some(pair)))
+}
+
+#[tokio::test]
+async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
+    let mut rig = boot("r9b-fleet").await;
+    stock(&mut rig).await;
+    let who = pilot(&mut rig, "Fleetwright", "fleetwright").await;
+    let observer = pilot(&mut rig, "MobileObserver", "mobileobserver").await;
+    let p = tacsim::relay_mobile::current(rig.tw.world())
+        .expect("dormant Fleet programme")
+        .clone();
+    assert_eq!(p.progress(), 0);
+    assert!(p.launch.is_none());
+    assert_eq!(
+        mush_propagation::routing::registry(rig.tw.world())
+            .unwrap()
+            .pairs
+            .len(),
+        1
+    );
+    let f = tacsim::relay_foundry::current(rig.tw.world())
+        .unwrap()
+        .clone();
+    for org in [f.owner, p.fleet] {
+        for cap in [
+            "economy.account.post",
+            "economy.account.view",
+            "vault.deposit",
+            "vault.withdraw",
+        ] {
+            let out = run(&mut rig, GOD, &format!("@org/grant {who}={org} {cap}")).await;
+            assert!(!out.contains("denied"), "{out}");
+        }
+    }
+    let out = run(
+        &mut rig,
+        GOD,
+        &format!("@asset/assign {}={who} Fleet command", p.hull),
+    )
+    .await;
+    assert!(out.contains("Assigned"), "{out}");
+    assert_eq!(
+        tacsim::port::coop::helm_of(rig.tw.world(), who)
+            .unwrap()
+            .hull,
+        p.hull
+    );
+    run(&mut rig, GOD, &format!("@teleport {who}={}", f.place)).await;
+    run(&mut rig, GOD, &format!("@account/open {who}=tacsim.credit")).await;
+    let payer = credit_account(&rig.tw, &PrincipalId::Object(who));
+    let treasury = port_map(&rig.tw, "ceres_port").treasury.unwrap();
+    run(
+        &mut rig,
+        GOD,
+        &format!("@econ/pay #{treasury}=#{} 10000000", payer.0),
+    )
+    .await;
+    r9_command(&mut rig, who, "+relaypair/stock").await;
+    let order = r9_make_pair(&mut rig, who, &f).await;
+    let count = rig.tw.world().next_id();
+    assert!(
+        run(
+            &mut rig,
+            observer,
+            &format!("+relayfleet/refit wo#{order:016x}")
+        )
+        .await
+        .contains("authority")
+    );
+    assert_eq!(count, rig.tw.world().next_id());
+    let out = run(&mut rig, who, &format!("+relayfleet/refit wo#{order:016x}")).await;
+    assert!(out.contains("Fleet refit complete"), "{out}");
+    let (mount, half) = tacsim::relay_mobile::mounted(rig.tw.world(), p.hull).unwrap();
+    assert!(tacsim::relay_mobile::active(rig.tw.world(), mount).is_none());
+    let pairs = mush_propagation::routing::registry(rig.tw.world())
+        .unwrap()
+        .pairs
+        .len();
+    assert!(
+        run(&mut rig, who, &format!("+relayfleet/refit wo#{order:016x}"))
+            .await
+            .contains("already completed")
+    );
+    assert_eq!(
+        pairs,
+        mush_propagation::routing::registry(rig.tw.world())
+            .unwrap()
+            .pairs
+            .len()
+    );
+    restart(&mut rig, |tw| {
+        tacsim::relay_mobile::mounted(tw.world(), p.hull) == Some((mount, half))
+    })
+    .await;
+    assert!(
+        run(&mut rig, observer, "+relayfleet/consent yes")
+            .await
+            .contains("authority")
+    );
+    let out = run(&mut rig, GOD, "+relayfleet/consent yes").await;
+    assert!(out.contains("consent recorded"), "{out}");
+    let before = credit_account(&rig.tw, &PrincipalId::Organization(p.fleet));
+    let balance = posted(&rig.tw, before);
+    // Authorized funding cannot invent money while the actual treasury is empty.
+    run(
+        &mut rig,
+        GOD,
+        &format!("@econ/pay #{}=#{} {balance}", before.0, payer.0),
+    )
+    .await;
+    assert_eq!(posted(&rig.tw, before), 0);
+    let out = run(&mut rig, who, "+relayfleet/fund").await;
+    assert!(out.contains("authorized"), "{out}");
+    fire_quietly(&mut rig).await;
+    assert!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .payments
+            .is_empty()
+    );
+    run(
+        &mut rig,
+        GOD,
+        &format!("@econ/pay #{}=#{} {balance}", payer.0, before.0),
+    )
+    .await;
+    assert_eq!(posted(&rig.tw, before), balance);
+    for n in 1..=6 {
+        if n == 6 {
+            r9b_cell(&mut rig, p.hull, "power", 0).await;
+        }
+        let due = tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .next_payment
+            .unwrap();
+        to_ic(&mut rig, due + 1).await;
+        fire_quietly(&mut rig).await;
+        assert_eq!(
+            tacsim::relay_mobile::current(rig.tw.world())
+                .unwrap()
+                .payments
+                .len(),
+            n
+        );
+        fire_quietly(&mut rig).await;
+        assert_eq!(
+            tacsim::relay_mobile::current(rig.tw.world())
+                .unwrap()
+                .payments
+                .len(),
+            n,
+            "no repeat installment"
+        );
+        if n == 3 {
+            restart(&mut rig, |tw| {
+                tacsim::relay_mobile::current(tw.world())
+                    .unwrap()
+                    .payments
+                    .len()
+                    == 3
+            })
+            .await;
+        }
+    }
+    assert_eq!(
+        posted(&rig.tw, before),
+        balance - 6 * tacsim::relay_mobile::PAYMENT_MINOR
+    );
+    assert_eq!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .progress(),
+        8
+    );
+    assert!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .launch
+            .is_none()
+    );
+    restart(&mut rig, |tw| {
+        tacsim::relay_mobile::current(tw.world())
+            .unwrap()
+            .progress()
+            == 8
+    })
+    .await;
+    r9b_cell(&mut rig, p.hull, "power", 3000).await;
+    fire_quietly(&mut rig).await;
+    assert!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .launch
+            .is_none()
+    );
+    assert_eq!(
+        tacsim::relay_mobile::active(rig.tw.world(), mount)
+            .unwrap()
+            .0,
+        p.hull
+    );
+    restart(&mut rig, |tw| {
+        tacsim::relay_mobile::current(tw.world())
+            .unwrap()
+            .launch
+            .is_none()
+    })
+    .await;
+    let identities = tacsim::relay_foundry::current(rig.tw.world())
+        .unwrap()
+        .machines[&order]
+        .clone();
+    assert!(
+        run(&mut rig, observer, "+relayfleet/remove")
+            .await
+            .contains("authority")
+    );
+    assert!(
+        run(&mut rig, who, "+relayfleet/remove")
+            .await
+            .contains("pair removed")
+    );
+    assert!(tacsim::relay_mobile::active(rig.tw.world(), mount).is_none());
+    assert_eq!(
+        mush_propagation::routing::registry(rig.tw.world())
+            .unwrap()
+            .pairs
+            .len(),
+        1
+    );
+    restart(&mut rig, |tw| {
+        tacsim::relay_mobile::mounted(tw.world(), p.hull).is_none()
+    })
+    .await;
+    let count = rig.tw.world().next_id();
+    assert!(
+        run(&mut rig, who, &format!("+relayfleet/refit wo#{order:016x}"))
+            .await
+            .contains("refit restored")
+    );
+    assert_eq!(rig.tw.world().next_id(), count);
+    let restored = &tacsim::relay_foundry::current(rig.tw.world())
+        .unwrap()
+        .machines[&order];
+    assert_eq!(restored.halves, identities.halves);
+    assert_eq!(restored.installed, identities.installed);
+    assert_eq!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .launch,
+        None
+    );
+    let out = run(&mut rig, who, "+ship").await;
+    assert!(out.contains("Halcyon"), "{out}");
+    let row = port_map(&rig.tw, "luna_port").hulls[0].clone();
+    let fuel = listing_of(&rig.tw, "luna_port", "highport_victualling", "propellant");
+    let food = listing_of(&rig.tw, "luna_port", "highport_victualling", "provisions");
+    bunker(&mut rig, who, "deimos", fuel, food).await;
+    // Boarding is part of the real load; carry margin for its allowance.
+    buy(&mut rig, who, fuel, 3).await;
+    buy(&mut rig, who, food, 2).await;
+    for _ in 0..3 {
+        sweep(&mut rig, 61).await;
+    }
+    assert_no_pages(&rig.tw);
+    let out = run(&mut rig, who, "+ship/board").await;
+    assert!(out.contains("cycle the lock"), "{out}");
+    set_rate(&mut rig, 3600).await;
+    let out = run(&mut rig, who, "+ship/undock deimos").await;
+    assert!(out.contains("Clearance filed"), "{out}");
+    for _ in 0..16 {
+        fire_quietly(&mut rig).await;
+        if under_way(&rig.tw, p.hull) {
+            break;
+        }
+    }
+    assert!(under_way(&rig.tw, p.hull));
+    fire_quietly(&mut rig).await;
+    let launch = tacsim::relay_mobile::current(rig.tw.world())
+        .unwrap()
+        .launch
+        .expect("canon follows real departure");
+    let t = ticket(&mut rig.tw, p.hull, 1).unwrap();
+    assert!(t.payload_kg >= tacsim::relay_foundry::HALF_KG);
+    assert!(t.plan.legs.last().is_some());
+    restart(&mut rig, |tw| ticket(tw, p.hull, 1).is_some()).await;
+    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    run(&mut rig, GOD, &format!("@teleport #1={}", f.place)).await;
+    set_rate(&mut rig, 1).await;
+    let key = cid(&format!("private_{order:016x}"));
+    let end = t
+        .plan
+        .legs
+        .last()
+        .map(|l| l.t0 + i64::from(l.secs))
+        .unwrap();
+    to_ic(&mut rig, (t.plan.depart_ic + end) / 2).await;
+    fire_quietly(&mut rig).await;
+    let aboard = r9b_letter(&mut rig, who, "R9b aboard").await;
+    assert!(
+        r9b_uses(&rig, aboard, &key),
+        "{:?}",
+        radio_envelope(&rig, aboard)
+    );
+    radio_arrive(&mut rig, aboard).await;
+    fire_quietly(&mut rig).await;
+    assert!(run(&mut rig, who, "@mail").await.contains("R9b aboard"));
+    let ceres = ObjId(port_map(&rig.tw, "ceres_port").presentation.unwrap());
+    run(&mut rig, GOD, &format!("@teleport {observer}={ceres}")).await;
+    let outside = r9b_letter(&mut rig, observer, "R9b outside").await;
+    assert!(!r9b_uses(&rig, outside, &key));
+    radio_arrive(&mut rig, outside).await;
+    // Arrive inside the receiver's physical coverage while still in passage.
+    let last = t.plan.legs.last().unwrap();
+    let nearby_secs =
+        ((u128::from(100_000_u64) * u128::from(last.secs)) / u128::from(last.dist_km)) as i64;
+    assert!(nearby_secs > 30);
+    to_ic(&mut rig, end - nearby_secs).await;
+    fire_quietly(&mut rig).await;
+    assert!(under_way(&rig.tw, p.hull));
+    let deimos = ObjId(port_map(&rig.tw, "deimos_port").presentation.unwrap());
+    run(&mut rig, GOD, &format!("@teleport {observer}={deimos}")).await;
+    let nearby = r9b_letter(&mut rig, observer, "R9b nearby").await;
+    assert!(
+        r9b_uses(&rig, nearby, &key),
+        "{:?}",
+        radio_envelope(&rig, nearby)
+    );
+    radio_arrive(&mut rig, nearby).await;
+    fire_quietly(&mut rig).await;
+    assert!(
+        run(&mut rig, observer, "@mail")
+            .await
+            .contains("R9b nearby")
+    );
+    let moving = r9b_letter(&mut rig, who, "R9b forwarding").await;
+    assert!(r9b_uses(&rig, moving, &key));
+    assert_ne!(
+        radio_envelope(&rig, moving).state(),
+        mush_propagation::EnvelopeState::Delivered
+    );
+    // Receiver transfers off the carrier before delivery; the envelope follows.
+    run(&mut rig, GOD, &format!("@teleport {who}={ceres}")).await;
+    radio_arrive(&mut rig, moving).await;
+    fire_quietly(&mut rig).await;
+    assert!(run(&mut rig, who, "@mail").await.contains("R9b forwarding"));
+    let bridge = ObjId(row.rooms[&cid("bridge")]);
+    run(&mut rig, GOD, &format!("@teleport {who}={bridge}")).await;
+    to_ic(&mut rig, end + 1).await;
+    for _ in 0..16 {
+        fire_quietly(&mut rig).await;
+        if !under_way(&rig.tw, p.hull) {
+            break;
+        }
+    }
+    assert!(!under_way(&rig.tw, p.hull));
+    // Move back into the real airlock before using the ordinary leave path.
+    let airlock = ObjId(row.rooms[&cid("airlock")]);
+    run(&mut rig, GOD, &format!("@teleport {who}={airlock}")).await;
+    let out = run(&mut rig, who, "+ship/leave").await;
+    assert!(out.contains("cycle the lock"), "{out}");
+    let pair = format!("private_{order:016x}");
+    let half_id = mush_propagation::routing::registry(rig.tw.world())
+        .unwrap()
+        .pairs[&cid(&pair)]
+        .halves[1]
+        .id
+        .clone();
+    run(&mut rig, GOD, &format!("@relay/disable {half_id}")).await;
+    assert_eq!(
+        mush_propagation::routing::registry(rig.tw.world())
+            .unwrap()
+            .pairs[&cid(&pair)]
+            .state(),
+        mush_sim::relay::LinkState::Degraded
+    );
+    run(&mut rig, GOD, &format!("@relay/enable {half_id}")).await;
+    let damage = serde_json::json!({"ops":[{"SetCell":{"addr":{"Section":{"section":"hull","cell":"internals"}},"value":0}}]});
+    let out = run(&mut rig, GOD, &format!("@unit/damage {}={damage}", p.hull)).await;
+    assert!(out.contains("Applied"), "{out}");
+    assert_eq!(
+        mush_propagation::routing::registry(rig.tw.world())
+            .unwrap()
+            .pairs[&cid(&pair)]
+            .state(),
+        mush_sim::relay::LinkState::Dead
+    );
+    restart(&mut rig, |tw| {
+        mush_propagation::routing::registry(tw.world())
+            .unwrap()
+            .pairs[&cid(&pair)]
+            .state()
+            == mush_sim::relay::LinkState::Dead
+    })
+    .await;
+    assert_eq!(
+        tacsim::relay_mobile::current(rig.tw.world())
+            .unwrap()
+            .launch,
+        Some(launch)
+    );
+    assert_eq!(row.hull, p.hull.0);
+    assert_no_pages(&rig.tw);
+}
+
+#[tokio::test]
+async fn r9b_fleet_assignment_expiry_uses_the_economy_wall_timestamp() {
+    let mut rig = boot("r9b-assignment").await;
+    let who = pilot(&mut rig, "FleetOfficer", "fleetofficer").await;
+    let hull = tacsim::relay_mobile::current(rig.tw.world()).unwrap().hull;
+    set_rate(&mut rig, 3600).await;
+    let until = rig.tw.world().now() + 60;
+    let out = run(
+        &mut rig,
+        GOD,
+        &format!("@asset/assign {hull}={who} Temporary command until={until}"),
+    )
+    .await;
+    assert!(out.contains("Assigned"), "{out}");
+    sweep(&mut rig, 30).await;
+    assert_eq!(
+        tacsim::relay_mobile::commander(rig.tw.world(), hull),
+        Some(who)
+    );
+    sweep(&mut rig, 31).await;
+    assert_eq!(tacsim::relay_mobile::commander(rig.tw.world(), hull), None);
+}

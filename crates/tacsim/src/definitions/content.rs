@@ -808,7 +808,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// twelve outer blocks' `paper`). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 12;
+pub const LANE_VERSION: u32 = 13;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -963,6 +963,10 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_DRONE.as_slice(),
         EXTENSIONS_HAULER.as_slice(),
         EXTENSIONS_VEHICLES.as_slice(),
+        &[(
+            "units/halcyon.json",
+            include_str!("../../content/units/halcyon.json"),
+        )],
         &[(
             "units/relay_station.json",
             include_str!("../../content/units/relay_station.json"),

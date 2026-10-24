@@ -22,6 +22,10 @@ use serde_json::Value;
 /// their pilots get the section rows with no doll (D-22-6), never a failure.
 const LOOKLESS: &[(&str, &str)] = &[
     (
+        "tacsim.unit.halcyon",
+        "a non-fieldable capital relief hull; ship and relay status use section rows, with no arena sprite",
+    ),
+    (
         "tacsim.unit.relay_station",
         "a fixed, non-fieldable relay installation; structural status uses section rows, with no arena sprite",
     ),

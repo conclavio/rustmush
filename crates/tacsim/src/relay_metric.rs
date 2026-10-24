@@ -74,12 +74,22 @@ struct Snapshot {
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+struct Segment {
+    from: CanonicalId,
+    to: CanonicalId,
+    distance_km: u64,
+    elapsed: u32,
+    seconds: u32,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
 struct Position {
     body: CanonicalId,
     /// Distance to the nearer end of the active frozen leg, rounded up to km.
     offset_km: u64,
     /// Ticket identity and frozen leg inputs, hashed into the flight's basis.
     source: String,
+    segment: Option<Segment>,
 }
 
 impl MetricProvider for RelayMetric {
@@ -171,6 +181,7 @@ impl Snapshot {
                         body: body.clone(),
                         offset_km: 0,
                         source: format!("docked:{}", hull.0),
+                        segment: None,
                     })
             };
             if snapshot.hulls.insert(hull, position).is_some() {
@@ -187,7 +198,11 @@ impl Snapshot {
         })
     }
 
+    fn physical_endpoint(&self, world: &World, endpoint: ObjId) -> ObjId {
+        crate::port::ship::hull_of_room(world, endpoint).map_or(endpoint, |(v, _)| v.hull())
+    }
     fn position(&self, world: &World, endpoint: ObjId) -> Option<Position> {
+        let endpoint = self.physical_endpoint(world, endpoint);
         if let Some(position) = self.hulls.get(&endpoint) {
             return position.clone();
         }
@@ -195,11 +210,33 @@ impl Snapshot {
             body: self.body(world, endpoint)?.clone(),
             offset_km: 0,
             source: "body".into(),
+            segment: None,
         })
     }
 }
 
 impl Metric for Snapshot {
+    fn coverage(
+        &self,
+        world: &World,
+        node: &mush_sim::relay::RelayNode,
+        endpoint: ObjId,
+    ) -> Option<bool> {
+        // An arbitrary station mounted inside an unsupported hull gains no magic
+        // fixed-room coverage. Only an actually commissioned capital socket works.
+        if crate::port::ship::hull_of_room(world, node.place).is_some() {
+            let (hull, radius) = crate::relay_mobile::active(world, node.object)?;
+            let endpoint = self.physical_endpoint(world, endpoint);
+            if hull == endpoint {
+                self.hulls.get(&hull)?.as_ref()?;
+                return Some(true);
+            }
+            let a = self.position(world, hull)?;
+            let b = self.position(world, endpoint)?;
+            return (near_distance(&a, &b)? <= u64::from(radius)).then_some(true);
+        }
+        Some(node.coverage.contains(&endpoint))
+    }
     fn endpoint(
         &self,
         world: &World,
@@ -241,6 +278,8 @@ impl Metric for Snapshot {
     }
 
     fn between(&self, world: &World, from: ObjId, to: ObjId) -> Measurement {
+        let from = self.physical_endpoint(world, from);
+        let to = self.physical_endpoint(world, to);
         let Some(sky) = &self.sky else {
             return Measurement::Unknown;
         };
@@ -394,6 +433,13 @@ fn ticket_position(
     Some(Position {
         body: body.clone(),
         offset_km,
+        segment: Some(Segment {
+            from: from.clone(),
+            to: leg.body.clone(),
+            distance_km: leg.dist_km,
+            elapsed: u32::try_from(elapsed).ok()?,
+            seconds: leg.secs,
+        }),
         source: format!(
             "{}:{}/{cursor}:{}/{}/{}/{}/{}",
             ticket.hull.0,
@@ -430,4 +476,104 @@ pub(crate) fn lag_line(ctx: &Ctx<'_>, hull: ObjId) -> String {
     });
     lag.map_or_else(|| "Radio: no live Exchange endpoint; conventional radio remains available.".into(),
         |s| format!("Radio: about {s} IC seconds one way to an Exchange endpoint; queue time and returning acknowledgements are additional."))
+}
+
+/// Only shared frozen edges or their endpoints establish local proximity. Two
+/// ships near different edges' nearer bodies are not assumed to share a position.
+fn near_distance(a: &Position, b: &Position) -> Option<u64> {
+    match (&a.segment, &b.segment) {
+        (None, None) if a.body == b.body => Some(0),
+        (Some(x), None) if b.body == x.from => u64::try_from(
+            (u128::from(x.distance_km) * u128::from(x.elapsed)).div_ceil(u128::from(x.seconds)),
+        )
+        .ok(),
+        (Some(x), None) if b.body == x.to => u64::try_from(
+            (u128::from(x.distance_km) * u128::from(x.seconds - x.elapsed))
+                .div_ceil(u128::from(x.seconds)),
+        )
+        .ok(),
+        (None, Some(_)) => near_distance(b, a),
+        (Some(x), Some(y))
+            if x.distance_km == y.distance_km && x.from == y.from && x.to == y.to =>
+        {
+            segment_separation(x, y, false)
+        }
+        (Some(x), Some(y))
+            if x.distance_km == y.distance_km && x.from == y.to && x.to == y.from =>
+        {
+            segment_separation(x, y, true)
+        }
+        _ => None,
+    }
+}
+
+fn segment_separation(x: &Segment, y: &Segment, reverse: bool) -> Option<u64> {
+    let a = u128::from(x.distance_km)
+        .checked_mul(u128::from(x.elapsed))?
+        .checked_mul(u128::from(y.seconds))?;
+    let elapsed = if reverse {
+        y.seconds.checked_sub(y.elapsed)?
+    } else {
+        y.elapsed
+    };
+    let b = u128::from(y.distance_km)
+        .checked_mul(u128::from(elapsed))?
+        .checked_mul(u128::from(x.seconds))?;
+    let denominator = u128::from(x.seconds).checked_mul(u128::from(y.seconds))?;
+    (denominator != 0)
+        .then(|| u64::try_from(a.abs_diff(b).div_ceil(denominator)).ok())
+        .flatten()
+}
+
+#[cfg(test)]
+mod mobile_coverage_tests {
+    use super::*;
+    fn position(from: &str, to: &str, distance: u64, elapsed: u32, seconds: u32) -> Position {
+        Position {
+            body: CanonicalId::new(from).unwrap(),
+            offset_km: 0,
+            source: "test".into(),
+            segment: Some(Segment {
+                from: CanonicalId::new(from).unwrap(),
+                to: CanonicalId::new(to).unwrap(),
+                distance_km: distance,
+                elapsed,
+                seconds,
+            }),
+        }
+    }
+    fn body(name: &str) -> Position {
+        Position {
+            body: CanonicalId::new(name).unwrap(),
+            offset_km: 0,
+            source: "test".into(),
+            segment: None,
+        }
+    }
+    #[test]
+    fn radius_rounds_outward_at_both_ends_and_between_carriers() {
+        let a = position("a", "b", 600_001, 1, 2);
+        assert_eq!(near_distance(&a, &body("a")), Some(300_001));
+        assert_eq!(near_distance(&a, &body("b")), Some(300_001));
+        assert_eq!(
+            near_distance(&a, &position("a", "b", 600_001, 0, 2)),
+            Some(300_001)
+        );
+        assert_eq!(
+            near_distance(&a, &position("b", "a", 600_001, 1, 2)),
+            Some(0)
+        );
+        assert_eq!(
+            near_distance(&a, &position("b", "a", 600_001, 0, 2)),
+            Some(300_001)
+        );
+        assert_eq!(near_distance(&a, &a), Some(0));
+    }
+    #[test]
+    fn unrelated_edges_and_inconsistent_frozen_distances_have_no_nearby_claim() {
+        let a = position("a", "b", 100, 1, 2);
+        assert_eq!(near_distance(&a, &position("a", "c", 100, 1, 2)), None);
+        assert_eq!(near_distance(&a, &position("a", "b", 101, 1, 2)), None);
+        assert_eq!(near_distance(&a, &body("c")), None);
+    }
 }

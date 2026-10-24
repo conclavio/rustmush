@@ -52,7 +52,7 @@ pub fn ensure_units(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn internals(unit: &mush_tactics::TacticalUnit, section: &str) -> Option<i64> {
+pub(crate) fn internals(unit: &mush_tactics::TacticalUnit, section: &str) -> Option<i64> {
     unit.cell(&CellAddr::Section {
         section: SectionId::new(section).ok()?,
         cell: CellId::new("internals").ok()?,
@@ -131,7 +131,10 @@ fn reconcile(
     let Some(node) = registry
         .nodes
         .iter()
-        .find(|(_, n)| n.object == object)
+        .find(|(_, n)| {
+            n.object == object
+                || crate::relay_mobile::carrier_of_node(ctx.w, n.object) == Some(object)
+        })
         .map(|(id, _)| id.clone())
     else {
         return Ok(());
@@ -140,8 +143,17 @@ fn reconcile(
     if unit.revision() != revision {
         return Err("stale structural event".into());
     }
-    let core = internals(unit, "core").ok_or("relay core missing")?;
-    let power = internals(unit, "power").ok_or("relay power missing")?;
+    let node_object = registry.nodes.get(&node).ok_or("Relay node absent")?.object;
+    let station =
+        mush_tactics::module::unit_of(ctx.w, node_object).ok_or("Relay station unavailable")?;
+    let mut core = internals(station, "core").ok_or("relay core missing")?;
+    let mut power = internals(station, "power").ok_or("relay power missing")?;
+    if let Some(hull) = crate::relay_mobile::carrier_of_node(ctx.w, node_object) {
+        let carrier =
+            mush_tactics::module::unit_of(ctx.w, hull).ok_or("Relay carrier unavailable")?;
+        core = core.min(internals(carrier, "hull").ok_or("Carrier structure missing")?);
+        power = power.min(internals(carrier, "power").ok_or("Carrier power missing")?);
+    }
     let dead = core == 0 || registry.losses.contains_key(&node);
     let mut changed = false;
     for half in registry
@@ -160,7 +172,7 @@ fn reconcile(
         registry.losses.insert(
             node,
             NodeLoss {
-                object,
+                object: node_object,
                 revision,
                 responsible,
                 at: ctx.w.world_ic_now().at,

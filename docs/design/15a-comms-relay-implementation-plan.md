@@ -468,6 +468,19 @@ passage, transfer/disembark a recipient, disable the installation, and destroy t
 carrier in a controlled test. The link dies consistently and canon records the
 first launch once. **Stop.**
 
+**Result (2026-10-24):** implemented and dev1 gate passed. Six actual 10,000-credit
+monthly transfers took 3,604 wall seconds at rate 3600; consent and paid physical
+refit completed the dormant 8-segment front. Removal/remount preserved the original
+halves, carrier power loss recovered, and the first launch followed a real voyage.
+Onboard/nearby mail, outside fallback, recipient transfer and terminal carrier loss
+passed through nine SIGKILL boundaries. Fresh boot/reboot, 12 SSH checks, finite
+material/money audit and baseline restoration passed. Linux ran 662 tests with zero
+failures or skips; formatting, Clippy and release/web builds passed. Seven legacy
+fixture targets from the preceding CI failure now pass with production inventory
+wiring. See [15b](15b-comms-relay-cut-notes.md) and
+[metadata](evidence/relay-r9b-2026-10-24/metadata.json). Commit/push precedes the
+authorized continuation to R10; normal CI remains owner-monitored.
+
 ### Gate 13 — R10: complete the Luna star
 
 Finish the five-node/four-pair/eight-half pack: Malapert, Phobos, Ceres, Kirkwood and

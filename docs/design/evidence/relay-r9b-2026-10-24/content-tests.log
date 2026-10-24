@@ -1,0 +1,65 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 38.71s
+     Running tests/content.rs (target/debug/deps/content-83413e8771d6aca3)
+
+running 36 tests
+test ic2_a_dray_note_past_the_bound_fails_the_load ... ok
+test ic2_logistics_refuses_a_rail_below_the_stowage_maxima ... ok
+test ic2_an_interior_refuses_what_the_template_cannot_build ... ok
+test every_shipped_pack_carries_its_own_digest ... ok
+test ic2_the_dray_is_pinned_and_checks ... ok
+test ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena ... ok
+test m2_every_fielded_units_substep_divides_the_three_periods ... ok
+test ic2_the_goods_table_is_pinned ... ok
+test m3_the_stock_class_table_is_the_doc_17_table ... ok
+test m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved ... ok
+test no_building_stands_on_a_road ... ok
+test o1_the_shipped_ground_declares_hold_at_the_crossroads ... ok
+test ic2_the_dray_is_a_hauler_and_binds_class_zero ... ok
+test m4_every_fielded_tanks_two_tracks_carry_the_pair_rule ... ok
+test sm3a_a_tool_out_of_bounds_is_refused ... ok
+test sm3a_a_bay_refuses_what_the_template_cannot_build ... ok
+test m3_every_shipped_chassis_binds_its_core ... ok
+test sm3a_the_dray_p_is_the_dray_with_a_bay ... ok
+test sm3a_the_tools_are_pinned_and_check ... ok
+test the_authored_map_is_the_map_the_arena_entry_describes ... ok
+test q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_order ... ok
+test the_ford_is_the_only_way_across_the_river ... ok
+test the_band_word_the_shipped_content_can_print ... ok
+test the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford ... ok
+test the_pinned_digests_are_the_shipped_ones ... ok
+test the_ten_commodity_families_decode ... ok
+test sm3a_the_terrain_vehicle_is_pinned_and_checks ... ok
+test sm3a_nothing_fielded_before_the_vehicles_moved ... ok
+test z3_the_arena_fields_six_a_side_in_the_authored_order ... ok
+test the_shipped_atlas_pack_is_this_generators_output ... ok
+test e1_the_ranges_the_shipped_machines_fight_at ... ok
+test z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing ... ok
+test z3_a_renamed_stock_tank_is_adopted_by_the_roster_and_no_thirteenth_is_made ... ok
+test m2_the_standard_doctrine_source_is_pinned ... ok
+test ae1_the_bluff_is_where_and_what_the_note_says ... ok
+test g7b_the_showcase_relief_is_drivable_and_the_fought_ground_is_unchanged ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.87s
+
+     Running tests/lane.rs (target/debug/deps/lane-4d66324aead50cea)
+
+running 16 tests
+test fixture_digests_unmoved_by_optional_sky_fields ... ok
+test a8_every_number_in_the_lane_is_spelled_as_serde_json_prints_it ... ok
+test body_epoch_holds_its_phase_at_that_instant ... ok
+test ic2_the_lane_pack_is_pinned ... ok
+test sky_circular_agrees_with_the_law_of_cosines ... ok
+test ic2_an_operator_seed_cannot_claim_the_lane_id ... ok
+test one_drive_class_one_law ... ok
+test sm10_a_paper_on_a_held_or_commons_block_is_refused ... ok
+test sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper ... ok
+test sm3a_the_lane_carries_the_refit_row_and_occators_rigs ... ok
+test sm10_a_paper_naming_no_row_or_the_sites_own_issuer_is_refused ... ok
+test sm3a_a_vehicles_block_out_of_bounds_is_refused ... ok
+test lane_legs_derive_at_epoch ... ok
+test ic14_corridor_show_at_an_unapplied_version_is_no_such_corridor ... ok
+test ic14_a_staff_seed_survives_a_fold_and_reboot ... ok
+test ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.12s

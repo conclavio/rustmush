@@ -245,3 +245,29 @@ Its power and structural loss follow the ordinary installed-station rules.
 `+relaypair/discover #half` requires physical inspection of a completed private
 installation. It files intelligence and advances the Concord's anti-proliferation
 front once per pair. Repeated inspections and restarts do not advance it again.
+
+
+## Concord Fleet mobile programme
+
+`+relayfleet` shows **A Half Afloat**, the dormant eight-segment relief programme.
+Its Halcyon capital hull begins without a working relay. Fleet command is a real
+`@asset/assign` relationship; treasury and hold access use normal organization grants.
+
+- `+relayfleet/fund` authorizes six actual 10,000-credit payments from the finite
+  Fleet treasury to the Lunar refit yard. The first is due immediately; subsequent
+  payments are at least 30 IC days apart. Insufficient funds pause the programme.
+- `+relayfleet/consent yes` records Postmaster Solveig Adebayo-Krishnan's decision
+  through an authorized Exchange representative.
+- `+relayfleet/refit wo#<16-hex>` installs both titled halves of a completed
+  foundry order while the assigned commander and idle cruiser are at Luna. The
+  physical pair and real refit provide the eighth segment, in any producer order.
+- With all eight segments complete, the half serves the cruiser and traffic within
+  300,000 km along its checked journey. `+ship/plan`, `/board`, `/undock`, and `/leave`
+  use the ordinary paid supplies and real passage. First-launch canon follows the
+  first actual departure, once.
+- `+relayfleet/remove` at the Lunar yard disconnects the pair and returns both
+  manufactured halves to the dock. Refit reuses the same halves and cradles, without
+  repeating the front or first launch. Lost hardware cannot be remounted to revive it.
+
+Carrier power damage interrupts service. Destroying the carrier kills its mobile
+half and orphans its mate, with the same consequences as destroying a fixed node.

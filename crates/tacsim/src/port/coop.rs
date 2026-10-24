@@ -413,22 +413,36 @@ impl ProgrammePort<'_> {
 /// present. `None` on a world with no such port.
 #[must_use]
 pub fn programme_port(w: &World) -> Option<ProgrammePort<'_>> {
-    let store = w.module_state::<TacsimStore>()?;
-    let lane = CanonicalId::new(LANE_PACK).ok()?;
+    programme_ports(w)
+        .into_iter()
+        .find(|p| p.programme.id.as_str() == "coop.first_captain")
+}
+
+/// Checked programmes in the applied lane, including the independently titled Fleet hull.
+pub fn programme_ports(w: &World) -> Vec<ProgrammePort<'_>> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let Ok(lane) = CanonicalId::new(LANE_PACK) else {
+        return Vec::new();
+    };
     let (_, ports) = report_ports(store, w);
-    ports.into_iter().find_map(|(entry, def)| {
-        let programme = def.programme.as_ref()?;
-        match store.port_map(&lane, &entry) {
-            PortMapState::Present(map) => Some(ProgrammePort {
-                pack: lane.clone(),
-                entry,
-                def,
-                programme,
-                map,
-            }),
-            PortMapState::Absent | PortMapState::Unreadable => None,
-        }
-    })
+    ports
+        .into_iter()
+        .filter_map(|(entry, def)| {
+            let programme = def.programme.as_ref()?;
+            match store.port_map(&lane, &entry) {
+                PortMapState::Present(map) => Some(ProgrammePort {
+                    pack: lane.clone(),
+                    entry,
+                    def,
+                    programme,
+                    map,
+                }),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// The port's player-facing name: the IC-return table's row for its venue,
@@ -554,6 +568,8 @@ pub enum Standing {
     Charter(ContractId),
     /// The pilot holds the hull's title: a graduate.
     Title,
+    /// Current economic assignment of a Concord Fleet hull.
+    Fleet,
 }
 
 /// **Who may operate** (D-18-23, cut IC13): the hull a pilot commands and on what standing.
@@ -579,6 +595,12 @@ pub(crate) fn titled_to(w: &World, hull: ObjId, owner: &PrincipalId) -> bool {
 /// the programme port's map whose asset is `Active` and titled to `Object(pilot)`.
 #[must_use]
 pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
+    if let Some(hull) = crate::relay_mobile::assigned_hull(w, pilot) {
+        return Some(Helm {
+            hull,
+            standing: Standing::Fleet,
+        });
+    }
     if let Some(charter) = live_charter(w, pilot) {
         return Some(Helm {
             hull: charter.hull,
@@ -603,6 +625,9 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
 /// title holder of a programme-map hull. `None` for a laid-up Trust hull.
 #[must_use]
 pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
+    if crate::relay_mobile::fleet_hull(w) == Some(hull) {
+        return crate::relay_mobile::commander(w, hull);
+    }
     if let Some(tenant) = charter_tenant(w, hull) {
         return Some(tenant);
     }

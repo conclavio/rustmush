@@ -1,0 +1,23 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T11:31:29.075Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.lane.ceres_phobos",
+      "reply": "Plan for tacsim.lane.ceres_phobos@13: 0 create, 1 update, 0 retire, 59 unchanged\n update   luna_port (port)\n validator: no findings\n fingerprint 920d247ec7a706bc — @atlas/pack apply 920d247ec7a706bc",
+      "wallMs": 25,
+      "replyBytes": 200
+    }
+  ],
+  "milestones": [],
+  "runs": [
+    {
+      "at": "2026-10-24T11:31:29.116Z",
+      "gatewayPid": 984575,
+      "serverPid": 984587,
+      "serverSha256": "b23b1845ded154dda7ecc3f15155e19fee1e149a766089a295e1015294680f75"
+    }
+  ],
+  "failure": "TypeError: Cannot read properties of null (reading '1')\n    at file:///opt/rustmush/dev1/build/scripts/relay-r9b-live.mjs:31:151"
+}

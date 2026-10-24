@@ -70,6 +70,9 @@ pub struct Machines {
     pub halves: [ObjId; 2],
     pub titled: [bool; 2],
     pub installed: [Option<ObjId>; 2],
+    /// A removed Fleet pair retains its original cradles for checked remounting.
+    #[serde(default)]
+    pub dismounted: Option<[ObjId; 2]>,
     pub operator: Option<OrgId>,
     pub discovery: Option<u64>,
 }
@@ -95,7 +98,12 @@ impl Foundry {
         let nodes: Vec<_> = self
             .machines
             .values()
-            .flat_map(|m| m.installed.into_iter().flatten())
+            .flat_map(|m| {
+                m.installed
+                    .into_iter()
+                    .flatten()
+                    .chain(m.dismounted.into_iter().flatten())
+            })
             .collect();
         if nodes
             .iter()
@@ -109,7 +117,10 @@ impl Foundry {
                         .iter()
                         .enumerate()
                         .any(|(i, n)| n.is_some() && !m.titled[i])
-                    || m.discovery.is_some() && m.installed.iter().any(Option::is_none)
+                    || m.dismounted.is_some() && m.installed.iter().any(Option::is_some)
+                    || m.discovery.is_some()
+                        && m.dismounted.is_none()
+                        && m.installed.iter().any(Option::is_none)
             })
         {
             return Err("Invalid relay installation census".into());
@@ -764,6 +775,7 @@ fn collect(ctx: &mut Ctx<'_>, mut f: Foundry) -> Result<(), String> {
                 halves,
                 titled: [false, false],
                 installed: [None, None],
+                dismounted: None,
                 operator: None,
                 discovery: None,
             },
@@ -1026,6 +1038,9 @@ fn install_half(ctx: &mut Ctx<'_>, mut f: Foundry) -> Result<(), String> {
         .get(&order)
         .cloned()
         .ok_or("Fabrication missing")?;
+    if m.dismounted.is_some() {
+        return Err("A removed Fleet pair must use +relayfleet/refit".into());
+    }
     if m.installed[n].is_some() {
         return Err("That half is already installed".into());
     }
@@ -1262,9 +1277,11 @@ fn protected(w: &World, o: ObjId) -> bool {
         return true;
     }
     current(w).is_some_and(|f| {
-        f.machines
-            .values()
-            .any(|m| m.halves.contains(&o) || m.installed.contains(&Some(o)))
+        f.machines.values().any(|m| {
+            m.halves.contains(&o)
+                || m.installed.contains(&Some(o))
+                || m.dismounted.is_some_and(|nodes| nodes.contains(&o))
+        })
     })
 }
 impl mush_core::EventHook for CargoGate {
@@ -1317,4 +1334,226 @@ impl mush_core::DetachGate for CargoGate {
             Ok(())
         }
     }
+}
+
+/// The Fleet yard fits both actually fabricated halves while the real hull is
+/// docked at Luna. This moves local hardware into mounts; it never creates output.
+pub(crate) fn fit_mobile(
+    ctx: &mut Ctx<'_>,
+    order: u64,
+    hull: ObjId,
+    operator: OrgId,
+) -> Result<(), String> {
+    let mut f = current(ctx.w).cloned().ok_or("Foundry missing")?;
+    let mut m = f
+        .machines
+        .get(&order)
+        .cloned()
+        .ok_or("Fabricated pair missing")?;
+    let (_, room) = crate::relay_mobile::capability(ctx.w, hull)
+        .ok_or("A checked capital relay socket is required")?;
+    let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, hull)
+    else {
+        return Err("Refit requires the real Lunar berth".into());
+    };
+    if map.entry.as_str() != "luna_port"
+        || map.presentation != Some(f.place.0)
+        || ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(f.place)
+        || crate::port::voyage::voyage_blocks(ctx.w, hull)
+        || m.installed.iter().any(Option::is_some)
+        || m.halves.iter().any(|h| {
+            !cargo(ctx.w, *h)
+                || !owns(ctx.w, ctx.actor, *h)
+                || ctx.w.get(*h).and_then(|o| o.location) != Some(f.place)
+        })
+        || !mush_economy::acts_for(ctx.w, ctx.actor, &PrincipalId::Organization(operator))
+    {
+        return Err("Refit needs both titled, usable halves on the Lunar dock, an idle cruiser and Fleet authority".into());
+    }
+    let unit = mush_tactics::module::unit_of(ctx.w, hull).ok_or("Capital structure missing")?;
+    if ["hull", "power"]
+        .into_iter()
+        .any(|s| crate::relay_loss::internals(unit, s).is_none_or(|n| n == 0))
+    {
+        return Err("Repair the cruiser before refitting".into());
+    }
+    let mut r = mush_propagation::routing::registry(ctx.w)
+        .cloned()
+        .ok_or("Registry missing")?;
+    r.reconcile(ctx.w)?;
+    mush_sim::relay::check_installer(ctx)?;
+    let pair = id(&format!("private_{order:016x}"))?;
+    if r.pairs.contains_key(&pair)
+        || r.pairs.len() + 1 > mush_sim::relay::MAX_PAIRS
+        || r.nodes.len() + 2 > mush_sim::relay::MAX_NODES
+        || operator == r.operator
+    {
+        return Err("No independent relay installation capacity".into());
+    }
+    let revision = r
+        .revision
+        .checked_add(1)
+        .ok_or("Relay revisions exhausted")?;
+    let catalog = crate::builtin_definitions()?;
+    let spec = catalog
+        .units
+        .get(crate::relay_loss::STATION)
+        .ok_or("Station schema missing")?;
+    let node_ids = [
+        id(&format!("private_{order:016x}_0"))?,
+        id(&format!("private_{order:016x}_1"))?,
+    ];
+    if node_ids
+        .iter()
+        .any(|n| r.nodes.contains_key(n) || r.losses.contains_key(n))
+    {
+        return Err("Fleet node identity conflict or terminal loss".into());
+    }
+    let places = [f.place, room];
+    if let Some(nodes) = m.dismounted {
+        for (n, mount) in nodes.into_iter().enumerate() {
+            if ctx.w.get(mount).and_then(|o| o.location) != Some(places[n])
+                || !healthy(ctx.w, mount)
+            {
+                return Err("The original Fleet cradle needs repair".into());
+            }
+        }
+    }
+    let mut halves = Vec::new();
+    for (n, place) in places.into_iter().enumerate() {
+        let node_id = node_ids[n].clone();
+        let mount = if let Some(nodes) = m.dismounted {
+            nodes[n]
+        } else {
+            let mount = ctx
+                .w
+                .create(
+                    mush_core::ObjKind::Thing,
+                    if n == 0 {
+                        "Fleet Lunar relay cradle"
+                    } else {
+                        "Fleet mobile relay cradle"
+                    },
+                    ctx.actor,
+                    Some(place),
+                )
+                .map_err(|e| e.to_string())?;
+            mush_tactics::module::create_unit(ctx, mount, spec)?;
+            mount
+        };
+        ctx.w
+            .move_to(m.halves[n], mount)
+            .map_err(|e| e.to_string())?;
+        bind(ctx, mount, mush_sim::relay::NODE_BEHAVIOR)?;
+        bind(ctx, m.halves[n], mush_sim::relay::HALF_BEHAVIOR)?;
+        m.installed[n] = Some(mount);
+        r.nodes.insert(
+            node_id.clone(),
+            mush_sim::relay::RelayNode {
+                object: mount,
+                place,
+                label: if n == 0 {
+                    "Concord Fleet lunar anchor".into()
+                } else {
+                    "Concord Fleet mobile half".into()
+                },
+                operator,
+                coverage: vec![place],
+            },
+        );
+        halves.push(mush_sim::relay::RelayHalf {
+            id: id(&format!("private_{order:016x}_half_{n}"))?,
+            object: m.halves[n],
+            node: node_id,
+            enabled: true,
+            powered: true,
+            staffed: true,
+            destroyed: false,
+            damaged: false,
+        });
+    }
+    r.pairs.insert(
+        pair,
+        mush_sim::relay::RelayPair {
+            halves: halves
+                .try_into()
+                .map_err(|_| "Fleet pair identity failure")?,
+            capacity_units_per_ic_second: 1,
+            class_policy: mush_sim::relay::ClassPolicy::Private,
+        },
+    );
+    r.revision = revision;
+    m.operator = Some(operator);
+    m.dismounted = None;
+    f.machines.insert(order, m);
+    mush_sim::relay::install(ctx, r)?;
+    save(ctx, f)
+}
+
+/// Remove at the original yard, retaining the manufactured identities and cradles.
+/// Lost hardware cannot be removed and remounted to erase a terminal loss.
+pub(crate) fn remove_mobile(ctx: &mut Ctx<'_>, order: u64, hull: ObjId) -> Result<(), String> {
+    let mut f = current(ctx.w).cloned().ok_or("Foundry absent")?;
+    let mut m = f
+        .machines
+        .get(&order)
+        .cloned()
+        .ok_or("Fabrication absent")?;
+    let [Some(a), Some(b)] = m.installed else {
+        return Err("Fleet pair is already removed".into());
+    };
+    let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, hull)
+    else {
+        return Err("Removal requires the real Lunar berth".into());
+    };
+    if map.entry.as_str() != "luna_port"
+        || ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(f.place)
+        || crate::port::voyage::voyage_blocks(ctx.w, hull)
+    {
+        return Err("Removal requires an idle cruiser and its commander on the Lunar dock".into());
+    }
+    let mut r = mush_propagation::routing::registry(ctx.w)
+        .cloned()
+        .ok_or("Registry absent")?;
+    r.reconcile(ctx.w)?;
+    mush_sim::relay::check_installer(ctx)?;
+    let pair_id = id(&format!("private_{order:016x}"))?;
+    let pair = r.pairs.get(&pair_id).cloned().ok_or("Fleet pair absent")?;
+    if pair.halves.iter().enumerate().any(|(n, h)| {
+        h.object != m.halves[n]
+            || r.nodes
+                .get(&h.node)
+                .is_none_or(|v| Some(v.object) != m.installed[n])
+            || h.destroyed
+            || r.losses.contains_key(&h.node)
+    }) {
+        return Err("Lost or inconsistent Fleet hardware cannot be removed for reuse".into());
+    }
+    r.revision = r
+        .revision
+        .checked_add(1)
+        .ok_or("Relay revisions exhausted")?;
+    let node_binding =
+        mush_core::BehaviorId::new(mush_sim::relay::NODE_BEHAVIOR).map_err(|e| e.to_string())?;
+    let half_binding =
+        mush_core::BehaviorId::new(mush_sim::relay::HALF_BEHAVIOR).map_err(|e| e.to_string())?;
+    for (n, mount) in [a, b].into_iter().enumerate() {
+        ctx.w
+            .detach_behavior(mount, &node_binding)
+            .map_err(|e| e.to_string())?;
+        ctx.w
+            .detach_behavior(m.halves[n], &half_binding)
+            .map_err(|e| e.to_string())?;
+        ctx.w
+            .move_to(m.halves[n], f.place)
+            .map_err(|e| e.to_string())?;
+        r.nodes.remove(&pair.halves[n].node);
+    }
+    r.pairs.remove(&pair_id);
+    m.installed = [None, None];
+    m.operator = None;
+    m.dismounted = Some([a, b]);
+    f.machines.insert(order, m);
+    mush_sim::relay::install(ctx, r)?;
+    save(ctx, f)
 }

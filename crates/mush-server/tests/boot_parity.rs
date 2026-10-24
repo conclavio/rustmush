@@ -807,10 +807,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 23,
-            "the twenty-three institutions: the corridor's nine, the moons' eleven (doc 19 cut \
+            orgs, 24,
+            "the twenty-four institutions: the corridor's nine, the moons' eleven (doc 19 cut \
              A.8), the Freeport Registry (doc 20 cut SM.2) and the Pallas Syndicate (doc 20 cut \
-             SM.10), plus the Malapert Exchange (doc 15 cut R1)"
+             SM.10), plus the Malapert Exchange (doc 15 cut R1) and Concord relief command (R9b)"
         );
         assert!(
             !store.test_world(),

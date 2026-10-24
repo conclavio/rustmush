@@ -1,0 +1,36 @@
+R9B_STORIES_PASSED
+R9B_REGRESSIONS_PASSED
+
+> rustmush-web@0.1.0 build
+> node scripts/build-wasm.mjs && svelte-check --tsconfig ./tsconfig.json && vite build && node scripts/stamp-commit.mjs
+
+    Finished `release` profile [optimized] target(s) in 0.28s
+Picture module: /opt/rustmush/dev1/build/web/src/lib/pixel/mush_pixel.wasm (375223 bytes)
+Loading svelte-check in workspace: /opt/rustmush/dev1/build/web
+Getting Svelte diagnostics...
+
+svelte-check found 0 errors and 0 warnings
+vite v8.2.2 building client environment for production...
+transforming...
+✓ 282 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                         1.24 kB │ gzip:   0.67 kB
+dist/assets/mush_pixel-CqQxwnO0.wasm  375.22 kB │ gzip: 124.27 kB
+dist/assets/index-DN7o2Mfr.css         66.70 kB │ gzip:  11.68 kB
+dist/assets/index-BJazGThP.js         790.08 kB │ gzip: 244.24 kB │ map: 3,457.11 kB
+
+✓ built in 2.53s
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+Web bundle source commit: 17a93c7e0885ce031cd610aeef3565963b114a4f
+web bundle: source commit 17a93c7e0885ce031cd610aeef3565963b114a4f matches
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `release` profile [optimized] target(s) in 8m 56s
+R9B_BUILD_COMPLETE

@@ -232,6 +232,11 @@ family = "propagation.relay_service"
 note = "Doc 15a R3/R4/R8a: the mixed command takes the ceiling category of its switches. Public board/status/own receipts are reads; operator policy and evidence use the accepted bounded, strictly decoded transport document. Retail quotes and reservations use that same owner record, with real money only through mush_economy::post and settle_engine_reservation. Hold/capture/release and transport post-images share the strict-durable step; failed capture discards provisional routing. No direct ledger balance writer or prepared action authority is added. Doc 15a explicitly retains the existing monolithic transport boundary; a future propagation.relay_service family migrates it with the existing economy boundary, not a parallel money authority."
 
 [[handler]]
+name = "+relayfleet"
+category = "authoritative"
+note = "R9b: bounded Fleet programme receipts coordinate actual economy monthly transfers, attributed principal consent, fabricated-half installation and the faction/canon owners. Command assignment is the existing economic asset relationship; physical coverage reads the checked capital unit and frozen voyage ticket. This shares the established strict durable post-image boundary; no second money balance, cargo quantity or message scheduler is introduced."
+
+[[handler]]
 name = "+relaypair"
 category = "authoritative"
 note = "R9a: stock and claim submit one typed fabrication action; the inventory owner consumes completed output and records a bounded fabrication receipt in the same transaction. Collection titles physical machines from that receipt through the existing economy owner. Loading uses checked spatial bay capacity and real voyage mass; installation writes the sim-owned relay registry. Physical mappings and discovery receipts are bounded post-images on the existing TacSim state slot. No second quantity or money ledger."

@@ -62,7 +62,7 @@ use support::ground::{UNSIGNED, sign};
 /// (was `3f49d176…` at v10).
 /// Doc 20 cut SM.10: v12, the claim fees beside the licence's, the Pallas Syndicate and Occator
 /// Rim's paper (was `c7239b0a…` at v11).
-const LANE_DIGEST: &str = "9108a455528b781bc3a010cf43cadbc001b7663e720e5cd19082f85bc63ca6c2";
+const LANE_DIGEST: &str = "34d47907dd42dbcd5192aae05d6eaf76c89dd40abd877845ac83ec35968e47c1";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -235,8 +235,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        12,
-        "lane v12 since doc 20 cut SM.10 (v11 at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 \
+        13,
+        "lane v13 since relay R9b (v12 at doc 20 cut SM.10) (v11 at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 \
          at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

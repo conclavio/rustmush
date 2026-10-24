@@ -17,6 +17,17 @@ pub fn strip_claims(doc: &mut Value) {
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };
+    // The shipped lane is now v13. Historical v11 fixtures must also remove
+    // the later, additive Fleet programme without changing the old digest.
+    if let Some(def) = entries
+        .get_mut("luna_port")
+        .and_then(|entry| entry["def"].as_object_mut())
+    {
+        def.remove("programme");
+        if let Some(orgs) = def.get_mut("orgs").and_then(Value::as_array_mut) {
+            orgs.retain(|org| org["id"] != "concord_fleet");
+        }
+    }
     if let Some(def) = entries
         .get_mut("ceres_port")
         .and_then(|entry| entry["def"].as_object_mut())

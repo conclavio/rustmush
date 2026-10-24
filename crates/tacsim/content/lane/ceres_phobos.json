@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 12,
+    "version": 13,
     "kind": "campaign_seed",
-    "digest": "9108a455528b781bc3a010cf43cadbc001b7663e720e5cd19082f85bc63ca6c2",
+    "digest": "34d47907dd42dbcd5192aae05d6eaf76c89dd40abd877845ac83ec35968e47c1",
     "requires": []
   },
   "entries": {
@@ -2686,12 +2686,14 @@
         },
         "treasury": "tacsim.treasury",
         "orgs": [
+          {"id": "concord_fleet", "name": "Concord Fleet Relief Command", "capital_major": 100000, "faction": "concord"},
           { "id": "orbital_access", "name": "Concord Orbital Access", "capital_major": 50000, "faction": "concord" },
           { "id": "cabeus_works", "name": "Cabeus Works", "capital_major": 250000, "faction": "concord" },
           { "id": "habitat_board", "name": "Lunar Habitat Board", "capital_major": 1000000, "faction": "concord" },
           { "id": "crisium_instruments", "name": "Crisium Instruments", "capital_major": 50000, "faction": "concord" },
           { "id": "highport_victualling", "name": "Highport Victualling Office", "capital_major": 50000, "faction": "concord" }
         ],
+        "programme": {"id": "concord.relief", "org": "concord_fleet", "office": "neighborhood.aitken_highport.room.l01_berth_gallery", "floor_major": 1, "unit": "tacsim.unit.halcyon", "issuer": "tacsim.registry", "pool": 1, "registry_prefix": "CF-H-", "hull_names": ["Long Vigil"], "stake_major": 1, "share_permille": 0, "reference": {}, "buyout_major": 1, "dormancy_real_days": 7, "per_account": 1},
         "vendors": [
           { "org": "cabeus_works", "storefront": "neighborhood.aitken_highport.item.cabeus_cage",
             "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.mwangi_eriksen",

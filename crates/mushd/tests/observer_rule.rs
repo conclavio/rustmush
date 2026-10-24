@@ -230,11 +230,20 @@ fn module_list(
     llm: &Arc<LlmService>,
     tacsim: tacsim::TacsimConfig,
 ) -> Vec<Box<dyn GameModule>> {
-    let mut mods = modules::server_modules();
+    // The loaded game content includes the foundry. Share the production inventory
+    // capability so a restart can audit its receipts through their actual owner.
+    let (mut mods, inventory) = modules::server_modules_with_tacsim(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        &Default::default(),
+        &Default::default(),
+        Default::default(),
+    );
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim));
+    mods.push(modules::tacsim_module_wired(tacsim, false, inventory));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }

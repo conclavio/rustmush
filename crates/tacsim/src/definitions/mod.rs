@@ -746,6 +746,10 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
     });
     vec![
         (
+            unit::RELAY_RULES_SCHEMA,
+            serde_json::json!({"carries":["radius_km","room"],"read_by":"tacsim"}),
+        ),
+        (
             unit::UNIT_RULES_SCHEMA,
             serde_json::json!({
                 "carries": [

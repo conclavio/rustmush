@@ -179,6 +179,8 @@ pub enum ResolveError {
 /// The in-RAM TacSim slot — the single runtime source of truth.
 #[derive(Clone, Debug, Default)]
 pub struct TacsimStore {
+    pub(crate) relay_mobile: Option<crate::relay_mobile::Programme>,
+    pub(crate) relay_mobile_held: bool,
     pub(crate) relay_foundry: Option<crate::relay_foundry::Foundry>,
     pub(crate) relay_foundry_held: bool,
     pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
@@ -2102,7 +2104,13 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
     };
     for (key, value) in kv {
         let key = key.as_str();
-        if key == crate::relay_foundry::KEY {
+        if key == crate::relay_mobile::KEY {
+            store.relay_mobile_held = true;
+            store.relay_mobile =
+                serde_json::from_value::<crate::relay_mobile::Programme>(value.clone())
+                    .ok()
+                    .filter(|p| p.check().is_ok());
+        } else if key == crate::relay_foundry::KEY {
             store.relay_foundry_held = true;
             store.relay_foundry =
                 serde_json::from_value::<crate::relay_foundry::Foundry>(value.clone())

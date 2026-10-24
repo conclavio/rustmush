@@ -768,14 +768,19 @@ pub(crate) fn carried_rigs(
     goods: &GoodsTable,
 ) -> Result<Vec<CarriedRig>, String> {
     let rigs = rigs_in_bay(w, view);
-    if rigs.is_empty() {
-        return Ok(Vec::new());
-    }
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| "the layer's state is absent".to_owned())?;
     let pool_unit = view.port.def.vehicles.as_ref().map(|v| v.unit.clone());
-    let mut out = Vec::with_capacity(rigs.len());
+    let mut out = Vec::with_capacity(rigs.len() + 1);
+    if let Some((_, half)) = crate::relay_mobile::mounted(w, view.hull()) {
+        out.push(CarriedRig {
+            tv: half.0,
+            dry_kg: crate::relay_foundry::HALF_KG,
+            hopper: None,
+            goods: Vec::new(),
+        });
+    }
     for rig in rigs {
         if crate::relay_foundry::cargo(w, rig.tv) {
             out.push(CarriedRig {
