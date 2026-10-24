@@ -646,8 +646,22 @@ async fn writer_loop(
     {
         return;
     }
+    let mut health_tick = tokio::time::interval(Duration::from_secs(1));
+    health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _ = health_tick.tick() => {
+                let sample = ToGateway::WorldHealth {
+                    world_loop_unixtime: metrics.world_loop_last_iter_unix(),
+                    loop_lag_ms: metrics.world_loop_lag_ms(),
+                    store_ok: metrics.store_ok(),
+                    integrity_ok: metrics.integrity_ok(),
+                };
+                if !write_or_teardown(&mut w, &sample, &metrics, write_timeout,
+                    "health write failed; boundary down").await {
+                    return;
+                }
+            }
             msg = rx.recv() => match msg {
                 Some(msg) => {
                     if !write_or_teardown(

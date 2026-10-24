@@ -137,9 +137,13 @@ async fn serve_tls_binds_and_answers_healthz_over_tls() {
     }
     let response = response.unwrap_or_else(|| panic!("no TLS handshake completed in 5s: {last:?}"));
 
-    assert_eq!(response.status(), 200, "GET /healthz over TLS");
+    assert_eq!(
+        response.status(),
+        503,
+        "TLS transport alone does not imply a live world"
+    );
     let body: serde_json::Value = response.json().await.expect("healthz answers JSON");
-    assert_eq!(body["ok"], true, "healthz body: {body}");
+    assert_eq!(body["ok"], false, "healthz body: {body}");
 
     let _ = stop_tx.send(());
     let outcome = tokio::time::timeout(Duration::from_secs(10), server).await;

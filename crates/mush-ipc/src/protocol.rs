@@ -55,7 +55,8 @@ pub use mush_core::ControlMsg;
 // same version adds `ServiceReq::UnlinkPlayer`, the compensating half of that
 // insert; it needs no further bump because no released peer has ever spoken 6.
 // Version 7 adds closed module invokes under claim/release custody.
-pub const IPC_VERSION: u32 = 7;
+// Version 8 adds authoritative world health; deploy both halves together.
+pub const IPC_VERSION: u32 = 8;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -1032,6 +1033,18 @@ pub enum ToServer {
 /// Server → gateway. Everything the server half sends across the boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToGateway {
+    /// Periodic authoritative liveness. Source timestamps remain unchanged when
+    /// the world stalls, even if the IPC writer and gateway are still running.
+    WorldHealth {
+        /// Last real Unix second in which the world loop began an iteration.
+        world_loop_unixtime: i64,
+        /// Most recent loop-lag observation in milliseconds.
+        loop_lag_ms: u64,
+        /// Whether authoritative persistence is writable.
+        store_ok: bool,
+        /// Whether authoritative integrity remains intact.
+        integrity_ok: bool,
+    },
     /// One resolved output: `event` goes to `target`. The world loop's
     /// `resolve_sends` already applied audience/ignore/perception filtering, so
     /// the gateway just routes.

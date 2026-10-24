@@ -407,6 +407,12 @@ fn every_to_gateway() -> Vec<ToGateway> {
             features: vec!["reattach".to_string(), "compression".to_string()],
             panels: vec!["who".to_string(), "mail".to_string()],
         },
+        ToGateway::WorldHealth {
+            world_loop_unixtime: 1_700_000_000,
+            loop_lag_ms: 19,
+            store_ok: false,
+            integrity_ok: true,
+        },
         ToGateway::Bye,
     ]
 }
@@ -431,7 +437,7 @@ fn version_is_present_and_travels_in_hello() {
     // character is being made for. A v5 gateway would create characters the
     // server's account oracle never learns of, which is the trap that cut
     // closed, so the two halves must be built together.
-    assert_eq!(IPC_VERSION, 7, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 8, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
