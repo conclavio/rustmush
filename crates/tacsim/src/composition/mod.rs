@@ -341,7 +341,8 @@ fn compose_server_modules(
         Box::new(
             mush_propagation::PropagationModule::new()
                 .with_dispatch_sources(Arc::new(mail_transport::MailTransport))
-                .with_metric(Arc::new(crate::relay_metric::RelayMetric)),
+                .with_metric(Arc::new(crate::relay_metric::RelayMetric))
+                .with_service(Arc::new(crate::relay_service::RelayService)),
         ),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
@@ -839,7 +840,13 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         // fails LOUDLY at the command instead of storing a grant that authorizes
         // nothing — which is exactly what this non-empty set is for.
         .chain(mush_campaign::CAPABILITIES.iter().copied())
-        .chain(["org.role.manage", "org.grant.delegate"])
+        .chain([
+            "org.role.manage",
+            "org.grant.delegate",
+            "relay.manage",
+            "relay.inspect",
+            "relay.publish",
+        ])
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
 }

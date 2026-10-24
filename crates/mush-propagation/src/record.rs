@@ -461,6 +461,15 @@ impl<'de> Deserialize<'de> for Envelope {
                     "itinerary contradicts envelope clock or hop budget",
                 ));
             }
+            if transit
+                .service
+                .as_ref()
+                .is_some_and(|t| t.units != crate::service::units(&envelope))
+            {
+                return Err(serde::de::Error::custom(
+                    "service units contradict content accounting",
+                ));
+            }
             envelope.transit = Some(transit);
         }
         Ok(envelope)
@@ -1230,6 +1239,12 @@ pub struct PropagationStore {
 }
 
 impl PropagationStore {
+    /// Internal read-only service/transport projection; public player views must
+    /// go through the actor-scoped service board and arrived receipts.
+    pub fn relay_transport(&self) -> &crate::routing::TransportState {
+        &self.transport
+    }
+
     /// Every live envelope, in id order.
     pub fn envelopes(&self) -> impl Iterator<Item = &Envelope> {
         self.envelopes.values()

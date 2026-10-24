@@ -186,3 +186,30 @@ pub use snapshot::{
 };
 pub use stimulus::{SpeechKind, Stimulus};
 pub use turn::run_npc_turn_async;
+
+/// File a validated observation through the knowledge owner. Producers must
+/// establish the observer's authority and provenance before calling this seam.
+pub fn file_observation(ctx: &mut mush_core::Ctx<'_>, record: IntelRecord) -> Result<(), String> {
+    record.validate().map_err(|e| e.to_string())?;
+    let principal = record.principal;
+    let host = ctx
+        .w
+        .module_state::<NpcHostState>()
+        .ok_or("Knowledge is unavailable.")?;
+    let mut intel = host.intel.clone();
+    let rows = intel.file(record).map_err(|e| e.to_string())?;
+    let value = serde_json::to_value(rows).map_err(|e| e.to_string())?;
+    let host = ctx
+        .w
+        .module_state_mut::<NpcHostState>()
+        .ok_or("Knowledge is unavailable.")?;
+    host.intel = intel;
+    ctx.persist(mush_core::ModuleOp {
+        ns: "npc".into(),
+        op: mush_core::ModuleWrite::JsonSet {
+            key: intel_key(principal),
+            value,
+        },
+    });
+    Ok(())
+}

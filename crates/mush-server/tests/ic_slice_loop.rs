@@ -2741,7 +2741,13 @@ async fn radio_arrive(rig: &mut Rig, id: u64) {
         if let Some(f) = e.transit().and_then(|r| r.flight.as_ref()) {
             to_ic(rig, f.due.at).await;
         } else {
-            to_ic(rig, ic_now(&rig.tw) + 1).await;
+            let next = e
+                .transit()
+                .and_then(|r| r.service.as_ref())
+                .map_or(ic_now(&rig.tw) + 1, |ticket| {
+                    ticket.eligible_at.max(ic_now(&rig.tw) + 1)
+                });
+            to_ic(rig, next).await;
         }
     }
     panic!("radio did not arrive: {:?}", radio_envelope(rig, id));

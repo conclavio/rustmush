@@ -341,6 +341,15 @@ pub fn delivery_pass_with_metric(
             continue;
         }
         if next.state() == EnvelopeState::Delivered {
+            if let Some(service) = &mut store.transport.service {
+                for receipt in service
+                    .receipts
+                    .iter_mut()
+                    .filter(|r| r.envelope == next.id())
+                {
+                    receipt.arrived = Some(now.at);
+                }
+            }
             settle_arrival(store, &next, now, &mut report);
         }
     }

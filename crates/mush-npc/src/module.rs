@@ -1016,6 +1016,7 @@ pub(crate) fn intel_kind_label(kind: IntelKind) -> &'static str {
         IntelKind::Spoke => "spoke",
         IntelKind::Concealed => "concealed",
         IntelKind::PowerUse => "poweruse",
+        IntelKind::ServiceEvidence => "service_evidence",
     }
 }
 

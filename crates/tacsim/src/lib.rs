@@ -144,6 +144,7 @@ pub mod port_tick;
 pub mod record;
 pub mod relay_content;
 pub mod relay_metric;
+mod relay_service;
 pub mod seed;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
 /// facts of doc 10 §17–§19, `+sheet`/`+chargen`/`+stat`/`+roll` over

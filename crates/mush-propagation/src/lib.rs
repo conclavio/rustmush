@@ -66,6 +66,7 @@ pub mod pass;
 pub mod policy;
 pub mod record;
 pub mod routing;
+pub mod service;
 
 pub use commands::{
     ContactCells, NO_SUCH_CONTACT, NO_SUCH_ENVELOPE, UNAVAILABLE, contact_cells, render_contact,
@@ -149,6 +150,7 @@ pub const MAX_DOMAINS_PER_DETECTION_FIRE: usize = 8;
 pub struct PropagationModule {
     metric: Option<Arc<dyn routing::MetricProvider>>,
     sources: Option<Arc<dyn dispatch::Sources>>,
+    service: Option<Arc<dyn service::Integration>>,
 }
 
 impl PropagationModule {
@@ -158,7 +160,14 @@ impl PropagationModule {
         Self {
             metric: None,
             sources: None,
+            service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_service(mut self, service: Arc<dyn service::Integration>) -> Self {
+        self.service = Some(service);
+        self
     }
 
     #[must_use]
@@ -187,7 +196,10 @@ impl GameModule for PropagationModule {
             reg.state(dispatch::Services(Arc::clone(sources)));
         }
         if let Some(metric) = &self.metric {
-            reg.state(routing::RoutingServices(Arc::clone(metric)));
+            reg.state(routing::RoutingServices(
+                Arc::clone(metric),
+                self.service.clone(),
+            ));
         }
         // The coarse delivery pass. It writes only propagation's own exempt
         // documents; it never touches a contact, and it stages no action.
@@ -208,6 +220,14 @@ impl GameModule for PropagationModule {
             Arc::new(detection_tick),
         )?;
         commands::register(reg)?;
+        if self.service.is_some() {
+            reg.persist_delegation(
+                NS,
+                "npc",
+                "R3 permissioned relay evidence is filed through the knowledge owner's public API",
+            )?;
+        }
+        service::register(reg)?;
         Ok(())
     }
 
@@ -288,6 +308,29 @@ impl GameModule for PropagationModule {
             return Err(ModError::msg(
                 "relay_transport missing beside routed envelopes; restore the committed capacity record",
             ));
+        }
+        if store.transport.service.is_none()
+            && store
+                .envelopes()
+                .any(|e| e.transit().is_some_and(|r| r.service.is_some()))
+        {
+            return Err(ModError::msg(
+                "relay service policy missing beside class tickets; restore committed transport state",
+            ));
+        }
+        if store.transport.service.is_none()
+            && let Some(api) = &self.service
+        {
+            let config = api.seed().map_err(ModError::msg)?;
+            config.validate().map_err(ModError::msg)?;
+            store.transport.service = Some(service::State::new(config));
+            ctx.persist(ModuleOp {
+                ns: NS.into(),
+                op: ModuleWrite::JsonSet {
+                    key: routing::STATE_KEY.into(),
+                    value: store.transport.to_value(),
+                },
+            });
         }
         store.reconcile_allocators();
         let dispatches: Vec<_> = store.envelopes().filter_map(|e| e.dispatch_ref()).collect();

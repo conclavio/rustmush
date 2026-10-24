@@ -509,6 +509,14 @@ impl Rig {
                 .run(GOD, &format!("@teleport {receiver}={ceres}"))
                 .contains("cannot")
         );
+        // Earlier physical-route stories isolate class delay with explicit
+        // no-charge operator grants. R3 stories select their own classes.
+        for actor in [GOD, receiver] {
+            assert!(
+                self.run(GOD, &format!("+relay/grant luna_ceres/{actor}=priority"))
+                    .contains("Class grant recorded")
+            );
+        }
         receiver
     }
 
@@ -1390,4 +1398,507 @@ async fn r6b_membership_bound_and_corrupt_knowledge_fail_closed() {
         rig.restart().await.is_err(),
         "malformed receipt identity must not silently expose legacy history"
     );
+}
+
+#[tokio::test]
+async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
+    use mush_core::QueryHandler;
+    use mush_propagation::{
+        EnvelopeState,
+        service::{BoardQuery, Class},
+    };
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
+    let mut senders = vec![];
+    for (name, class) in [
+        ("StandardSender", "standard"),
+        ("DeferredSender", "deferred"),
+        ("PrioritySender", "priority"),
+        ("SovereignSender", "sovereign"),
+    ] {
+        let who = rig.tw.spawn_player(name);
+        rig.run(GOD, &format!("@teleport {who}={luna}"));
+        assert!(
+            rig.run(GOD, &format!("+relay/grant luna_ceres/{who}={class}"))
+                .contains("Class grant recorded")
+        );
+        senders.push(who);
+        assert!(
+            rig.run(
+                who,
+                &format!("@mail/quick {receiver}=R3-{class}/{}", "x".repeat(490))
+            )
+            .contains("queued")
+        );
+    }
+    rig.mail_tick();
+    let policy = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .clone();
+    let envelopes: Vec<_> = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .envelopes()
+        .filter(|e| {
+            e.kind() == mush_propagation::record::DispatchKind::Mail
+                && e.transit().is_some_and(|t| t.queued_at.is_some())
+        })
+        .cloned()
+        .collect();
+    assert_eq!(envelopes.len(), 4, "all four durably queued before service");
+    assert!(
+        envelopes
+            .iter()
+            .all(|e| e.transit().unwrap().service.as_ref().unwrap().units == 4)
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap(),
+        &policy
+    );
+    for e in &envelopes {
+        assert_eq!(rig.envelope(e.id()), *e);
+    }
+    rig.pass();
+    rig.pass();
+    let receipts = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport()
+        .service
+        .as_ref()
+        .unwrap()
+        .receipts
+        .clone();
+    assert_eq!(receipts.len(), 2);
+    assert!(
+        receipts
+            .iter()
+            .all(|r| matches!(r.ticket.class, Class::Priority | Class::Sovereign))
+    );
+    assert_eq!(receipts.iter().map(|r| r.ticket.units).sum::<u32>(), 8);
+    for _ in 0..3 {
+        rig.pass();
+    }
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .receipts
+            .len(),
+        2,
+        "retry does not spend twice"
+    );
+    let standard = envelopes.iter().find(|e| e.issuer() == senders[0]).unwrap();
+    let eligible = standard
+        .transit()
+        .unwrap()
+        .service
+        .as_ref()
+        .unwrap()
+        .eligible_at;
+    rig.advance_ic_to(eligible - 1);
+    rig.pass();
+    assert_ne!(
+        rig.envelope(standard.id()).state(),
+        EnvelopeState::Delivered
+    );
+    rig.advance_ic_to(eligible);
+    rig.pass();
+    assert_eq!(
+        rig.envelope(standard.id()).state(),
+        EnvelopeState::Delivered
+    );
+    let deferred = envelopes.iter().find(|e| e.issuer() == senders[1]).unwrap();
+    let earliest = deferred
+        .transit()
+        .unwrap()
+        .service
+        .as_ref()
+        .unwrap()
+        .eligible_at;
+    rig.advance_ic_to(earliest);
+    rig.pass();
+    let cfg = policy.config;
+    if !cfg.window_open(earliest) {
+        assert_ne!(
+            rig.envelope(deferred.id()).state(),
+            EnvelopeState::Delivered
+        );
+    }
+    let next = earliest
+        + (cfg.window_period_s - earliest.rem_euclid(cfg.window_period_s)) % cfg.window_period_s;
+    rig.advance_ic_to(next);
+    rig.pass();
+    assert_eq!(
+        rig.envelope(deferred.id()).state(),
+        EnvelopeState::Delivered
+    );
+    rig.mail_tick();
+    assert!(rig.run(receiver, "+relay/receipts").contains("Standard"));
+    assert!(
+        !rig.run(senders[0], "+relay/receipts")
+            .contains("transmitted"),
+        "sender has no remote receipt shortcut"
+    );
+    let public = rig.run(receiver, "+relay");
+    assert!(!public.contains("actual queued"));
+    let panel = BoardQuery
+        .query(
+            rig.tw.world(),
+            receiver,
+            &serde_json::json!({"actor":1,"actual":true}),
+        )
+        .unwrap();
+    if let mush_proto::OutputEvent::Panel { data, .. } = panel {
+        assert_eq!(
+            data["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            public
+        );
+    } else {
+        panic!("board panel");
+    }
+    assert!(
+        rig.run(receiver, "+relay/load luna_ceres")
+            .contains("Permission denied")
+    );
+    assert!(
+        rig.run(receiver, "+relay/publish luna_ceres")
+            .contains("Permission denied")
+    );
+    let operator = rig.registry().operator;
+    let org = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .org(operator)
+        .unwrap()
+        .id
+        .0;
+    rig.run(GOD, &format!("@org/grant {receiver}={org} relay.inspect"));
+    let discovered = rig.run(receiver, "+relay/discover luna_ceres");
+    assert!(discovered.contains("Evidence filed"), "{discovered}");
+    assert!(rig.run(receiver, "+intel").contains("Standard queued"));
+    assert!(!rig.run(senders[0], "+intel").contains("Standard queued"));
+    assert!(
+        rig.run(receiver, "+relay/publish luna_ceres")
+            .contains("Permission denied")
+    );
+    rig.run(GOD, &format!("@org/grant {receiver}={org} relay.publish"));
+    let published = rig.run(receiver, "+relay/publish luna_ceres");
+    assert!(published.contains("scandal front"), "{published}");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(
+        rig.run(receiver, "+relay/publish luna_ceres")
+            .contains("already published")
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_faction::SimState>()
+            .unwrap()
+            .fronts
+            .values()
+            .filter(|f| f.title == "The Exchange congestion board")
+            .count(),
+        1
+    );
+    assert!(
+        rig.tw.world().refused_namespace_writes().is_empty(),
+        "{:?}",
+        rig.tw.world().refused_namespace_writes()
+    );
+}
+
+#[tokio::test]
+async fn r3_mixed_traffic_skips_a_busy_head_and_receipts_follow_membership() {
+    use mush_propagation::record::DispatchKind;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let channel = rig.channel_setup(&[GOD, bob]);
+    // Seven mail units, then an eight-unit channel copy, then one order unit.
+    // The channel must not consume the last unit or block the smaller order.
+    assert!(
+        rig.run(GOD, &format!("@mail/quick {bob}=seven/{}", "m".repeat(840)))
+            .contains("queued")
+    );
+    let mail_id = rig.mail().next_id() - 1;
+    rig.mail_tick();
+    assert!(
+        rig.run(GOD, &format!("radio {}", "c".repeat(980)))
+            .contains("queued")
+    );
+    rig.mail_tick();
+    assert!(
+        rig.run(GOD, &format!("+order {bob}=small"))
+            .contains("Queued")
+    );
+    let order = rig.last_envelope().id();
+    rig.pass();
+    rig.pass();
+    rig.pass();
+    assert_eq!(
+        rig.envelope(order).path().len(),
+        1,
+        "eligible small work passes a busy head"
+    );
+    let state = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport()
+        .clone();
+    let channel_receipts = state
+        .service
+        .as_ref()
+        .unwrap()
+        .receipts
+        .iter()
+        .filter(|r| r.kind == DispatchKind::Channel)
+        .count();
+    assert_eq!(channel_receipts, 0);
+    assert_eq!(state.capacity[&cid("luna_ceres")].units, 8);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .capacity,
+        state.capacity
+    );
+    let now = rig.tw.world().world_ic_now().at;
+    rig.advance_ic_to(now + 1);
+    rig.finish_channel(channel, 1);
+    rig.finish_mail(mail_id);
+    assert!(rig.run(bob, "+relay/receipts").contains("Channel"));
+    rig.run(bob, "delcom radio");
+    assert!(!rig.run(bob, "+relay/receipts").contains("Channel"));
+    rig.run(bob, "addcom radio=Radio");
+    assert!(!rig.run(bob, "+relay/receipts").contains("Channel"));
+}
+
+#[tokio::test]
+async fn r3_aged_standard_work_precedes_new_high_class_traffic() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "+relay/grant luna_ceres/#1=standard");
+    rig.run(GOD, &format!("+order {bob}={}", "s".repeat(512)));
+    let old = rig.last_envelope().id();
+    rig.pass();
+    let queued = rig
+        .envelope(old)
+        .transit()
+        .unwrap()
+        .queued_at
+        .as_ref()
+        .unwrap()
+        .at;
+    rig.advance_ic_to(queued + 600);
+    rig.run(GOD, "+relay/grant luna_ceres/#1=sovereign");
+    let mut young = vec![];
+    for _ in 0..3 {
+        rig.run(GOD, &format!("+order {bob}={}", "y".repeat(512)));
+        young.push(rig.last_envelope().id());
+    }
+    rig.pass();
+    rig.pass();
+    rig.pass();
+    let state = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap()
+        .relay_transport();
+    assert_eq!(
+        state
+            .service
+            .as_ref()
+            .unwrap()
+            .receipts
+            .first()
+            .unwrap()
+            .envelope,
+        old
+    );
+    assert_eq!(rig.envelope(old).path().len(), 1);
+    assert_eq!(
+        young
+            .iter()
+            .filter(|id| rig.envelope(**id).path().len() == 1)
+            .count(),
+        1
+    );
+    assert_eq!(state.capacity[&cid("luna_ceres")].units, 8);
+}
+
+#[tokio::test]
+async fn r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_policy() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let exit = rig.registry().nodes[&cid("ceres")].place;
+    rig.run(GOD, &format!("@prop/jam {exit}=100"));
+    for n in 0..64 {
+        assert!(
+            rig.run(GOD, &format!("@mail/quick {bob}=legacy-{n}/payload"))
+                .contains("queued for IC transit")
+        );
+    }
+    // Convert a persisted, normally admitted full queue to its R2/R6 shape.
+    // This models an upgrade; it never mutates another owner's live state.
+    for _ in 0..4 {
+        rig.mail_tick();
+    }
+    rig.flush().await;
+    let book = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap();
+    assert_eq!(
+        book.envelopes()
+            .filter_map(|e| e.transit())
+            .filter(|t| t.queued_at.is_some())
+            .count(),
+        64
+    );
+    let mut transport = serde_json::to_value(book.relay_transport()).unwrap();
+    let saved = transport.clone();
+    transport.as_object_mut().unwrap().remove("service");
+    transport["capacity"] =
+        serde_json::json!({"luna_ceres":{"at":rig.tw.world().world_ic_now().at,"units":8}});
+    let mut ops = vec![ModuleOp {
+        ns: "propagation".into(),
+        op: ModuleWrite::JsonSet {
+            key: "relay_transport".into(),
+            value: transport.clone(),
+        },
+    }];
+    for e in book.envelopes() {
+        let mut row = serde_json::to_value(e).unwrap();
+        if let Some(t) = row.get_mut("transit").and_then(|t| t.as_object_mut()) {
+            t.remove("service");
+        }
+        ops.push(ModuleOp {
+            ns: "propagation".into(),
+            op: ModuleWrite::JsonSet {
+                key: format!("envelope:{}", e.id()).into(),
+                value: row,
+            },
+        });
+    }
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: ops,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    let upgraded = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(upgraded["capacity"], transport["capacity"]);
+    assert_eq!(upgraded["service"]["config"]["version"], 1);
+    rig.mail_tick();
+    let book = rig
+        .tw
+        .world()
+        .module_state::<mush_propagation::PropagationStore>()
+        .unwrap();
+    assert!(
+        book.envelopes()
+            .filter_map(|e| e.transit())
+            .filter(|t| t.queued_at.is_some())
+            .all(|t| t.service.is_some()),
+        "a full legacy queue can acquire tickets without readmission"
+    );
+    rig.flush().await;
+    // Losing the policy beside issued tickets is corruption, not a migration.
+    let mut missing = rig
+        .store
+        .module_json_get("propagation", "relay_transport")
+        .await
+        .unwrap()
+        .unwrap();
+    missing.as_object_mut().unwrap().remove("service");
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "propagation".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "relay_transport".into(),
+                    value: missing,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    assert!(rig.restart().await.unwrap_err().contains("policy missing"));
+    let mut invalid = saved;
+    invalid["service"]["config"]["window_period_s"] = 0.into();
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "propagation".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "relay_transport".into(),
+                    value: invalid,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(rig.restart().await.is_err());
 }

@@ -97,6 +97,8 @@ pub enum IntelKind {
     /// watch list, like [`IntelKind::Concealed`].
     #[serde(rename = "poweruse")]
     PowerUse,
+    /// An authorized observer inspected a relay service receipt.
+    ServiceEvidence,
 }
 
 /// One filed piece of intel: an informant's provenance-tagged report to its

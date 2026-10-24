@@ -565,3 +565,116 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .expect("faction state slot installed at registration") = st;
     Ok(())
 }
+
+/// Open a content-authored front after a permissioned publication. The producer
+/// supplies an authorized canon draft; all fallible planning precedes that append.
+/// The title is the stable content identity within this operator's faction.
+pub fn publish_front(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    title: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    if title.is_empty() || title.len() > 128 {
+        return Err("Invalid front title.".into());
+    }
+    let org_name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|s| s.state().org(operator))
+        .map(|o| o.name.clone())
+        .ok_or("Operator unavailable.")?;
+    let mut factions = ctx
+        .w
+        .module_state::<FactionState>()
+        .cloned()
+        .ok_or("Factions unavailable.")?;
+    let mut simulation = ctx
+        .w
+        .module_state::<SimState>()
+        .cloned()
+        .ok_or("Fronts unavailable.")?;
+    let faction = if let Some(f) = factions.factions.values().find(|f| f.org == Some(operator)) {
+        f.clone()
+    } else {
+        if factions.faction_by_name(&org_name).is_some() || factions.factions.len() >= 4096 {
+            return Err("Operator faction conflicts or is full.".into());
+        }
+        let id = FactionId(factions.next_faction_id);
+        factions.next_faction_id = factions
+            .next_faction_id
+            .checked_add(1)
+            .ok_or("Faction ids exhausted.")?;
+        let mut f = Faction::new(id, &org_name);
+        f.org = Some(operator);
+        factions.factions.insert(id, f.clone());
+        f
+    };
+    if let Some(f) = simulation
+        .fronts
+        .values()
+        .find(|f| f.faction == faction.id && f.title == title)
+    {
+        return Ok(f.id);
+    }
+    if simulation.fronts.len() >= 4096 || simulation.clocks.len() >= 4096 {
+        return Err("Front ledger full.".into());
+    }
+    let id = FrontId(simulation.next_front_id);
+    simulation.next_front_id = simulation
+        .next_front_id
+        .checked_add(1)
+        .ok_or("Front ids exhausted.")?;
+    let clock_id = ClockId(simulation.next_clock_id);
+    simulation.next_clock_id = simulation
+        .next_clock_id
+        .checked_add(1)
+        .ok_or("Clock ids exhausted.")?;
+    let front = Front {
+        id,
+        faction: faction.id,
+        title: title.into(),
+        resolved: false,
+    };
+    let clock = Clock {
+        id: clock_id,
+        front: id,
+        faction: faction.id,
+        title: "Public accounting demanded".into(),
+        segments: 4,
+        filled: 1,
+        visibility: Visibility::Public,
+        advance_on: Some("scene.concluded".into()),
+        consequence: "The Exchange must account publicly for its declared congestion.".into(),
+        on_complete_control: None,
+        completed: false,
+    };
+    simulation.fronts.insert(id, front.clone());
+    simulation.clocks.insert(clock_id, clock.clone());
+    if mush_canon::commit(ctx, draft).is_none() {
+        return Err("Canon publication unavailable.".into());
+    }
+    // No fallible operation follows the canon boundary. The composed owner slots
+    // were checked above; the synchronous canon observers cannot remove them.
+    if let Some(state) = ctx.w.module_state_mut::<FactionState>() {
+        state
+            .factions
+            .entry(faction.id)
+            .or_insert_with(|| faction.clone());
+        state.next_faction_id = factions.next_faction_id;
+    }
+    // Preserve any clocks advanced synchronously by the canon observer.
+    if let Some(state) = ctx.w.module_state_mut::<SimState>() {
+        state.next_front_id = simulation.next_front_id;
+        state.next_clock_id = simulation.next_clock_id;
+        state.fronts.insert(id, front.clone());
+        state.clocks.insert(clock_id, clock.clone());
+    }
+    data::persist_faction(ctx.out, &faction);
+    data::persist_meta(ctx.out, factions.next_faction_id, factions.next_region_id);
+    sim::persist_front(ctx.out, &front);
+    sim::persist_clock(ctx.out, &clock);
+    sim::persist_sim_meta(ctx.out, &simulation);
+    ctx.out.pin_deferred();
+    Ok(id)
+}

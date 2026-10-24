@@ -63,7 +63,10 @@ pub enum Measurement {
 }
 
 #[derive(Clone, Debug)]
-pub struct RoutingServices(pub Arc<dyn MetricProvider>);
+pub struct RoutingServices(
+    pub Arc<dyn MetricProvider>,
+    pub Option<Arc<dyn crate::service::Integration>>,
+);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +105,8 @@ pub struct Transit {
     pub next: usize,
     pub flight: Option<Flight>,
     pub queued_at: Option<ClockStamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<crate::service::Ticket>,
     pub forwardings: u8,
     pub physical_legs: u8,
     pub history: Vec<CompletedLeg>,
@@ -110,7 +115,11 @@ pub struct Transit {
 
 impl Transit {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1
+        if self
+            .service
+            .as_ref()
+            .is_some_and(|s| !s.valid() || self.queued_at.is_none())
+            || self.version != 1
             || self.registry_revision == 0
             || self.legs.is_empty()
             || self.legs.len() > MAX_ROUTE_LEGS
@@ -198,6 +207,8 @@ pub struct Capacity {
 pub struct TransportState {
     pub version: u16,
     pub capacity: BTreeMap<CanonicalId, Capacity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<crate::service::State>,
 }
 
 impl Default for TransportState {
@@ -205,6 +216,7 @@ impl Default for TransportState {
         Self {
             version: 1,
             capacity: BTreeMap::new(),
+            service: None,
         }
     }
 }
@@ -226,13 +238,17 @@ impl TransportState {
                 )
             })
             .collect();
-        serde_json::Value::Object(serde_json::Map::from_iter([
-            ("version".into(), self.version.into()),
-            ("capacity".into(), serde_json::Value::Object(capacity)),
-        ]))
+        let mut value = serde_json::json!({"version":self.version,"capacity":serde_json::Value::Object(capacity)});
+        if let Some(service) = &self.service {
+            value["service"] = serde_json::json!(service);
+        }
+        value
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(service) = &self.service {
+            service.validate()?;
+        }
         if self.version != 1
             || self.capacity.len() > MAX_PAIRS
             || self.capacity.values().any(|b| b.units > 1_000_000)
@@ -242,6 +258,13 @@ impl TransportState {
         Ok(())
     }
 
+    fn available(&self, pair: &CanonicalId, now: i64, limit: u32) -> u32 {
+        match self.capacity.get(pair) {
+            Some(b) if b.at > now => 0,
+            Some(b) if b.at == now => limit.saturating_sub(b.units),
+            _ => limit,
+        }
+    }
     fn consume(&mut self, pair: &CanonicalId, now: i64, units: u32, limit: u32) -> bool {
         if !self.capacity.contains_key(pair) && self.capacity.len() >= MAX_PAIRS {
             return false;
@@ -492,6 +515,7 @@ fn plan_catalog(
             next: 0,
             flight: None,
             queued_at: None,
+            service: None,
             forwardings: 0,
             physical_legs: 0,
             history: vec![],
@@ -581,13 +605,7 @@ pub fn prepare_with(
 }
 
 fn message_units(envelope: &Envelope) -> u32 {
-    match envelope.dispatch_ref() {
-        // Version 1 bulk policy: no pair is eligible. The reference's small size
-        // must never let a large letter ride the short-message service.
-        Some(d) if d.bytes > crate::dispatch::SHORT_MESSAGE_BYTES => u32::MAX,
-        Some(d) => d.bytes.div_ceil(BYTES_PER_UNIT as u32),
-        None => envelope.payload().len().div_ceil(BYTES_PER_UNIT) as u32,
-    }
+    crate::service::units(envelope)
 }
 
 fn destination(
@@ -636,12 +654,21 @@ impl<'a> Pass<'a> {
                 && let Some(at) = &r.queued_at
                 && let Some(pair) = r.legs.get(r.next).and_then(|l| l.pair.as_ref())
             {
-                rows.push((at.at, e.id(), pair.clone()));
+                let rank = store.transport.service.as_ref().map_or(0, |s| {
+                    let class = r
+                        .service
+                        .as_ref()
+                        .map_or_else(|| s.class(pair, e.issuer()), |t| t.class);
+                    (class as i64)
+                        .saturating_sub(now.at.saturating_sub(at.at) / s.config.aging_s)
+                        .max(0)
+                });
+                rows.push((rank, at.at, e.id(), pair.clone()));
             }
         }
         rows.sort();
         let mut queues = BTreeMap::<CanonicalId, VecDeque<u64>>::new();
-        for (_, id, pair) in rows {
+        for (_, _, id, pair) in rows {
             queues.entry(pair).or_default().push_back(id);
         }
         Some(Self {
@@ -782,19 +809,96 @@ impl<'a> Pass<'a> {
             if pair.state() != LinkState::Live || pair.class_policy != ClassPolicy::Exchange {
                 return None;
             }
-            if route.queued_at.is_none() {
-                if self
-                    .queues
-                    .get(pair_id)
-                    .is_some_and(|q| q.len() >= MAX_LINK_QUEUE)
+            if route.queued_at.is_none()
+                || (store.transport.service.is_some() && route.service.is_none())
+            {
+                if route.queued_at.is_none()
+                    && self
+                        .queues
+                        .get(pair_id)
+                        .is_some_and(|q| q.len() >= MAX_LINK_QUEUE)
                 {
                     return None;
                 }
-                route.queued_at = Some(now.clone());
+                let queued = route.queued_at.clone().unwrap_or_else(|| now.clone());
+                if let Some(service) = &store.transport.service {
+                    let class = service.class(pair_id, envelope.issuer());
+                    let units = message_units(envelope);
+                    let available = store.transport.available(
+                        pair_id,
+                        now.at,
+                        pair.capacity_units_per_ic_second
+                            .min(service.config.burst_units),
+                    );
+                    route.service = Some(crate::service::Ticket {
+                        version: service.config.version,
+                        class,
+                        units,
+                        eligible_at: service.config.eligible_at(class, queued.at),
+                        declared_s: service.config.standard_delay_s,
+                        actual_ready: (available >= units
+                            && self.jamming.get(&leg.to).copied().unwrap_or(0)
+                                < crate::context::JAMMING_BLOCKS_AT)
+                            .then_some(now.at),
+                    });
+                }
+                route.queued_at = Some(queued);
                 return Some(envelope.with_transit(route));
             }
+            let limit = store
+                .transport
+                .service
+                .as_ref()
+                .map_or(pair.capacity_units_per_ic_second, |s| {
+                    pair.capacity_units_per_ic_second.min(s.config.burst_units)
+                });
+            let available = store.transport.available(pair_id, now.at, limit);
+            if let Some(ticket) = route.service.as_mut()
+                && ticket.actual_ready.is_none()
+                && available >= ticket.units
+                && self.jamming.get(&leg.to).copied().unwrap_or(0)
+                    < crate::context::JAMMING_BLOCKS_AT
+            {
+                ticket.actual_ready = Some(now.at);
+                return Some(envelope.with_transit(route));
+            }
+            // A closed Deferred window, jammed destination or oversized head
+            // cannot block an eligible smaller copy. The bounded class/FIFO
+            // ordering ages all open work toward the highest scheduling rank.
             let queue = self.queues.get_mut(pair_id)?;
-            if queue.front() != Some(&envelope.id()) {
+            let chosen = queue
+                .iter()
+                .find(|id| {
+                    store.envelope(**id).is_some_and(|e| {
+                        let Some(r) = e.transit() else { return false };
+                        let Some(l) = r.legs.get(r.next) else {
+                            return false;
+                        };
+                        if r.registry_revision != catalog.revision
+                            || self::destination(self.metric.as_ref(), self.world, self.state, e)
+                                != Some(r.destination)
+                            || self.jamming.get(&l.to).copied().unwrap_or(0)
+                                >= crate::context::JAMMING_BLOCKS_AT
+                        {
+                            return false;
+                        }
+                        r.service.as_ref().map_or_else(
+                            || message_units(e) <= available,
+                            |t| {
+                                t.units <= available
+                                    && now.at >= t.eligible_at
+                                    && (t.class != crate::service::Class::Deferred
+                                        || store
+                                            .transport
+                                            .service
+                                            .as_ref()
+                                            .is_some_and(|s| s.config.window_open(now.at)))
+                            },
+                        )
+                    })
+                })
+                .copied();
+            if chosen != Some(envelope.id()) {
                 return None;
             }
             if self.jamming.get(&leg.to).copied().unwrap_or(0) >= crate::context::JAMMING_BLOCKS_AT
@@ -802,20 +906,36 @@ impl<'a> Pass<'a> {
                 return None;
             }
             let units = message_units(envelope);
-            if !store
-                .transport
-                .consume(pair_id, now.at, units, pair.capacity_units_per_ic_second)
-            {
-                return None;
-            }
             let mut next = match envelope.relayed(leg.relay?, now.clone()) {
                 Ok(next) => next,
                 Err(_) => return Some(envelope.in_state(EnvelopeState::Expired, now.clone())),
             };
-            queue.pop_front();
+            if !store.transport.consume(pair_id, now.at, units, limit) {
+                return None;
+            }
+            queue.retain(|id| *id != envelope.id());
+            if let (Some(state), Some(ticket), Some(queued)) = (
+                &mut store.transport.service,
+                &route.service,
+                &route.queued_at,
+            ) {
+                state.receipt(crate::service::Receipt {
+                    envelope: envelope.id(),
+                    pair: pair_id.clone(),
+                    issuer: envelope.issuer(),
+                    recipient: envelope.recipient(),
+                    reference: envelope.dispatch_ref().map(|d| d.key.clone()),
+                    kind: envelope.kind(),
+                    ticket: ticket.clone(),
+                    queued: queued.at,
+                    transmitted: now.at,
+                    arrived: None,
+                });
+            }
             route.position = leg.to;
             route.next += 1;
             route.queued_at = None;
+            route.service = None;
             next = next.with_transit(route);
             Some(next)
         } else {

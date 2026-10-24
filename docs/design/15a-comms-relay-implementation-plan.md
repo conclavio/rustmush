@@ -41,7 +41,7 @@ a milestone can be resolved and recorded without reopening the seven decisions.
 
 The owner subsequently authorized automatic continuation from R6a to R6b, after
 R6a's integration gate, commit and push. This changes that stop only; failed gates
-still block dependent implementation, and work stops after R6b before R3.
+still block dependent implementation. The owner has since authorized R3; the next stop is before R4.
 
 Every other split milestone below has its own stop. If another split becomes necessary,
 each new part must still end in an observable, integrated result. A library, record
@@ -314,7 +314,7 @@ underway-hull traffic and controlled source-object loss. The real bridge passed
 controlled-provider ingress/egress and retry checks, including reply modals.
 Live Discord remains an open acceptance item: dev1 has no enabled bot or relay
 mapping. Normal CI remains owner-monitored. [15b](15b-comms-relay-cut-notes.md)
-records provenance and limits. **Paused here; R3 has not started.**
+records provenance and limits. The owner subsequently authorized R3.
 
 ### Gate 6 — R3: classes and a deliberately dishonest board
 
@@ -502,5 +502,5 @@ The initial action was R1 only: registry, minimal Luna–Ceres seed, diagnostics
 real Redis/client testing and an owner review. The owner subsequently authorized
 the R1 push and R2 implementation, then Gate 3 / R5 after the corrective dev1
 rerun. The next authorization covers R6a and automatic continuation to R6b after
-R6a's live gate and push. **Next owner stop: after R6b, before R3.** The owner is
+R6a's live gate and push. The owner subsequently authorized R3. **Next owner stop: after R3, before R4.** The owner is
 monitoring GitHub CI; every live milestone gate still must pass before proceeding.
