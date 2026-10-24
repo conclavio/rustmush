@@ -30,9 +30,9 @@ impl Integration for RelayService {
     }
     fn valid_principal(&self, w: &World, p: &Principal) -> bool {
         match p {
-            Principal::Object(id) => w.get(*id).is_some_and(|o| {
-                !o.flags.contains(mush_core::Flags::GOING) && o.kind == mush_core::ObjKind::Player
-            }),
+            Principal::Object(id) => w
+                .get(*id)
+                .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING) && o.kind.is_actor()),
             Principal::Organization(id) => w
                 .module_state::<mush_org::OrgStore>()
                 .and_then(|s| s.state().org(mush_org::OrgId(*id)))
@@ -44,8 +44,7 @@ impl Integration for RelayService {
         // A character speaks personally. A titled unit speaks for its legal owner;
         // ordinary membership, a builder's dbref owner, custody or a paying account
         // never permits claiming a different organization.
-        if w.get(endpoint)
-            .is_some_and(|o| o.kind != mush_core::ObjKind::Player)
+        if w.get(endpoint).is_some_and(|o| !o.kind.is_actor())
             && let Some(asset) = w
                 .module_state::<mush_economy::EconomyStore>()
                 .and_then(|s| s.snapshot().asset(endpoint))

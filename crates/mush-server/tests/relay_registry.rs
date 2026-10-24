@@ -2229,6 +2229,29 @@ async fn r4_org_titled_endpoints_and_independent_operator_link() {
             .iter()
             .all(|l| l.pair.is_none())
     );
+    let npc = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Npc, "Policy NPC", GOD, Some(ceres))
+        .unwrap();
+    assert!(
+        rig.run(
+            GOD,
+            &format!(
+                "+relay/policy luna_ceres/{npc}=suspended,operator.npc,Personal NPC restriction"
+            )
+        )
+        .contains("policy recorded")
+    );
+    rig.run(GOD, &format!("+order {npc}=npc receiver"));
+    assert!(
+        rig.last_envelope()
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.is_none())
+    );
     // Personal membership/physical location cannot accidentally become org identity.
     rig.run(GOD, &format!("+order {bob}=personal receiver"));
     assert!(
