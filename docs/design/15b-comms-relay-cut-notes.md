@@ -748,3 +748,120 @@ R6a synthetic accounts and its legitimately departed Dray.
 configuration has Discord disabled and zero relay mappings. Controlled-provider
 results do not claim a live Discord run. Full acceptance also awaits normal CI.
 **Paused after R6b; R3 has not started.**
+
+
+## R3 — Service classes, declared congestion and publication (2026-10-23)
+
+The existing propagation queue now schedules Sovereign, Priority, Standard and
+Deferred copies. Class entitlement is operator-granted through scoped IC
+organization authority; no purchase, debit or payment is claimed. All mail remains
+IC and ordinary OOC channels remain immediate. R4 service restrictions and R8
+billing are separate gates.
+
+The versioned `content/relays/service-v1.json` policy defines 128 content bytes per
+unit, a 1,024-byte short-message limit, an eight-unit burst, Standard's 60 IC second
+extra wait, and Deferred's minimum 7,200 IC seconds plus the first 3,600 seconds of
+each 86,400-second IC day. The existing pair seed supplies eight units per IC
+second, shared across directions. Idle capacity does not accumulate. Actual
+content bytes include mail subject/body and channel attribution, not the transport
+reference. Each pair traversal consumes one bucket entry per recipient copy; no
+second hub charge is introduced.
+
+Eligible older work gains a class rank every 300 IC seconds. The bounded pass can
+skip a capacity-blocked head, a jammed exit or a closed Deferred window. It keeps
+R2's 64 copies per link, 128 pending copies, 64 visited envelopes per delivery pass,
+rotating durable cursor and coarse cadence. These are earliest service times;
+cadence and contention may make arrival later. Existing conventional flights retain
+their frozen physical timing.
+
+A frozen ticket sits on each queued envelope. Capacity, ticket transitions and
+receipts share the existing transport commit. The optional v1 service record
+migrates old transport state without resetting spent capacity; losing the record
+beside class tickets or loading malformed policy refuses boot. Full legacy queues
+acquire tickets without attempting a second admission.
+
+`+relay` and the advertised `relay.board` query share the same public projection.
+`+relay/receipts` exposes only the actor's arrived, still-visible traffic; mail
+retention and channel membership/see lock/history are rechecked. Private actual
+load, audit and discovery require scoped `relay.inspect`; class grants require
+`relay.manage`. Publication separately requires `relay.publish` and private
+knowledge of retained evidence. Discovery uses the NPC knowledge owner's API;
+publication uses existing canon and faction/front owners. It creates the authored
+congestion-board front and public accounting clock once. Neither path exposes
+message payloads. Restoring Standard frees a grant slot; re-discovery restores a
+rolled-off intel entry without duplicating it.
+
+Retained state is bounded to 256 class overrides, 512 rolling receipts, 64 evidence
+records, 64 pair publication IDs and 128 rolling audit events. The classes and
+evidence are durable across restart. Price terms, subscriptions, receiver denial
+and sanctions are not part of this cut.
+
+### Validation and provenance
+
+Base: `5b4bb042`; initial candidate: `adf77a50`; final runtime candidate:
+`97b4106b`. On the final candidate, local owner-crate tests passed 313 checks and
+all five focused R3 production stories passed. Ownership, scheduling, RNG,
+panic-budget and CI inventory passed 23 checks. Changed Rust files pass rustfmt;
+targeted Clippy denies warnings. Linux passed all 52 relay, passage and boot-matrix
+tests and the affected library lint before its release build.
+
+Review and tests repaired a missing advertised board feed, full legacy queue
+readmission, default-grant retention, intel-refiling behavior, mixed-switch
+authority checks and expired-ticket load accounting. The R5 passage
+helper now advances to the recorded service eligibility time. The web hello golden
+explicitly includes the new feed. No work limits, ownership allowances or panic
+budgets were increased.
+
+### Real server gate
+
+The [fresh-world check](evidence/relay-r3-2026-10-23/fresh.json) booted and
+rebooted the release server against previously empty dev1 Redis database 15. It
+retained the v1 policy, two nodes and one pair without grants or receipts. The
+existing dev1 database had no service record before upgrade; it gained the policy
+without a world reset. Only dev1 was used.
+
+The [live transcript](evidence/relay-r3-2026-10-23/live.json) records 71 authenticated
+TLS WebSocket commands and one board query. The public query matched line output
+and ignored forged actor/actual-load parameters. With a normal jam at the relay
+exit, four eight-unit letters acquired distinct class tickets. A verified child
+SIGKILL preserved their complete persisted envelopes. After recovery, Sovereign
+and Priority transmitted 5 and 7 IC seconds after queueing; Standard transmitted
+at exactly 60 seconds despite free capacity observed at second 10. Deferred
+transmitted after 10,860 IC seconds, inside its configured off-peak window.
+
+An ordinary observer was denied actual load and discovery. Scoped inspect
+authority filed private intel; publication remained denied until separately
+authorized. Publication created front #0 once. A second child SIGKILL retained
+that front and made a repeated publication an idempotent reply. The mixed-producer
+gate then queued 13 real mail/channel/order copies at the jammed relay exit and
+drained them under the shared bucket. Leaving/rejoining the channel removed old
+receipt visibility. OOC speech remained immediate.
+
+The [SSH transcript](evidence/relay-r3-2026-10-23/ssh.json) passed five checks through
+the real `play` front door on port 6789: board, arrived receipts, private-load
+refusal, discovery refusal and immediate OOC speech.
+[Environment evidence](evidence/relay-r3-2026-10-23/environment.json) records exact
+runtime hashes and raw/normalized runner hashes. All 27 retained pair receipts
+were unique and every IC second spent at most eight units. No pending copies
+remained. Command latency was 51 ms median and 53 ms maximum; the largest reply
+was 2,666 bytes. These are observations, not performance thresholds. Dev1 was
+restored to rate 24 with both halves healthy; dev2 gateway PID 539467 was unchanged.
+
+The final runtime is `97b4106b`. The runner-only correction included with this
+evidence targets the actual relay node rather than its coverage room, and waits
+for channel-owner settlement before reading history. Database backups,
+credentials and fresh-world configuration remain root-only on the VPS. Linux
+test/lint logs and automated counts accompany the evidence; no credentials or
+backups are committed.
+
+Reproduce with `scripts/relay-r3-fresh.py` on an empty dev1 database 15, then run
+`relay-r3-live.mjs` with arguments `https://conclav.io:6790`, the root-only staff
+credentials file, `/opt/rustmush/dev1/r3-evidence`, and `6788`, followed by
+`relay-r3-ssh.py`. The live script reuses the R6a synthetic accounts and verifies
+TLS. It is an explicit real-server gate, not a test that silently succeeds
+without Redis.
+
+**Live milestone gate passed.** The previous CI repair on `5b4bb042` is green;
+normal R3 CI is triggered by the push and remains owner-monitored. The earlier
+R6b live Discord-provider gap remains recorded above; R3 changes no bridge code.
+**Paused after R3, before R4.**

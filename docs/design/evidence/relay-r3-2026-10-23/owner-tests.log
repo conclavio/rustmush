@@ -1,0 +1,422 @@
+   Compiling mush-propagation v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-propagation)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.63s
+     Running unittests src\lib.rs (target\debug\deps\mush_faction-b9f4a2bbd427f0f1.exe)
+
+running 12 tests
+test data::tests::edge_cycles_are_detected_per_kind ... ok
+test data::tests::officer_and_intel_thresholds ... ok
+test data::tests::control_records_serde_round_trip ... ok
+test data::tests::parse_helpers_accept_staff_spellings ... ok
+test data::tests::principal_serde_is_backward_compatible ... ok
+test data::tests::name_and_alias_resolution ... ok
+test data::tests::hidden_faction_listing ... ok
+test data::tests::resource_pools_are_cause_stamped_and_bounded ... ok
+test sim::tests::advance_saturates_and_can_overshoot_to_complete ... ok
+test sim::tests::clocks_watching_filters_kind_and_completion ... ok
+test data::tests::visibility_projection ... ok
+test sim::tests::advance_reports_completion_once ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\atlas.rs (target\debug\deps\atlas-73c3b7ab7ac40b7b.exe)
+
+running 1 test
+test a_control_region_on_an_atlas_place_renders_its_footprint_in_territory ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\economy.rs (target\debug\deps\economy-c816b59afb85aa9d.exe)
+
+running 21 tests
+test a_missing_org_makes_the_link_unresolvable_not_absent ... ok
+test destroy_is_refused_while_bound_and_allowed_after_unbinding ... ok
+test migrate_refuses_a_non_system_source_and_an_unbacked_faction ... ok
+test a_faction_officer_sees_ratings_but_not_money_and_cannot_spend ... ok
+test bind_new_unbind_and_rebind_an_existing_org ... ok
+test boot_reports_a_two_factions_one_org_conflict_and_preserves_both_links ... ok
+test migrate_without_confirm_shows_the_scale_and_moves_nothing ... ok
+test a_dropped_faction_doc_write_converges_on_a_re_run ... ok
+test boot_reports_a_missing_backing_org_and_preserves_the_link ... ok
+test a_confirmed_migrate_posts_once_and_a_second_run_changes_nothing ... ok
+test migrate_refuses_an_unregistered_or_inactive_instrument ... ok
+test an_outsider_sees_neither_ratings_nor_money ... ok
+test one_org_backs_one_faction_and_a_duplicate_makes_both_unusable ... ok
+test a_reboot_after_migrate_reproduces_the_balances_from_the_journal ... ok
+test a_frozen_economy_refuses_the_migration_before_a_wallet_is_opened ... ok
+test migrate_refuses_a_zero_or_negative_pool ... ok
+test a_rating_key_still_applies_and_a_migrated_key_is_refused ... ok
+test a_pool_zeroed_between_the_post_and_the_re_run_still_converges ... ok
+test faction_ids_scope_the_idempotency_key_so_two_factions_both_migrate ... ok
+test a_pool_edited_between_the_post_and_the_re_run_still_converges ... ok
+test a_suspended_backing_org_refuses_the_migration_before_a_wallet_is_opened ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\faction.rs (target\debug\deps\faction-23710b7c42e4dfc0.exe)
+
+running 15 tests
+test channel_inspect_without_equals_does_not_unbind ... ok
+test create_add_and_visibility_projection ... ok
+test destroy_cascades_members_edges_and_control ... ok
+test membership_visibility_matrix_members_and_officers ... ok
+test hidden_faction_is_indistinguishable_from_missing ... ok
+test territory_control_contests_and_covert_holdings ... ok
+test roster_order_hides_rank_from_non_officers ... ok
+test admin_gate_royalty_or_faction_admin_power ... ok
+test aliases_are_validated_like_names ... ok
+test channel_binding_joins_only_public_members ... ok
+test structural_edges_are_acyclic_and_front_edges_stay_covert ... ok
+test destroy_leaves_the_bound_channel ... ok
+test manual_channel_joins_are_never_the_modules_to_remove ... ok
+test boot_never_rewinds_allocators_below_loaded_ids ... ok
+test persistence_round_trip_rebuilds_identical_state ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\simulation.rs (target\debug\deps\simulation-a40863c59fcbd5a8.exe)
+
+running 8 tests
+test clocks_are_visibility_gated_for_players ... ok
+test the_consequence_kind_is_reserved_from_watching ... ok
+test destroying_a_region_detaches_its_clock_flip ... ok
+test destroying_a_faction_prunes_its_fronts_and_clocks ... ok
+test staff_can_advance_a_clock_to_completion ... ok
+test a_covert_clock_flip_stays_covert_not_public ... ok
+test a_canon_event_advances_a_watching_clock_and_completion_fires_the_consequence ... ok
+test fronts_and_clocks_survive_a_restart ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\standing.rs (target\debug\deps\standing-e36d6120aa0bca00.exe)
+
+running 2 tests
+test provider_resolves_member_officer_intel_and_fails_closed ... ok
+test org_policy_gates_on_live_faction_standing_end_to_end ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mush_npc-a7ba7a4ef34c85f5.exe)
+
+running 73 tests
+test action::tests::sanitize_strips_unicode_bidi_and_zero_width ... ok
+test action::tests::json_fallback_array_parses ... ok
+test action::tests::json_fallback_single_object_and_synonyms ... ok
+test action::tests::action_list_is_bounded ... ok
+test action::tests::tool_calls_map_to_allowlisted_actions ... ok
+test intel::tests::filed_by_counts_across_principals ... ok
+test action::tests::use_ability_folds_flat_keys_via_json_path ... ok
+test knowledge::tests::secrecy_default_is_public ... ok
+test knowledge::tests::sparse_lore_entry_deserializes_with_defaults ... ok
+test intel::tests::file_groups_by_principal_and_returns_snapshot ... ok
+test action::tests::ability_tool_call_maps_to_use_ability ... ok
+test intel::tests::invalid_record_and_bucket_principal_are_refused ... ok
+test intel::tests::intel_keys_round_trip_and_stay_wire_compatible ... ok
+test intel::tests::for_principal_subject_filters ... ok
+test action::tests::invented_tool_becomes_inert_use_ability_never_a_command ... ok
+test knowledge::tests::familiarity_thresholds_track_notes ... ok
+test knowledge::tests::knowledge_rejects_duplicate_tags_and_count_overflow ... ok
+test knowledge::tests::pool_key_slugs_the_tag ... ok
+test action::tests::sanitize_strips_ansi_and_control_and_caps ... ok
+test knowledge::tests::pools_resolve_unions_matching_and_ignores_unknown ... ok
+test intel::tests::faction_pools_are_distinct_from_character_buckets ... ok
+test action::tests::shapeless_answer_requests_repair ... ok
+test intel::tests::record_serde_is_backward_compatible_with_m12_docs ... ok
+test knowledge::tests::secret_entries_do_not_consume_shareable_projection_capacity ... ok
+test intel::tests::load_replaces_and_bounds ... ok
+test knowledge::tests::is_shareable_gates_only_secret ... ok
+test memory::tests::push_enforces_hard_cap_dropping_oldest ... ok
+test intel::tests::clear_for_drops_only_that_principal ... ok
+test memory::tests::buffer_overflow_drains_old_half ... ok
+test memory::tests::invalid_and_oversized_records_are_refused_without_mutation ... ok
+test memory::tests::recall_matches_present_players_newest_first ... ok
+test knowledge::tests::pool_and_projection_have_independent_hard_caps ... ok
+test memory::tests::transcript_caps_from_the_newest ... ok
+test profile::tests::default_and_representative_profile_validate ... ok
+test profile::tests::fallback_line_is_deterministic_and_bounded ... ok
+test memory::tests::slug_is_safe_and_stable ... ok
+test memory::tests::recall_has_a_hard_result_ceiling ... ok
+test profile::tests::informant_fields_round_trip_through_serde ... ok
+test profile::tests::m12_era_profile_docs_still_load ... ok
+test profile::tests::cooldown_override_wins_when_nonzero ... ok
+test profile::tests::sparse_profile_deserializes_with_defaults ... ok
+test profile::tests::tier_defaults_match_design ... ok
+test prompt::tests::familiarity_annotations_render_for_stranger_and_known ... ok
+test profile::tests::validation_rejects_prompt_growth_before_storage ... ok
+test prompt::tests::guarded_world_knowledge_renders_with_trust_framing ... ok
+test prompt::tests::secret_world_knowledge_never_reaches_any_prompt ... ok
+test prompt::tests::summarize_prompt_folds_events ... ok
+test prompt::tests::system_prompt_has_frame_and_persona ... ok
+test prompt::tests::public_world_knowledge_appears_in_system_prompt ... ok
+test prompt::tests::user_prompt_escapes_and_delimits_player_speech ... ok
+test query::tests::carries_kind_label_and_provenance ... ok
+test query::tests::faction_pools_merge_for_cleared_members_only ... ok
+test query::tests::empty_for_a_principal_with_no_intel ... ok
+test runtime::tests::idle_npc_applies_an_unseen_completion_once ... ok
+test query::tests::faction_pools_stay_hidden_below_the_intel_gate ... ok
+test runtime::tests::no_stimuli_means_not_pending ... ok
+test runtime::tests::one_in_flight_low_value_dropped_speech_queued ... ok
+test query::tests::lists_only_the_querying_principals_records ... ok
+test runtime::tests::lower_priority_stimulus_cannot_evict_direct_speech ... ok
+test runtime::tests::rapid_chatter_coalesces_into_one_batch ... ok
+test runtime::tests::cooldown_blocks_then_allows_direct_shortens ... ok
+test query::tests::records_are_newest_first ... ok
+test runtime::tests::mailbox_is_bounded_and_prefers_new_direct_speech ... ok
+test runtime::tests::completion_must_match_current_correlation ... ok
+test runtime::tests::single_oversized_stimulus_is_refused ... ok
+test memory::tests::subjects_evict_oldest_with_stable_tie_break ... ok
+test memory::tests::boot_insertion_keeps_the_same_newest_set_in_any_order ... ok
+test snapshot::tests::capability_profile_rejects_unbounded_tools_and_schemas ... ok
+test memory::tests::push_enforces_per_event_and_aggregate_byte_bounds ... ok
+test intel::tests::merged_projection_keeps_newest_with_count_and_byte_bounds ... ok
+test intel::tests::file_is_bounded_dropping_oldest ... ok
+test snapshot::tests::snapshot_rejects_unbounded_scene_and_complete_payload ... ok
+test intel::tests::bucket_enforces_encoded_byte_ceiling ... ok
+
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\agents.rs (target\debug\deps\agents-a8790c11ca99ec65.exe)
+
+running 54 tests
+test hidden_factions_never_leak_through_agent_commands ... ok
+test informant_files_to_faction_pool_gated_by_clearance ... ok
+test agent_set_and_show_informant_fields ... ok
+test informant_files_watched_subject_arrival ... ok
+test informant_stops_filing_when_principal_faction_is_gone ... ok
+test informant_files_watched_subject_speech ... ok
+test intel_pull_clear_empties_the_log ... ok
+test delayed_completion_cannot_clear_or_act_during_a_newer_turn ... ok
+test agent_show_reports_filed_count ... ok
+test a_refusal_is_spoken_in_the_askers_words_and_audited_as_refused ... ok
+test an_interface_ability_is_offered_and_runs_as_the_asker ... ok
+test intel_pull_empty_is_graceful ... ok
+test exclusive_scene_participant_is_suppressed_from_wakes ... ok
+test a_profile_without_the_provider_offers_nothing_and_an_unknown_name_falls_through ... ok
+test familiarity_from_memory_reaches_the_user_prompt ... ok
+test agent_lore_add_list_del_clear_round_trips ... ok
+test filing_does_not_leak_across_principals ... ok
+test intel_pull_filters_by_subject ... ok
+test bad_completion_does_not_wedge_in_flight ... ok
+test do_nothing_is_silent_and_audited ... ok
+test an_ambient_turn_holds_no_ones_authority_and_a_gone_asker_is_refused ... ok
+test cooldown_is_enforced ... ok
+test intel_pull_shows_only_own_principal_records ... ok
+test completion_for_an_idle_npc_is_applied_once ... ok
+test budget_trip_degrades_to_fallback_line ... ok
+test never_reports_principal_or_self ... ok
+test injection_yields_only_allowlisted_actions_never_a_command ... ok
+test no_players_no_wakes_no_tokens ... ok
+test memory_overflow_summarizes_and_persists ... ok
+test npc_actor_power_use_files_intel_for_a_witnessing_informant ... ok
+test intel_survives_on_world_loaded_round_trip ... ok
+test json_actions_fallback_parses_after_one_repair ... ok
+test lore_pool_surface_list_show_and_delete ... ok
+test npc_speech_does_not_wake_other_npcs ... ok
+test only_one_call_in_flight ... ok
+test npc_thinking_keyframe_emitted_on_dialogue_start ... ok
+test npc_cannot_move_through_a_locked_exit ... ok
+test npc_thinking_end_frame_emitted_on_completion ... ok
+test lore_pools_survive_on_world_loaded_round_trip ... ok
+test power_use_files_intel_for_carried_witnesses_only ... ok
+test remember_stores_and_recalls_by_present_player ... ok
+test perceived_concealed_subject_is_always_filed ... ok
+test rapid_chatter_coalesces_into_one_turn ... ok
+test say_action_renders_through_formatter ... ok
+test secret_lore_never_enters_the_snapshot ... ok
+test shared_pool_resolves_into_dialogue_snapshot ... ok
+test the_help_provider_reads_a_topic_verbatim_or_refuses ... ok
+test unperceived_subject_is_never_filed ... ok
+test per_npc_daily_tokens_override_is_enforced ... ok
+test unwatched_ordinary_subject_is_not_filed ... ok
+test with_the_model_off_the_fallback_names_the_command ... ok
+test staff_set_the_interfaces_and_read_the_audit ... ok
+test use_ability_resolves_on_loop_and_renders_a_roll ... ok
+test willingness_gate_blocks_filing ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\h2a_source.rs (target\debug\deps\h2a_source-bdbfddf12be46934.exe)
+
+running 6 tests
+test h2a_the_source_registers_its_families_and_definitions ... ok
+test h2a_a_queued_request_becomes_one_capture_on_the_next_tick ... ok
+test h2a_a_request_for_a_player_or_a_full_queue_is_dropped ... ok
+test h2a_the_idle_fallback_selects_idle_and_errs_without_it ... ok
+test h2a_idle_and_decide_are_projected_for_an_agent_and_for_nobody_else ... ok
+test h2a_the_kernel_builds_a_capture_plan_for_an_agent_and_refuses_a_player ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\parse_actions_proptest.rs (target\debug\deps\parse_actions_proptest-6e2e16a8e1af73cc.exe)
+
+running 5 tests
+test parse_arbitrary_text_is_safe ... ok
+test parse_arbitrary_tool_calls_is_safe ... ok
+test sanitize_is_always_clean ... ok
+test sanitize_scrubs_injection_payloads ... ok
+test parse_actionish_text_is_safe ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests\s8_audience.rs (target\debug\deps\s8_audience-7d28583896d72dc6.exe)
+
+running 3 tests
+test the_default_audience_is_the_asker ... ok
+test a_private_reply_reaches_the_asker_alone ... ok
+test a_public_reply_is_said_aloud ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mush_propagation-ad2273f4793aff6f.exe)
+
+running 16 tests
+test context::tests::a_jammed_unit_is_still_detected_and_an_occluded_courier_still_arrives ... ok
+test record::tests::a_terminal_transition_is_idempotent ... ok
+test context::tests::the_media_map_onto_the_base_vocabulary_and_back ... ok
+test record::tests::an_over_long_payload_is_refused_at_issue_not_truncated_at_delivery ... ok
+test record::tests::a_phantoms_subject_is_scoped_and_has_no_object_arm_at_all ... ok
+test context::tests::every_term_saturates_rather_than_overflowing ... ok
+test routing::tests::corrupt_frozen_time_and_cursor_are_refused_and_generation_change_preserves_due_scalar ... ok
+test routing::tests::capacity_post_image_matches_the_wire_at_integer_limits ... ok
+test routing::tests::cycle_hit_and_miss_visit_the_same_bounded_graph_and_respect_remaining_hops ... ok
+test routing::tests::legacy_dispatch_kind_is_inferred_and_reports_or_messages_are_not_standing_orders ... ok
+test record::tests::every_record_re_enters_through_its_constructor ... ok
+test context::tests::a_miss_and_a_hit_are_the_same_shape_and_carry_the_same_lag ... ok
+test service::tests::policy_has_strict_bounds_and_utc_independent_ic_windows ... ok
+test service::tests::receipt_bounds_and_evidence_require_observed_free_capacity ... ok
+test routing::tests::shared_capacity_is_conserved_across_wire_round_trip_and_clock_rollback ... ok
+test record::tests::a_relay_cycle_terminates_at_the_hop_bound ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\e7c11.rs (target\debug\deps\e7c11-7039a2c501d40f72.exe)
+
+running 5 tests
+test e7c11_b0_a_proxy_driver_reads_the_units_picture_and_not_their_own ... ok
+test e7c11_b0_the_ingress_is_inert_without_a_live_seat ... ok
+test e7c11_b0_an_order_from_a_seat_is_issued_by_the_npc ... ok
+test e7c11_b0_a_seat_narrows_who_a_driver_may_address ... ok
+test vf_d7_a_staff_driver_is_narrowed_by_the_seat_like_anyone_else ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\e7c7.rs (target\debug\deps\e7c7-fbaa7bafd9051252.exe)
+
+running 88 tests
+test e7c7_a2_prop_pass_stages_the_tactics_owned_sensor_arm_and_writes_no_contact_document ... ok
+test e7c7_o10_an_over_size_payload_is_refused_at_issue ... ok
+test e7c7_k5_a_detection_miss_and_a_hit_cost_the_same_lag_and_the_same_shape ... ok
+test e7c7_k4_a_leak_scan_over_every_player_facing_render_finds_no_undetected_unit ... ok
+test e7c7_a1_only_mush_tactics_has_a_contact_guard_validator_not_propagation_sim_or_industry ... ok
+test e7c7_p3_the_phantom_class_and_owner_agree_between_tactics_and_propagation ... ok
+test e7c7_o5_an_ack_is_itself_a_delivery_and_a_lost_one_leaves_the_issuer_uninformed ... ok
+test e7c7_o6_a_duplicate_ack_is_a_hit ... ok
+test e7c7_p4_an_unwired_sensor_policy_arms_nothing ... ok
+test e7c7_a4_the_six_sensor_sources_are_registered_beside_handoff_and_production ... ok
+test e7c7_k3_one_observers_contact_is_invisible_to_another_and_the_two_refusals_are_identical ... ok
+test e7c7_o2_an_older_revision_arriving_late_is_superseded_and_never_becomes_active ... ok
+test e7c7_k1_a_phantom_subject_never_resolves_to_a_unit_through_any_projection ... ok
+test e7c7_k2_a_false_and_a_real_contact_render_identically_and_cost_the_same_reads ... ok
+test e7c7_k6_an_unviewable_and_a_nonexistent_envelope_subject_are_byte_identical ... ok
+test e7c7_b1_a_phantoms_expiry_issues_loss_to_every_holder ... ok
+test e7c7_b2_a_report_from_a_destroyed_observer_still_renders_with_its_age ... ok
+test e7c7_a3_a_detection_pass_is_deterministic_ordered_and_bounded ... ok
+test e7c7_o3_a_jammed_recipient_keeps_its_last_delivered_order ... ok
+test e7c7_o9_expiry_is_idempotent ... ok
+test e7c7_b6_an_in_flight_envelope_at_restart_is_neither_delivered_twice_nor_lost ... ok
+test e7c7_p1_every_verbs_recorded_compatibility_class_matches_its_group ... ok
+test e7c7_o1_revision_3_after_2_supersedes_and_the_recipient_obeys_the_newest_received ... ok
+test e7c7_b8_the_delivery_pass_bound_is_paged_not_logged ... ok
+test e7c7_p6_a_jammed_platform_is_still_detected_and_an_occluded_one_still_receives ... ok
+test e7c7_o7_a_relay_cycle_terminates_at_max_envelope_hops ... ok
+test e7c7_b5_every_envelope_state_hydrates_across_a_reboot ... ok
+test i8_k3_params_are_ignored_and_another_holders_rows_never_appear ... ok
+test e7c7_p5_the_coarse_delivery_tick_advances_an_envelope_without_a_staff_verb ... ok
+test e7c7_o4_restored_reachability_delivers_the_newest_valid_revision_not_the_backlog ... ok
+test i8_k2_a_phantom_backed_row_and_a_real_row_differ_only_in_id_and_prefill ... ok
+test e7c7_b3_an_envelope_whose_recipient_is_destroyed_expires_and_is_attributed ... ok
+test vf_b10_a_subjectless_or_time_reversed_sighting_is_refused_on_load ... ok
+test e7c7_p2_the_prop_staff_gate_covers_pass_phantom_and_jam_and_an_unknown_switch_refuses ... ok
+test u4_a_platform_an_arena_holds_is_neither_observer_subject_refresher_nor_sharer ... ok
+test i8_one_view_the_row_reconstructs_the_plus_contacts_line_and_its_prefill_resolves ... ok
+test e7c7_b7_a_corrupt_record_is_held_loudly_not_deleted ... ok
+test vf_b16_the_delivery_pass_takes_a_jamming_view_not_a_store ... ok
+test e7c7_b4_a_contact_past_contact_ttl_is_lost_and_one_merely_stale_is_refreshed ... ok
+test vf_b3c_the_tick_pages_its_bound_and_its_anomalies ... ok
+test i8_k4_the_keyframe_leak_scan_finds_no_dbref_no_holder_no_phantom_and_no_stamp ... ok
+test vf_b3b_an_envelope_behind_a_jam_still_reaches_its_ttl ... ok
+test vf_b1b_an_expired_phantom_is_dropped_after_its_losses_are_armed ... ok
+test vf_b3a_the_delivery_pass_resumes_where_it_stopped ... ok
+test vf_b6_a_pass_scoped_to_one_domain_names_no_subject_in_another ... ok
+test vf_b14_plus_orders_pages_rather_than_printing_the_whole_history ... ok
+test vf_b18_every_contact_renders_unattributed_and_every_hop_relay_is_the_issuer ... ok
+test vf_b7a_the_held_map_is_bounded_and_a_held_document_is_inspectable ... ok
+test i8_the_contacts_feed_is_registered_under_its_literal_name ... ok
+test e7c7_o8_a_share_fires_only_after_delivered_and_a_queued_envelope_shares_nothing ... ok
+test i8_the_contacts_query_writes_nothing_and_stamps_no_idle ... ok
+test vf_b12_a_second_pass_with_no_change_writes_no_sighting_op ... ok
+test vf_b13_the_delivery_tick_drives_delivery_only_and_arms_nothing ... ok
+test u4_a_platform_an_arena_holds_neither_loses_nor_is_credited_a_phantom ... ok
+test vf_k13a_no_sighting_key_or_phantom_id_carries_a_dbref ... ok
+test vf_k2b_an_order_to_a_ship_under_way_waits_and_says_so ... ok
+test vf_the_after_action_audience_cap_ties_to_the_seat_cap ... ok
+test vf_k1b_no_cross_domain_unit_reaches_the_armed_ingress_document ... ok
+test vf_k15_a_reported_provenance_names_no_dbref ... ok
+test vf_b11_a_hydrated_phantom_set_raises_the_phantom_allocator ... ok
+test vf_dev_c_the_signature_constant_is_not_the_fog_model ... ok
+test vf_b8_prop_publishes_authoritative_because_pass_stages_sensor_arm ... ok
+test vf_k1a_a_unit_in_another_domain_is_not_detected_while_a_same_domain_pair_still_detects ... ok
+test i8_the_table_caps_at_max_contact_view_rows_says_truncated_and_is_deterministic ... ok
+test vf_k3b_a_pre_change_contact_never_renders_as_freshly_observed ... ok
+test vf_b15_a_context_build_visits_at_most_max_context_records ... ok
+test vf_k4c_a_loss_is_not_armed_for_a_destroyed_holder ... ok
+test vf_k4a_a_second_pass_replaces_the_standing_cursor ... ok
+test vf_b9_the_arm_is_filled_by_bytes_and_a_trimmed_intent_is_not_left_booked ... ok
+test vf_k2a_two_carriers_under_way_do_not_observe_each_other ... ok
+test vf_k5_an_order_to_an_undetected_dbref_refuses_identically_to_a_nonexistent_one ... ok
+test vf_k9_a_sealed_hull_occludes_in_both_directions ... ok
+test vf_k3a_a_rate_change_ages_out_an_envelope_and_expires_a_phantom ... ok
+test vf_k3c_the_stranded_contacts_are_paged_and_retired ... ok
+test vf_k8_a_stranger_cannot_displace_a_commanders_standing_order ... ok
+test vf_o10_two_contacts_sharing_an_id_prefix_arm_two_distinct_intents ... ok
+test vf_o2c_a_sensor_arm_without_a_projected_offer_refuses_in_prepare_not_only_in_the_offer ... ok
+test vf_k6_a_lost_phantom_contact_reacquires_and_a_lost_real_one_is_observed_again ... ok
+test vf_o9_a_shared_contact_refreshes_once_not_once_per_holder ... ok
+test vf_o2a_loss_refresh_share_reacquire_and_observe_by_a_principal_outside_the_audience_all_refuse ... ok
+test vf_provenance_tripwire_no_production_writer_yet ... ok
+test vf_o7_a_minted_phantom_becomes_a_contact_through_the_pass ... ok
+test vf_o6_every_holder_sees_its_own_contacts_past_the_ledger_cap ... ok
+test vf_o8_the_sensor_ingress_round_trip_commits_replaces_and_refuses ... ok
+test vf_k7b_the_paged_remainder_is_still_due_on_the_second_run ... ok
+test vf_b1a_finished_traffic_is_compacted_and_order_still_works_at_the_census ... ok
+test vf_k7c_a_full_sighting_book_refuses_rather_than_rearming ... ok
+test vf_k7a_the_detection_bound_pages_and_resumes ... ok
+
+test result: ok. 88 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests\e7c8.rs (target\debug\deps\e7c8-2b9ac9cab08b39a5.exe)
+
+running 4 tests
+test vf_d8d_the_detection_tick_adds_no_contact_authority_and_no_new_family ... ok
+test vf_d8c_the_detection_tick_is_bounded_on_domains_and_on_intents_and_pages_its_bound ... ok
+test vf_d8a_a_promoted_domain_detects_with_no_staff_action_and_a_passive_one_does_not ... ok
+test vf_d8b_the_detection_tick_arms_the_tactics_owned_sensor_arm_and_nothing_of_its_own ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests mush_faction
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mush_npc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mush_propagation
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

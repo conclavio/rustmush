@@ -333,6 +333,13 @@ work, and hub transit is accounted consistently. Ordinary players can compare th
 own timestamps but cannot query actual load. An authorized publication opens the
 scandal front once. Restart with all four classes queued. **Stop.**
 
+**R3 status (2026-10-23):** implemented on runtime candidate `97b4106b`.
+All 52 Linux boot/relay/passage tests, targeted lint, fresh Redis boot/reboot and
+upgraded dev1 WebSocket/SSH gates passed. All four queued classes and publication
+survived actual child SIGKILLs; 13 mixed producer copies drained within the shared
+capacity. [15b](15b-comms-relay-cut-notes.md) records the evidence. Normal CI is
+owner-monitored. **Paused after R3; R4 has not started.**
+
 ### Gate 7 — R4: service state and operator authority
 
 Add Served/Throttled/Suspended by legitimate IC principal, scoped operator authority,

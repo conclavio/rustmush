@@ -222,10 +222,11 @@ try {
  milestone('permissioned-knowledge-and-single-publication',{front});
  // Saturate with real mail/channel/order producers while the exit is jammed.
  await command(staff,'@tacsim/time rate=1');
- jammed=ceres;await command(staff,`@prop/jam #${jammed}=100`);
+ jammed=catalog.nodes.ceres.place;await command(staff,`@prop/jam #${jammed}=100`);
  await command(staff,`+relay/grant luna_ceres/${staff.object}=priority`);
  channel='R3Radio'+randomBytes(3).toString('hex');
  await command(staff,'@channel/create '+channel,'created');
+ const channelNumber=shell('redis-cli',['-p',redisPort,'--scan','--pattern','mod:comsys:chan:*']).split('\n').filter(Boolean).map(redis).find(c=>c.name===channel).id;
  for(const flag of ['ic','logged','persist'])await command(staff,`@channel/set ${channel}=${flag}`);
  for(const c of [staff,clients.bob]){await command(c,'delcom r3');await command(c,'addcom r3='+channel,'added');}
  const earlierIds=new Set(envelopes().map(e=>e.id));
@@ -245,7 +246,7 @@ try {
  const bins=new Map();for(const r of mixed){const k=r.pair+':'+r.transmitted;bins.set(k,(bins.get(k)||0)+r.ticket.units);}
  assert([...bins.values()].every(v=>v<=8));
  await command(staff,'@tacsim/time rate=24');
- await until(()=>service().receipts.filter(r=>r.kind==='channel'&&r.recipient===actor(clients.bob)).some(r=>r.arrived),'channel arrivals');
+ await until(()=>redis(`mod:comsys:member:${actor(clients.bob)}:${channelNumber}`)?.ic?.received.length>0,'channel owner settled arrivals');
  await command(clients.bob,'@channel/recall r3','R3-channel');
  await command(clients.bob,'+relay/receipts','Channel');
  await command(clients.bob,'delcom r3');

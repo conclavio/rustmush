@@ -10,8 +10,9 @@ channel traffic now transit. The real Discord bridge passed controlled-provider
 tests; live Discord remains open because dev1 has no enabled bot or relay mapping.
 [15b](15b-comms-relay-cut-notes.md) records the evidence and outstanding CI criterion.
 [15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
-mandatory integration gate after every milestone. Work is paused after R6b,
-before R3.
+mandatory integration gate after every milestone. R3 classes, declared congestion,
+permissioned evidence and publication passed the fresh/upgrade dev1 gate. Work is
+paused after R3, before R4; normal candidate CI remains owner-monitored.
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require
