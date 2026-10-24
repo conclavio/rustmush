@@ -1240,3 +1240,87 @@ billing/purchase books, one capital receipt, two nodes and one pair. Both dev1
 services are active, and dev2 remains PID 539467. No credentials, configuration
 or database snapshots are committed. The milestone push triggers normal CI; its
 long-running result remains owner-monitored while R9a begins.
+
+
+## R9a — manufactured private pairs (2026-10-24)
+
+### Implementation and ownership
+
+`tacsim.relay.manufacture@1` provides a finite Lunar foundry and the gated
+`private_pair` recipe: one relay blank and two instrument boards, 120 hourly IC
+production units, and actual economy budget consumption. The eight-blank issue
+is finite; boards must come from ordinary inventory/market supply. Existing
+industry work orders, inventory lineage, title/custody and the action coordinator
+produce the output. No staff pair-mint command substitutes for the recipe.
+
+The bounded `tacsim.relay_fabrications` family records the consumed completed
+work-order lot; inventory compares and consumes the exact lineage-bearing product.
+The legacy TacSim foundry projection durably records two unique physical half IDs
+before title issuance. Boot audits both directions and never remints a missing or
+destroyed half. Duplicate collection returns the original pair. Actual consumed
+budget, beneficiary authority, recipe, facility, quantity and destination are
+revalidated before collection; listed output cannot be collected twice.
+
+Each half is five tonnes and occupies a real carrier bay. The vehicle adapter
+contributes inert payload to both departure gates and the frozen voyage ticket.
+Loading/unloading requires local docked access and active, unstolen, unfrozen title;
+generic get/teleport cannot bypass cargo custody. Installation requires a local,
+owned empty mount, independent operator authority and two distinct rooms. The first
+mount persists without an invalid partial registry binding. The second establishes
+the private pair and both checked station units after preflight. Its capacity is one
+unit per IC second and it does not depend on the Exchange. Physical discovery files
+real intelligence and advances the Concord anti-proliferation front once per pair.
+
+The real production story exposed a finite-schedule ownership conflict: the kernel
+advanced a cursor while industry completion deleted it in the same action. The
+schedule adapter now declares completion read-only immediately before preparation;
+the kernel alone writes the advanced completed cursor. Industry completes its job,
+and later delivery/cancellation prunes the cursor. Completed jobs cannot fire again.
+The full authoritative coordinator and live industry producer exercise this path.
+
+### Acceptance and repairs
+
+Parent `0e8742a5834443ad4ee938871ebab3c970663acb`; accepted source tree
+`745723b53e9c301cc8328a5d145fb7f9b3b2dd70`. The compiled runtime tree is
+`1d4664e68bbe24765961c74c841264a1436ff317`; the recorded diff contains only the
+live and SSH acceptance harnesses. Runtime, test sources, fresh boot and release
+executables are identical. The commit additionally records this documentation and
+the captured evidence. The web build stamp is the parent because commits follow
+the live gate.
+
+Linux passed 73 production boot/relay/IC scenarios, 91 industry tests, 11 core
+scheduler tests, 23 ownership/contract checks and one real Redis observer regression
+(199 total, zero failed or skipped). Clippy with warnings denied, release server and
+TLS gateway, web build/check and local rustdoc with warnings denied passed. The
+R8b CI run `40073317738` failed only the missile observer race: a shooter's receipt
+does not imply the victim's separate SSH socket has already delivered its own hit.
+The test now waits for that victim observation before draining, retaining all
+negative leak assertions. The reproduction passed on Windows and Linux.
+
+[Acceptance metadata](evidence/relay-r9a-2026-10-24/metadata.json) records 122
+real TLS WebSocket commands, nine SSH commands and seven actual SIGKILL/restart
+boundaries. [The full live transcript](evidence/relay-r9a-2026-10-24/live.json)
+shows two paid completed work orders, interruption/restamp, stolen/destroyed cargo
+refusal, three actual freight legs, first/second installation recovery, private mail
+with the Lunar Exchange endpoint disabled and discovery surviving repeat/restart
+without advancing twice. [The read-only material audit](evidence/relay-r9a-2026-10-24/material-audit.json)
+checks two consumed blanks, four boards, consumed output lots, four unique halves,
+two consumed budget holds and no live material holds. The frozen Luna–Deimos
+payload includes exactly 10,000 kg of relay cargo.
+
+The live harness was corrected at observed safety refusals: clock generation freezes
+production until restamp without immediately changing the work-order label; ordinary
+players cannot build empty mounts; a creator initially carries a new mount; boarding
+adds a real occupant provision/fuel allowance; SSH wraps the public board. Failed
+checkpoints remain on dev1. Resumes reused the paid outputs and completed journeys;
+no direct data edit advanced production, minted cargo or teleported a loaded hull.
+Builder fixtures only supplied empty player-owned mounts at the physical destination.
+
+Socket latency was 50 ms median, 53 ms p95 and 78 ms maximum (observations, not a
+load benchmark). Fresh Redis database 6 boot/reboot passed. The 4,808-key baseline
+retained in database 5 was restored with original expiry deadlines after acceptance;
+empty purchase/subscription books, original balances and the two-node/one-pair seed
+were verified. Both dev1 services are active. Dev2 remains PID 539467. No credentials,
+configuration or database snapshot is committed. The source/archive/process hashes
+are in the evidence directory. Normal CI follows the push and remains owner-monitored;
+the authorized next milestone is R9b.

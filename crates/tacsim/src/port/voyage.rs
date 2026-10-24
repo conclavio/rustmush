@@ -2560,6 +2560,11 @@ pub(crate) fn bay_gate_with(
     let w: &World = ctx.w;
     let hull = view.hull();
     let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", name));
+    let inert: std::collections::BTreeSet<_> = crate::port::vehicle::rigs_in_bay(w, view)
+        .into_iter()
+        .filter(|r| crate::relay_foundry::cargo(w, r.tv))
+        .map(|r| r.tv)
+        .collect();
     // The rigs: the bay's placements and the live records naming the hull, by slot.
     let mut rigs: Vec<(u8, ObjId)> = crate::port::vehicle::rigs_in_bay(w, view)
         .iter()
@@ -2593,6 +2598,9 @@ pub(crate) fn bay_gate_with(
         Berth::Docked { .. } | Berth::UnderWay | Berth::Elsewhere => None,
     };
     for (slot, tv) in &rigs {
+        if inert.contains(tv) {
+            continue;
+        }
         // Doc 20 cut SM.11 (the reviewer's F4): the dry run behind an await reads only the rigs
         // the await does not wait for.
         match skip {
@@ -2691,6 +2699,9 @@ pub(crate) fn bay_gate_with(
         }
     }
     for (slot, tv) in &rigs {
+        if inert.contains(tv) {
+            continue;
+        }
         let (kg, _) = crate::port::tv::hopper_load_of(ctx, *tv).map_err(|error| {
             tracing::warn!(tv = tv.0, %error, "tacsim: a departure could not read a rig's hopper");
             dark()

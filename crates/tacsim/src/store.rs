@@ -179,6 +179,9 @@ pub enum ResolveError {
 /// The in-RAM TacSim slot — the single runtime source of truth.
 #[derive(Clone, Debug, Default)]
 pub struct TacsimStore {
+    pub(crate) relay_foundry: Option<crate::relay_foundry::Foundry>,
+    pub(crate) relay_foundry_held: bool,
+    pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
     /// Frozen at wiring.
     pub(crate) cfg: TacsimConfig,
     /// The packs the host read and this module verified, keyed `(id, version)`.
@@ -2099,7 +2102,13 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
     };
     for (key, value) in kv {
         let key = key.as_str();
-        if let Some(rest) = key.strip_prefix("tacsim:pack:") {
+        if key == crate::relay_foundry::KEY {
+            store.relay_foundry_held = true;
+            store.relay_foundry =
+                serde_json::from_value::<crate::relay_foundry::Foundry>(value.clone())
+                    .ok()
+                    .filter(|f| f.check().is_ok());
+        } else if let Some(rest) = key.strip_prefix("tacsim:pack:") {
             let Some((id, version)) = split_versioned(rest) else {
                 tracing::warn!(%key, "tacsim: a pack ledger row has an unreadable key; skipped");
                 continue;

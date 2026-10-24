@@ -7034,6 +7034,12 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         } else {
             shots += 1;
         }
+        // The two SSH sessions drain independently. The shooter's hit receipt
+        // does not imply the target's socket has received its own damage line.
+        // Wait for that promised output before checking every line for leaks.
+        if outcome == 0 {
+            ada.expect_after(from, "Hit on the ").await;
+        }
         o1_drain(&mut ada).await;
         let told = ae2_told(&strip_ansi(&ada.seen[from..]));
         let whole = told.join("\n");

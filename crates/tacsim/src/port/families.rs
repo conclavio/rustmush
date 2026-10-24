@@ -479,6 +479,8 @@ impl StockReceipt {
 /// The port's four production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
+    /// Conserved private relay production receipts, one bounded book per foundry.
+    pub relay_fabrications: StateFamilyHandle<ObjId, crate::relay_foundry::Fabrications>,
     /// `tacsim.port_stock`.
     pub port_stock: StateFamilyHandle<StockIssueId, StockReceipt>,
     /// `tacsim.ticket`.
@@ -505,6 +507,8 @@ pub struct PortFamilies {
 /// `InventoryHandles` shape (`mush-inventory/src/module.rs:370`).
 #[derive(Clone, Debug)]
 pub struct PortHandles {
+    /// Real foundry production conversion action.
+    pub relay_fabricate: Option<mush_core::DefinitionRef>,
     /// The port's own families.
     pub families: PortFamilies,
     /// `mush-inventory`'s families, from the cell the composition handed the layer
@@ -678,7 +682,22 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    let relay_fabrications = reg
+        .state_family::<ObjId, crate::relay_foundry::Fabrications, _, _, _, _>(
+            family_descriptor(
+                crate::relay_foundry::FAMILY,
+                "tacsim.relay_foundry_id.v1",
+                "tacsim.relay_fabrications",
+            )?,
+            |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::relay_foundry::Fabrications| value.check(),
+            |value: &crate::relay_foundry::Fabrications| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
     Ok(PortFamilies {
+        relay_fabrications,
         port_stock,
         tickets,
         excursions,

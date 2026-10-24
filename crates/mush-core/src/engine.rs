@@ -2472,6 +2472,9 @@ impl Engine {
             .registry
             .schedule_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let completes = schedules.completes(candidate, self).map_err(|source| {
+            crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+        })?;
         providers.prepare_authoritative_invocation_seeded(
             candidate.action(),
             invocation,
@@ -2479,9 +2482,11 @@ impl Engine {
             &mut self.action_state,
             self.resolution_keys.as_ref(),
             |txn| {
-                schedules.seed_advance(candidate, txn).map_err(|source| {
-                    crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
-                })
+                schedules
+                    .seed_advance(candidate, completes, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                    })
             },
         )
     }

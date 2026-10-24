@@ -1,0 +1,145 @@
+   Compiling smallvec v1.15.2
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling tracing v0.1.44
+   Compiling parking_lot_core v0.9.12
+   Compiling getrandom v0.3.4
+   Compiling parking_lot v0.12.5
+   Compiling num-traits v0.2.19
+   Compiling icu_normalizer v2.3.0
+   Compiling futures-channel v0.3.34
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling mush-proto v0.1.0 (/opt/rustmush/dev1/build/crates/mush-proto)
+   Compiling idna_adapter v1.2.2
+   Compiling percent-encoding v2.3.2
+   Compiling form_urlencoded v1.2.2
+   Compiling rand_core v0.9.5
+   Compiling idna v1.1.0
+   Compiling log v0.4.34
+   Compiling futures-executor v0.3.34
+   Compiling redis-protocol v6.0.0
+   Compiling futures v0.3.34
+   Compiling url v2.5.8
+   Compiling mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+   Compiling float-cmp v0.10.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling tokio-util v0.7.19
+   Compiling tokio-stream v0.1.19
+   Compiling fred v10.1.0
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+    Finished `test` profile [unoptimized] target(s) in 51.12s
+     Running unittests src/lib.rs (target/debug/deps/mush_industry-cb8785dcdabbd14b)
+
+running 6 tests
+test money::tests::e7r1_r1_both_money_keys_carry_the_attempt_term_and_move_together ... ok
+test money::tests::e7r1_r1_the_work_order_kind_is_engine_owned ... ok
+test money::tests::e7r1_r1_the_two_key_shapes_are_deterministic_and_inside_the_kernel_cap ... ok
+test money::tests::vf_d9b_the_settle_pending_cap_is_encoded ... ok
+test money::tests::e7r1_r1_the_sweep_budgets_are_encoded ... ok
+test money::tests::e7r1_r1_the_work_order_purpose_is_one_value_built_in_one_place ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/e7c4.rs (target/debug/deps/e7c4-286b6ad7f3dd32e3)
+
+running 41 tests
+test e7c4_b1_the_facility_record_carries_no_active_slots_counter ... ok
+test e7c4_b3_the_deterministic_holder_key_fits_the_idempotency_cap ... ok
+test e7c4_b3_the_state_machine_transitions_bump_revision ... ok
+test e7c4_b3_work_order_wire_round_trips_and_refuses_over_cap ... ok
+test e7c4_b7_the_completion_marker_round_trips_and_names_its_fact ... ok
+test e7c4_d2_the_marker_ring_evicts_the_oldest_past_the_cap ... ok
+test e7c4_g_production_progress_is_bounded_by_total_units ... ok
+test e7c4_p_a_quote_is_a_pure_function_of_recorded_inputs ... ok
+test e7c4_b1_two_orders_contend_for_the_last_slot_and_exactly_one_starts ... ok
+test e7c4_b1_both_reservation_validators_compose_without_collision ... ok
+test e7c4_a_cancel_releases_the_material_reservation ... ok
+test e7c4_b1_a_released_slot_is_reservable_again ... ok
+test e7c4_b1_availability_is_derived_from_live_reservations ... ok
+test e7c4_a_a_work_order_run_conserves_its_inputs ... ok
+test vf_c1_a_zero_input_recipe_is_unconstructible ... ok
+test vf_b5_wo_set_is_not_silently_list ... ok
+test vf_b4_staff_may_inspect_any_work_order ... ok
+test vf_r1_a_terminal_order_plans_no_more_production ... ok
+test vf_c2_a_non_owner_cannot_hold_a_facilitys_slots ... ok
+test vf_c2_capacity_maximum_comes_from_the_record ... ok
+test e7c4_d2_the_durable_marker_family_stays_bounded_and_conserves ... ok
+test vf_b3_facility_list_signals_truncation ... ok
+test vf_r3_the_completion_family_stays_bounded ... ok
+test vf_r2_a_generation_bump_does_not_freeze_the_scan ... ok
+test ws02_s4_the_facility_book_excludes_a_rival_and_a_quarantined_facility ... ok
+test vf_r4_a_both_absent_capacity_pair_fails_closed ... ok
+test vf_b2_wo_list_pages_to_exhaustion ... ok
+test ws02_s4_an_offer_route_draft_cannot_name_a_facility_it_was_not_offered ... ok
+test ws02_s5_a_facility_the_actor_may_not_run_refuses_byte_identically ... ok
+test ws02_s4_an_actor_with_no_facility_is_projected_no_draft_offer ... ok
+test ws02_s4_two_projections_agree_and_the_catalog_is_walked_once ... ok
+test ws02_s5_a_reordered_and_respaced_pinned_is_accepted ... ok
+test ws02_s5_a_facility_of_hers_that_cannot_run_the_recipe_refuses ... ok
+test ws02_s5b_a_republication_cancels_the_drafts_pinned_against_the_old_pack ... ok
+test ws02_s5b_the_sweep_cancels_a_drafted_order_whose_pin_is_not_the_authoritys ... ok
+test ws02_s5_a_submission_that_names_capacity_revision_never_reaches_the_provider ... ok
+test ws02_s4_the_per_requester_cap_is_read_off_the_index_not_the_family ... ok
+test ws02_s5_a_zero_input_minting_recipe_still_refuses_at_recipe_mints_from_nothing ... ok
+test ws02_s5_an_inflated_pinned_recipe_never_reaches_the_family_or_the_endpoint ... ok
+test ws02_s5_a_rival_endpoint_or_a_foreign_account_refuses ... ok
+test ws02_s4_a_large_catalog_truncates_at_the_cap_and_the_offer_still_builds ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/e7r1.rs (target/debug/deps/e7r1-bbac121f2db98c87)
+
+running 44 tests
+test e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft ... ok
+test e7r1_r1_a_retyped_submit_reuses_the_standing_reservation ... ok
+test e7r1_r1_a_funded_submit_places_the_hold_before_the_submit_and_names_it ... ok
+test e7r1_r1_an_unfunded_submit_refuses_on_the_engines_own_check_and_reserves_nothing ... ok
+test e7r1_r1_a_capture_after_a_release_refuses_and_the_total_does_not_move ... ok
+test e7r1_r1_a_vanished_hold_pauses_the_order_and_pages_and_is_never_a_replay_hit ... ok
+test e7r1_r1_a_submission_naming_no_hold_is_refused_by_the_provider ... ok
+test e7r1_r1_the_orders_own_owner_cannot_release_or_capture_the_engine_owned_hold ... ok
+test e7r1_r5_a_timeline_changed_pause_round_trips_and_names_its_exit ... ok
+test e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement ... ok
+test e7r1_r1_the_sweep_captures_a_completed_order_once_and_conserves_the_ledger ... ok
+test e7r1_r1_a_reboot_re_running_the_sweep_settles_nothing_twice ... ok
+test e7r1_r5_the_timeline_changed_producer_runs_before_the_first_irreversible_step ... ok
+test e7r1_r1_the_sweep_releases_an_orphaned_draft_hold_on_the_second_sighting ... ok
+test e7r1_r1_the_sweep_releases_a_cancelled_order_and_a_repeat_writes_nothing ... ok
+test vf_b15a_a_forged_hold_id_buys_no_production_because_the_authority_is_the_purpose ... ok
+test vf_b5a_the_vanished_hold_refusal_is_byte_identical_to_a_free_id_for_a_stranger ... ok
+test vf_c13a_staff_may_not_name_a_players_account_as_a_work_orders_budget ... ok
+test vf_c1d_the_draft_is_not_an_account_census_of_a_stranger ... ok
+test vf_c1a_an_owner_operators_completed_order_is_a_recorded_self_transfer_and_moves_no_net_worth ... ok
+test vf_c1c_a_distinct_requester_really_pays_the_facility_owner ... ok
+test vf_c1b_a_one_account_owner_drafts_and_settles ... ok
+test vf_c2c_a_paused_order_still_holds_its_budget_and_its_slot_and_releases_them_on_cancel ... ok
+test vf_c3a_a_completed_order_whose_payee_closed_holds_its_budget_and_pages_rather_than_refunding ... ok
+test vf_c3b_reopening_a_payout_account_lets_the_next_fire_capture ... ok
+test vf_c4a_a_released_orphan_is_resubmittable_with_a_new_live_hold ... ok
+test vf_c4b_the_second_placements_key_differs_from_the_first ... ok
+test vf_d11a_cancelling_a_paged_order_closes_its_alert_on_the_next_fire ... ok
+test vf_c4d_a_payee_that_changes_before_the_settle_posts_clean_and_pages_nothing ... ok
+test vf_d8b_the_orphan_arm_continues_on_a_transient_before_the_slot_and_the_note ... ok
+test vf_c4c_a_live_hold_never_coexists_with_a_spent_settle_key ... ok
+test vf_d9a_settle_pending_never_exceeds_its_declared_cap ... ok
+test vf_c2b_the_restamp_post_image_carries_the_live_generation ... ok
+test vf_d8a_a_transient_placement_is_a_wait_not_a_funding_refusal ... ok
+test vf_d4a_a_swept_vanished_hold_pauses_the_order_and_the_offer_ingress_delivers_nothing ... ok
+test vf_z1a_no_shipped_player_string_carries_a_double_space ... ok
+test e7r1_r1_the_sweep_settles_at_most_its_budget_per_fire_and_drops_nothing ... ok
+test vf_z4b_a_draft_with_no_budget_account_refuses_and_stages_nothing ... ok
+test ws02_s5b_the_sweep_is_what_stops_a_forged_pin_the_digest_checks_wave_through ... ok
+test vf_d4b_a_funded_order_still_delivers_through_the_offer_route ... ok
+test vf_c2a_a_rate_change_pauses_an_order_and_the_restamp_lets_the_next_deliver_complete ... ok
+test ws02_s5b_an_honest_draft_survives_the_sweep_and_still_delivers ... ok
+test vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_units ... ok
+test vf_z2a_every_wo_command_submission_resolves_through_the_real_offer_route ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s

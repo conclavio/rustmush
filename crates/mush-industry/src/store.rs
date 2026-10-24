@@ -1202,3 +1202,30 @@ pub fn is_staff(world: &World, actor: ObjId) -> bool {
     mush_core::perm::has_power(world, actor, mush_core::Powers::SIM_ADMIN)
         || mush_core::perm::has_role(world, actor, mush_core::Role::Royalty)
 }
+
+/// Install a composition-authored facility without replacing an existing identity.
+/// The content owner validates its location and institution before calling.
+pub fn install_authored_facility(
+    ctx: &mut mush_core::Ctx<'_>,
+    facility: FacilityRecord,
+) -> Result<(), String> {
+    let store = ctx
+        .w
+        .module_state::<IndustryStore>()
+        .ok_or("Industry unavailable")?;
+    if let Some(existing) = store.facility(facility.object()) {
+        return if existing == &facility {
+            Ok(())
+        } else {
+            Err("Authored facility identity drift".into())
+        };
+    }
+    if ctx.w.get(facility.object()).is_none() {
+        return Err("Authored facility object missing".into());
+    }
+    persist_facility(ctx.out, &facility);
+    if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+        store.put_facility(facility);
+    }
+    Ok(())
+}

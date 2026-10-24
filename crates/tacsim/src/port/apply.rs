@@ -124,7 +124,7 @@ pub fn room_by_key(w: &World, key: &RecordKey) -> Option<ObjId> {
 /// # Errors
 ///
 /// When the economy is not composed or the allocator is spent.
-pub(super) fn alloc_vault_id(ctx: &mut Ctx<'_>) -> Result<mush_economy::VaultId, String> {
+pub(crate) fn alloc_vault_id(ctx: &mut Ctx<'_>) -> Result<mush_economy::VaultId, String> {
     ctx.w
         .module_state_mut::<EconomyStore>()
         .ok_or_else(|| "the economy is not composed".to_owned())?

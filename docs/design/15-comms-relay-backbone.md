@@ -311,7 +311,7 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (R1–R8 implemented; R9–R10 remaining)
+## 8. Engine backlog (R1–R8 and R9a implemented; R9b–R10 remaining)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
@@ -363,8 +363,15 @@ government Sovereign treaties use actual economy obligations. Missed installment
 throttle then suspend; full debt cure preserves independent sanctions and cannot
 reactivate cancelled service. Exclusive expiry prevents rebilling. The dev1 gate
 passed through six process crashes, a real treasury, cancellation and arrears;
-fresh/reboot and upgraded-state checks passed. R9a is the next gate. See 15b for
+fresh/reboot and upgraded-state checks passed. See 15b for
 exact source, executable hashes, live evidence and CI repairs.
+
+**R9a as built (2026-10-24):** finite foundry inputs, know-how and actual paid
+industry work orders yield unique titled five-tonne halves. Real carrier bays,
+frozen voyage payload and local authorized installation establish an independent,
+low-bandwidth private link. Discovery advances the anti-proliferation front once.
+The dev1 gate passed manufacture, three freight legs, private mail, cargo refusals,
+seven crashes and baseline restoration. R9b is next; see 15b for evidence.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

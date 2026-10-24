@@ -145,6 +145,7 @@ pub mod record;
 pub mod relay_billing;
 pub mod relay_commerce;
 pub mod relay_content;
+pub mod relay_foundry;
 pub mod relay_loss;
 pub mod relay_metric;
 mod relay_service;
@@ -590,6 +591,7 @@ impl GameModule for TacsimRuleset {
         )?;
         relay_loss::register(reg)?;
         relay_commerce::register(reg)?;
+        relay_foundry::register(reg)?;
         reg.persist_delegation(
             crate::NS,
             "propagation",
@@ -847,6 +849,7 @@ impl GameModule for TacsimRuleset {
         relay_loss::boot(ctx).map_err(ModError::msg)?;
         relay_commerce::boot(ctx).map_err(ModError::msg)?;
         relay_billing::boot(ctx).map_err(ModError::msg)?;
+        relay_foundry::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

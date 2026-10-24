@@ -1,0 +1,1464 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T08:53:44.424Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 26,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#105",
+      "reply": "Teleported.",
+      "wallMs": 25,
+      "replyBytes": 11
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+coop/enrol R9a Relay Carrier",
+      "reply": "Lease #17 has been offered to you (@contract/show #17, @contract/accept #17).\nContract #17 is active: every party has accepted.\nCeres Clearing opens account #26 in your name.\nThe Co-op charters you FPC-D-0403, laid up as the Ninth Ledger, now the R9a Relay Carrier, cradled at the Visiting Berth Gallery.\n25000.00cr staked to you. Buyout 90000.00cr. Ilse Oduya-Brandt countersigns.",
+      "wallMs": 78,
+      "replyBytes": 381
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+coop/refit prospector",
+      "reply": "The Co-op's yard refits the R9a Relay Carrier (FPC-D-0403) as a Dray-P: a two-rig vehicle bay aft of the hold, which now takes 86 t and 103.2 m³ of bulk or ore. Ilse Oduya-Brandt countersigns.",
+      "wallMs": 26,
+      "replyBytes": 193
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 economy.account.post",
+      "reply": "Granted economy.account.post to R6bob1b16df over org #11's scope tree (grant #18).",
+      "wallMs": 26,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 economy.account.view",
+      "reply": "Granted economy.account.view to R6bob1b16df over org #11's scope tree (grant #19).",
+      "wallMs": 52,
+      "replyBytes": 82
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 vault.deposit",
+      "reply": "Granted vault.deposit to R6bob1b16df over org #11's scope tree (grant #20).",
+      "wallMs": 51,
+      "replyBytes": 75
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #678=11 vault.withdraw",
+      "reply": "Granted vault.withdraw to R6bob1b16df over org #11's scope tree (grant #21).",
+      "wallMs": 51,
+      "replyBytes": 76
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#202",
+      "reply": "emit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 43
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relaypair/stock",
+      "reply": "Lunar foundry authority and presence required.",
+      "wallMs": 26,
+      "replyBytes": 46
+    },
+    {
+      "actor": "God",
+      "line": "@account/open #678=tacsim.credit",
+      "reply": "Opened account #27 (tacsim.credit).",
+      "wallMs": 51,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 1500000",
+      "reply": "Paid: transaction #86 posted.",
+      "wallMs": 26,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/stock",
+      "reply": "Foundry action submitted. Use +relaypair to inspect the committed receipt.\nQueued.\nDone.",
+      "wallMs": 26,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 44 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4052 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 27,
+      "replyBytes": 857
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #24=2",
+      "reply": "Quote #14: 2 × 900.00cr = 1800.00cr — good until 1792835633 (real time). It reserves nothing; take it up with +market/accept #14.",
+      "wallMs": 25,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #14=127",
+      "reply": "Queued.\nContract #18 has been offered to you (@contract/show #18).\nContract #18 is active: every party has accepted.\nAgreed. Contract #18 carries it; your payment is escrowed and settles when the terms are met. Anneliese Okafor-Thistlewood signs for Crisium Instruments.\nDone.",
+      "wallMs": 50,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/draft tacsim.relay.manufacture/private_pair/1=684 1 27 127 127",
+      "reply": "Queued.\nDrafted wo#bf29605f531707ea.",
+      "wallMs": 26,
+      "replyBytes": 36
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/submit wo#bf29605f531707ea",
+      "reply": "Queued.\nSubmitted wo#bf29605f531707ea; production started.",
+      "wallMs": 26,
+      "replyBytes": 58
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1800",
+      "reply": "World time generation 45 opens at 1800 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/restamp wo#bf29605f531707ea=production",
+      "reply": "Queued.\nRestamped wo#bf29605f531707ea to the current generation.",
+      "wallMs": 25,
+      "replyBytes": 64
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/deliver wo#bf29605f531707ea",
+      "reply": "Queued.\nDelivered wo#bf29605f531707ea.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/claim wo#bf29605f531707ea=9207545661217630678",
+      "reply": "Foundry action submitted. Use +relaypair to inspect the committed receipt.\nQueued.\nDone.",
+      "wallMs": 25,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/collect wo#bf29605f531707ea",
+      "reply": "Pair bf29605f531707ea: titled halves #685 and #686. Load them into a checked cargo bay before shipping.",
+      "wallMs": 52,
+      "replyBytes": 103
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/collect wo#bf29605f531707ea",
+      "reply": "Pair bf29605f531707ea: titled halves #685 and #686. Load them into a checked cargo bay before shipping.",
+      "wallMs": 50,
+      "replyBytes": 103
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relaypair/collect wo#bf29605f531707ea",
+      "reply": "Output owner must collect at the lunar foundry.",
+      "wallMs": 26,
+      "replyBytes": 47
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 46 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4050 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #24=2",
+      "reply": "Quote #15: 2 × 900.00cr = 1800.00cr — good until 1792835938 (real time). It reserves nothing; take it up with +market/accept #15.",
+      "wallMs": 25,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #15=127",
+      "reply": "Queued.\nContract #19 has been offered to you (@contract/show #19).\nContract #19 is active: every party has accepted.\nAgreed. Contract #19 carries it; your payment is escrowed and settles when the terms are met. Anneliese Okafor-Thistlewood signs for Crisium Instruments.\nDone.",
+      "wallMs": 52,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/draft tacsim.relay.manufacture/private_pair/1=684 1 27 127 127",
+      "reply": "Queued.\nDrafted wo#b5b720afbdace3c0.",
+      "wallMs": 25,
+      "replyBytes": 36
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/submit wo#b5b720afbdace3c0",
+      "reply": "Queued.\nSubmitted wo#b5b720afbdace3c0; production started.",
+      "wallMs": 25,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@wo/deliver wo#b5b720afbdace3c0",
+      "reply": "Queued.\nDelivered wo#b5b720afbdace3c0.",
+      "wallMs": 51,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/claim wo#b5b720afbdace3c0=13598280239331093087",
+      "reply": "Foundry action submitted. Use +relaypair to inspect the committed receipt.\nQueued.\nDone.",
+      "wallMs": 26,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/collect wo#b5b720afbdace3c0",
+      "reply": "Pair b5b720afbdace3c0: titled halves #687 and #688. Load them into a checked cargo bay before shipping.",
+      "wallMs": 25,
+      "replyBytes": 103
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/collect wo#b5b720afbdace3c0",
+      "reply": "Pair b5b720afbdace3c0: titled halves #687 and #688. Load them into a checked cargo bay before shipping.",
+      "wallMs": 51,
+      "replyBytes": 103
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relaypair/collect wo#b5b720afbdace3c0",
+      "reply": "Output owner must collect at the lunar foundry.",
+      "wallMs": 26,
+      "replyBytes": 47
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "get #685",
+      "reply": "Relay machinery moves through its checked carrier bay workflow.",
+      "wallMs": 25,
+      "replyBytes": 63
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@asset/stolen #687=public R9a stolen freight",
+      "reply": "Reported stolen (transaction #99).",
+      "wallMs": 50,
+      "replyBytes": 34
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #688",
+      "reply": "Economic records block that destruction: #688 holds a live title record",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@asset/writeoff #688=R9a destructive test",
+      "reply": "Written off (transaction #100).",
+      "wallMs": 52,
+      "replyBytes": 31
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #688",
+      "reply": "Destroyed.",
+      "wallMs": 52,
+      "replyBytes": 10
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@create R9a Negative Mount",
+      "reply": "Permission denied.",
+      "wallMs": 25,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #678 R6bob1b16df#679 R6carol1f8127#684 Lunar entanglement foundry#685 Relay pair bf29605f531707ea half 1 (5 tonnes)#686 Relay pair bf29605f531707ea half 2 (5 tonnes)#687 Relay pair b5b720afbdace3c0 half 1 (5 tonnes) Pressure Lobby <PL> pllobbyin winter afternoon",
+      "wallMs": 26,
+      "replyBytes": 881
+    },
+    {
+      "actor": "God",
+      "line": "@create R9a Negative Mount",
+      "reply": "Created: R9a Negative Mount(#689).",
+      "wallMs": 51,
+      "replyBytes": 34
+    },
+    {
+      "actor": "God",
+      "line": "@chown #689=#678",
+      "reply": "Owner changed.",
+      "wallMs": 52,
+      "replyBytes": 14
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/load #687",
+      "reply": "No usable titled relay cargo.",
+      "wallMs": 26,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/install #687=#689 org:11",
+      "reply": "Local cargo title, owned empty mount and operator authority are required.",
+      "wallMs": 52,
+      "replyBytes": 73
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/load #688",
+      "reply": "No usable titled relay cargo.",
+      "wallMs": 52,
+      "replyBytes": 29
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/install #688=#689 org:11",
+      "reply": "Local cargo title, owned empty mount and operator authority are required.",
+      "wallMs": 51,
+      "replyBytes": 73
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/collect wo#b5b720afbdace3c0",
+      "reply": "Pair b5b720afbdace3c0: titled halves #687 and #688. Load them into a checked cargo bay before shipping.",
+      "wallMs": 51,
+      "replyBytes": 103
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "emit R6bob1b16df has left.\nTeleported.",
+      "wallMs": 26,
+      "replyBytes": 38
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan luna",
+      "reply": "Plan for Aitken Highport:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: metal concentrate 86 t (mass), water ice 73 t (packed volume), reaction mass 80 t (mass), voyage provisions 120 crew-days (mass and packed volume).\nPayload 0.1 t of 181 t.\nBurn 49 t (tank 0 t; 49 t short). Flip and burn at 0.86 m/s² (50 milli-g rated, throttle 1000‰): Δv 1363 km/s, peak 682 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 19 crew-days (locker 0; 19 short).\nPassage 18.3 IC days ≈ 7 min real; arrives about 09:12 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 77,
+      "replyBytes": 647
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #27=49",
+      "reply": "Quote #16: 49 × 40.00cr = 1960.00cr — good until 1792836280 (real time). It reserves nothing; take it up with +market/accept #16.",
+      "wallMs": 26,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #16",
+      "reply": "Queued.\nContract #20 has been offered to you (@contract/show #20).\nContract #20 is active: every party has accepted.\nAgreed. Contract #20 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 277
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #31=19",
+      "reply": "Quote #17: 19 × 10.00cr = 190.00cr — good until 1792836282 (real time). It reserves nothing; take it up with +market/accept #17.",
+      "wallMs": 26,
+      "replyBytes": 131
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #17",
+      "reply": "Queued.\nContract #21 has been offered to you (@contract/show #21).\nContract #21 is active: every party has accepted.\nAgreed. Contract #21 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 267
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan luna",
+      "reply": "Plan for Aitken Highport:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: metal concentrate 86 t (mass), water ice 73 t (packed volume), reaction mass 31 t (mass), voyage provisions 101 crew-days (mass and packed volume).\nPayload 49.2 t of 181 t.\nBurn 55 t (tank 49 t; 6 t short). Flip and burn at 0.71 m/s² (50 milli-g rated, throttle 1000‰): Δv 1246 km/s, peak 623 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 19; 2 short).\nPassage 20.2 IC days ≈ 8 min real; arrives about 09:12 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 75,
+      "replyBytes": 648
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #27=6",
+      "reply": "Quote #18: 6 × 40.00cr = 240.00cr — good until 1792836284 (real time). It reserves nothing; take it up with +market/accept #18.",
+      "wallMs": 25,
+      "replyBytes": 130
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #18",
+      "reply": "Queued.\nContract #22 has been offered to you (@contract/show #22).\nContract #22 is active: every party has accepted.\nAgreed. Contract #22 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 53,
+      "replyBytes": 277
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #31=2",
+      "reply": "Quote #19: 2 × 10.00cr = 20.00cr — good until 1792836285 (real time). It reserves nothing; take it up with +market/accept #19.",
+      "wallMs": 26,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #19",
+      "reply": "Queued.\nContract #23 has been offered to you (@contract/show #23).\nContract #23 is active: every party has accepted.\nAgreed. Contract #23 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 267
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan luna",
+      "reply": "Plan for Aitken Highport:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: metal concentrate 86 t (mass), water ice 73 t (packed volume), reaction mass 25 t (mass), voyage provisions 99 crew-days (mass and packed volume).\nPayload 55.2 t of 181 t.\nBurn 55 t (tank 55 t; 0 t left). Flip and burn at 0.70 m/s² (50 milli-g rated, throttle 1000‰): Δv 1234 km/s, peak 617 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 21; 0 left).\nPassage 20.4 IC days ≈ 8 min real; arrives about 09:12 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 645
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the R9a Relay Carrier.\nAirlock #432 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage winter afternoon\nAboard the R9a Relay Carrier (FPC-D-0403), docked at Ceres Freeport.",
+      "wallMs": 26,
+      "replyBytes": 646
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "The world already runs at 3600 IC seconds per real second.",
+      "wallMs": 51,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/leave",
+      "reply": "You cycle the lock out into the Visiting Berth Gallery.\nVisiting Berth Gallery #101 The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby. #431 R9a Relay Carrier#450 Patience Wen#469 Kirkwood Lamp#488 Long Division#507 Dry Season#526 Tally Ho Pressure Lobby <N> nnorthlobbydoors winter afternoon",
+      "wallMs": 26,
+      "replyBytes": 866
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "Teleported.",
+      "wallMs": 25,
+      "replyBytes": 11
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan luna",
+      "reply": "Plan for Aitken Highport:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: metal concentrate 86 t (mass), water ice 73 t (packed volume), reaction mass 25 t (mass), voyage provisions 99 crew-days (mass and packed volume).\nPayload 55.2 t of 181 t.\nBurn 56 t (tank 55 t; 1 t short). Flip and burn at 0.70 m/s² (50 milli-g rated, throttle 1000‰): Δv 1251 km/s, peak 625 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 21; 0 left).\nPassage 20.6 IC days ≈ 8 min real; arrives about 09:17 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 77,
+      "replyBytes": 646
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #27=4",
+      "reply": "Quote #20: 4 × 40.00cr = 160.00cr — good until 1792836542 (real time). It reserves nothing; take it up with +market/accept #20.",
+      "wallMs": 26,
+      "replyBytes": 130
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #20",
+      "reply": "Queued.\nContract #24 has been offered to you (@contract/show #24).\nContract #24 is active: every party has accepted.\nAgreed. Contract #24 carries it; your payment is escrowed and settles when the terms are met. Rosalind Qureshi-Mbeki signs for Occator Water & Propellant.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 277
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #31=2",
+      "reply": "Quote #21: 2 × 10.00cr = 20.00cr — good until 1792836544 (real time). It reserves nothing; take it up with +market/accept #21.",
+      "wallMs": 26,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #21",
+      "reply": "Queued.\nContract #25 has been offered to you (@contract/show #25).\nContract #25 is active: every party has accepted.\nAgreed. Contract #25 carries it; your payment is escrowed and settles when the terms are met. Dov Akintola signs for Belt Carriers' Cooperative.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 267
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan luna",
+      "reply": "Plan for Aitken Highport:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: metal concentrate 86 t (mass), water ice 73 t (packed volume), reaction mass 21 t (mass), voyage provisions 97 crew-days (mass and packed volume).\nPayload 59.2 t of 181 t.\nBurn 56 t (tank 59 t; 3 t left). Flip and burn at 0.69 m/s² (50 milli-g rated, throttle 1000‰): Δv 1243 km/s, peak 621 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 21 crew-days (locker 23; 2 left).\nPassage 20.8 IC days ≈ 8 min real; arrives about 09:17 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 645
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the R9a Relay Carrier.\nAirlock #432 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage winter morning\nAboard the R9a Relay Carrier (FPC-D-0403), docked at Ceres Freeport.",
+      "wallMs": 52,
+      "replyBytes": 644
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "The world already runs at 3600 IC seconds per real second.",
+      "wallMs": 52,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/undock luna",
+      "reply": "Queued.\nClearance filed for Aitken Highport: the plan burns 57 t of reaction mass and 21 crew-days; arrival in 20.9 IC days, about 09:18 UTC today.",
+      "wallMs": 26,
+      "replyBytes": 147
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/leave",
+      "reply": "You cycle the lock out into the Visiting Berth Gallery.\nVisiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #1 God#679 R6carol1f8127#684 Lunar entanglement foundry#685 Relay pair bf29605f531707ea half 1 (5 tonnes)#686 Relay pair bf29605f531707ea half 2 (5 tonnes)#687 Relay pair b5b720afbdace3c0 half 1 (5 tonnes)#431 R9a Relay Carrier Pressure Lobby <PL> pllobbyin winter morning",
+      "wallMs": 26,
+      "replyBytes": 947
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/load #685",
+      "reply": "Relay cargo #685 loaded (5 tonnes, one bay slot).",
+      "wallMs": 50,
+      "replyBytes": 49
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/load #686",
+      "reply": "Relay cargo #686 loaded (5 tonnes, one bay slot).",
+      "wallMs": 52,
+      "replyBytes": 49
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: structural alloy stock 86 t (mass), instrument boards, crated 40 t (packed volume), reaction mass 78 t (mass), voyage provisions 118 crew-days (mass and packed volume).\nPayload 12.1 t of 181 t.\nBurn 27 t (tank 2 t; 25 t short). Flip and burn at 0.82 m/s² (50 milli-g rated, throttle 1000‰): Δv 669 km/s, peak 335 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 10 crew-days (locker 2; 8 short).\nPassage 9.4 IC days ≈ 3 min real; arrives about 09:22 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 51,
+      "replyBytes": 669
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #28=28",
+      "reply": "Quote #22: 28 × 60.00cr = 1680.00cr — good until 1792837113 (real time). It reserves nothing; take it up with +market/accept #22.",
+      "wallMs": 26,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #22",
+      "reply": "Queued.\nContract #26 has been offered to you (@contract/show #26).\nContract #26 is active: every party has accepted.\nAgreed. Contract #26 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 50,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #32=10",
+      "reply": "Quote #23: 10 × 10.00cr = 100.00cr — good until 1792837115 (real time). It reserves nothing; take it up with +market/accept #23.",
+      "wallMs": 51,
+      "replyBytes": 131
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #23",
+      "reply": "Queued.\nContract #27 has been offered to you (@contract/show #27).\nContract #27 is active: every party has accepted.\nAgreed. Contract #27 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: structural alloy stock 86 t (mass), instrument boards, crated 40 t (packed volume), reaction mass 50 t (mass), voyage provisions 108 crew-days (mass and packed volume).\nPayload 40.1 t of 181 t.\nBurn 29 t (tank 30 t; 1 t left). Flip and burn at 0.74 m/s² (50 milli-g rated, throttle 1000‰): Δv 634 km/s, peak 317 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 10 crew-days (locker 12; 2 left).\nPassage 9.9 IC days ≈ 3 min real; arrives about 09:22 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 25,
+      "replyBytes": 668
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #28=2",
+      "reply": "Quote #24: 2 × 60.00cr = 120.00cr — good until 1792837116 (real time). It reserves nothing; take it up with +market/accept #24.",
+      "wallMs": 25,
+      "replyBytes": 130
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #24",
+      "reply": "Queued.\nContract #28 has been offered to you (@contract/show #28).\nContract #28 is active: every party has accepted.\nAgreed. Contract #28 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: structural alloy stock 86 t (mass), instrument boards, crated 40 t (packed volume), reaction mass 48 t (mass), voyage provisions 108 crew-days (mass and packed volume).\nPayload 42.1 t of 181 t.\nBurn 29 t (tank 32 t; 3 t left). Flip and burn at 0.73 m/s² (50 milli-g rated, throttle 1000‰): Δv 632 km/s, peak 316 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 10 crew-days (locker 12; 2 left).\nPassage 9.9 IC days ≈ 4 min real; arrives about 09:22 UTC today.\nWindow: today is the best departure in the next 30 IC days.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 668
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the R9a Relay Carrier.\nAirlock #432 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage winter dawn\nAboard the R9a Relay Carrier (FPC-D-0403), docked at Aitken Highport.",
+      "wallMs": 53,
+      "replyBytes": 642
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "The world already runs at 3600 IC seconds per real second.",
+      "wallMs": 26,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/undock deimos",
+      "reply": "Queued.\nClearance filed for Voltaire Anchorage: the plan burns 29 t of reaction mass and 11 crew-days; arrival in 10.1 IC days, about 09:23 UTC today.\nDone.",
+      "wallMs": 53,
+      "replyBytes": 156
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/leave",
+      "reply": "You cycle the lock out into the Visiting Berth Gallery.\nVisiting Berth Gallery #261 The gallery runs the length of the visiting cradles behind a row of thick ports, each framing a berth number, a boarding tube and a hull lashed down by four tie-downs. Deimos holds even less than Phobos, so a hull does not land here so much as settle, and the cradles keep what settles into them. The deck is a convention of painted chevrons; handlines run at shoulder height and every bench has a tether loop. The air is old scrubber air, cold off the tank steel, with new tether rubber in it. A berth board lists each cradle and its bond status. The pressure lobby is inward. #431 R9a Relay Carrier Pressure Lobby <PL> pllobbyin winter morning",
+      "wallMs": 26,
+      "replyBytes": 729
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/unload #685",
+      "reply": "Relay cargo #685 unloaded (5 tonnes, one bay slot).",
+      "wallMs": 50,
+      "replyBytes": 51
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#261",
+      "reply": "Visiting Berth Gallery #261 The gallery runs the length of the visiting cradles behind a row of thick ports, each framing a berth number, a boarding tube and a hull lashed down by four tie-downs. Deimos holds even less than Phobos, so a hull does not land here so much as settle, and the cradles keep what settles into them. The deck is a convention of painted chevrons; handlines run at shoulder height and every bench has a tether loop. The air is old scrubber air, cold off the tank steel, with new tether rubber in it. A berth board lists each cradle and its bond status. The pressure lobby is inward. #431 R9a Relay Carrier#678 R6bob1b16df#685 Relay pair bf29605f531707ea half 1 (5 tonnes) Pressure Lobby <PL> pllobbyin winter morning",
+      "wallMs": 51,
+      "replyBytes": 739
+    },
+    {
+      "actor": "God",
+      "line": "@create R9a Deimos Private Mount",
+      "reply": "Created: R9a Deimos Private Mount(#690).",
+      "wallMs": 52,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@chown #690=#678",
+      "reply": "Owner changed.",
+      "wallMs": 51,
+      "replyBytes": 14
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #690=#261",
+      "reply": "emit R9a Deimos Private Mount has arrived.\nTeleported.",
+      "wallMs": 26,
+      "replyBytes": 54
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/install #685=#690 org:11",
+      "reply": "Half #685 installed at #690. Pair private_bf29605f531707ea activates when both distinct stations are installed.",
+      "wallMs": 77,
+      "replyBytes": 111
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: reaction mass 77 t (mass), voyage provisions 119 crew-days (mass and packed volume).\nPayload 8.1 t of 181 t.\nBurn 1 t (tank 3 t; 2 t left). Flip and burn at 0.83 m/s² (50 milli-g rated, throttle 1000‰): Δv 10 km/s, peak 5 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 1 crew-days (locker 1; 0 left).\nPassage 0.1 IC days ≈ under a minute real; arrives about 09:27 UTC today.\nWindow: the best departure in the next 30 IC days is 2352-02-08 (in 8 IC days): under a minute and 1 t, under a minute and 0 t less than today.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 665
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #17=1",
+      "reply": "Quote #25: 1 × 60.00cr = 60.00cr — good until 1792837645 (real time). It reserves nothing; take it up with +market/accept #25.",
+      "wallMs": 26,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #25",
+      "reply": "Queued.\nContract #29 has been offered to you (@contract/show #29).\nContract #29 is active: every party has accepted.\nAgreed. Contract #29 carries it; your payment is escrowed and settles when the terms are met. Caspian Abiodun-Fleck signs for Republic Strategic Reserve.\nDone.",
+      "wallMs": 52,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #18=2",
+      "reply": "Quote #26: 2 × 10.00cr = 20.00cr — good until 1792837646 (real time). It reserves nothing; take it up with +market/accept #26.",
+      "wallMs": 25,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #26",
+      "reply": "Queued.\nContract #30 has been offered to you (@contract/show #30).\nContract #30 is active: every party has accepted.\nAgreed. Contract #30 carries it; your payment is escrowed and settles when the terms are met. Caspian Abiodun-Fleck signs for Republic Strategic Reserve.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan stickney",
+      "reply": "Plan for Stickney Yards:\nCargo: 0/86 t · 0.0/103 m³ — 86 t free and 103.2 m³ free.\nRoom on this board: reaction mass 76 t (mass), voyage provisions 117 crew-days (mass and packed volume).\nPayload 9.1 t of 181 t.\nBurn 1 t (tank 4 t; 3 t left). Flip and burn at 0.83 m/s² (50 milli-g rated, throttle 1000‰): Δv 9 km/s, peak 5 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 1 crew-days (locker 3; 2 left).\nPassage 0.1 IC days ≈ under a minute real; arrives about 09:27 UTC today.\nWindow: the best departure in the next 30 IC days is 2352-02-01 (in 1 IC days): under a minute and 1 t, under a minute and 0 t less than today.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 664
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the R9a Relay Carrier.\nAirlock #432 A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage. Inner Hatch <I> innerinpassage winter morning\nAboard the R9a Relay Carrier (FPC-D-0403), docked at Voltaire Anchorage.",
+      "wallMs": 26,
+      "replyBytes": 648
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "The world already runs at 3600 IC seconds per real second.",
+      "wallMs": 50,
+      "replyBytes": 58
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/undock stickney",
+      "reply": "Queued.\nClearance filed for Stickney Yards: the plan burns 1 t of reaction mass and 1 crew-days; arrival in 0.0 IC days, about 09:28 UTC today.\nDone.",
+      "wallMs": 26,
+      "replyBytes": 149
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/leave",
+      "reply": "You cycle the lock out into the Visiting Berth Gallery.\nVisiting Berth Gallery #156 The gallery runs the length of the visiting berths behind a wall of thick ports, each framing a cradle, a boarding tube and the stencilled number of the berth beyond. Handlines are strung the full length at shoulder height; Phobos holds nothing down, and the deck is a convention painted in yellow arrows. The air carries the cold-metal tang of a lock that has just cycled and a faint ozone of welders somewhere out in the crater. A berth board lists what sits in each cradle, who it answers to and what it owes. The pressure lobby is inward, and everything else is through the lobby. #393 Relay Dray 671834#412 Mail Dray 2ae773#431 R9a Relay Carrier Pressure Lobby <PL> pllobbyin winter afternoon",
+      "wallMs": 51,
+      "replyBytes": 781
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/unload #686",
+      "reply": "Relay cargo #686 unloaded (5 tonnes, one bay slot).",
+      "wallMs": 51,
+      "replyBytes": 51
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#156",
+      "reply": "Visiting Berth Gallery #156 The gallery runs the length of the visiting berths behind a wall of thick ports, each framing a cradle, a boarding tube and the stencilled number of the berth beyond. Handlines are strung the full length at shoulder height; Phobos holds nothing down, and the deck is a convention painted in yellow arrows. The air carries the cold-metal tang of a lock that has just cycled and a faint ozone of welders somewhere out in the crater. A berth board lists what sits in each cradle, who it answers to and what it owes. The pressure lobby is inward, and everything else is through the lobby. #393 Relay Dray 671834#412 Mail Dray 2ae773#431 R9a Relay Carrier#678 R6bob1b16df#686 Relay pair bf29605f531707ea half 2 (5 tonnes) Pressure Lobby <PL> pllobbyin winter afternoon",
+      "wallMs": 25,
+      "replyBytes": 791
+    },
+    {
+      "actor": "God",
+      "line": "@create R9a Phobos Private Mount",
+      "reply": "Created: R9a Phobos Private Mount(#691).",
+      "wallMs": 51,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@chown #691=#678",
+      "reply": "Owner changed.",
+      "wallMs": 52,
+      "replyBytes": 14
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #691=#156",
+      "reply": "emit R9a Phobos Private Mount has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 54
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relaypair/install #686=#691 org:11",
+      "reply": "Local cargo title, owned empty mount and operator authority are required.",
+      "wallMs": 51,
+      "replyBytes": 73
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/install #686=#691 org:11",
+      "reply": "Half #686 installed at #691. Pair private_bf29605f531707ea activates when both distinct stations are installed.",
+      "wallMs": 51,
+      "replyBytes": 111
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 35.",
+      "wallMs": 50,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#261",
+      "reply": "Teleported.",
+      "wallMs": 50,
+      "replyBytes": 11
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@mail/quick #679=R9a private letter/Manufactured freight bypasses Luna.",
+      "reply": "MAIL: Message 103 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 25,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail",
+      "reply": "--- MAIL: inbox ---\n  1 U R6alice41b953  R6a reply chain Oct 23\n  2 U R6bob1b16df    Re: R6a reply chain Oct 23\n  3 U R6alice41b953  R6a reply chain Oct 23\n  4 U R6bob1b16df    Re: R6a reply chain Oct 23\n  5 U R6bob1b16df    R9a private letter Oct 24\n--- 5 messages, 5 unread ---",
+      "wallMs": 25,
+      "replyBytes": 279
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/discover #686",
+      "reply": "Discovery filed and consumed by anti-proliferation front #1.",
+      "wallMs": 26,
+      "replyBytes": 60
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relaypair/discover #686",
+      "reply": "This discovery is already recorded in anti-proliferation front #1.",
+      "wallMs": 51,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 47 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4049 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 855
+    }
+  ],
+  "milestones": [
+    {
+      "test": "paid-production-running",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 926593,
+      "fresh": 927421
+    },
+    {
+      "test": "output-consumed-before-title-collection",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 927421,
+      "fresh": 932102
+    },
+    {
+      "test": "paid-unique-output-and-restart",
+      "order": {
+        "beneficiary": {
+          "Object": 678
+        },
+        "budget_account": 27,
+        "capacity_revision": 1,
+        "destination": {
+          "endpoint": 127,
+          "kind": "endpoint"
+        },
+        "facility": 684,
+        "facility_slots": 1,
+        "holds": [
+          16
+        ],
+        "id": "13774646897821550570",
+        "material_source": 127,
+        "pinned": {
+          "inputs": [
+            {
+              "commodity": "relay_blank",
+              "units": 1
+            },
+            {
+              "commodity": "instrument_boards",
+              "units": 2
+            }
+          ],
+          "outputs": [
+            {
+              "commodity": "relay_pair",
+              "units": 1
+            }
+          ],
+          "requires": [
+            "relay.entanglement"
+          ],
+          "work_units": 120
+        },
+        "policy_revision": 1,
+        "quantity": 1,
+        "recipe": {
+          "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6",
+          "id": "private_pair",
+          "pack": "tacsim.relay.manufacture",
+          "version": 1
+        },
+        "requester": {
+          "Object": 678
+        },
+        "reservations": [
+          "cafe5055e8b0606535f070feefd89cd2b76421140c39c734e8a5c0994ac577b6",
+          "564ef03db1efeaeb80e88dd42b4f67b18bde9151c8adaa147ceb6a8177df0661",
+          "2275f57f796852ad01c965ed85e157050044b9b3ae4bb288a2a806a9c085a4c6"
+        ],
+        "revision": 125,
+        "schedule": {
+          "clock_policy": "production",
+          "progress_units": 120,
+          "schedule": "72a3cb7803e5eeecf02f9d7864cbdd128392a6ba8565bfe332c74025454ae0c9",
+          "started": {
+            "at": 74168635573,
+            "clock": {
+              "generation": 45,
+              "kind": "world_ic"
+            }
+          },
+          "total_units": 120
+        },
+        "state": {
+          "commit": "a7d3140b3af1e76337312fe106409825",
+          "kind": "completed"
+        },
+        "visibility": "Parties"
+      },
+      "lot": {
+        "commodity": "relay_pair",
+        "depth": 0,
+        "endpoint": 127,
+        "grade": 0,
+        "id": "9207545661217630678",
+        "lineage": {
+          "kind": "origin",
+          "source": {
+            "id": "wo/bf29605f531707ea",
+            "kind": "workorder.output",
+            "provider": "industry",
+            "revision": 1
+          }
+        },
+        "quantity": 1,
+        "revision": 1
+      },
+      "halves": {
+        "discovery": null,
+        "halves": [
+          685,
+          686
+        ],
+        "installed": [
+          null,
+          null
+        ],
+        "operator": null,
+        "titled": [
+          true,
+          true
+        ]
+      },
+      "total": "0"
+    },
+    {
+      "test": "second-paid-pair-for-negative-lifecycle",
+      "order": {
+        "beneficiary": {
+          "Object": 678
+        },
+        "budget_account": 27,
+        "capacity_revision": 1,
+        "destination": {
+          "endpoint": 127,
+          "kind": "endpoint"
+        },
+        "facility": 684,
+        "facility_slots": 1,
+        "holds": [
+          18
+        ],
+        "id": "13093970380776596416",
+        "material_source": 127,
+        "pinned": {
+          "inputs": [
+            {
+              "commodity": "relay_blank",
+              "units": 1
+            },
+            {
+              "commodity": "instrument_boards",
+              "units": 2
+            }
+          ],
+          "outputs": [
+            {
+              "commodity": "relay_pair",
+              "units": 1
+            }
+          ],
+          "requires": [
+            "relay.entanglement"
+          ],
+          "work_units": 120
+        },
+        "policy_revision": 1,
+        "quantity": 1,
+        "recipe": {
+          "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6",
+          "id": "private_pair",
+          "pack": "tacsim.relay.manufacture",
+          "version": 1
+        },
+        "requester": {
+          "Object": 678
+        },
+        "reservations": [
+          "990533904a5b5837b78acfeb669383790fc902edeb570bc42a8cad43585f0d8b",
+          "4b8ba6e8da197b35c3d336ca6f7c7d2fb31351151fcaeb910f59b3203992059b",
+          "f34af40140398708d5020a7fd0e51652437ef85a2f6743650ef2a68c94b2de34"
+        ],
+        "revision": 124,
+        "schedule": {
+          "clock_policy": "production",
+          "progress_units": 120,
+          "schedule": "991e5648357e438574adb6154d99e732ba8519546de59414cba0cb5874724768",
+          "started": {
+            "at": 74169175573,
+            "clock": {
+              "generation": 46,
+              "kind": "world_ic"
+            }
+          },
+          "total_units": 120
+        },
+        "state": {
+          "commit": "24b9b4cce5df004fa03db98c5fbf7a68",
+          "kind": "completed"
+        },
+        "visibility": "Parties"
+      },
+      "lot": {
+        "commodity": "relay_pair",
+        "depth": 0,
+        "endpoint": 127,
+        "grade": 0,
+        "id": "13598280239331093087",
+        "lineage": {
+          "kind": "origin",
+          "source": {
+            "id": "wo/b5b720afbdace3c0",
+            "kind": "workorder.output",
+            "provider": "industry",
+            "revision": 1
+          }
+        },
+        "quantity": 1,
+        "revision": 1
+      },
+      "halves": {
+        "discovery": null,
+        "halves": [
+          687,
+          688
+        ],
+        "installed": [
+          null,
+          null
+        ],
+        "operator": null,
+        "titled": [
+          true,
+          true
+        ]
+      },
+      "total": "0"
+    },
+    {
+      "test": "stolen-and-destroyed-cargo",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 932102,
+      "fresh": 937098
+    },
+    {
+      "test": "title-refusal-and-loss-remain-after-restart",
+      "bad": {
+        "discovery": null,
+        "halves": [
+          687,
+          688
+        ],
+        "installed": [
+          null,
+          null
+        ],
+        "operator": null,
+        "titled": [
+          true,
+          true
+        ]
+      },
+      "assets": [
+        {
+          "acquisition": null,
+          "assignment": null,
+          "catalog": null,
+          "encumbrances": [
+            {
+              "claimant": {
+                "Object": 678
+              },
+              "kind": "Disputed",
+              "reason": "R9a stolen freight"
+            }
+          ],
+          "frozen": false,
+          "frozen_reason": null,
+          "last_journal_seq": 99,
+          "lifecycle": "Active",
+          "maintenance_account": null,
+          "object": 687,
+          "revision": 2,
+          "scope": null,
+          "stolen": {
+            "at": 1792832517,
+            "by": {
+              "Object": 678
+            },
+            "reason": "R9a stolen freight",
+            "visibility": "public"
+          },
+          "title_owner": {
+            "Object": 678
+          }
+        },
+        {
+          "acquisition": null,
+          "assignment": null,
+          "catalog": null,
+          "encumbrances": [],
+          "frozen": true,
+          "frozen_reason": "object-destroyed",
+          "last_journal_seq": 100,
+          "lifecycle": "WrittenOff",
+          "maintenance_account": null,
+          "object": 688,
+          "revision": 2,
+          "scope": null,
+          "stolen": null,
+          "title_owner": {
+            "Object": 678
+          }
+        }
+      ]
+    },
+    {
+      "test": "departure-luna",
+      "hull": 431,
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74171587573,
+        "hull": 431,
+        "manifest": {
+          "cargo": {},
+          "locker": 23,
+          "occupants": 1,
+          "tank": 59
+        },
+        "order": null,
+        "payload_kg": 59192,
+        "plan": {
+          "burn_t": 57,
+          "crew_days": 21,
+          "depart_ic": 74171587573,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "luna",
+              "dist_km": 562544683,
+              "secs": 1805915,
+              "t0": 74171587573,
+              "t1": 74173393488,
+              "to": "aitken_highport"
+            }
+          ],
+          "route": "ceres_aitken",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 1805915
+        },
+        "route": "ceres_aitken",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 12,
+        "seq": 1,
+        "unit_definition": "8dc0630805bf3fc4a01b43d78d51e8e43e408af5917e302f2b16fd417130bd87"
+      },
+      "expectedRealSeconds": 499
+    },
+    {
+      "test": "arrival-luna",
+      "location": 202
+    },
+    {
+      "test": "two-titled-halves-in-real-passage",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 937098,
+      "fresh": 942749
+    },
+    {
+      "test": "departure-deimos",
+      "hull": 431,
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74173650373,
+        "hull": 431,
+        "manifest": {
+          "cargo": {},
+          "locker": 12,
+          "occupants": 1,
+          "tank": 32
+        },
+        "order": null,
+        "payload_kg": 42148,
+        "plan": {
+          "burn_t": 29,
+          "crew_days": 11,
+          "depart_ic": 74173650373,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "deimos",
+              "dist_km": 139921574,
+              "secs": 874631,
+              "t0": 74173650373,
+              "t1": 74174525004,
+              "to": "voltaire_anchorage"
+            }
+          ],
+          "route": "aitken_voltaire",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 874631
+        },
+        "route": "aitken_voltaire",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 12,
+        "seq": 2,
+        "unit_definition": "8dc0630805bf3fc4a01b43d78d51e8e43e408af5917e302f2b16fd417130bd87"
+      },
+      "expectedRealSeconds": 236
+    },
+    {
+      "test": "arrival-deimos",
+      "location": 261
+    },
+    {
+      "test": "first-installed-half-without-working-link",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 942749,
+      "fresh": 945917
+    },
+    {
+      "test": "departure-stickney",
+      "hull": 431,
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74175558373,
+        "hull": 431,
+        "manifest": {
+          "cargo": {},
+          "locker": 3,
+          "occupants": 1,
+          "tank": 4
+        },
+        "order": null,
+        "payload_kg": 9112,
+        "plan": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "depart_ic": 74175558373,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "phobos",
+              "dist_km": 14105,
+              "secs": 8252,
+              "t0": 74175558373,
+              "t1": 74175566625,
+              "to": "stickney_yards"
+            }
+          ],
+          "route": "voltaire_stickney",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 8252
+        },
+        "route": "voltaire_stickney",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 12,
+        "seq": 3,
+        "unit_definition": "8dc0630805bf3fc4a01b43d78d51e8e43e408af5917e302f2b16fd417130bd87"
+      },
+      "expectedRealSeconds": -1
+    },
+    {
+      "test": "arrival-stickney",
+      "location": 156
+    },
+    {
+      "test": "complete-private-installation",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 945917,
+      "fresh": 946061
+    },
+    {
+      "test": "anti-proliferation-discovery-consumed",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 946061,
+      "fresh": 946108
+    },
+    {
+      "test": "private-mail-with-luna-disabled-and-once-only-discovery",
+      "pair": {
+        "capacity_units_per_ic_second": 1,
+        "class_policy": "private",
+        "halves": [
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_bf29605f531707ea_half_0",
+            "node": "private_bf29605f531707ea_0",
+            "object": 685,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_bf29605f531707ea_half_1",
+            "node": "private_bf29605f531707ea_1",
+            "object": 686,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      },
+      "envelope": null,
+      "discovery": 1,
+      "total": "0",
+      "expectedTotal": "0",
+      "foundry": {
+        "facility": 684,
+        "machines": {
+          "13093970380776596416": {
+            "discovery": null,
+            "halves": [
+              687,
+              688
+            ],
+            "installed": [
+              null,
+              null
+            ],
+            "operator": null,
+            "titled": [
+              true,
+              true
+            ]
+          },
+          "13774646897821550570": {
+            "discovery": 1,
+            "halves": [
+              685,
+              686
+            ],
+            "installed": [
+              690,
+              691
+            ],
+            "operator": 11,
+            "titled": [
+              true,
+              true
+            ]
+          }
+        },
+        "owner": 11,
+        "place": 202,
+        "vault": 127
+      }
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T08:53:44.465Z",
+      "gatewayPid": 926580,
+      "serverPid": 926593,
+      "serverSha256": "fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca"
+    },
+    {
+      "at": "2026-10-24T09:04:35.624Z",
+      "gatewayPid": 926580,
+      "serverPid": 932102,
+      "serverSha256": "fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca"
+    },
+    {
+      "at": "2026-10-24T09:08:59.039Z",
+      "gatewayPid": 926580,
+      "serverPid": 937098,
+      "serverSha256": "fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca"
+    },
+    {
+      "at": "2026-10-24T09:27:20.910Z",
+      "gatewayPid": 926580,
+      "serverPid": 942749,
+      "serverSha256": "fbd6d7bedda831b5adefe664a30415be69bc1f0d0317fd4f9445f072eb8cbaca"
+    }
+  ],
+  "resumes": [
+    {
+      "at": "2026-10-24T09:04:35.730Z",
+      "reason": "Use builder-created empty sites with player ownership; continue the same paid lots, halves, titles and world."
+    },
+    {
+      "at": "2026-10-24T09:08:59.143Z",
+      "reason": "Refused before burning: disembark, add supply margin and continue the same carrier."
+    },
+    {
+      "at": "2026-10-24T09:27:21.014Z",
+      "reason": "Place the existing empty player-owned mount in the arrival room after the installation guard refused its inventory location."
+    }
+  ],
+  "passed": true
+}

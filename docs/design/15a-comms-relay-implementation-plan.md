@@ -11,7 +11,7 @@ passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
 Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
 R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-implemented and its dev1 gate passed. R6b, R3, R4, R7, R8a and R8b have now passed their live gates; the remaining authorized train continues with R9a.
+implemented and its dev1 gate passed. R6b, R3, R4, R7, R8a, R8b and R9a have now passed their live gates; the remaining authorized train continues with R9b.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -445,6 +445,15 @@ Verify conservation, title/installation authority, interruption, stolen/destroye
 cargo and restart at manufacture/install boundaries. Consume the discovery event
 in the anti-proliferation front once. No free pair mint or staff-only recipe path
 counts as the finished product. **Stop.**
+
+**Result (2026-10-24):** implemented and dev1 gate passed: two paid work orders,
+finite material/output conservation, three real freight legs carrying 10 tonnes of
+relay cargo, independent Deimos–Phobos installation and mail with Luna disabled,
+once-only discovery, seven SIGKILL boundaries, fresh boot/reboot and baseline
+restoration. Linux ran 199 targeted tests with no failures or skips; Clippy,
+release/web builds and checks passed. See [15b](15b-comms-relay-cut-notes.md) and
+[acceptance metadata](evidence/relay-r9a-2026-10-24/metadata.json). Normal CI runs
+after push; the owner monitors it while the authorized train continues to R9b.
 
 ### Gate 12 — R9b: move a half with a hull
 

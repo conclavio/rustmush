@@ -595,8 +595,32 @@ pub fn publish_front(
     title: &str,
     draft: mush_canon::CanonDraft,
 ) -> Result<FrontId, String> {
-    if title.is_empty() || title.len() > 128 {
-        return Err("Invalid front title.".into());
+    publish_front_clock(
+        ctx,
+        operator,
+        title,
+        "Public accounting demanded",
+        4,
+        Some("scene.concluded"),
+        "The Exchange must account publicly for its declared congestion.",
+        draft,
+    )
+}
+
+/// Content-authored front clock. Planning precedes its canon append.
+#[allow(clippy::too_many_arguments)]
+fn publish_front_clock(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    title: &str,
+    clock_title: &str,
+    segments: u8,
+    advance_on: Option<&str>,
+    consequence: &str,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    if title.is_empty() || title.len() > 128 || clock_title.len() > 128 || segments == 0 {
+        return Err("Invalid front title/clock.".into());
     }
     let org_name = ctx
         .w
@@ -660,12 +684,12 @@ pub fn publish_front(
         id: clock_id,
         front: id,
         faction: faction.id,
-        title: "Public accounting demanded".into(),
-        segments: 4,
+        title: clock_title.into(),
+        segments,
         filled: 1,
         visibility: Visibility::Public,
-        advance_on: Some("scene.concluded".into()),
-        consequence: "The Exchange must account publicly for its declared congestion.".into(),
+        advance_on: advance_on.map(Into::into),
+        consequence: consequence.into(),
         on_complete_control: None,
         completed: false,
     };
@@ -765,4 +789,67 @@ pub fn condemn_relay_loss(
     }
     ctx.out.pin_deferred();
     Ok(())
+}
+
+/// Consume an authenticated private-pair discovery into the Concord front.
+/// The producer's durable pair receipt is the once-only gate, in the same batch.
+pub fn record_relay_discovery(
+    ctx: &mut Ctx<'_>,
+    concord: mush_org::OrgId,
+    mut draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    const TITLE: &str = "The Concord's anti-proliferation campaign";
+    let faction = ctx
+        .w
+        .module_state::<FactionState>()
+        .and_then(|s| s.factions.values().find(|f| f.org == Some(concord)))
+        .map(|f| f.id);
+    let front = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| {
+            s.fronts
+                .values()
+                .find(|f| Some(f.faction) == faction && f.title == TITLE)
+        })
+        .cloned();
+    let Some(front) = front else {
+        return publish_front_clock(
+            ctx,
+            concord,
+            TITLE,
+            "Private entanglement networks discovered",
+            8,
+            None,
+            "The Concord orders a general interdiction of unauthorized entanglement foundries.",
+            draft,
+        );
+    };
+    let mut clock = ctx
+        .w
+        .module_state::<SimState>()
+        .and_then(|s| s.clocks.values().find(|c| c.front == front.id))
+        .cloned()
+        .ok_or("Anti-proliferation clock missing")?;
+    let completed = clock.advance(1);
+    if completed {
+        draft.summary.push_str(&format!(" {}", clock.consequence));
+    }
+    if mush_canon::commit(ctx, draft).is_none() {
+        return Err("Discovery canon unavailable".into());
+    }
+    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+        s.clocks.insert(clock.id, clock.clone());
+    }
+    sim::persist_clock(ctx.out, &clock);
+    if completed {
+        let mut resolved = front.clone();
+        resolved.resolved = true;
+        if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+            s.fronts.insert(resolved.id, resolved.clone());
+        }
+        sim::persist_front(ctx.out, &resolved);
+    }
+    ctx.out.pin_deferred();
+    Ok(front.id)
 }

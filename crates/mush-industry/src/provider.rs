@@ -3597,13 +3597,18 @@ impl IndustryProvider {
             next = next
                 .with_state(WorkOrderState::AwaitingDelivery)
                 .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-            // R1: production is finished — the order leaves `Running`, so no more
-            // occurrences are wanted. Tear the schedule and job down in this same
-            // bundle, or the next cadence tick refuses (state != Running) and
-            // freezes the world.
-            self.families
-                .tear_down_production(txn, production_schedule_id(id)?)
-                .map_err(|source| refuse(&source))?;
+            // The kernel already seeded this occurrence's completed cursor.
+            // Deleting it here would be a second mutation of the same key.
+            // Delivery/cancellation may later prune that terminal cursor.
+            let sid = production_schedule_id(id)?;
+            if txn
+                .get(&self.families.jobs, &sid)
+                .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+                .is_some()
+            {
+                txn.remove(&self.families.jobs, &sid)
+                    .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+            }
         }
         self.families
             .put_work_order(txn, order.revision(), next)
@@ -4341,6 +4346,20 @@ struct ProductionScheduleAdapter {
 }
 
 impl ScheduleActionAdapter for ProductionScheduleAdapter {
+    fn completes(&self, advance: &ScheduleAdvance, engine: &Engine) -> bool {
+        let Ok(Some(job)) = engine.action_state().get(&self.jobs, &advance.schedule()) else {
+            return false;
+        };
+        let Ok(Some(order)) = engine.action_state().get(&self.work_orders, &job.order()) else {
+            return false;
+        };
+        let Some(progress) = order.schedule() else {
+            return false;
+        };
+        let units = (advance.occurrences().len() as u64).saturating_mul(job.units_per_occurrence());
+        progress.progress_units().saturating_add(units) >= progress.total_units()
+    }
+
     fn plan(
         &self,
         action: &DefinitionRef,

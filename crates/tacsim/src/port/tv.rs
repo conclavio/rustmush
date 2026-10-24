@@ -2402,7 +2402,9 @@ fn status_lines(
                 // unlisted rig after the numbered lines.
                 Some(i) if only.is_some() => {
                     if let Some(rig) = unlisted.get(i) {
-                        lines.push(RIG_UNLISTED.replace("{mark}", &rig.mark));
+                        lines.push(if crate::relay_foundry::known_cargo(w,rig.tv){
+                format!("Relay cargo #{}: 5 tonnes, one bay slot; unload with +relaypair/unload {} at the dock.",rig.tv.0,rig.tv)
+            }else{RIG_UNLISTED.replace("{mark}", &rig.mark)});
                     }
                 }
                 Some(_) => {}
@@ -2448,7 +2450,9 @@ fn status_lines(
     }
     if only.is_none() {
         for rig in unlisted {
-            lines.push(RIG_UNLISTED.replace("{mark}", &rig.mark));
+            lines.push(if crate::relay_foundry::known_cargo(w,rig.tv){
+                format!("Relay cargo #{}: 5 tonnes, one bay slot; unload with +relaypair/unload {} at the dock.",rig.tv.0,rig.tv)
+            }else{RIG_UNLISTED.replace("{mark}", &rig.mark)});
         }
     }
     // 4. On a site's pad, SM.2's stores line (the SM.2 note deferred it here).

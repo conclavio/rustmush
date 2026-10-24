@@ -199,3 +199,49 @@ receives it unless the pool exists. A new attributed loss grants one attention t
 affiliated factions with that pool, reduces an existing legitimacy rating by one,
 and advances clocks watching `relay.node_destroyed`. Replaying the loss grants
 nothing. No attention-seeking faction is seeded.
+
+
+## Building a private pair
+
+`+relaypair` locates the lunar entanglement foundry and its input/output vault.
+Running it requires the foundry organization's authority and `vault.withdraw`
+on that vault's scope. `/stock` issues the world's eight original relay blanks
+once. Instrument boards must be bought from real stock or shipped in.
+
+Use ordinary industry commands. Substitute the numbers shown by `+relaypair`
+and your own funded credit account:
+
+```
+@wo/draft tacsim.relay.manufacture/private_pair/1=<facility> 1 <account> <vault> <vault>
+@wo/submit <work-order>
+@wo/show <work-order>
+@wo/deliver <work-order>
+@inv/lots <vault> relay_pair
++relaypair/claim <work-order>=<output-lot>
++relaypair/collect <work-order>
+```
+
+Each pair consumes one relay blank, two instrument boards and 120 hourly IC
+production occurrences. Delivery and the industry's budget settlement must finish
+before claiming the output. Claim consumes that exact industrial lot once;
+collection gives its owner two uniquely titled machines. Repeating collection or
+restarting never replaces missing, stolen or destroyed machinery.
+
+Each half weighs five tonnes and occupies one checked vehicle-bay slot. A Dray-P
+can carry two. Stand at the dock gallery with the actual carrier and cargo, then
+use `+relaypair/load #half`. Sail through the ordinary ship workflow and use
+`+relaypair/unload #half` at the destination gallery. Cargo cannot be loaded or
+unloaded during passage or while clearance is filed. Ordinary carry and teleport
+commands cannot bypass this workflow; `+tv` includes cargo occupying the bay.
+
+At each destination, supply an owned mounting object in the same room as the
+unloaded half. `+relaypair/install #half=#mount org:<operator-id>` requires cargo
+title and authority to represent an independent operator. The two stations must
+occupy distinct places. The first installation survives restart but provides no
+link; the second activates the pair at one unit per IC second, compared with the
+Exchange's eight. Each station covers its own room and uses its operator's policy.
+Its power and structural loss follow the ordinary installed-station rules.
+
+`+relaypair/discover #half` requires physical inspection of a completed private
+installation. It files intelligence and advances the Concord's anti-proliferation
+front once per pair. Repeated inspections and restarts do not advance it again.

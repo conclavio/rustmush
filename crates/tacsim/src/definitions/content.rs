@@ -843,6 +843,13 @@ pub fn lane_packs() -> Result<Vec<mush_content::Pack>, String> {
 pub fn game_seed_sources() -> Vec<PackSource> {
     LANE_SOURCES
         .iter()
+        .chain(
+            [(
+                "relays/manufacture-v1.json",
+                include_str!("../../content/relays/manufacture-v1.json"),
+            )]
+            .iter(),
+        )
         .map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),
             bytes: (*bytes).to_string(),

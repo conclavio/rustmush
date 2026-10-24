@@ -397,3 +397,21 @@ writer = "tacsim"
 ns = "propagation"
 declared_by = "tacsim"
 reason = "R8 finite Exchange capitalization installs the checked relay market through the propagation owner API at boot."
+
+[[delegation]]
+writer = "tacsim"
+ns = "industry"
+declared_by = "tacsim"
+reason = "R9 authored lunar facility installation through the industry owner API."
+
+[[delegation]]
+writer = "tacsim"
+ns = "faction"
+declared_by = "tacsim"
+reason = "R9 authenticated private relay discovery advances the Concord front through its owner API."
+
+[[delegation]]
+writer = "tacsim"
+ns = "npc"
+declared_by = "tacsim"
+reason = "R9 physical private relay inspection files its knowledge observation through the NPC owner API."

@@ -187,8 +187,13 @@ pub fn register(
         .get(crate::port::site::SITE_WORK_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the site work's outcome did not register"))?;
+    let relay_outcome = outcome_refs
+        .get(crate::relay_foundry::OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("relay fabrication outcome missing"))?;
     let actions = action_descriptors(
         &stock_outcome,
+        &relay_outcome,
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
         &chart_forget_outcome,
@@ -357,7 +362,25 @@ pub fn register(
         }
         _ => None,
     };
+    let relay_fabricate = if let (Some(action), Some(inventory)) = (
+        action_refs.get(crate::relay_foundry::ACTION).cloned(),
+        inventory_families.clone(),
+    ) {
+        reg.action_provider(
+            action.clone(),
+            crate::relay_foundry::Provider {
+                action: action.clone(),
+                outcome: relay_outcome,
+                inventory,
+                book: port_families.relay_fabrications.clone(),
+            },
+        )?;
+        Some(action)
+    } else {
+        None
+    };
     reg.state(PortHandles {
+        relay_fabricate,
         families: port_families,
         inventory: inventory_families,
         probe,
@@ -404,6 +427,11 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 /// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "outcome",
+            crate::relay_foundry::OUTCOME,
+            json!({"fields":["actor","order","op"]}),
+        )?,
         descriptor(
             "outcome",
             crate::port::stock::STOCK_OUTCOME,
@@ -455,6 +483,7 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 /// registered (a test world); one validator per kind for the crate.
 fn action_descriptors(
     stock_outcome: &DefinitionRef,
+    relay_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
     chart_forget_outcome: &DefinitionRef,
@@ -462,6 +491,12 @@ fn action_descriptors(
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "action",
+            crate::relay_foundry::ACTION,
+            json!({"subject":"self_actor","targets":0,"family":crate::relay_foundry::FAMILY}),
+        )?
+        .with_references(vec![relay_outcome.clone()]),
         descriptor(
             "action",
             crate::port::stock::STOCK_ACTION,

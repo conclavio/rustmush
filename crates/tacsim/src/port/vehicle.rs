@@ -777,6 +777,18 @@ pub(crate) fn carried_rigs(
     let pool_unit = view.port.def.vehicles.as_ref().map(|v| v.unit.clone());
     let mut out = Vec::with_capacity(rigs.len());
     for rig in rigs {
+        if crate::relay_foundry::cargo(w, rig.tv) {
+            out.push(CarriedRig {
+                tv: rig.tv.0,
+                dry_kg: crate::relay_foundry::HALF_KG,
+                hopper: None,
+                goods: Vec::new(),
+            });
+            continue;
+        }
+        if crate::relay_foundry::known_cargo(w, rig.tv) {
+            return Err(format!("relay cargo #{} is unavailable", rig.tv.0));
+        }
         let unit = crate::port::hull::live_unit_id(w, rig.tv)
             .or_else(|| pool_unit.clone())
             .ok_or_else(|| format!("rig #{} has no unit", rig.tv.0))?;

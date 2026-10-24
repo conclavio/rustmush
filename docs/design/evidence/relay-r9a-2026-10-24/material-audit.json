@@ -1,0 +1,527 @@
+{
+  "passed": true,
+  "at": 1792833728.854405,
+  "materials": {
+    "relay_blank": {
+      "scalar": {
+        "current": 6,
+        "maximum": 1000000000000,
+        "minimum": 0,
+        "revision": 4
+      },
+      "reservations": {
+        "id": "9b7bbe508f9aa952a32154c87de86838a103e0b675e4948ffb933728e35b8f39",
+        "records": [
+          {
+            "amount": 1,
+            "expires": {
+              "at": 74169780373,
+              "clock": {
+                "generation": 46,
+                "kind": "world_ic"
+              }
+            },
+            "holder": {
+              "epoch": 0,
+              "key": {
+                "kind": "deterministic",
+                "value": "90f56a0eb7f175558b30d061dc6846d9dde86e423490f87ef6396b61d97d6e4b"
+              },
+              "scope": {
+                "namespace": "industry",
+                "owner": "industry",
+                "principal": {
+                  "class": "workorder",
+                  "id": "wob5b720afbdace3c0",
+                  "kind": "scoped",
+                  "owner": "industry"
+                }
+              }
+            },
+            "id": "990533904a5b5837b78acfeb669383790fc902edeb570bc42a8cad43585f0d8b",
+            "owner": "inventory",
+            "resource": {
+              "id": "relay_blank",
+              "owner": "inventory",
+              "subject": {
+                "class": "inventory.endpoint",
+                "id": "v127",
+                "kind": "scoped",
+                "owner": "inventory"
+              }
+            },
+            "revision": 2,
+            "state": {
+              "commit": "24b9b4cce5df004fa03db98c5fbf7a68",
+              "kind": "consumed"
+            }
+          },
+          {
+            "amount": 1,
+            "expires": {
+              "at": 74169240373,
+              "clock": {
+                "generation": 45,
+                "kind": "world_ic"
+              }
+            },
+            "holder": {
+              "epoch": 0,
+              "key": {
+                "kind": "deterministic",
+                "value": "92efae3a9a3b4541374131161d7dcfa64ba9136614ea46bcef86a3792a3a1f6c"
+              },
+              "scope": {
+                "namespace": "industry",
+                "owner": "industry",
+                "principal": {
+                  "class": "workorder",
+                  "id": "wobf29605f531707ea",
+                  "kind": "scoped",
+                  "owner": "industry"
+                }
+              }
+            },
+            "id": "cafe5055e8b0606535f070feefd89cd2b76421140c39c734e8a5c0994ac577b6",
+            "owner": "inventory",
+            "resource": {
+              "id": "relay_blank",
+              "owner": "inventory",
+              "subject": {
+                "class": "inventory.endpoint",
+                "id": "v127",
+                "kind": "scoped",
+                "owner": "inventory"
+              }
+            },
+            "revision": 3,
+            "state": {
+              "commit": "a7d3140b3af1e76337312fe106409825",
+              "kind": "consumed"
+            }
+          }
+        ],
+        "resource": {
+          "id": "relay_blank",
+          "owner": "inventory",
+          "subject": {
+            "class": "inventory.endpoint",
+            "id": "v127",
+            "kind": "scoped",
+            "owner": "inventory"
+          }
+        },
+        "resource_revision": 4,
+        "revision": 6,
+        "schema_version": 1
+      }
+    },
+    "instrument_boards": {
+      "scalar": {
+        "current": 0,
+        "maximum": 1000000000000,
+        "minimum": 0,
+        "revision": 5
+      },
+      "reservations": {
+        "id": "5ebe442424aad5a50eef7db3839105f4a69f3aaa3ae2b019e66243934b56acf7",
+        "records": [
+          {
+            "amount": 2,
+            "expires": {
+              "at": 74169780373,
+              "clock": {
+                "generation": 46,
+                "kind": "world_ic"
+              }
+            },
+            "holder": {
+              "epoch": 0,
+              "key": {
+                "kind": "deterministic",
+                "value": "90f56a0eb7f175558b30d061dc6846d9dde86e423490f87ef6396b61d97d6e4b"
+              },
+              "scope": {
+                "namespace": "industry",
+                "owner": "industry",
+                "principal": {
+                  "class": "workorder",
+                  "id": "wob5b720afbdace3c0",
+                  "kind": "scoped",
+                  "owner": "industry"
+                }
+              }
+            },
+            "id": "4b8ba6e8da197b35c3d336ca6f7c7d2fb31351151fcaeb910f59b3203992059b",
+            "owner": "inventory",
+            "resource": {
+              "id": "instrument_boards",
+              "owner": "inventory",
+              "subject": {
+                "class": "inventory.endpoint",
+                "id": "v127",
+                "kind": "scoped",
+                "owner": "inventory"
+              }
+            },
+            "revision": 2,
+            "state": {
+              "commit": "24b9b4cce5df004fa03db98c5fbf7a68",
+              "kind": "consumed"
+            }
+          },
+          {
+            "amount": 2,
+            "expires": {
+              "at": 74169240373,
+              "clock": {
+                "generation": 45,
+                "kind": "world_ic"
+              }
+            },
+            "holder": {
+              "epoch": 0,
+              "key": {
+                "kind": "deterministic",
+                "value": "92efae3a9a3b4541374131161d7dcfa64ba9136614ea46bcef86a3792a3a1f6c"
+              },
+              "scope": {
+                "namespace": "industry",
+                "owner": "industry",
+                "principal": {
+                  "class": "workorder",
+                  "id": "wobf29605f531707ea",
+                  "kind": "scoped",
+                  "owner": "industry"
+                }
+              }
+            },
+            "id": "564ef03db1efeaeb80e88dd42b4f67b18bde9151c8adaa147ceb6a8177df0661",
+            "owner": "inventory",
+            "resource": {
+              "id": "instrument_boards",
+              "owner": "inventory",
+              "subject": {
+                "class": "inventory.endpoint",
+                "id": "v127",
+                "kind": "scoped",
+                "owner": "inventory"
+              }
+            },
+            "revision": 3,
+            "state": {
+              "commit": "a7d3140b3af1e76337312fe106409825",
+              "kind": "consumed"
+            }
+          }
+        ],
+        "resource": {
+          "id": "instrument_boards",
+          "owner": "inventory",
+          "subject": {
+            "class": "inventory.endpoint",
+            "id": "v127",
+            "kind": "scoped",
+            "owner": "inventory"
+          }
+        },
+        "resource_revision": 5,
+        "revision": 7,
+        "schema_version": 1
+      }
+    }
+  },
+  "fabrications": {
+    "facility": 684,
+    "receipts": {
+      "13093970380776596416": {
+        "actor": 678,
+        "lot": 13598280239331093087,
+        "order": 13093970380776596416,
+        "owner": {
+          "Object": 678
+        }
+      },
+      "13774646897821550570": {
+        "actor": 678,
+        "lot": 9207545661217630678,
+        "order": 13774646897821550570,
+        "owner": {
+          "Object": 678
+        }
+      }
+    },
+    "stocked": true
+  },
+  "orders": [
+    {
+      "beneficiary": {
+        "Object": 678
+      },
+      "budget_account": 27,
+      "capacity_revision": 1,
+      "destination": {
+        "endpoint": 127,
+        "kind": "endpoint"
+      },
+      "facility": 684,
+      "facility_slots": 1,
+      "holds": [
+        16
+      ],
+      "id": 13774646897821550570,
+      "material_source": 127,
+      "pinned": {
+        "inputs": [
+          {
+            "commodity": "relay_blank",
+            "units": 1
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          }
+        ],
+        "outputs": [
+          {
+            "commodity": "relay_pair",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "relay.entanglement"
+        ],
+        "work_units": 120
+      },
+      "policy_revision": 1,
+      "quantity": 1,
+      "recipe": {
+        "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6",
+        "id": "private_pair",
+        "pack": "tacsim.relay.manufacture",
+        "version": 1
+      },
+      "requester": {
+        "Object": 678
+      },
+      "reservations": [
+        "cafe5055e8b0606535f070feefd89cd2b76421140c39c734e8a5c0994ac577b6",
+        "564ef03db1efeaeb80e88dd42b4f67b18bde9151c8adaa147ceb6a8177df0661",
+        "2275f57f796852ad01c965ed85e157050044b9b3ae4bb288a2a806a9c085a4c6"
+      ],
+      "revision": 125,
+      "schedule": {
+        "clock_policy": "production",
+        "progress_units": 120,
+        "schedule": "72a3cb7803e5eeecf02f9d7864cbdd128392a6ba8565bfe332c74025454ae0c9",
+        "started": {
+          "at": 74168635573,
+          "clock": {
+            "generation": 45,
+            "kind": "world_ic"
+          }
+        },
+        "total_units": 120
+      },
+      "state": {
+        "commit": "a7d3140b3af1e76337312fe106409825",
+        "kind": "completed"
+      },
+      "visibility": "Parties"
+    },
+    {
+      "beneficiary": {
+        "Object": 678
+      },
+      "budget_account": 27,
+      "capacity_revision": 1,
+      "destination": {
+        "endpoint": 127,
+        "kind": "endpoint"
+      },
+      "facility": 684,
+      "facility_slots": 1,
+      "holds": [
+        18
+      ],
+      "id": 13093970380776596416,
+      "material_source": 127,
+      "pinned": {
+        "inputs": [
+          {
+            "commodity": "relay_blank",
+            "units": 1
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          }
+        ],
+        "outputs": [
+          {
+            "commodity": "relay_pair",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "relay.entanglement"
+        ],
+        "work_units": 120
+      },
+      "policy_revision": 1,
+      "quantity": 1,
+      "recipe": {
+        "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6",
+        "id": "private_pair",
+        "pack": "tacsim.relay.manufacture",
+        "version": 1
+      },
+      "requester": {
+        "Object": 678
+      },
+      "reservations": [
+        "990533904a5b5837b78acfeb669383790fc902edeb570bc42a8cad43585f0d8b",
+        "4b8ba6e8da197b35c3d336ca6f7c7d2fb31351151fcaeb910f59b3203992059b",
+        "f34af40140398708d5020a7fd0e51652437ef85a2f6743650ef2a68c94b2de34"
+      ],
+      "revision": 124,
+      "schedule": {
+        "clock_policy": "production",
+        "progress_units": 120,
+        "schedule": "991e5648357e438574adb6154d99e732ba8519546de59414cba0cb5874724768",
+        "started": {
+          "at": 74169175573,
+          "clock": {
+            "generation": 46,
+            "kind": "world_ic"
+          }
+        },
+        "total_units": 120
+      },
+      "state": {
+        "commit": "24b9b4cce5df004fa03db98c5fbf7a68",
+        "kind": "completed"
+      },
+      "visibility": "Parties"
+    }
+  ],
+  "budgetHolds": [
+    {
+      "account": 27,
+      "amount": 3,
+      "beneficiary": {
+        "Object": 678
+      },
+      "expires": null,
+      "holder": {
+        "key": "13093970380776596416/0",
+        "namespace": "industry.wo.hold"
+      },
+      "id": 18,
+      "last_journal_seq": 96,
+      "placed_by": {
+        "Object": 678
+      },
+      "purpose": {
+        "Reservation": {
+          "id": 13093970380776596416,
+          "kind": "industry.workorder"
+        }
+      },
+      "revision": 2,
+      "status": {
+        "Consumed": {
+          "amount": 3,
+          "transaction": 96
+        }
+      }
+    },
+    {
+      "account": 27,
+      "amount": 3,
+      "beneficiary": {
+        "Object": 678
+      },
+      "expires": null,
+      "holder": {
+        "key": "13774646897821550570/0",
+        "namespace": "industry.wo.hold"
+      },
+      "id": 16,
+      "last_journal_seq": 90,
+      "placed_by": {
+        "Object": 678
+      },
+      "purpose": {
+        "Reservation": {
+          "id": 13774646897821550570,
+          "kind": "industry.workorder"
+        }
+      },
+      "revision": 2,
+      "status": {
+        "Consumed": {
+          "amount": 3,
+          "transaction": 90
+        }
+      }
+    }
+  ],
+  "halves": [
+    687,
+    688,
+    685,
+    686
+  ],
+  "outputLotsRemaining": 0,
+  "note": "Captured after both real work orders settled and their unique output lots were consumed; all Redis access was read-only.",
+  "loadedPassage": {
+    "ticket": {
+      "attempt": 1,
+      "burned_at": 74173650373,
+      "hull": 431,
+      "manifest": {
+        "cargo": {},
+        "locker": 12,
+        "occupants": 1,
+        "tank": 32
+      },
+      "order": null,
+      "payload_kg": 42148,
+      "plan": {
+        "burn_t": 29,
+        "crew_days": 11,
+        "depart_ic": 74173650373,
+        "law": "flip",
+        "legs": [
+          {
+            "body": "deimos",
+            "dist_km": 139921574,
+            "secs": 874631,
+            "t0": 74173650373,
+            "t1": 74174525004,
+            "to": "voltaire_anchorage"
+          }
+        ],
+        "route": "aitken_voltaire",
+        "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+        "throttle_permille": 1000,
+        "total_s": 874631
+      },
+      "route": "aitken_voltaire",
+      "route_pack": "tacsim.lane.ceres_phobos",
+      "route_version": 12,
+      "seq": 2,
+      "unit_definition": "8dc0630805bf3fc4a01b43d78d51e8e43e408af5917e302f2b16fd417130bd87"
+    },
+    "nonRelayPayloadKg": 32148,
+    "relayCargoKg": 10000,
+    "actualProcessDeath": {
+      "test": "two-titled-halves-in-real-passage",
+      "signal": "SIGKILL",
+      "gateway": 926580,
+      "old": 937098,
+      "fresh": 942749
+    }
+  }
+}

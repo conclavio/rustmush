@@ -1458,6 +1458,28 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// Consume one complete, identified lot into a durable product receipt.
+    /// The caller must validate authority, provenance and absence of a sale, and
+    /// write its receipt in this same transaction. This does not credit a pool.
+    ///
+    /// # Errors
+    /// Refuses a missing, moved or changed lot; census and removal are atomic.
+    pub fn consume_product(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        expected: &Lot,
+    ) -> Result<(), InventoryError> {
+        let actual = txn
+            .get(&self.lots, &expected.id())?
+            .ok_or(InventoryError::NoLot)?;
+        if actual != expected {
+            return Err(InventoryError::NoLot);
+        }
+        self.move_lots(txn, expected.endpoint(), -1)?;
+        txn.remove(&self.lots, &expected.id())?;
+        Ok(())
+    }
+
     /// Merge several lots into one. Every parent is consumed; the child records
     /// all of them.
     ///

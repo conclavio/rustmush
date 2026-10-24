@@ -81,6 +81,13 @@ pub struct ScheduleActionDraft {
 /// It may inspect immutable engine truth, but mutation remains exclusively in
 /// the registered [`crate::action::ActionProvider`].
 pub trait ScheduleActionAdapter: Send + Sync {
+    /// Whether this occurrence finishes the domain's finite job. Read-only and
+    /// evaluated again immediately before preparation. The kernel alone writes
+    /// the resulting completed cursor in the same bundle as the domain effects.
+    fn completes(&self, _advance: &ScheduleAdvance, _engine: &crate::engine::Engine) -> bool {
+        false
+    }
+
     fn plan(
         &self,
         action: &DefinitionRef,
@@ -486,9 +493,19 @@ impl ScheduleSourceRegistry {
         })
     }
 
+    pub(crate) fn completes(
+        &self,
+        candidate: &ScheduledActionCandidate,
+        engine: &crate::engine::Engine,
+    ) -> Result<bool, ScheduleAdvanceAdmissionError> {
+        let entry = self.entry_for_candidate(candidate)?;
+        Ok(entry.adapter.completes(&candidate.advance, engine))
+    }
+
     pub(crate) fn seed_advance(
         &self,
         candidate: &ScheduledActionCandidate,
+        completes: bool,
         txn: &mut ActionTxn<'_>,
     ) -> Result<(), ScheduleAdvanceAdmissionError> {
         let entry = self.entry_for_candidate(candidate)?;
@@ -516,7 +533,11 @@ impl ScheduleSourceRegistry {
         txn.replace(
             &entry.schedules,
             &candidate.advance.schedule(),
-            candidate.advance.post_image().clone(),
+            if completes {
+                candidate.advance.post_image().completed_post_image()
+            } else {
+                candidate.advance.post_image().clone()
+            },
         )?;
         self.owner_readiness.require_ready(entry.key.owner())?;
         Ok(())
