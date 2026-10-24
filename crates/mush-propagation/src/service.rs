@@ -424,6 +424,12 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .into_iter()
             .flat_map(|s| s.envelopes())
             .filter(|e| {
+                matches!(
+                    e.state(),
+                    crate::EnvelopeState::Queued | crate::EnvelopeState::Transmitted
+                )
+            })
+            .filter(|e| {
                 e.transit().is_some_and(|r| {
                     r.queued_at.is_some()
                         && r.legs

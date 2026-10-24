@@ -1973,3 +1973,30 @@ async fn r3_upgrade_full_legacy_queue_preserves_capacity_and_refuses_partial_pol
         .unwrap();
     assert!(rig.restart().await.is_err());
 }
+
+#[tokio::test]
+async fn r3_expired_queue_tickets_do_not_inflate_private_load() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let exit = rig.registry().nodes[&cid("ceres")].place;
+    rig.run(GOD, &format!("@prop/jam {exit}=100"));
+    rig.run(GOD, &format!("+order {bob}=will expire at jammed exit"));
+    rig.pass();
+    let id = rig.last_envelope().id();
+    assert!(
+        rig.run(GOD, "+relay/load luna_ceres")
+            .contains("actual queued 1")
+    );
+    let expires =
+        rig.tw.world().world_ic_now().at + mush_propagation::record::ENVELOPE_TTL_SECS + 1;
+    rig.advance_ic_to(expires);
+    rig.pass();
+    assert_eq!(
+        rig.envelope(id).state(),
+        mush_propagation::EnvelopeState::Expired
+    );
+    assert!(
+        rig.run(GOD, "+relay/load luna_ceres")
+            .contains("actual queued 0")
+    );
+}

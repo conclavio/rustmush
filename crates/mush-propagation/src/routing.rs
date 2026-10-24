@@ -870,6 +870,12 @@ impl<'a> Pass<'a> {
                 .iter()
                 .find(|id| {
                     store.envelope(**id).is_some_and(|e| {
+                        if !matches!(
+                            e.state(),
+                            EnvelopeState::Queued | EnvelopeState::Transmitted
+                        ) {
+                            return false;
+                        }
                         let Some(r) = e.transit() else { return false };
                         let Some(l) = r.legs.get(r.next) else {
                             return false;
