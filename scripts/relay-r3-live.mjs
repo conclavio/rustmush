@@ -171,6 +171,7 @@ try {
  const panel=await boardQuery(clients.bob);assert.equal(panel.lines.join('\n'),board);
  milestone('web-board-query-line-parity');
  await command(clients.bob,'+relay/load luna_ceres','Permission denied');
+ await command(clients.bob,'+relay/load/publish luna_ceres','Choose one relay command switch');
  await command(clients.bob,`+relay/grant luna_ceres/${clients.bob.object}=sovereign`,'Permission denied');
  const items={};
  for(const cls of ['standard','deferred','priority','sovereign'])items[cls]=await send(cls);

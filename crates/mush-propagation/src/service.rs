@@ -293,6 +293,9 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
     lines
 }
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.iter().count() > 1 {
+        return Err(CmdError::msg("Choose one relay command switch."));
+    }
     let api = integration(ctx.w).ok_or_else(|| CmdError::msg("Relay service unavailable."))?;
     let mut state = current(ctx)
         .cloned()

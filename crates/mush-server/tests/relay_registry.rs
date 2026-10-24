@@ -1608,6 +1608,22 @@ async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
         .unwrap()
         .id
         .0;
+    rig.run(
+        GOD,
+        &format!("@org/grant {}={org} relay.publish", senders[0]),
+    );
+    for command in [
+        "+relay/load/publish luna_ceres",
+        "+relay/audit/publish luna_ceres",
+        "+relay/discover/publish luna_ceres",
+    ] {
+        let output = rig.run(senders[0], command);
+        assert!(
+            output.contains("Choose one relay command switch"),
+            "{output}"
+        );
+        assert!(!output.contains("actual queued"));
+    }
     rig.run(GOD, &format!("@org/grant {receiver}={org} relay.inspect"));
     let discovered = rig.run(receiver, "+relay/discover luna_ceres");
     assert!(discovered.contains("Evidence filed"), "{discovered}");
