@@ -690,6 +690,10 @@ fn ic3_a_second_boot_posts_nothing() {
     let roster = Roster::production();
     let mut tw = boot(&roster);
     sweep(&mut tw, 3_600);
+    // The Exchange's five-second cadence runs before the economy producer in
+    // this fire. Let its next fire consume the now-funded clearing capital,
+    // then assert a settled world's reboot adds no journal entry.
+    sweep(&mut tw, 5);
     let before = counts(&tw);
     let before_maps = maps(&tw);
     let before_latches: Vec<(String, u32, String)> = tw
@@ -1144,6 +1148,11 @@ fn ic3_a_corrupt_port_map_refuses_re_creation() {
         store(&tw).port_map(&lane_id(), &cid("ceres_port")),
         PortMapState::Unreadable
     ));
+    assert!(
+        mush_propagation::commerce::current(tw.world())
+            .is_some_and(|market| market.capital_transaction.is_none()),
+        "a held clearing map cannot fund the Exchange"
+    );
     let out = report(&mut tw);
     assert!(
         out.contains(&format!(
@@ -1639,6 +1648,21 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             "{out}"
         );
         no_refused_writes(&next);
+        assert!(
+            mush_propagation::commerce::current(next.world()).is_none(),
+            "an old lane did not create unfunded relay accounts at boot"
+        );
+        sweep(&mut next, 3_600);
+        sweep(&mut next, 5);
+        assert!(
+            mush_propagation::commerce::current(next.world())
+                .is_some_and(|market| market.capital_transaction.is_some()),
+            "normal cadence initializes retail after the real lane upgrade"
+        );
+        assert!(
+            mush_propagation::billing::current(next.world()).is_some(),
+            "subscription enrollment becomes available without a second reboot"
+        );
     }
 }
 

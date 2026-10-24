@@ -7,6 +7,7 @@ pub const JSON: &str = include_str!("../content/relays/service-v1.json");
 #[serde(deny_unknown_fields)]
 struct Seed {
     retail: mush_propagation::commerce::Tariff,
+    billing: crate::relay_billing::Seed,
     policy: Config,
     scandal_title: String,
     scandal_summary: String,
@@ -26,6 +27,46 @@ fn provenance(e: &Evidence) -> String {
     format!("relay.service.v1:{}:{}", e.receipt.pair, e.receipt.envelope)
 }
 impl Integration for RelayService {
+    fn represents(&self, w: &World, a: ObjId, p: &Principal) -> bool {
+        crate::relay_billing::represents(w, a, p)
+    }
+    fn government(&self, w: &World, o: u64) -> bool {
+        crate::relay_billing::government(w, o)
+    }
+    fn enroll(
+        &self,
+        ctx: &mut Ctx<'_>,
+        s: &mush_propagation::billing::Subscription,
+        t: &mush_propagation::billing::Tariff,
+    ) -> Result<u64, String> {
+        crate::relay_billing::enroll(ctx, s, t)
+    }
+    fn subscription(
+        &self,
+        w: &World,
+        s: &mush_propagation::billing::Subscription,
+    ) -> Result<mush_propagation::billing::View, String> {
+        crate::relay_billing::subscription(w, s)
+    }
+    fn cancel_subscription(
+        &self,
+        ctx: &mut Ctx<'_>,
+        s: &mush_propagation::billing::Subscription,
+    ) -> Result<(), String> {
+        crate::relay_billing::cancel(ctx, s)
+    }
+    fn cure_subscription(
+        &self,
+        ctx: &mut Ctx<'_>,
+        s: &mush_propagation::billing::Subscription,
+        m: u32,
+        c: u32,
+    ) -> Result<u64, String> {
+        crate::relay_billing::cure(ctx, s, m, c)
+    }
+    fn subscription_notice(&self, ctx: &mut Ctx<'_>, p: &Principal, s: String) {
+        crate::relay_billing::notice(ctx, p, s)
+    }
     fn payer(&self, w: &World, actor: ObjId, account: u64) -> Result<(), String> {
         crate::relay_commerce::payer(w, actor, account)
     }
@@ -109,6 +150,7 @@ impl Integration for RelayService {
     fn seed(&self) -> Result<Config, String> {
         let seed = seed()?;
         seed.retail.validate()?;
+        seed.billing.tariff.validate()?;
         Ok(seed.policy)
     }
     fn visible(&self, w: &World, actor: ObjId, r: &mush_propagation::service::Receipt) -> bool {

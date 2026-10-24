@@ -70,6 +70,8 @@ pub struct EconomySnapshot {
     held_reservations_by_kind: BTreeMap<SmolStr, BTreeSet<HoldId>>,
     cadences: BTreeMap<CadenceId, CadenceClock>,
     obligations: BTreeMap<ObligationId, Obligation>,
+    /// Derived active services and terminal services with unpaid installments.
+    service_obligations_by_owner: BTreeMap<SmolStr, BTreeSet<ObligationId>>,
     contracts: BTreeMap<ContractId, EconomicContract>,
     /// Derived: the `(object, vault)` pairs a **live** contract's `DepositInto`
     /// condition holds, and which contract holds each. Only that contract's own
@@ -496,8 +498,37 @@ impl EconomySnapshot {
     pub fn put_cadence(&mut self, cadence: CadenceClock) {
         self.cadences.insert(cadence.id, cadence);
     }
+    /// Bounded product reverse audit without walking unrelated obligations.
+    pub fn service_obligations(&self, namespace: &str) -> impl Iterator<Item = &Obligation> {
+        self.service_obligations_by_owner
+            .get(namespace)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.obligations.get(id))
+    }
     /// Insert/replace an obligation.
     pub fn put_obligation(&mut self, obligation: Obligation) {
+        if let Some(old) = self.obligations.get(&obligation.id)
+            && let crate::ObligationCause::Ruleset { namespace } = &old.cause
+            && let Some(ids) = self.service_obligations_by_owner.get_mut(namespace)
+        {
+            ids.remove(&old.id);
+            if ids.is_empty() {
+                self.service_obligations_by_owner.remove(namespace);
+            }
+        }
+        if let Some(terms) = &obligation.service_terms
+            && let crate::ObligationCause::Ruleset { namespace } = &obligation.cause
+            && (!matches!(
+                obligation.status,
+                crate::ObligationStatus::Cancelled | crate::ObligationStatus::Satisfied
+            ) || terms.cured_misses < obligation.missed_total)
+        {
+            self.service_obligations_by_owner
+                .entry(namespace.clone())
+                .or_default()
+                .insert(obligation.id);
+        }
         self.obligations.insert(obligation.id, obligation);
     }
     /// Insert/replace a contract, re-deriving its custody locks.

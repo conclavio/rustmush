@@ -58,6 +58,7 @@ use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registr
 use mush_core::{Ctx, ModuleOp, ModuleWrite, SceneId};
 use smol_str::SmolStr;
 
+pub mod billing;
 pub mod commands;
 pub mod commerce;
 pub mod context;
@@ -370,6 +371,7 @@ impl GameModule for PropagationModule {
 fn delivery_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     dispatch::reconcile(ctx);
     commerce::sweep(ctx);
+    billing::maintain(ctx);
     let at = ctx.w.world_ic_now();
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         return;

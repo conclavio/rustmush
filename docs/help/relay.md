@@ -42,6 +42,63 @@ and quote Priority. Repeating a purchase does not reserve or charge again.
 The Exchange's initial capital comes from an existing finite clearing balance;
 paid quotes wait until that transfer lands on the economy cadence.
 
+## Subscriptions, treaties and arrears
+
+A v1 subscription covers short outgoing copies for its named IC principal:
+Standard is 25 cr per IC day, Priority 100 cr, and Sovereign 500 cr per IC day
+under a current Exchange treaty. Capacity, declared Standard delay, both endpoints'
+restrictions and the 1024-byte short-message limit still apply. Your account pays;
+it does not change who sent a message. Personal memberships do not make personal
+mail an organization's traffic. An organization's titled unit speaks for that
+organization; an ordinary character speaks personally.
+
+```
++relay/subscribe #<your character>=priority,<payer account>
++relay/subscribe org:<organization>=standard,<payer account>
++relay/enroll <subscription quote>
++relay/subscriptions
++relay/cure <subscription>
++relay/unsubscribe <subscription>
+```
+
+A subscription quote lasts 600 IC seconds. Enrollment creates a real recurring
+obligation, subject to the payer's actual debit authority. The first collection is
+due at enrollment and runs on the economy's existing cadence; service begins only
+when an installment is actually paid. Later installments fall due one full IC day
+apart. Collection is bounded; the economy's existing downtime-forgiveness policy
+still applies. Each started period has the quoted flat price, with no prorated
+refund on cancellation or treaty expiry. The obligation and its real transactions
+remain inspectable through the economy commands.
+
+One unpaid installment throttles service; two suspend it. A later successful bill
+does not repay older missed installments. `+relay/cure <id>` states the exact debt
+and prints a confirmation command with its counters. That confirmation pays the
+actual debt, refuses stale terms, and survives retries/restart without charging
+again. Cancellation stops future bills and grants no further class, but existing
+arrears remain payable. Cure cannot undo cancellation, expire an independent
+account review, clear `operator.*` sanctions, or remove permanent anathema.
+
+An organization enrolls through a representative with `economy.account.post` on
+its root compartment; payer account authority is checked separately. Sovereign
+recognition is pinned to the existing government institutions: Concord Orbital
+Access, Republic Strategic Reserve, Freeport Registry and Titan Concession Company.
+A faction affiliation or a similar organization name is not eligibility.
+
+An Exchange operator with `relay.manage` may offer
+`+relay/treaty org:<id>=<IC days>,<reason>`. Offers last 2–365 IC days and are immutable until expiry. The
+recognized institution's authorized representative accepts through a quoted
+Sovereign subscription. At least one full billing period must remain at enrollment.
+`+relay/treaty org:<id>` lets the representative or Exchange operator read the offer.
+Expiry removes Sovereign eligibility immediately and the economy refuses any
+collection at or after the agreed endpoint. A new term requires a new agreement;
+separate operator sanctions remain available during a treaty.
+
+The service retains at most 128 subscription/quote rows, eight current quotes per
+issuer and 32 treaty counterparties. Expired quotes and cancelled debt-free records
+may be retired for room. Active obligations and outstanding debt are never evicted.
+Notices are queued through the existing economic-notice inbox, not instant mail.
+Routing reads current billing status directly; a delayed notice cannot grant service.
+
 Scoped operators may still give explicitly noncommercial courtesy service with
 `+relay/grant luna_ceres/#character=priority` (or `sovereign`, `standard`, `deferred`),
 under `relay.manage`. On Exchange links, Deferred removes the override; independent operators default

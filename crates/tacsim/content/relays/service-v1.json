@@ -19,5 +19,37 @@
     "priority_minor": 500,
     "quote_secs": 600,
     "reservation_secs": 86400
+  },
+  "billing": {
+    "tariff": {
+      "version": 1,
+      "period_secs": 86400,
+      "standard_minor": 2500,
+      "priority_minor": 10000,
+      "sovereign_minor": 50000,
+      "quote_secs": 600
+    },
+    "governments": [
+      {
+        "port": "luna_port",
+        "institution": "orbital_access",
+        "government": "Concord"
+      },
+      {
+        "port": "deimos_port",
+        "institution": "strategic_reserve",
+        "government": "Republic"
+      },
+      {
+        "port": "ceres_port",
+        "institution": "freeport_registry",
+        "government": "Ceres Freeport"
+      },
+      {
+        "port": "titan_port",
+        "institution": "titan_concession",
+        "government": "Saturn Charter"
+      }
+    ]
   }
 }

@@ -1,0 +1,169 @@
+{
+  "passed": true,
+  "sourceParent": "ec669fb9b9e75c88756a0bfa39edb78aef5ad57d",
+  "sourceTree": "680568ec8100b69060d0c0e1ce61ff7facc4ee7c",
+  "sourceArchiveSha256": "c3c77923ed11c19ed929d8d39e2f510bcfbde6f4a99670aa4f7b07e7739d10f7",
+  "buildMarkerNote": "The exact source tree includes runtime, tests and final live harness, tested before the milestone commit; the parent commit is the web build stamp. Three earlier harness failures and the superseded runtime are retained on dev1. This candidate includes the CI-discovered old-lane/held-port boot repair. Live treaty coverage verifies inbound delivery to a titled government unit; outbound unit Sovereign class is covered by the production-engine scenario.",
+  "linuxTests": {
+    "story-tests": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 44,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "economy-tests": [
+      {
+        "passed": 37,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 85,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 85,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "propagation-tests": [
+      {
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "contracts": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-vocabulary": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-gateway": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-reservations": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-bridge": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ci-ports": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "process-fault": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "commands": 101,
+  "sshCommands": 8,
+  "processCrashes": 6,
+  "socketLatencyMs": {
+    "median": 50,
+    "p95": 52,
+    "max": 79
+  },
+  "health": {
+    "dev1mush-gateway": "active",
+    "redis-dev1mush": "active"
+  },
+  "gatewayPid": 892227,
+  "serverPid": 892240,
+  "serverSha256": "b896c9efd1c0dc4b4b5553de949ee7a137239bab5a6c3a6d52d0917bda0d7f28",
+  "gatewaySha256": "0ce978d415301d2b1309f852aa3416341c0c44702bc09cde05207256763eef67",
+  "dev2": "MainPID=539467",
+  "freshDatabase": 8,
+  "retainedBaselineDatabase": 7,
+  "restoredBilling": {
+    "cursor": 0,
+    "next": 1,
+    "subscriptions": {},
+    "tariff": {
+      "period_secs": 86400,
+      "priority_minor": 10000,
+      "quote_secs": 600,
+      "sovereign_minor": 50000,
+      "standard_minor": 2500,
+      "version": 1
+    },
+    "treaties": {}
+  },
+  "restoredMarket": {
+    "capital_transaction": 83,
+    "legacy_before": 402,
+    "next": 1,
+    "operator": 22,
+    "payee": 25,
+    "purchases": {},
+    "tariff": {
+      "priority_minor": 500,
+      "quote_secs": 600,
+      "reservation_secs": 86400,
+      "standard_minor": 100,
+      "version": 1
+    }
+  },
+  "nodes": 2,
+  "pairs": 1
+}

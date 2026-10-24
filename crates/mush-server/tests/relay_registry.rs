@@ -3496,3 +3496,529 @@ async fn r8a_two_exchange_hops_use_one_purchase_and_survive_restart_between_hops
             .all(|r| r.ticket.class == mush_propagation::service::Class::Priority)
     );
 }
+
+impl Rig {
+    fn billing(&self) -> mush_propagation::billing::Book {
+        mush_propagation::billing::current(self.tw.world())
+            .unwrap()
+            .clone()
+    }
+    fn subscription_obligation(&self, id: u64) -> mush_economy::Obligation {
+        let oid = self.billing().subscriptions[&id].obligation.unwrap();
+        self.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .obligation(mush_economy::ObligationId(oid))
+            .unwrap()
+            .clone()
+    }
+    fn subscribe(
+        &mut self,
+        actor: mush_core::ObjId,
+        principal: &str,
+        class: &str,
+        payer: u64,
+    ) -> u64 {
+        let id = self.billing().next;
+        let reply = self.run(
+            actor,
+            &format!("+relay/subscribe {principal}={class},{payer}"),
+        );
+        assert!(reply.contains(&format!("Subscription {id} for")), "{reply}");
+        let reply = self.run(actor, &format!("+relay/enroll {id}"));
+        assert!(reply.contains("Active"), "{reply}");
+        id
+    }
+    fn bill(&mut self) {
+        let now = self.tw.world().now() * 1000;
+        self.tw.engine_mut().sched.insert(
+            now,
+            mush_core::ScheduledKind::ModuleTick {
+                module: "economy".into(),
+                tag: "economy.sweep".into(),
+            },
+        );
+        self.tw.fire_due(now);
+        self.pass();
+    }
+    fn next_bill(&mut self, id: u64) {
+        let due = self.subscription_obligation(id).schedule.next_due;
+        self.advance_ic_to(due);
+        self.bill();
+    }
+    fn receipt_class(&self, env: u64) -> Option<mush_propagation::service::Class> {
+        self.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .relay_transport()
+            .service
+            .as_ref()
+            .unwrap()
+            .receipts
+            .iter()
+            .find(|r| r.envelope == env)
+            .map(|r| r.ticket.class)
+    }
+    async fn flush_subscription(&mut self, id: u64) {
+        assert!(
+            self.tw
+                .engine_mut()
+                .take_durable_gate()
+                .is_some_and(|(_, strict)| strict)
+        );
+        let dirty = self.tw.world_mut().take_dirty();
+        let mut batch = persist::batch_from_dirty(self.tw.world(), dirty, self.serial, true);
+        batch.module_ops = self.tw.take_module_ops();
+        assert!(batch.module_ops.iter().any(|o| o.ns == "economy"));
+        assert!(batch.module_ops.iter().any(|o|o.ns=="propagation" && matches!(&o.op,ModuleWrite::JsonSet{key,value} if key=="relay_transport" && value["service"]["billing"]["subscriptions"][id.to_string()]["obligation"].is_u64())));
+        self.store.write(batch).await.unwrap();
+        self.serial += 1;
+    }
+}
+#[tokio::test]
+async fn r8b_person_subscription_real_bills_queued_delivery_arrears_cure_restart_and_sanctions() {
+    use mush_propagation::service::Class;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("RecurringAlice", true);
+    let payee = rig.retail().payee;
+    let capital = rig.account(payee).posted_balance.minor();
+    let id = rig.subscribe(alice, &alice.to_string(), "priority", payer);
+    assert!(rig.run(alice, "+relay").contains("your class Deferred"));
+    rig.flush_subscription(id).await;
+    rig.restart().await.unwrap();
+    rig.bill();
+    assert_eq!(rig.subscription_obligation(id).settled_total, 1);
+    assert_eq!(rig.account(payer).posted_balance.minor(), 0);
+    assert_eq!(rig.account(payee).posted_balance.minor(), capital + 10000);
+    assert!(rig.run(alice, "+relay").contains("your class Priority"));
+    let (_, env) = rig.retail_mail(alice, bob, "subscription paid crossing");
+    for _ in 0..8 {
+        rig.pass();
+    }
+    assert_eq!(rig.receipt_class(env), Some(Class::Priority));
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    for _ in 0..3 {
+        rig.bill();
+    }
+    assert_eq!(rig.subscription_obligation(id).settled_total, 1);
+    assert_eq!(rig.account(payee).posted_balance.minor(), capital + 10000);
+    rig.next_bill(id);
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("Throttled")
+    );
+    let (_, waiting) = rig.retail_mail(alice, bob, "held by a missed bill");
+    rig.pass();
+    assert_eq!(
+        rig.envelope(waiting)
+            .transit()
+            .unwrap()
+            .service
+            .as_ref()
+            .unwrap()
+            .class,
+        Class::Standard
+    );
+    rig.next_bill(id);
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("Suspended")
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.run(
+        GOD,
+        &format!("+relay/policy luna_ceres/{alice}=suspended,operator.incident,compound incident"),
+    );
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}"))
+            .contains("200.00 cr")
+    );
+    assert!(
+        rig.run(bob, &format!("+relay/cure {id}=2,0"))
+            .contains("No such represented")
+    );
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=2,0"))
+            .contains("Cure refused")
+    );
+    rig.run(GOD, &format!("@econ/pay 1={payer} 30000"));
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=2,0"))
+            .contains("Arrears paid")
+    );
+    rig.flush_subscription(id).await;
+    let cured = rig.subscription_obligation(id);
+    rig.restart().await.unwrap();
+    assert_eq!(rig.subscription_obligation(id), cured);
+    assert_eq!(rig.account(payer).posted_balance.minor(), 10000);
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=2,0"))
+            .contains("Arrears paid")
+    );
+    assert_eq!(rig.account(payer).posted_balance.minor(), 10000);
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("operator.incident Suspended")
+    );
+    rig.run(
+        GOD,
+        &format!("+relay/policy luna_ceres/{alice}=served,operator.incident,resolved incident"),
+    );
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("luna_ceres: Served")
+    );
+    assert!(rig.run(alice, "+relay").contains("your class Priority"));
+    rig.next_bill(id);
+    assert_eq!(rig.subscription_obligation(id).settled_total, 2);
+    assert_eq!(rig.account(payer).posted_balance.minor(), 0);
+    assert_eq!(rig.account(payee).posted_balance.minor(), capital + 40000);
+}
+#[tokio::test]
+async fn r8b_later_payment_does_not_erase_old_debt_and_cancellation_keeps_arrears() {
+    use mush_economy::ObligationStatus;
+    let mut rig = Rig::new(true).await;
+    rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("EarlyCure", false);
+    let id = rig.subscribe(alice, &alice.to_string(), "standard", payer);
+    rig.bill();
+    assert!(rig.run(alice, "+relay").contains("your class Deferred"));
+    assert_eq!(rig.subscription_obligation(id).missed_total, 1);
+    rig.run(GOD, &format!("@econ/pay 1={payer} 5000"));
+    rig.next_bill(id);
+    assert_eq!(
+        rig.subscription_obligation(id).status,
+        ObligationStatus::Active
+    );
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("Throttled")
+    );
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=1,0"))
+            .contains("Arrears paid")
+    );
+    assert_eq!(rig.account(payer).posted_balance.minor(), 0);
+    rig.next_bill(id);
+    assert!(matches!(
+        rig.subscription_obligation(id).status,
+        ObligationStatus::Grace { missed: 1, .. }
+    ));
+    rig.run(alice, &format!("+relay/unsubscribe {id}"));
+    assert_eq!(
+        rig.subscription_obligation(id).status,
+        ObligationStatus::Cancelled
+    );
+    assert!(
+        rig.run(alice, &format!("+relay/subscribe {alice}=priority,{payer}"))
+            .contains("existing subscription first")
+    );
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=1,0"))
+            .contains("Cure refused")
+    );
+    rig.run(GOD, &format!("@econ/pay 1={payer} 2500"));
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=2,1"))
+            .contains("Arrears paid")
+    );
+    rig.flush_subscription(id).await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.subscription_obligation(id).status,
+        ObligationStatus::Cancelled
+    );
+    assert!(rig.run(alice, "+relay").contains("your class Deferred"));
+    let before = rig.account(payer).posted_balance;
+    rig.advance_ic_to(rig.tw.world().world_ic_now().at + 3 * 86400);
+    rig.bill();
+    assert_eq!(rig.account(payer).posted_balance, before);
+}
+#[tokio::test]
+async fn r8b_sovereign_real_institution_treaty_expires_before_billing_and_never_aliases_payer() {
+    use mush_propagation::service::Class;
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    rig.retail_ready();
+    let (officer, personal) = rig.retail_sender("TreatyOfficer", true);
+    let org = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .orgs()
+        .find(|o| o.name == "Freeport Registry")
+        .unwrap()
+        .id;
+    let payer = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .unwrap()
+        .snapshot()
+        .accounts_of(&mush_org::PrincipalId::Organization(org))
+        .next()
+        .unwrap()
+        .id
+        .0;
+    assert!(
+        rig.run(
+            officer,
+            &format!("+relay/subscribe org:{org}=sovereign,{payer}")
+        )
+        .contains("No such represented")
+    );
+    rig.run(
+        GOD,
+        &format!("@org/grant {officer}={org} economy.account.post"),
+    );
+    rig.run(
+        GOD,
+        &format!("@org/grant {officer}={org} economy.account.view"),
+    );
+    assert!(
+        rig.run(
+            officer,
+            &format!("+relay/subscribe org:{org}=sovereign,{payer}")
+        )
+        .contains("No treaty")
+    );
+    assert!(
+        rig.run(
+            officer,
+            &format!("+relay/treaty org:{org}=2,government agreement")
+        )
+        .contains("Permission denied")
+    );
+    let exchange = rig.registry().operator;
+    assert!(
+        rig.run(
+            GOD,
+            &format!("+relay/treaty org:{exchange}=2,not a government")
+        )
+        .contains("No recognized")
+    );
+    assert!(
+        rig.run(
+            GOD,
+            &format!("+relay/treaty org:{org}=2,Registry public service")
+        )
+        .contains("Treaty offered")
+    );
+    let id = rig.subscribe(officer, &format!("org:{org}"), "sovereign", payer);
+    let before = rig.account(payer).posted_balance.minor();
+    rig.bill();
+    assert_eq!(rig.account(payer).posted_balance.minor(), before - 50000);
+    // A member using an organization's payer remains a personal sender.
+    assert!(rig.run(officer, "+relay").contains("your class Deferred"));
+    rig.run(GOD, "@create RegistryDispatchUnit");
+    let unit = rig
+        .tw
+        .world()
+        .iter()
+        .find(|o| o.name == "RegistryDispatchUnit")
+        .unwrap()
+        .id;
+    let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
+    rig.run(GOD, &format!("@teleport {unit}={luna}"));
+    assert!(
+        rig.run(GOD, &format!("@asset/title {unit}=org:{org}"))
+            .contains("Title recorded")
+    );
+    // Ordinary unit ingress can address a co-located recipient. The addressed
+    // character then moves before the queued order is processed: normal forwarding
+    // supplies the cross-system leg without a staff addressing bypass.
+    rig.run(GOD, &format!("@teleport {bob}={luna}"));
+    let reply = rig.run(unit, &format!("+order {bob}=treaty dispatch"));
+    assert!(reply.contains("Queued"), "{reply}");
+    let ceres = rig.registry().nodes[&cid("ceres")].coverage[0];
+    rig.run(GOD, &format!("@teleport {bob}={ceres}"));
+    let env = rig.last_envelope().id();
+    for _ in 0..8 {
+        rig.pass();
+    }
+    assert_eq!(rig.receipt_class(env), Some(Class::Sovereign));
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    let end = rig.billing().subscriptions[&id].until_ic.unwrap();
+    rig.advance_ic_to(end);
+    let before = rig.account(payer).posted_balance;
+    rig.bill();
+    rig.bill();
+    assert_eq!(rig.account(payer).posted_balance, before);
+    assert_eq!(
+        rig.subscription_obligation(id).status,
+        mush_economy::ObligationStatus::Cancelled
+    );
+    assert_eq!(
+        mush_propagation::billing::class(rig.tw.world(), exchange.0, unit),
+        None
+    );
+    assert_eq!(rig.account(personal).posted_balance.minor(), 10000);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.bill();
+    assert_eq!(rig.account(payer).posted_balance, before);
+}
+#[tokio::test]
+async fn r8b_cure_preserves_economic_suspension_and_rate_changes_do_not_rebill() {
+    let mut rig = Rig::new(true).await;
+    rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("PausedSubscriber", false);
+    let id = rig.subscribe(alice, &alice.to_string(), "standard", payer);
+    rig.bill();
+    let oid = rig.subscription_obligation(id).id;
+    rig.run(
+        GOD,
+        &format!("@obligation/suspend {oid}=independent account review"),
+    );
+    let held = rig.subscription_obligation(id).holders();
+    assert!(!held.is_empty());
+    rig.run(GOD, &format!("@econ/pay 1={payer} 2500"));
+    let payee = rig.retail().payee;
+    // Account freeze is a recovery fault, not a gameplay command. Change only
+    // that documented status authority and re-enter through production boot.
+    rig.flush().await;
+    let key = format!("account:{payee}");
+    let mut account = rig
+        .store
+        .module_json_get("economy", &key)
+        .await
+        .unwrap()
+        .unwrap();
+    account["status"] = serde_json::json!("Frozen");
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "economy".into(),
+                op: ModuleWrite::JsonSet {
+                    key: key.into(),
+                    value: account,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=1,0"))
+            .contains("Cure refused")
+    );
+    assert_eq!(rig.account(payer).posted_balance.minor(), 2500);
+    rig.run(GOD, &format!("@account/unfreeze {payee}"));
+    assert!(
+        rig.run(alice, &format!("+relay/cure {id}=1,0"))
+            .contains("Arrears paid")
+    );
+    assert_eq!(rig.subscription_obligation(id).holders(), held);
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("Suspended")
+    );
+    rig.run(GOD, &format!("@obligation/resume {oid}"));
+    assert!(
+        rig.run(alice, "+relay/status luna_ceres")
+            .contains("Served")
+    );
+    let before = rig.subscription_obligation(id);
+    rig.run(GOD, "@tacsim/time rate=24");
+    rig.bill();
+    rig.run(GOD, "@tacsim/time rate=1");
+    rig.bill();
+    assert_eq!(
+        rig.subscription_obligation(id).periods_settled,
+        before.periods_settled
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.subscription_obligation(id).service_terms,
+        before.service_terms
+    );
+}
+#[tokio::test]
+async fn r8b_lost_subscription_owner_and_forged_terms_refuse_boot() {
+    let mut rig = Rig::new(true).await;
+    rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("BillingIntegrity", true);
+    let id = rig.subscribe(alice, &alice.to_string(), "standard", payer);
+    rig.bill();
+    rig.flush_subscription(id).await;
+    let key = "relay_transport";
+    let original = rig
+        .store
+        .module_json_get("propagation", key)
+        .await
+        .unwrap()
+        .unwrap();
+    for forged in [false, true] {
+        let mut doc = original.clone();
+        if forged {
+            doc["service"]["billing"]["subscriptions"][id.to_string()]["payer"] =
+                serde_json::json!(1);
+        } else {
+            doc["service"]["billing"]["subscriptions"]
+                .as_object_mut()
+                .unwrap()
+                .clear();
+        }
+        rig.store
+            .write(WriteBatch {
+                serial: rig.serial,
+                durable: true,
+                module_ops: vec![ModuleOp {
+                    ns: "propagation".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: key.into(),
+                        value: doc,
+                    },
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        rig.serial += 1;
+        let error = rig.restart().await.unwrap_err();
+        assert!(
+            error.contains(if forged {
+                "obligation/terms mismatch"
+            } else {
+                "Orphaned relay subscription"
+            }),
+            "{error}"
+        );
+    }
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: vec![ModuleOp {
+                ns: "propagation".into(),
+                op: ModuleWrite::JsonSet {
+                    key: key.into(),
+                    value: original,
+                },
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.subscription_obligation(id).settled_total, 1);
+}

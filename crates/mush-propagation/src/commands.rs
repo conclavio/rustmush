@@ -1004,6 +1004,7 @@ fn prop_pass(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Permission denied."));
     }
     crate::commerce::sweep(ctx);
+    crate::billing::maintain(ctx);
     let at = now(ctx);
     let Some(state) = ctx.w.module_state::<mush_sim::SpatialState>().cloned() else {
         info(ctx, UNAVAILABLE);

@@ -1132,3 +1132,111 @@ configuration or raw database snapshot is committed. R7's completed CI run has o
 the five reproduced and repaired failures described above; R8a's normal CI is
 triggered by its main push and remains owner-monitored. Commit/push completes this
 gate before automatic continuation to R8b.
+
+## Gate 10 / R8b — subscriptions, Sovereign treaties and arrears
+
+**Implementation/live gate passed (2026-10-24).** Base `ec669fb9`; runtime tree
+`680568ec8100b69060d0c0e1ce61ff7facc4ee7c`. Commit/push follows this verified real-server
+result, then the authorized train continues to R9a.
+
+### Implementation
+
+The Exchange now offers versioned daily subscriptions: Standard 25 cr, Priority
+100 cr, and Sovereign 500 cr. A represented person or organization quotes terms
+and separately authorizes the actual payer account. Enrollment creates an ordinary
+World-IC economy obligation. Its first installment is due at enrollment; service
+becomes eligible only after a real settled payment. Account choice never changes
+sender or receiver identity.
+
+One unpaid installment throttles; two suspend. The service projection reads the
+actual obligation on every routing decision. A later successful installment does
+not forgive old arrears. `+relay/cure` quotes the full unpaid amount and requires
+the displayed missed/cured counters on confirmation. The economy journals one
+balanced payment, retains its receipt for duplicate confirmation, and restores
+only the payment-related lifecycle. Independent suspension holders, operator
+incident sanctions and anathema survive. Cancellation ends future collection but
+retains debt, and paying that debt cannot re-enroll a cancelled service.
+
+Sovereign service requires an Exchange treaty with a recognized institution,
+pinned through existing port/institution identities for Concord, Republic, Ceres
+Freeport and Saturn Charter. An authorized representative enrolls against the
+real treasury. Offers last 2–365 IC days; at least a full billing period must remain
+when accepted. Terms are immutable through expiry. The economy checks the exclusive
+end before posting, so a delayed observer or restart cannot charge an expired term.
+
+All new data is bounded: 128 subscriptions/quotes, eight live quotes per issuer,
+32 treaty counterparties, and 32 observer reads/eight transition notices per fire.
+A derived economy index audits service-owned obligations at boot without walking
+unrelated money records. Legacy obligations omit the optional service terms and
+retain their previous wire shape. Missing owner records and forged obligation
+terms refuse boot. Existing economic notices provide transition information;
+help and the public board show prices, cancellation, arrears and cure commands.
+
+### Validation
+
+Local: 72 cumulative production scenarios (21 boot, seven IC-loop, 44 relay),
+207 economy tests, 19 propagation tests, and 134 kernel contracts passed; the full
+contract suite has eight explicit ignored tests. The final runtime correction
+reran all 44 relay stories, all 207 economy tests, the panic-budget and ownership
+contracts, and Clippy. The final runtime also passes all 21 port scenarios and all 44 relay scenarios; changed CI tests pass Clippy. Rustdoc for the changed public APIs passes with warnings denied.
+
+Linux: 72 production scenarios, 207 economy tests, 19 propagation tests,
+23 targeted kernel contracts including the panic budget, one capability-vocabulary
+check, four two-process gateway tests, and the real Redis process-death test passed.
+The additional CI reproductions cover the money-hold census, bridge and all 21 port scenarios.
+Release build and web checks passed (zero Svelte errors/warnings). The final
+compiled runtime passed the complete live gate and baseline restoration.
+
+The live scenario checks actual TLS WebSocket and SSH entry points, scheduled
+installments, Priority/Standard/conventional delivery changes, empty and unauthorized
+payers, exact cure with a concurrent incident, duplicate confirmation, cancellation,
+a real government treasury, inbound delivery to a titled government unit, treaty expiry,
+notices, OOC channels and money conservation. It records six SIGKILL/restart
+boundaries. Fresh boot/reboot uses previously empty dev1 Redis database 8; a
+verified whole-world baseline is retained in database 7. Test payments and all
+world changes are restored only after passing evidence is captured. The dev2 PID
+must remain unchanged. Outbound titled-unit Sovereign dispatch is covered by the production-engine scenario. The server has no network puppet command; the live test does not claim to exercise one.
+
+### CI repairs included
+
+R8a run `40065228623` reported the same panic-budget regression in both kernel
+and rest jobs, a stale three-entry protected money-hold census, and the bridge
+fixture's old unpaid-Standard assumption. Removed the new production panic sites
+without raising budgets; settlement resolves its destination before the money
+post, and subscription terms are created with the original obligation. Updated
+the census to include the real `relay.message` money hold. The bridge fixture now
+uses the normal operator command to grant Standard courtesy, preserving its
+arrival gating and duplicate suppression assertions.
+
+The final TacSim integration job exposed three real old-lane/held-port boot failures.
+Retail initialization now defers capitalization when the clearing port map is absent
+or held for repair, preserving the existing repair path and every committed money
+identity check. The normal five-second cadence initializes the market and its
+subscription book after a real lane upgrade. The fourth port test now advances the
+next capitalization tick before asserting that a settled world's reboot posts nothing.
+All 21 port scenarios pass, including explicit no-funding-on-held-map and
+upgrade-without-another-reboot assertions.
+
+The final compiled archive includes all runtime, CI-test and harness corrections.
+The web build stamp is the parent commit because this workflow commits only after
+integration. Evidence records the exact tree, archive and executable hashes.
+Three failed harness runs are retained on dev1: journal wording, a nonexistent
+object-execution use of campaign @force, and the lowercase obligation display.
+The superseded candidate's full logs and Redis snapshot are retained under
+r8b-evidence/superseded-145e8d4. Database 8 was reset for the final candidate only
+after preserving that complete RDB; database 7's verified baseline was reused.
+
+[Acceptance metadata](evidence/relay-r8b-2026-10-24/metadata.json) records 101
+authenticated TLS WebSocket commands, eight SSH checks and six actual process
+crashes. Observed socket latency was 50 ms median, 52 ms p95 and 79 ms maximum;
+this is gate observation, not a load benchmark.
+[Live evidence](evidence/relay-r8b-2026-10-24/live.json) records all six passed
+scenarios. The running server SHA-256 is
+`b896c9efd1c0dc4b4b5553de949ee7a137239bab5a6c3a6d52d0917bda0d7f28`;
+the archive/tree and gateway hashes are recorded alongside it. Running process
+executables match the built binaries. Fresh database 8 boot/reboot passed; the
+4,808-key database-7 baseline was restored with original expiry deadlines, empty
+billing/purchase books, one capital receipt, two nodes and one pair. Both dev1
+services are active, and dev2 remains PID 539467. No credentials, configuration
+or database snapshots are committed. The milestone push triggers normal CI; its
+long-running result remains owner-monitored while R9a begins.

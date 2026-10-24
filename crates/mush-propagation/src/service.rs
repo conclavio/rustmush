@@ -38,7 +38,7 @@ impl Class {
             _ => Self::Deferred,
         }
     }
-    fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s {
             "sovereign" => Some(Self::Sovereign),
             "priority" => Some(Self::Priority),
@@ -62,7 +62,7 @@ impl Principal {
             Self::Organization(id) => format!("org:{id}"),
         }
     }
-    fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         if let Some(id) = s.strip_prefix("org:") {
             id.parse().ok().map(Self::Organization)
         } else {
@@ -82,7 +82,7 @@ pub enum ServiceState {
     Suspended,
 }
 impl ServiceState {
-    fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s {
             "served" => Some(Self::Served),
             "throttled" => Some(Self::Throttled),
@@ -226,6 +226,8 @@ pub struct Audit {
 pub struct State {
     #[serde(default)]
     pub commerce: Option<crate::commerce::Market>,
+    #[serde(default)]
+    pub billing: Option<crate::billing::Book>,
     pub config: Config,
     pub grants: Vec<Grant>,
     #[serde(default)]
@@ -239,6 +241,7 @@ impl State {
     pub fn new(config: Config) -> Self {
         Self {
             commerce: None,
+            billing: None,
             config,
             grants: vec![],
             restrictions: vec![],
@@ -250,6 +253,9 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
+        if let Some(billing) = &self.billing {
+            billing.validate()?;
+        }
         if let Some(market) = &self.commerce {
             market.validate()?;
         }
@@ -364,6 +370,44 @@ impl State {
 /// This bridge may use organization, knowledge, canon and front owners. It must
 /// preflight all fallible work before mutating, and must never disclose payloads.
 pub trait Integration: Send + Sync + std::fmt::Debug {
+    fn represents(&self, _w: &World, _actor: ObjId, _principal: &Principal) -> bool {
+        false
+    }
+    fn government(&self, _w: &World, _org: u64) -> bool {
+        false
+    }
+    fn enroll(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _s: &crate::billing::Subscription,
+        _t: &crate::billing::Tariff,
+    ) -> Result<u64, String> {
+        Err("Subscriptions unavailable".into())
+    }
+    fn subscription(
+        &self,
+        _w: &World,
+        _s: &crate::billing::Subscription,
+    ) -> Result<crate::billing::View, String> {
+        Err("Subscriptions unavailable".into())
+    }
+    fn cancel_subscription(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _s: &crate::billing::Subscription,
+    ) -> Result<(), String> {
+        Err("Subscriptions unavailable".into())
+    }
+    fn cure_subscription(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _s: &crate::billing::Subscription,
+        _missed: u32,
+        _cured: u32,
+    ) -> Result<u64, String> {
+        Err("Subscriptions unavailable".into())
+    }
+    fn subscription_notice(&self, _ctx: &mut Ctx<'_>, _p: &Principal, _text: String) {}
     fn payer(&self, _w: &World, _actor: ObjId, _account: u64) -> Result<(), String> {
         Err("Relay commerce unavailable.".into())
     }
@@ -426,7 +470,9 @@ pub fn status(
             if principals.len() > 2 || api.sanction(world, operator, &principals).is_some() {
                 ServiceState::Suspended
             } else {
-                state.status(operator, &principals)
+                state
+                    .status(operator, &principals)
+                    .max(crate::billing::status(world, operator, &principals))
             }
         })
         .max()
@@ -519,12 +565,21 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
     } else {
         lines.push("No paid service composed; operator grants only, no payment charged.".into());
     }
+    if let Some(line) = crate::billing::board(world) {
+        lines.push(line);
+    }
     for (id, p) in &registry.pairs {
         if p.class_policy != mush_sim::relay::ClassPolicy::Exchange {
             continue;
         }
         let status = status(state, world, id, (actor, actor));
-        let base = state.class(id, actor);
+        let base = integration(world)
+            .and_then(|api| api.operator(world, id))
+            .and_then(|operator| crate::billing::class(world, operator, actor))
+            .map_or_else(
+                || state.class(id, actor),
+                |class| class.min(state.class(id, actor)),
+            );
         let class = match status {
             ServiceState::Served => base.label(),
             ServiceState::Throttled => base.demoted().label(),
@@ -537,6 +592,9 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one relay command switch."));
+    }
+    if crate::billing::handles(ctx) {
+        return crate::billing::command(ctx);
     }
     if crate::commerce::handles(ctx) {
         return crate::commerce::command(ctx);
@@ -603,6 +661,9 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx,
             format!("{id}: {:?}.", status(&state, ctx.w, &id, (viewer, viewer))),
         );
+        for line in crate::billing::status_lines(ctx.w, operator, &principals) {
+            say(ctx, line);
+        }
         if let Some(reason) = api.sanction(ctx.w, operator, &principals) {
             say(ctx, reason);
         }
@@ -868,7 +929,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+relay".into(),
             shape: ArgShape::EqPair,
-            switches: ["outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
+            switches: ["subscribe","enroll","subscriptions","unsubscribe","cure","treaty","outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
                 .into_iter().map(Into::into).collect(),
             help: "+relay: public tariff board. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
             ..Default::default()

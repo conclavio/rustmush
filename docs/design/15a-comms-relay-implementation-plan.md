@@ -1,6 +1,6 @@
 # 15a — Relay backbone implementation plan
 
-**Draft 0.4 — 2026-10-23.** Initially grounded against `origin/main` at
+**Draft 0.5 — 2026-10-24.** Initially grounded against `origin/main` at
 `7c886408c1a1d4d0283b886bdd62fbbe2f8fe7af`.
 Parent: [15 — Communications](15-comms-relay-backbone.md).
 This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
@@ -11,7 +11,7 @@ passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
 Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
 R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-implemented and its dev1 gate passed. R6b, R3, R4, R7 and R8a have now passed their live gates; the remaining authorized train continues with R8b.
+implemented and its dev1 gate passed. R6b, R3, R4, R7, R8a and R8b have now passed their live gates; the remaining authorized train continues with R9a.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -421,6 +421,15 @@ paying an invoice clears arrears, never an incident sanction or anathema.
 miss payments, observe actual delivery changes, pay and recover. Test treaty expiry,
 two concurrent restriction reasons, clock changes and restart around settlement.
 Repeated cadence fires cannot bill twice or clear the wrong suspension. **Stop.**
+
+**Result (2026-10-24):** implementation and dev1 gate passed on source tree
+`680568ec8100b69060d0c0e1ce61ff7facc4ee7c`: 101 TLS WebSocket commands, eight SSH
+checks, six actual process crashes, and fresh Redis-8 boot/reboot. Actual installments,
+arrears, concurrent sanctions, full cure, cancellation, a government treasury and
+exclusive treaty expiry passed with conserved money. The verified Redis-7 baseline
+was restored; dev2 stayed unchanged. CI-discovered old-lane/held-port initialization
+and three stale test inventories are repaired. See 15b and its exact candidate
+evidence; normal CI remains owner-monitored. Commit/push precedes R9a.
 
 ### Gate 11 — R9a: manufacture and deploy a private pair
 

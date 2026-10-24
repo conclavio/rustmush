@@ -234,7 +234,9 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
                         }
                     } else if store
                         .snapshot()
-                        .hold(HoldId(p.hold.expect("validated purchase")))
+                        .hold(HoldId(
+                            p.hold.ok_or("Consumed purchase has no hold identity")?,
+                        ))
                         .is_some()
                     {
                         return Err("relay settled hold identity drift".into());
@@ -270,7 +272,11 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("port map missing")?
         .port_map(&lane, &port);
     let crate::port::PortMapState::Present(map) = mapped else {
-        return Err("Exchange clearing port map unavailable".into());
+        // An old lane has no clearing map yet; a held map must remain available
+        // for staff repair. Neither case authorizes creating or funding retail.
+        // The ordinary capital cadence retries after the owner repairs/upgrades
+        // the map. Existing account/hold integrity checks above still fail closed.
+        return Ok(());
     };
     let row = map
         .orgs
@@ -373,10 +379,21 @@ pub fn register(reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::Mod
 }
 
 fn capital_tick(ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>) {
-    if mush_propagation::commerce::current(ctx.w).is_some_and(|m| m.capital_transaction.is_some()) {
+    if mush_propagation::commerce::current(ctx.w).is_some_and(|m| m.capital_transaction.is_some())
+        && mush_propagation::billing::current(ctx.w).is_some()
+    {
         return;
     }
     if let Err(error) = boot(ctx) {
         tracing::warn!(%error, "relay capitalization unavailable");
+        return;
+    }
+    // A lane upgraded after boot can install the market on this cadence. Its
+    // subscription book must be initialized at the same boundary, without a
+    // second reboot or a periodic scan of existing subscriptions.
+    if mush_propagation::billing::current(ctx.w).is_none()
+        && let Err(error) = crate::relay_billing::boot(ctx)
+    {
+        tracing::warn!(%error, "relay subscriptions unavailable");
     }
 }

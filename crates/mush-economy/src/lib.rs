@@ -93,6 +93,7 @@ mod snapshot;
 mod clock;
 mod contract;
 mod obligation;
+pub use obligation::ServiceTerms;
 
 // E4b1 — the graded escalation ladder and the one economy sweep tick.
 mod escalation;
@@ -260,13 +261,13 @@ pub use api::{
     CadenceError, ENGINE_OWNED_RESERVATIONS, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY,
     ObligationSpec, PostOutcome, account_key, acknowledge_escalation, approval_key, asset_key,
     cadence_key, cancel_obligation, contract_key, create_cadence, create_obligation,
-    create_system_obligation, create_vault, hold_key, idempotency_resolved, instrument_key,
-    is_engine_owned_reservation, issue_title, mark_canon_published,
-    obligation_key as obligation_doc_key, open_account, open_escalation, post, post_capability,
-    register_instrument, rehome_vault, reinstate_obligation, resume_obligation, reverse,
-    set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
-    set_system_obligation, set_vault_status, settle_engine_reservation, suspend_obligation,
-    vault_key,
+    create_service_obligation, create_system_obligation, create_vault, cure_service_obligation,
+    hold_key, idempotency_resolved, instrument_key, is_engine_owned_reservation, issue_title,
+    mark_canon_published, obligation_key as obligation_doc_key, open_account, open_escalation,
+    post, post_capability, register_instrument, rehome_vault, reinstate_obligation,
+    resume_obligation, reverse, set_account_approval, set_account_status, set_asset_frozen,
+    set_economy_frozen, set_system_obligation, set_vault_status, settle_engine_reservation,
+    suspend_obligation, vault_key,
 };
 pub use commands::{
     ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,

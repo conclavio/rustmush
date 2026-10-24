@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized] target(s) in 0.20s
+     Running tests/e7c11.rs (target/debug/deps/e7c11-f0adba89fe4ccc31)
+
+running 1 test
+test vf_g2_engine_owned_reservations_is_a_money_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

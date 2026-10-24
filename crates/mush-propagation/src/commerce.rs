@@ -156,13 +156,12 @@ fn pending(e: &Envelope) -> bool {
 fn unspent(e: &Envelope) -> bool {
     pending(e) && e.path().is_empty()
 }
-fn persist(ctx: &mut Ctx<'_>) {
-    let value = ctx
-        .w
-        .module_state::<PropagationStore>()
-        .expect("propagation composed")
-        .transport
-        .to_value();
+pub(crate) fn persist(ctx: &mut Ctx<'_>) {
+    let Some(book) = ctx.w.module_state::<PropagationStore>() else {
+        tracing::error!("relay persistence requires the propagation store");
+        return;
+    };
+    let value = book.transport.to_value();
     ctx.persist(ModuleOp {
         ns: crate::NS.into(),
         op: ModuleWrite::JsonSet {
@@ -212,12 +211,16 @@ pub fn install(ctx: &mut Ctx<'_>, operator: u64, payee: u64, tariff: Tariff) -> 
 }
 /// Complete the once-only capitalization handoff in the money post's batch.
 pub fn capitalized(ctx: &mut Ctx<'_>, transaction: u64) {
-    ctx.w
+    let Some(market) = ctx
+        .w
         .module_state_mut::<PropagationStore>()
         .and_then(|s| s.transport.service.as_mut())
         .and_then(|s| s.commerce.as_mut())
-        .expect("market installed")
-        .capital_transaction = Some(transaction);
+    else {
+        tracing::error!("relay capitalization requires the installed market");
+        return;
+    };
+    market.capital_transaction = Some(transaction);
     persist(ctx);
 }
 /// A purchased class never substitutes a payer identity for either endpoint.
@@ -233,7 +236,10 @@ pub fn base(state: &service::State, w: &World, pair: &CanonicalId, e: &Envelope)
                 return if valid { p.class } else { Class::Deferred };
             }
             if e.id() >= m.legacy_before {
-                return state.class(pair, e.issuer());
+                return crate::billing::class(w, m.operator, e.issuer()).map_or_else(
+                    || state.class(pair, e.issuer()),
+                    |class| class.min(state.class(pair, e.issuer())),
+                );
             }
             return e.transit().and_then(|r| r.service.as_ref()).map_or_else(
                 || {
@@ -318,15 +324,21 @@ pub fn settle_pass(ctx: &mut Ctx<'_>, book: &mut PropagationStore) -> bool {
         return false;
     };
     let p = &pending[0];
+    // Resolve the provisional destination before money moves. This mutable
+    // borrow belongs to the local post-image, independent of the world adapter.
+    let Some(purchase) = book
+        .transport
+        .service
+        .as_mut()
+        .and_then(|s| s.commerce.as_mut())
+        .and_then(|m| m.purchases.get_mut(&p.id))
+    else {
+        tracing::error!(purchase = p.id, "relay settlement destination missing");
+        return false;
+    };
     match api.settle(ctx, p, true) {
         Ok(tx) => {
-            book.transport
-                .service
-                .as_mut()
-                .and_then(|s| s.commerce.as_mut())
-                .and_then(|m| m.purchases.get_mut(&p.id))
-                .expect("quoted purchase")
-                .transaction = Some(tx);
+            purchase.transaction = Some(tx);
             true
         }
         Err(error) => {
@@ -374,15 +386,21 @@ pub fn sweep(ctx: &mut Ctx<'_>) {
         } else {
             None
         };
-        let m = ctx
+        // The economy adapter cannot remove this owner's installed state.
+        // Preserve the identified post-image without a second purchase lookup.
+        let Some(market) = ctx
             .w
             .module_state_mut::<PropagationStore>()
             .and_then(|s| s.transport.service.as_mut())
             .and_then(|s| s.commerce.as_mut())
-            .expect("market exists");
-        let p = m.purchases.get_mut(&p.id).expect("purchase exists");
-        p.phase = Phase::Released;
-        p.transaction = tx;
+        else {
+            tracing::error!(purchase = p.id, "relay release lost its installed market");
+            return;
+        };
+        let mut released = p;
+        released.phase = Phase::Released;
+        released.transaction = tx;
+        market.purchases.insert(released.id, released);
         persist(ctx);
     }
 }
@@ -580,7 +598,7 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.w
             .module_state_mut::<PropagationStore>()
             .and_then(|s| s.transport.service.as_mut())
-            .expect("service exists")
+            .ok_or_else(|| fail("Relay service unavailable."))?
             .commerce = Some(market);
         persist(ctx);
         say(ctx, line(&p));
@@ -636,13 +654,18 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         p.phase = Phase::Released;
     }
-    ctx.w
+    if let Some(installed) = ctx
+        .w
         .module_state_mut::<PropagationStore>()
         .and_then(|s| s.transport.service.as_mut())
         .and_then(|s| s.commerce.as_mut())
-        .expect("market exists")
-        .purchases
-        .insert(id, p.clone());
+    {
+        installed.purchases.insert(id, p.clone());
+    } else {
+        // An installed owner slot cannot disappear during the synchronous
+        // economy call; retain a diagnostic if composition violates that seam.
+        tracing::error!(purchase = id, "relay purchase lost its installed market");
+    }
     persist(ctx);
     say(ctx, line(&p));
     Ok(())

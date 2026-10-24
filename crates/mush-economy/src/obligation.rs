@@ -369,6 +369,19 @@ pub enum ObligationEvent {
     },
 }
 
+/// Optional terms for a ruleset's recurring service. The ordinary obligation
+/// scheduler remains the money owner; service expiry never depends on timer order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTerms {
+    /// Exclusive IC expiry; no period is collected at or after this instant.
+    pub until_ic: Option<i64>,
+    /// Missed installments actually repaid by the service-cure posting seam.
+    pub cured_misses: u32,
+    /// Receipt for the last cure, committed with the counter and lifecycle change.
+    pub cure_transaction: Option<TransactionId>,
+}
+
 /// A recurring debt: a fixed amount per period, on a named clock, with bounded
 /// catch-up and a grace allowance.
 ///
@@ -433,6 +446,9 @@ pub struct Obligation {
     /// How many periods have been **missed**, ever.
     #[serde(default)]
     pub missed_total: u32,
+    /// Present only for explicitly enrolled recurring services (doc 15 R8b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_terms: Option<ServiceTerms>,
     /// How many periods have been **forgiven**, ever (D-E4-14).
     #[serde(default)]
     pub forgiven_total: u32,

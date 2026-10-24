@@ -69,6 +69,12 @@ async fn r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_pro
         let luna=tw.world().module_state::<mush_sim::relay::RelayStore>().unwrap().registry().unwrap().nodes[&mush_core::CanonicalId::new("malapert").unwrap()].coverage[0];
         let ceres=tw.world().module_state::<mush_sim::relay::RelayStore>().unwrap().registry().unwrap().nodes[&mush_core::CanonicalId::new("ceres").unwrap()].coverage[0];
         for line in [format!("@teleport me={luna}"),format!("@teleport {bob}={ceres}"),"@tacsim/time rate=24".into(),"@channel/create Radio".into()] {tw.run(GOD,&line);}
+        // R8a made unpurchased traffic Deferred. This bridge test isolates the
+        // observer-arrival boundary, so explicitly grant Standard courtesy through
+        // the operator command; the retail gate covers payments and free waiting.
+        let grant=tw.run(GOD,"+relay/grant luna_ceres/#1=standard");
+        let reply=tw.seen_by(&grant,GOD).join("\n");
+        assert!(reply.contains("Class grant recorded"), "{reply}");
         for flag in ["ic","logged","persist","relay"]{tw.run(GOD,&format!("@channel/set Radio={flag}"));}
         tw.run(GOD,"addcom radio=Radio");tw.run(bob,"addcom radio=Radio");tw.run(GOD,"@channel/set Public=relay");
         let channel=tw.world().module_state::<mush_comsys::ComsysState>().unwrap().channel_by_name("Radio").unwrap().id;

@@ -4970,6 +4970,7 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         history: Vec::new(),
         settled_total: 0,
         missed_total: 0,
+        service_terms: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,

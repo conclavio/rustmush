@@ -1101,6 +1101,7 @@ fn obligation() -> Obligation {
         history: Vec::new(),
         settled_total: 0,
         missed_total: 0,
+        service_terms: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -3138,4 +3139,33 @@ fn reservation_namespace_index_tracks_capture_release_and_purpose_replacement() 
             .collect::<Vec<_>>(),
         s.held_reservations("other.product").collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn service_obligation_reverse_index_retains_cancelled_debt_and_rebuilds_from_records() {
+    let mut snap = EconomySnapshot::new();
+    let mut o = obligation();
+    o.cause = ObligationCause::Ruleset {
+        namespace: "relay.billing".into(),
+    };
+    o.service_terms = Some(mush_economy::ServiceTerms {
+        until_ic: None,
+        cured_misses: 0,
+        cure_transaction: None,
+    });
+    snap.put_obligation(o.clone());
+    assert_eq!(snap.service_obligations("relay.billing").count(), 1);
+    o.status = ObligationStatus::Cancelled;
+    o.missed_total = 1;
+    snap.put_obligation(o.clone());
+    assert_eq!(snap.service_obligations("relay.billing").count(), 1);
+    let mut rebuilt = EconomySnapshot::new();
+    for row in snap.obligations() {
+        rebuilt.put_obligation(row.clone());
+    }
+    assert_eq!(rebuilt.service_obligations("relay.billing").count(), 1);
+    o.service_terms.as_mut().unwrap().cured_misses = 1;
+    snap.put_obligation(o);
+    assert_eq!(snap.service_obligations("relay.billing").count(), 0);
+    assert_eq!(snap.service_obligations("housing").count(), 0);
 }
