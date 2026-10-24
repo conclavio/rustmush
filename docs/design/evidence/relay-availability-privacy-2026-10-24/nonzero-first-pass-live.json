@@ -1,0 +1,2959 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T20:29:33.981Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 45 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #1=availability gate transfer",
+      "reply": "#1 is not placed",
+      "wallMs": 52,
+      "replyBytes": 16
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #678 R6bob1b16df#679 R6carol1f8127#684 Lunar entanglement foundry#706 Long Vigil#728 Postmaster Solveig Adebayo-Krishnan#731 Fleet Lunar relay cradle Pressure Lobby <PL> pllobbyin winter dusk",
+      "wallMs": 53,
+      "replyBytes": 810
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #678=availability gate transfer",
+      "reply": "#678 is not placed",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has left.\nemit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=availability gate transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#202",
+      "reply": "emit R6carol1f8127 has left.\nemit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 72
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 25,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 50,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/audit private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/audit no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/discover private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/discover no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/publish private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/publish no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/access private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/access no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/network private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/network no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 26,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/load private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/load no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/audit private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 50,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/audit no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/access private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/access no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=discover",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 26,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "private_407fdca2ba48ecec: Served; private carriage not granted.",
+      "wallMs": 52,
+      "replyBytes": 63
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=24 relay.manage",
+      "reply": "Granted relay.manage to R6carol1f8127 over org #24's scope tree (grant #26).",
+      "wallMs": 25,
+      "replyBytes": 76
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network private_407fdca2ba48ecec=public",
+      "reply": "Permission denied: public carriage requires relay.publish authority.",
+      "wallMs": 26,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=none",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 25,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 500000",
+      "reply": "Paid: transaction #100 posted.",
+      "wallMs": 26,
+      "replyBytes": 30
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 46 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4050 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 857
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/100 t · 0.0/120 m³ — 100 t free and 120.0 m³ free.\nRoom on this board: structural alloy stock 100 t (mass), instrument boards, crated 47 t (packed volume), reaction mass 1800 t (mass), voyage provisions 1200 crew-days (mass and packed volume).\nPayload 5.1 t of 1920 t.\nBurn 637 t (tank 0 t; 637 t short). Flip and burn at 0.72 m/s² (50 milli-g rated, throttle 1000‰): Δv 1039 km/s, peak 519 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 17 crew-days (locker 0; 17 short).\nPassage 16.5 IC days ≈ 6 min real; arrives about 20:36 UTC today.\nWindow: the best departure in the next 30 IC days is 2353-01-07 (in 30 IC days): 6 min and 621 t, under a minute and 16 t less than today.\nNothing was written.",
+      "wallMs": 25,
+      "replyBytes": 759
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #28=640",
+      "reply": "Quote #15: 640 × 60.00cr = 38400.00cr — good until 1792877378 (real time). It reserves nothing; take it up with +market/accept #15.",
+      "wallMs": 26,
+      "replyBytes": 134
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #15",
+      "reply": "Queued.\nContract #18 has been offered to you (@contract/show #18).\nContract #18 is active: every party has accepted.\nAgreed. Contract #18 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #32=19",
+      "reply": "Quote #16: 19 × 10.00cr = 190.00cr — good until 1792877379 (real time). It reserves nothing; take it up with +market/accept #16.",
+      "wallMs": 26,
+      "replyBytes": 131
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #16",
+      "reply": "Queued.\nContract #19 has been offered to you (@contract/show #19).\nContract #19 is active: every party has accepted.\nAgreed. Contract #19 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/100 t · 0.0/120 m³ — 100 t free and 120.0 m³ free.\nRoom on this board: structural alloy stock 100 t (mass), instrument boards, crated 47 t (packed volume), reaction mass 1160 t (mass), voyage provisions 1181 crew-days (mass and packed volume).\nPayload 645.2 t of 1920 t.\nBurn 690 t (tank 640 t; 50 t short). Flip and burn at 0.62 m/s² (50 milli-g rated, throttle 1000‰): Δv 965 km/s, peak 482 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 18 crew-days (locker 19; 1 left).\nPassage 17.8 IC days ≈ 7 min real; arrives about 20:36 UTC today.\nWindow: the best departure in the next 30 IC days is 2353-01-07 (in 30 IC days): 6 min and 673 t, under a minute and 17 t less than today.\nNothing was written.",
+      "wallMs": 25,
+      "replyBytes": 760
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #28=53",
+      "reply": "Quote #17: 53 × 60.00cr = 3180.00cr — good until 1792877381 (real time). It reserves nothing; take it up with +market/accept #17.",
+      "wallMs": 25,
+      "replyBytes": 132
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #17",
+      "reply": "Queued.\nContract #20 has been offered to you (@contract/show #20).\nContract #20 is active: every party has accepted.\nAgreed. Contract #20 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #32=1",
+      "reply": "Quote #18: 1 × 10.00cr = 10.00cr — good until 1792877383 (real time). It reserves nothing; take it up with +market/accept #18.",
+      "wallMs": 25,
+      "replyBytes": 129
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #18",
+      "reply": "Queued.\nContract #21 has been offered to you (@contract/show #21).\nContract #21 is active: every party has accepted.\nAgreed. Contract #21 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 51,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/100 t · 0.0/120 m³ — 100 t free and 120.0 m³ free.\nRoom on this board: structural alloy stock 100 t (mass), instrument boards, crated 47 t (packed volume), reaction mass 1107 t (mass), voyage provisions 1180 crew-days (mass and packed volume).\nPayload 698.2 t of 1920 t.\nBurn 695 t (tank 693 t; 2 t short). Flip and burn at 0.62 m/s² (50 milli-g rated, throttle 1000‰): Δv 959 km/s, peak 480 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 18 crew-days (locker 20; 2 left).\nPassage 17.9 IC days ≈ 7 min real; arrives about 20:36 UTC today.\nWindow: the best departure in the next 30 IC days is 2353-01-08 (in 30 IC days): 7 min and 677 t, under a minute and 18 t less than today.\nNothing was written.",
+      "wallMs": 27,
+      "replyBytes": 759
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/quote #28=5",
+      "reply": "Quote #19: 5 × 60.00cr = 300.00cr — good until 1792877384 (real time). It reserves nothing; take it up with +market/accept #19.",
+      "wallMs": 25,
+      "replyBytes": 130
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+market/accept #19",
+      "reply": "Queued.\nContract #22 has been offered to you (@contract/show #22).\nContract #22 is active: every party has accepted.\nAgreed. Contract #22 carries it; your payment is escrowed and settles when the terms are met. Imogen Batista-Okeke signs for Highport Victualling Office.\nDone.",
+      "wallMs": 50,
+      "replyBytes": 276
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/plan deimos",
+      "reply": "Plan for Voltaire Anchorage:\nCargo: 0/100 t · 0.0/120 m³ — 100 t free and 120.0 m³ free.\nRoom on this board: structural alloy stock 100 t (mass), instrument boards, crated 47 t (packed volume), reaction mass 1102 t (mass), voyage provisions 1180 crew-days (mass and packed volume).\nPayload 703.2 t of 1920 t.\nBurn 695 t (tank 698 t; 3 t left). Flip and burn at 0.62 m/s² (50 milli-g rated, throttle 1000‰): Δv 958 km/s, peak 479 km/s, exhaust 6000 km/s; a farther port costs more.\nStores 18 crew-days (locker 20; 2 left).\nPassage 17.9 IC days ≈ 7 min real; arrives about 20:36 UTC today.\nWindow: the best departure in the next 30 IC days is 2353-01-08 (in 30 IC days): 7 min and 678 t, under a minute and 17 t less than today.\nNothing was written.",
+      "wallMs": 26,
+      "replyBytes": 758
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relayfleet",
+      "reply": "A Half Afloat: 8/8; hull #706; 6 of 6 treasury payments; Postmaster #728 consent true; refit true; launched false; mounted true. +relayfleet/fund; /consent yes; /refit wo#<16-hex>; /remove. Command is an @asset/assign relationship; stores use the Fleet's real vault.",
+      "wallMs": 26,
+      "replyBytes": 266
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/board",
+      "reply": "You cycle the lock into the Long Vigil.\nFleet Airlock #707 An eight-place naval transfer lock, pressure doors dogged in sequence. Inner Hatch <I> innerinpassage winter afternoon\nAboard the Long Vigil (CF-H-01), docked at Aitken Highport.",
+      "wallMs": 50,
+      "replyBytes": 237
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+ship/undock deimos",
+      "reply": "Queued.\nClearance filed for Voltaire Anchorage: the plan burns 694 t of reaction mass and 18 crew-days; arrival in 17.9 IC days, about 20:37 UTC today.\nDone.",
+      "wallMs": 52,
+      "replyBytes": 157
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 47 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4049 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@relay/disable luna_ceres.luna",
+      "reply": "Relay half luna_ceres.luna: disable=false; revision 39.",
+      "wallMs": 51,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant private_407fdca2ba48ecec/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=AP class is not access/checked transit",
+      "reply": "MAIL: Message 103 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (1 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=discover,use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 51,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=discover",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 52,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=AP both endpoints required/checked transit",
+      "reply": "MAIL: Message 104 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (2 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=discover,use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 50,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant private_407fdca2ba48ecec/#679=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=AP revoke queued/checked transit",
+      "reply": "MAIL: Message 105 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=discover",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 50,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (3 visited).\nDetection pass: nothing due.",
+      "wallMs": 51,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=discover,use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 50,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=24 economy.account.post",
+      "reply": "Granted economy.account.post to R6carol1f8127 over org #24's scope tree (grant #27).",
+      "wallMs": 51,
+      "replyBytes": 84
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/represent org:24",
+      "reply": "Permission denied: relay.speak authority is required.",
+      "wallMs": 26,
+      "replyBytes": 53
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=24 relay.speak",
+      "reply": "Granted relay.speak to R6carol1f8127 over org #24's scope tree (grant #28).",
+      "wallMs": 51,
+      "replyBytes": 75
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/represent org:24",
+      "reply": "Communication principal selected; existing traffic is unchanged.",
+      "wallMs": 26,
+      "replyBytes": 64
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=none",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 51,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=AP frozen organization/checked transit",
+      "reply": "MAIL: Message 106 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 25,
+      "replyBytes": 148
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/represent personal",
+      "reply": "Communication principal selected; existing traffic is unchanged.",
+      "wallMs": 25,
+      "replyBytes": 64
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 25,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@org/status 24=suspended",
+      "reply": "Org #24 is now suspended.",
+      "wallMs": 25,
+      "replyBytes": 25
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 0 relayed, 0 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (4 visited).\nDetection pass: nothing due.",
+      "wallMs": 52,
+      "replyBytes": 148
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/represent org:24",
+      "reply": "Permission denied: relay.speak authority is required.",
+      "wallMs": 25,
+      "replyBytes": 53
+    },
+    {
+      "actor": "God",
+      "line": "@org/status 24=active",
+      "reply": "Org #24 is now active.",
+      "wallMs": 50,
+      "replyBytes": 22
+    },
+    {
+      "actor": "God",
+      "line": "+relay/network private_407fdca2ba48ecec=public",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 51,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "private_407fdca2ba48ecec: Served; private carriage allowed.",
+      "wallMs": 26,
+      "replyBytes": 59
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant private_407fdca2ba48ecec/#679=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "@mail/quick #678=AP public carriage/checked transit",
+      "reply": "MAIL: Message 107 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/pass",
+      "reply": "Delivery pass: 1 relayed, 1 delivered, 0 acknowledged, 0 superseded, 0 expired, 0 waiting on a jammed link (5 visited).\nDetection pass: nothing due.",
+      "wallMs": 26,
+      "replyBytes": 148
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 48 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4048 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "+relay/network private_407fdca2ba48ecec=private",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 26,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 50,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167220732, transmitted 74167220735, arrived 74167220735; 3 units.\nluna_ceres Mail Standard: queued 74167220670, transmitted 74167220730, arrived 74167220730; 3 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146413, arrived 74167146413; 4 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 26,
+      "replyBytes": 1314
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=discover,use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 52,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "private_407fdca2ba48ecec Mail Priority: queued 74202886056, transmitted 74202886056, arrived 74202886056; 1 units.\nluna_ceres Mail Priority: queued 74167220732, transmitted 74167220735, arrived 74167220735; 3 units.\nluna_ceres Mail Standard: queued 74167220670, transmitted 74167220730, arrived 74167220730; 3 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146413, arrived 74167146413; 4 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 26,
+      "replyBytes": 1429
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#678=use",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 52,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167220732, transmitted 74167220735, arrived 74167220735; 3 units.\nluna_ceres Mail Standard: queued 74167220670, transmitted 74167220730, arrived 74167220730; 3 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146413, arrived 74167146413; 4 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 26,
+      "replyBytes": 1314
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 50,
+      "replyBytes": 66
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/receipts",
+      "reply": "luna_ceres Mail Priority: queued 74167220732, transmitted 74167220735, arrived 74167220735; 3 units.\nluna_ceres Mail Standard: queued 74167220670, transmitted 74167220730, arrived 74167220730; 3 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146413, arrived 74167146413; 4 units.\nluna_ceres Mail Priority: queued 74167146406, transmitted 74167146412, arrived 74167146412; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146411, arrived 74167146411; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Mail Priority: queued 74167146405, transmitted 74167146410, arrived 74167146410; 4 units.\nluna_ceres Order Priority: queued 74167146405, transmitted 74167146407, arrived 74167146407; 4 units.\nluna_ceres Mail Deferred: queued 74167131871, transmitted 74167142731, arrived 74167142731; 8 units.\nluna_ceres Mail Standard: queued 74167131870, transmitted 74167131930, arrived 74167131930; 8 units.\nluna_ceres Mail Priority: queued 74167131872, transmitted 74167131879, arrived 74167131879; 8 units.\nluna_ceres Mail Sovereign: queued 74167131873, transmitted 74167131878, arrived 74167131878; 8 units.",
+      "wallMs": 25,
+      "replyBytes": 1314
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 49 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4047 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #733=availability gate transfer",
+      "reply": "#733 is not placed",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #733=#202",
+      "reply": "emit APflooddc5482 has arrived.\nTeleported.",
+      "wallMs": 51,
+      "replyBytes": 43
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #734=availability gate transfer",
+      "reply": "#734 is not placed",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #734=#0",
+      "reply": "Teleported.",
+      "wallMs": 51,
+      "replyBytes": 11
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #735=availability gate transfer",
+      "reply": "#735 is not placed",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #735=#0",
+      "reply": "Teleported.",
+      "wallMs": 52,
+      "replyBytes": 11
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 0/unresolved",
+      "reply": "MAIL: Message 108 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 26,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 1/unresolved",
+      "reply": "MAIL: Message 109 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 2/unresolved",
+      "reply": "MAIL: Message 110 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 3/unresolved",
+      "reply": "MAIL: Message 111 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 4/unresolved",
+      "reply": "MAIL: Message 112 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 5/unresolved",
+      "reply": "MAIL: Message 113 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 6/unresolved",
+      "reply": "MAIL: Message 114 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 7/unresolved",
+      "reply": "MAIL: Message 115 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 8/unresolved",
+      "reply": "MAIL: Message 116 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 9/unresolved",
+      "reply": "MAIL: Message 117 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 10/unresolved",
+      "reply": "MAIL: Message 118 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 11/unresolved",
+      "reply": "MAIL: Message 119 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 77,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 12/unresolved",
+      "reply": "MAIL: Message 120 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 13/unresolved",
+      "reply": "MAIL: Message 121 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 14/unresolved",
+      "reply": "MAIL: Message 122 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734 #735=AP saturation 15/unresolved",
+      "reply": "MAIL: Message 123 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 71
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734=AP overflow/body",
+      "reply": "Your communication allowance is full; retry after pending traffic settles.",
+      "wallMs": 52,
+      "replyBytes": 74
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 25,
+      "replyBytes": 66
+    },
+    {
+      "actor": "APflooddc5482",
+      "line": "@mail/quick #734=AP overflow after restart/body",
+      "reply": "Your communication allowance is full; retry after pending traffic settles.",
+      "wallMs": 25,
+      "replyBytes": 74
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=availability gate transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#202",
+      "reply": "emit R6carol1f8127 has left.\nemit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 72
+    },
+    {
+      "actor": "God",
+      "line": "+order #679=AP unrelated order",
+      "reply": "Queued revision 1 to R6carol1f8127 as envelope #440. It is not their order until it arrives.",
+      "wallMs": 50,
+      "replyBytes": 92
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+orders/ack 440",
+      "reply": "Acknowledgement queued as envelope #441. Your commander learns nothing until it arrives.",
+      "wallMs": 26,
+      "replyBytes": 88
+    },
+    {
+      "actor": "God",
+      "line": "@channel/create APIndependent",
+      "reply": "Channel APIndependent created (id 9).  Join it with: addcom <alias>=APIndependent",
+      "wallMs": 26,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set APIndependent=ic",
+      "reply": "Flag ic set on APIndependent.",
+      "wallMs": 51,
+      "replyBytes": 29
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set APIndependent=logged",
+      "reply": "Flag logged set on APIndependent.",
+      "wallMs": 51,
+      "replyBytes": 33
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set APIndependent=persist",
+      "reply": "Flag persist set on APIndependent.",
+      "wallMs": 51,
+      "replyBytes": 34
+    },
+    {
+      "actor": "God",
+      "line": "addcom ap=APIndependent",
+      "reply": "Channel APIndependent added with alias 'ap'.",
+      "wallMs": 51,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "addcom ap=APIndependent",
+      "reply": "Channel APIndependent added with alias 'ap'.",
+      "wallMs": 26,
+      "replyBytes": 44
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "ap AP independent channel",
+      "reply": "Channel message queued for IC transit.",
+      "wallMs": 50,
+      "replyBytes": 38
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 26,
+      "replyBytes": 66
+    }
+  ],
+  "milestones": [
+    {
+      "test": "genuine-funded-checkpoint",
+      "fixture": {
+        "action": "prepare",
+        "sourceSha256": "7cecd71fe01a116829d3342fa7e6658da763f6c95528ecb74dcdd6d91a9a9c16",
+        "dev2Pid": 539467,
+        "keys": 5362,
+        "method": "portless RDB reader; dev1 DB0 RESTORE with AOF retained"
+      },
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": null,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      },
+      "pair": {
+        "capacity_units_per_ic_second": 1,
+        "class_policy": "private",
+        "halves": [
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_0",
+            "node": "private_407fdca2ba48ecec_0",
+            "object": 729,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_1",
+            "node": "private_407fdca2ba48ecec_1",
+            "object": 730,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    {
+      "test": "private-id-opaque-and-management-does-not-publish"
+    },
+    {
+      "test": "real-voyage-budget",
+      "from": 1,
+      "payer": 27,
+      "minor": 500000,
+      "total": "0"
+    },
+    {
+      "test": "real-carrier-departure",
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74202367648,
+        "hull": 706,
+        "manifest": {
+          "cargo": {},
+          "locker": 20,
+          "occupants": 1,
+          "tank": 698
+        },
+        "order": null,
+        "payload_kg": 703180,
+        "plan": {
+          "burn_t": 694,
+          "crew_days": 18,
+          "depart_ic": 74202367648,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "deimos",
+              "dist_km": 371253252,
+              "secs": 1551154,
+              "t0": 74202367648,
+              "t1": 74203918802,
+              "to": "voltaire_anchorage"
+            }
+          ],
+          "route": "aitken_voltaire",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 1551154
+        },
+        "route": "aitken_voltaire",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 13,
+        "seq": 1,
+        "unit_definition": "10a447cbba6bd6849f551cfb22763940264f72f1725d95112daf3a428c984bbb"
+      },
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": null,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      }
+    },
+    {
+      "test": "private-use-positive-at-both-ends-and-revoked-before-hop",
+      "queued": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886050,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 31,
+          "fallback": 706,
+          "key": "mail:v1:105:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 404,
+        "issued": {
+          "at": 74202886050,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 679,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:105:678:out",
+        "recipient": 678,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 706,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886050,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886050,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886050,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            },
+            {
+              "from": 202,
+              "pair": "private_407fdca2ba48ecec",
+              "relay": 732,
+              "to": 715
+            },
+            {
+              "from": 715,
+              "pair": null,
+              "relay": null,
+              "to": 706
+            }
+          ],
+          "next": 1,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": {
+            "at": 74202886050,
+            "clock": {
+              "generation": 47,
+              "kind": "world_ic"
+            }
+          },
+          "registry_revision": 39,
+          "service": {
+            "actual_ready": 74202886050,
+            "base_class": "standard",
+            "class": "standard",
+            "declared_s": 60,
+            "eligible_at": 74202886110,
+            "throttled": false,
+            "units": 1,
+            "version": 1
+          },
+          "version": 1
+        }
+      },
+      "rerouted": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886050,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 31,
+          "fallback": 706,
+          "key": "mail:v1:105:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 404,
+        "issued": {
+          "at": 74202886050,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 679,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:105:678:out",
+        "recipient": 678,
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 706,
+          "flight": {
+            "basis": "ship.v1:4ff0c46af94f4d0e1f9825a82f65283b13fcce2a497a7b079c83bfea07156c63",
+            "due": {
+              "at": 74202886465,
+              "clock": {
+                "generation": 47,
+                "kind": "world_ic"
+              }
+            },
+            "seconds": 414,
+            "started": {
+              "at": 74202886051,
+              "clock": {
+                "generation": 47,
+                "kind": "world_ic"
+              }
+            }
+          },
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886050,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886050,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886050,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 706
+            }
+          ],
+          "next": 0,
+          "physical_legs": 2,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      },
+      "ticket": {
+        "attempt": 1,
+        "burned_at": 74202367648,
+        "hull": 706,
+        "manifest": {
+          "cargo": {},
+          "locker": 20,
+          "occupants": 1,
+          "tank": 698
+        },
+        "order": null,
+        "payload_kg": 703180,
+        "plan": {
+          "burn_t": 694,
+          "crew_days": 18,
+          "depart_ic": 74202367648,
+          "law": "flip",
+          "legs": [
+            {
+              "body": "deimos",
+              "dist_km": 371253252,
+              "secs": 1551154,
+              "t0": 74202367648,
+              "t1": 74203918802,
+              "to": "voltaire_anchorage"
+            }
+          ],
+          "route": "aitken_voltaire",
+          "sky_rev": "900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a",
+          "throttle_permille": 1000,
+          "total_s": 1551154
+        },
+        "route": "aitken_voltaire",
+        "route_pack": "tacsim.lane.ceres_phobos",
+        "route_version": 13,
+        "seq": 1,
+        "unit_definition": "10a447cbba6bd6849f551cfb22763940264f72f1725d95112daf3a428c984bbb"
+      }
+    },
+    {
+      "test": "organization-snapshot-and-private-acl-restart",
+      "signal": "SIGKILL",
+      "gateway": 1200832,
+      "old": 1200842,
+      "fresh": 1206578
+    },
+    {
+      "test": "explicit-frozen-agency-revalidated-after-restart",
+      "accepted": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886051,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 37,
+          "fallback": 706,
+          "key": "mail:v1:106:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 405,
+        "issued": {
+          "at": 74202886051,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 679,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:106:678:out",
+        "recipient": 678,
+        "representation": {
+          "organization": 24,
+          "scope": 24
+        },
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 706,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886051,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886051,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886051,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            },
+            {
+              "from": 202,
+              "pair": "private_407fdca2ba48ecec",
+              "relay": 732,
+              "to": 715
+            },
+            {
+              "from": 715,
+              "pair": null,
+              "relay": null,
+              "to": 706
+            }
+          ],
+          "next": 1,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": {
+            "at": 74202886051,
+            "clock": {
+              "generation": 47,
+              "kind": "world_ic"
+            }
+          },
+          "registry_revision": 39,
+          "service": {
+            "actual_ready": 74202886051,
+            "base_class": "standard",
+            "class": "standard",
+            "declared_s": 60,
+            "eligible_at": 74202886111,
+            "throttled": false,
+            "units": 1,
+            "version": 1
+          },
+          "version": 1
+        }
+      },
+      "after": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886051,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 37,
+          "fallback": 706,
+          "key": "mail:v1:106:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 405,
+        "issued": {
+          "at": 74202886051,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 679,
+        "kind": "mail",
+        "path": [],
+        "payload": "mail:v1:106:678:out",
+        "recipient": 678,
+        "representation": {
+          "organization": 24,
+          "scope": 24
+        },
+        "revision": 1,
+        "shares": null,
+        "state": "transmitted",
+        "transit": {
+          "destination": 706,
+          "flight": {
+            "basis": "ship.v1:c6c6fe329baccb2c5f64a466ed7c71912c5dab16dc7c215b6b23b90e8b7d8344",
+            "due": {
+              "at": 74202886469,
+              "clock": {
+                "generation": 47,
+                "kind": "world_ic"
+              }
+            },
+            "seconds": 414,
+            "started": {
+              "at": 74202886055,
+              "clock": {
+                "generation": 47,
+                "kind": "world_ic"
+              }
+            }
+          },
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886051,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886051,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886051,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 706
+            }
+          ],
+          "next": 0,
+          "physical_legs": 2,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      }
+    },
+    {
+      "test": "arrived-private-receipt-filter",
+      "signal": "SIGKILL",
+      "gateway": 1200832,
+      "old": 1206578,
+      "fresh": 1206635
+    },
+    {
+      "test": "public-carriage-delivers-and-receipts-observer-filtered",
+      "accepted": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886056,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "dispatch": {
+          "bytes": 33,
+          "fallback": 706,
+          "key": "mail:v1:107:678:out",
+          "origin": 202,
+          "version": 1
+        },
+        "id": 406,
+        "issued": {
+          "at": 74202886055,
+          "clock": {
+            "generation": 47,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 679,
+        "kind": "mail",
+        "path": [
+          {
+            "at": {
+              "at": 74202886056,
+              "clock": {
+                "generation": 47,
+                "kind": "world_ic"
+              }
+            },
+            "relay": 732
+          }
+        ],
+        "payload": "mail:v1:107:678:out",
+        "recipient": 678,
+        "revision": 1,
+        "shares": null,
+        "state": "delivered",
+        "transit": {
+          "destination": 706,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886056,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886056,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886056,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            },
+            {
+              "arrived": {
+                "at": 74202886056,
+                "clock": {
+                  "generation": 47,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886056,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886056,
+                  "clock": {
+                    "generation": 47,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 715,
+                "pair": null,
+                "relay": null,
+                "to": 706
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            },
+            {
+              "from": 202,
+              "pair": "private_407fdca2ba48ecec",
+              "relay": 732,
+              "to": 715
+            },
+            {
+              "from": 715,
+              "pair": null,
+              "relay": null,
+              "to": 706
+            }
+          ],
+          "next": 3,
+          "physical_legs": 2,
+          "position": 706,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      },
+      "arrived": null
+    },
+    {
+      "test": "unresolved-mail-saturation",
+      "signal": "SIGKILL",
+      "gateway": 1200832,
+      "old": 1206635,
+      "fresh": 1206763
+    },
+    {
+      "test": "one-sender-cannot-starve-orders-acks-or-channels",
+      "beforeHandoff": [],
+      "pendingFlood": [
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:114:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 421,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:114:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:120:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 433,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:120:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:123:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 439,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:123:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:109:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 411,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:109:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:110:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 413,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:110:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:121:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 434,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:121:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:108:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 409,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:108:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:111:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 415,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:111:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:111:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 414,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:111:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:117:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 427,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:117:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:113:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 419,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:113:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:115:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 423,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:115:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:116:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 424,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:116:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:118:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 428,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:118:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:117:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 426,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:117:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:113:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 418,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:113:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:123:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 438,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:123:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:112:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 417,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:112:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:122:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 436,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:122:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:122:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 437,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:122:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:110:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 412,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:110:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:115:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 422,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:115:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:121:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 435,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:121:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:112:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 416,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:112:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:120:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 432,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:120:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:108:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 408,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:108:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:116:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 425,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:116:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:114:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 420,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:114:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:119:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 430,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:119:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 25,
+            "fallback": null,
+            "key": "mail:v1:109:734:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 410,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:109:734:out",
+          "recipient": 734,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:118:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 429,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:118:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        },
+        {
+          "ack_of": null,
+          "advanced": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "dispatch": {
+            "bytes": 26,
+            "fallback": null,
+            "key": "mail:v1:119:735:out",
+            "origin": 202,
+            "version": 1
+          },
+          "id": 431,
+          "issued": {
+            "at": 74202886153,
+            "clock": {
+              "generation": 49,
+              "kind": "world_ic"
+            }
+          },
+          "issuer": 733,
+          "kind": "mail",
+          "path": [],
+          "payload": "mail:v1:119:735:out",
+          "recipient": 735,
+          "revision": 1,
+          "shares": null,
+          "state": "queued"
+        }
+      ],
+      "order": {
+        "ack_of": null,
+        "advanced": {
+          "at": 74202886160,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "id": 440,
+        "issued": {
+          "at": 74202886158,
+          "clock": {
+            "generation": 49,
+            "kind": "world_ic"
+          }
+        },
+        "issuer": 1,
+        "kind": "order",
+        "path": [],
+        "payload": "AP unrelated order",
+        "recipient": 679,
+        "revision": 1,
+        "shares": null,
+        "state": "acknowledged",
+        "transit": {
+          "destination": 202,
+          "flight": null,
+          "forwardings": 0,
+          "history": [
+            {
+              "arrived": {
+                "at": 74202886159,
+                "clock": {
+                  "generation": 49,
+                  "kind": "world_ic"
+                }
+              },
+              "flight": {
+                "basis": "relay.coverage.v1",
+                "due": {
+                  "at": 74202886159,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                },
+                "seconds": 0,
+                "started": {
+                  "at": 74202886159,
+                  "clock": {
+                    "generation": 49,
+                    "kind": "world_ic"
+                  }
+                }
+              },
+              "leg": {
+                "from": 202,
+                "pair": null,
+                "relay": null,
+                "to": 202
+              }
+            }
+          ],
+          "last_work": {
+            "edge_visits": 16,
+            "metric_reads": 9
+          },
+          "legs": [
+            {
+              "from": 202,
+              "pair": null,
+              "relay": null,
+              "to": 202
+            }
+          ],
+          "next": 1,
+          "physical_legs": 1,
+          "position": 202,
+          "queued_at": null,
+          "registry_revision": 39,
+          "version": 1
+        }
+      }
+    }
+  ],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T20:29:34.032Z",
+      "gatewayPid": 1200832,
+      "serverPid": 1200842,
+      "serverSha256": "e54fab5075d7fd476943c5557e969ba8cfdf04dba9d85503690ecad8a600c9df"
+    }
+  ],
+  "passed": true
+}

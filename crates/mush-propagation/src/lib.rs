@@ -58,6 +58,8 @@ use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registr
 use mush_core::{Ctx, ModuleOp, ModuleWrite, SceneId};
 use smol_str::SmolStr;
 
+pub mod access;
+pub mod admission;
 pub mod billing;
 pub mod commands;
 pub mod commerce;

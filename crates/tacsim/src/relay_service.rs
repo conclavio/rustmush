@@ -27,6 +27,45 @@ fn provenance(e: &Evidence) -> String {
     format!("relay.service.v1:{}:{}", e.receipt.pair, e.receipt.envelope)
 }
 impl Integration for RelayService {
+    fn representation(
+        &self,
+        w: &World,
+        actor: ObjId,
+        organization: u64,
+    ) -> Option<mush_core::RelayRepresentation> {
+        if w.get(actor)
+            .is_none_or(|o| !o.kind.is_actor() || o.flags.contains(mush_core::Flags::GOING))
+        {
+            return None;
+        }
+        let org = w
+            .module_state::<mush_org::OrgStore>()?
+            .state()
+            .org(mush_org::OrgId(organization))?;
+        if org.status != mush_org::OrgStatus::Active {
+            return None;
+        }
+        let capability = mush_org::CapabilityId::new("relay.speak")?;
+        if !perm::has_role(w, actor, Role::Wizard)
+            && !mush_org::authorize_in_world(
+                w,
+                &mush_org::AuthRequest {
+                    actor,
+                    capability,
+                    scope: org.root_scope,
+                    now: w.now(),
+                    amount: None,
+                },
+            )
+            .is_allow()
+        {
+            return None;
+        }
+        Some(mush_core::RelayRepresentation {
+            organization,
+            scope: org.root_scope.0,
+        })
+    }
     fn represents(&self, w: &World, a: ObjId, p: &Principal) -> bool {
         crate::relay_billing::represents(w, a, p)
     }
@@ -154,6 +193,13 @@ impl Integration for RelayService {
                 _ => None,
             };
             if let Some(owner) = owner
+                && match owner {
+                    Principal::Organization(id) => w
+                        .module_state::<mush_org::OrgStore>()
+                        .and_then(|s| s.state().org(mush_org::OrgId(id)))
+                        .is_some_and(|o| o.status == mush_org::OrgStatus::Active),
+                    _ => true,
+                }
                 && !result.contains(&owner)
             {
                 result.push(owner);

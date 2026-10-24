@@ -9,9 +9,10 @@ conventional route when positions are known; an unknown endpoint waits until it
 can be located or the message expires. All mail travels IC; OOC channels remain immediate.
 
 
-`+relay` shows the public service board and your class; `relay.board` is the matching
+`+relay` shows public links, private links you may discover, and your class; `relay.board` is the matching
 web query. `+relay/receipts` shows timestamps for your retained, arrived traffic.
-Leaving a channel removes access to its receipts as well as its history.
+Leaving a channel removes access to its receipts as well as its history. Private
+link stamps also require current discovery rights.
 
 The v1 policy has four classes. Sovereign and Priority wait for actual capacity.
 Standard additionally waits 60 IC seconds from queue admission. Deferred waits at
@@ -45,6 +46,60 @@ and quote Priority. Repeating a purchase does not reserve or charge again.
 The Exchange's initial capital comes from an existing finite clearing balance;
 paid quotes wait until that transfer lands on the economy cadence.
 
+## Availability, private links and official traffic
+
+New pending data is limited to 32 recipient copies per actor. Explicitly represented
+organization traffic also shares a 32-copy organization allowance across its officials.
+Switching identity does not reset the actor allowance. Mail and IC channels each have
+48-copy producer limits and share 64 external-data slots. All data together may use
+112 of the 128 pending slots; the remaining 16 are reserved for returning mail receipts
+and order acknowledgements. Unresolved source intents count before handoff and after
+restart; they are not a second free queue. Mail retains its original sender and
+organization allowance through the returning receipt, until the round trip completes.
+Old accepted work is retained on upgrade.
+A refusal identifies the allowance and creates no letter/channel line; retry once
+pending work settles. A full physical queue can still refuse control traffic.
+
+Private pairs start closed. Both endpoints need positive use rights; buying service,
+paying for manufacture or receiving a class grant does not grant carriage. Link
+knowledge and carriage are separate. Operators can grant either or both rights:
+
+```
++relay/access <pair>/#<character>=discover,use
++relay/access <pair>/org:<organization>=use
++relay/access <pair>/#<character>=none
++relay/network <pair>=public
++relay/network <pair>=private
+```
+
+Access changes require `relay.manage` and knowledge of the pair. Opening a private
+pair to public carriage also requires `relay.publish`. Private identifiers without
+discovery rights produce the same reply as unknown identifiers. `relay.discover`,
+`relay.use`, `relay.inspect`, `relay.manage` and `relay.publish` are independent
+scoped capabilities. Staff retain their administrative authority. The active owning
+organization and its legally titled units have ownership authority; ordinary human
+members do not inherit that authority. Existing manufactured pairs need explicit
+grants or public carriage when upgrading from the earlier permissive behavior.
+
+```
++relay/represent org:<organization>
++relay/represent personal
++relay/represent
+```
+
+An official needs `relay.speak` at the organization's root scope; a grant confined to
+a child compartment cannot claim the whole institution. Membership, account debit
+authority and the payer do not confer speaking authority. The actor, represented
+organization and authorizing scope are recorded separately. Selection applies to
+new orders, reports, mail and IC channel lines, and may qualify them for that
+organization's subscription. It never changes the sender or who pays. Queued work
+keeps its original representation after selection changes or restart. Authority and
+private use are rechecked before the next relay hop; revocation selects conventional
+fallback where possible. A physical leg already in flight keeps its frozen timing.
+If a selected identity loses authority, new sends refuse until you select personal
+or regain authority. Recipients are checked as themselves or their titled owner;
+a human's selected sending identity does not silently act as a receiving mailbox.
+
 ## Subscriptions, treaties and arrears
 
 A v1 subscription covers short outgoing copies for its named IC principal:
@@ -53,7 +108,8 @@ under a current Exchange treaty. Capacity, declared Standard delay, both endpoin
 restrictions and the 1024-byte short-message limit still apply. Your account pays;
 it does not change who sent a message. Personal memberships do not make personal
 mail an organization's traffic. An organization's titled unit speaks for that
-organization; an ordinary character speaks personally.
+organization while that institution is active; an ordinary character speaks personally
+unless explicitly authorized and selected as described below.
 
 ```
 +relay/subscribe #<your character>=priority,<payer account>

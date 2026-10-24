@@ -11,6 +11,9 @@ impl dispatch::Sources for MailTransport {
         let mut requests: Vec<_> = mush_mail::transit::intents(world)?
             .into_iter()
             .map(|intent| dispatch::Request {
+                reservation_actor: intent.reservation_actor,
+                reservation_representation: intent.reservation_representation,
+                representation: intent.representation,
                 reference: dispatch::DispatchRef {
                     version: 1,
                     key: intent.key,
@@ -28,6 +31,9 @@ impl dispatch::Sources for MailTransport {
             mush_comsys::transit::intents(world)?
                 .into_iter()
                 .map(|intent| dispatch::Request {
+                    reservation_actor: intent.from,
+                    reservation_representation: intent.representation,
+                    representation: intent.representation,
                     reference: dispatch::DispatchRef {
                         version: 1,
                         key: intent.key,
@@ -46,8 +52,27 @@ impl dispatch::Sources for MailTransport {
 }
 
 impl mush_comsys::transit::Transport for MailTransport {
-    fn capacity(&self, world: &World, additional: usize) -> bool {
-        dispatch::has_capacity(world, additional)
+    fn representation(
+        &self,
+        w: &World,
+        a: ObjId,
+    ) -> Result<Option<mush_core::RelayRepresentation>, mush_core::TransportRefusal> {
+        mush_propagation::access::selected(w, a)
+    }
+    fn capacity(
+        &self,
+        w: &World,
+        a: ObjId,
+        r: Option<mush_core::RelayRepresentation>,
+        n: usize,
+    ) -> Result<(), mush_core::TransportRefusal> {
+        mush_propagation::admission::check(
+            w,
+            a,
+            r,
+            mush_propagation::admission::Producer::Channel,
+            n,
+        )
     }
     fn endpoint(&self, world: &World, actor: ObjId) -> Option<ObjId> {
         crate::relay_metric::source_address(world, actor)
@@ -66,8 +91,21 @@ impl mush_comsys::transit::Transport for MailTransport {
 }
 
 impl mush_mail::transit::Transport for MailTransport {
-    fn capacity(&self, world: &World, additional: usize) -> bool {
-        dispatch::has_capacity(world, additional)
+    fn representation(
+        &self,
+        w: &World,
+        a: ObjId,
+    ) -> Result<Option<mush_core::RelayRepresentation>, mush_core::TransportRefusal> {
+        mush_propagation::access::selected(w, a)
+    }
+    fn capacity(
+        &self,
+        w: &World,
+        a: ObjId,
+        r: Option<mush_core::RelayRepresentation>,
+        n: usize,
+    ) -> Result<(), mush_core::TransportRefusal> {
+        mush_propagation::admission::check(w, a, r, mush_propagation::admission::Producer::Mail, n)
     }
     fn endpoints(&self, ctx: &Ctx<'_>, actors: &[ObjId]) -> Vec<Option<ObjId>> {
         let metric = mush_propagation::routing::snapshot_in(ctx, &ctx.w.world_ic_now());

@@ -844,6 +844,9 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
             "org.role.manage",
             "org.grant.delegate",
             "relay.manage",
+            "relay.discover",
+            "relay.use",
+            "relay.speak",
             "relay.inspect",
             "relay.publish",
         ])

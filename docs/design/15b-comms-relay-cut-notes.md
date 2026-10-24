@@ -1600,3 +1600,61 @@ and [retained transcripts and procedure](evidence/relay-acceptance-repair-2026-1
 Normal CI for the follow-up push is a separate result and is not claimed green here.
 RR-1 and RR-4 through RR-7 remain follow-up work; this closes the requested acceptance
 repair and current-help correction, not unconditional acceptance of every review finding.
+
+
+## Availability/privacy follow-up gate — 2026-10-24
+
+The owner authorized this unit after the acceptance-repair push `1a0565cd`.
+[Design 15d](15d-comms-availability-privacy.md) records the implementation contract.
+The gate closes retrospective RR-1 and RR-4 together with explicit organization
+speaking, while retaining the existing scheduler and source-owner handoff.
+
+Admission now counts source reservations and active envelopes once, limits an
+actor to 32 pending copies, shares a further 32-copy allowance across explicitly
+represented officials, limits mail/channel producers to 48 each and 64 combined,
+and reserves 16 of the unchanged 128 slots for acknowledgements/return receipts.
+Mail stays charged to its original sender through the return receipt. Refusals are
+typed and occur before source mutation. Private pairs have independent discovery
+and use grants; both endpoints need use authority. Public carriage is explicit,
+and manage alone cannot publish. Commands, boards and receipts filter private
+knowledge. Scoped `relay.speak` agency is frozen at acceptance and revalidated at
+transmission independently of the payer; organization/scope ID zero remains valid.
+
+The acceptance-repair CI run completed with all required jobs passing except the
+isolated bot arena fixture's content/runtime mismatch. This unit repairs that
+fixture consistently with the earlier TacSim repair, without weakening the
+Fleet/Postmaster guard. The full isolated bot suite passed 717 tests, seven ignored;
+CodeQL and the prior run's other required jobs passed.
+
+Final Linux validation passed **2,490 tests**, zero failures and eight pre-existing
+ignored tests: 57 relay integration, 205 producer/transport, 31 boot-parity/IC,
+1,480 TacSim library and 717 bot. The focused 19-test bot arena run is included in
+that full suite, not added twice. All but the bot suite reran after the final
+zero-ID correction. Full formatting, strict all-targets Clippy for the changed
+production modules/server, release server build and harness syntax checks passed.
+
+The real dev1 gate passed **150 checked commands and four SIGKILL/restart
+boundaries**. It loaded the genuine six-payment R9b checkpoint through normal
+Redis RESTORE with AOF enabled, made a checked finite 800,000-minor voyage payment,
+bought real stores and sailed the commissioned carrier. It proved private-link
+opacity, both-endpoint authority, queued revocation, frozen and revoked agency,
+zero-based identity persistence, actual public-carriage inbox arrival and private
+receipt filtering. One ordinary sender's 32 unresolved copies survived restart
+while unrelated order, acknowledgement and IC channel traffic actually arrived.
+The first successful 142-command/three-crash pass and earlier failed harness/setup
+attempts remain preserved separately.
+
+All 1,492 crate/Cargo/help/harness inputs match the checkout after CRLF normalization.
+The tested and restored running server SHA-256 is
+`f4e40f4af9a869c745dd669398c8f49e0a1a0e589357a2e330ec5a6a703000aa`.
+The original dev1 baseline/config was restored: 4,888 keys, two nodes/one pair,
+no private pair, HTTPS 200. Dev2 stayed at gateway PID 539467.
+[Evidence and procedure](evidence/relay-availability-privacy-2026-10-24/README.md)
+and [metadata](evidence/relay-availability-privacy-2026-10-24/metadata.json) contain
+the exact result and source identities. The new push's normal CI is separate and
+is not claimed green by these results.
+
+Upgrade behavior: existing private pairs default closed until authority is granted
+or public carriage explicitly opened. Exchange charter links remain public. This
+unit does not begin the policy/bandwidth gate, add new gameplay consumers or create
+organization inboxes; RR-5 through RR-7 and live Discord acceptance remain open.

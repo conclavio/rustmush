@@ -4845,6 +4845,15 @@ async fn r9a_paid_manufacture_survives_restart_and_installs_once() {
     })
     .await;
     let key = cid(&format!("private_{:016x}", order.0));
+    for endpoint in [who, stranger] {
+        let out = run(
+            &mut rig,
+            GOD,
+            &format!("+relay/access {key}/{endpoint}=discover,use"),
+        )
+        .await;
+        assert!(out.contains("policy recorded"), "{out}");
+    }
     let pair = &mush_propagation::routing::registry(rig.tw.world())
         .unwrap()
         .pairs[&key];
@@ -5508,6 +5517,15 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
     run(&mut rig, GOD, &format!("@teleport #1={}", f.place)).await;
     set_rate(&mut rig, 1).await;
     let key = cid(&format!("private_{order:016x}"));
+    for endpoint in [who, observer] {
+        let out = run(
+            &mut rig,
+            GOD,
+            &format!("+relay/access {key}/{endpoint}=discover,use"),
+        )
+        .await;
+        assert!(out.contains("policy recorded"), "{out}");
+    }
     let end = t
         .plan
         .legs

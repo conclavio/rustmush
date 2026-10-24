@@ -364,11 +364,38 @@ pub fn plan(
     units: u32,
     endpoints: Option<(ObjId, ObjId)>,
 ) -> (Option<Transit>, Work) {
+    plan_as(
+        world, state, metric, from, to, at, used_hops, units, endpoints, None,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn plan_as(
+    world: &World,
+    state: &SpatialState,
+    metric: &dyn Metric,
+    from: ObjId,
+    to: ObjId,
+    at: &ClockStamp,
+    used_hops: usize,
+    units: u32,
+    endpoints: Option<(ObjId, ObjId)>,
+    representation: Option<mush_core::RelayRepresentation>,
+) -> (Option<Transit>, Work) {
     let Some(catalog) = registry(world) else {
         return (None, Work::default());
     };
     plan_catalog(
-        catalog, world, state, metric, from, to, at, used_hops, units, endpoints,
+        catalog,
+        world,
+        state,
+        metric,
+        from,
+        to,
+        at,
+        used_hops,
+        units,
+        endpoints,
+        representation,
     )
 }
 
@@ -384,6 +411,7 @@ fn plan_catalog(
     used_hops: usize,
     units: u32,
     endpoints: Option<(ObjId, ObjId)>,
+    representation: Option<mush_core::RelayRepresentation>,
 ) -> (Option<Transit>, Work) {
     let mut work = Work {
         metric_reads: 1,
@@ -420,9 +448,14 @@ fn plan_catalog(
     }
     let permitted: std::collections::BTreeSet<_> = catalog
         .pairs
-        .keys()
-        .filter(|id| endpoints.is_none_or(|ends| crate::service::allowed(world, id, ends)))
-        .cloned()
+        .iter()
+        .filter(|(id, p)| {
+            endpoints.map_or(
+                p.class_policy == mush_sim::relay::ClassPolicy::Exchange,
+                |ends| crate::service::allowed_as(world, id, ends, representation),
+            )
+        })
+        .map(|(id, _)| id.clone())
         .collect();
     let mut best: Option<Path> = None;
     for depth in 0..MAX_LINK_HOPS {
@@ -601,7 +634,7 @@ pub fn prepare_with(
     now: &ClockStamp,
     metric: &dyn Metric,
 ) -> Option<Transit> {
-    plan(
+    plan_as(
         world,
         state,
         metric,
@@ -620,6 +653,7 @@ pub fn prepare_with(
         envelope.path().len(),
         message_units(envelope),
         Some((envelope.issuer(), envelope.recipient())),
+        envelope.representation(),
     )
     .0
 }
@@ -760,7 +794,7 @@ impl<'a> Pass<'a> {
                     )
                 })?;
                 let to = destination(self.metric.as_ref(), self.world, self.state, envelope)?;
-                let route = plan(
+                let route = plan_as(
                     self.world,
                     self.state,
                     self.metric.as_ref(),
@@ -770,6 +804,7 @@ impl<'a> Pass<'a> {
                     envelope.path().len(),
                     message_units(envelope),
                     Some((envelope.issuer(), envelope.recipient())),
+                    envelope.representation(),
                 )
                 .0?;
                 if admission(store, Some(&route), Some(envelope.id())).is_err() {
@@ -805,10 +840,11 @@ impl<'a> Pass<'a> {
             .skip(route.next)
             .filter_map(|l| l.pair.as_ref())
             .any(|pair| {
-                !crate::service::allowed(
+                !crate::service::allowed_as(
                     self.world,
                     pair,
                     (envelope.issuer(), envelope.recipient()),
+                    envelope.representation(),
                 )
             });
         let uncovered = route
@@ -831,7 +867,7 @@ impl<'a> Pass<'a> {
             if route.destination != destination && route.forwardings >= MAX_FORWARDINGS {
                 return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
             }
-            let mut revised = plan(
+            let mut revised = plan_as(
                 self.world,
                 self.state,
                 self.metric.as_ref(),
@@ -841,6 +877,7 @@ impl<'a> Pass<'a> {
                 envelope.path().len(),
                 message_units(envelope),
                 Some((envelope.issuer(), envelope.recipient())),
+                envelope.representation(),
             )
             .0?;
             if admission(store, Some(&revised), Some(envelope.id())).is_err() {
@@ -1044,6 +1081,7 @@ impl<'a> Pass<'a> {
                 &route.queued_at,
             ) {
                 state.receipt(crate::service::Receipt {
+                    representation: envelope.representation(),
                     envelope: envelope.id(),
                     pair: pair_id.clone(),
                     issuer: envelope.issuer(),
@@ -1206,6 +1244,7 @@ mod tests {
             0,
             1,
             None,
+            None,
         );
         let (miss, miss_work) = plan_catalog(
             &registry,
@@ -1217,6 +1256,7 @@ mod tests {
             &at,
             0,
             1,
+            None,
             None,
         );
         let hit = hit.unwrap();
@@ -1238,6 +1278,7 @@ mod tests {
             0,
             1,
             None,
+            None,
         );
         assert_eq!(
             private
@@ -1246,7 +1287,7 @@ mod tests {
                 .iter()
                 .filter(|l| l.pair.is_some())
                 .count(),
-            1
+            2
         );
         registry.pairs.get_mut(&cid("ca")).unwrap().halves[0].enabled = false;
         let (around, _) = plan_catalog(
@@ -1259,6 +1300,7 @@ mod tests {
             &at,
             0,
             1,
+            None,
             None,
         );
         assert_eq!(
@@ -1281,6 +1323,7 @@ mod tests {
             MAX_LINK_HOPS - 1,
             1,
             None,
+            None,
         );
         assert!(bounded.is_none());
     }
@@ -1297,6 +1340,7 @@ mod tests {
             &clock(0),
             0,
             1,
+            None,
             None,
         )
         .0

@@ -105,6 +105,7 @@ try{
  await sail('deimos_port','stickney',3,false);await command(pilot,'+relaypair/unload #'+good.halves[1],'unloaded');const b=await mount('R9a Phobos Private Mount');
  await command(stranger,`+relaypair/install #${good.halves[1]}=#${b} org:${f.owner}`,'authority');await command(pilot,`+relaypair/install #${good.halves[1]}=#${b} org:${f.owner}`,'installed');
  await death('complete-private-installation');const pairId='private_'+BigInt(good.id).toString(16).padStart(16,'0'),pair=registry().pairs[pairId];assert.equal(pair.capacity_units_per_ic_second,1);assert.equal(pair.class_policy,'private');
+ for(const endpoint of [pilot,stranger])await command(staff,`+relay/access ${pairId}/${endpoint.object}=discover,use`,'policy recorded');
  await command(staff,'@relay/disable luna_ceres.luna');await command(staff,`@teleport ${stranger.object}=#${deimos}`);
  await command(pilot,`@mail/quick ${stranger.object}=R9a private letter/Manufactured freight bypasses Luna.`,'queued for IC transit');const e=await until(()=>envelopes().find(e=>e.issuer===actor(pilot)&&e.dispatch?.key.endsWith(':out')&&mail(Number(e.dispatch.key.split(':')[2]))?.subject==='R9a private letter'),'private mail envelope');
  await command(staff,'@prop/pass');await until(()=>box(stranger,Number(e.dispatch.key.split(':')[2])),'private inbox delivery',180);assert(read('mod:propagation:envelope:'+e.id).transit.legs.some(l=>l.pair===pairId));await command(stranger,'@mail','R9a private letter');

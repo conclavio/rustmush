@@ -19,7 +19,20 @@ pub const MAX_TEXT_BYTES: usize = 16_384;
 pub const TICK: &str = "comsys.handoff";
 
 pub trait Transport: Send + Sync + std::fmt::Debug {
-    fn capacity(&self, world: &World, additional: usize) -> bool;
+    fn capacity(
+        &self,
+        world: &World,
+        actor: ObjId,
+        representation: Option<mush_core::RelayRepresentation>,
+        additional: usize,
+    ) -> Result<(), mush_core::TransportRefusal>;
+    fn representation(
+        &self,
+        _world: &World,
+        _actor: ObjId,
+    ) -> Result<Option<mush_core::RelayRepresentation>, mush_core::TransportRefusal> {
+        Ok(None)
+    }
     /// Physical address only. An unresolved address must not become local.
     fn endpoint(&self, world: &World, actor: ObjId) -> Option<ObjId>;
     /// A committed terminal receipt: true arrived, false expired.
@@ -29,6 +42,7 @@ pub trait Transport: Send + Sync + std::fmt::Debug {
 pub struct Services(pub Arc<dyn Transport>);
 #[derive(Clone, Debug)]
 pub struct Intent {
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub key: String,
     pub from: ObjId,
     pub to: ObjId,
@@ -71,6 +85,8 @@ pub struct Received {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub version: u32,
     pub channel: ChannelId,
     pub msg: ChanMsg,
@@ -190,6 +206,7 @@ pub fn intents(w: &World) -> Option<Vec<Intent>> {
         let m = st.ic.messages.get(id)?;
         for &to in &m.pending {
             result.push(Intent {
+                representation: m.representation,
                 key: m.key(to),
                 from: m.msg.actor,
                 to,
@@ -242,14 +259,20 @@ pub(crate) fn submit(
         .filter_map(|id| st.ic.messages.get(id))
         .map(|m| m.pending.len())
         .sum();
-    if st.ic.pending.len() >= MAX_PENDING
-        || copies + recipients.len() > MAX_COPIES
-        || !service.0.capacity(w, recipients.len())
-    {
+    if st.ic.pending.len() >= MAX_PENDING || copies + recipients.len() > MAX_COPIES {
         return Err("IC transport pending queue is full; try again later.");
     }
+    let representation = service
+        .0
+        .representation(w, msg.actor)
+        .map_err(|e| e.message())?;
+    service
+        .0
+        .capacity(w, msg.actor, representation, recipients.len())
+        .map_err(|e| e.message())?;
     msg.seq = c.seq.checked_add(1).ok_or("Channel sequence exhausted.")?;
     let m = Message {
+        representation,
         version: 1,
         channel,
         origin: service.0.endpoint(w, msg.actor),
@@ -554,6 +577,7 @@ pub(crate) fn load(
                 let id = (m.channel, msg.seq);
                 if let std::collections::btree_map::Entry::Vacant(e) = st.ic.messages.entry(id) {
                     let message = Message {
+                        representation: None,
                         version: 1,
                         channel: m.channel,
                         msg: msg.clone(),

@@ -510,6 +510,21 @@ fn route_submission(ctx: &mut Ctx<'_>, envelope: Envelope) -> Result<Envelope, C
     if !crate::routing::enabled(ctx.w) {
         return Ok(envelope);
     }
+    let envelope = if envelope.kind() == crate::record::DispatchKind::Acknowledgement {
+        envelope
+    } else {
+        let r = crate::access::selected(ctx.w, envelope.issuer())
+            .map_err(|e| CmdError::msg(e.message()))?;
+        envelope.with_representation(r)
+    };
+    crate::admission::check(
+        ctx.w,
+        envelope.issuer(),
+        envelope.representation(),
+        crate::admission::producer(envelope.kind(), None),
+        1,
+    )
+    .map_err(|e| CmdError::msg(e.message()))?;
     let metric = crate::routing::snapshot_in(ctx, envelope.issued());
     let route = ctx
         .w

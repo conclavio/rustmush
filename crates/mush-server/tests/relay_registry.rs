@@ -690,12 +690,23 @@ async fn r2_fifo_bandwidth_survives_restart_and_rejects_full_link_queue() {
     rig.advance_ic_to(rig.tw.world().world_ic_now().at + 1);
     rig.pass();
     assert_eq!(rig.envelope(ids[2]).state(), EnvelopeState::Delivered);
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    let other = rig.tw.spawn_player("OtherOperator");
+    let extra = rig.tw.spawn_player("ExtraOperator");
+    for who in [other, extra] {
+        rig.tw
+            .world_mut()
+            .set_flag(who, mush_core::Flags::ROYALTY, true)
+            .unwrap();
+        rig.run(GOD, &format!("@teleport {who}={luna}"));
+    }
     for i in 0..mush_propagation::routing::MAX_LINK_QUEUE {
-        let reply = rig.run(GOD, &format!("+order {receiver}=pending-{i}"));
+        let who = if i < 32 { GOD } else { other };
+        let reply = rig.run(who, &format!("+order {receiver}=pending-{i}"));
         assert!(reply.contains("Queued"), "{i}: {reply}");
     }
     assert!(
-        rig.run(GOD, &format!("+order {receiver}=overload"))
+        rig.run(extra, &format!("+order {receiver}=overload"))
             .contains("link queue is full")
     );
     assert!(!rig.run(receiver, "+orders").contains("pending-"));
@@ -733,13 +744,23 @@ async fn r2_unknown_endpoints_wait_with_bounded_admission_and_expiry() {
     let mut rig = Rig::new(true).await;
     let receiver = rig.endpoints();
     rig.run(GOD, &format!("@teleport {receiver}={LIMBO}"));
-    for i in 0..MAX_PENDING_ROUTES {
-        let reply = rig.run(GOD, &format!("+order {receiver}=waiting-{i}"));
+    let senders: Vec<_> = (0..4)
+        .map(|i| rig.tw.spawn_player(&format!("QueueSender{i}")))
+        .collect();
+    for &sender in &senders {
+        rig.tw
+            .world_mut()
+            .set_flag(sender, mush_core::Flags::ROYALTY, true)
+            .unwrap();
+    }
+    for i in 0..MAX_PENDING_ROUTES - mush_propagation::admission::CONTROL_RESERVE {
+        let sender = senders[i / 32];
+        let reply = rig.run(sender, &format!("+order {receiver}=waiting-{i}"));
         assert!(reply.contains("Queued"), "{reply}");
     }
     assert!(
         rig.run(GOD, &format!("+order {receiver}=overflow"))
-            .contains("pending queue is full")
+            .contains("reserved for acknowledgements")
     );
     let last = rig.last_envelope();
     rig.pass();
@@ -1240,7 +1261,7 @@ async fn r6a_pending_capacity_expiry_and_deleted_sent_payload_are_bounded() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    for i in 0..4 {
+    for i in 0..1 {
         assert!(
             rig.run(GOD, &format!("@mail/quick {names}=waiting{i}/secret"))
                 .contains("queued for IC transit")
@@ -1249,14 +1270,14 @@ async fn r6a_pending_capacity_expiry_and_deleted_sent_payload_are_bounded() {
     let next = rig.mail().next_id();
     assert!(
         rig.run(GOD, &format!("@mail/quick {names}=overload/x"))
-            .contains("queue is full")
+            .contains("allowance is full")
     );
     assert_eq!(rig.mail().next_id(), next, "refusal allocates nothing");
     assert_eq!(
         mush_mail::transit::intents(rig.tw.world()).unwrap().len(),
-        128
+        32
     );
-    let first = next - 4;
+    let first = next - 1;
     for _ in 0..10 {
         rig.mail_tick();
     }
@@ -1327,17 +1348,17 @@ async fn r6b_bounds_expiry_and_retention_release_real_transport_work() {
     let bob = rig.endpoints();
     let chan = rig.channel_setup(&[GOD, bob]);
     rig.run(GOD, "@relay/disable luna_ceres.luna");
-    for n in 0..64 {
+    for n in 0..16 {
         assert!(
             rig.run(GOD, &format!("radio bounded-{n}"))
                 .contains("queued for IC transit")
         );
     }
-    assert!(rig.run(GOD, "radio refused-65").contains("full"));
-    assert_eq!(rig.channels().channels[&chan].seq, 64);
+    assert!(rig.run(GOD, "radio refused-17").contains("full"));
+    assert_eq!(rig.channels().channels[&chan].seq, 16);
     assert_eq!(
         mush_comsys::transit::intents(rig.tw.world()).unwrap().len(),
-        128
+        32
     );
     rig.flush().await;
     rig.restart().await.unwrap();
@@ -1348,15 +1369,15 @@ async fn r6b_bounds_expiry_and_retention_release_real_transport_work() {
     }
     assert!(rig.channels().ic.pending.is_empty());
     assert!(!rig.backlog(bob).contains("bounded-"));
-    assert!(rig.channels().ic.progress.expired >= 64);
+    assert!(rig.channels().ic.progress.expired >= 16);
     rig.run(GOD, "@relay/enable luna_ceres.luna");
     rig.run(GOD, "@channel/set Radio=cap=1");
-    for n in 65..=66 {
+    for n in 17..=18 {
         rig.run(GOD, &format!("radio retained-{n}"));
         rig.finish_channel(chan, n);
     }
-    assert!(!rig.backlog(bob).contains("retained-65"));
-    assert!(rig.backlog(bob).contains("retained-66"));
+    assert!(!rig.backlog(bob).contains("retained-17"));
+    assert!(rig.backlog(bob).contains("retained-18"));
     assert_eq!(rig.channels().ic.messages.len(), 1);
     rig.run(GOD, "delcom radio");
     rig.run(bob, "delcom radio");
@@ -1868,10 +1889,23 @@ async fn r3_full_legacy_tickets_preserve_capacity_and_refuse_partial_policy() {
     let bob = rig.endpoints();
     let exit = rig.registry().nodes[&cid("ceres")].place;
     rig.run(GOD, &format!("@prop/jam {exit}=100"));
-    for n in 0..64 {
+    let other = rig.tw.spawn_player("LegacyOperator");
+    rig.tw
+        .world_mut()
+        .set_flag(other, mush_core::Flags::ROYALTY, true)
+        .unwrap();
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    rig.run(GOD, &format!("@teleport {other}={luna}"));
+    // Fill the shared link through independent producers/principals. New mail
+    // alone cannot monopolize it; old accepted tickets still migrate in place.
+    for n in 0..32 {
         assert!(
             rig.run(GOD, &format!("@mail/quick {bob}=legacy-{n}/payload"))
                 .contains("queued for IC transit")
+        );
+        assert!(
+            rig.run(other, &format!("+order {bob}=legacy-{n}"))
+                .contains("Queued")
         );
     }
     // Convert admitted tickets to their R2/R6 shape while preserving the
@@ -2377,6 +2411,10 @@ async fn r4_org_titled_endpoints_and_independent_operator_link() {
     assert!(
         rig.run(GOD, "@atlas/pack plan tacsim.relay.luna_ceres")
             .contains("Nothing to do.")
+    );
+    rig.run(
+        GOD,
+        &format!("+relay/access independent/{bob}=discover,use"),
     );
     rig.run(GOD, &format!("@org/grant {bob}={operator} relay.manage"));
     assert!(
@@ -4318,5 +4356,606 @@ async fn r10_upgrade_observes_cancelled_debt_without_inventing_an_active_subscri
     assert_eq!(
         serde_json::to_value(tacsim::relay_world::current(rig.tw.world()).unwrap()).unwrap(),
         facts
+    );
+}
+
+// Availability/privacy repair: production handlers, source reservations and reboot.
+async fn ap_private_fixture(rig: &mut Rig) {
+    let operator = rig.registry().operator;
+    let other = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .orgs()
+        .find(|o| o.id != operator)
+        .unwrap()
+        .id;
+    let mut catalog = rig.registry();
+    let mut pair = catalog.pairs[&cid("luna_ceres")].clone();
+    for (i, key) in ["malapert", "ceres"].iter().enumerate() {
+        let mut node = catalog.nodes[&cid(key)].clone();
+        let node_name = format!("R4IndependentNode{i}");
+        rig.run(GOD, &format!("@create {node_name}"));
+        node.object = rig
+            .tw
+            .world()
+            .iter()
+            .find(|o| o.name == node_name)
+            .unwrap()
+            .id;
+        rig.run(GOD, &format!("@teleport {}={}", node.object, node.place));
+        rig.run(
+            GOD,
+            &format!("@behavior/add {}=sim.relay_node", node.object),
+        );
+        rig.run(
+            GOD,
+            &format!("@unit/create {}=tacsim.unit.relay_station", node.object),
+        );
+        let half_name = format!("R4IndependentHalf{i}");
+        let half = rig
+            .tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                &half_name,
+                GOD,
+                Some(node.object),
+            )
+            .unwrap();
+        rig.run(GOD, &format!("@behavior/add {half}=sim.relay_half"));
+        node.operator = other;
+        let key = cid(&format!("independent_{key}"));
+        pair.halves[i].node = key.clone();
+        pair.halves[i].object = half;
+        pair.halves[i].id = cid(&format!("independent.half{i}"));
+        catalog.nodes.insert(key, node);
+    }
+    pair.class_policy = mush_sim::relay::ClassPolicy::Private;
+    catalog.pairs.insert(cid("independent"), pair);
+    catalog.revision += 1;
+    catalog.reconcile(rig.tw.world()).unwrap();
+    rig.flush().await;
+    rig.replace_document(serde_json::to_value(&catalog).unwrap())
+        .await;
+    rig.restart().await.unwrap();
+}
+
+#[tokio::test]
+async fn ap_one_sender_cannot_fill_shared_admission_before_or_after_handoff() {
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let sender = rig.tw.spawn_player("APsender");
+    let a = rig.tw.spawn_player("APunknownA");
+    let b = rig.tw.spawn_player("APunknownB");
+    for n in 0..16 {
+        let out = rig.run(sender, &format!("@mail/quick {a} {b}=fill{n}/body"));
+        assert!(out.contains("queued for IC transit"), "{out}");
+    }
+    let before = rig.mail().next_id();
+    let out = rig.run(sender, &format!("@mail/quick {a}=refused/body"));
+    assert!(
+        out.contains("Your communication allowance is full"),
+        "{out}"
+    );
+    assert_eq!(rig.mail().next_id(), before);
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=unrelated before handoff"))
+            .contains("Queued revision")
+    );
+    for _ in 0..5 {
+        rig.mail_tick();
+    }
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    let out = rig.run(sender, &format!("@mail/quick {a}=still refused/body"));
+    assert!(
+        out.contains("Your communication allowance is full"),
+        "{out}"
+    );
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=unrelated after restart"))
+            .contains("Queued revision")
+    );
+    let id = rig.last_envelope().id();
+    for _ in 0..4 {
+        rig.pass();
+    }
+    assert_eq!(
+        rig.envelope(id).state(),
+        mush_propagation::EnvelopeState::Delivered
+    );
+    let out = rig.run(receiver, &format!("+orders/ack {id}"));
+    assert!(out.contains("Acknowledgement queued"), "{out}");
+}
+
+#[tokio::test]
+async fn ap_multiple_mail_senders_leave_channel_and_tactical_headroom() {
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let a = rig.tw.spawn_player("APunknown");
+    for (who, count) in [("APfirst", 32), ("APsecond", 16)] {
+        let sender = rig.tw.spawn_player(who);
+        for n in 0..count {
+            let out = rig.run(sender, &format!("@mail/quick {a}=fill{n}/body"));
+            assert!(out.contains("queued for IC transit"), "{out}");
+        }
+    }
+    let third = rig.tw.spawn_player("APthird");
+    let out = rig.run(third, &format!("@mail/quick {a}=no/body"));
+    assert!(out.contains("producer's allowance"), "{out}");
+    rig.channel_setup(&[third, a]);
+    assert!(
+        rig.run(third, "radio independent channel")
+            .contains("queued for IC transit")
+    );
+    assert!(
+        rig.run(GOD, &format!("+order {receiver}=order remains usable"))
+            .contains("Queued revision")
+    );
+}
+
+#[tokio::test]
+async fn ap_private_discovery_use_revocation_and_public_carriage_are_separate() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    ap_private_fixture(&mut rig).await;
+    let outsider = rig.tw.spawn_player("APoutsider");
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    rig.run(GOD, &format!("@teleport {outsider}={luna}"));
+    rig.public_hub(false);
+    for switch in ["status", "load", "audit", "discover", "publish"] {
+        assert_eq!(
+            rig.run(outsider, &format!("+relay/{switch} independent")),
+            rig.run(outsider, &format!("+relay/{switch} no_such_pair"))
+        );
+    }
+    rig.run(
+        GOD,
+        &format!("+relay/grant independent/{outsider}=priority"),
+    );
+    let plan = |rig: &Rig| {
+        let w = rig.tw.world();
+        let at = w.world_ic_now();
+        let svc = w
+            .module_state::<mush_propagation::routing::RoutingServices>()
+            .unwrap();
+        let metric = svc.0.snapshot(w, &at);
+        mush_propagation::routing::plan(
+            w,
+            w.module_state().unwrap(),
+            metric.as_ref(),
+            luna,
+            rig.registry().nodes[&cid("ceres")].place,
+            &at,
+            0,
+            1,
+            Some((outsider, bob)),
+        )
+        .0
+        .unwrap()
+    };
+    assert!(plan(&rig).legs.iter().all(|l| l.pair.is_none()));
+    assert!(
+        rig.run(
+            GOD,
+            &format!("+relay/access independent/{outsider}=discover")
+        )
+        .contains("policy recorded")
+    );
+    assert!(
+        rig.run(outsider, "+relay/status independent")
+            .contains("not granted")
+    );
+    assert!(plan(&rig).legs.iter().all(|l| l.pair.is_none()));
+    for actor in [outsider, bob] {
+        rig.run(
+            GOD,
+            &format!("+relay/access independent/{actor}=discover,use"),
+        );
+    }
+    assert!(
+        plan(&rig)
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(
+        plan(&rig)
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    rig.run(GOD, "+relay/grant independent/#1=standard");
+    rig.run(GOD, &format!("+order {bob}=queued before revoke"));
+    let id = rig.last_envelope().id();
+    rig.pass();
+    assert!(rig.envelope(id).transit().unwrap().queued_at.is_some());
+    rig.run(GOD, &format!("+relay/access independent/{bob}=discover"));
+    rig.pass();
+    assert!(
+        rig.envelope(id)
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.is_none())
+    );
+    rig.run(GOD, &format!("+relay/access independent/{outsider}=none"));
+    assert_eq!(
+        rig.run(outsider, "+relay/status independent"),
+        rig.run(outsider, "+relay/status missing")
+    );
+    assert!(
+        rig.run(GOD, "+relay/network independent=public")
+            .contains("policy recorded")
+    );
+    assert!(
+        rig.run(outsider, "+relay/status independent")
+            .contains("allowed")
+    );
+    assert!(
+        plan(&rig)
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    assert!(
+        rig.run(GOD, "+relay/network independent=private")
+            .contains("policy recorded")
+    );
+    assert!(plan(&rig).legs.iter().all(|l| l.pair.is_none()));
+}
+
+#[tokio::test]
+async fn ap_organization_speaking_is_explicit_frozen_scoped_and_revocable() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    ap_private_fixture(&mut rig).await;
+    rig.public_hub(false);
+    let official = rig.tw.spawn_player("APofficial");
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    rig.run(GOD, &format!("@teleport {official}={luna}"));
+    let org = rig.registry().operator; // A different principal than the private operator.
+    rig.run(
+        GOD,
+        &format!("@org/grant {official}={org} economy.account.post"),
+    );
+    assert!(
+        rig.run(official, &format!("+relay/represent org:{org}"))
+            .contains("Permission denied")
+    );
+    rig.run(GOD, &format!("@org/scope create {org}=local_comms"));
+    let child = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "local_comms")
+        .unwrap()
+        .id;
+    rig.run(
+        GOD,
+        &format!("@org/grant {official}={org} relay.speak scope={child}"),
+    );
+    assert!(
+        rig.run(official, &format!("+relay/represent org:{org}"))
+            .contains("Permission denied"),
+        "local authority cannot claim institution-wide identity"
+    );
+    rig.run(GOD, &format!("@org/grant {official}={org} relay.speak"));
+    assert!(
+        rig.run(official, &format!("+relay/represent org:{org}"))
+            .contains("principal selected")
+    );
+    rig.run(
+        GOD,
+        &format!("+relay/access independent/org:{org}=discover,use"),
+    );
+    rig.run(
+        GOD,
+        &format!("+relay/access independent/{bob}=discover,use"),
+    );
+    rig.run(official, &format!("@mail/quick {bob}=official/body"));
+    let mail_id = rig.mail().next_id() - 1;
+    assert_eq!(
+        mush_mail::transit::intents(rig.tw.world())
+            .unwrap()
+            .into_iter()
+            .find(|i| i.representation.is_some())
+            .unwrap()
+            .representation
+            .unwrap()
+            .organization,
+        org.0
+    );
+    rig.run(official, "+relay/represent personal");
+    rig.mail_tick();
+    let envelope = rig.mail_route(mail_id, bob, false).unwrap();
+    assert_eq!(envelope.representation().unwrap().organization, org.0);
+    assert!(
+        envelope
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        rig.envelope(envelope.id()).representation(),
+        envelope.representation()
+    );
+    // Suspending the represented institution removes live speaking authority.
+    let out = rig.run(GOD, &format!("@org/status {org}=suspended"));
+    assert!(out.contains("now suspended"), "{out}");
+    rig.pass();
+    assert!(
+        rig.envelope(envelope.id())
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.is_none())
+    );
+    assert!(
+        rig.run(official, &format!("+relay/represent org:{org}"))
+            .contains("Permission denied")
+    );
+}
+
+#[tokio::test]
+async fn ap_control_reserve_survives_data_saturation_and_restart() {
+    let mut rig = Rig::new(true).await;
+    let receiver = rig.endpoints();
+    let mut orders = Vec::new();
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    for i in 0..17 {
+        let issuer = rig.tw.spawn_player(&format!("APcommander{i}"));
+        rig.tw
+            .world_mut()
+            .set_flag(issuer, mush_core::Flags::ROYALTY, true)
+            .unwrap();
+        rig.run(GOD, &format!("@teleport {issuer}={luna}"));
+        rig.run(GOD, &format!("+relay/grant luna_ceres/{issuer}=priority"));
+        let out = rig.run(issuer, &format!("+order {receiver}=ack source {i}"));
+        assert!(out.contains("Queued"), "{out}");
+        orders.push(rig.last_envelope().id());
+    }
+    for _ in 0..6 {
+        rig.pass();
+        rig.advance_ic_to(rig.tw.world().world_ic_now().at + 1);
+    }
+    assert!(
+        orders
+            .iter()
+            .all(|id| rig.envelope(*id).state() == mush_propagation::EnvelopeState::Delivered)
+    );
+    let unknown = rig.tw.spawn_player("APnoLocation");
+    for (n, count) in [32, 32, 32, 16].into_iter().enumerate() {
+        let sender = rig.tw.spawn_player(&format!("APdata{n}"));
+        rig.tw
+            .world_mut()
+            .set_flag(sender, mush_core::Flags::ROYALTY, true)
+            .unwrap();
+        for i in 0..count {
+            let out = rig.run(sender, &format!("+order {unknown}=pending {i}"));
+            assert!(out.contains("Queued"), "{out}");
+        }
+    }
+    let out = rig.run(
+        GOD,
+        &format!("+order {unknown}=data cannot consume reserve"),
+    );
+    assert!(out.contains("reserved for acknowledgements"), "{out}");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    for id in &orders[..16] {
+        let out = rig.run(receiver, &format!("+orders/ack {id}"));
+        assert!(out.contains("Acknowledgement queued"), "{out}");
+    }
+    let out = rig.run(receiver, &format!("+orders/ack {}", orders[16]));
+    assert!(out.contains("pending queue is full"), "{out}");
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .envelopes()
+            .filter(|e| matches!(
+                e.state(),
+                mush_propagation::EnvelopeState::Queued
+                    | mush_propagation::EnvelopeState::Transmitted
+            ))
+            .count(),
+        128
+    );
+}
+
+#[tokio::test]
+async fn ap_organization_quota_is_shared_and_switching_identity_cannot_evade_actor_quota() {
+    let mut rig = Rig::new(true).await;
+    rig.endpoints();
+    let org = rig.registry().operator;
+    let unknown = rig.tw.spawn_player("APunlocated");
+
+    let mut officials = Vec::new();
+    for i in 0..3 {
+        let who = rig.tw.spawn_player(&format!("APagent{i}"));
+        // Royalty permits addressing an unknown-position test recipient, but
+        // does not bypass relay.speak (only Wizard does).
+        rig.tw
+            .world_mut()
+            .set_flag(who, mush_core::Flags::ROYALTY, true)
+            .unwrap();
+        rig.run(GOD, &format!("@org/grant {who}={org} relay.speak"));
+        assert!(
+            rig.run(who, &format!("+relay/represent org:{org}"))
+                .contains("principal selected")
+        );
+        officials.push(who);
+    }
+    for who in &officials[..2] {
+        for i in 0..16 {
+            assert!(
+                rig.run(*who, &format!("+order {unknown}=official {i}"))
+                    .contains("Queued")
+            );
+        }
+    }
+    assert!(
+        rig.run(officials[2], &format!("+order {unknown}=shared quota"))
+            .contains("allowance is full")
+    );
+    rig.run(officials[0], "+relay/represent personal");
+    for i in 0..16 {
+        assert!(
+            rig.run(officials[0], &format!("+order {unknown}=personal {i}"))
+                .contains("Queued")
+        );
+    }
+    assert!(
+        rig.run(officials[0], &format!("+order {unknown}=actor quota"))
+            .contains("allowance is full")
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(
+        rig.run(
+            officials[2],
+            &format!("+order {unknown}=persistent organization quota")
+        )
+        .contains("allowance is full")
+    );
+    assert!(
+        rig.run(
+            officials[0],
+            &format!("+order {unknown}=persistent actor quota")
+        )
+        .contains("allowance is full")
+    );
+}
+
+#[tokio::test]
+async fn ap_mail_reservation_stays_with_original_sender_until_return_is_consumed() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let ceres = rig.registry().nodes[&cid("ceres")].place;
+    rig.run(GOD, &format!("@prop/jam {ceres}=100"));
+    for n in 0..32 {
+        let out = rig.run(GOD, &format!("@mail/quick {bob}=roundtrip{n}/body"));
+        assert!(out.contains("queued for IC transit"), "{out}");
+    }
+    for _ in 0..4 {
+        rig.mail_tick();
+    }
+    rig.run(GOD, &format!("@prop/jam {ceres}=0"));
+    for _ in 0..6 {
+        rig.pass();
+        rig.advance_ic_to(rig.tw.world().world_ic_now().at + 1);
+    }
+    // All outbound arrivals are durable; source receipt application has not run.
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_propagation::PropagationStore>()
+            .unwrap()
+            .envelopes()
+            .filter(|e| e.state() == mush_propagation::EnvelopeState::Delivered)
+            .count(),
+        32
+    );
+    assert!(
+        rig.run(GOD, &format!("@mail/quick {bob}=between owners/body"))
+            .contains("allowance is full")
+    );
+    rig.public_hub(false);
+    for _ in 0..4 {
+        rig.mail_tick();
+    }
+    let requests = mush_mail::transit::intents(rig.tw.world()).unwrap();
+    assert_eq!(requests.len(), 32);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.key.ends_with(":return") && r.reservation_actor == GOD)
+    );
+    let out = rig.run(GOD, &format!("@mail/quick {bob}=returning control/body"));
+    assert!(out.contains("allowance is full"), "{out}");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert!(
+        rig.run(
+            GOD,
+            &format!("@mail/quick {bob}=restart cannot refill/body")
+        )
+        .contains("allowance is full")
+    );
+}
+
+#[tokio::test]
+async fn ap_zero_based_organization_and_scope_survive_source_handoff_and_restart() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    ap_private_fixture(&mut rig).await;
+    rig.public_hub(false);
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .unwrap()
+            .state()
+            .org(mush_org::OrgId(0))
+            .unwrap()
+            .root_scope
+            .0,
+        0
+    );
+    let official = rig.tw.spawn_player("APzeroOfficial");
+    let luna = rig.registry().nodes[&cid("malapert")].place;
+    rig.run(GOD, &format!("@teleport {official}={luna}"));
+    rig.run(GOD, &format!("@org/grant {official}=0 relay.speak"));
+    let out = rig.run(official, "+relay/represent org:0");
+    assert!(out.contains("principal selected"), "{out}");
+    let out = rig.run(GOD, "+relay/access independent/org:0=discover,use");
+    assert!(out.contains("policy recorded"), "{out}");
+    rig.run(
+        GOD,
+        &format!("+relay/access independent/{bob}=discover,use"),
+    );
+    let out = rig.run(official, &format!("@mail/quick {bob}=zero IDs/body"));
+    assert!(out.contains("queued for IC transit"), "{out}");
+    let id = rig.mail().next_id() - 1;
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.mail_tick();
+    let e = rig.mail_route(id, bob, false).unwrap();
+    assert_eq!(
+        e.representation(),
+        Some(mush_core::RelayRepresentation {
+            organization: 0,
+            scope: 0
+        })
+    );
+    assert!(
+        e.transit()
+            .unwrap()
+            .legs
+            .iter()
+            .any(|l| l.pair == Some(cid("independent")))
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.envelope(e.id()).representation(), e.representation());
+    assert!(
+        rig.run(official, "+relay/represent")
+            .contains("org:0; scope 0")
     );
 }

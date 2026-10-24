@@ -749,6 +749,7 @@ mod tests {
             delivery: Some(BTreeMap::new()),
         };
         let dispatch = Dispatch {
+            representation: None,
             version: 1,
             id: 1,
             from: msg.from,

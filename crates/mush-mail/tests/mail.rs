@@ -32,8 +32,14 @@ const NOW: i64 = 1_700_000_000;
 #[derive(Debug)]
 struct LocalReceiptFixture;
 impl mush_mail::transit::Transport for LocalReceiptFixture {
-    fn capacity(&self, _: &World, _: usize) -> bool {
-        true
+    fn capacity(
+        &self,
+        _: &World,
+        _: ObjId,
+        _: Option<mush_core::RelayRepresentation>,
+        _: usize,
+    ) -> Result<(), mush_core::TransportRefusal> {
+        Ok(())
     }
     fn endpoints(&self, _: &mush_core::Ctx<'_>, actors: &[ObjId]) -> Vec<Option<ObjId>> {
         actors.iter().map(|_| Some(LIMBO)).collect()

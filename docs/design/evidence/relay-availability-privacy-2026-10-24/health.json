@@ -1,0 +1,11 @@
+{
+  "at": "2026-10-24T21:01:18.382718+00:00",
+  "gateway": 1235509,
+  "server": 1235521,
+  "binarySha256": "f4e40f4af9a869c745dd669398c8f49e0a1a0e589357a2e330ec5a6a703000aa",
+  "https": "200",
+  "dev2Pid": 539467,
+  "nodes": 2,
+  "pairs": 1,
+  "privatePairs": []
+}

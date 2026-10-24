@@ -1,7 +1,7 @@
 //! Durable cross-owner handoff. Sources retain intents until consuming a terminal
 //! envelope; envelopes retain receipts until the source withdraws that intent.
 //! The existing delivery tick is the only transport scheduler.
-use crate::{Envelope, EnvelopeState, PropagationStore, record::DispatchKind};
+use crate::{Envelope, PropagationStore, record::DispatchKind};
 use mush_core::{ClockStamp, Ctx, ModuleOp, ModuleWrite, ObjId, World};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
@@ -37,6 +37,10 @@ impl DispatchRef {
 
 #[derive(Clone, Debug)]
 pub struct Request {
+    /// Source reservation ownership can differ from a returning receipt issuer.
+    pub reservation_actor: ObjId,
+    pub reservation_representation: Option<mush_core::RelayRepresentation>,
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub reference: DispatchRef,
     pub kind: DispatchKind,
     pub issuer: ObjId,
@@ -55,55 +59,6 @@ pub fn find<'a>(world: &'a World, key: &str) -> Option<&'a Envelope> {
         .module_state::<PropagationStore>()?
         .envelopes()
         .find(|e| e.dispatch_ref().is_some_and(|d| d.key == key))
-}
-
-/// Reserve source-side space before acknowledging acceptance. Include all source
-/// intents not yet accepted so a burst between transport fires cannot overbook.
-pub fn has_capacity(world: &World, additional: usize) -> bool {
-    let Some(services) = world.module_state::<Services>() else {
-        return false;
-    };
-    let Some(requests) = services.0.requests(world) else {
-        return false;
-    };
-    let Some(book) = world.module_state::<PropagationStore>() else {
-        return false;
-    };
-    let accepted_keys: BTreeSet<_> = book
-        .envelopes()
-        .filter_map(|e| e.dispatch_ref().map(|d| d.key.as_str()))
-        .collect();
-    let unaccepted = requests
-        .iter()
-        .filter(|r| !accepted_keys.contains(r.reference.key.as_str()))
-        .count();
-    let pending = book
-        .envelopes()
-        .filter(|e| {
-            matches!(
-                e.state(),
-                EnvelopeState::Queued | EnvelopeState::Transmitted
-            )
-        })
-        .count();
-    let external = book
-        .envelopes()
-        .filter(|e| e.dispatch_ref().is_some())
-        .count();
-    pending
-        .saturating_add(unaccepted)
-        .saturating_add(additional)
-        <= crate::routing::MAX_PENDING_ROUTES
-        && external
-            .saturating_add(unaccepted)
-            .saturating_add(additional)
-            <= MAX_DISPATCHES
-        && book
-            .envelopes()
-            .count()
-            .saturating_add(unaccepted)
-            .saturating_add(additional)
-            <= crate::MAX_ENVELOPES
 }
 
 pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
@@ -189,6 +144,7 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
         ) else {
             continue;
         };
+        let envelope = envelope.with_representation(request.representation);
         let Ok(value) = serde_json::to_value(&envelope) else {
             continue;
         };

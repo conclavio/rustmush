@@ -1,0 +1,369 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T20:25:20.628Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 45 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4051 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #1=availability gate transfer",
+      "reply": "#1 is not placed",
+      "wallMs": 51,
+      "replyBytes": 16
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #1=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. #678 R6bob1b16df#679 R6carol1f8127#684 Lunar entanglement foundry#706 Long Vigil#728 Postmaster Solveig Adebayo-Krishnan#731 Fleet Lunar relay cradle Pressure Lobby <PL> pllobbyin autumn night",
+      "wallMs": 52,
+      "replyBytes": 811
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #678=availability gate transfer",
+      "reply": "#678 is not placed",
+      "wallMs": 51,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#202",
+      "reply": "emit R6bob1b16df has left.\nemit R6bob1b16df has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=availability gate transfer",
+      "reply": "#679 is not placed",
+      "wallMs": 52,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#202",
+      "reply": "emit R6carol1f8127 has left.\nemit R6carol1f8127 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 72
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 25,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/load no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/audit private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/audit no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/discover private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/discover no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/publish private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/publish no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/access private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/access no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/network private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/network no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 27,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/load private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/load no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/audit private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/audit no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/discover no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/publish no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/access private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/access no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 51,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network private_407fdca2ba48ecec",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network no_such_pair",
+      "reply": "No such public link.",
+      "wallMs": 52,
+      "replyBytes": 20
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay",
+      "reply": "Relay board v1: explicit operator grants are noncommercial courtesy. One message-unit = 128 content bytes; short limit 1024 bytes.\nRetail tariff v1: Standard 100 / Priority 500 minor credits per 128-byte unit per recipient copy. New traffic defaults to free Deferred. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy quote; +relay/cancel quote; +relay/purchases. One charge across Exchange hops; release before use, no refund after first transmission.\nSubscriptions v1 per 1 IC day(s): Standard 25.00 cr / Priority 100.00 cr / Sovereign treaty 500.00 cr. Short outgoing copies only; capacity and both endpoint policies still apply. First actual payment enables service; one unpaid installment throttles, two suspend. +relay/subscribe #person|org:id=class,account; +relay/enroll quote; +relay/subscriptions; +relay/cure id; +relay/unsubscribe id. Cancellation ends future bills, never old debt. Sovereign requires an Exchange treaty and expires with its term.\nluna_ceres: Live; your class Deferred; service Served; Standard declared wait 60 IC seconds. Sovereign/Priority wait for capacity. Deferred: at least 7200 IC seconds, window 0..3600 in each 86400 IC seconds. Rate 8 units/IC second; burst 8 units.",
+      "wallMs": 51,
+      "replyBytes": 1231
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=discover",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 26,
+      "replyBytes": 78
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/status private_407fdca2ba48ecec",
+      "reply": "private_407fdca2ba48ecec: Served; private carriage not granted.",
+      "wallMs": 52,
+      "replyBytes": 63
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=24 relay.manage",
+      "reply": "Granted relay.manage to R6carol1f8127 over org #24's scope tree (grant #26).",
+      "wallMs": 26,
+      "replyBytes": 76
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/network private_407fdca2ba48ecec=public",
+      "reply": "Permission denied: public carriage requires relay.publish authority.",
+      "wallMs": 26,
+      "replyBytes": 68
+    },
+    {
+      "actor": "God",
+      "line": "+relay/access private_407fdca2ba48ecec/#679=none",
+      "reply": "Relay access policy recorded; queued traffic is rechecked before transmission.",
+      "wallMs": 26,
+      "replyBytes": 78
+    },
+    {
+      "actor": "God",
+      "line": "@econ/pay 1=27 1000000",
+      "reply": "account 1 would breach its credit policy",
+      "wallMs": 26,
+      "replyBytes": 40
+    }
+  ],
+  "milestones": [
+    {
+      "test": "genuine-funded-checkpoint",
+      "fixture": {
+        "action": "prepare",
+        "sourceSha256": "7cecd71fe01a116829d3342fa7e6658da763f6c95528ecb74dcdd6d91a9a9c16",
+        "dev2Pid": 539467,
+        "keys": 5362,
+        "method": "portless RDB reader; dev1 DB0 RESTORE with AOF retained"
+      },
+      "programme": {
+        "consent": 3,
+        "fleet": 24,
+        "front": 1,
+        "hull": 706,
+        "launch": null,
+        "next_payment": null,
+        "payments": [
+          88,
+          95,
+          96,
+          97,
+          98,
+          99
+        ],
+        "postmaster": 728,
+        "refit": "4647675931937795308"
+      },
+      "pair": {
+        "capacity_units_per_ic_second": 1,
+        "class_policy": "private",
+        "halves": [
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_0",
+            "node": "private_407fdca2ba48ecec_0",
+            "object": 729,
+            "powered": true,
+            "staffed": true
+          },
+          {
+            "damaged": false,
+            "destroyed": false,
+            "enabled": true,
+            "id": "private_407fdca2ba48ecec_half_1",
+            "node": "private_407fdca2ba48ecec_1",
+            "object": 730,
+            "powered": true,
+            "staffed": true
+          }
+        ]
+      }
+    },
+    {
+      "test": "private-id-opaque-and-management-does-not-publish"
+    }
+  ],
+  "mode": "split",
+  "runs": [
+    {
+      "at": "2026-10-24T20:25:20.673Z",
+      "gatewayPid": 1199213,
+      "serverPid": 1199223,
+      "serverSha256": "e54fab5075d7fd476943c5557e969ba8cfdf04dba9d85503690ecad8a600c9df"
+    }
+  ],
+  "failure": "Error: Timed out: actual finite voyage budget transfer\n    at until (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:111:9)\n    at async file:///opt/rustmush/dev1/build/scripts/relay-availability-live.mjs:38:65"
+}

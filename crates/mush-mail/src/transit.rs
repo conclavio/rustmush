@@ -15,6 +15,10 @@ pub const TICK: &str = "mail.handoff";
 
 #[derive(Clone, Debug)]
 pub struct Intent {
+    /// Original sender owns the reservation through the returning receipt.
+    pub reservation_actor: ObjId,
+    pub reservation_representation: Option<mush_core::RelayRepresentation>,
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub key: String,
     pub from: ObjId,
     pub to: ObjId,
@@ -29,7 +33,20 @@ pub struct Receipt {
     pub origin: Option<ObjId>,
 }
 pub trait Transport: Send + Sync + std::fmt::Debug {
-    fn capacity(&self, world: &World, additional: usize) -> bool;
+    fn capacity(
+        &self,
+        world: &World,
+        actor: ObjId,
+        representation: Option<mush_core::RelayRepresentation>,
+        additional: usize,
+    ) -> Result<(), mush_core::TransportRefusal>;
+    fn representation(
+        &self,
+        _world: &World,
+        _actor: ObjId,
+    ) -> Result<Option<mush_core::RelayRepresentation>, mush_core::TransportRefusal> {
+        Ok(None)
+    }
     fn endpoints(&self, ctx: &Ctx<'_>, actors: &[ObjId]) -> Vec<Option<ObjId>>;
     fn receipt(&self, world: &World, key: &str) -> Option<Receipt>;
 }
@@ -71,6 +88,8 @@ pub struct Copy {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dispatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub version: u32,
     pub id: u64,
     pub from: ObjId,
@@ -121,6 +140,13 @@ pub fn intents(world: &World) -> Option<Vec<Intent>> {
             }
             let returning = copy.result.is_some();
             intents.push(Intent {
+                reservation_actor: dispatch.from,
+                reservation_representation: dispatch.representation,
+                representation: if returning {
+                    None
+                } else {
+                    dispatch.representation
+                },
                 key: dispatch.key(copy.to, returning),
                 from: if returning { copy.to } else { dispatch.from },
                 to: if returning { dispatch.from } else { copy.to },
@@ -170,13 +196,20 @@ pub(crate) fn submit(
             .sum::<usize>()
             + to.len()
             > MAX_PENDING_COPIES
-        || !service.0.capacity(ctx.w, to.len())
     {
         return Err(CmdError::msg(
             "MAIL: Transport pending queue is full; try again later.",
         ));
     }
     let from = ctx.actor;
+    let representation = service
+        .0
+        .representation(ctx.w, from)
+        .map_err(|e| CmdError::msg(e.message()))?;
+    service
+        .0
+        .capacity(ctx.w, from, representation, to.len())
+        .map_err(|e| CmdError::msg(e.message()))?;
     if !perm::has_role(ctx.w, from, Role::Wizard) && state.entry_count(from) >= state.quota() {
         return Err(CmdError::msg(
             "MAIL: Your mailbox is full; free space for the Sent copy.",
@@ -202,6 +235,7 @@ pub(crate) fn submit(
         delivery: Some(BTreeMap::new()),
     };
     let dispatch = Dispatch {
+        representation,
         version: 1,
         id,
         from,

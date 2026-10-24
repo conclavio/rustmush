@@ -67,6 +67,7 @@ try{
  await command(pilot,'+relaypair/collect '+oid(order.id),'titled halves');await settled();
  await command(observer,'+relayfleet/refit '+oid(orderId),'authority');await command(pilot,'+relayfleet/refit '+oid(orderId),'Fleet refit complete');
  const machines=foundry().machines[orderId];pairId='private_'+BigInt(orderId).toString(16).padStart(16,'0');assert.equal(registry().pairs[pairId].class_policy,'private');
+ for(const endpoint of [pilot,observer])await command(staff,`+relay/access ${pairId}/${endpoint.object}=discover,use`,'policy recorded');
  await command(staff,'+relayfleet/consent yes','consent recorded');await command(staff,'+relayfleet/consent yes','already recorded');await command(pilot,'+relayfleet/fund','already authorized');
  assert.equal(programme().launch,null);await death('real-refit-and-consent-before-commissioning');
  milestone('real-paid-refit-awaits-six-months',{order:orders().find(o=>String(o.id)===orderId),machines,programme:programme(),total:total()});

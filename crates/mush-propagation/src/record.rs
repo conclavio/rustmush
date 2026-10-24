@@ -339,6 +339,8 @@ pub enum DispatchKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    representation: Option<mush_core::RelayRepresentation>,
     id: u64,
     issuer: ObjId,
     recipient: ObjId,
@@ -370,6 +372,8 @@ pub struct Envelope {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvelopeWire {
+    #[serde(default)]
+    representation: Option<mush_core::RelayRepresentation>,
     id: u64,
     issuer: ObjId,
     recipient: ObjId,
@@ -412,6 +416,7 @@ impl<'de> Deserialize<'de> for Envelope {
             matches!(wire.kind, Some(DispatchKind::Mail | DispatchKind::Channel)),
         )
         .map_err(serde::de::Error::custom)?;
+        envelope.representation = wire.representation;
         if let Some(kind) = wire.kind {
             if (kind == DispatchKind::Acknowledgement) != envelope.ack_of.is_some()
                 || (kind == DispatchKind::Report) != envelope.shares.is_some()
@@ -617,6 +622,7 @@ impl Envelope {
             } else {
                 DispatchKind::Order
             },
+            representation: None,
             transit: None,
             dispatch: None,
         })
@@ -654,6 +660,13 @@ impl Envelope {
     }
 
     #[must_use]
+    pub fn representation(&self) -> Option<mush_core::RelayRepresentation> {
+        self.representation
+    }
+    pub fn with_representation(mut self, r: Option<mush_core::RelayRepresentation>) -> Self {
+        self.representation = r;
+        self
+    }
     pub fn dispatch_ref(&self) -> Option<&crate::dispatch::DispatchRef> {
         self.dispatch.as_ref()
     }

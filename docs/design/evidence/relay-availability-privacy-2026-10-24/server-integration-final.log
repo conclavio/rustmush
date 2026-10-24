@@ -1,0 +1,54 @@
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized] target(s) in 11.16s
+     Running tests/boot_parity.rs (target/debug/deps/boot_parity-eceb0e3813cdacad)
+
+running 21 tests
+test a_callsite_first_reached_without_a_subscriber_is_still_captured ... ok
+test both_binaries_build_their_deps_through_the_production_constructor ... ok
+test check_config_finds_the_world_half_refusals_without_booting ... ok
+test a_digest_mismatched_pack_fails_the_split_boot ... ok
+test stop_ledger_archive_joins_the_pass_rather_than_detaching_it ... ok
+test game_modules_pins_the_composition_order ... ok
+test the_composition_root_is_stated_once_across_the_fork ... ok
+test a_caller_supplied_store_says_the_archive_tier_is_ignored ... ok
+test the_engine_knobs_reach_the_booted_world ... ok
+test the_production_deps_carry_the_booted_mind_and_one_registry ... ok
+test split_build_engine_composes_the_tacsim_layer ... ok
+test sm2_the_production_root_lays_up_every_site ... ok
+test a_seeded_pack_resolves_a_route ... ok
+test the_store_knobs_are_read_where_the_store_is_opened ... ok
+test the_split_boot_carries_the_operator_recovery_policy ... ok
+test the_roster_and_hello_manifest_are_golden_across_the_matrix ... ok
+test the_split_shutdown_awaits_the_archive_job ... ok
+test ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on ... ok
+test the_starter_area_boots_once_and_is_durable ... ok
+test the_boot_says_whether_the_simulator_is_there ... ok
+test sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.24s
+
+     Running tests/ic_slice_loop.rs (target/debug/deps/ic_slice_loop-e918ab86e9530e45)
+
+running 10 tests
+test ic12_a_rate_change_mid_passage_relabels_the_arrival has been running for over 60 seconds
+test ic12_negative_checks_refuse_in_fiction_and_move_nothing has been running for over 60 seconds
+test ic12_part_one_a_leg_by_hand has been running for over 60 seconds
+test ic12_part_two_the_queue_runs_the_return has been running for over 60 seconds
+test ic12_the_sailing_plan_skips_and_holds has been running for over 60 seconds
+test ic14_a_counter_refusal_is_retried_on_the_shipped_packs has been running for over 60 seconds
+test r5_real_dray_radio_freezes_forwards_and_recovers has been running for over 60 seconds
+test r9a_paid_manufacture_survives_restart_and_installs_once has been running for over 60 seconds
+test ic14_a_counter_refusal_is_retried_on_the_shipped_packs ... ok
+test ic12_a_rate_change_mid_passage_relabels_the_arrival ... ok
+test ic12_part_one_a_leg_by_hand ... ok
+test r9b_fleet_assignment_expiry_uses_the_economy_wall_timestamp ... ok
+test ic12_negative_checks_refuse_in_fiction_and_move_nothing ... ok
+test r5_real_dray_radio_freezes_forwards_and_recovers ... ok
+test ic12_part_two_the_queue_runs_the_return ... ok
+test r9b_fleet_front_real_refit_passage_and_carrier_loss has been running for over 60 seconds
+test r9a_paid_manufacture_survives_restart_and_installs_once ... ok
+test ic12_the_sailing_plan_skips_and_holds ... ok
+test r9b_fleet_front_real_refit_passage_and_carrier_loss ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 177.67s
+

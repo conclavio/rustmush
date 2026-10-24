@@ -178,6 +178,8 @@ impl Ticket {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<mush_core::RelayRepresentation>,
     pub envelope: u64,
     pub pair: CanonicalId,
     pub issuer: ObjId,
@@ -225,6 +227,8 @@ pub struct Audit {
 #[serde(deny_unknown_fields)]
 pub struct State {
     #[serde(default)]
+    pub access: crate::access::Policy,
+    #[serde(default)]
     pub commerce: Option<crate::commerce::Market>,
     #[serde(default)]
     pub billing: Option<crate::billing::Book>,
@@ -240,6 +244,7 @@ pub struct State {
 impl State {
     pub fn new(config: Config) -> Self {
         Self {
+            access: Default::default(),
             commerce: None,
             billing: None,
             config,
@@ -253,6 +258,7 @@ impl State {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
+        self.access.validate()?;
         if let Some(billing) = &self.billing {
             billing.validate()?;
         }
@@ -370,6 +376,22 @@ impl State {
 /// This bridge may use organization, knowledge, canon and front owners. It must
 /// preflight all fallible work before mutating, and must never disclose payloads.
 pub trait Integration: Send + Sync + std::fmt::Debug {
+    fn representation(
+        &self,
+        _w: &World,
+        _actor: ObjId,
+        _organization: u64,
+    ) -> Option<mush_core::RelayRepresentation> {
+        None
+    }
+    fn representation_valid(
+        &self,
+        w: &World,
+        actor: ObjId,
+        r: mush_core::RelayRepresentation,
+    ) -> bool {
+        self.representation(w, actor, r.organization) == Some(r)
+    }
     fn represents(&self, _w: &World, _actor: ObjId, _principal: &Principal) -> bool {
         false
     }
@@ -468,6 +490,15 @@ pub fn status(
     pair: &CanonicalId,
     endpoints: (ObjId, ObjId),
 ) -> ServiceState {
+    status_as(state, world, pair, endpoints, None)
+}
+pub fn status_as(
+    state: &State,
+    world: &World,
+    pair: &CanonicalId,
+    endpoints: (ObjId, ObjId),
+    representation: Option<mush_core::RelayRepresentation>,
+) -> ServiceState {
     let Some(api) = integration(world) else {
         return ServiceState::Served;
     };
@@ -476,8 +507,15 @@ pub fn status(
     };
     endpoints_into(endpoints)
         .into_iter()
-        .map(|endpoint| {
-            let principals = api.principals(world, endpoint);
+        .enumerate()
+        .map(|(index, endpoint)| {
+            let Some(principals) = crate::access::principals(
+                world,
+                endpoint,
+                if index == 0 { representation } else { None },
+            ) else {
+                return ServiceState::Suspended;
+            };
             if principals.len() > 2 || api.sanction(world, operator, &principals).is_some() {
                 ServiceState::Suspended
             } else {
@@ -493,10 +531,21 @@ fn endpoints_into(endpoints: (ObjId, ObjId)) -> [ObjId; 2] {
     [endpoints.0, endpoints.1]
 }
 pub fn allowed(world: &World, pair: &CanonicalId, endpoints: (ObjId, ObjId)) -> bool {
-    world
-        .module_state::<PropagationStore>()
-        .and_then(|s| s.transport.service.as_ref())
-        .is_none_or(|state| status(state, world, pair, endpoints) != ServiceState::Suspended)
+    allowed_as(world, pair, endpoints, None)
+}
+pub fn allowed_as(
+    world: &World,
+    pair: &CanonicalId,
+    endpoints: (ObjId, ObjId),
+    representation: Option<mush_core::RelayRepresentation>,
+) -> bool {
+    crate::access::usable(world, pair, endpoints, representation)
+        && world
+            .module_state::<PropagationStore>()
+            .and_then(|s| s.transport.service.as_ref())
+            .is_none_or(|state| {
+                status_as(state, world, pair, endpoints, representation) != ServiceState::Suspended
+            })
 }
 pub fn effective(
     state: &State,
@@ -505,25 +554,34 @@ pub fn effective(
     envelope: &Envelope,
 ) -> Option<(Class, bool)> {
     let base = crate::commerce::base(state, world, pair, envelope);
-    match status(
+    if !crate::access::usable(
+        world,
+        pair,
+        (envelope.issuer(), envelope.recipient()),
+        envelope.representation(),
+    ) {
+        return None;
+    }
+    match status_as(
         state,
         world,
         pair,
         (envelope.issuer(), envelope.recipient()),
+        envelope.representation(),
     ) {
         ServiceState::Served => Some((base, false)),
         ServiceState::Throttled => Some((base.demoted(), true)),
         ServiceState::Suspended => None,
     }
 }
-fn current<'a>(ctx: &'a Ctx<'_>) -> Option<&'a State> {
+pub(crate) fn current<'a>(ctx: &'a Ctx<'_>) -> Option<&'a State> {
     ctx.w
         .module_state::<PropagationStore>()?
         .transport
         .service
         .as_ref()
 }
-fn save(ctx: &mut Ctx<'_>, state: State) -> Result<(), CmdError> {
+pub(crate) fn save(ctx: &mut Ctx<'_>, state: State) -> Result<(), CmdError> {
     state.validate().map_err(CmdError::msg)?;
     let book = ctx
         .w
@@ -544,9 +602,12 @@ fn save(ctx: &mut Ctx<'_>, state: State) -> Result<(), CmdError> {
 fn say(ctx: &mut Ctx<'_>, s: impl Into<String>) {
     ctx.out.sys_to_actor(ctx.actor, crate::NS, s.into());
 }
-fn pair(ctx: &Ctx<'_>, s: &str) -> Result<CanonicalId, CmdError> {
+pub(crate) fn pair(ctx: &Ctx<'_>, s: &str) -> Result<CanonicalId, CmdError> {
     let id = CanonicalId::new(s).map_err(|_| CmdError::msg("No such public link."))?;
     if crate::routing::registry(ctx.w).is_none_or(|r| !r.pairs.contains_key(&id)) {
+        return Err(CmdError::msg("No such public link."));
+    }
+    if !crate::access::discoverable(ctx.w, ctx.actor, &id) {
         return Err(CmdError::msg("No such public link."));
     }
     Ok(id)
@@ -580,13 +641,26 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
         lines.push(line);
     }
     for (id, p) in &registry.pairs {
-        if p.class_policy != mush_sim::relay::ClassPolicy::Exchange {
+        if !crate::access::discoverable(world, actor, id) {
             continue;
         }
-        let status = status(state, world, id, (actor, actor));
+        let status = status_as(
+            state,
+            world,
+            id,
+            (actor, actor),
+            crate::access::selected(world, actor).ok().flatten(),
+        );
         let base = integration(world)
             .and_then(|api| api.operator(world, id))
-            .and_then(|operator| crate::billing::class(world, operator, actor))
+            .and_then(|operator| {
+                crate::billing::class_as(
+                    world,
+                    operator,
+                    actor,
+                    crate::access::selected(world, actor).ok().flatten(),
+                )
+            })
             .map_or_else(
                 || state.class(id, actor),
                 |class| class.min(state.class(id, actor)),
@@ -603,6 +677,9 @@ pub fn board(world: &World, actor: ObjId) -> Vec<String> {
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.iter().count() > 1 {
         return Err(CmdError::msg("Choose one relay command switch."));
+    }
+    if crate::access::handles(ctx) {
+        return crate::access::command(ctx);
     }
     if crate::billing::handles(ctx) {
         return crate::billing::command(ctx);
@@ -621,7 +698,10 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .iter()
             .rev()
             .filter(|r| {
-                r.recipient == viewer && r.arrived.is_some() && api.visible(ctx.w, viewer, r)
+                r.recipient == viewer
+                    && r.arrived.is_some()
+                    && crate::access::discoverable(ctx.w, viewer, &r.pair)
+                    && api.visible(ctx.w, viewer, r)
             })
             .take(32)
             .map(|r| {
@@ -667,10 +747,34 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let operator = api
             .operator(ctx.w, &id)
             .ok_or_else(|| CmdError::msg("Operator unavailable."))?;
-        let principals = api.principals(ctx.w, viewer);
+        let principals = crate::access::principals(
+            ctx.w,
+            viewer,
+            crate::access::selected(ctx.w, viewer).map_err(|e| CmdError::msg(e.message()))?,
+        )
+        .ok_or_else(|| CmdError::msg("Communication authority unavailable."))?;
         say(
             ctx,
-            format!("{id}: {:?}.", status(&state, ctx.w, &id, (viewer, viewer))),
+            format!(
+                "{id}: {:?}; private carriage {}.",
+                status_as(
+                    &state,
+                    ctx.w,
+                    &id,
+                    (viewer, viewer),
+                    crate::access::selected(ctx.w, viewer).ok().flatten()
+                ),
+                if crate::access::can_use(
+                    ctx.w,
+                    &id,
+                    viewer,
+                    crate::access::selected(ctx.w, viewer).ok().flatten()
+                ) {
+                    "allowed"
+                } else {
+                    "not granted"
+                }
+            ),
         );
         for line in crate::billing::status_lines(ctx.w, operator, &principals) {
             say(ctx, line);
@@ -942,9 +1046,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+relay".into(),
             shape: ArgShape::EqPair,
-            switches: ["subscribe","enroll","subscriptions","unsubscribe","cure","treaty","outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
+            switches: ["access", "network", "represent", "subscribe","enroll","subscriptions","unsubscribe","cure","treaty","outbox", "quote", "buy", "cancel", "purchases", "policy", "status", "receipts", "grant", "load", "audit", "discover", "publish"]
                 .into_iter().map(Into::into).collect(),
-            help: "+relay: public tariff board. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
+            help: "+relay: public tariff board. +relay/outbox; +relay/quote envelope=standard|priority,account; +relay/buy|cancel quote; +relay/purchases. +relay/receipts: your arrived traffic stamps. +relay/grant pair/character=class: operator grants, not purchases. +relay/policy pair/#character|org:id=state,operator.source,reason: operator-wide restriction. +relay/access pair/#character|org:id=discover,use|discover|use|none: private rights (manage). +relay/network pair=private|public: carriage policy (manage; public also publish). +relay/represent personal|org:id: explicit relay.speak authority, checked on send and each hop. +relay/status pair: your restrictions. +relay/load|audit|discover|publish pair: separately permissioned operator actions.".into(),
             ..Default::default()
         },
         Arc::new(command),
@@ -1023,6 +1127,7 @@ mod tests {
         let pair = CanonicalId::new("test").unwrap();
         let mut state = State::new(config());
         let mut receipt = Receipt {
+            representation: None,
             envelope: 1,
             pair: pair.clone(),
             issuer: ObjId(2),

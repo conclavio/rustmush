@@ -21,6 +21,24 @@ push's normal CI remains a separate result. RR-8's current help is corrected. RR
 and RR-4 through RR-7 remain open. The live transfer is a shore-recipient relocation
 after real docking, with moving coverage and passage restart proved earlier.
 
+## Availability/privacy follow-up
+
+The owner subsequently authorized gate 2 after the acceptance-repair push.
+[Design 15d](15d-comms-availability-privacy.md) records the admission, private-access
+and explicit organization-agency contract and its integration gate. It passed 150
+checked live commands and four SIGKILL/restart boundaries on dev1, with 2,490
+passing automated tests and eight pre-existing ignored tests. **RR-1 and RR-4 are
+closed by this follow-up.** Private pairs default closed on upgrade; Exchange
+charter links remain public. The explicit sender identity is separate from payer
+and receiver authority.
+
+The acceptance-repair push's CI subsequently exposed the same fixture flag mismatch
+in the isolated bot arena. That fixture is repaired here; its full 717-test suite
+passes. Every other required job and CodeQL on that prior push passed. CI for this
+new push remains a separate result. The findings below retain the reviewed R10
+behavior; RR-5 through RR-7, further consumer interfaces and live Discord acceptance
+remain open.
+
 ## Assessment
 
 The core chain is built. It is substantially more than a registry or a deferred

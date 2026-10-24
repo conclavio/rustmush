@@ -236,10 +236,11 @@ pub fn base(state: &service::State, w: &World, pair: &CanonicalId, e: &Envelope)
                 return if valid { p.class } else { Class::Deferred };
             }
             if e.id() >= m.legacy_before {
-                return crate::billing::class(w, m.operator, e.issuer()).map_or_else(
-                    || state.class(pair, e.issuer()),
-                    |class| class.min(state.class(pair, e.issuer())),
-                );
+                return crate::billing::class_as(w, m.operator, e.issuer(), e.representation())
+                    .map_or_else(
+                        || state.class(pair, e.issuer()),
+                        |class| class.min(state.class(pair, e.issuer())),
+                    );
             }
             return e.transit().and_then(|r| r.service.as_ref()).map_or_else(
                 || {

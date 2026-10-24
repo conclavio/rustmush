@@ -221,11 +221,18 @@ pub fn status(w: &World, operator: u64, principals: &[Principal]) -> ServiceStat
         .unwrap_or_default()
 }
 pub fn class(w: &World, operator: u64, endpoint: ObjId) -> Option<Class> {
+    class_as(w, operator, endpoint, None)
+}
+pub fn class_as(
+    w: &World,
+    operator: u64,
+    endpoint: ObjId,
+    representation: Option<mush_core::RelayRepresentation>,
+) -> Option<Class> {
     if !exchange(w, operator) {
         return None;
     }
-    let api = service::integration(w)?;
-    let principals = api.principals(w, endpoint);
+    let principals = crate::access::principals(w, endpoint, representation)?;
     current(w)?
         .subscriptions
         .values()

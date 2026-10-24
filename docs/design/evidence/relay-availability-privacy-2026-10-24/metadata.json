@@ -1,0 +1,40 @@
+{
+  "baseCommit": "1a0565cd2b274f416ca4c0de2754ae294863b2fc",
+  "recordedAtUtc": "2026-10-24T21:01:19.091826+00:00",
+  "sourceNormalization": "CRLF to LF",
+  "sourceFiles": 1492,
+  "sourceManifestSha256": "f86c3b0523b597ed1fb8d53810edb4fc65bf46591f50f1598b97b76d0f605680",
+  "serverSha256": "f4e40f4af9a869c745dd669398c8f49e0a1a0e589357a2e330ec5a6a703000aa",
+  "tests": {
+    "relay-registry.log": {
+      "passed": 57,
+      "failed": 0,
+      "ignored": 0
+    },
+    "producer-tests-final.log": {
+      "passed": 205,
+      "failed": 0,
+      "ignored": 0
+    },
+    "server-integration-final.log": {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    "tacsim-lib-final.log": {
+      "passed": 1480,
+      "failed": 0,
+      "ignored": 1
+    },
+    "bot-tests.log": {
+      "passed": 717,
+      "failed": 0,
+      "ignored": 7
+    }
+  },
+  "livePassed": true,
+  "liveChecks": 150,
+  "liveCrashes": 4,
+  "botTestScope": "Full isolated suite passed after fixture repair; before the final zero-based organization/scope correction. Relay, producer, server and TacSim suites reran after that correction.",
+  "retainedFailureNote": "Initial live harness attempts: an invalid loose-inventory precondition, insufficient pilot fuel funds, and an oversized proposed clearing transfer. Reset retried after Redis background-save overlap; duplicate failed transcript retained. Final gate used a real 800000-minor transfer from the existing clearing balance with conservation checked."
+}

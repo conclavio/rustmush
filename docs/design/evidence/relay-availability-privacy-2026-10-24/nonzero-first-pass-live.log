@@ -1,0 +1,8 @@
+PASS genuine-funded-checkpoint
+PASS private-id-opaque-and-management-does-not-publish
+PASS real-voyage-budget
+PASS real-carrier-departure
+PASS private-use-positive-at-both-ends-and-revoked-before-hop
+PASS explicit-frozen-agency-revalidated-after-restart
+PASS public-carriage-delivers-and-receipts-observer-filtered
+PASS one-sender-cannot-starve-orders-acks-or-channels
