@@ -4,7 +4,7 @@
     "version": 1,
     "kind": "rules_definition",
     "requires": [],
-    "digest": "7759d8663182114b9fed021ad1760ca3c84ebc0b29c64da8c1dbd4b44ff96eca"
+    "digest": "9db7f4ad577e1071c124369289f9fdd6d5ff395b78160b9362c4718e29a7827e"
   },
   "entries": {
     "tacsim.unit.relay_station": {
@@ -70,7 +70,7 @@
                 "starting",
                 "online"
               ],
-              "initial": "off"
+              "initial": "online"
             }
           }
         ],

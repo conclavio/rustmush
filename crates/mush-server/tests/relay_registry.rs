@@ -2629,7 +2629,7 @@ fn r7_station_pack_digest_and_bounded_attention() {
     .unwrap();
     assert_eq!(
         pack.manifest().digest().to_hex(),
-        "7759d8663182114b9fed021ad1760ca3c84ebc0b29c64da8c1dbd4b44ff96eca"
+        "9db7f4ad577e1071c124369289f9fdd6d5ff395b78160b9362c4718e29a7827e"
     );
     let mut f = mush_faction::Faction::new(mush_faction::FactionId(0), "Controlled attention");
     f.apply_resource("attention", i64::MAX, "test", GOD, 0);
