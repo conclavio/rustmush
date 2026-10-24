@@ -1,0 +1,13 @@
+   Compiling mush-faction v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-faction)
+   Compiling mush-net-discord v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-net-discord)
+   Compiling mush-npc v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-npc)
+   Compiling tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+   Compiling mush-server v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.99s
+     Running tests\relay_registry.rs (target\debug\deps\relay_registry-6fc37fb918999edb.exe)
+
+running 1 test
+test r6a_refusals_wait_for_arrival_and_a_physical_return ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 6.67s
+

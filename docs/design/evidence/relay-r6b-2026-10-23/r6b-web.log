@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 C:/Users/faeni/.codex/worktrees/mining-graphics-minds/rustmush/web
+
+
+ Test Files  2 passed (2)
+      Tests  103 passed (103)
+   Start at  16:29:10
+   Duration  1.78s (transform 1.85s, setup 1.98s, import 644ms, tests 133ms, environment 0ms)
+

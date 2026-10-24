@@ -630,7 +630,7 @@ The owner monitors GitHub and authorized continuation to R6b after commit/push.
 R6b must finish its own live gate; the next owner stop is before R3.
 
 
-## R6b — IC channel fanout and observer bridge boundaries (candidate)
+## R6b — IC channel fanout and observer bridge boundaries (2026-10-23)
 
 IC channel speech now uses the existing propagation handshake. Comsys owns the
 frozen content, eligible dispatch roster, and each member's arrived history;
@@ -682,6 +682,69 @@ and repaired the renderer's previous blanket rejection of channel frames. The
 web cache tests also found a pre-existing plain-string backlog body rendering
 problem, now corrected alongside membership epoch handling.
 
-Live dev1 evidence will be appended after deploying this candidate. The explicit
-live Discord acceptance item remains open unless an enabled bot and relay mapping
-are available; controlled-provider results do not claim a live Discord run.
+### Automated validation and provenance
+
+The initial candidate passed 734 regression tests across comsys, mail, propagation,
+Discord, SSH, IPC and the split gateway, plus 50 protocol tests, 27 ownership,
+scheduling, panic-budget and CI-inventory contract tests, and three gateway service
+parity checks. All 26 production relay/passage stories passed on Linux. The final
+Discord ingress correction passed all 98 gateway/Discord unit tests and the real
+bridge test, including duplicate modal submissions; that bridge test also passed
+on Linux. The web controller and channel store passed 103 tests, Svelte reported
+zero errors/warnings, and targeted Clippy passed with warnings denied.
+
+The state-ownership contract exposed an R6a test fixture directly changing mail's
+live quota state. It now changes the persisted mail configuration and reboots;
+that refusal scenario passed on both hosts. No ownership allowance or panic budget
+was raised. The web controller also refetches an active tab when its membership
+epoch changes, including when an older backlog response is still in flight.
+
+Base: `24384bf2`. Initial transport candidate: `cdf8190a`; web refresh and persisted
+quota fixture: `1d2e2cd6`; final bridge-identity candidate: `e0b1841a`. The Linux
+26-story suite ran on cdf8190a; the changed quota fixture was rerun on 1d2e2cd6.
+The expanded bridge test and **all live dev1 checks ran on e0b1841a**. The three
+candidates were built locally/on dev1 before the final gate push; normal GitHub CI
+is separate and owner-monitored.
+
+### Real server gate
+
+The [live transcript](evidence/relay-r6b-2026-10-23/live.json) contains 68 checks
+through authenticated TLS WebSockets at `conclav.io:6790`, with certificate
+verification enabled. Legacy IC history created by the R6a binary remained readable
+and created no new dispatch. A verified server-child SIGKILL preserved fanout and
+the frozen physical flight. A later paired line arrived first; recall, backlog,
+member sequence/unread and mention surfaces did not expose the earlier payload.
+The earlier line then arrived while its recipient was offline, with one additional
+receipt and unread increment. The uncovered destination received its own copies
+only after their flights.
+
+Leaving and rejoining replaced the membership epoch and denied the older in-flight
+copy. A see lock revoked during flight denied arrival, with no retained body after
+access was restored. The actual underway Dray from the R6a departure supplied both
+a moving recipient and a ship-to-shore source; both routes recorded positive ship
+flights. OOC chat remained immediate. A controlled source-object deletion with
+**dev1 stopped** left accepted content deliverable; the exact synthetic object was
+restored afterward. This is an object-loss fault test, not a claim about the game's
+normal destruction command. The diagnostic expired counter includes cancellation
+of copies addressed to the absent object.
+
+[SSH evidence](evidence/relay-r6b-2026-10-23/ssh.json) records five checks through the
+real `play` front door on port 6789: arrived history, queued speech, arrived self
+copy, immediate OOC chat and refusal of staff-only transport diagnostics.
+[Environment](evidence/relay-r6b-2026-10-23/environment.json) records actual runtime
+binary/runner hashes, 680 preserved objects, rate 24, a healthy pair, zero pending
+channel copies and unchanged dev2 gateway PID 539467. Command replies had median
+52 ms and maximum 78 ms, with a largest reply of 855 bytes; these are observations,
+not performance thresholds. Database/object backups and credentials remain root-only
+on the VPS. Test logs and [automated counts](evidence/relay-r6b-2026-10-23/automated.json)
+are alongside the transcript.
+
+Reproduce with `scripts/relay-r6b-live.mjs` using the same four arguments as R6a,
+substituting `/opt/rustmush/dev1/r6b-evidence`, then `relay-r6b-ssh.py` on the VPS.
+`R6B_PREPARE=1` creates the legacy IC fixture before upgrade. This harness reuses the
+R6a synthetic accounts and its legitimately departed Dray.
+
+**Dev1 checks passed. Live Discord provider acceptance remains open:** the deployed
+configuration has Discord disabled and zero relay mappings. Controlled-provider
+results do not claim a live Discord run. Full acceptance also awaits normal CI.
+**Paused after R6b; R3 has not started.**

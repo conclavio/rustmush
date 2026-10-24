@@ -1,0 +1,114 @@
+   Compiling mush-net-web v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-net-web)
+warning: mush-net-web@0.1.0: web/dist/index.html missing: the web client will 404 until you run `npm run build` in web/ (debug builds pick it up without a rebuild)
+   Compiling mush-gateway v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.86s
+     Running unittests src\lib.rs (target\debug\deps\mush_gateway-18056b1eca89d306.exe)
+
+running 70 tests
+test bridge_common::projection_tests::line_action_parser_accepts_self_and_staff_subject_parameters ... ok
+test discord_bridge::tests::the_relay_map_honours_directions ... ok
+test poison::tests::a_poisoned_lock_is_recovered_with_its_state_intact ... ok
+test composing::tests::one_start_per_interval_and_a_stop_always_passes ... ok
+test accounts::commit_retry_tests::the_name_check_waits_for_the_commit_to_land ... ok
+test accounts::commit_retry_tests::an_answered_check_is_not_re_sent ... ok
+test poison::tests::the_recovery_line_is_logged_once_per_process ... ok
+test tests::a_poisoned_boundary_handle_still_swaps_the_boundary ... ok
+test tests::a_poisoned_lifecycle_table_keeps_every_other_connection_alive ... ok
+test tests::child_config_argument_is_passed_only_when_explicit ... ok
+test tests::crash_guard_trips_after_consecutive_failures ... ok
+test tests::crash_guard_backoff_grows_then_caps ... ok
+test tests::crash_guard_prunes_stale_window_before_admission ... ok
+test tests::crash_guard_trips_after_max_restarts_in_window ... ok
+test accounts::pubkey_tests::verify_pubkey_matches_by_key_material_uniform_on_miss ... ok
+test accounts::commit_retry_tests::a_world_that_stays_mid_commit_is_still_reported_busy ... ok
+test tests::boundary_teardown_fails_inflight_request ... ok
+test discord_bridge::tests::game_lines_go_out_through_the_webhook_or_as_the_bot ... ok
+test discord_bridge::tests::a_minted_code_links_once_and_whoami_and_unlink_follow ... ok
+test discord_bridge::tests::refusals_are_uniform_expired_banned_already_linked_either_side ... ok
+test tests::input_shed_drops_cmd_query_but_never_must_deliver ... ok
+test discord_bridge::tests::staff_sink_lines_post_to_the_staff_channel_as_the_bot ... ok
+test discord_bridge::tests::unlinked_follow_must_stop_accepting_commands ... ok
+test tests::a_stop_closes_the_boundary_and_waits_for_the_server_to_exit ... ok
+test discord_bridge::tests::banned_follow_must_stop_accepting_commands ... ok
+test tests::close_web_sessions_drops_only_structured_conns ... ok
+test discord_bridge::tests::unknown_prefixes_cross_to_the_server_with_the_account_and_actor ... ok
+test discord_bridge::tests::old_discord_message_cannot_answer_a_reused_request_id ... ok
+test discord_bridge::tests::notice_reply_buttons_open_a_prefilled_modal_whose_line_runs_as_the_character ... ok
+test tests::flood_exempt_input_has_a_bounded_burst_window ... ok
+test tests::enter_game_waits_for_durable_and_engine_connection_readiness ... ok
+test discord_bridge::tests::revocation_during_world_admission_leaves_no_connection ... ok
+test discord_bridge::tests::idle_detach_zero_means_never ... ok
+test discord_bridge::tests::request_buttons_answer_through_respond_and_mark_the_message ... ok
+test tests::enter_game_untracked_connection_compensates_without_session_info ... ok
+test tests::legacy_claim_drops_replay_copy_before_sending_release ... ok
+test tests::enter_game_barrier_failure_compensates_and_removes_fresh_session ... ok
+test discord_bridge::tests::revocation_cancels_an_attached_alt_and_its_buttons ... ok
+test discord_bridge::tests::discord_lines_come_in_as_the_linked_character_under_the_gates ... ok
+test tests::lifecycle_obligations_are_bounded_before_session_custody ... ok
+test tests::lifecycle_busy_refuses_before_local_session_attach ... ok
+test discord_bridge::tests::revocation_while_creating_a_dm_cannot_restore_the_link_or_attach ... ok
+test tests::enter_game_barrier_failure_restores_revived_linkdead_session ... ok
+test discord_bridge::tests::follow_refusals_not_linked_banned_closed_dms_and_quit_in_the_dm ... ok
+test tests::replay_custody_is_per_connection_bounded_and_exactly_released ... ok
+test tests::lifecycle_teardown_during_restart_gap_does_not_leak_custody ... ok
+test tests::line_shed_emits_busy_notice ... ok
+test tests::linkdead_cleanup_holds_lifecycle_capacity_until_session_gone ... ok
+test tests::request_after_boundary_down_fails_fast ... ok
+test tests::resync_orders_full_roster_before_readiness_barrier ... ok
+test tests::service_request_id_exhaustion_fails_before_enqueue ... ok
+test tests::resync_readiness_barrier_times_out_and_teardown_drains_waiter ... ok
+test tests::siteban_refresh_reloads_wholesale_and_is_idempotent ... ok
+test tests::version_skew_never_trips_the_crash_guard ... ok
+test tests::siteban_refresh_ejects_live_connections_from_banned_addresses ... ok
+test tests::service_request_waiters_are_bounded_and_refused_before_enqueue ... ok
+test tests::tempban_lift_reaches_each_guard_once_and_cannot_clear_a_siteban ... ok
+test tests::uncertain_old_instance_exit_fail_stops_without_respawn ... ok
+test web_bridge::tests::tokens_are_64_hex_chars_and_unique ... ok
+test web_bridge::tests::token_hash_is_sha256_hex ... ok
+test web_bridge::tests::a_busy_or_absent_world_is_never_a_credential_refusal ... ok
+test web_bridge::tests::a_store_that_cannot_answer_is_unavailable_not_refused ... ok
+test composing::tests::the_table_is_bounded ... ok
+test bridge_common::projection_tests::line_action_list_renders_only_projected_presentation ... ok
+test web_bridge::tests::failed_resume_conn_up_restores_linkdead_without_conn_down ... ok
+test tests::reverse_slow_client_detach_is_linkdead_then_session_gone ... ok
+test discord_bridge::tests::the_idle_sweep_detaches_idle_and_deaf_follows_but_not_scene_members ... ok
+test discord_bridge::tests::in_game_controls_follow_unfollow_and_retune_quiet ... ok
+test discord_bridge::tests::auto_follow_attaches_when_the_last_terminal_goes_linkdead ... ok
+test discord_bridge::tests::follow_attaches_a_structured_connection_of_the_characters_session ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running unittests src\lib.rs (target\debug\deps\mush_net_discord-7cfda168571d0d29.exe)
+
+running 28 tests
+test bot::tests::the_limiter_window_slides_and_a_success_forgives ... ok
+test config::tests::debug_carries_no_token ... ok
+test dm::tests::chunking_breaks_between_lines_and_hard_splits_one_long_line ... ok
+test dm::tests::answering_a_previous_message_leaves_its_replacement_open ... ok
+test bot::tests::a_closed_gateway_ends_serve_with_an_error ... ok
+test dm::tests::request_rows_follow_the_layout_rules ... ok
+test dm::tests::notice_actions_are_bounded_and_the_oldest_are_forgotten ... ok
+test config::tests::an_empty_table_is_disabled_and_validates ... ok
+test dm::tests::quiet_keeps_notices_requests_and_the_scene_only ... ok
+test config::tests::relay_entries_parse_with_defaults ... ok
+test dm::tests::refused_components_fall_back_to_plain_text ... ok
+test dm::tests::the_allow_list_renders_what_a_follow_shows_and_drops_the_rest ... ok
+test dm::tests::priority_arrival_cannot_shorten_retry_backoff ... ok
+test config::tests::enabled_requires_the_ids ... ok
+test dm::tests::a_room_that_answers_the_room_query_renders_as_a_bare_room ... ok
+test dm::tests::priority_overflow_and_closing_flush_are_bounded ... ok
+test config::tests::zero_ids_fall_back_to_the_environment_and_toml_values_win ... ok
+test dm::tests::the_writer_coalesces_flushes_priority_promptly_and_marks_drops ... ok
+test dm::tests::a_retryable_failure_keeps_order_and_a_closed_dm_goes_deaf ... ok
+test dm::tests::stalled_send_keeps_priority_and_only_newest_narrative_then_cancels ... ok
+test dm::tests::a_request_is_its_own_message_recorded_and_expired_at_the_deadline ... ok
+test dm::tests::a_slow_rest_send_must_not_block_the_session_drain ... ok
+test bot::tests::an_unfollowed_dm_gets_one_hint_per_interval ... ok
+test bot::tests::component_clicks_and_modal_submissions_route_to_the_hooks_and_are_answered ... ok
+test bot::tests::follow_detach_sugar_and_dm_lines_route_to_the_hooks ... ok
+test bot::tests::the_link_limiter_refuses_the_sixth_attempt_without_a_lookup ... ok
+test bot::tests::registers_commands_then_links_with_a_normalized_code ... ok
+test bot::tests::guild_lines_route_to_the_relay_and_only_the_unlinked_or_refused_are_told ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

@@ -307,6 +307,15 @@ provider adapter, and the supported live integration when credentials are availa
 an unavailable live bridge leaves this acceptance item open. OOC chat still works.
 **Stop.**
 
+**Result (2026-10-23):** implemented. Dev1 passed 68 authenticated TLS WebSocket
+checks and five SSH checks, including upgrade, restart during fanout, overtaking,
+offline/uncovered delivery, membership boundaries, arrival revocation, real
+underway-hull traffic and controlled source-object loss. The real bridge passed
+controlled-provider ingress/egress and retry checks, including reply modals.
+Live Discord remains an open acceptance item: dev1 has no enabled bot or relay
+mapping. Normal CI remains owner-monitored. [15b](15b-comms-relay-cut-notes.md)
+records provenance and limits. **Paused here; R3 has not started.**
+
 ### Gate 6 — R3: classes and a deliberately dishonest board
 
 Extend R2's queue with real capacity accounting, class entitlement, public declared

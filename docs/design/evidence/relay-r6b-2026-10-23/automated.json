@@ -1,0 +1,65 @@
+{
+  "local": [
+    {
+      "suite": "r6b-regression",
+      "binaries": 35,
+      "passed": 734,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "r6b-contracts-final",
+      "binaries": 6,
+      "passed": 27,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "r6b-proto",
+      "binaries": 6,
+      "passed": 50,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "r6b-bridge",
+      "binaries": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "r6b-gateway-parity",
+      "binaries": 1,
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "webTests": 103,
+  "svelteErrors": 0,
+  "svelteWarnings": 0,
+  "ci": "Not assessed here; owner monitors GitHub CI.",
+  "followupValidation": {
+    "realBridgeIncludingDuplicateModal": 1,
+    "discordAndGatewayUnitTests": 98,
+    "clippy": "passed with warnings denied"
+  },
+  "linux": [
+    {
+      "suite": "story-tests",
+      "passed": 26,
+      "failed": 0
+    },
+    {
+      "suite": "bridge-final",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "suite": "quota-fixture",
+      "passed": 1,
+      "failed": 0
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-24T00:14:57.985256+00:00",
+  "baseCommit": "24384bf2",
+  "initialCandidate": "cdf8190a4fa45a5abeca56b823d67fca76fdb8b1",
+  "webAndFixtureCandidate": "1d2e2cd61e2335d51b107ae5c742a746e773a633",
+  "liveCandidate": "e0b1841afca8a68223e1a027ca408dc67fc296c4",
+  "target": "https://conclav.io:6790",
+  "redisPort": 6788,
+  "tlsVerification": true,
+  "gatewayPid": 718781,
+  "serverPid": 718792,
+  "dev2GatewayPid": 539467,
+  "objects": 680,
+  "worldRate": 24,
+  "pairAvailable": true,
+  "pendingChannelCopies": 0,
+  "progress": {
+    "cursor": [
+      7,
+      7
+    ],
+    "delivered": 22,
+    "expired": 2,
+    "refused": 4,
+    "visited": 1
+  },
+  "checks": 68,
+  "sshChecks": 5,
+  "medianReplyMs": 52,
+  "maxReplyMs": 78,
+  "largestReplyBytes": 855,
+  "livePassed": true,
+  "sshPassed": true,
+  "discordEnabled": false,
+  "discordRelayMappings": 0,
+  "githubCi": "Owner monitored; not awaited by this gate",
+  "serverSha256": "d79ec40a465bce030c02c2c6923257a9e0ebf84ffb8543e8c2df0a943b853040",
+  "gatewaySha256": "4dc23e6c4dcede9184caa717a32897558ebf0c20fd264c1ebb7014e9b9f79855",
+  "runnerSha256": "af102a2056c14c3dd15d2ed167221461a747c8f4591b51e45e85d0e15c948414",
+  "sshRunnerSha256": "58b15aa7f3fa7aa969120e80a1f0cdef89f95ae9c5dc366412fcca6e5a89b2cd"
+}

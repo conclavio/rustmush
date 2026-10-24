@@ -1,0 +1,78 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-23T23:22:01.962Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@channel/create R6bLegacy7c2799",
+      "reply": "Channel R6bLegacy7c2799 created (id 6).  Join it with: addcom <alias>=R6bLegacy7c2799",
+      "wallMs": 27,
+      "replyBytes": 85
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bLegacy7c2799=ic",
+      "reply": "Flag ic set on R6bLegacy7c2799.",
+      "wallMs": 53,
+      "replyBytes": 31
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bLegacy7c2799=logged",
+      "reply": "Flag logged set on R6bLegacy7c2799.",
+      "wallMs": 50,
+      "replyBytes": 35
+    },
+    {
+      "actor": "God",
+      "line": "@channel/set R6bLegacy7c2799=persist",
+      "reply": "Flag persist set on R6bLegacy7c2799.",
+      "wallMs": 50,
+      "replyBytes": 36
+    },
+    {
+      "actor": "God",
+      "line": "addcom legacy=R6bLegacy7c2799",
+      "reply": "[R6bLegacy7c2799] God has joined this channel.\nChannel R6bLegacy7c2799 added with alias 'legacy'.",
+      "wallMs": 51,
+      "replyBytes": 97
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "addcom legacy=R6bLegacy7c2799",
+      "reply": "[R6bLegacy7c2799] R6bob1b16df has joined this channel.\nChannel R6bLegacy7c2799 added with alias 'legacy'.",
+      "wallMs": 26,
+      "replyBytes": 105
+    },
+    {
+      "actor": "God",
+      "line": "legacy legacy-already-delivered",
+      "reply": "R6bLegacy7c2799 #1 God say legacy-already-delivered",
+      "wallMs": 52,
+      "replyBytes": 51
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "@channel/recall legacy",
+      "reply": "-- R6bLegacy7c2799: last 1 message --\n[R6bLegacy7c2799] God: legacy-already-delivered\n-- End of recall --",
+      "wallMs": 26,
+      "replyBytes": 105
+    }
+  ],
+  "milestones": [
+    {
+      "test": "legacy-prepared",
+      "channel": "R6bLegacy7c2799",
+      "id": 6
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-23T23:22:02.063Z",
+      "gatewayPid": 673340,
+      "serverPid": 673353,
+      "serverSha256": "b25ef00df68d72b9add2b9955566526c1c598355a41e572eb564d78fbff8aa89"
+    }
+  ],
+  "passed": true
+}
