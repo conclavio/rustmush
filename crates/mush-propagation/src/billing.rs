@@ -688,7 +688,17 @@ pub fn maintain(ctx: &mut Ctx<'_>) {
         if s.obligation.is_none() {
             continue;
         }
-        let v = view(ctx.w, s);
+        let v = match api.subscription(ctx.w, s) {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(%error, subscription=id, "relay billing facts unavailable; observer will retry");
+                continue;
+            }
+        };
+        if let Err(error) = api.subscription_changed(ctx, s, &v) {
+            tracing::warn!(%error, subscription=id, "relay subscription observer will retry");
+            continue;
+        }
         if s.observed.as_ref() == Some(&v) {
             continue;
         }

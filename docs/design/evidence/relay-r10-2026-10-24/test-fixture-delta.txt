@@ -1,0 +1,14 @@
+ crates/tacsim/tests/commerce.rs    |  6 +++---
+ crates/tacsim/tests/driving.rs     | 35 +++++-----------------------------
+ crates/tacsim/tests/extensions.rs  | 13 +++++++++++--
+ crates/tacsim/tests/mining.rs      | 39 +++++++-------------------------------
+ crates/tacsim/tests/orders.rs      |  6 +++---
+ crates/tacsim/tests/plumbing.rs    |  6 +++---
+ crates/tacsim/tests/ports.rs       | 18 ++++++------------
+ crates/tacsim/tests/price.rs       |  6 +++---
+ crates/tacsim/tests/sale.rs        |  6 +++---
+ crates/tacsim/tests/sites.rs       |  6 +++---
+ crates/tacsim/tests/support/mod.rs | 37 ++++++++++++++++++++++++++++++++++--
+ crates/tacsim/tests/vehicles.rs    |  6 +++---
+ crates/tacsim/tests/voyage.rs      |  6 +++---
+ 13 files changed, 88 insertions(+), 102 deletions(-)

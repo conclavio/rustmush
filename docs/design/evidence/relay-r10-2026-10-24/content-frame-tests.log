@@ -1,0 +1,17 @@
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+    Finished `test` profile [unoptimized] target(s) in 1.68s
+     Running tests/apply.rs (target/debug/deps/apply-8acceb07b32dd177)
+
+running 10 tests
+test an_unknown_kind_is_refused_naming_the_entry ... ok
+test a_refused_entry_stops_the_apply_and_the_latch_describes_the_world ... ok
+test a_retire_that_would_orphan_a_reference_is_refused_whole ... ok
+test an_edited_entry_updates_and_a_dropped_entry_retires ... ok
+test an_unchanged_pack_applied_twice_creates_nothing_and_plans_nothing ... ok
+test a_first_boot_entry_anomaly_also_fails_the_test_world_immediately - should panic ... ok
+test a_retired_pack_keeps_its_latch_and_does_not_satisfy_requires ... ok
+test an_unowned_first_boot_pack_fails_at_boot_with_its_identity_and_cause ... ok
+test boot_deferral_is_opt_in_and_only_for_older_active_dependencies ... ok
+test transitively_deferred_boot_packs_require_exact_checked_predecessors ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

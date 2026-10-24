@@ -169,9 +169,9 @@ impl Roster {
             None => mods
                 .push(comp::content_module_with(true, true).expect("the content module composes")),
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -2237,15 +2237,15 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .cloned()
         .collect();
     // Doc 20 cut SM.10: v12 also adds the Pallas Syndicate (capital 50,000), whose base
-    // tranche is the other new obligation; Occator's raise is still exactly one.
+    // tranche joins R9b's 100,000-credit Fleet base; Occator's raise is still exactly one.
     assert_eq!(
         made.len(),
-        2,
-        "Occator's one new tranche and the Syndicate's base"
+        3,
+        "Occator's one new tranche, the Syndicate and the Fleet bases"
     );
     let made: Vec<mush_economy::Obligation> = made
         .into_iter()
-        .filter(|o| o.amount.minor() != 5_000_000)
+        .filter(|o| ![5_000_000, 10_000_000].contains(&o.amount.minor()))
         .collect();
     assert_eq!(made.len(), 1, "exactly one new Occator tranche");
     assert_eq!(made[0].amount.minor(), 25_000_000);

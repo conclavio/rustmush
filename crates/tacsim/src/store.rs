@@ -181,6 +181,8 @@ pub enum ResolveError {
 pub struct TacsimStore {
     pub(crate) relay_mobile: Option<crate::relay_mobile::Programme>,
     pub(crate) relay_mobile_held: bool,
+    pub(crate) relay_world: Option<crate::relay_world::Story>,
+    pub(crate) relay_world_held: bool,
     pub(crate) relay_foundry: Option<crate::relay_foundry::Foundry>,
     pub(crate) relay_foundry_held: bool,
     pub(crate) relay_proposals: BTreeMap<ObjId, crate::relay_foundry::Proposal>,
@@ -2104,7 +2106,12 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
     };
     for (key, value) in kv {
         let key = key.as_str();
-        if key == crate::relay_mobile::KEY {
+        if key == crate::relay_world::KEY {
+            store.relay_world_held = true;
+            store.relay_world = serde_json::from_value::<crate::relay_world::Story>(value.clone())
+                .ok()
+                .filter(|s| s.check().is_ok());
+        } else if key == crate::relay_mobile::KEY {
             store.relay_mobile_held = true;
             store.relay_mobile =
                 serde_json::from_value::<crate::relay_mobile::Programme>(value.clone())

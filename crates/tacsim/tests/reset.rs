@@ -101,7 +101,8 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
+    // Match production: load the lane catalog when applying the game boot packs.
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }

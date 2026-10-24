@@ -163,9 +163,9 @@ impl Roster {
                 );
             }
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");

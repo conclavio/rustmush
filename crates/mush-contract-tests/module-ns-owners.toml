@@ -415,3 +415,9 @@ writer = "tacsim"
 ns = "npc"
 declared_by = "tacsim"
 reason = "R9 physical private relay inspection files its knowledge observation through the NPC owner API."
+
+[[delegation]]
+writer = "propagation"
+ns = "tacsim"
+declared_by = "propagation"
+reason = "R10 typed billing and policy facts persist the bounded Terms case through the game adapter in the same commit."

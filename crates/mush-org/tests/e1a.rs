@@ -1252,3 +1252,32 @@ fn scope_creation_stops_at_the_per_org_cap() {
         .is_ok()
     );
 }
+
+#[test]
+fn charter_revision_is_guarded_and_preserves_identity_lifecycle_and_authority() {
+    let s = two_orgs();
+    let old = s.org(OrgId(1)).unwrap().clone();
+    let op = OrgMutationOp::ReviseCharter {
+        org: old.id,
+        expected: old.charter.clone(),
+        charter: "Neutral common carrier".into(),
+    };
+    let next = apply(&s, vec![op.clone()]);
+    let mut expected = old.clone();
+    expected.charter = "Neutral common carrier".into();
+    expected.revision += 1;
+    assert_eq!(next.org(old.id), Some(&expected));
+    assert!(OrgMutationPlan::of(vec![op]).apply(&next).is_err());
+    for invalid in [String::new(), "x".repeat(4097), "newline\n".into()] {
+        assert!(
+            OrgMutationPlan::of(vec![OrgMutationOp::ReviseCharter {
+                org: old.id,
+                expected: old.charter.clone(),
+                charter: invalid
+            }])
+            .apply(&s)
+            .is_err()
+        );
+    }
+    assert_eq!(s.org(old.id), Some(&old));
+}

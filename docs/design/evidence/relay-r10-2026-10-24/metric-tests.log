@@ -1,0 +1,9 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 1m 35s
+     Running unittests src/lib.rs (target/debug/deps/tacsim-237d99dd51f6b957)
+
+running 2 tests
+test relay_metric::mobile_coverage_tests::unrelated_edges_and_inconsistent_frozen_distances_have_no_nearby_claim ... ok
+test relay_metric::mobile_coverage_tests::radius_rounds_outward_at_both_ends_and_between_carriers ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1479 filtered out; finished in 0.00s

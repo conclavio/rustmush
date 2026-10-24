@@ -2788,7 +2788,9 @@ async fn r5_real_dray_radio_freezes_forwards_and_recovers() {
         .nodes[&cid("malapert")]
         .place;
     run(&mut rig, GOD, &format!("@teleport me={luna}")).await;
-    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+        run(&mut rig, GOD, &format!("@relay/disable {pair}.luna")).await;
+    }
     let boarding = radio_issue(&mut rig, pilot, "board-and-forward").await;
     radio_pass(&mut rig).await;
     board_from_chandlery(&mut rig, pilot, "Radio Dray").await;
@@ -2923,7 +2925,9 @@ async fn r5_real_dray_radio_freezes_forwards_and_recovers() {
     // The second half of a leg uses its OTHER endpoint, with deterministic
     // distance from the frozen plan, not a new ship position in the sky.
     to_ic(&mut rig, leg.t0 + i64::from(leg.secs) * 3 / 4).await;
-    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+        run(&mut rig, GOD, &format!("@relay/disable {pair}.luna")).await;
+    }
     let far = radio_issue(&mut rig, pilot, "nearer-end-switched").await;
     radio_pass(&mut rig).await;
     let far_flight = radio_envelope(&rig, far)
@@ -4796,7 +4800,7 @@ async fn r9a_paid_manufacture_survives_restart_and_installs_once() {
             .unwrap()
             .pairs
             .len(),
-        1
+        4
     );
     restart(&mut rig, |tw| {
         tacsim::relay_foundry::current(tw.world()).unwrap().machines[&order.0].installed
@@ -4846,7 +4850,9 @@ async fn r9a_paid_manufacture_survives_restart_and_installs_once() {
         .pairs[&key];
     assert_eq!(pair.capacity_units_per_ic_second, 1);
     assert_eq!(pair.class_policy, mush_sim::relay::ClassPolicy::Private);
-    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+        run(&mut rig, GOD, &format!("@relay/disable {pair}.luna")).await;
+    }
     run(&mut rig, GOD, &format!("@teleport {stranger}={deimos}")).await;
     let out = run(
         &mut rig,
@@ -5228,7 +5234,7 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
             .unwrap()
             .pairs
             .len(),
-        1
+        4
     );
     let f = tacsim::relay_foundry::current(rig.tw.world())
         .unwrap()
@@ -5438,7 +5444,7 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
             .unwrap()
             .pairs
             .len(),
-        1
+        4
     );
     restart(&mut rig, |tw| {
         tacsim::relay_mobile::mounted(tw.world(), p.hull).is_none()
@@ -5496,7 +5502,9 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
     assert!(t.payload_kg >= tacsim::relay_foundry::HALF_KG);
     assert!(t.plan.legs.last().is_some());
     restart(&mut rig, |tw| ticket(tw, p.hull, 1).is_some()).await;
-    run(&mut rig, GOD, "@relay/disable luna_ceres.luna").await;
+    for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+        run(&mut rig, GOD, &format!("@relay/disable {pair}.luna")).await;
+    }
     run(&mut rig, GOD, &format!("@teleport #1={}", f.place)).await;
     set_rate(&mut rig, 1).await;
     let key = cid(&format!("private_{order:016x}"));

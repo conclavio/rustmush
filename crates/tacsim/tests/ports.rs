@@ -161,7 +161,9 @@ impl Roster {
         } else {
             mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
         }
-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods.push(
+            comp::content_module_with(true, game_content).expect("the content module composes"),
+        );
         mods
     }
 }
@@ -612,10 +614,10 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100)
     );
     assert_eq!(
-        treasury_balance, -1_485_000_000,
-        "14,850,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_495_000_000,
+        "14,950,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
-         SM.5) and the Pallas Syndicate's 50,000 (doc 20 cut SM.10)"
+         SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10) and R9b's Fleet 100,000"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -1497,11 +1499,9 @@ fn lane_v1_json() -> String {
 /// vendors arrive with them.
 #[test]
 fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
-    use tacsim::composition as comp;
-
     let v1 = lane_v1_json();
     // An operator seed with the game sources off, applied by a content module
-    // whose boot list ends with it.
+    // whose boot list preserves the lane dependency order and historical relay seed.
     let mut cfg = config();
     cfg.seeds.push(PackSource {
         name: "ops/lane_v1.json".to_owned(),
@@ -1509,9 +1509,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
     });
     let mut mods = Roster::bare().modules_with(cfg, false);
     mods.pop();
-    let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-    packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-    packs.push(content_pack(&v1));
+    let packs = support::boot_packs_with_lane(content_pack(&v1));
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -2594,8 +2592,6 @@ fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
 /// and nothing is made (no org, account, obligation or domain; the lane stays at v1).
 #[test]
 fn ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write() {
-    use tacsim::composition as comp;
-
     let v1 = lane_v1_json();
     let mut cfg = config();
     cfg.seeds.push(PackSource {
@@ -2604,9 +2600,7 @@ fn ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write() {
     });
     let mut mods = Roster::bare().modules_with(cfg, false);
     mods.pop();
-    let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-    packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-    packs.push(content_pack(&v1));
+    let packs = support::boot_packs_with_lane(content_pack(&v1));
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");

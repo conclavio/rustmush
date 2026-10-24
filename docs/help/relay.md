@@ -1,6 +1,9 @@
 # Relay service and topology
 
-The Luna–Ceres pair carries IC mail, IC channel copies, orders, contact reports and returning acknowledgements.
+The Luna star carries IC mail, IC channel copies, orders, contact reports and returning acknowledgements.
+Malapert is the hub of four separate pairs: Phobos, Ceres, Kirkwood and the Mercury stub.
+Aitken Highport uses Malapert; Stickney and Voltaire use Phobos. Titan, Pallas,
+Venus and Vesta have no halves. Spoke-to-spoke traffic consumes both links.
 Conventional legs wait for their physical travel time. A disabled pair uses the
 conventional route when positions are known; an unknown endpoint waits until it
 can be located or the message expires. All mail travels IC; OOC channels remain immediate.
@@ -271,3 +274,25 @@ Its Halcyon capital hull begins without a working relay. Fleet command is a real
 
 Carrier power damage interrupts service. Destroying the carrier kills its mobile
 half and orphans its mate, with the same consequences as destroying a fixed node.
+
+## The Exchange and its original fronts
+
+Postmaster Solveig Adebayo-Krishnan works at the Malapert compound. The public
+counter displays the Exchange charter; the relay hall is staff restricted.
+`+clocks` shows their **Named service case** and **Fleet relief relay programme**
+clocks; staff can inspect **Terms of Service** and **A Half Afloat** with `@front`. Fresh worlds start
+both clocks at zero, without a commissioned private or mobile pair.
+
+Terms of Service records the first named principal's real arrears or authorized
+incident case: two segments for a throttle and four for a confirmed suspension.
+A direct suspension can fill the clock immediately. The same principal must own
+both stages; unrelated debts never accumulate into their case. Repeated notices
+and restarts do not advance it. Paying arrears restores service according to the
+subscription rules; it does not erase the historical case or another sanction.
+
+Staff upgrading an older world first apply its pending station and lane packs
+through `@atlas/pack plan` / `@atlas/pack apply`. Restart to seed the missing
+Exchange geography, then explicitly apply `tacsim.relay.luna_ceres` version 2 and
+restart. Existing halves, purchases, balances and damage survive; a conflicting
+partial expansion refuses and requires repair. Startup logs report the full star
+ready; `@relay`, `+relay`, and `+relay/rates` show the topology, board and tariffs.

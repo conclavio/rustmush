@@ -356,9 +356,9 @@ impl Roster {
             None => mods
                 .push(comp::content_module_with(true, true).expect("the content module composes")),
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -1025,8 +1025,8 @@ fn sm2_the_lane_carries_six_sites() {
     // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
     // paper; no new entry).
     assert_eq!(
-        LANE_VERSION, 12,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10"
+        LANE_VERSION, 13,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -2961,7 +2961,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 24 create, 10 update, 0 retire, 26 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 24 create, 11 update, 0 retire, 25 unchanged"
         )),
         "{plan}"
     );
@@ -2972,7 +2972,7 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 10 updated, 0 retired, 26 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );
@@ -3016,7 +3016,7 @@ fn sm2_the_apply_installs_the_lane_tables() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 10 updated, 0 retired, 26 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 24 created, 11 updated, 0 retired, 25 unchanged."
         )),
         "{plan}\n{apply}"
     );

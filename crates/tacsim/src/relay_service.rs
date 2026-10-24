@@ -64,6 +64,21 @@ impl Integration for RelayService {
     ) -> Result<u64, String> {
         crate::relay_billing::cure(ctx, s, m, c)
     }
+    fn subscription_changed(
+        &self,
+        ctx: &mut Ctx<'_>,
+        s: &mush_propagation::billing::Subscription,
+        v: &mush_propagation::billing::View,
+    ) -> Result<(), String> {
+        crate::relay_world::subscription(ctx, s, v)
+    }
+    fn policy_changed(
+        &self,
+        ctx: &mut Ctx<'_>,
+        r: &mush_propagation::service::Restriction,
+    ) -> Result<(), String> {
+        crate::relay_world::observe(ctx, r)
+    }
     fn subscription_notice(&self, ctx: &mut Ctx<'_>, p: &Principal, s: String) {
         crate::relay_billing::notice(ctx, p, s)
     }

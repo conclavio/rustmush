@@ -668,7 +668,9 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     })
     .await;
 
-    command(&mut god, "@relay/disable luna_ceres.luna", "revision").await;
+    for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+        command(&mut god, &format!("@relay/disable {pair}.luna"), "revision").await;
+    }
     let reply = command(
         &mut god,
         &format!("+order {recipient}=frozen-crash-proof"),

@@ -200,9 +200,9 @@ impl Roster {
             None => mods
                 .push(comp::content_module_with(true, true).expect("the content module composes")),
             Some(lane) => {
-                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
-                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
-                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let packs = support::boot_packs_with_lane(
+                    mush_content::load_pack(lane).expect("the seed lane verifies"),
+                );
                 let mut appliers = mush_content::Appliers::new();
                 mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
                 mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -2130,14 +2130,19 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 0 create, 2 update, 0 retire, {} unchanged",
-            entries - 2
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 0 create, 3 update, 0 retire, {} unchanged",
+            entries - 3
         )),
         "{plan}"
     );
     // Doc 20 cut SM.10: the shipped lane also carries Occator Rim's papers, so
     // `occator_port` is the second update (`strip_vehicles` strips the claims first).
-    for port in ["ceres_port (port)", "occator_port (port)"] {
+    // R9b also updates Luna with the Fleet programme.
+    for port in [
+        "ceres_port (port)",
+        "occator_port (port)",
+        "luna_port (port)",
+    ] {
         assert!(
             plan.lines()
                 .any(|l| l.contains("update") && l.contains(port)),
@@ -2146,8 +2151,8 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 0 created, 2 updated, 0 retired, {} unchanged.",
-            entries - 2
+            "Applied {LANE_PACK}@{LANE_VERSION}: 0 created, 3 updated, 0 retired, {} unchanged.",
+            entries - 3
         )),
         "{plan}\n{apply}"
     );
@@ -2189,9 +2194,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, {} unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 3 updated, 0 retired, {} unchanged.",
             LANE_VERSION + 1,
-            entries - 2
+            entries - 3
         )),
         "{plan}\n{apply}"
     );

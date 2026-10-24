@@ -17,8 +17,20 @@ const evidence={target,at:new Date().toISOString(),checks:[],milestones:[]};
 const sockets = [];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const shell = (cmd, args) => execFileSync(cmd, args, {encoding:'utf8',timeout:30000}).trim();
-const gatewayPid=Number(shell('systemctl',['show','dev1mush-gateway','-p','MainPID','--value']));
-const serverPid=Number(shell('pgrep',['-P',String(gatewayPid),'-x','mush-server']));
+const mode=process.env.RELAY_GATE_MODE || 'split';
+assert(['split','all-in-one'].includes(mode),'known deployment mode');
+if(mode==='all-in-one') assert.equal(realpathSync(output),'/opt/rustmush/dev1/r10-evidence','all-in-one belongs to the R10 dev1 gate');
+const serviceName=mode==='split'?'dev1mush-gateway':'rustmush-r10-allinone';
+const expectedBinary='/opt/rustmush/dev1/build/target/release/'+(mode==='split'?'mush-server':'mushd');
+function processIds(){
+ const main=Number(shell('systemctl',['show',serviceName,'-p','MainPID','--value']));
+ assert(main>1,'gate service is running');
+ const child=mode==='split'?Number(shell('pgrep',['-P',String(main),'-x','mush-server'])):main;
+ assert.equal(realpathSync('/proc/'+child+'/exe'),expectedBinary);
+ return {main,child};
+}
+const initialProcess=processIds(),gatewayPid=mode==='split'?initialProcess.main:null,serverPid=initialProcess.child;
+evidence.mode=mode;
 evidence.runs??=[];
 evidence.runs.push({at:new Date().toISOString(),gatewayPid,serverPid,
   serverSha256:shell('sha256sum',['/proc/'+serverPid+'/exe']).split(' ')[0]});
@@ -98,23 +110,22 @@ async function until(test, label, seconds=180) {
   throw new Error('Timed out: '+label);
 }
 async function crash(label, beforeKill = () => {}) {
-  const service='dev1mush-gateway';
-  const gateway=Number(shell('systemctl',['show',service,'-p','MainPID','--value']));
-  const old=Number(shell('pgrep',['-P',String(gateway),'-x','mush-server']));
-  assert.equal(realpathSync('/proc/'+old+'/exe'),'/opt/rustmush/dev1/build/target/release/mush-server');
+  const service=serviceName;
+  const before=processIds(),gateway=before.main,old=before.child;
   const cursor=shell('journalctl',['-u',service,'-n','0','--show-cursor','--no-pager']).split('-- cursor: ')[1];
   assert(cursor,'journal cursor');
   beforeKill();
   process.kill(old,'SIGKILL');
   const fresh=await until(()=>{
     try {
-      const pid=Number(shell('pgrep',['-P',String(gateway),'-x','mush-server']));
+      const pid=processIds().child;
       return pid!==old && pid;
     } catch {return false;}
   },'replacement server',60);
   await until(()=>{
     const logs=shell('journalctl',['-u',service,'--after-cursor',cursor,'--no-pager','-o','cat']);
-    return logs.includes('gateway connected');
+    if(mode==='split') return logs.includes('gateway connected');
+    try {shell('curl',['-fsS','--cacert','/opt/rustmush/dev1/tls/cert.pem',target+'/']);return true;} catch {return false;}
   },'gateway reconnected',60);
   evidence.milestones.push({test:label,signal:'SIGKILL',gateway,old,fresh});
   // Authentication is served by the gateway; game hello waits for the new child.

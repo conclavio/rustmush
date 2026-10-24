@@ -331,7 +331,7 @@ fn persist_ops(out: &mut Outbox, ops: &[OrgMutationOp], post: &crate::OrgState) 
             // E6c B10: both flip a field on the LIVE record and bump the org's
             // revision, so the documents come from the post-image — the
             // `RetireScope` shape, for the same reason.
-            OrgMutationOp::SetOrgStatus { org, .. } => {
+            OrgMutationOp::SetOrgStatus { org, .. } | OrgMutationOp::ReviseCharter { org, .. } => {
                 if let Some(o) = post.org(*org) {
                     persist_org(out, o);
                 }

@@ -1178,25 +1178,11 @@ fn count(text: &str, line: &str) -> usize {
 }
 
 /// Staff place `tv` `Direct` on `entry`'s domain at site cell `(x, y)`'s centre, facing south.
-fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, (x, y): (i64, i64)) {
+fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, cell: (i64, i64)) {
     let domain = mush_sim::DomainId(port_map(&rig.tw, entry).domain.expect("a domain"));
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
-        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
-            .map_err(|e| e.to_string())?;
-        mush_sim::place(
-            ctx,
-            tv,
-            domain,
-            mush_sim::data::Pose {
-                x_cm: x * 1_000 + 500,
-                y_cm: y * 1_000 + 500,
-                z_cm: 0,
-                heading_mdeg: 180_000,
-                posture,
-            },
-        )
-    });
-    placed.expect("staff place the rig");
+    let staff = support::place_keeping(&mut rig.tw, domain, tv, cell);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
 }
 
 /// Staff move `tv` to Ahuna's site cell `(x, y)`.
@@ -2212,7 +2198,7 @@ fn sm7_a_replayed_cycle_is_a_hit() {
         format!("tacsim.surface/{}/{}/cycle/1", tv.0, run.ordinal)
     );
     // The restart: the tick's retry counts are RAM, so the first fire after it submits the cycle
-    // afresh (staff placement is no persisted write, so the rig is placed again first).
+    // afresh, with staff reasserting the durable placement first.
     let mut rig = reboot(rig, &[pilot]);
     to_cell(&mut rig, tv, fair.stand);
     let (_, queued) = fire(&mut rig);
@@ -2605,8 +2591,7 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
         doc["grace_secs"] = json!(0);
     });
     warm(&mut rig, AHUNA);
-    // Staff placement (`with_ctx`) is no persisted write: the restart puts the rig back where its
-    // last persisted move left it, so staff place it again (M12 drives there for real).
+    // Reassert the durable staff placement at the pocket; M12 drives there for real.
     to_cell(&mut rig, tv, w.stand);
     let (first, _) = cycle(&mut rig, tv, p);
     assert!(first.contains("Rig 1, cycle 1 of "), "{first}");

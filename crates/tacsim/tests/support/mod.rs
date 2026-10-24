@@ -459,7 +459,8 @@ pub fn production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
         &mush_config::config::NpcCfg::default(),
     ));
     mods.extend(comp::sheet_modules(&onboarding, &game));
-    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
+    // Match production: load the lane catalog when applying the game boot packs.
+    mods.push(comp::tacsim_module_wired(cfg, true, inventory));
     // `[game].starter_area` off: the arena's ground is in a region of its own and
     // the shipped lot would only add rooms no window must anchor on.
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
@@ -1355,6 +1356,16 @@ pub fn place_keeping(
     tv: mush_core::ObjId,
     (x, y): (i64, i64),
 ) -> Vec<mush_core::ModuleOp> {
+    place_cm_keeping(tw, domain, tv, (x * 1_000 + 500, y * 1_000 + 500))
+}
+
+/// The same durable placement at exact centimetre coordinates (including ramps).
+pub fn place_cm_keeping(
+    tw: &mut TestWorld,
+    domain: mush_sim::DomainId,
+    tv: mush_core::ObjId,
+    (x, y): (i64, i64),
+) -> Vec<mush_core::ModuleOp> {
     let mut out = mush_core::Outbox::new();
     let placed = {
         let engine = tw.engine_mut();
@@ -1376,8 +1387,8 @@ pub fn place_keeping(
             tv,
             domain,
             mush_sim::data::Pose {
-                x_cm: x * 1_000 + 500,
-                y_cm: y * 1_000 + 500,
+                x_cm: x,
+                y_cm: y,
                 z_cm: 0,
                 heading_mdeg: 180_000,
                 posture,
@@ -2556,4 +2567,27 @@ pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
         })
         .unwrap_or(0);
     (fns.len(), depth, widest, width)
+}
+
+/// Historical/operator-edited lanes do not satisfy the full star's exact lane
+/// digest. Keep their old Luna-Ceres seed while testing the lane's own upgrade
+/// and refusal paths; full-star migration is covered by production relay stories.
+pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack> {
+    assert_eq!(
+        lane.manifest().id().as_str(),
+        tacsim::definitions::content::LANE_PACK
+    );
+    let mut packs = tacsim::composition::boot_pack_list(true, true).expect("the boot list");
+    let slot = packs
+        .iter_mut()
+        .find(|p| p.manifest().id() == lane.manifest().id())
+        .expect("lane in boot order");
+    *slot = lane;
+    let relay = packs
+        .iter_mut()
+        .find(|p| p.manifest().id().as_str() == "tacsim.relay.luna_ceres")
+        .expect("relay in boot order");
+    *relay = mush_content::load_pack(tacsim::relay_content::HISTORICAL_JSON)
+        .expect("historical relay verifies");
+    packs
 }

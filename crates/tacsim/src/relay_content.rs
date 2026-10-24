@@ -1,4 +1,4 @@
-//! R1's small real content slice. The sim module owns the durable topology.
+//! Checked Luna star and narrow v1 migration. The sim owner retains topology.
 
 use mush_atlas::record::RecordKey;
 use mush_content::{EntryApplier, Pack, RawEntry};
@@ -17,10 +17,24 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const JSON: &str = include_str!("../content/relays/luna_ceres.json");
 pub const KIND: &str = "relay_network";
 
+pub const HISTORICAL_JSON: &str = include_str!("../content/relays/luna_ceres-v1.json");
+pub const CHARTER: &str = "Concord-chartered neutral common carrier under the 2312 Settlement. The Exchange staffs the Luna star, publishes tariffs and records a named principal and reason for every service restriction. Independent sanctions survive an arrears cure.";
+pub const LEGACY_CHARTER: &str =
+    "Concord-chartered relay operator; R1 installs topology, not paid service.";
+const GEOGRAPHY: [&str; 6] = [
+    include_str!("../content/atlas/region.kirkwood_depot.json"),
+    include_str!("../content/atlas/region.mercury_relay.json"),
+    include_str!("../content/atlas/neighborhood.malapert_exchange.json"),
+    include_str!("../content/atlas/neighborhood.phobos_exchange.json"),
+    include_str!("../content/atlas/neighborhood.kirkwood_depot.json"),
+    include_str!("../content/atlas/neighborhood.mercury_relay.json"),
+];
 pub fn packs() -> Result<Vec<Pack>, String> {
-    Ok(vec![
-        mush_content::load_pack(JSON).map_err(|e| format!("relay pack: {e}"))?,
-    ])
+    GEOGRAPHY
+        .into_iter()
+        .chain([JSON])
+        .map(|json| mush_content::load_pack(json).map_err(|e| format!("relay pack: {e}")))
+        .collect()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -102,13 +116,42 @@ fn definition(ctx: &Ctx<'_>, entry: &RawEntry) -> Result<NetworkDef, String> {
     Ok(def)
 }
 
-/// All content refusals run before objects or an organization are created.
+fn bindings(ctx: &Ctx<'_>, registry: &RelayRegistry, def: &NetworkDef) -> Result<(), String> {
+    for (id, authored) in &def.nodes {
+        let live = registry.nodes.get(id).ok_or("relay: node identity drift")?;
+        let coverage: Result<Vec<_>, _> = authored.coverage.iter().map(|k| room(ctx, k)).collect();
+        if live.operator != registry.operator
+            || live.label != authored.label
+            || live.place != room(ctx, &authored.place)?
+            || live.coverage != coverage?
+        {
+            return Err(format!("relay: node {id} binding/coverage drift"));
+        }
+    }
+    for (id, authored) in &def.pairs {
+        let live = registry.pairs.get(id).ok_or("relay: pair identity drift")?;
+        if live.capacity_units_per_ic_second != authored.capacity_units_per_ic_second
+            || live.class_policy != authored.class_policy
+            || live
+                .halves
+                .iter()
+                .zip(&authored.halves)
+                .any(|(a, b)| a.id != b.id || a.node != b.node)
+        {
+            return Err(format!("relay: pair {id} definition drift"));
+        }
+    }
+    Ok(())
+}
+
+/// Recognize only the exact old authored slice or the complete new topology.
+/// Private extras and physical loss are retained; partial public expansion refuses.
 fn preflight(
     ctx: &Ctx<'_>,
     pack: &Pack,
     id: &CanonicalId,
     entry: &RawEntry,
-) -> Result<NetworkDef, String> {
+) -> Result<(NetworkDef, bool), String> {
     mush_sim::relay::check_installer(ctx)?;
     let def = definition(ctx, entry)?;
     let store = ctx
@@ -119,58 +162,216 @@ fn preflight(
         .w
         .module_state::<OrgStore>()
         .ok_or("relay: organizations not composed")?;
-    if let Some(registry) = store.registry() {
-        registry.reconcile(ctx.w)?;
-        if &registry.source_pack != pack.manifest().id()
-            || &registry.source_entry != id
-            || registry.nodes.len() < def.nodes.len()
-            || registry.pairs.len() < def.pairs.len()
-            || orgs
-                .state()
-                .org(registry.operator)
-                .is_none_or(|o| o.name != def.operator_name)
+    let mut upgrade = false;
+    let mut objects = def.nodes.len() + 2 * def.pairs.len();
+    if let Some(r) = store.registry() {
+        r.reconcile(ctx.w)?;
+        let org = orgs
+            .state()
+            .org(r.operator)
+            .ok_or("relay: operator absent")?;
+        if &r.source_pack != pack.manifest().id()
+            || &r.source_entry != id
+            || org.name != def.operator_name
         {
-            return Err("relay: existing catalog provenance/operator/topology differs; explicit migration required".into());
+            return Err("relay: existing catalog provenance/operator differs".into());
         }
-        for (id, authored) in &def.nodes {
-            let live = registry.nodes.get(id).ok_or("relay: node identity drift")?;
-            let coverage: Result<Vec<_>, _> =
-                authored.coverage.iter().map(|k| room(ctx, k)).collect();
-            if live.operator != registry.operator
-                || live.label != authored.label
-                || live.place != room(ctx, &authored.place)?
-                || live.coverage != coverage?
-            {
-                return Err(format!("relay: node {id} binding/coverage drift"));
-            }
+        if bindings(ctx, r, &def).is_ok() {
+            return Ok((def, false));
         }
-        for (id, authored) in &def.pairs {
-            let live = registry.pairs.get(id).ok_or("relay: pair identity drift")?;
-            if live.capacity_units_per_ic_second != authored.capacity_units_per_ic_second
-                || live.class_policy != authored.class_policy
-                || live
-                    .halves
-                    .iter()
-                    .zip(&authored.halves)
-                    .any(|(a, b)| a.id != b.id || a.node != b.node)
-            {
-                return Err(format!("relay: pair {id} definition drift"));
-            }
+        if pack.manifest().version() != 2 {
+            return Err("relay: authored topology drift; repair required".into());
         }
-    } else {
-        if orgs.state().orgs().any(|o| o.name == def.operator_name) {
+        let old = mush_content::load_pack(HISTORICAL_JSON).map_err(|e| e.to_string())?;
+        let old = definition(
+            ctx,
+            old.entry(id).ok_or("relay: historical network absent")?,
+        )?;
+        bindings(ctx, r, &old)?;
+        let added_nodes: Vec<_> = def
+            .nodes
+            .keys()
+            .filter(|n| !old.nodes.contains_key(*n))
+            .collect();
+        let added_pairs: Vec<_> = def
+            .pairs
+            .keys()
+            .filter(|p| !old.pairs.contains_key(*p))
+            .collect();
+        if added_nodes.iter().any(|n| r.nodes.contains_key(*n))
+            || added_pairs.iter().any(|p| r.pairs.contains_key(*p))
+            || r.nodes.len() + added_nodes.len() > mush_sim::relay::MAX_NODES
+            || r.pairs.len() + added_pairs.len() > mush_sim::relay::MAX_PAIRS
+        {
             return Err(
-                "relay: operator exists without relay catalog; repair, do not reseed".into(),
+                "relay: partial/conflicting public expansion or full catalog; repair required"
+                    .into(),
             );
         }
-        let count =
-            u32::try_from(def.nodes.len() + 2 * def.pairs.len()).map_err(|e| e.to_string())?;
-        ctx.w
-            .next_id()
-            .checked_add(count)
-            .ok_or("relay: object ids exhausted")?;
+        let halves: BTreeSet<_> = r
+            .pairs
+            .values()
+            .flat_map(|p| p.halves.iter().map(|h| &h.id))
+            .collect();
+        if added_pairs
+            .iter()
+            .any(|p| def.pairs[*p].halves.iter().any(|h| halves.contains(&h.id)))
+        {
+            return Err("relay: new half identity collides with existing machinery".into());
+        }
+        let catalog = crate::builtin_definitions()?;
+        let spec = catalog
+            .units
+            .get(crate::relay_loss::STATION)
+            .ok_or("relay station definition absent")?;
+        for (id, n) in &r.nodes {
+            let unit = mush_tactics::module::unit_of(ctx.w, n.object)
+                .ok_or("relay: existing structure missing; repair required")?;
+            if unit.schema() != &spec.definition
+                || crate::relay_loss::internals(unit, "core").is_none()
+                || crate::relay_loss::internals(unit, "power").is_none()
+                || crate::relay_loss::internals(unit, "core") == Some(0)
+                    && !r.losses.contains_key(id)
+            {
+                return Err(
+                    "relay: existing structure/loss record differs; repair required".into(),
+                );
+            }
+        }
+        r.revision
+            .checked_add(1)
+            .ok_or("relay revisions exhausted")?;
+        if org.charter == LEGACY_CHARTER {
+            org.revision
+                .checked_add(1)
+                .ok_or("organization revisions exhausted")?;
+        }
+        objects = added_nodes.len() + 2 * added_pairs.len();
+        upgrade = true;
+    } else if orgs.state().orgs().any(|o| o.name == def.operator_name) {
+        return Err("relay: operator exists without relay catalog; repair, do not reseed".into());
     }
-    Ok(def)
+    ctx.w
+        .next_id()
+        .checked_add(u32::try_from(objects).map_err(|e| e.to_string())?)
+        .ok_or("relay: object ids exhausted")?;
+    Ok((def, upgrade))
+}
+
+fn expand(ctx: &mut Ctx<'_>, mut r: RelayRegistry, def: &NetworkDef) -> Result<(), String> {
+    let catalog = crate::builtin_definitions()?;
+    let spec = catalog
+        .units
+        .get(crate::relay_loss::STATION)
+        .ok_or("relay station definition absent")?;
+    // Create only the genuinely new station structures. The old structural latch
+    // stays set, so a missing old structure can never be silently re-created.
+    for (id, authored) in &def.nodes {
+        if r.nodes.contains_key(id) {
+            continue;
+        }
+        let place = room(ctx, &authored.place)?;
+        let coverage = authored
+            .coverage
+            .iter()
+            .map(|k| room(ctx, k))
+            .collect::<Result<_, _>>()?;
+        let obj = object(ctx, &authored.label, place, NODE_BEHAVIOR)?;
+        mush_tactics::module::create_unit(ctx, obj, spec)?;
+        r.nodes.insert(
+            id.clone(),
+            RelayNode {
+                object: obj,
+                place,
+                label: authored.label.clone(),
+                operator: r.operator,
+                coverage,
+            },
+        );
+    }
+    for (id, authored) in &def.nodes {
+        let n = r.nodes.get_mut(id).ok_or("relay node absent")?;
+        let place = room(ctx, &authored.place)?;
+        if n.place != place {
+            ctx.w.move_to(n.object, place).map_err(|e| e.to_string())?;
+            n.place = place;
+        }
+        n.coverage = authored
+            .coverage
+            .iter()
+            .map(|k| room(ctx, k))
+            .collect::<Result<_, _>>()?;
+    }
+    for (id, authored) in &def.pairs {
+        if r.pairs.contains_key(id) {
+            continue;
+        }
+        let mut halves = Vec::new();
+        for half in &authored.halves {
+            let node = r.nodes.get(&half.node).ok_or("relay node absent")?;
+            let obj = object(
+                ctx,
+                &format!("Relay half {}", half.id),
+                node.object,
+                HALF_BEHAVIOR,
+            )?;
+            let unit = mush_tactics::module::unit_of(ctx.w, node.object)
+                .ok_or("relay structure absent")?;
+            // A lost or unpowered hub does not acquire healthy new spokes during
+            // the gap between content apply and the next boot reconciliation.
+            let destroyed = r.losses.contains_key(&half.node)
+                || crate::relay_loss::internals(unit, "core") == Some(0);
+            let damaged = crate::relay_loss::internals(unit, "power") == Some(0);
+            halves.push(RelayHalf {
+                id: half.id.clone(),
+                object: obj,
+                node: half.node.clone(),
+                enabled: true,
+                powered: true,
+                staffed: true,
+                destroyed,
+                damaged,
+            });
+        }
+        r.pairs.insert(
+            id.clone(),
+            RelayPair {
+                halves: halves
+                    .try_into()
+                    .map_err(|_| "relay pair needs two halves")?,
+                capacity_units_per_ic_second: authored.capacity_units_per_ic_second,
+                class_policy: authored.class_policy,
+            },
+        );
+    }
+    let org = ctx
+        .w
+        .module_state::<OrgStore>()
+        .and_then(|s| s.state().org(r.operator))
+        .ok_or("relay operator absent")?;
+    if org.charter == LEGACY_CHARTER {
+        mush_org::submit(
+            ctx,
+            &OrgMutationPlan::of(vec![OrgMutationOp::ReviseCharter {
+                org: r.operator,
+                expected: LEGACY_CHARTER.into(),
+                charter: CHARTER.into(),
+            }]),
+            OrgAction {
+                action: "org.charter.revise".into(),
+                org: Some(r.operator),
+                detail: serde_json::json!({"source":"relay.full_star.v2"}),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    r.revision = r
+        .revision
+        .checked_add(1)
+        .ok_or("relay revisions exhausted")?;
+    mush_sim::relay::install(ctx, r)?;
+    ctx.out.pin_deferred();
+    Ok(())
 }
 
 fn object(ctx: &mut Ctx<'_>, label: &str, place: ObjId, behavior: &str) -> Result<ObjId, String> {
@@ -202,15 +403,17 @@ impl RelayApplier {
         id: &CanonicalId,
         entry: &RawEntry,
     ) -> Result<Option<ObjId>, String> {
-        let def = preflight(ctx, pack, id, entry)?;
-        if ctx
+        let (def, upgrade) = preflight(ctx, pack, id, entry)?;
+        if let Some(registry) = ctx
             .w
             .module_state::<RelayStore>()
             .and_then(RelayStore::registry)
-            .is_some()
+            .cloned()
         {
+            if upgrade {
+                expand(ctx, registry, &def)?;
+            }
             crate::relay_loss::ensure_units(ctx)?;
-            // Reapply never resets availability or creates a second identity.
             return Ok(None);
         }
         let (operator, root_id) = {
@@ -226,8 +429,12 @@ impl RelayApplier {
             aliases: Vec::new(),
             status: OrgStatus::Active,
             hidden: false,
-            charter: "Concord-chartered relay operator; R1 installs topology, not paid service."
-                .into(),
+            charter: if pack.manifest().version() == 1 {
+                LEGACY_CHARTER
+            } else {
+                CHARTER
+            }
+            .into(),
             root_scope: root_id,
             revision: 1,
             ruleset_ext: RulesValue::default(),

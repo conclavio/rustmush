@@ -146,6 +146,38 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let Some(row) = port.map.hulls.first() else {
         return Ok(());
     };
+    // Old station packs can defer the Exchange seed while the lane is already
+    // current. Wait before creating the NPC/front, but never hide lost authority
+    // beside an existing programme or an applied/held relay pack.
+    let exchange = match mush_propagation::routing::registry(ctx.w) {
+        Some(registry) => registry.operator,
+        None => {
+            let relay_pack = id("tacsim.relay.luna_ceres")?;
+            let unseeded = ctx
+                .w
+                .module_state::<mush_content::ContentState>()
+                .is_some_and(|s| {
+                    s.latches.applied(&relay_pack).is_none() && !s.latches.is_held(&relay_pack)
+                });
+            let receipt_absent = ctx
+                .w
+                .module_state::<crate::TacsimStore>()
+                .is_some_and(|s| s.relay_mobile.is_none() && !s.relay_mobile_held);
+            let orphan = ctx
+                .w
+                .iter()
+                .any(|o| o.name == "Postmaster Solveig Adebayo-Krishnan")
+                || ctx
+                    .w
+                    .module_state::<mush_faction::SimState>()
+                    .is_some_and(|s| s.fronts.values().any(|f| f.title == "A Half Afloat"));
+            if unseeded && receipt_absent && !orphan {
+                tracing::info!("Fleet programme waits for the explicitly upgraded Exchange seed");
+                return Ok(());
+            }
+            return Err("Exchange absent beside Fleet or relay authority; repair required".into());
+        }
+    };
     let hull = ObjId(row.hull);
     let org = port
         .map
@@ -209,9 +241,6 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     let front=mush_faction::seed_mobile_relay_front(ctx,fleet,draft(ctx,"relay.mobile_programme","A Half Afloat: the Concord relief cruiser awaits funding, consent and a manufactured pair.".into(),vec![hull],serde_json::json!({"hull":hull})))?;
-    let exchange = mush_propagation::routing::registry(ctx.w)
-        .ok_or("Exchange absent")?
-        .operator;
     mush_faction::register_programme_principal(ctx, exchange, postmaster)?;
     let view = crate::port::ship::hull_view(ctx.w, hull).ok_or("Fleet hull unreadable")?;
     let backing =

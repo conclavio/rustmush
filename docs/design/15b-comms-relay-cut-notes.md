@@ -1430,3 +1430,93 @@ whitespace is normalized for the repository. No credentials, server configuratio
 or database snapshot is committed. Normal CI follows the main push
 and remains owner-monitored. The standing authorization continues to R10 after
 this milestone is committed and pushed.
+
+## Gate 13 / R10: full Luna star and campaign acceptance
+
+**Implemented; automated and real dev1 integration gate passed (2026-10-24).**
+Base `a517e74f02ad965cd602305cb00022ceee902a86`; tested runtime tree `1b5a6dd1906e2bbb9b3c1f90ad90e00ddfa81c70`; final live-harness tree `87c6d6f9bfaa260b4441c7a12429af74286aa403`.
+Production story tests ran on `21a6f9b154c59a88c5c5aa9c4c8ec80d21dc2c47`; passed baseline suites on `4efb7d542134045745c8acb1705e298e4fd77b33` and custom-lane suites on `bf70b8c3cf83cf8233f4c0960f03dee1ddb9492b` are retained with their source identities. The recorded Rust deltas to the final runtime tree contain only test-fixture corrections; affected targets were rerun. The separately recorded live-harness delta fixes acceptance assertions and placement. Acceptance documentation and sanitized evidence are added after the tested tree.
+
+The full public Luna star has five nodes, four Exchange pairs and eight physical
+halves: Malapert, Ceres, Phobos, Kirkwood and Mercury. Malapert's authored compound
+includes the public counter, Postmaster's office and restricted hall. Aitken keeps
+Malapert coverage; Stickney and Voltaire use Phobos. Kirkwood and Mercury add
+strategic relay sites without inventing trade ports or routes. Titan, Pallas,
+Venus and Vesta have no public halves. Every public pair retains eight units per
+IC second; private and mobile pairs remain absent on a fresh world.
+
+The v2 content update recognizes the exact historical v1 authored slice. It keeps
+the original operator, nodes, halves, availability, private additions, money and
+in-flight timing. It only creates the missing public structures and halves,
+moves the original Malapert structure, and expands authored coverage. A lost or
+unpowered hub cannot acquire healthy spokes during migration. An unchanged R1
+charter updates through the organization owner; a customized charter is retained.
+Partial expansion, identity collisions, exhausted bounds or missing old structures
+refuse the upgrade. Existing packs still require explicit staff plan/apply.
+
+The one Postmaster and A Half Afloat front introduced in R9b are reused. The new
+four-segment Terms of Service front observes typed billing and operator decisions.
+A throttle records two segments; a suspension records four. One named principal
+owns the case; repeats and unrelated principals do not advance it. Cure preserves
+history and cannot erase an independent sanction. Cancelled subscriptions with
+unpaid debt remain observable. Clock changes, attributed canon and bounded receipts
+share the durable commit. Missing or contradictory receipts refuse reseeding.
+
+The content boot path now permits explicitly opted-in transitive deferral only
+through an earlier deferred pack with matching version and digest. This allows an
+old station/lane world to boot for explicit upgrades without silently applying
+those upgrades. Missing, held, mismatched, retired and newer dependencies still
+refuse. Six invalid/valid dependency-chain cases pin the boundary.
+
+Defects found before acceptance: obsolete one-pair/pack-count fixture assertions;
+the transitive boot dependency ordering; test rosters that applied game content while omitting the lane catalog, unlike
+production; and the old-world Fleet boot path attempting to create its programme
+before the explicitly deferred Exchange existed. The latter now waits only when
+no Fleet/Exchange identity has been applied. Existing held or inconsistent state
+still requires repair.
+
+The completed R9b CI run 40096036146 exposed 14 failures in nine TacSim targets.
+The assertions now include Halcyon, its Capital class, the Fleet funding and lane
+v13 changes. Two recovery fixtures had discarded staff-placement persistence
+operations; retaining those writes fixes their real recovery-ledger gap without
+weakening the audit. The complete local driving/mining suites pass. Historical/operator-edited lane fixtures now keep the compatible historical
+relay seed, preserving their lane-specific refusal and upgrade tests without
+weakening the full star's exact dependency checks. The disabled-server credit
+fixture also uses production's content switch. Broader Linux reruns and live
+results are recorded below. Failed-run evidence is retained.
+
+The first live attempt reached full-star traffic and real hub-outage recovery,
+then its repair command requested 1,000 power internals on a station bounded at
+200. The station damage handler correctly refused it. The harness now restores 200, retains the
+failed transcript and restarts the complete live campaign from the saved baseline.
+No production bound was relaxed.
+
+The second attempt passed the paid voyage but exposed a soak-harness lifetime
+error: an already-delivered envelope can be reaped before a later poll. The
+harness retains the accepted mail ID and reads the durable inbox instead. It
+also verifies all 72 recipient copies of its 24 channel lines. That failure is
+retained, and the complete campaign is restarted from the baseline again.
+
+The first all-in-one launch ran under root rather than dev1's `mush` account.
+The quarantine owner guard refused startup before opening the world. Its verified
+empty write probe was preserved outside the spool, and the temporary service now
+uses `User=mush` / `Group=mush`. The next route assertion exposed ignored teleport
+refusals: Bob was still aboard after the voyage and Alice began in an old test
+carrier. The earlier split soak is therefore retained as superseded evidence,
+not accepted four-location coverage. Placement now uses the real staff unplacement
+command, tolerates an already-unplaced actor, and verifies each stored location;
+Bob also leaves normally after docking. Both deployment campaigns passed on the corrected harness.
+
+### Validation and operational result
+
+The candidate passed **1046 Linux tests**, with zero failures or skips, including production boot/relay/IC stories, the affected content and legacy CI suites, owner/contract tests and the real Redis process-fault contracts. Full Linux formatting, targeted Clippy with warnings denied, web build/bundle verification and release builds of `mush-server`, `mush-gateway` and `mushd` passed, with TLS enabled for the gateway and all-in-one server. The complete local driving/mining and plumbing suites also passed (74 tests).
+
+The split server/gateway gate passed 308 line commands and 23 panel queries, with 8 real SIGKILL recovery boundaries. Its four concurrent clients sent 72 mails and 24 IC channel lines during the bounded soak. All 72 mails and all 72 channel recipient copies arrived; no expiry was observed. Observed maxima: 17 active envelopes, 5 on a link, 32 visited per explicit pass, 11 metric reads and 32 routing edges. No configured work limit was raised. Command latency was 51.0 ms median, 532 ms p95 and 1055 ms maximum; inbox polling upper bounds are in the metadata, not claimed as precise transport latency.
+
+The all-in-one server gate passed 220 line commands and 23 panel queries, with 4 real SIGKILL recovery boundaries. Its four concurrent clients sent 72 mails and 24 IC channel lines during the bounded soak. All 72 mails and all 72 channel recipient copies arrived; no expiry was observed. Observed maxima: 13 active envelopes, 3 on a link, 25 visited per explicit pass, 11 metric reads and 32 routing edges. No configured work limit was raised. Command latency was 52.0 ms median, 318 ms p95 and 652 ms maximum; inbox polling upper bounds are in the metadata, not claimed as precise transport latency.
+
+The split campaign proved explicit lane-v13/full-star-v2 migration preserving identities, operator funds, the existing Postmaster and frozen traffic; all four spokes and two distinct-hop receipts; Aitken/Voltaire coverage and uncovered Titan fallback; a real hub power outage; daily subscription payment, arrears, class changes, Terms history and independent-sanction cure; and an actual funded voyage with conventional onboard mail. The all-in-one deployment repeated traffic, outage, persistence and load checks. The real SSH front door passed 18 surface/permission commands.
+
+Fresh Redis database 2 boot/reboot passed with the same five-node/four-pair identities, finite capitalization and dormant Fleet/Terms receipts. The original dev1 world was restored from the retained database-1 baseline with original expiry deadlines: lane v12, relay v1, two nodes/one pair, no Fleet or Terms programme and no manufactured machines. The following R10 boot adds its six new Atlas geography packs, while lane/relay upgrades remain explicit. Both dev1 services are active; dev2 remained `MainPID=539467`. Installed executable hashes, retained failures, transcripts and counts are in [acceptance metadata](evidence/relay-r10-2026-10-24/metadata.json). Credentials, server configuration and database snapshots are excluded.
+
+R9b CI run `40096036146` finished with failures in nine TacSim targets; the final R10 candidate repairs those fixtures and reruns their affected suites. Normal CI for this push remains owner-monitored and is not claimed green. The earlier live Discord-provider criterion remains open because dev1 has no enabled bot/mapping; controlled-provider bridge tests remain the existing evidence. The R1–R10 implementation sequence is complete; this is the stop for programme acceptance.

@@ -899,23 +899,9 @@ fn count(text: &str, line: &str) -> usize {
 /// Staff place `tv` `Direct` on Ahuna's domain at `(x, y)`, facing south.
 fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
     let domain = ahuna_domain(&rig.tw);
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
-        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
-            .map_err(|e| e.to_string())?;
-        mush_sim::place(
-            ctx,
-            tv,
-            domain,
-            mush_sim::data::Pose {
-                x_cm: x,
-                y_cm: y,
-                z_cm: 0,
-                heading_mdeg: 180_000,
-                posture,
-            },
-        )
-    });
-    placed.expect("staff place the rig");
+    let staff = support::place_cm_keeping(&mut rig.tw, domain, tv, (x, y));
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
 }
 
 /// Staff move `tv` to the centre of site cell `(x, y)` (the placement seam).
@@ -2161,8 +2147,7 @@ fn sm4b_recover_from_afar_drives_home_and_climbs_aboard() {
     launched(&mut rig, pilot, tv);
     let keyed_cu = leg.cu;
     let mut rig = reboot_with(rig, &[pilot], false);
-    // A staff move is placement only (never folded into the store): the rig is put far out
-    // after the restart, as the tick-batch seam a test may call.
+    // Staff place the rig far out after restart through the durable placement seam.
     to_cell(&mut rig, tv, far);
     let dark = INSTRUMENTS_DARK.to_owned();
     for line in ["+tv/1 drive 140,96", "+tv/1 scan"] {

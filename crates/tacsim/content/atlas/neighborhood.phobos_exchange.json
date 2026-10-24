@@ -1,0 +1,239 @@
+{
+  "brief": {
+    "prose": "The Exchange staffs its own Phobos compound under the Settlement. Its last mile covers Stickney and Voltaire; no separate half is installed on Deimos."
+  },
+  "entries": {
+    "exit.relay": {
+      "def": {
+        "from": "room.counter",
+        "lock": "staff",
+        "names": [
+          "Phobos Relay Hall;relay",
+          "Extraterritorial Exchange Counter;counter"
+        ],
+        "portal": {
+          "mode": "open"
+        },
+        "to": "room.relay"
+      },
+      "kind": "exit"
+    },
+    "exit.yard": {
+      "def": {
+        "from": "neighborhood.stickney_yards.room.p12_observation",
+        "names": [
+          "Exchange Compound <X>;exchange;x",
+          "Yard Observation Gallery <Y>;yard;y"
+        ],
+        "portal": {
+          "at": [
+            200,
+            165,
+            7
+          ],
+          "mode": "open"
+        },
+        "to": "room.counter"
+      },
+      "kind": "exit"
+    },
+    "locality.compound": {
+      "def": {
+        "footprint": [
+          [
+            200,
+            155
+          ],
+          [
+            240,
+            155
+          ],
+          [
+            240,
+            180
+          ],
+          [
+            200,
+            180
+          ]
+        ],
+        "kind": "facility",
+        "name": "Phobos Exchange Compound",
+        "region": "region.stickney_yards"
+      },
+      "kind": "locality"
+    },
+    "neighborhood": {
+      "def": {
+        "footprint": [
+          [
+            200,
+            155
+          ],
+          [
+            240,
+            155
+          ],
+          [
+            240,
+            180
+          ],
+          [
+            200,
+            180
+          ]
+        ],
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "locality": "locality.compound",
+        "name": "Phobos Exchange Compound",
+        "region": "region.stickney_yards",
+        "representation": "authored",
+        "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 2,
+          "target": 2
+        },
+        "setting": "station"
+      },
+      "kind": "neighborhood"
+    },
+    "room.counter": {
+      "def": {
+        "access": "public",
+        "desc": "A pressure door opens from the yard observation gallery to an Exchange counter. A copy of the 2312 Settlement names the compound's extraterritorial rights; Republic seals stop at the threshold.",
+        "details": {
+          "charter": "Concord-chartered neutral common carrier under the 2312 Settlement. Every suspension names its principal and reason; independent sanctions survive an arrears cure.",
+          "tariffs": "Published service terms are available with +relay. All mail is IC and transits. Standard pays the declared wait; Priority and Sovereign wait for capacity; Deferred waits for an off-peak window."
+        },
+        "footprint": {
+          "rect": [
+            [
+              200,
+              155
+            ],
+            [
+              220,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Extraterritorial Exchange Counter",
+        "short_desc": "Extraterritorial Exchange Counter.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.relay": {
+      "def": {
+        "access": "restricted",
+        "desc": "An Exchange cradle sits behind a service barrier, its destination plate marked MALAPERT. Handlines cross the chamber. A coverage notice includes the yards and Voltaire Anchorage on Deimos.",
+        "footprint": {
+          "rect": [
+            [
+              220,
+              155
+            ],
+            [
+              240,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Phobos Relay Hall",
+        "short_desc": "Phobos Relay Hall.",
+        "site": "site.compound",
+        "surface": {
+          "floor": [
+            "structure.compound",
+            0
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "site.compound": {
+      "def": {
+        "footprint": [
+          [
+            200,
+            155
+          ],
+          [
+            240,
+            155
+          ],
+          [
+            240,
+            180
+          ],
+          [
+            200,
+            180
+          ]
+        ],
+        "name": "Phobos Exchange Compound",
+        "site_kind": "relay_compound"
+      },
+      "kind": "site"
+    },
+    "structure.compound": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 4,
+            "index": 0,
+            "name": "Exchange Deck",
+            "z_offset_m": 7
+          }
+        ],
+        "footprint": [
+          [
+            200,
+            155
+          ],
+          [
+            240,
+            155
+          ],
+          [
+            240,
+            180
+          ],
+          [
+            200,
+            180
+          ]
+        ],
+        "site": "site.compound"
+      },
+      "kind": "structure"
+    }
+  },
+  "manifest": {
+    "digest": "c186a5bc336ed6572d54e6caf47d471b0bb7081c745152fb270b55137d220b70",
+    "id": "neighborhood.phobos_exchange",
+    "kind": "neighborhood",
+    "requires": [
+      {
+        "id": "region.stickney_yards",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.stickney_yards",
+        "version": 4
+      }
+    ],
+    "version": 1
+  }
+}

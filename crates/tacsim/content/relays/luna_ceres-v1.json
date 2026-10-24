@@ -1,0 +1,162 @@
+{
+  "manifest": {
+    "id": "tacsim.relay.luna_ceres",
+    "version": 1,
+    "kind": "campaign_seed",
+    "requires": [
+      {
+        "id": "neighborhood.aitken_highport",
+        "version": 1
+      },
+      {
+        "id": "neighborhood.ceres_freeport",
+        "version": 2
+      }
+    ],
+    "digest": "59f32f5d013fc15188f5e50763084e371ce489d26302c446acdd26790a65a6d9"
+  },
+  "entries": {
+    "network": {
+      "kind": "relay_network",
+      "def": {
+        "operator_name": "Malapert Exchange",
+        "nodes": {
+          "malapert": {
+            "label": "Malapert relay endpoint",
+            "place": {
+              "pack": "neighborhood.aitken_highport",
+              "entry": "room.l15_spine"
+            },
+            "coverage": [
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l01_berth_gallery"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l02_pressure"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l12_dockmaster"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l08_receiving"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l15_spine"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l03_arrivals"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l04_concourse"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l05_registry"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l06_clearing"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l07_exchange"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l09_chandlery"
+              },
+              {
+                "pack": "neighborhood.aitken_highport",
+                "entry": "room.l10_cold_trap"
+              }
+            ]
+          },
+          "ceres": {
+            "label": "Ceres relay endpoint",
+            "place": {
+              "pack": "neighborhood.ceres_freeport",
+              "entry": "room.c15_maintenance"
+            },
+            "coverage": [
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c01_berth_gallery"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c02_pressure"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c03_arrivals"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c04_concourse"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c05_registry"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c06_clearing"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c07_exchange"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c08_chandlery"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c09_tycho"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c10_slack_line"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c14_dockmaster"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c15_maintenance"
+              },
+              {
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c16_authority"
+              }
+            ]
+          }
+        },
+        "pairs": {
+          "luna_ceres": {
+            "halves": [
+              {
+                "id": "luna_ceres.luna",
+                "node": "malapert"
+              },
+              {
+                "id": "luna_ceres.ceres",
+                "node": "ceres"
+              }
+            ],
+            "capacity_units_per_ic_second": 8,
+            "class_policy": "exchange"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "brief": {
+    "prose": "Kirkwood Depot is a Co-op-hosted transfer stop under Freeport licence. Tycho finances the depot; Republic pickets watch its approaches. The Exchange keeps its own sealed relay compound."
+  },
+  "entries": {
+    "region.kirkwood_depot": {
+      "def": {
+        "background": {
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350,
+          "surface": "regolith"
+        },
+        "body": "kirkwood",
+        "datum_m": 0,
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "ground_resolution_cm": 1000,
+        "kind": "surface",
+        "name": "Kirkwood",
+        "theme": {
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "name": "TacSim 2350",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      },
+      "kind": "region"
+    }
+  },
+  "manifest": {
+    "digest": "0c4187a8757fe7f7fed9179f09f0a62e83db606ea25f2a9cdffebca6ccd76627",
+    "id": "region.kirkwood_depot",
+    "kind": "region",
+    "requires": [],
+    "version": 1
+  }
+}

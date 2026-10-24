@@ -162,7 +162,7 @@ fn module_list(
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module_wired(
         tacsim_config(),
-        false,
+        true,
         inventory,
     ));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));

@@ -179,7 +179,7 @@ fn module_list(
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::sheet_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module_wired(cfg, false, inventory));
+    mods.push(modules::tacsim_module_wired(cfg, true, inventory));
     // 16b cut C.2: the content module last, with `[game].starter_area` off and
     // the game's own boot packs on — the arena's ground has to be in this
     // world's atlas records before `@arena/start` can build its window.

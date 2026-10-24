@@ -3,15 +3,13 @@
 **Draft 0.5 — 2026-10-24.** Initially grounded against `origin/main` at
 `7c886408c1a1d4d0283b886bdd62fbbe2f8fe7af`.
 Parent: [15 — Communications](15-comms-relay-backbone.md).
-This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) is the build
-and evidence record. R1 is pushed to main. The owner authorized R2 after that
-push; R2 is implemented and its dev1 live checks passed. Normal candidate CI is
-still required for full acceptance under §5. After the CI repair's dev1 rerun
-passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
-CI run. R5 is implemented and its real-server gate passed; 15b records the results.
-Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
-R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-implemented and its dev1 gate passed. R6b, R3, R4, R7, R8a, R8b and R9a have now passed their live gates; the remaining authorized train continues with R9b.
+This is the implementation plan; [15b](15b-comms-relay-cut-notes.md) records the
+implementation and evidence. R1–R10 are implemented, with automated and real dev1
+integration checks recorded at each milestone before continuing. R10's final gate
+covers fresh/upgraded worlds, both deployment modes, crash recovery, real billing,
+a voyage and bounded concurrent traffic. The train stops for programme acceptance.
+Normal candidate CI remains owner-monitored and required for full acceptance.
+The external live Discord-provider criterion remains open; dev1 has no bot/mapping.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -482,6 +480,11 @@ wiring. See [15b](15b-comms-relay-cut-notes.md) and
 authorized continuation to R10; normal CI remains owner-monitored.
 
 ### Gate 13 — R10: complete the Luna star
+
+**Implemented; automated and real dev1 gate passed (2026-10-24).** See
+[15b](15b-comms-relay-cut-notes.md#gate-13--r10-full-luna-star-and-campaign-acceptance)
+and [metadata](evidence/relay-r10-2026-10-24/metadata.json). Normal CI remains
+owner-monitored; stop here for programme acceptance.
 
 Finish the five-node/four-pair/eight-half pack: Malapert, Phobos, Ceres, Kirkwood and
 the Mercury stub; the Exchange, Postmaster, coverage, published tariffs, mildly false

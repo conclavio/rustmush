@@ -407,6 +407,17 @@ pub trait Integration: Send + Sync + std::fmt::Debug {
     ) -> Result<u64, String> {
         Err("Subscriptions unavailable".into())
     }
+    fn subscription_changed(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _s: &crate::billing::Subscription,
+        _v: &crate::billing::View,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn policy_changed(&self, _ctx: &mut Ctx<'_>, _r: &Restriction) -> Result<(), String> {
+        Ok(())
+    }
     fn subscription_notice(&self, _ctx: &mut Ctx<'_>, _p: &Principal, _text: String) {}
     fn payer(&self, _w: &World, _actor: ObjId, _account: u64) -> Result<(), String> {
         Err("Relay commerce unavailable.".into())
@@ -726,18 +737,20 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if action.len() > 256 {
             return Err(CmdError::msg("Policy audit exceeds 256 bytes."));
         }
-        state
-            .restrict(Restriction {
-                operator,
-                principal,
-                source,
-                state: policy,
-                reason,
-                actor: ctx.actor,
-                at,
-            })
-            .map_err(CmdError::msg)?;
+        let restriction = Restriction {
+            operator,
+            principal,
+            source,
+            state: policy,
+            reason,
+            actor: ctx.actor,
+            at,
+        };
+        state.restrict(restriction.clone()).map_err(CmdError::msg)?;
         state.audit(ctx.actor, at, action);
+        state.validate().map_err(CmdError::msg)?;
+        api.policy_changed(ctx, &restriction)
+            .map_err(CmdError::msg)?;
         save(ctx, state)?;
         say(
             ctx,

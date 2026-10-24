@@ -20,7 +20,7 @@
 //!   `@atlas/pack plan` shows the diff, and a staffer applies it. A restart never
 //!   rewrites a lot underneath its players.
 //! - A composition may explicitly defer a new pack until staff upgrade its active
-//!   dependencies. Only older dependency versions qualify; all other dependency
+//!   dependencies. Earlier explicitly deferred boot packs may also wait; all other dependency
 //!   failures still refuse boot. This never upgrades a dependency implicitly.
 //! - A first-boot pack that will not apply, or stops with an entry anomaly,
 //!   **fails boot** with the pack and cause (16c cut L, T-85). The host does not
@@ -32,7 +32,7 @@
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 use mush_core::{CanonicalId, CommandCompatibility, Ctx};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::apply::{Appliers, ApplyError, ApplyReport, apply};
 use crate::latch::{Applied, Latches, NS};
@@ -78,7 +78,8 @@ impl ContentModule {
         self
     }
 
-    /// Defer this new pack while an active dependency is at an older version.
+    /// Defer this new pack while an active dependency is at an older version,
+    /// or an earlier opted-in boot dependency was deferred for that same reason.
     /// Staff must upgrade that dependency explicitly; a later boot retries the
     /// seed. Missing, retired, held, newer or digest-mismatched dependencies
     /// still fail boot, as do all apply errors. Existing latches are unchanged.
@@ -124,6 +125,7 @@ impl GameModule for ContentModule {
                 .ok_or_else(|| ModError::msg("content: state slot missing"))?;
             slot.latches = latches;
         }
+        let mut deferred = BTreeMap::new();
         for pack in &self.boot_packs {
             let id = pack.manifest().id().clone();
             let already = ctx
@@ -137,8 +139,16 @@ impl GameModule for ContentModule {
                     }
                     let mut older = false;
                     let compatible = pack.manifest().requires().iter().all(|r| {
-                        let Some(latch) = s.latches.applied(&r.id) else {
+                        if s.latches.is_held(&r.id) {
                             return false;
+                        }
+                        let Some(latch) = s.latches.applied(&r.id) else {
+                            let waits = deferred.get(&r.id).is_some_and(|(version, digest)| {
+                                *version == r.version
+                                    && r.digest.is_none_or(|required| required == *digest)
+                            });
+                            older |= waits;
+                            return waits;
                         };
                         if s.latches.is_held(&r.id)
                             || latch.is_retired()
@@ -155,6 +165,10 @@ impl GameModule for ContentModule {
                     compatible && older
                 })
             {
+                deferred.insert(
+                    id.clone(),
+                    (pack.manifest().version(), pack.manifest().digest()),
+                );
                 tracing::warn!(pack = %id, requires = ?pack.manifest().requires(),
                     "content: new boot pack deferred until staff upgrade its dependencies with @atlas/pack plan and apply; restart or apply this pack afterwards");
                 continue;

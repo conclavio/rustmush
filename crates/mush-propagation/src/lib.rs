@@ -225,6 +225,11 @@ impl GameModule for PropagationModule {
         if self.service.is_some() {
             reg.persist_delegation(
                 NS,
+                "tacsim",
+                "R10 typed service decisions persist the game-owned Terms case in the same commit",
+            )?;
+            reg.persist_delegation(
+                NS,
                 "npc",
                 "R3 permissioned relay evidence is filed through the knowledge owner's public API",
             )?;

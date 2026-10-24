@@ -1,0 +1,3 @@
+72105227139a7f8196a856833609841d259def3039320dcc07fa72c86c1ad01a  /opt/rustmush/dev1/build/target/release/mushd
+902284588df8946fe511614ca14389158da4e313444e3d80e0b0bd984b6b10ad  /opt/rustmush/dev1/build/target/release/mush-server
+c53d95967583e1d3cbd7033a9f53dd341881a00c47b0a7ca149bc24ef6170f14  /opt/rustmush/dev1/build/target/release/mush-gateway

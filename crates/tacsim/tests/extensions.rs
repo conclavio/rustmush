@@ -3772,7 +3772,7 @@ fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
         &mush_config::config::NpcCfg::default(),
     ));
     mods.extend(comp::sheet_modules(&onboarding, &game));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_with(cfg, true));
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
     mods
 }
@@ -8561,10 +8561,10 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        15,
+        16,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
-         and Dray-P, plus R7's relay station"
+         and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10068,9 +10068,9 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     // with the terrain vehicle and the Dray-P (was twelve).
     assert_eq!(
         fielded.specs.len(),
-        15,
+        16,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
-         IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station"
+         IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10885,9 +10885,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        15,
+        16,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
-         the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station"
+         the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station and R9b's Halcyon"
     );
     let earlier: Vec<(&str, &str)> = [
         content::EXTENSIONS.as_slice(),
@@ -10970,6 +10970,14 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let dray_p_key = CanonicalId::new(content::DRAY_P).expect("a canonical id");
     let tv_key = CanonicalId::new(content::TV_PROSPECTOR).expect("a canonical id");
     let station_key = CanonicalId::new(tacsim::relay_loss::STATION).expect("a canonical id");
+    let capital_key = CanonicalId::new(tacsim::relay_mobile::UNIT).expect("a canonical id");
+    assert_eq!(
+        classes
+            .get(&UnitClass::Capital)
+            .cloned()
+            .unwrap_or_default(),
+        vec!["halcyon"]
+    );
     assert_eq!(
         classes
             .get(&UnitClass::Station)
@@ -10985,8 +10993,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
                 || *id == dray_key
                 || *id == dray_p_key
                 || *id == tv_key
-                || *id == station_key,
-            "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle and the relay station write a class \
+                || *id == station_key
+                || *id == capital_key,
+            "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle, the relay station and Halcyon write a class \
              word"
         );
     }

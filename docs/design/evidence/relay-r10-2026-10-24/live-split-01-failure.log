@@ -1,0 +1,7 @@
+PASS explicit-full-star-upgrade-preserves-assets-money-npc-and-frozen-flight
+PASS four-spokes-two-hop-restart-coverage-mail-and-channel
+AssertionError [ERR_ASSERTION]: @unit/damage #665={"ops":[{"SetCell":{"addr":{"Section":{"section":"power","cell":"internals"}},"value":1000}}]}: cell Section { section: SectionId("power"), cell: CellId("internals") } value 1000 out of bounds [0,200]
+    at command (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:99:16)
+    at async cell (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:25:41)
+    at async traffic (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:59:215)
+    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:103:26

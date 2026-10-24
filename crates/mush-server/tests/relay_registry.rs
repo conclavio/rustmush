@@ -80,12 +80,12 @@ async fn r6b_channel_holes_offline_restart_and_shared_mirror_are_arrival_gated()
         .tw
         .world()
         .iter()
-        .find(|o| o.name == "Kasei Receiving Office")
+        .find(|o| o.name == "Townships Receiving")
         .unwrap()
         .id;
     rig.run(GOD, &format!("@teleport {far}={phobos}"));
     let chan = rig.channel_setup(&[GOD, bob, far]);
-    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.public_hub(false);
     let events = rig.tw.run(GOD, "radio first-secret RelayReceiver FarRadio");
     assert!(
         !events
@@ -114,7 +114,7 @@ async fn r6b_channel_holes_offline_restart_and_shared_mirror_are_arrival_gated()
     rig.flush().await;
     rig.restart().await.unwrap();
     assert!(!rig.backlog(bob).contains("first-secret"));
-    rig.run(GOD, "@relay/enable luna_ceres.luna");
+    rig.public_hub(true);
     assert!(
         rig.run(GOD, "radio second-fast")
             .contains("queued for IC transit")
@@ -183,7 +183,7 @@ async fn r6b_membership_revocation_and_source_loss_preserve_transport_boundaries
     let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
     rig.run(GOD, &format!("@teleport {alice}={luna}"));
     let chan = rig.channel_setup(&[alice, bob]);
-    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.public_hub(false);
     rig.run(alice, "radio before-rejoin");
     rig.mail_tick();
     rig.run(bob, "delcom radio");
@@ -528,10 +528,14 @@ impl Rig {
         // Earlier physical-route stories isolate class delay with explicit
         // no-charge operator grants. R3 stories select their own classes.
         for actor in [GOD, receiver] {
-            assert!(
-                self.run(GOD, &format!("+relay/grant luna_ceres/{actor}=priority"))
-                    .contains("Class grant recorded")
-            );
+            for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+                if catalog.pairs.contains_key(&cid(pair)) {
+                    assert!(
+                        self.run(GOD, &format!("+relay/grant {pair}/{actor}=priority"))
+                            .contains("Class grant recorded")
+                    );
+                }
+            }
         }
         receiver
     }
@@ -625,7 +629,7 @@ async fn r2_conventional_fallback_freezes_sky_lag_across_restart_and_link_repair
     use mush_propagation::EnvelopeState;
     let mut rig = Rig::new(true).await;
     let receiver = rig.endpoints();
-    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.public_hub(false);
     assert!(
         rig.run(GOD, &format!("+order {receiver}=R2-timed-order"))
             .contains("Queued")
@@ -636,7 +640,7 @@ async fn r2_conventional_fallback_freezes_sky_lag_across_restart_and_link_repair
     let flight = in_flight.transit().unwrap().flight.clone().unwrap();
     assert!(flight.seconds > 60, "astronomical lag, not abstract range");
     assert!(flight.basis.starts_with("sky.v1:"));
-    rig.run(GOD, "@relay/enable luna_ceres.luna");
+    rig.public_hub(true);
     rig.flush().await;
     rig.restart().await.unwrap();
     assert_eq!(rig.envelope(id), in_flight);
@@ -702,7 +706,7 @@ async fn r2_moving_recipient_requires_another_physical_leg() {
     use mush_propagation::EnvelopeState;
     let mut rig = Rig::new(true).await;
     let receiver = rig.endpoints();
-    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.public_hub(false);
     rig.run(GOD, &format!("+order {receiver}=forward-this"));
     let id = rig.last_envelope().id();
     rig.pass();
@@ -758,9 +762,9 @@ async fn r1_real_seed_availability_and_noop_plan_survive_restart() {
     let original = rig.registry();
     rig.restart().await.unwrap();
     assert_eq!(rig.registry(), original);
-    assert_eq!((original.nodes.len(), original.pairs.len()), (2, 1));
+    assert_eq!((original.nodes.len(), original.pairs.len()), (5, 4));
     assert_eq!(original.pairs[&cid("luna_ceres")].state(), LinkState::Live);
-    assert_eq!(original.nodes[&cid("malapert")].coverage.len(), 12);
+    assert_eq!(original.nodes[&cid("malapert")].coverage.len(), 15);
     assert_eq!(original.nodes[&cid("ceres")].coverage.len(), 13);
     assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
     assert!(
@@ -961,11 +965,12 @@ async fn r6a_mail_handoffs_gate_visibility_and_survive_each_restart() {
     use mush_propagation::EnvelopeState;
     let mut rig = Rig::new(true).await;
     let bob = rig.endpoints();
+    rig.public_hub(false);
     let stickney = rig
         .tw
         .world()
         .iter()
-        .find(|o| o.name == "Kasei Receiving Office")
+        .find(|o| o.name == "Townships Receiving")
         .unwrap()
         .id;
     rig.run(GOD, &format!("@teleport {bob}={stickney}"));
@@ -1163,7 +1168,7 @@ async fn r6a_refusals_wait_for_arrival_and_a_physical_return() {
     use mush_mail::transit::Outcome;
     let mut rig = Rig::new(true).await;
     let bob = rig.endpoints();
-    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.public_hub(false);
     let alice = rig.tw.spawn_player("MailAlice");
     let luna = rig.registry().nodes[&cid("malapert")].coverage[0];
     rig.run(GOD, &format!("@teleport {alice}={luna}"));
@@ -1703,7 +1708,7 @@ async fn r3_four_classes_restart_capacity_receipts_and_scandal() {
             .unwrap()
             .grants
             .iter()
-            .any(|g| g.principal == receiver)
+            .any(|g| g.principal == receiver && g.pair == cid("luna_ceres"))
     );
     let published = rig.run(receiver, "+relay/publish luna_ceres");
     assert!(published.contains("scandal front"), "{published}");
@@ -3379,65 +3384,13 @@ async fn r8a_two_exchange_hops_use_one_purchase_and_survive_restart_between_hops
     let mut rig = Rig::new(true).await;
     let bob = rig.endpoints();
     rig.retail_ready();
-    let mut catalog = rig.registry();
-    let phobos = rig
-        .tw
-        .world()
-        .iter()
-        .find(|o| o.name == "Kasei Receiving Office")
-        .unwrap()
-        .id;
-    // Controlled topology fixture, using real checked node/unit bindings.
-    // Manufacturing these objects through industry belongs to R9a.
-    let mut node = catalog.nodes[&cid("ceres")].clone();
-    rig.run(GOD, "@create R8HopNode");
-    node.object = rig
-        .tw
-        .world()
-        .iter()
-        .find(|o| o.name == "R8HopNode")
-        .unwrap()
-        .id;
-    node.place = phobos;
-    node.coverage = vec![phobos];
-    rig.run(GOD, &format!("@teleport {}={phobos}", node.object));
-    rig.run(
-        GOD,
-        &format!("@behavior/add {}=sim.relay_node", node.object),
-    );
-    rig.run(
-        GOD,
-        &format!("@unit/create {}=tacsim.unit.relay_station", node.object),
-    );
-    catalog.nodes.insert(cid("r8_phobos"), node.clone());
-    let mut pair = catalog.pairs[&cid("luna_ceres")].clone();
-    for (i, node_key) in ["ceres", "r8_phobos"].iter().enumerate() {
-        let inside = catalog.nodes[&cid(node_key)].object;
-        let half = rig
-            .tw
-            .world_mut()
-            .create(
-                mush_core::ObjKind::Thing,
-                &format!("R8Half{i}"),
-                GOD,
-                Some(inside),
-            )
-            .unwrap();
-        rig.run(GOD, &format!("@behavior/add {half}=sim.relay_half"));
-        pair.halves[i].object = half;
-        pair.halves[i].node = cid(node_key);
-        pair.halves[i].id = cid(&format!("r8.half{i}"));
-    }
-    catalog.pairs.insert(cid("r8_second"), pair);
-    catalog.revision += 1;
-    catalog.reconcile(rig.tw.world()).unwrap();
-    rig.flush().await;
-    rig.replace_document(serde_json::to_value(catalog).unwrap())
-        .await;
-    rig.restart().await.unwrap();
+    let catalog = rig.registry();
+    let phobos = catalog.nodes[&cid("phobos")].place;
+    let ceres = catalog.nodes[&cid("ceres")].coverage[0];
     rig.run(GOD, &format!("@teleport {bob}={phobos}"));
     rig.run(GOD, &format!("@prop/jam {phobos}=100"));
     let (alice, payer) = rig.retail_sender("TwoHopBuyer", true);
+    rig.run(GOD, &format!("@teleport {alice}={ceres}"));
     let (mail, env) = rig.retail_mail(alice, bob, "two hops");
     let q = rig.retail_quote(alice, env, "priority", payer);
     rig.run(alice, &format!("+relay/buy {q}"));
@@ -3609,6 +3562,14 @@ async fn r8b_person_subscription_real_bills_queued_delivery_arrears_cure_restart
     assert_eq!(rig.subscription_obligation(id).settled_total, 1);
     assert_eq!(rig.account(payee).posted_balance.minor(), capital + 10000);
     rig.next_bill(id);
+    rig.pass();
+    let terms = tacsim::relay_world::current(rig.tw.world()).unwrap();
+    assert_eq!(terms.progress(), 2);
+    assert_eq!(
+        terms.facts[0].restriction.principal,
+        mush_propagation::service::Principal::Object(alice)
+    );
+
     assert!(
         rig.run(alice, "+relay/status luna_ceres")
             .contains("Throttled")
@@ -3626,6 +3587,14 @@ async fn r8b_person_subscription_real_bills_queued_delivery_arrears_cure_restart
         Class::Standard
     );
     rig.next_bill(id);
+    rig.pass();
+    assert_eq!(
+        tacsim::relay_world::current(rig.tw.world())
+            .unwrap()
+            .progress(),
+        4
+    );
+
     assert!(
         rig.run(alice, "+relay/status luna_ceres")
             .contains("Suspended")
@@ -4021,4 +3990,333 @@ async fn r8b_lost_subscription_owner_and_forged_terms_refuse_boot() {
     rig.serial += 1;
     rig.restart().await.unwrap();
     assert_eq!(rig.subscription_obligation(id).settled_total, 1);
+}
+
+impl Rig {
+    fn public_hub(&mut self, enabled: bool) {
+        for pair in ["luna_ceres", "luna_phobos", "luna_kirkwood", "luna_mercury"] {
+            self.run(
+                GOD,
+                &format!(
+                    "@relay/{} {pair}.luna",
+                    if enabled { "enable" } else { "disable" }
+                ),
+            );
+        }
+    }
+    async fn apply_content(&mut self, packs: Vec<mush_content::Pack>) {
+        self.flush().await;
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = self.tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some("content".into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            for pack in packs {
+                let (latch, _) = mush_content::apply_pack(&mut ctx, &pack).unwrap();
+                assert!(
+                    latch.anomaly().is_none(),
+                    "{} {:?}",
+                    pack.manifest().id(),
+                    latch.anomaly()
+                );
+            }
+        }
+        let ops = out
+            .take_deferred()
+            .into_iter()
+            .filter_map(|d| {
+                if let mush_core::Deferred::Persist(op) = d {
+                    Some(op)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let dirty = self.tw.world_mut().take_dirty();
+        let mut batch = persist::batch_from_dirty(self.tw.world(), dirty, self.serial, true);
+        batch.module_ops = ops;
+        self.store.write(batch).await.unwrap();
+        self.serial += 1;
+    }
+    async fn old_star() -> Self {
+        let mut rig = Self::new(false).await;
+        let mut packs = tacsim::composition::boot_pack_list(false, true).unwrap();
+        let new_ids: Vec<_> = tacsim::relay_content::packs()
+            .unwrap()
+            .iter()
+            .map(|p| p.manifest().id().clone())
+            .collect();
+        packs.retain(|p| !new_ids.contains(p.manifest().id()));
+        packs.push(mush_content::load_pack(tacsim::relay_content::HISTORICAL_JSON).unwrap());
+        rig.apply_content(packs).await;
+        rig.cfg.tacsim.enabled = true;
+        rig.restart().await.unwrap();
+        assert_eq!(rig.registry().pairs.len(), 1);
+        assert!(tacsim::relay_world::current(rig.tw.world()).is_none());
+        rig.flush().await;
+        rig
+    }
+}
+#[tokio::test]
+async fn r10_historical_pack_upgrade_preserves_identity_money_and_inflight_due() {
+    let mut rig = Rig::old_star().await;
+    let bob = rig.endpoints();
+    rig.run(GOD, "@relay/disable luna_ceres.luna");
+    rig.run(GOD, &format!("+order {bob}=old-world-inflight"));
+    rig.pass();
+    let envelope = rig.last_envelope();
+    let flight = envelope.transit().unwrap().flight.clone().unwrap();
+    let original = rig.registry();
+    let money = rig.money_total();
+    let npc = tacsim::relay_mobile::current(rig.tw.world())
+        .unwrap()
+        .postmaster;
+    rig.apply_content(vec![
+        mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
+    ])
+    .await;
+    rig.restart().await.unwrap();
+    let expanded = rig.registry();
+    assert_eq!((expanded.nodes.len(), expanded.pairs.len()), (5, 4));
+    assert_eq!(expanded.operator, original.operator);
+    assert_eq!(
+        expanded.pairs[&cid("luna_ceres")],
+        original.pairs[&cid("luna_ceres")]
+    );
+    for n in ["malapert", "ceres"] {
+        assert_eq!(
+            expanded.nodes[&cid(n)].object,
+            original.nodes[&cid(n)].object
+        );
+    }
+    assert_ne!(
+        expanded.nodes[&cid("malapert")].place,
+        original.nodes[&cid("malapert")].place
+    );
+    assert_eq!(rig.money_total(), money);
+    assert_eq!(
+        tacsim::relay_world::current(rig.tw.world())
+            .unwrap()
+            .postmaster,
+        npc
+    );
+    assert_eq!(
+        rig.envelope(envelope.id()).transit().unwrap().flight,
+        Some(flight.clone())
+    );
+    rig.advance_ic_to(flight.due.at);
+    rig.pass();
+    assert_eq!(
+        rig.envelope(envelope.id()).state(),
+        mush_propagation::EnvelopeState::Delivered
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.registry(), expanded);
+    assert_eq!(rig.money_total(), money);
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
+#[tokio::test]
+async fn r10_named_terms_case_deduplicates_unrelated_principals_and_cure() {
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let initial = tacsim::relay_world::current(rig.tw.world())
+        .unwrap()
+        .clone();
+    assert_eq!(initial.progress(), 0);
+    let office = rig
+        .tw
+        .world()
+        .get(initial.postmaster)
+        .unwrap()
+        .location
+        .unwrap();
+    assert_eq!(
+        rig.tw.world().get(office).unwrap().name,
+        "Postmaster's Office"
+    );
+    assert!(
+        rig.run(
+            bob,
+            &format!("+relay/policy luna_ceres/{bob}=throttled,operator.case,unauthorized")
+        )
+        .contains("Permission denied")
+    );
+    assert_eq!(
+        tacsim::relay_world::current(rig.tw.world())
+            .unwrap()
+            .progress(),
+        0
+    );
+    for _ in 0..2 {
+        assert!(
+            rig.run(
+                GOD,
+                &format!(
+                    "+relay/policy luna_ceres/{bob}=throttled,operator.case,compound incident"
+                )
+            )
+            .contains("policy recorded")
+        );
+    }
+    assert_eq!(
+        tacsim::relay_world::current(rig.tw.world())
+            .unwrap()
+            .facts
+            .len(),
+        1
+    );
+    rig.run(
+        GOD,
+        "+relay/policy luna_ceres/#1=suspended,operator.other,another principal",
+    );
+    assert_eq!(
+        tacsim::relay_world::current(rig.tw.world())
+            .unwrap()
+            .progress(),
+        2
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.run(
+        GOD,
+        &format!("+relay/policy luna_phobos/{bob}=suspended,operator.case,confirmed incident"),
+    );
+    let complete =
+        serde_json::to_value(tacsim::relay_world::current(rig.tw.world()).unwrap()).unwrap();
+    assert_eq!(complete["facts"].as_array().unwrap().len(), 2);
+    rig.run(
+        GOD,
+        &format!("+relay/policy luna_ceres/{bob}=served,operator.case,settled"),
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    assert_eq!(
+        serde_json::to_value(tacsim::relay_world::current(rig.tw.world()).unwrap()).unwrap(),
+        complete
+    );
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
+
+#[tokio::test]
+async fn r10_expansion_inherits_terminal_hub_loss_without_a_healthy_window() {
+    let mut rig = Rig::old_star().await;
+    let node = rig.registry().nodes[&cid("malapert")].object;
+    r7_damage(&mut rig, node, "core", 0);
+    let original = rig.registry();
+    rig.apply_content(vec![
+        mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
+    ])
+    .await;
+    let expanded = rig.registry();
+    assert_eq!(expanded.losses, original.losses);
+    assert_eq!(
+        expanded.pairs[&cid("luna_ceres")],
+        original.pairs[&cid("luna_ceres")]
+    );
+    assert!(
+        expanded
+            .pairs
+            .values()
+            .all(|p| p.state() == LinkState::Dead)
+    );
+    rig.restart().await.unwrap();
+    assert_eq!(rig.registry().losses, original.losses);
+    r7_damage(&mut rig, node, "core", 1000);
+    assert!(
+        rig.registry()
+            .pairs
+            .values()
+            .all(|p| p.state() == LinkState::Dead)
+    );
+}
+#[test]
+fn r10_public_star_content_digests_are_pinned() {
+    let expected = [
+        (
+            "region.kirkwood_depot",
+            "0c4187a8757fe7f7fed9179f09f0a62e83db606ea25f2a9cdffebca6ccd76627",
+        ),
+        (
+            "region.mercury_relay",
+            "a8732cda91b8e10a9845ff87d879c9cf45983659b98064c8b583d1388b2ff725",
+        ),
+        (
+            "neighborhood.malapert_exchange",
+            "acad4209e0ded034b989bfbe0ff7311df8e02734d579bd6bcdd6a5abbf0b626c",
+        ),
+        (
+            "neighborhood.phobos_exchange",
+            "c186a5bc336ed6572d54e6caf47d471b0bb7081c745152fb270b55137d220b70",
+        ),
+        (
+            "neighborhood.kirkwood_depot",
+            "fe585584e7631ed5904c4402d5042f451ff487a417aaf5b259b27db0fcc4e328",
+        ),
+        (
+            "neighborhood.mercury_relay",
+            "511d9a2997a9c1a05e9249639a680496fdf1439a8777124b7187150bf823ac49",
+        ),
+        (
+            "tacsim.relay.luna_ceres",
+            "6d99bd6f999c88285404f05242100945416191a2dc67e18b4838514124d61401",
+        ),
+    ];
+    let packs = tacsim::relay_content::packs().unwrap();
+    assert_eq!(packs.len(), expected.len());
+    for (p, (id, digest)) in packs.iter().zip(expected) {
+        assert_eq!(p.manifest().id().as_str(), id);
+        assert_eq!(p.manifest().digest().to_hex(), digest);
+    }
+}
+
+#[tokio::test]
+async fn r10_upgrade_observes_cancelled_debt_without_inventing_an_active_subscription() {
+    let mut rig = Rig::old_star().await;
+    rig.endpoints();
+    rig.retail_ready();
+    let (alice, payer) = rig.retail_sender("OldDebt", false);
+    let id = rig.subscribe(alice, &alice.to_string(), "priority", payer);
+    rig.bill();
+    rig.next_bill(id);
+    assert_eq!(rig.subscription_obligation(id).missed_total, 2);
+    assert!(
+        rig.run(alice, &format!("+relay/unsubscribe {id}"))
+            .contains("Cancelled")
+    );
+    assert!(tacsim::relay_world::current(rig.tw.world()).is_none());
+    rig.apply_content(vec![
+        mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
+    ])
+    .await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    let story = tacsim::relay_world::current(rig.tw.world()).unwrap();
+    assert_eq!(story.progress(), 4);
+    assert_eq!(story.facts.len(), 1);
+    assert_eq!(
+        story.facts[0].restriction.principal,
+        mush_propagation::service::Principal::Object(alice)
+    );
+    assert_eq!(
+        rig.billing().subscriptions[&id].phase,
+        mush_propagation::billing::Phase::Cancelled
+    );
+    let facts = serde_json::to_value(story).unwrap();
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    rig.pass();
+    assert_eq!(
+        serde_json::to_value(tacsim::relay_world::current(rig.tw.world()).unwrap()).unwrap(),
+        facts
+    );
 }

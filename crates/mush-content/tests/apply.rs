@@ -451,3 +451,76 @@ fn an_unknown_kind_is_refused_naming_the_entry() {
     );
     assert_eq!(h.things(), 0);
 }
+
+#[test]
+fn transitively_deferred_boot_packs_require_exact_checked_predecessors() {
+    fn needs(name: &str, dep: &str, version: u32, digest: Option<&str>) -> Pack {
+        let mut doc: serde_json::Value = serde_json::from_str(&signed(name, 1, TWO)).unwrap();
+        doc["manifest"]["requires"] = serde_json::json!([{"id":dep,"version":version}]);
+        if let Some(d) = digest {
+            doc["manifest"]["requires"][0]["digest"] = d.into();
+        }
+        doc["manifest"]["digest"] = parse_pack(&doc.to_string())
+            .unwrap()
+            .computed_digest()
+            .unwrap()
+            .to_hex()
+            .into();
+        load_pack(&doc.to_string()).unwrap()
+    }
+    for (case, version, wrong_digest, held, reverse, defer) in [
+        ("valid", 1, false, false, false, true),
+        ("wrong-version", 2, false, false, false, true),
+        ("wrong-digest", 1, true, false, false, true),
+        ("held", 1, false, true, false, true),
+        ("wrong-order", 1, false, false, true, true),
+        ("not-opted-in", 1, false, false, false, false),
+    ] {
+        let base = load_pack(&signed("base", 1, "{}")).unwrap();
+        let middle = needs("middle", "base", 2, None);
+        let digest = if wrong_digest {
+            "f".repeat(64)
+        } else {
+            middle.manifest().digest().to_hex()
+        };
+        let top = needs("top", "middle", version, Some(&digest));
+        let packs = if reverse {
+            vec![base, top, middle]
+        } else {
+            vec![base, middle, top]
+        };
+        let mut appliers = Appliers::new();
+        appliers.register("test", Arc::new(Things)).unwrap();
+        let mut module = mush_content::ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(packs)
+            .wait_for_dependency_upgrades(id("middle"));
+        if defer {
+            module = module.wait_for_dependency_upgrades(id("top"));
+        }
+        let (world, registry) = boot_world();
+        let mut engine =
+            mush_core::Engine::with_modules(world, registry, vec![Box::new(module)]).unwrap();
+        let mut boot = std::collections::HashMap::new();
+        if held {
+            boot.insert(
+                mush_content::NS.into(),
+                mush_core::ModuleBootData {
+                    kv: vec![("applied:middle".into(), serde_json::json!({"bad":"latch"}))],
+                    ..Default::default()
+                },
+            );
+        }
+        let result =
+            engine.modules_loaded(boot, &mut Outbox::new(), &mut mush_core::Effects::new());
+        assert_eq!(result.is_ok(), case == "valid", "{case}: {result:?}");
+        if case == "valid" {
+            let state = engine
+                .world
+                .module_state::<mush_content::ContentState>()
+                .unwrap();
+            assert!(state.latches.applied(&id("middle")).is_none());
+            assert!(state.latches.applied(&id("top")).is_none());
+        }
+    }
+}

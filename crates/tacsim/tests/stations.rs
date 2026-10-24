@@ -457,13 +457,25 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
     // since doc 19 cut A.8, twenty-five since doc 20 cut SM.2).
     want.push(LANE_PACK.to_string());
-    want.push("tacsim.relay.luna_ceres".to_string());
+    want.extend(
+        [
+            "region.kirkwood_depot",
+            "region.mercury_relay",
+            "neighborhood.malapert_exchange",
+            "neighborhood.phobos_exchange",
+            "neighborhood.kirkwood_depot",
+            "neighborhood.mercury_relay",
+            "tacsim.relay.luna_ceres",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        29,
+        35,
         "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
-         SM.2), the lane and the relay seed"
+         SM.2), the lane and seven R10 relay/geography packs"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -491,8 +503,32 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             LANE_PACK => assert!(requires.is_empty()),
             "tacsim.relay.luna_ceres" => assert_eq!(
                 requires,
-                vec![(AITKEN_PACK.to_string(), 1), (CERES_PACK.to_string(), 2)]
+                vec![
+                    (AITKEN_PACK.to_string(), 1),
+                    (CERES_PACK.to_string(), 2),
+                    ("neighborhood.malapert_exchange".into(), 1),
+                    ("neighborhood.phobos_exchange".into(), 1),
+                    ("neighborhood.kirkwood_depot".into(), 1),
+                    ("neighborhood.mercury_relay".into(), 1),
+                    (STICKNEY_PACK.into(), 4),
+                    (VOLTAIRE_PACK.into(), 1),
+                    (LANE_PACK.into(), 13)
+                ]
             ),
+            "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
+            "neighborhood.malapert_exchange" => {
+                assert_eq!(requires, vec![(AITKEN_REGION_PACK.into(), 1)])
+            }
+            "neighborhood.phobos_exchange" => assert_eq!(
+                requires,
+                vec![(STICKNEY_REGION_PACK.into(), 1), (STICKNEY_PACK.into(), 4)]
+            ),
+            "neighborhood.kirkwood_depot" => {
+                assert_eq!(requires, vec![("region.kirkwood_depot".into(), 1)])
+            }
+            "neighborhood.mercury_relay" => {
+                assert_eq!(requires, vec![("region.mercury_relay".into(), 1)])
+            }
             // Doc 20 cut SM.2: the site regions require nothing; each site
             // neighborhood requires its region at 1.
             site if site_regions.contains(&site) => assert!(requires.is_empty()),
@@ -1236,10 +1272,10 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        29,
-        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane and relay seed"
+        35,
+        "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane and seven R10 relay/geography packs"
     );
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(1));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(2));
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1900,6 +1936,13 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         None,
         "the relay seed waits for the explicit Ceres upgrade"
     );
+    assert!(tacsim::relay_mobile::current(tw.world()).is_none());
+    assert!(
+        !tw.world()
+            .iter()
+            .any(|o| o.name == "Postmaster Solveig Adebayo-Krishnan"),
+        "a deferred Exchange must not leave a half-created Fleet programme"
+    );
     assert_eq!(
         version(&tw, CERES_PACK),
         Some(1),
@@ -1937,7 +1980,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     let mut tw = tw
         .reboot_into(production_roster_with_starter(config()), store.clone())
         .expect("the relay seed installs after the station upgrade");
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(1));
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(2));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()

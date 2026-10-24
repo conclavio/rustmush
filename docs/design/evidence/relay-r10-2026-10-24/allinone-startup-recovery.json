@@ -1,0 +1,11 @@
+{
+  "cause": "transient service omitted User=mush/Group=mush; root-created probe failed the directory-owner guard before store boot",
+  "probeName": ".rustmush-write-probe-1093426-0.tmp",
+  "probeBytes": 0,
+  "probeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "action": "preserved the verified empty probe outside the spool; relaunch under normal dev1 service account",
+  "serviceUser": "mush",
+  "serviceGroup": "mush",
+  "splitPassed": true,
+  "noWorldReset": true
+}

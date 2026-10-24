@@ -951,3 +951,63 @@ pub fn register_programme_principal(
     }
     Ok(())
 }
+
+/// R10's original four-segment case, driven only by typed service decisions.
+pub fn seed_relay_terms_front(
+    ctx: &mut Ctx<'_>,
+    operator: mush_org::OrgId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    publish_front_clock(
+        ctx,
+        operator,
+        "Terms of Service",
+        "Named service case",
+        4,
+        0,
+        None,
+        "The named service case has a confirmed suspension; cure and independent sanctions remain with their service owners.",
+        draft,
+    )
+}
+/// The caller owns bounded attributed facts; this owner changes only its clock.
+/// One preflighted canon append and the exact clock post-image share the commit.
+pub fn advance_relay_terms_front(
+    ctx: &mut Ctx<'_>,
+    front: FrontId,
+    expected: u8,
+    next: u8,
+    draft: mush_canon::CanonDraft,
+) -> Result<u64, String> {
+    let sim = ctx
+        .w
+        .module_state::<SimState>()
+        .ok_or("Fronts unavailable")?;
+    if !sim
+        .fronts
+        .get(&front)
+        .is_some_and(|f| f.title == "Terms of Service")
+    {
+        return Err("Terms front identity differs".into());
+    }
+    let mut clocks = sim.clocks.values().filter(|c| c.front == front);
+    let mut clock = clocks.next().cloned().ok_or("Terms clock missing")?;
+    if clocks.next().is_some()
+        || clock.segments != 4
+        || clock.filled != expected
+        || clock.completed
+        || clock.advance_on.is_some()
+        || !matches!((expected, next), (0, 2) | (0, 4) | (2, 4))
+    {
+        return Err("Terms front differs from its producer receipts".into());
+    }
+    let canon = mush_canon::commit(ctx, draft).ok_or("Canon unavailable")?;
+    clock.filled = next;
+    clock.completed = next == 4;
+    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
+        s.clocks.insert(clock.id, clock.clone());
+    }
+    sim::persist_clock(ctx.out, &clock);
+    ctx.out.pin_deferred();
+    Ok(canon.0)
+}

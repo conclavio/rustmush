@@ -28,6 +28,16 @@ pub enum OrgMutationOp {
         /// The org's root scope (`parent: None`, `depth: 0`).
         root: OrgScope,
     },
+    /// Revise only the authored charter, with an explicit old-value guard.
+    /// Existing identities, lifecycle, authority and economic bindings are preserved.
+    ReviseCharter {
+        /// The existing organization.
+        org: OrgId,
+        /// Expected previous charter; drift refuses the whole plan.
+        expected: String,
+        /// New nonempty charter, at most 4096 bytes.
+        charter: String,
+    },
     /// Create a child scope under an existing parent.
     CreateScope {
         /// The new scope.
@@ -243,6 +253,31 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
             }
             state.put_org(org.clone());
             state.put_scope(root.clone());
+        }
+        OrgMutationOp::ReviseCharter {
+            org,
+            expected,
+            charter,
+        } => {
+            let mut o = state
+                .org(*org)
+                .cloned()
+                .ok_or_else(|| OrgError::NotFound(format!("org {org}")))?;
+            if &o.charter != expected
+                || charter.trim().is_empty()
+                || charter.len() > 4096
+                || charter.chars().any(char::is_control)
+            {
+                return Err(OrgError::Invalid(
+                    "charter changed or replacement is invalid".into(),
+                ));
+            }
+            o.revision = o
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| OrgError::Invalid("organization revision exhausted".into()))?;
+            o.charter.clone_from(charter);
+            state.put_org(o);
         }
         OrgMutationOp::CreateScope { scope } => {
             if state.scope(scope.id).is_some() {

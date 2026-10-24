@@ -1,0 +1,10 @@
+PASS explicit-full-star-upgrade-preserves-assets-money-npc-and-frozen-flight
+PASS four-spokes-two-hop-restart-coverage-mail-and-channel
+PASS uncovered-flight-hub-power-outage-restart-and-restoration
+PASS real-classes-daily-bills-terms-cure-and-source-isolation
+PASS actual-paid-trade-voyage-and-conventional-onboard-mail
+TypeError: Cannot read properties of null (reading 'dispatch')
+    at file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:93:144
+    at until (file:///opt/rustmush/dev1/build/scripts/relay-live-client.mjs:106:17)
+    at soak (file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:93:27)
+    at async file:///opt/rustmush/dev1/build/scripts/relay-r10-live.mjs:103:91

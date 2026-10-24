@@ -892,11 +892,11 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     for (pack, _) in SITE_SOURCES {
         assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(1));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(2));
     assert_eq!(
         after.len(),
-        29,
-        "five, ten station packs, twelve site packs, the lane and the R1 relay pack"
+        35,
+        "five, ten station packs, twelve site packs, the lane and seven R10 relay/geography packs"
     );
     lane_resolves(&on.engine);
     let atlas = on

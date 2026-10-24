@@ -190,11 +190,25 @@ impl Snapshot {
         }
         snapshot
     }
-    fn body<'a>(&'a self, world: &World, room: ObjId) -> Option<&'a CanonicalId> {
-        self.rooms.get(&room).or_else(|| {
+    fn body(&self, world: &World, room: ObjId) -> Option<CanonicalId> {
+        self.rooms.get(&room).cloned().or_else(|| {
             let atlas = world.module_state::<mush_atlas::AtlasState>()?;
             let geo = atlas.records.roomgeo.get(&room)?;
-            self.areas.get(&geo.neighborhood.pack)
+            if let Some(body) = self.areas.get(&geo.neighborhood.pack) {
+                return Some(body.clone());
+            }
+            // Fixed key lookups, not a global room scan. Checked strategic sites
+            // need no invented trade port merely to participate in radio distance.
+            let neighborhood = atlas.records.neighborhoods.get(&geo.neighborhood)?;
+            let region = atlas.records.regions.get(&neighborhood.region)?;
+            let body = match &region.kind {
+                mush_atlas::record::RegionKind::Surface { body }
+                | mush_atlas::record::RegionKind::Orbital { body } => body,
+                _ => return None,
+            };
+            let body = CanonicalId::new(body.as_str()).ok()?;
+            self.sky.as_ref()?.position_km(&body, self.at)?;
+            Some(body)
         })
     }
 
@@ -207,7 +221,7 @@ impl Snapshot {
             return position.clone();
         }
         Some(Position {
-            body: self.body(world, endpoint)?.clone(),
+            body: self.body(world, endpoint)?,
             offset_km: 0,
             source: "body".into(),
             segment: None,
@@ -318,7 +332,7 @@ impl Metric for Snapshot {
         }
         match (self.body(world, from), self.body(world, to)) {
             (Some(a), Some(b)) if a != b => sky
-                .light_lag_s(a, self.at, b, self.at)
+                .light_lag_s(&a, self.at, &b, self.at)
                 .and_then(|s| i64::try_from(s).ok())
                 .map_or(Measurement::Unknown, |seconds| Measurement::Known {
                     seconds,

@@ -1,0 +1,201 @@
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 2m 48s
+     Running tests/arena_custody.rs (target/debug/deps/arena_custody-db417345ce4962f1)
+
+running 6 tests
+test a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong ... ok
+test a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed ... ok
+test af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result ... ok
+test a_restart_with_snapshots_or_the_layer_off_voids_by_name ... ok
+test an_injected_panic_voids_the_match_and_the_world_keeps_serving ... ok
+test a_match_takes_custody_of_two_units_and_gives_them_back ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.75s
+
+     Running tests/arena_story.rs (target/debug/deps/arena_story-4e3c005da4d41324)
+
+running 1 test
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed has been running for over 60 seconds
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 78.27s
+
+     Running tests/front_door.rs (target/debug/deps/front_door-0af455c34cc4c1b5)
+
+running 3 tests
+test an_alt_made_after_boot_shares_its_account_and_cannot_take_a_second_slot ... ok
+test a_macro_made_at_the_front_door_survives_a_reconnect ... ok
+test two_accounts_made_after_boot_walk_in_and_each_claims_a_slot ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.44s
+
+     Running tests/observer_rule.rs (target/debug/deps/observer_rule-c99c048f9f337fa8)
+
+running 32 tests
+test ae1_the_slope_hold_names_nothing_and_places_nothing ... ok
+test a_taken_name_is_refused_the_same_way_whatever_it_collided_with ... ok
+test a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_match ... ok
+test ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh ... ok
+test e3_the_traffic_stops_one_line_names_nothing_and_places_nothing ... ok
+test a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held ... ok
+test ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_reads_miss ... ok
+test af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read ... ok
+test i1_a_replay_is_public_names_nobody_and_a_running_match_has_none ... ok
+test i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing ... ok
+test i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round ... ok
+test i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else ... ok
+test m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detection ... ok
+test m5_the_fog_sweep_finds_each_leak_it_names ... ok
+test m1b3_the_arming_names_nothing_but_the_pilots_own_slot ... ok
+test m5_a_slots_mind_is_read_by_its_own_character_alone ... ok
+test m5_the_mind_object_names_nothing_but_the_pilots_own_seal ... ok
+test neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found ... ok
+test m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds ... ok
+test o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot ... ok
+test o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_receiver ... ok
+test nothing_of_the_shooting_crosses_to_the_world_or_to_the_target ... ok
+test the_board_withholds_the_other_sides_standing_from_a_seated_pilot ... ok
+test the_receiver_and_the_regression_name_only_what_that_pilot_already_holds ... ok
+test the_retain_marker_the_arena_sends_is_the_one_the_session_ring_reads ... ok
+test o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own ... ok
+test the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field ... ok
+test the_victims_own_lines_name_nothing_but_the_victims_own_tank ... ok
+test nothing_about_an_undetected_unit_crosses_on_any_surface ... ok
+test z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_no_one_else ... ok
+test the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found ... ok
+test the_switch_names_a_contact_at_the_first_pass_over_the_real_composition ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 164.79s
+
+     Running tests/sim_cockpit.rs (target/debug/deps/sim_cockpit-651dfe1ac0bd8d7d)
+
+running 12 tests
+test ag1_a_spot_line_out_of_place_fails_the_shape - should panic ... ok
+test ag1_no_contacts_beside_a_contact_fails_the_shape - should panic ... ok
+test ap4_a_brief_without_its_end_line_last_fails_the_shape ... ok
+test ag1_the_brief_readers_round_trip_the_golden_and_report_a_stray ... ok
+test b4_board_and_exit_show_the_room_after_the_sentence ... ok
+test board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_it ... ok
+test a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reconnect ... ok
+test a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing ... ok
+test the_cockpit_verbs_are_contextual_and_the_window_is_a_map ... ok
+test two_pilots_board_fly_and_climb_out_twice_in_a_row ... ok
+test m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back ... ok
+test past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.85s
+
+     Running tests/sim_lobby.rs (target/debug/deps/sim_lobby-9e6ddf496daa45be)
+
+running 13 tests
+test d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines ... ok
+test d1_the_boards_arena_clock_moves_while_nobody_drives ... ok
+test b4_a_lead_who_exits_mid_match_hands_the_side_on ... ok
+test aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede ... ok
+test d1_with_the_fill_off_the_claim_line_is_unchanged ... ok
+test d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_word ... ok
+test d3_a_lead_concedes_and_the_board_names_the_winner ... ok
+test i1_a_finished_match_replays_to_both_pilots_and_a_bystander ... ok
+test o1_sim_mode_over_the_wire ... ok
+test the_staff_shortcut_runs_a_match_the_centre_knows_about ... ok
+test sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts ... ok
+test two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_account ... ok
+test z3_a_side_takes_six_claims_and_the_fill_is_one_to_six ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.93s
+
+     Running tests/sim_net.rs (target/debug/deps/sim_net-705ed79a153c0d36)
+
+running 1 test
+test a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the_other ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.72s
+
+     Running tests/sim_range.rs (target/debug/deps/sim_range-61d003c0b3093a2f)
+
+running 1 test
+test one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.75s
+
+     Running tests/sim_reflex.rs (target/debug/deps/sim_reflex-b371ae2db1a157ae)
+
+running 4 tests
+test m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff ... ok
+test with_ai_fill_on_sim_ai_four_fields_four_a_side ... ok
+test with_ai_fill_on_the_default_size_is_the_larger_side ... ok
+test past_the_grace_the_reflex_controller_drives_the_tank_home ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.01s
+
+     Running tests/sim_rematch.rs (target/debug/deps/sim_rematch-7d20e03c404916a9)
+
+running 2 tests
+test a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_again ... ok
+test two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.38s
+
+     Running tests/sim_solo.rs (target/debug/deps/sim_solo-5f2608c4ccb7feb0)
+
+running 6 tests
+test i3_staff_place_the_machine_and_the_tape_records_it ... ok
+test d3_the_match_a_lone_pilot_walks_out_of_ends_itself ... ok
+test m5_a_pilot_seals_a_mind_climbs_out_and_the_tank_is_flown_by_it ... ok
+test one_pilot_alone_starts_a_match_and_fights_the_machine ... ok
+test ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keeps_the_flags ... ok
+test y1_a_lone_pilot_orders_their_wingman ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.06s
+
+     Running tests/sim_units.rs (target/debug/deps/sim_units-d058814df9a0c64c)
+
+running 8 tests
+test ae3_a_pilot_flies_the_drone_and_it_carries_no_weapon ... ok
+test ae1_two_pilots_field_the_scout_car_and_the_heavy_tank ... ok
+test ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack ... ok
+test ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds_later ... ok
+test ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby ... ok
+test m5_sim_unit_is_never_refused_for_the_pool_at_the_stock_constants ... ok
+test o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so ... ok
+test two_pilots_field_two_different_machines_and_the_pods_are_pods_again ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.08s
+
+     Running tests/sim_weapons.rs (target/debug/deps/sim_weapons-c005f6e9322af88b)
+
+running 2 tests
+test two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot ... ok
+test m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still_fires ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.94s
+
+     Running tests/typeahead.rs (target/debug/deps/typeahead-ad1c362f3e7b7a45)
+
+running 2 tests
+test four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order ... ok
+test brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.92s
