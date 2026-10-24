@@ -1,0 +1,94 @@
+{
+  "at": "2026-10-24T02:38:38.779777+00:00",
+  "target": "https://conclav.io:6790",
+  "redisPort": 6788,
+  "tlsVerification": true,
+  "sourceCommit": "c5a393b17f85fba21602dc573c1552cc432d336d",
+  "sourceTree": "12c15c01db480a0ad4fbe082d84b31b3224e83af",
+  "gatewayPid": 769577,
+  "serverPid": 769595,
+  "runtimeHashes": {
+    "server": "274c8769c260638893b22c5f0469fba93bfabe9aa0f06b73dc45e32d2b5e8aa1",
+    "gateway": "1f56835f41977a7afe554e9bc29c7c6b4a1453283ebce10893fd14723a583380"
+  },
+  "runnerHashes": {
+    "relay-r4-ssh.py": "eac20e934602b31f276343eac2a2366d2fc91181f7ea4470ac4e9e960cd21a06",
+    "relay-r4-live.mjs": "84272d88c1f67123724bb605e4970db3683bb962935b3abbd853bbcfd39a64c9",
+    "relay-r4-fresh.py": "eb5cfcf142b6592b5b5fb0ae3712491a0b7bb6fa5e762df38f3d18e9caff56ae",
+    "relay-live-client.mjs": "2b9e6eeb59f04f8a1f1b9c2a56eb274fa80789c9814d7d0cd973fce9f5908ded"
+  },
+  "dev2Unchanged": true,
+  "dev2Pid": 539467,
+  "commandChecks": 85,
+  "latencyMs": {
+    "median": 51,
+    "max": 763
+  },
+  "maxReplyBytes": 1755,
+  "remainingPending": 0,
+  "pendingByKind": {},
+  "upgradeHadNoRestrictions": true,
+  "activeRestrictions": [],
+  "maxSpentPerICSecond": 8,
+  "duplicatePairReceipts": 0,
+  "retainedReceipts": 34,
+  "retainedEvidence": 1,
+  "publishedFronts": {
+    "luna_ceres": 0
+  },
+  "policy": {
+    "aging_s": 300,
+    "burst_units": 8,
+    "bytes_per_unit": 128,
+    "deferred_min_s": 7200,
+    "short_message_bytes": 1024,
+    "standard_delay_s": 60,
+    "version": 1,
+    "window_duration_s": 3600,
+    "window_period_s": 86400,
+    "window_start_s": 0
+  },
+  "clock": {
+    "generation": 43,
+    "ic_anchor": 74168066749,
+    "rate": 24,
+    "real_anchor": 1792809456
+  },
+  "channelProgress": {
+    "cursor": [
+      8,
+      6
+    ],
+    "delivered": 34,
+    "expired": 2,
+    "refused": 4,
+    "visited": 1
+  },
+  "links": {
+    "luna_ceres": {
+      "capacity_units_per_ic_second": 8,
+      "class_policy": "exchange",
+      "halves": [
+        {
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.luna",
+          "node": "malapert",
+          "object": 666,
+          "powered": true,
+          "staffed": true
+        },
+        {
+          "destroyed": false,
+          "enabled": true,
+          "id": "luna_ceres.ceres",
+          "node": "ceres",
+          "object": 667,
+          "powered": true,
+          "staffed": true
+        }
+      ]
+    }
+  },
+  "command": "relay-r4-live.mjs https://conclav.io:6790 /opt/rustmush/dev1/r1-evidence/credentials.json /opt/rustmush/dev1/r4-evidence 6788"
+}

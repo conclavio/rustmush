@@ -2,6 +2,8 @@
 // R4: actual command/client, durable operator policy and recipient delivery.
 import { assert,readFileSync,randomBytes,evidence,credentials,sockets,sleep,shell,redis,envelope,registry,save,text,auth,connect,wait,command,until,crash,envelopes,actor,transport,service,mail,box,receipt,milestone,close } from './relay-live-client.mjs';
 let staff, bob, carol, staffLogin, bobLogin, carolLogin, jammed;
+const resumeCleanup=process.argv.includes('--resume-cleanup');
+if(resumeCleanup){Object.assign(evidence,JSON.parse(readFileSync('/opt/rustmush/dev1/r4-evidence/live.json','utf8')));assert(['sender-throttle-restart-and-board-parity','receiver-throttle-source-specific-restore','sender-suspension-fallback-and-restore','receiver-suspension-fallback-and-restore','independent-operator-fixture-boot','independent-operator-delivery-and-scope'].every(test=>evidence.milestones.some(m=>m.test===test)),'resume requires every policy scenario already passed');delete evidence.failure;}
 async function reconnect() { for(const ws of sockets) if(ws.readyState===WebSocket.OPEN) ws.close(); await sleep(300); staff=await connect(staffLogin); bob=await connect(bobLogin); carol=await connect(carolLogin); }
 async function policy(who,state,source,reason) { return command(carol,`+relay/policy luna_ceres/${who.object}=${state},operator.${source},${reason}`,'policy recorded'); }
 async function send(label) {
@@ -19,8 +21,22 @@ try {
  staffLogin=await auth('login',credentials);
  const accounts=JSON.parse(readFileSync('/opt/rustmush/dev1/r6a-evidence/actors.json','utf8'));
  bobLogin=await auth('login',accounts.bob);carolLogin=await auth('login',accounts.carol);await reconnect();
+ if(resumeCleanup){
+  const fixture=JSON.parse(readFileSync('/opt/rustmush/dev1/r4-evidence/independent-fixture.json','utf8'));
+  assert.deepEqual(Object.keys(registry().pairs),['luna_ceres']);
+  for(const row of fixture.created.reverse()){const obj=redis('obj:'+row.object);if(obj){assert(!obj.behaviors?.[row.behavior]);await command(staff,`@destroy #${row.object}`);}}
+  await command(staff,'@relay/check','Bindings OK');
+  await command(staff,'@tacsim/time rate=24');
+  await command(staff,`+relay/grant luna_ceres/${staff.object}=standard`);await command(staff,`+relay/grant luna_ceres/${bob.object}=standard`);
+  await command(carol,'+relay/audit luna_ceres','receiver restored');
+  await command(bob,'pub R4 OOC remains immediate','R4 OOC remains immediate');
+  await until(()=>envelopes().every(e=>!['queued','transmitted'].includes(e.state)),'queue drained',60);
+  assert.deepEqual(service().restrictions,[]);
+  milestone('seed-topology-restored',{revision:registry().revision,fixtureBindingsRemoved:fixture.created.map(r=>r.object),recoveredTeardown:true});
+  evidence.passed=true;
+ } else {
  const catalog=registry();
- assert.deepEqual(service().restrictions,[],'R3 upgrade starts with no policy restrictions');
+ assert.deepEqual(service().restrictions ?? [],[],'R3 upgrade starts with no policy restrictions; absent legacy field defaults empty');
  await command(staff,'@tacsim/time rate=1');
  await command(staff,'@teleport me=#'+catalog.nodes.malapert.coverage[0]);
  await command(staff,`@teleport ${bob.object}=#${catalog.nodes.ceres.coverage[0]}`);
@@ -89,10 +105,14 @@ try {
   pair.halves[i]={...pair.halves[i],object:half,id:'r4_independent.half'+i,node:'r4_'+key};
  }
  fixture.pairs.r4_independent=pair;fixture.revision++;
- async function installFixture(catalog,label) {
+ async function installFixture(catalog,label,teardown=[]) {
   await command(staff,'@dump','snapshot acknowledged by the store');
   for(const ws of sockets) if(ws.readyState===WebSocket.OPEN) ws.close();
   shell('systemctl',['stop','dev1mush-gateway']);
+  // Teardown is the inverse of the controlled offline fixture install. Remove
+  // only its known bindings in the same stopped-server interval as its topology;
+  // boot correctly refuses any hardware binding absent from the registry.
+  for(const row of teardown){const key='obj:'+row.object,obj=redis(key);assert(obj.name.startsWith('R4 fixture '));assert(obj.behaviors[row.behavior]);delete obj.behaviors[row.behavior];assert.equal(shell('redis-cli',['-p','6788','JSON.SET',key,'$',JSON.stringify(obj)]),'OK');}
   assert.equal(shell('redis-cli',['-p','6788','JSON.SET','mod:sim:relay:registry','$',JSON.stringify(catalog)]),'OK');
   shell('systemctl',['start','dev1mush-gateway']);
   await until(()=>{try{return shell('curl',['-fsS','--cacert','/opt/rustmush/dev1/tls/cert.pem','https://conclav.io:6790/']).length>0;}catch{return false;}},'gateway ready',60);
@@ -114,8 +134,8 @@ try {
  await policy(bob,'served','independent','Independent test complete');
  await command(staff,`+relay/grant r4_independent/${staff.object}=standard`);
  await command(staff,'@tacsim/time rate=3600');await until(()=>envelopes().every(e=>!['queued','transmitted'].includes(e.state)),'fixture traffic drained',45);
- const restored=structuredClone(original);restored.revision=registry().revision+1;await installFixture(restored,'seed-topology-restored');
- for(const row of created.reverse()) {await command(staff,`@behavior/remove #${row.object}=${row.behavior}`);await command(staff,`@destroy #${row.object}`);}
+ const restored=structuredClone(original);restored.revision=registry().revision+1;await installFixture(restored,'seed-topology-restored',created);
+ for(const row of created.reverse()) await command(staff,`@destroy #${row.object}`);
  await command(staff,'@tacsim/time rate=24');
  await command(carol,'+relay/audit luna_ceres','receiver restored');
  await command(bob,'pub R4 OOC remains immediate','R4 OOC remains immediate');
@@ -123,5 +143,6 @@ try {
  await until(()=>envelopes().filter(e=>['queued','transmitted'].includes(e.state)).length===0,'queue drained',60);
  assert.deepEqual(service().restrictions,[]);
  evidence.passed=true;
+ }
 } catch(error){evidence.passed=false;evidence.failure=error.stack;throw error;}
 finally { try {if(staff?.ws.readyState===WebSocket.OPEN){if(jammed)await jam(false);await command(staff,'@tacsim/time rate=24');}}catch{} close(); }

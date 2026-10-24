@@ -12,7 +12,7 @@ tests; live Discord remains open because dev1 has no enabled bot or relay mappin
 [15a](15a-comms-relay-implementation-plan.md) defines the remaining sequence and a
 mandatory integration gate after every milestone. R3 classes, declared congestion,
 permissioned evidence and publication passed the fresh/upgrade dev1 gate. Work is
-continuing through the owner-authorized R4–R10 train, with a tested commit/push at every milestone; normal candidate CI remains owner-monitored.
+R4 has passed its live gate; continuing through the owner-authorized R7–R10 train, with a tested commit/push at every milestone; normal candidate CI remains owner-monitored.
 
 **Parents.** Doc 10 §3 (tone, amended here), §12 C9A (deterministic delivery for consequential
 information), §18.2 (IC traffic rides the propagation path; OOC never does), T15 (orders require

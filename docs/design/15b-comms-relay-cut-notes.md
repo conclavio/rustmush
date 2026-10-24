@@ -867,7 +867,7 @@ R6b live Discord-provider gap remains recorded above; R3 changes no bridge code.
 **Paused after R3, before R4.**
 
 
-## R4 — operator service policy (candidate, 2026-10-23)
+## R4 — operator service policy (2026-10-23)
 
 Base `0bb5a25f`. The owner authorized all remaining R4–R10 gates, each with
 integration testing followed by commit/push before dependent work. R4 adds
@@ -902,5 +902,38 @@ process-kill scenario now explicitly grants Priority to both endpoints, preservi
 its physical/crash premise; R3 class stories retain Standard delay assertions.
 This correction must pass on actual dev1 Redis/child processes before pushing.
 
-Local production stories, owner tests and architecture contracts passed during
-candidate preparation. Real-server evidence and final acceptance are pending.
+**Implementation/live gate passed.** Runtime candidate
+`c5a393b17f85fba21602dc573c1552cc432d336d` adds NPC personal identity coverage to
+`233fbb2e`. The exact final runtime passed 55 cumulative Linux production stories,
+library Clippy and the real Redis/process-death CI regression (1 test, 3 other
+scenarios intentionally filtered). Local checks passed 419 unique propagation/sim
+owner tests, 23 architecture contracts and the 3 R4 production stories; changed
+integration tests passed Clippy and changed Rust files passed formatting.
+
+[Evidence](evidence/relay-r4-2026-10-23/automated.json) includes exact commands and
+logs. [Real-client evidence](evidence/relay-r4-2026-10-23/live.json) records sender
+and receiver throttling, independent source restoration, suspension fallback despite
+Sovereign entitlement, frozen-flight preservation, scoped operator refusal and
+successful independent private-link delivery. Two actual SIGKILL boundaries prove
+confirmed policy/queue and receiving-endpoint suspension recovery. A fresh Redis-14
+world booted and rebooted as two real processes. Upgraded Redis-0 retained R3
+receipts/classes and acquired the optional R4 fields on its first service write.
+The SSH front door passed six checks. 85 WS command checks had median 51 ms, maximum
+763 ms; these are measured observations, not a raised performance budget.
+
+The live harness needed two lifecycle corrections, with no further runtime change:
+accept an omitted legacy `restrictions` field as empty; and remove the four
+controlled fixture bindings during the same stopped-server interval as restoring
+its topology. The registry correctly refused boot with unrecorded bindings during
+the initial teardown attempt. The repaired cleanup resumed only after verifying
+that all six policy/independent-operator scenarios had passed; it also handles
+omitted empty behavior maps and waits for the gateway front door. No product boot
+guard was weakened. Final runner hashes and runtime hashes are recorded in
+[environment.json](evidence/relay-r4-2026-10-23/environment.json).
+
+Final dev1: original two nodes/one live pair, no active restrictions, no pending
+envelopes, world rate 24×, unique pair-service receipts and capacity within the
+8-unit Exchange / 4-unit fixture limits. Dev2 remains PID 539467. Normal R4 CI is
+triggered by the main push and remains owner-monitored; the known prior CI failure
+is repaired and reproduced green. The standing authorization continues to R7
+only after this evidence commit/push.

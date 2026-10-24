@@ -1,0 +1,762 @@
+{
+  "target": "https://conclav.io:6790",
+  "at": "2026-10-24T02:32:20.524Z",
+  "checks": [
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 37 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4059 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn evening",
+      "wallMs": 52,
+      "replyBytes": 663
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#101",
+      "reply": "Teleported.",
+      "wallMs": 51,
+      "replyBytes": 11
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/policy luna_ceres/#1=suspended,operator.denied,not authorized",
+      "reply": "Permission denied.",
+      "wallMs": 26,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@org/grant #679=22 relay.manage",
+      "reply": "Granted relay.manage to R6carol1f8127 over org #22's scope tree (grant #17).",
+      "wallMs": 51,
+      "replyBytes": 76
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#678=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R4-sender-throttle-03ce3f/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 98 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 50,
+      "replyBytes": 70
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#1=throttled,operator.incident,Sender review pending",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Throttled.\noperator.incident Throttled: Sender review pending (IC 74167220671).",
+      "wallMs": 25,
+      "replyBytes": 91
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Served.",
+      "wallMs": 25,
+      "replyBytes": 19
+    },
+    {
+      "actor": "God",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Throttled.\noperator.incident Throttled: Sender review pending (IC 74167220671).",
+      "wallMs": 26,
+      "replyBytes": 91
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#1=served,operator.incident,Sender cleared",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 51,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R4-receiver-throttle-bb9d3d/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 99 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 70
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=throttled,operator.incident,Receiver review",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=throttled,operator.review,Independent reason",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 51,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=served,operator.incident,First reason cleared",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Throttled.\noperator.review Throttled: Independent reason (IC 74167220732).",
+      "wallMs": 26,
+      "replyBytes": 86
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=served,operator.review,Second reason cleared",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 26,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "The world already runs at 1 IC seconds per real second.",
+      "wallMs": 25,
+      "replyBytes": 55
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=sovereign",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 50,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R4-sender-suspension-9943c3/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 100 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#1=suspended,operator.incident,sender suspended",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#1=served,operator.incident,sender restored",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 38 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4058 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 39 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4057 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 26,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=sovereign",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R4-receiver-suspension-f52867/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 101 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 52,
+      "replyBytes": 71
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=suspended,operator.incident,receiver suspended",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\noperator.incident Suspended: receiver suspended (IC 74167227940).",
+      "wallMs": 27,
+      "replyBytes": 88
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=served,operator.incident,receiver restored",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 25,
+      "replyBytes": 81
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 40 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4056 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=1",
+      "reply": "World time generation 41 opens at 1 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4055 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 25,
+      "replyBytes": 854
+    },
+    {
+      "actor": "God",
+      "line": "@org/create R4 Independent 6ee459",
+      "reply": "Created org #23 (R4 Independent 6ee459); root scope #23.",
+      "wallMs": 51,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#213",
+      "reply": "Rim Service Spine #213 A service trunk runs from the hub toward the drum's bearings, cable trays on every face and four wire cages strapped along it: Cabeus's stock, the Board's intake manifold, Crisium's bonded cage and the victualling stores. Each cage carries a manifest, and the manifests are the station's real stock, not the boards in the public rooms. At the inner end a glassed office holds four desks with dark terminals and nameplates turned face down. The bearing hum is loud and constant, and the air smells of lubricant and cold cable. ORBITAL ACCESS PERSONNEL is stencilled every ten metres. The receiving hatch is the way out. #214 Cabeus Works stock cage#215 Crisium bonded cage#216 Habitat Board intake manifold#217 Victualling Office stores locker#221 Cosima Ferreira-Lund#225 Odile Kwarteng-Fairweather#226 Ingrid Moravec-Ansah#230 Benedikt Rourke-Haddad#625 Aitken Highport stock clerk#665 Malapert relay endpoint Receiving Hatch <RH> rhreceivingout autumn night",
+      "wallMs": 52,
+      "replyBytes": 982
+    },
+    {
+      "actor": "God",
+      "line": "@create R4 fixture node 0 043f6d",
+      "reply": "Created: R4 fixture node 0 043f6d(#680).",
+      "wallMs": 50,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #680=#213",
+      "reply": "emit R4 fixture node 0 043f6d has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 54
+    },
+    {
+      "actor": "God",
+      "line": "@set #680=ENTER_OK",
+      "reply": "Set.",
+      "wallMs": 52,
+      "replyBytes": 4
+    },
+    {
+      "actor": "God",
+      "line": "@create R4 fixture half 0 62c86a",
+      "reply": "Created: R4 fixture half 0 62c86a(#681).",
+      "wallMs": 51,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "give #681=#680",
+      "reply": "You give R4 fixture half 0 62c86a to R4 fixture node 0 043f6d.",
+      "wallMs": 51,
+      "replyBytes": 62
+    },
+    {
+      "actor": "God",
+      "line": "@behavior/add #680=sim.relay_node",
+      "reply": "Attached `sim.relay_node`.",
+      "wallMs": 52,
+      "replyBytes": 26
+    },
+    {
+      "actor": "God",
+      "line": "@behavior/add #681=sim.relay_half",
+      "reply": "Attached `sim.relay_half`.",
+      "wallMs": 52,
+      "replyBytes": 26
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#112",
+      "reply": "Maintenance Spine #112 A corridor that is mostly pipe: water, reaction mass and air in colour-banded runs along both walls, a grated floor over a drainage channel, and the pumps close enough now to feel in the teeth. Work lights hang from the pipe brackets and leave the ends of the corridor dark. The air is wet, warm and smells of ozone and lubricant. At the near end a manifold the height of a person carries Occator's drop-and-flame and a row of valve wheels with tags; beside it a second, squatter manifold wears the Exchange's mark, and a chain-link cage holds the chandlery's counted stock on pallets. Everything has an inspection sticker. Nothing has a chair. Stencils point to areas that do not exist yet. #114 Chandlery cage#115 Exchange manifold#116 Occator manifold#392 Ceres Freeport stock clerk#664 Ceres relay endpoint Hatch <H> hhatchdockmasterout autumn night",
+      "wallMs": 51,
+      "replyBytes": 876
+    },
+    {
+      "actor": "God",
+      "line": "@create R4 fixture node 1 025d53",
+      "reply": "Created: R4 fixture node 1 025d53(#682).",
+      "wallMs": 51,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #682=#112",
+      "reply": "emit R4 fixture node 1 025d53 has arrived.\nTeleported.",
+      "wallMs": 52,
+      "replyBytes": 54
+    },
+    {
+      "actor": "God",
+      "line": "@set #682=ENTER_OK",
+      "reply": "Set.",
+      "wallMs": 51,
+      "replyBytes": 4
+    },
+    {
+      "actor": "God",
+      "line": "@create R4 fixture half 1 d50e7e",
+      "reply": "Created: R4 fixture half 1 d50e7e(#683).",
+      "wallMs": 52,
+      "replyBytes": 40
+    },
+    {
+      "actor": "God",
+      "line": "give #683=#682",
+      "reply": "You give R4 fixture half 1 d50e7e to R4 fixture node 1 025d53.",
+      "wallMs": 51,
+      "replyBytes": 62
+    },
+    {
+      "actor": "God",
+      "line": "@behavior/add #682=sim.relay_node",
+      "reply": "Attached `sim.relay_node`.",
+      "wallMs": 52,
+      "replyBytes": 26
+    },
+    {
+      "actor": "God",
+      "line": "@behavior/add #683=sim.relay_half",
+      "reply": "MAIL: Message 100 to #678: delivered.\nAttached `sim.relay_half`.",
+      "wallMs": 763,
+      "replyBytes": 64
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 51,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 32: 4 nodes, 2 pairs, 4 halves; operator #22. Bindings OK.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange\nr4_independent: Live; r4_malapert <-> r4_ceres; capacity 4 units/IC-second; Private",
+      "wallMs": 26,
+      "replyBytes": 244
+    },
+    {
+      "actor": "God",
+      "line": "@atlas/pack plan tacsim.relay.luna_ceres",
+      "reply": "Plan for tacsim.relay.luna_ceres@1: 0 create, 0 update, 0 retire, 1 unchanged\n validator: no findings\n Nothing to do.",
+      "wallMs": 52,
+      "replyBytes": 117
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy r4_independent/#678=suspended,operator.no,Wrong scope",
+      "reply": "Permission denied.",
+      "wallMs": 25,
+      "replyBytes": 18
+    },
+    {
+      "actor": "God",
+      "line": "@teleport me=#202",
+      "reply": "Visiting Berth Gallery #202 The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward. Pressure Lobby <PL> pllobbyin autumn night",
+      "wallMs": 52,
+      "replyBytes": 661
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=suspended,operator.independent,Exchange denial still active",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 25,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant r4_independent/#1=priority",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 50,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=100",
+      "reply": "Interference at Maintenance Spine is now 100. Orders already delivered still stand.",
+      "wallMs": 51,
+      "replyBytes": 83
+    },
+    {
+      "actor": "God",
+      "line": "@mail/quick #678=R4-independent-fb56c5/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "reply": "MAIL: Message 102 queued for IC transit. Delivery is not yet confirmed.",
+      "wallMs": 51,
+      "replyBytes": 71
+    },
+    {
+      "actor": "God",
+      "line": "@prop/jam #112=0",
+      "reply": "Interference at Maintenance Spine is now 0. Orders already delivered still stand.",
+      "wallMs": 26,
+      "replyBytes": 81
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "+relay/status luna_ceres",
+      "reply": "luna_ceres: Suspended.\noperator.independent Suspended: Exchange denial still active (IC 74167235146).",
+      "wallMs": 26,
+      "replyBytes": 101
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/policy luna_ceres/#678=served,operator.independent,Independent test complete",
+      "reply": "Operator policy recorded; applies to both endpoints before their next relay hop.",
+      "wallMs": 26,
+      "replyBytes": 80
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant r4_independent/#1=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 27,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=3600",
+      "reply": "World time generation 42 opens at 3600 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4054 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 51,
+      "replyBytes": 857
+    },
+    {
+      "actor": "God",
+      "line": "@dump",
+      "reply": "GAME: Dumping database.\n@dump: snapshot acknowledged by the store.",
+      "wallMs": 25,
+      "replyBytes": 66
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #683",
+      "reply": "Destroyed.",
+      "wallMs": 25,
+      "replyBytes": 10
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "World time generation 43 opens at 24 IC seconds per real second. Nothing already recorded is reinterpreted; every earlier generation stands.\n  journeys: no policy declared — the subsystem's own default applies\n  production: no policy declared — the subsystem's own default applies\n  fronts: no policy declared — the subsystem's own default applies\n  domains: no policy declared — the subsystem's own default applies\nJourneys re-anchor and keep their remaining IC duration; a tactical domain refuses a stale scan and pages per entry; propagation re-anchors and arms its own losses; a work order started on the old generation pauses as `TimelineChanged` at its next transition, and `@wo/restamp` re-anchors its production schedule and its material reservations and resumes it.\n  4053 of 4096 world-time generations remain for the life of this world.",
+      "wallMs": 50,
+      "replyBytes": 855
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #682",
+      "reply": "Destroyed.",
+      "wallMs": 24,
+      "replyBytes": 10
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #681",
+      "reply": "Destroyed.",
+      "wallMs": 51,
+      "replyBytes": 10
+    },
+    {
+      "actor": "God",
+      "line": "@destroy #680",
+      "reply": "Destroyed.",
+      "wallMs": 51,
+      "replyBytes": 10
+    },
+    {
+      "actor": "God",
+      "line": "@relay/check",
+      "reply": "Relay registry v1 revision 33: 2 nodes, 1 pairs, 2 halves; operator #22. Bindings OK.\nluna_ceres: Live; malapert <-> ceres; capacity 8 units/IC-second; Exchange",
+      "wallMs": 52,
+      "replyBytes": 160
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 52,
+      "replyBytes": 56
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#1=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 51,
+      "replyBytes": 41
+    },
+    {
+      "actor": "God",
+      "line": "+relay/grant luna_ceres/#678=standard",
+      "reply": "Class grant recorded; no payment charged.",
+      "wallMs": 52,
+      "replyBytes": 41
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "+relay/audit luna_ceres",
+      "reply": "74168068237 #1 grant luna_ceres #678 Standard\n74168068213 #1 grant luna_ceres #1 Standard\n74167235149 #679 policy luna_ceres #678 Served operator.independent: Independent test complete\n74167235146 #679 policy luna_ceres #678 Suspended operator.independent: Exchange denial still active\n74167227943 #679 policy luna_ceres #678 Served operator.incident: receiver restored\n74167227940 #679 policy luna_ceres #678 Suspended operator.incident: receiver suspended\n74167227938 #1 grant luna_ceres #1 Sovereign\n74167220738 #679 policy luna_ceres #1 Served operator.incident: sender restored\n74167220737 #679 policy luna_ceres #1 Suspended operator.incident: sender suspended\n74167220736 #1 grant luna_ceres #1 Sovereign\n74167220734 #679 policy luna_ceres #678 Served operator.review: Second reason cleared\n74167220733 #679 policy luna_ceres #678 Served operator.incident: First reason cleared\n74167220732 #679 policy luna_ceres #678 Throttled operator.review: Independent reason\n74167220732 #679 policy luna_ceres #678 Throttled operator.incident: Receiver review\n74167220731 #679 policy luna_ceres #1 Served operator.incident: Sender cleared\n74167220671 #679 policy luna_ceres #1 Throttled operator.incident: Sender review pending\n74167220669 #1 grant luna_ceres #678 Priority\n74167220669 #1 grant luna_ceres #1 Priority\n74167146437 #1 grant luna_ceres #1 Standard\n74167146407 #1 inspect luna_ceres\n74167146403 #1 grant luna_ceres #1 Priority\n74167146331 #679 publish luna_ceres\n74167146331 #679 discover luna_ceres\n74167146331 #679 inspect luna_ceres\n74167131873 #1 inspect luna_ceres\n74167131873 #1 grant luna_ceres #1 Sovereign\n74167131871 #1 grant luna_ceres #1 Priority\n74167131870 #1 grant luna_ceres #1 Deferred\n74167131869 #1 grant luna_ceres #1 Standard",
+      "wallMs": 25,
+      "replyBytes": 1755
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "pub R4 OOC remains immediate",
+      "reply": "Public #678 R6bob1b16df say R4 OOC remains immediate",
+      "wallMs": 25,
+      "replyBytes": 52
+    },
+    {
+      "actor": "God",
+      "line": "@tacsim/time rate=24",
+      "reply": "The world already runs at 24 IC seconds per real second.",
+      "wallMs": 27,
+      "replyBytes": 56
+    }
+  ],
+  "milestones": [
+    {
+      "test": "sender-throttle-durable-policy",
+      "signal": "SIGKILL",
+      "gateway": 767689,
+      "old": 767702,
+      "fresh": 768017
+    },
+    {
+      "test": "sender-throttle-restart-and-board-parity",
+      "receipt": {
+        "arrived": 74167220730,
+        "envelope": 392,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167220670,
+        "recipient": 678,
+        "reference": "mail:v1:98:678:out",
+        "ticket": {
+          "actual_ready": 74167220675,
+          "base_class": "priority",
+          "class": "standard",
+          "declared_s": 60,
+          "eligible_at": 74167220730,
+          "throttled": true,
+          "units": 3,
+          "version": 1
+        },
+        "transmitted": 74167220730
+      }
+    },
+    {
+      "test": "receiver-throttle-source-specific-restore",
+      "receipt": {
+        "arrived": 74167220735,
+        "envelope": 394,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "luna_ceres",
+        "queued": 74167220732,
+        "recipient": 678,
+        "reference": "mail:v1:99:678:out",
+        "ticket": {
+          "actual_ready": 74167220734,
+          "base_class": "priority",
+          "class": "priority",
+          "declared_s": 60,
+          "eligible_at": 74167220732,
+          "throttled": false,
+          "units": 3,
+          "version": 1
+        },
+        "transmitted": 74167220735
+      }
+    },
+    {
+      "test": "sender-suspension-fallback-and-restore",
+      "envelope": 395,
+      "flight": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74167220738",
+        "due": {
+          "at": 74167222181,
+          "clock": {
+            "generation": 37,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1443,
+        "started": {
+          "at": 74167220738,
+          "clock": {
+            "generation": 37,
+            "kind": "world_ic"
+          }
+        }
+      }
+    },
+    {
+      "test": "receiver-suspension-durable-fallback",
+      "signal": "SIGKILL",
+      "gateway": 767689,
+      "old": 768017,
+      "fresh": 768464
+    },
+    {
+      "test": "receiver-suspension-fallback-and-restore",
+      "envelope": 398,
+      "flight": {
+        "basis": "sky.v1:900ddcd59ba0996e5f4d6c856c74c630c467513c7fbd0b9e448303674b371b6a:luna:ceres:74167227940",
+        "due": {
+          "at": 74167229383,
+          "clock": {
+            "generation": 39,
+            "kind": "world_ic"
+          }
+        },
+        "seconds": 1443,
+        "started": {
+          "at": 74167227940,
+          "clock": {
+            "generation": 39,
+            "kind": "world_ic"
+          }
+        }
+      }
+    },
+    {
+      "test": "independent-operator-fixture-boot",
+      "revision": 32,
+      "operators": [
+        22,
+        23
+      ]
+    },
+    {
+      "test": "independent-operator-delivery-and-scope",
+      "receipt": {
+        "arrived": 74167235148,
+        "envelope": 400,
+        "issuer": 1,
+        "kind": "mail",
+        "pair": "r4_independent",
+        "queued": 74167235147,
+        "recipient": 678,
+        "reference": "mail:v1:102:678:out",
+        "ticket": {
+          "actual_ready": 74167235148,
+          "base_class": "priority",
+          "class": "priority",
+          "declared_s": 60,
+          "eligible_at": 74167235147,
+          "throttled": false,
+          "units": 3,
+          "version": 1
+        },
+        "transmitted": 74167235148
+      },
+      "operator": 23
+    },
+    {
+      "test": "seed-topology-restored",
+      "revision": 33,
+      "fixtureBindingsRemoved": [
+        683,
+        682,
+        681,
+        680
+      ],
+      "recoveredTeardown": true
+    }
+  ],
+  "runs": [
+    {
+      "at": "2026-10-24T02:32:20.563Z",
+      "gatewayPid": 767689,
+      "serverPid": 767702,
+      "serverSha256": "274c8769c260638893b22c5f0469fba93bfabe9aa0f06b73dc45e32d2b5e8aa1"
+    }
+  ],
+  "passed": true
+}

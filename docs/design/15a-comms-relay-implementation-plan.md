@@ -11,7 +11,7 @@ passed, the owner authorized Gate 3 / R5 and took over monitoring GitHub's long
 CI run. R5 is implemented and its real-server gate passed; 15b records the results.
 Full acceptance still requires normal candidate CI. The owner authorized Gate 4 /
 R6a and automatic continuation to R6b after R6a's real-server gate and push. R6a is
-implemented and its dev1 gate passed; R6b is the next authorized milestone.
+implemented and its dev1 gate passed. R6b, R3 and R4 have now passed their live gates; the remaining authorized train continues with R7.
 
 ## 1. Owner rulings and delivery discipline
 
@@ -351,6 +351,13 @@ and receiver in separate cases. Traffic demotes or falls back, including traffic
 already queued; neither the receiver nor a payer alias bypasses denial. Restore
 service and test another operator's independent link. Refuse unauthorized changes.
 Restart across a policy change; the reason and routing result agree. **Stop.**
+
+**Result (2026-10-23):** runtime `c5a393b1` passed 55 Linux production stories,
+419 local owner tests, 23 contracts, and the repaired real Redis/process-death
+regression. Dev1 passed fresh/upgrade/restart, 85 WS commands, six SSH checks,
+sender/receiver restrictions, scoped authority and a controlled independent-link
+fixture. The seed was restored with zero pending traffic. Evidence is in 15b;
+commit/push precedes automatic continuation to R7. Normal CI remains owner-monitored.
 
 ### Gate 8 — R7: physical loss and political consequences
 
