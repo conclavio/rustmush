@@ -1,0 +1,101 @@
+   Compiling mush-core v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-core)
+   Compiling mush-org v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-org)
+   Compiling mush-canon v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-canon)
+   Compiling mush-content v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-content)
+   Compiling mush-economy v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-economy)
+   Compiling mush-scenes v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-scenes)
+   Compiling mush-testkit v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-testkit)
+   Compiling mush-store v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-store)
+   Compiling mush-ruleset v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-ruleset)
+   Compiling mush-sim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-sim)
+   Compiling mush-jobs v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-jobs)
+   Compiling mush-comsys v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-comsys)
+   Compiling mush-atlas v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-atlas)
+   Compiling mush-tactics v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-tactics)
+   Compiling mush-faction v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-faction)
+   Compiling mush-propagation v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-propagation)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.16s
+     Running unittests src\lib.rs (target\debug\deps\mush_faction-ddcd345fdd5d3eaa.exe)
+
+running 12 tests
+test sim::tests::advance_saturates_and_can_overshoot_to_complete ... ok
+test data::tests::parse_helpers_accept_staff_spellings ... ok
+test data::tests::name_and_alias_resolution ... ok
+test data::tests::officer_and_intel_thresholds ... ok
+test data::tests::edge_cycles_are_detected_per_kind ... ok
+test data::tests::visibility_projection ... ok
+test data::tests::control_records_serde_round_trip ... ok
+test data::tests::resource_pools_are_cause_stamped_and_bounded ... ok
+test data::tests::principal_serde_is_backward_compatible ... ok
+test sim::tests::advance_reports_completion_once ... ok
+test data::tests::hidden_faction_listing ... ok
+test sim::tests::clocks_watching_filters_kind_and_completion ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mush_propagation-ad2273f4793aff6f.exe)
+
+running 17 tests
+test context::tests::a_jammed_unit_is_still_detected_and_an_occluded_courier_still_arrives ... ok
+test context::tests::every_term_saturates_rather_than_overflowing ... ok
+test context::tests::a_miss_and_a_hit_are_the_same_shape_and_carry_the_same_lag ... ok
+test record::tests::a_terminal_transition_is_idempotent ... ok
+test context::tests::the_media_map_onto_the_base_vocabulary_and_back ... ok
+test record::tests::a_relay_cycle_terminates_at_the_hop_bound ... ok
+test record::tests::a_phantoms_subject_is_scoped_and_has_no_object_arm_at_all ... ok
+test record::tests::an_over_long_payload_is_refused_at_issue_not_truncated_at_delivery ... ok
+test service::tests::receipt_bounds_and_evidence_require_observed_free_capacity ... ok
+test routing::tests::capacity_post_image_matches_the_wire_at_integer_limits ... ok
+test routing::tests::corrupt_frozen_time_and_cursor_are_refused_and_generation_change_preserves_due_scalar ... ok
+test routing::tests::shared_capacity_is_conserved_across_wire_round_trip_and_clock_rollback ... ok
+test service::tests::policy_has_strict_bounds_and_utc_independent_ic_windows ... ok
+test routing::tests::legacy_dispatch_kind_is_inferred_and_reports_or_messages_are_not_standing_orders ... ok
+test record::tests::every_record_re_enters_through_its_constructor ... ok
+test routing::tests::cycle_hit_and_miss_visit_the_same_bounded_graph_and_respect_remaining_hops ... ok
+test service::tests::restriction_bounds_sources_and_legacy_tickets_are_checked ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\mush_sim-d012679c7db1a694.exe)
+
+running 37 tests
+test focus::tests::e7c5_b1_unwired_oracle_fails_closed ... ok
+test data::tests::domain_allocator_exhaustion_is_explicit_and_nonmutating ... ok
+test data::tests::control_generation_exhaustion_is_explicit_and_nonmutating ... ok
+test domain::tests::e7c6_b5_the_queue_re_evaluates_and_never_drops ... ok
+test deployed::tests::an_uncomposed_world_admits_everything ... ok
+test focus::tests::e7c5_b2_reach_and_focus_are_not_ordered ... ok
+test deployed::tests::an_unmarked_unit_is_admitted_and_a_marked_one_is_refused_by_name ... ok
+test boot::tests::ic4_invalid_members_spares_the_space_object ... ok
+test focus::tests::e7c5_b2_relinquish_is_idempotent ... ok
+test focus::tests::e7c5_b2_two_accounts_coexist_independently ... ok
+test focus::tests::e7c5_b2_claim_is_relinquish_then_install_single_writer ... ok
+test domain::tests::e7c6_b5_the_workflow_wires_re_run_every_invariant ... ok
+test route::distance_law_tests::the_laws_factor_is_one_at_the_pin_and_over_nothing ... ok
+test journey::tests::e7c6_b3_under_way_is_one_predicate ... ok
+test journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key ... ok
+test journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent ... ok
+test route::distance_law_tests::a_torch_grows_with_the_root_and_a_coaster_with_the_distance ... ok
+test route::distance_law_tests::a_drive_wire_without_a_law_coasts_and_round_trips_with_one ... ok
+test route::distance_law_tests::a_pinned_route_encodes_its_pin_and_an_unpinned_one_no_key ... ok
+test journey::tests::e7c6_b3_same_place_compares_identity_not_pose ... ok
+test route::laden_leg_tests::ic9_laden_leg_durations_is_route_durations_per_leg ... ok
+test route::laden_leg_tests::ic9_laden_leg_durations_refuses_overload_and_overflow ... ok
+test route::route_def_tests::e7c1_routes_an_unknown_drive_class_refuses ... ok
+test journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant ... ok
+test tick::tests::e7c8_b1_the_domain_clock_wire_re_runs_period_generation_and_epoch ... ok
+test tick::tests::e7c8_b1_apply_and_clear_pulse_change_only_the_cadence ... ok
+test tick::tests::e7c8_b3_the_standing_order_wire_re_runs_band_channel_revision_and_clock ... ok
+test tick::tests::e7c8_b1_the_tick_scalar_is_one_pure_function_of_the_world_clock ... ok
+test route::route_def_tests::e7c1_routes_duration_is_pure_and_two_evaluations_agree ... ok
+test route::route_def_tests::e7c1_routes_the_wire_re_runs_max_legs_and_every_invariant ... ok
+test tick::tests::e7c8_b1_the_domain_id_canonical_map_round_trips ... ok
+test tick::tests::e7c8_b4_a_commit_that_omits_an_accepted_intent_fails_its_state_hash ... ok
+test handoff::tests::request_schedule_apply_reuse_and_cancel_are_atomic ... ok
+test tick::tests::e7c8_b5_a_tick_at_the_measured_cap_stays_under_sixty_percent_of_every_k8_cap ... ok
+test tick::measurement_report::e7c8_c_a_domain_at_the_cap_promotes_and_one_unit_past_it_refuses_with_its_measurement ... ok
+test tick::measurement_report::e7c8_b5_the_measurement_table_names_the_nearest_cap_at_every_n ... ok
+test tick::measurement_report::e7c8_b5_no_k8_cap_binds_before_the_window_capacity_does ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.54s
+

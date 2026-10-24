@@ -311,7 +311,7 @@ big IC day, and whoever hosts the hull decides where instant comms go. A ship ca
 transit isolation for itself and everything in its coverage, becomes the most valuable target in any
 engagement it joins, and dies with its link.
 
-## 8. Engine backlog (R1, R2 and R5 implemented)
+## 8. Engine backlog (R1–R7 implemented; R8–R10 remaining)
 
 The R identifiers remain the scope map. [15a](15a-comms-relay-implementation-plan.md)
 is the implementation sequence: R1 → R2 → R5 → R6a → R6b → R3 → R4 → R7 →
@@ -343,6 +343,14 @@ nested rooms; disembarkation uses bounded forwarding. Missing tickets wait.
 An aboard-only `+ship` estimate states one-way physical lag. A real Dray completed
 the Ceres–Kirkwood–Stickney passage on dev1 with delayed traffic and ACKs, restart,
 rate-change, ticket-loss and docking checks. See 15b for evidence and CI status.
+
+**R7 as built (2026-10-23):** checked fixed station units feed the real persistent
+damage and arena-custody writers into irreversible pair loss. Power damage disables
+service; core loss orphans counterparts and drives idempotent canon, Exchange
+anathema, faction/front consequences and recovery insurance cancellation. Existing
+attention pools are bounded; no seeker is seeded. Real dev1 loss/restart/fallback
+acceptance passed. Stations are not arena-fieldable; no strategic siege UI is added.
+R3/R4/R6 class, policy, all-IC mail and IC-channel acceptance are recorded in 15b.
 
 | # | Item | Home | Shape |
 |---|---|---|---|

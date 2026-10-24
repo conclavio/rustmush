@@ -8561,10 +8561,10 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        14,
+        15,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
-         and Dray-P"
+         and Dray-P, plus R7's relay station"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10068,9 +10068,9 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
     // with the terrain vehicle and the Dray-P (was twelve).
     assert_eq!(
         fielded.specs.len(),
-        14,
+        15,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
-         IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P"
+         IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10885,9 +10885,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        14,
+        15,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
-         the drone, the Dray, the terrain vehicle and the Dray-P"
+         the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station"
     );
     let earlier: Vec<(&str, &str)> = [
         content::EXTENSIONS.as_slice(),
@@ -10969,11 +10969,24 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     let dray_key = CanonicalId::new(content::DRAY).expect("a canonical id");
     let dray_p_key = CanonicalId::new(content::DRAY_P).expect("a canonical id");
     let tv_key = CanonicalId::new(content::TV_PROSPECTOR).expect("a canonical id");
+    let station_key = CanonicalId::new(tacsim::relay_loss::STATION).expect("a canonical id");
+    assert_eq!(
+        classes
+            .get(&UnitClass::Station)
+            .cloned()
+            .unwrap_or_default(),
+        vec!["relay_station"]
+    );
+    assert!(!UnitClass::Station.fieldable());
     for (id, spec) in &fielded.specs {
         assert_eq!(
             spec.class.is_some(),
-            *id == drone_key || *id == dray_key || *id == dray_p_key || *id == tv_key,
-            "{id}: only the drone, the Dray, the Dray-P and the terrain vehicle write a class \
+            *id == drone_key
+                || *id == dray_key
+                || *id == dray_p_key
+                || *id == tv_key
+                || *id == station_key,
+            "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle and the relay station write a class \
              word"
         );
     }

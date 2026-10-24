@@ -1,0 +1,21 @@
+   Compiling tacsim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\tacsim)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.15s
+     Running tests\extensions.rs (target\debug\deps\extensions-ed3d4f6d2f405af7.exe)
+
+running 13 tests
+test ae1_the_route_is_the_rows_own ... ok
+test ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it ... ok
+test ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it ... ok
+test ae2_the_autocannon_is_a_burst_of_three_and_each_round_is_its_own_draw ... ok
+test ae3_the_drone_loads_beside_the_stock_game_without_moving_it ... ok
+test ae2_the_missile_lands_where_the_target_was ... ok
+test ae1_a_biped_walks_the_thick_woods_a_tank_is_refused ... ok
+test ae1_a_wheeled_car_is_stopped_by_rubble_and_takes_the_ford_slowly ... ok
+test ae2_the_round_is_traced_from_where_it_left ... ok
+test ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_cadence ... ok
+test m5r::ae2_a_machine_that_climbs_after_firing_is_not_taught_stop_i ... ok
+test ae1_the_loader_prices_every_row_and_a_fixture_prices_none ... ok
+test ae1_the_bluff_refuses_a_tank_and_a_car_and_admits_a_walker_on_the_shipped_ground ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 2.43s
+

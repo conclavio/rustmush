@@ -379,6 +379,14 @@ cover exists. Replaying destruction cannot repeat penalties or mint attention.
 Repair does not resurrect a destroyed entangled pair. Also exercise disablement
 without destruction and destruction during a pending leg. **Stop.**
 
+**Result (2026-10-23):** runtime `5bdec3b8` passed 59 Linux production stories,
+the real Redis/process-death regression, local owner/content/faction contracts,
+fresh/upgrade boot, 39 real WS commands and six SSH checks. Actual structural loss,
+insurance cancellation, single political consequences and permanent orphaning
+survived SIGKILL and repeated repair/destruction. Both fallback letters arrived.
+The disposable baseline was restored with zero pending traffic; dev2 is unchanged.
+See 15b for evidence and the corrected test-fixture setup. Commit/push precedes R8a.
+
 ### Gate 9 — R8a: the Exchange sells a message-unit service
 
 Add the Exchange's real funded accounts and the narrow E8 product needed here.

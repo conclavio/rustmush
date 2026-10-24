@@ -937,3 +937,85 @@ envelopes, world rate 24×, unique pair-service receipts and capacity within the
 triggered by the main push and remains owner-monitored; the known prior CI failure
 is repaired and reproduced green. The standing authorization continues to R7
 only after this evidence commit/push.
+
+
+## R7 — structural loss and political consequences (2026-10-23)
+
+Base `3a042341`; runtime candidate `5bdec3b8`. The checked relay-station pack adds
+class `station`, core and power structure, and starts its power component online.
+Stations are fixed installations, excluded from the simulator lobby; this cut does
+not add a strategic siege UI. The live persistent writers are
+`mush_tactics::module::apply_plan` (`@unit/damage` and checked game callers) and
+`custody::check_in` (the actual arena-return writer). Both emit a synchronous
+`TacticalUnitChanged` notification on their persistence batch. Void returns do not
+announce damage. A standing command carries its authenticated actor; an arena
+return with no established attacker is recorded unattributed, never blamed on the
+finishing timer or on a free-form cause string. The retired fire lane is unused.
+
+The game adapter installs default-compatible `damaged` half flags and permanent
+node-loss records through the simulation owner. Power-structure loss independently
+disables service; the operator switch cannot override it. Core loss kills every
+installed half on that node, orphans counterparts, and never clears on structural
+repair. Existing routing revalidates queued hops and preserves frozen flights.
+A bounded per-node incident identity drives public canon, Exchange-wide anathema
+for both endpoints, institutional condemnation, legitimacy clocks and the existing
+recovery insurance consumer. Manual operator policy cannot clear anathema. Faction
+cause receipts prevent duplicate penalties; an existing affiliated `attention`
+pool earns one, capped at 1000, while an existing legitimacy pool loses one. No
+attention pool or actor is seeded. Canon append failures leave terminal outage and
+an unannounced incident for boot retry rather than restoring service.
+
+R1–R4 records default to `structural_version = 0`; migration attaches checked units
+once and records version 1. Thereafter absent/held units or a different exact
+structural definition refuse boot, instead of silently recreating healthy hardware.
+The new station does not change older chassis digests, weapons, cores or arena
+admission. Explicit source/catalog census tests were extended by one station.
+No crate dependency, state slot or namespace was added. The narrow new persistence
+delegations are `tacsim -> sim` and `content|atlas -> tactics`.
+
+Insurance cancellation changes `loss_is_covered`, the actual grant-time predicate,
+and removes a prior insured-loss cooldown waiver. `@recovery/status` renders that
+same live decision. The VPS gate uses a documented historical **ended** covered
+grant fixture and temporarily enables the existing recovery provider; it tests the
+consumer, not E7 loaner issuance. It snapshots upgraded Redis-0 into isolated
+Redis-11, preserves expirations, tests destructive loss, and restores the whole
+approved disposable test world afterward. Snapshot/config/credentials remain
+root-only. This reset is not a product command capable of reviving entanglement.
+
+Prior R4 CI run `40055195406`, job `120756539207`, failed Clippy on a needless
+borrow in the new restriction-bound test. R7 removes that borrow. The broader local
+ownership check also exposed an older missing inventory row for R3's already
+declared `propagation -> npc` permission; that inventory now matches production.
+Both checks are reproduced locally rather than left for the long CI run.
+
+**Implementation/live gate passed.** The exact final runtime passed 59 Linux
+production boot/relay/passage stories and the actual Redis/process-death regression.
+Local owner/content checks passed 130 tests, owner libraries 66, the full faction
+suite 59 (12 overlap those libraries), and 13 affected extension census/class tests.
+Changed library and integration-test targets passed Clippy with warnings denied.
+[Automated evidence](evidence/relay-r7-2026-10-23/automated.json) lists scopes and logs.
+The extension census changes are test-only additions after the runtime candidate.
+
+[Live evidence](evidence/relay-r7-2026-10-23/live.json) covers real power disablement,
+repair, permanent node loss during a physical flight, queued fallback, orphaning,
+permanent Exchange sanction, actual recovery cooldown change, one faction/front
+consequence, attention saturation, real SIGKILL, and repeated repair/destruction.
+Both letters arrived conventionally without relay-service receipts. All returns
+drained. A fresh Redis-12 world booted and rebooted; the upgraded world persisted
+structural version 1. SSH passed six checks. The 39 WS command checks measured
+51 ms median and 52 ms maximum. No performance budget was raised.
+
+The first fixture attempt enabled recovery without its mandatory pool account/tier;
+config validation correctly refused boot before gameplay. The corrected fixture
+uses existing funded clearing account 1 only as provider identity, issues no grants
+and spends no money. The same runtime binaries then passed. Runner-only corrections
+also require durable migration before the baseline snapshot and verify the backup's
+content hash before restore. Final runner/runtime hashes are in
+[environment.json](evidence/relay-r7-2026-10-23/environment.json).
+
+The whole upgraded test baseline was restored after acceptance: two healthy nodes,
+one live pair, no losses/restrictions/pending traffic, rate 24×. Redis-11 retains the
+root-only snapshot; original expiration deadlines were preserved. Dev2 remains PID
+539467. Secrets, raw snapshots and configuration are not committed. Prior R4 CI has
+only the already-repaired test(rest) failure at this check; the slow remaining shard
+is owner-monitored. Commit/push completes R7 before automatic continuation to R8a.

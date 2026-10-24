@@ -1,0 +1,105 @@
+   Compiling mush-sim v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-sim)
+   Compiling mush-atlas v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-atlas)
+   Compiling mush-faction v0.1.0 (C:\Users\faeni\.codex\worktrees\mining-graphics-minds\rustmush\crates\mush-faction)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.81s
+     Running unittests src\lib.rs (target\debug\deps\mush_faction-a3ec1dd82b3fee86.exe)
+
+running 12 tests
+test data::tests::control_records_serde_round_trip ... ok
+test data::tests::name_and_alias_resolution ... ok
+test data::tests::edge_cycles_are_detected_per_kind ... ok
+test data::tests::hidden_faction_listing ... ok
+test sim::tests::clocks_watching_filters_kind_and_completion ... ok
+test data::tests::officer_and_intel_thresholds ... ok
+test data::tests::resource_pools_are_cause_stamped_and_bounded ... ok
+test data::tests::principal_serde_is_backward_compatible ... ok
+test data::tests::visibility_projection ... ok
+test sim::tests::advance_reports_completion_once ... ok
+test sim::tests::advance_saturates_and_can_overshoot_to_complete ... ok
+test data::tests::parse_helpers_accept_staff_spellings ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\atlas.rs (target\debug\deps\atlas-8c93db84c3b6ca22.exe)
+
+running 1 test
+test a_control_region_on_an_atlas_place_renders_its_footprint_in_territory ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\economy.rs (target\debug\deps\economy-1a28632af7b66d8e.exe)
+
+running 21 tests
+test a_missing_org_makes_the_link_unresolvable_not_absent ... ok
+test bind_new_unbind_and_rebind_an_existing_org ... ok
+test destroy_is_refused_while_bound_and_allowed_after_unbinding ... ok
+test migrate_without_confirm_shows_the_scale_and_moves_nothing ... ok
+test migrate_refuses_a_non_system_source_and_an_unbacked_faction ... ok
+test migrate_refuses_a_zero_or_negative_pool ... ok
+test one_org_backs_one_faction_and_a_duplicate_makes_both_unusable ... ok
+test a_rating_key_still_applies_and_a_migrated_key_is_refused ... ok
+test boot_reports_a_two_factions_one_org_conflict_and_preserves_both_links ... ok
+test a_frozen_economy_refuses_the_migration_before_a_wallet_is_opened ... ok
+test boot_reports_a_missing_backing_org_and_preserves_the_link ... ok
+test migrate_refuses_an_unregistered_or_inactive_instrument ... ok
+test an_outsider_sees_neither_ratings_nor_money ... ok
+test a_confirmed_migrate_posts_once_and_a_second_run_changes_nothing ... ok
+test a_faction_officer_sees_ratings_but_not_money_and_cannot_spend ... ok
+test faction_ids_scope_the_idempotency_key_so_two_factions_both_migrate ... ok
+test a_dropped_faction_doc_write_converges_on_a_re_run ... ok
+test a_reboot_after_migrate_reproduces_the_balances_from_the_journal ... ok
+test a_pool_zeroed_between_the_post_and_the_re_run_still_converges ... ok
+test a_pool_edited_between_the_post_and_the_re_run_still_converges ... ok
+test a_suspended_backing_org_refuses_the_migration_before_a_wallet_is_opened ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\faction.rs (target\debug\deps\faction-f7169829bb3c667f.exe)
+
+running 15 tests
+test admin_gate_royalty_or_faction_admin_power ... ok
+test hidden_faction_is_indistinguishable_from_missing ... ok
+test channel_inspect_without_equals_does_not_unbind ... ok
+test aliases_are_validated_like_names ... ok
+test destroy_leaves_the_bound_channel ... ok
+test roster_order_hides_rank_from_non_officers ... ok
+test manual_channel_joins_are_never_the_modules_to_remove ... ok
+test create_add_and_visibility_projection ... ok
+test destroy_cascades_members_edges_and_control ... ok
+test territory_control_contests_and_covert_holdings ... ok
+test membership_visibility_matrix_members_and_officers ... ok
+test structural_edges_are_acyclic_and_front_edges_stay_covert ... ok
+test channel_binding_joins_only_public_members ... ok
+test boot_never_rewinds_allocators_below_loaded_ids ... ok
+test persistence_round_trip_rebuilds_identical_state ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\simulation.rs (target\debug\deps\simulation-baf6b98e4c57aa66.exe)
+
+running 8 tests
+test destroying_a_region_detaches_its_clock_flip ... ok
+test the_consequence_kind_is_reserved_from_watching ... ok
+test destroying_a_faction_prunes_its_fronts_and_clocks ... ok
+test clocks_are_visibility_gated_for_players ... ok
+test a_canon_event_advances_a_watching_clock_and_completion_fires_the_consequence ... ok
+test a_covert_clock_flip_stays_covert_not_public ... ok
+test staff_can_advance_a_clock_to_completion ... ok
+test fronts_and_clocks_survive_a_restart ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\standing.rs (target\debug\deps\standing-97c799c73ab97f1a.exe)
+
+running 2 tests
+test provider_resolves_member_officer_intel_and_fails_closed ... ok
+test org_policy_gates_on_live_faction_standing_end_to_end ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mush_faction
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
