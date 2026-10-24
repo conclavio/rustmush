@@ -956,6 +956,10 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_DRONE.as_slice(),
         EXTENSIONS_HAULER.as_slice(),
         EXTENSIONS_VEHICLES.as_slice(),
+        &[(
+            "units/relay_station.json",
+            include_str!("../../content/units/relay_station.json"),
+        )],
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

@@ -1106,6 +1106,7 @@ mod tests {
                         powered: true,
                         staffed: true,
                         destroyed: false,
+                        damaged: false,
                     }),
                 },
             );
@@ -1118,6 +1119,8 @@ mod tests {
             operator,
             nodes,
             pairs,
+            losses: BTreeMap::new(),
+            structural_version: 0,
         }
     }
 

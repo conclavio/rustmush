@@ -143,6 +143,7 @@ pub mod port;
 pub mod port_tick;
 pub mod record;
 pub mod relay_content;
+pub mod relay_loss;
 pub mod relay_metric;
 mod relay_service;
 pub mod seed;
@@ -585,6 +586,7 @@ impl GameModule for TacsimRuleset {
              under the tacsim module's identity, and the atlas appliers it runs write the \
              site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
         )?;
+        relay_loss::register(reg)?;
         commands::register(reg)?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
@@ -834,6 +836,7 @@ impl GameModule for TacsimRuleset {
     /// radio. The sweep then takes anybody a restart left in a pod off their net
     /// as it gives their seat back.
     fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        relay_loss::boot(ctx).map_err(ModError::msg)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

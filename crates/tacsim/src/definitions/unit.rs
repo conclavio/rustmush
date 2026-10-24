@@ -742,6 +742,8 @@ pub enum UnitClass {
     /// caps and never fielded in phase 1, exactly as [`UnitClass::Hauler`];
     /// the promotion cut (doc 20 §17) flips [`UnitClass::fieldable`] for it.
     Vehicle,
+    /// A fixed structural installation, never offered by the simulator lobby.
+    Station,
 }
 
 impl UnitClass {
@@ -750,12 +752,13 @@ impl UnitClass {
     /// Doc 18 cut IC2 appends [`UnitClass::Hauler`] and doc 20 cut SM.3a
     /// [`UnitClass::Vehicle`], so [`UnitClass::parse`] and [`UnitClass::read`]
     /// know the words; the arena's doors ask [`UnitClass::fieldable`].
-    pub const ALL: [UnitClass; 5] = [
+    pub const ALL: [UnitClass; 6] = [
         UnitClass::Armour,
         UnitClass::Walker,
         UnitClass::Drone,
         UnitClass::Hauler,
         UnitClass::Vehicle,
+        UnitClass::Station,
     ];
 
     /// The class word, as content and the operator's config write it.
@@ -767,6 +770,7 @@ impl UnitClass {
             UnitClass::Drone => "drone",
             UnitClass::Hauler => "hauler",
             UnitClass::Vehicle => "vehicle",
+            UnitClass::Station => "station",
         }
     }
 
@@ -778,7 +782,7 @@ impl UnitClass {
     pub const fn fieldable(self) -> bool {
         match self {
             UnitClass::Armour | UnitClass::Walker | UnitClass::Drone => true,
-            UnitClass::Hauler | UnitClass::Vehicle => false,
+            UnitClass::Hauler | UnitClass::Vehicle | UnitClass::Station => false,
         }
     }
 
@@ -807,6 +811,8 @@ impl UnitClass {
             (UnitClass::Hauler, false) => "haulers",
             (UnitClass::Vehicle, true) => "terrain vehicle",
             (UnitClass::Vehicle, false) => "terrain vehicles",
+            (UnitClass::Station, true) => "station",
+            (UnitClass::Station, false) => "stations",
         }
     }
 

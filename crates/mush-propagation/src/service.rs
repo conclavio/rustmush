@@ -355,6 +355,15 @@ pub trait Integration: Send + Sync + std::fmt::Debug {
     fn operator(&self, world: &World, pair: &CanonicalId) -> Option<u64>;
     fn principals(&self, world: &World, endpoint: ObjId) -> Vec<Principal>;
     fn valid_principal(&self, world: &World, principal: &Principal) -> bool;
+    /// Permanent game sanctions, independent of manually clearable restrictions.
+    fn sanction(
+        &self,
+        _world: &World,
+        _operator: u64,
+        _principals: &[Principal],
+    ) -> Option<String> {
+        None
+    }
     fn visible(&self, world: &World, actor: ObjId, receipt: &Receipt) -> bool;
     fn authorized(&self, world: &World, actor: ObjId, pair: &CanonicalId, action: &str) -> bool;
     fn discover(&self, ctx: &mut Ctx<'_>, evidence: &Evidence) -> Result<(), String>;
@@ -374,9 +383,6 @@ pub fn status(
     pair: &CanonicalId,
     endpoints: (ObjId, ObjId),
 ) -> ServiceState {
-    if state.restrictions.is_empty() {
-        return ServiceState::Served;
-    }
     let Some(api) = integration(world) else {
         return ServiceState::Served;
     };
@@ -387,7 +393,7 @@ pub fn status(
         .into_iter()
         .map(|endpoint| {
             let principals = api.principals(world, endpoint);
-            if principals.len() > 2 {
+            if principals.len() > 2 || api.sanction(world, operator, &principals).is_some() {
                 ServiceState::Suspended
             } else {
                 state.status(operator, &principals)
@@ -558,8 +564,11 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let principals = api.principals(ctx.w, viewer);
         say(
             ctx,
-            format!("{id}: {:?}.", state.status(operator, &principals)),
+            format!("{id}: {:?}.", status(&state, ctx.w, &id, (viewer, viewer))),
         );
+        if let Some(reason) = api.sanction(ctx.w, operator, &principals) {
+            say(ctx, reason);
+        }
         for r in state
             .restrictions
             .iter()
@@ -955,7 +964,7 @@ mod tests {
         assert!(state.restrict(bad).is_err());
         for id in 1..MAX_RESTRICTIONS {
             let mut r = base.clone();
-            r.source = CanonicalId::new(&format!("operator.source{id}")).unwrap();
+            r.source = CanonicalId::new(format!("operator.source{id}")).unwrap();
             state.restrict(r).unwrap();
         }
         let mut extra = base.clone();

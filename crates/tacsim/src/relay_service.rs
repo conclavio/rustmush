@@ -28,6 +28,26 @@ impl Integration for RelayService {
     fn operator(&self, world: &World, pair: &CanonicalId) -> Option<u64> {
         operator(world, pair).map(|o| o.0)
     }
+    fn sanction(&self, w: &World, operator: u64, principals: &[Principal]) -> Option<String> {
+        let registry = mush_propagation::routing::registry(w)?;
+        if operator != registry.operator.0 {
+            return None;
+        }
+        registry
+            .losses
+            .values()
+            .find(|loss| {
+                loss.responsible
+                    .is_some_and(|a| principals.contains(&Principal::Object(a)))
+            })
+            .map(|loss| {
+                format!(
+                    "{}: permanent Exchange anathema; Tycho cover voided (IC {}).",
+                    loss.source(),
+                    loss.at
+                )
+            })
+    }
     fn valid_principal(&self, w: &World, p: &Principal) -> bool {
         match p {
             Principal::Object(id) => w

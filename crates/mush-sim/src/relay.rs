@@ -45,6 +45,9 @@ pub struct RelayHalf {
     pub staffed: bool,
     /// Reserved terminal physical state. R1 has no destruction command.
     pub destroyed: bool,
+    /// Structural power loss is independent of the operator's power switch.
+    #[serde(default)]
+    pub damaged: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -78,7 +81,7 @@ impl RelayPair {
         } else if self
             .halves
             .iter()
-            .all(|h| h.enabled && h.powered && h.staffed)
+            .all(|h| h.enabled && h.powered && h.staffed && !h.damaged)
         {
             LinkState::Live
         } else {
@@ -97,12 +100,42 @@ pub struct RelayRegistry {
     pub operator: OrgId,
     pub nodes: BTreeMap<CanonicalId, RelayNode>,
     pub pairs: BTreeMap<CanonicalId, RelayPair>,
+    /// Terminal physical incidents, at most one per node; never removed by repair.
+    #[serde(default)]
+    pub losses: BTreeMap<CanonicalId, NodeLoss>,
+    /// R7 migration latch: once checked structure exists, missing records are corruption.
+    #[serde(default)]
+    pub structural_version: u32,
+}
+
+/// One permanent, attributed physical loss. The registry and the tactical post-image
+/// share a persistence batch; canon publication can be retried at boot by identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLoss {
+    pub object: ObjId,
+    pub revision: u64,
+    pub responsible: Option<ObjId>,
+    pub at: i64,
+    pub canon: Option<u64>,
+}
+impl NodeLoss {
+    pub fn source(&self) -> String {
+        format!("relay.loss.v1:{}:{}", self.object.0, self.revision)
+    }
+}
+/// The public incident record is also the irrevocable insurance cancellation.
+pub fn cover_voided(world: &World, principal: ObjId) -> bool {
+    world
+        .module_state::<RelayStore>()
+        .and_then(RelayStore::registry)
+        .is_some_and(|r| r.losses.values().any(|l| l.responsible == Some(principal)))
 }
 
 impl RelayRegistry {
     /// Shape checks run before any reference walk or insertion.
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.revision == 0 {
+        if self.version != 1 || self.revision == 0 || self.structural_version > 1 {
             return Err("unsupported version or zero revision".into());
         }
         if self.nodes.is_empty()
@@ -111,6 +144,19 @@ impl RelayRegistry {
             || self.pairs.len() > MAX_PAIRS
         {
             return Err("relay node/pair census is outside its bounds".into());
+        }
+        if self.losses.len() > MAX_NODES
+            || self.losses.iter().any(|(id, l)| {
+                l.revision == 0
+                    || self.nodes.get(id).is_none_or(|n| n.object != l.object)
+                    || self
+                        .pairs
+                        .values()
+                        .flat_map(|p| &p.halves)
+                        .any(|h| &h.node == id && !h.destroyed)
+            })
+        {
+            return Err("invalid terminal relay loss".into());
         }
         let mut objects = BTreeSet::new();
         let mut halves = BTreeSet::new();
@@ -405,7 +451,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 crate::commands::info(
                     ctx,
                     format!(
-                        "half {} {} node {} {} ({}) place {} coverage {:?}; enabled={} powered={} staffed={} destroyed={}",
+                        "half {} {} node {} {} ({}) place {} coverage {:?}; enabled={} powered={} staffed={} destroyed={} damaged={} orphaned={}",
                         half.id,
                         half.object,
                         half.node,
@@ -416,7 +462,9 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         half.enabled,
                         half.powered,
                         half.staffed,
-                        half.destroyed
+                        half.destroyed,
+                        half.damaged,
+                        !half.destroyed && pair.state() == LinkState::Dead
                     ),
                 );
             }

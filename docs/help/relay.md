@@ -95,3 +95,25 @@ behavior removed through ordinary commands. If the registry is corrupt, missing
 beside surviving bindings, or contradicts its objects/operator, startup stops with
 a diagnostic naming `relay:registry`. Restore the matching document and objects
 from a consistent backup; do not delete the record to force a second seed.
+
+## Structural loss and anathema
+
+Installed relay nodes are checked station units. Damage to power structure disables
+service independently of the operator power switch; structural repair restores this
+availability. Core destruction permanently kills installed halves and leaves their
+distant partners orphaned. Repairing a station does not recreate its entanglement.
+Queued work takes conventional fallback; an already-flying leg keeps its deadline.
+
+An attributed destruction produces a public canon incident and faction condemnation.
+The Exchange permanently denies the perpetrator service, including reception, and
+Tycho voids their recovery cover and insured-loss cooldown waiver. `+relay/status
+<pair>` shows your sanction; `@recovery/status` shows its insurance effect where the
+recovery provider is enabled. `+relay/policy ...=served,operator...` cannot clear it.
+Unattributed custody damage is recorded without inventing an attacker.
+
+Staff may opt a controlled faction into notoriety using `@faction/resource
+<faction>=attention/0/<reason>`. Attention is a rating from 0 to 1000; no faction
+receives it unless the pool exists. A new attributed loss grants one attention to
+affiliated factions with that pool, reduces an existing legitimacy rating by one,
+and advances clocks watching `relay.node_destroyed`. Replaying the loss grants
+nothing. No attention-seeking faction is seeded.

@@ -44,6 +44,17 @@ pub const META_KEY: &str = "meta";
 
 /// Bounded length of a faction's cause-stamped resource change log.
 pub const RESOURCE_LOG_CAP: usize = 20;
+/// Opt-in notoriety rating; condemnation never creates this pool.
+pub const MAX_ATTENTION: i64 = 1000;
+/// At most the relay catalog's bounded node census can be condemned.
+pub const MAX_RELAY_CONDEMNATIONS: usize = 32;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelayCondemnation {
+    pub object: ObjId,
+    pub responsible: Option<ObjId>,
+    pub source: String,
+}
 
 /// Longest accepted faction / region name.
 pub const MAX_NAME_LEN: usize = 40;
@@ -268,6 +279,9 @@ pub struct Faction {
     /// Bounded cause-stamped tail of resource changes (newest last).
     #[serde(default)]
     pub resource_log: Vec<ResourceChange>,
+    /// Public institutional condemnation, with permanent cause identities.
+    #[serde(default)]
+    pub relay_condemnations: Vec<RelayCondemnation>,
     /// The backing organization (E3d, D-E3-8): the faction's money identity, so
     /// value attributed to "the Camarilla" is owned by a real principal with
     /// scopes, grants, and a journal. `None` is the default and the norm —
@@ -324,6 +338,7 @@ impl Faction {
             intel_level: 0,
             resources: BTreeMap::new(),
             resource_log: Vec::new(),
+            relay_condemnations: Vec::new(),
             org: None,
             migrated: BTreeSet::new(),
             edges: Vec::new(),
@@ -343,7 +358,12 @@ impl Faction {
     pub fn apply_resource(&mut self, kind: &str, delta: i64, reason: &str, by: ObjId, ts: i64) {
         let kind = SmolStr::new(kind.to_ascii_lowercase());
         let slot = self.resources.entry(kind.clone()).or_insert(0);
+        let before = *slot;
         *slot = slot.saturating_add(delta);
+        if kind.as_str() == "attention" {
+            *slot = (*slot).clamp(0, MAX_ATTENTION);
+        }
+        let delta = slot.saturating_sub(before);
         self.push_resource_log(ResourceChange {
             kind,
             delta,

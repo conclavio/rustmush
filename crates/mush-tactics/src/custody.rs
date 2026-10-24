@@ -256,6 +256,14 @@ pub fn check_in(
         store.replace_active(post.clone(), document.1);
     }
     mush_sim::deployed::clear(ctx.w, unit);
+    if !restored {
+        ctx.emit_world_event(&mush_core::WorldEvent::TacticalUnitChanged {
+            unit,
+            revision: post.revision(),
+            responsible: None,
+        });
+        ctx.out.pin_deferred();
+    }
     Ok(CheckIn {
         marker,
         journal,

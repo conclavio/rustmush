@@ -1,0 +1,166 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.relay_station",
+    "version": 1,
+    "kind": "rules_definition",
+    "requires": [],
+    "digest": "7759d8663182114b9fed021ad1760ca3c84ebc0b29c64da8c1dbd4b44ff96eca"
+  },
+  "entries": {
+    "tacsim.unit.relay_station": {
+      "kind": "unit",
+      "def": {
+        "label": "relay station",
+        "sections": [
+          {
+            "id": "core",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 400
+              },
+              {
+                "id": "left",
+                "armor": 250
+              },
+              {
+                "id": "right",
+                "armor": 250
+              },
+              {
+                "id": "rear",
+                "armor": 150
+              },
+              {
+                "id": "top",
+                "armor": 100
+              }
+            ],
+            "internals": 1000,
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
+          },
+          {
+            "id": "power",
+            "facets": [],
+            "internals": 200,
+            "consequences": [
+              {
+                "kind": "disable_motion"
+              }
+            ],
+            "struck_through": {
+              "section": "core",
+              "facet": "rear"
+            }
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "core",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 0,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "core",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "core",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "core",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "core",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "core",
+                "weight": 100
+              }
+            ]
+          }
+        ],
+        "silhouettes": [
+          {
+            "band": "front",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "left",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "right",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "rear",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "top",
+            "width_cm": 700,
+            "height_cm": 350
+          }
+        ],
+        "sensor_height_cm": 150,
+        "note": "Fixed relay installation. Core destruction permanently kills every installed half; power structure loss disables service until repaired. Structural repairs never recreate entanglement. Not fielded by the simulator lobby.",
+        "class": "station"
+      }
+    }
+  }
+}

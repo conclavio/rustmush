@@ -2306,6 +2306,10 @@ async fn r4_org_titled_endpoints_and_independent_operator_link() {
             GOD,
             &format!("@behavior/add {}=sim.relay_node", node.object),
         );
+        rig.run(
+            GOD,
+            &format!("@unit/create {}=tacsim.unit.relay_station", node.object),
+        );
         let half_name = format!("R4IndependentHalf{i}");
         let half = rig
             .tw
@@ -2370,4 +2374,303 @@ async fn r4_org_titled_endpoints_and_independent_operator_link() {
         mush_propagation::EnvelopeState::Delivered
     );
     assert_eq!(rig.envelope(id).path().len(), 1);
+}
+
+fn r7_plan(section: &str, value: i64) -> mush_tactics::UnitMutationPlan {
+    serde_json::from_value(serde_json::json!({"ops":[{"SetCell":{"addr":{"Section":{"section":section,"cell":"internals"}},"value":value}}]})).unwrap()
+}
+fn r7_damage(rig: &mut Rig, node: mush_core::ObjId, section: &str, value: i64) {
+    let result = rig.run(
+        GOD,
+        &format!(
+            "@unit/damage {node}={}",
+            serde_json::to_string(&r7_plan(section, value)).unwrap()
+        ),
+    );
+    assert!(result.contains("Applied"), "{result}");
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
+
+#[tokio::test]
+async fn r7_damage_permanent_loss_consequences_repair_and_restart() {
+    use mush_campaign::{RecoveryConfig, RecoveryGrant, RecoveryRefusal};
+    let mut rig = Rig::new(true).await;
+    let bob = rig.endpoints();
+    let node = rig.registry().nodes[&cid("ceres")].object;
+    assert_eq!(rig.registry().structural_version, 1);
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), node).unwrap();
+    assert_eq!(
+        tacsim::definitions::UnitClass::read(unit),
+        tacsim::definitions::UnitClass::Station
+    );
+    // A controlled notoriety-seeking faction is opt-in through normal commands.
+    rig.run(GOD, "@faction/create R7Cell");
+    let name = rig.tw.world().get(GOD).unwrap().name.clone();
+    rig.run(GOD, &format!("@faction/add R7Cell={name}"));
+    rig.run(GOD, "@faction/resource R7Cell=attention/999/test opt-in");
+    rig.run(GOD, "@faction/resource R7Cell=legitimacy/5/test baseline");
+    rig.run(GOD, "@front/create R7Cell=Legitimacy crisis");
+    let front = rig
+        .tw
+        .world()
+        .module_state::<mush_faction::SimState>()
+        .unwrap()
+        .fronts
+        .values()
+        .find(|f| f.title == "Legitimacy crisis")
+        .unwrap()
+        .id;
+    rig.run(GOD, &format!("@clock/create {front}=Public condemnation/4"));
+    let clock = rig
+        .tw
+        .world()
+        .module_state::<mush_faction::SimState>()
+        .unwrap()
+        .clocks
+        .values()
+        .find(|c| c.front == front)
+        .unwrap()
+        .id;
+    rig.run(GOD, &format!("@clock/set {clock}=on:relay.node_destroyed"));
+    let now = rig.tw.world().world_ic_now().at;
+    let grant =
+        RecoveryGrant::with_cover(GOD, 1, bob, "scout".into(), now - 100, Some(now - 1), true)
+            .unwrap();
+    let cfg = RecoveryConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    assert!(!matches!(
+        mush_campaign::eligible(rig.tw.world(), &cfg, GOD, Some(&grant), now),
+        Err(RecoveryRefusal::Cooldown { .. })
+    ));
+    // Power loss disables, but causes no terminal incident or sanctions.
+    r7_damage(&mut rig, node, "power", 0);
+    assert_eq!(
+        rig.registry().pairs[&cid("luna_ceres")].state(),
+        mush_sim::relay::LinkState::Degraded
+    );
+    assert!(rig.registry().losses.is_empty());
+    rig.run(GOD, "@relay/power luna_ceres.ceres=on");
+    assert_eq!(
+        rig.registry().pairs[&cid("luna_ceres")].state(),
+        mush_sim::relay::LinkState::Degraded
+    );
+    r7_damage(&mut rig, node, "power", 200);
+    assert_eq!(
+        rig.registry().pairs[&cid("luna_ceres")].state(),
+        mush_sim::relay::LinkState::Live
+    );
+    // A Standard message is genuinely queued when structure is destroyed.
+    rig.run(GOD, "+relay/grant luna_ceres/#1=standard");
+    rig.run(GOD, &format!("+order {bob}=r7 queued order"));
+    let order = rig.last_envelope().id();
+    assert!(
+        rig.envelope(order)
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .any(|l| l.pair.is_some())
+    );
+    r7_damage(&mut rig, node, "core", 0);
+    let loss = rig.registry().losses[&cid("ceres")].clone();
+    assert_eq!(loss.responsible, Some(GOD));
+    assert!(loss.canon.is_some());
+    assert!(
+        rig.run(GOD, "@relay/show luna_ceres")
+            .contains("orphaned=true")
+    );
+    assert!(
+        rig.run(GOD, "+relay/status luna_ceres")
+            .contains("permanent Exchange anathema")
+    );
+    rig.run(
+        GOD,
+        "+relay/policy luna_ceres/#1=served,operator.test,cure cannot revoke anathema",
+    );
+    assert!(
+        rig.run(GOD, "+relay/status luna_ceres")
+            .contains("Suspended")
+    );
+    assert!(matches!(
+        mush_campaign::eligible(rig.tw.world(), &cfg, GOD, Some(&grant), now),
+        Err(RecoveryRefusal::Cooldown { .. })
+    ));
+    assert!(mush_sim::relay::cover_voided(rig.tw.world(), GOD));
+    rig.pass();
+    assert!(
+        rig.envelope(order)
+            .transit()
+            .unwrap()
+            .legs
+            .iter()
+            .all(|l| l.pair.is_none())
+    );
+    let due = rig.envelope(order).transit().unwrap().flight.clone();
+    for _ in 0..2 {
+        r7_damage(&mut rig, node, "core", 1000);
+        r7_damage(&mut rig, node, "core", 0);
+    }
+    r7_damage(&mut rig, node, "core", 1000);
+    assert_eq!(rig.registry().losses[&cid("ceres")], loss);
+    let state = rig
+        .tw
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .unwrap();
+    let faction = state.faction_by_name("R7Cell").unwrap();
+    assert_eq!(faction.resources["attention"], 1000);
+    assert_eq!(faction.resources["legitimacy"], 4);
+    assert!(
+        state
+            .factions
+            .values()
+            .all(|f| f.relay_condemnations.len() == 1)
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_faction::SimState>()
+            .unwrap()
+            .clocks[&clock]
+            .filled,
+        1
+    );
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.registry().losses[&cid("ceres")], loss);
+    assert_eq!(
+        rig.registry().pairs[&cid("luna_ceres")].state(),
+        mush_sim::relay::LinkState::Dead
+    );
+    assert_eq!(rig.envelope(order).transit().unwrap().flight, due);
+    assert!(
+        rig.run(GOD, "+relay/status luna_ceres")
+            .contains("Suspended")
+    );
+}
+
+#[tokio::test]
+async fn r7_custody_void_and_checked_return_use_the_same_loss_writer() {
+    let mut rig = Rig::new(true).await;
+    let node = rig.registry().nodes[&cid("malapert")].object;
+    let mut out = mush_core::Outbox::new();
+    {
+        let engine = rig.tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some("tactics".into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let mark = mush_sim::deployed::DeployedMark {
+            match_id: 777,
+            arena: "test.custody".into(),
+        };
+        mush_tactics::custody::check_out(&mut ctx, node, mark.clone()).unwrap();
+        let back = mush_tactics::custody::check_in(&mut ctx, node, None).unwrap();
+        assert!(back.restored);
+        assert!(
+            ctx.w
+                .module_state::<RelayStore>()
+                .unwrap()
+                .registry()
+                .unwrap()
+                .losses
+                .is_empty()
+        );
+        mush_tactics::custody::check_out(&mut ctx, node, mark).unwrap();
+        mush_tactics::custody::check_in(&mut ctx, node, Some(&r7_plan("core", 0))).unwrap();
+    }
+    let ops = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|d| match d {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    rig.store
+        .write(WriteBatch {
+            serial: rig.serial,
+            durable: true,
+            module_ops: ops,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    rig.serial += 1;
+    let loss = rig.registry().losses[&cid("malapert")].clone();
+    assert_eq!(
+        loss.responsible, None,
+        "arena ownership does not establish an attacker"
+    );
+    assert!(!mush_sim::relay::cover_voided(rig.tw.world(), GOD));
+    assert!(loss.canon.is_some());
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(rig.registry().losses[&cid("malapert")], loss);
+    assert_eq!(
+        rig.registry().pairs[&cid("luna_ceres")].state(),
+        mush_sim::relay::LinkState::Dead
+    );
+}
+
+#[test]
+fn r7_station_pack_digest_and_bounded_attention() {
+    let pack = tacsim::pack::load_pack(include_str!(
+        "../../tacsim/content/units/relay_station.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "7759d8663182114b9fed021ad1760ca3c84ebc0b29c64da8c1dbd4b44ff96eca"
+    );
+    let mut f = mush_faction::Faction::new(mush_faction::FactionId(0), "Controlled attention");
+    f.apply_resource("attention", i64::MAX, "test", GOD, 0);
+    assert_eq!(f.resources["attention"], 1000);
+    assert_eq!(f.resource_log.last().unwrap().delta, 1000);
+    f.apply_resource("attention", i64::MIN, "test", GOD, 0);
+    assert_eq!(f.resources["attention"], 0);
+    assert_eq!(f.resource_log.last().unwrap().delta, -1000);
+}
+
+#[tokio::test]
+async fn r7_missing_migrated_structure_refuses_boot_and_old_seed_migrates_once() {
+    let mut rig = Rig::new(true).await;
+    let node = rig.registry().nodes[&cid("ceres")].object;
+    rig.run(GOD, &format!("@unit/remove {node}"));
+    assert!(mush_tactics::module::unit_of(rig.tw.world(), node).is_none());
+    rig.flush().await;
+    let error = rig.restart().await.unwrap_err();
+    assert!(
+        error.contains("migrated structure missing or held"),
+        "{error}"
+    );
+    // Model the R4 shape: no unit/binding and no R7 migration latch.
+    let mut doc = rig
+        .store
+        .module_json_get("sim", KEY)
+        .await
+        .unwrap()
+        .unwrap();
+    doc.as_object_mut().unwrap().remove("structural_version");
+    rig.replace_document(doc).await;
+    rig.restart().await.unwrap();
+    assert!(mush_tactics::module::unit_of(rig.tw.world(), node).is_some());
+    assert_eq!(rig.registry().structural_version, 1);
+    let before = mush_tactics::module::unit_of(rig.tw.world(), node)
+        .unwrap()
+        .clone();
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!(
+        mush_tactics::module::unit_of(rig.tw.world(), node).unwrap(),
+        &before
+    );
 }

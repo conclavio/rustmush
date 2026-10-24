@@ -203,6 +203,10 @@ fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::CanonRecorded { kind, entities, .. } = ev else {
         return;
     };
+    // R7's owner API advances these once alongside its durable cause receipt.
+    if kind == "relay.node_destroyed" {
+        return;
+    }
     let to_advance: Vec<ClockId> = {
         let (Some(sim), Some(fac)) = (
             ctx.w.module_state::<SimState>(),
@@ -412,6 +416,22 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                 return Err(ModError::msg(format!(
                     "faction: doc {key:?} claims id {}",
                     f.id
+                )));
+            }
+            if f.relay_condemnations.len() > data::MAX_RELAY_CONDEMNATIONS
+                || f.relay_condemnations.iter().any(|r| r.source.len() > 96)
+                || f.relay_condemnations
+                    .iter()
+                    .map(|r| r.object)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != f.relay_condemnations.len()
+                || f.resources
+                    .get("attention")
+                    .is_some_and(|n| !(0..=data::MAX_ATTENTION).contains(n))
+            {
+                return Err(ModError::msg(format!(
+                    "faction: invalid bounded relay/attention data in {key}"
                 )));
             }
             factions.insert(f.id, f);
@@ -677,4 +697,72 @@ pub fn publish_front(
     sim::persist_sim_meta(ctx.out, &simulation);
     ctx.out.pin_deferred();
     Ok(id)
+}
+
+/// R7's institutional response, through the faction owner. The receipt makes a
+/// retry harmless; attention is opt-in and ratings never create money pools.
+pub fn condemn_relay_loss(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    responsible: Option<ObjId>,
+    source: &str,
+) -> Result<(), String> {
+    let state = ctx
+        .w
+        .module_state::<FactionState>()
+        .ok_or("Factions unavailable")?;
+    let sim = ctx
+        .w
+        .module_state::<SimState>()
+        .ok_or("Fronts unavailable")?;
+    if state.factions.len() > 4096 || sim.clocks.len() > 4096 || source.len() > 96 {
+        return Err("Relay political response exceeds bounded census".into());
+    }
+    let mut updates = Vec::new();
+    for f in state.factions.values() {
+        if f.relay_condemnations.iter().any(|r| r.object == object) {
+            continue;
+        }
+        if f.relay_condemnations.len() >= data::MAX_RELAY_CONDEMNATIONS {
+            return Err("Relay condemnation ledger full".into());
+        }
+        let mut f = f.clone();
+        let affiliated =
+            responsible.is_some_and(|a| state.is_member(a, f.id) || f.principals.contains(&a));
+        f.relay_condemnations.push(data::RelayCondemnation {
+            object,
+            responsible,
+            source: source.into(),
+        });
+        if affiliated {
+            if f.resources.contains_key("legitimacy") && !f.migrated.contains("legitimacy") {
+                f.apply_resource("legitimacy", -1, source, ctx.actor, ctx.w.now());
+            }
+            if f.resources.contains_key("attention") && !f.migrated.contains("attention") {
+                f.apply_resource("attention", 1, source, ctx.actor, ctx.w.now());
+            }
+        }
+        updates.push(f);
+    }
+    let fresh: std::collections::BTreeSet<_> = updates.iter().map(|f| f.id).collect();
+    let clocks: Vec<_> = sim
+        .clocks_watching("relay.node_destroyed")
+        .into_iter()
+        .filter(|id| {
+            sim.clocks
+                .get(id)
+                .is_some_and(|c| fresh.contains(&c.faction))
+        })
+        .collect();
+    for f in updates {
+        data::persist_faction(ctx.out, &f);
+        if let Some(state) = ctx.w.module_state_mut::<FactionState>() {
+            state.factions.insert(f.id, f);
+        }
+    }
+    for id in clocks {
+        advance_clock(ctx, id, 1);
+    }
+    ctx.out.pin_deferred();
+    Ok(())
 }

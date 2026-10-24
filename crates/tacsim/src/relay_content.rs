@@ -209,6 +209,7 @@ impl RelayApplier {
             .and_then(RelayStore::registry)
             .is_some()
         {
+            crate::relay_loss::ensure_units(ctx)?;
             // Reapply never resets availability or creates a second identity.
             return Ok(None);
         }
@@ -280,6 +281,7 @@ impl RelayApplier {
                     powered: true,
                     staffed: true,
                     destroyed: false,
+                    damaged: false,
                 });
             }
             let halves: [RelayHalf; 2] =
@@ -303,8 +305,11 @@ impl RelayApplier {
                 operator,
                 nodes,
                 pairs,
+                losses: BTreeMap::new(),
+                structural_version: 0,
             },
         )?;
+        crate::relay_loss::ensure_units(ctx)?;
         Ok(None)
     }
 }

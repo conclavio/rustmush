@@ -754,6 +754,8 @@ pub enum WorldEventKind {
     /// overlay-only mutation (a Willpower spend, Condition-Monitor damage)
     /// never touches the sheet attribute.
     ActionStateChanged,
+    /// A checked tactical mutation was persisted (standing damage or custody return).
+    TacticalUnitChanged,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -761,6 +763,17 @@ pub enum WorldEventKind {
 /// by [`World`] itself, which stays observer-free.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldEvent {
+    /// A checked tactical unit post-image is installed. No arbitrary cause string
+    /// supplies attribution: a standing command names its authenticated actor;
+    /// an unattributed arena return deliberately carries None.
+    TacticalUnitChanged {
+        /// The persisted unit.
+        unit: ObjId,
+        /// Its new revision.
+        revision: u64,
+        /// Known responsible actor, when the producer can establish one.
+        responsible: Option<ObjId>,
+    },
     /// `who` moved from `from` to `to` (exit traversal, `home`,
     /// `@teleport`, `@dig/teleport` — the same moves `MoveAttempt` can
     /// veto).
@@ -903,6 +916,7 @@ impl WorldEvent {
     #[must_use]
     pub fn kind(&self) -> WorldEventKind {
         match self {
+            WorldEvent::TacticalUnitChanged { .. } => WorldEventKind::TacticalUnitChanged,
             WorldEvent::Moved { .. } => WorldEventKind::Moved,
             WorldEvent::Said { kind, .. } => WorldEventKind::Said { kind: *kind },
             WorldEvent::ObjCreated { .. } => WorldEventKind::ObjCreated,
@@ -928,6 +942,7 @@ impl WorldEvent {
             | WorldEvent::Disconnected { who }
             | WorldEvent::PowerUsed { who, .. }
             | WorldEvent::Rolled { who, .. } => *who,
+            WorldEvent::TacticalUnitChanged { responsible, .. } => responsible.unwrap_or(GOD),
             WorldEvent::SceneTurn { actor, .. } => *actor,
             WorldEvent::ObjCreated { creator, .. } => *creator,
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,

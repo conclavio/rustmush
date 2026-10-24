@@ -474,10 +474,10 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     // (was 12).
     assert_eq!(
         catalog.specs.len(),
-        14,
+        15,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
          the range's target, 16b cut AE.1's three chassis, 16b cut AE.3's drone, \
-         doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P"
+         doc 18 cut IC2's Dray, doc 20 cut SM.3a's terrain vehicle and Dray-P, and R7's relay station"
     );
     let fieldable: Vec<(&mush_core::CanonicalId, &tacsim::definitions::UnitSpec)> = catalog
         .specs
@@ -1045,11 +1045,11 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     // SM.3a: and the terrain vehicle and the Dray-P after it (was `+ 20`).
     assert_eq!(
         fielded.len(),
-        stock.len() + 22,
-        "nine shipped packs and twenty-two extension files: doc 16 section 9's ten, \
+        stock.len() + 23,
+        "nine shipped packs and twenty-three extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
-         doc 20 cut SM.3a's terrain vehicle and Dray-P"
+         doc 20 cut SM.3a's terrain vehicle and Dray-P, and R7's relay station"
     );
     for (shipped, both) in stock.iter().zip(fielded.iter()) {
         assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
@@ -2420,7 +2420,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
     // Doc 18 cut IC2: twelve with the Dray, which fits no core (Class 0, the
     // drive ROM) — was eleven. Doc 20 cut SM.3a: fourteen with the terrain vehicle
     // and the Dray-P, neither fitting a core (Class 0, as the Dray).
-    let expected: [(&str, Fitted<'_>); 14] = [
+    let expected: [(&str, Fitted<'_>); 15] = [
         (content::LINE_TANK, line),
         (content::LINE_TANK_LASER, line),
         (content::LINE_TANK_THERMAL, line),
@@ -2450,6 +2450,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
         (content::DRAY, None),
         (content::TV_PROSPECTOR, None),
         (content::DRAY_P, None),
+        (tacsim::relay_loss::STATION, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {
@@ -3025,8 +3026,8 @@ fn ic2_the_dray_is_a_hauler_and_binds_class_zero() {
     // Dray (was `+ 1`, the Dray only).
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 3,
-        "the Dray, the terrain vehicle and the Dray-P, and only they"
+        before.specs.len() + 4,
+        "the Dray, the terrain vehicle, the Dray-P, and R7 relay station"
     );
     for (id, reference) in &before.references {
         assert_eq!(
@@ -3872,8 +3873,8 @@ fn sm3a_nothing_fielded_before_the_vehicles_moved() {
     let before = Catalog::build_game(&operator, tacsim::NS).expect("the earlier content binds");
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 2,
-        "the terrain vehicle and the Dray-P, and only they"
+        before.specs.len() + 3,
+        "the terrain vehicle, the Dray-P, and R7 relay station"
     );
     for (id, reference) in &before.references {
         assert_eq!(

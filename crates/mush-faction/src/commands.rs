@@ -1063,6 +1063,12 @@ fn faction_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         ));
     }
+    for incident in &f.relay_condemnations {
+        lines.push(format!(
+            "  Condemns relay loss {}: responsible {:?}; {}",
+            incident.object, incident.responsible, incident.source
+        ));
+    }
     for (kind, total) in &f.resources {
         lines.push(format!("  Resource: {kind} = {total}"));
     }
@@ -1503,6 +1509,12 @@ fn cmd_faction_info(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
     if is_officer || staff {
+        for incident in &f.relay_condemnations {
+            lines.push(format!(
+                "  Condemns relay loss {}: responsible {:?}; {}",
+                incident.object, incident.responsible, incident.source
+            ));
+        }
         for (kind, total) in &f.resources {
             lines.push(format!("  Resource: {kind} = {total}"));
         }

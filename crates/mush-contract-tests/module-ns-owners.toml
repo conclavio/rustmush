@@ -367,3 +367,27 @@ publish opaque Roll-prepared changes through its owned API. Serialization and
 stale checks precede publication; TacSim queues only owner-produced Roll writes
 with the related TacSim writes. Revision pruning keeps immutable source bytes.
 """
+
+[[delegation]]
+writer = "tacsim"
+ns = "sim"
+declared_by = "tacsim"
+reason = "R7 checked tactical post-images update terminal relay loss and structural availability through the simulation owner API."
+
+[[delegation]]
+writer = "content"
+ns = "tactics"
+declared_by = "tactics"
+reason = "R7 relay content installs its checked station structure through the tactics owner API."
+
+[[delegation]]
+writer = "atlas"
+ns = "tactics"
+declared_by = "tactics"
+reason = "R7 relay content installs its checked station structure through the tactics owner API."
+
+[[delegation]]
+writer = "propagation"
+ns = "npc"
+declared_by = "propagation"
+reason = "R3 permissioned service evidence is filed through mush_npc::file_observation; this pins the already-declared production crossing."

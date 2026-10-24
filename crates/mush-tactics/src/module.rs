@@ -1120,6 +1120,9 @@ impl GameModule for TacticsModule {
         // the slot is declared HERE — the first moment the reference exists —
         // rather than at the top of `register`. A custody write on a composition
         // that never reached this line refuses rather than guessing a schema.
+        for writer in ["content", "atlas"] {
+            reg.persist_delegation(writer, NS, "R7 relay content creates checked structural station units through tactics::create_unit")?;
+        }
         reg.state(UnitStore {
             record_definition: Some(v2.clone()),
             ..UnitStore::default()
@@ -2690,6 +2693,12 @@ pub fn apply_plan(
     if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
         store.update_active(post.clone(), payload_digest);
     }
+    ctx.emit_world_event(&WorldEvent::TacticalUnitChanged {
+        unit: obj,
+        revision: post.revision(),
+        responsible: Some(ctx.actor),
+    });
+    ctx.out.pin_deferred();
     Ok((post, journal))
 }
 
