@@ -62,7 +62,7 @@ pub struct Viewport {
 impl Viewport {
     /// Where a world point lands, in (fractional) frame pixels.
     #[must_use]
-    pub fn to_frame(&self, (x, y): (f64, f64)) -> (f64, f64) {
+    pub fn to_frame(self, (x, y): (f64, f64)) -> (f64, f64) {
         let (w0, s0, e0, n0) = self.world;
         let (fx, fy, fw, fh) = self.frame;
         match self.transform {
@@ -86,7 +86,7 @@ impl Viewport {
 
     /// [`Self::to_frame`], floored to a pixel.
     #[must_use]
-    pub fn to_px(&self, p: (f64, f64)) -> (i64, i64) {
+    pub fn to_px(self, p: (f64, f64)) -> (i64, i64) {
         let (x, y) = self.to_frame(p);
         (x.floor() as i64, y.floor() as i64)
     }

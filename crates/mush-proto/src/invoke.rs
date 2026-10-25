@@ -87,10 +87,10 @@ impl InvokeRequest {
                 return Err("invalid paid source range or selector");
             }
         }
-        if let MindRequest::Remove { name } = request {
-            if name.is_empty() || name.len() > 64 || name.contains(['\0', '@', ':']) {
-                return Err("invalid owned removal name");
-            }
+        if let MindRequest::Remove { name } = request
+            && (name.is_empty() || name.len() > 64 || name.contains(['\0', '@', ':']))
+        {
+            return Err("invalid owned removal name");
         }
         if let MindRequest::Replace { draft, .. } = request {
             if draft.source.len() > MAX_MIND_SOURCE_BYTES || draft.source.contains('\0') {

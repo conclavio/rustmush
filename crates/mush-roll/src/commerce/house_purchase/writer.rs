@@ -699,8 +699,8 @@ impl RegisteredHouseWriter {
             .read_owner_preimage(txn, &self.reader, HouseSaleRequest::listed(licence, issuer))
             .map_err(invalid)?;
         let r = self.registration()?;
-        if (&self.action != r.action(self.protocol()?, Transition::Fund)?
-            && &self.action != r.action(self.protocol()?, Transition::Grant)?)
+        if &self.action != r.action(self.protocol()?, Transition::Fund)?
+            && &self.action != r.action(self.protocol()?, Transition::Grant)?
         {
             return Err(PublicationError::Mismatch);
         }
