@@ -153,6 +153,9 @@ pub mod hull;
 pub mod licence;
 pub mod map;
 pub mod market;
+/// Doc 20 cut SM.12a: the Exchange's and Occator's mills — the batch, its ledger
+/// and the restock of the house's drawn ask (doc 20 §7.3 "The mill").
+pub mod mill;
 pub mod orders;
 pub mod passage;
 /// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
@@ -190,10 +193,11 @@ pub use coop::{
 pub use def::{
     AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, LicenceDef,
     MAX_CAPITAL_RAISES, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE, MAX_LICENCE_FEE_MAJOR,
-    MAX_LICENCE_TERM_IC_DAYS, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR,
-    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef,
-    SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone,
-    capital_schedule, check_ports, room_key, tranches,
+    MAX_LICENCE_TERM_IC_DAYS, MAX_MILL_RATIO, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR,
+    MAX_VENDOR_MILLS, MillDef, MillRatio, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef,
+    PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef, SITE_BLOCK_COUNT, SiteDef,
+    SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone, capital_schedule,
+    check_ports, room_key, tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -218,6 +222,10 @@ pub use market::{
     HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,
     NOT_IN_PORT, NOT_YOUR_CHARTER, PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate,
     capacity_line, governed_hold,
+};
+pub use mill::{
+    MAX_MILL_ATTEMPTS, MAX_RECENT_BATCHES, MILL_ACTION, MILL_FAMILY, MILL_KEY_PREFIX, MILL_OUTCOME,
+    MillBatch, MillId, MillLedger, Milled, batch, conserves, ic_day, room_today,
 };
 pub use orders::{
     HoldNote, Inflight, InflightRefs, LogLine, MAX_DEPART_CREW, MAX_ORDER_LOG_BYTES,

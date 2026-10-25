@@ -2,7 +2,7 @@
 //! "Finite seeded stock", "The driver"; D-18-26, D-18-32, Q-18-31; lead rulings L4,
 //! L5, L7, L19, L20).
 //!
-//! Four things live here, all driven by the `tacsim.port` tick
+//! Five things live here, all driven by the `tacsim.port` tick
 //! ([`crate::port_tick`]), which runs as GOD and submits nothing itself: every
 //! authoritative act below is made inside `Fire::as_principal`, as the principal it
 //! is for, at most one per principal per fire (D-18-32).
@@ -35,6 +35,13 @@
 //!   advanced), spent at the first fire after a sale into it — never more than one. A
 //!   row whose act the market refused having moved nothing waits for the next IC day,
 //!   so it never stalls the rows after it (lead ruling L24's rule).
+//! - **The mill** (`crate::port::mill`; doc 20 cut SM.12a, §7.3 "The mill"): after the
+//!   intake drip and before the lapsed-bid re-post, one restock or one batch a fire: a
+//!   restock raises a house's drawn ask by the units its mills made and the ask does not
+//!   yet carry (`mush_market::restock_ask`, the counter in the same outbox); a batch debits
+//!   ore and credits product at the storefront under the mill's ledger
+//!   (`tacsim_port_mill`). The drift check and the list step read the milled units not yet
+//!   listed, so the gap between a batch and its restock never pages.
 //! - **The lapsed-hold release arm** (`release_verify`, `release_agent`,
 //!   `release_step`): a player's hold-backed lot listing that lapsed is released
 //!   by the tick acting **as the vault's owner** through
@@ -60,7 +67,7 @@ use mush_core::{
 use mush_economy::{Amount, CatalogRef, VaultId};
 use mush_inventory::record::{EndpointRef, Grade, LotId};
 use mush_inventory::{InventoryFamilies, InventoryVerb};
-use mush_market::{ListingId, MarketStore, MarketVisibility, PaidKind, Supply};
+use mush_market::{ListingId, MarketStore, MarketVisibility, Supply};
 use mush_org::PrincipalId;
 use serde_json::{Map, Value, json};
 
@@ -483,27 +490,13 @@ pub(crate) fn ask_reading(store: &MarketStore, vault: u64, good: &CanonicalId) -
     let listing = store
         .lot_listing_of(endpoint, good)
         .and_then(|id| store.listing(id).map(|l| (id, l.quantity)));
-    let mut reading = AskReading {
+    // Doc 20 cut SM.12a (12a-M5): the undrawn rule has one copy, the market's.
+    let (undrawn, in_flight) = store.draw_reading(endpoint, good);
+    AskReading {
         listing,
-        ..AskReading::default()
-    };
-    for quote in store.quotes() {
-        let Some(lot) = &quote.lot else {
-            continue;
-        };
-        if lot.kind != PaidKind::Draw
-            || lot.source.0 != endpoint
-            || &lot.commodity.0 != good
-            || quote.settled.is_some()
-        {
-            continue;
-        }
-        reading.in_flight = true;
-        if quote.drawn_at.is_none() {
-            reading.undrawn = reading.undrawn.saturating_add(quote.quantity);
-        }
+        undrawn,
+        in_flight,
     }
-    reading
 }
 
 /// Whether a reading drifts (doc 18 §4.3; lead ruling L19): fewer in the pool than
@@ -522,8 +515,9 @@ fn ask_price(w: &World, price_major: u64) -> Option<Amount> {
     crate::port::apply::minor_of(price_major, scale).map(Amount::from_minor)
 }
 
-/// One swapped submission's step: `Submitted`, or why not.
-fn swapped(result: Result<(), SwapRefused>) -> Step {
+/// One swapped submission's step: `Submitted`, or why not. Doc 20 cut SM.12a: the
+/// mill's batch maps its submission through it too (`crate::port::mill`).
+pub(crate) fn swapped(result: Result<(), SwapRefused>) -> Step {
     match result {
         Ok(()) => Step::Submitted,
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
@@ -535,9 +529,15 @@ fn swapped(result: Result<(), SwapRefused>) -> Step {
 /// step for the port's clerk this fire — the first that is due, in authored order: mint
 /// a row with no receipt, dissolve a minted lot still standing at the storefront, then
 /// (every row seeded) list an ask whose pool has stock, no live listing and no Draw in
-/// flight, then (doc 20 cut SM.5) the intake drip for a refreshed bid, then (doc 18 cut
-/// IC10, lead 2h-ii) re-post a lapsed standing bid. The drift check takes no step.
-/// Nothing is notified: the clerk is a Thing.
+/// flight, then (doc 20 cut SM.5) the intake drip for a refreshed bid, then (doc 20 cut
+/// SM.12a) the mill: a restock, then a batch, then (doc 18 cut IC10, lead 2h-ii) re-post a
+/// lapsed standing bid. The drift check takes no step; it and the list step net out the
+/// units the mills made and the ask does not yet carry (`crate::port::mill::unlisted`), and
+/// a mill fault skips only the asks of the good it is about (D8: nothing the mill reads
+/// returns early). An ask whose listing the market refused is passed over for the rest of
+/// that IC day (`PortTickState::list_refused`; doc 20 cut SM.12a, D8, lead ruling L24's
+/// rule): a milled pool a suspended or retired house cannot list never spends the clerk's
+/// every act. Nothing is notified: the clerk is a Thing.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn stock_step(
     ctx: &mut Ctx<'_>,
@@ -683,6 +683,13 @@ pub(crate) fn stock_step(
     }
     // 4–5. Every row is seeded: the drift check, then the list step.
     let mut due: Option<(mush_market::VendorId, u64, CanonicalId, u64, u64)> = None;
+    // Doc 20 cut SM.12a (F1): the due ask's vendor org and its mills' target counters.
+    let mut due_counters: Option<(CanonicalId, Vec<(CanonicalId, u64)>)> = None;
+    let mills = handles.families.mills.clone();
+    // Doc 20 cut SM.12a (D8; lead ruling L24's rule, as the drip applies it): an ask whose
+    // listing the market refused today waits for the next IC day, so a house that cannot
+    // list (suspended, retired) never spends the clerk's every act on it.
+    let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
     for vendor in &def.vendors {
         let Some(row) = map.vendors.get(&vendor.org) else {
             continue;
@@ -691,12 +698,34 @@ pub(crate) fn stock_step(
             let Ok(pool) = read_pool(ctx, EndpointRef(VaultId(row.vault)), &ask.good) else {
                 return Step::Refused;
             };
+            // Doc 20 cut SM.12a (F3, D8, D21, D27): the units this vendor's mills made and
+            // the ask does not yet carry are netted out of the pool; a mill fault skips this
+            // ask alone (warned once a boot) and never returns from the arm.
+            let net = match crate::port::mill::unlisted(ctx, &mills, &map, vendor, row, &ask.good) {
+                Err(error) => {
+                    crate::port::mill::mill_warn(state, row.vault, error.ore(), error.warn(), "");
+                    continue;
+                }
+                Ok(unlisted) => match pool.checked_sub(unlisted) {
+                    Some(net) => net,
+                    None => {
+                        crate::port::mill::mill_warn(
+                            state,
+                            row.vault,
+                            &ask.good,
+                            crate::port::mill::MillWarn::Underflow,
+                            "",
+                        );
+                        continue;
+                    }
+                },
+            };
             let reading = ctx
                 .w
                 .module_state::<MarketStore>()
                 .map(|store| ask_reading(store, row.vault, &ask.good))
                 .unwrap_or_default();
-            if drifts(pool, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
+            if drifts(net, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
                 tracing::error!(
                     vault = row.vault,
                     good = %ask.good,
@@ -710,6 +739,10 @@ pub(crate) fn stock_step(
                 && reading.listing.is_none()
                 && !reading.in_flight
                 && pool > 0
+                && !state
+                    .list_refused
+                    .get(&(row.vault, ask.good.clone()))
+                    .is_some_and(|day| *day == today)
                 && let Some(vendor_id) = row.vendor
             {
                 due = Some((
@@ -719,6 +752,10 @@ pub(crate) fn stock_step(
                     ask.price_major,
                     pool,
                 ));
+                due_counters = Some((
+                    vendor.org.clone(),
+                    mill_targets(ctx, &mills, &map, vendor, &ask.good),
+                ));
             }
         }
     }
@@ -726,6 +763,11 @@ pub(crate) fn stock_step(
         // Doc 20 cut SM.5 (lead ruling 4): the intake drip, before the lapsed-bid
         // re-post (which never touches a refresh row).
         if let Some(step) = drip_step(ctx, state, fire, clerk, &map, &def) {
+            return step;
+        }
+        // Doc 20 cut SM.12a (D4): the mill — a restock, then a batch — before the
+        // lapsed-bid re-post.
+        if let Some(step) = crate::port::mill::mill_step(ctx, state, fire, clerk, &map, &def) {
             return step;
         }
         return bid_step(ctx, state, fire, clerk, &map, &def);
@@ -749,17 +791,83 @@ pub(crate) fn stock_step(
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
     };
     match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
-        Ok(Ok(_)) => Step::Worked,
+        Ok(Ok(_)) => {
+            state.list_refused.remove(&(vault, good.clone()));
+            // Doc 20 cut SM.12a (F1): a fresh listing of the whole pool carries every unit
+            // the vendor's mills of this good made, so their counters are set to their
+            // ledger totals — written only when one differs, in the same outbox.
+            if let Some((org, targets)) = due_counters
+                && let Some(next) = counters_set(&map, &org, &targets)
+            {
+                crate::store::put_port_map(ctx, &next);
+            }
+            Step::Worked
+        }
         Ok(Err(error)) => {
             tracing::warn!(
                 vault, good = %good, ?error,
                 "tacsim: the stock clerk could not list an ask"
             );
+            // Doc 20 cut SM.12a (D8): passed over for the rest of this IC day (stale days
+            // pruned first, so the bound holds the live refusals).
+            state.list_refused.retain(|_, day| *day == today);
+            let key = (vault, good.clone());
+            if state.list_refused.contains_key(&key) || state.list_refused.len() < MAX_CLERK_ROWS {
+                state.list_refused.insert(key, today);
+            }
             Step::Refused
         }
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
         Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
     }
+}
+
+/// **A fresh listing's target counters** (doc 20 cut SM.12a, F1): for each of the vendor's
+/// authored mill rows whose ledger exists and whose ledger `into` is `good`, `(the mill's
+/// ore, the ledger's product total)`. A ledger that will not read is skipped (the ask of
+/// its row's good was skipped before it could be due, `crate::port::mill::unlisted`).
+fn mill_targets(
+    ctx: &Ctx<'_>,
+    mills: &StateFamilyHandle<crate::port::mill::MillId, crate::port::mill::MillLedger>,
+    map: &PortMap,
+    vendor: &crate::port::def::VendorDef,
+    good: &CanonicalId,
+) -> Vec<(CanonicalId, u64)> {
+    vendor
+        .mill
+        .iter()
+        .filter_map(|mill| {
+            let id =
+                crate::port::mill::MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore)
+                    .ok()?;
+            let ledger = crate::port::mill::ledger_at(ctx, mills, &id).ok()??;
+            (&ledger.into == good).then(|| (mill.ore.clone(), ledger.product_t))
+        })
+        .collect()
+}
+
+/// **The map with a vendor's mill counters set to `targets`** (doc 20 cut SM.12a, F1), or
+/// `None` when every target already matches its stored counter (an absent counter reads
+/// 0), so a fresh listing with no milled units — every seed listing — writes no counter
+/// and no extra port-map document. Pure.
+fn counters_set(
+    map: &PortMap,
+    org: &CanonicalId,
+    targets: &[(CanonicalId, u64)],
+) -> Option<PortMap> {
+    let row = map.vendors.get(org)?;
+    let differs = targets
+        .iter()
+        .any(|(ore, target)| row.mill_listed.get(ore).copied().unwrap_or(0) != *target);
+    if !differs {
+        return None;
+    }
+    let mut next = map.clone();
+    let row = next.vendors.get_mut(org)?;
+    for (ore, target) in targets {
+        row.mill_listed.insert(ore.clone(), *target);
+    }
+    Some(next)
 }
 
 /// **The clerk's bid re-post** (doc 18 cut IC10, lead 2h-ii; decisions 7 and 23): the
@@ -869,7 +977,8 @@ fn bid_step(
 pub(crate) const DRIP_RENEW_SECS: i64 = 86_400;
 
 /// An IC day, seconds: the drip's boundary is a change of `instant.div_euclid(IC_DAY)`.
-const IC_DAY: i64 = 86_400;
+/// Doc 20 cut SM.12a: the mill's day tally reads it too (`crate::port::mill::ic_day`).
+pub(crate) const IC_DAY: i64 = 86_400;
 
 /// **Why the drip warned** (doc 20 cut SM.5; reviewer F10): two keys, so the first
 /// warning of a `(vault, good)` never hides the second.
@@ -1615,6 +1724,7 @@ mod tests {
                     lot: id.lot_id().0,
                 }],
                 bids: BTreeMap::new(),
+                mill_listed: BTreeMap::new(),
             },
         );
         let rows = rows_of(std::iter::once(&map), ObjId(40));

@@ -4178,6 +4178,177 @@ async fn r10_historical_pack_upgrade_preserves_identity_money_and_inflight_due()
     assert_eq!(rig.money_total(), money);
     assert!(rig.tw.world().refused_namespace_writes().is_empty());
 }
+
+/// Re-sign a pack edited as JSON with the shipping canonical encoder, as
+/// `crates/mush-content/examples/pack_digest.rs` does.
+fn resigned(mut value: serde_json::Value) -> mush_content::Pack {
+    let digest = mush_content::parse_pack(&value.to_string())
+        .unwrap()
+        .computed_digest()
+        .unwrap()
+        .to_hex();
+    value["manifest"]["digest"] = digest.into();
+    mush_content::load_pack(&value.to_string()).unwrap()
+}
+/// The published lane v13 (relay cut R9b): the shipped v14 less doc 20 cut SM.12a's two
+/// `mill` rows, at version 13, re-signed to its published digest.
+fn lane_v13() -> mush_content::Pack {
+    let mut lane: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::LANE_JSON).unwrap();
+    for vendor in lane["entries"]["ceres_port"]["def"]["vendors"]
+        .as_array_mut()
+        .unwrap()
+    {
+        vendor.as_object_mut().unwrap().remove("mill");
+    }
+    lane["manifest"]["version"] = 13.into();
+    let pack = resigned(lane);
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "34d47907dd42dbcd5192aae05d6eaf76c89dd40abd877845ac83ec35968e47c1",
+        "the rebuild is the published lane v13"
+    );
+    pack
+}
+/// The published relay v2 (relay cut R10): the shipped v3 at version 2, requiring lane
+/// v13, re-signed to its published digest. No entry byte differs.
+fn relay_v2() -> mush_content::Pack {
+    let mut relay: serde_json::Value = serde_json::from_str(tacsim::relay_content::JSON).unwrap();
+    relay["manifest"]["version"] = 2.into();
+    for requirement in relay["manifest"]["requires"].as_array_mut().unwrap() {
+        if requirement["id"] == tacsim::definitions::content::LANE_PACK {
+            requirement["version"] = 13.into();
+        }
+    }
+    let pack = resigned(relay);
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "6d99bd6f999c88285404f05242100945416191a2dc67e18b4838514124d61401",
+        "the rebuild is the published relay v2"
+    );
+    pack
+}
+impl Rig {
+    /// A world kept from relay cut R10: lane v13 and relay v2 applied, the full star
+    /// live, booted by today's binary (lane v14, relay v3), whose boot pass upgrades
+    /// neither latch.
+    async fn v13_star() -> Self {
+        let mut rig = Self::new(false).await;
+        let mut packs = tacsim::composition::boot_pack_list(false, true).unwrap();
+        for pack in &mut packs {
+            match pack.manifest().id().as_str() {
+                tacsim::definitions::content::LANE_PACK => *pack = lane_v13(),
+                "tacsim.relay.luna_ceres" => *pack = relay_v2(),
+                _ => {}
+            }
+        }
+        rig.apply_content(packs).await;
+        rig.cfg.tacsim.enabled = true;
+        rig.restart().await.unwrap();
+        rig.flush().await;
+        rig
+    }
+    fn latched(&self, pack: &str) -> Option<u32> {
+        self.tw
+            .world()
+            .module_state::<mush_content::ContentState>()
+            .unwrap()
+            .latches
+            .applied(&cid(pack))
+            .map(mush_content::Applied::version)
+    }
+    fn operator_org(&self) -> mush_org::Organization {
+        let operator = self.registry().operator;
+        self.tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .unwrap()
+            .state()
+            .org(operator)
+            .unwrap()
+            .clone()
+    }
+    fn story(&self) -> serde_json::Value {
+        serde_json::to_value(
+            tacsim::relay_world::current(self.tw.world())
+                .expect("the full star seeds the Terms story"),
+        )
+        .unwrap()
+    }
+}
+/// **Doc 20 cut SM.12a: the relay seed follows the lane.** Relay v3 is v2's star
+/// re-signed to require lane v14 (`luna_ceres.json`; `LANE_VERSION`'s doc). A world kept
+/// at lane v13 and relay v2 with the full star live boots today's binary unchanged, takes
+/// lane v14 by the lane's own path (`@atlas/pack plan`/`apply`), and keeps the star
+/// through relay v3: staff's plan reads "Nothing to do." (no entry differs, so there is
+/// nothing to apply and the latch may stay at 2, which `full_star` still reads as the
+/// star), and the operator's apply of the shipped pack (the v1 → v2 tests' driver)
+/// latches 3. The catalog — its operator, nodes, pairs and halves — the operator org,
+/// the bindings, the Terms story and the money never move, across two restarts.
+#[tokio::test]
+async fn sm12a_a_kept_v13_star_takes_lane_v14_and_relay_v3() {
+    let lane = tacsim::definitions::content::LANE_PACK;
+    let relay = "tacsim.relay.luna_ceres";
+    let mut rig = Rig::v13_star().await;
+    assert_eq!(rig.latched(lane), Some(13), "the boot pass never upgrades");
+    assert_eq!(rig.latched(relay), Some(2), "the boot pass never upgrades");
+    let original = rig.registry();
+    assert_eq!((original.nodes.len(), original.pairs.len()), (5, 4));
+    let org = rig.operator_org();
+    let story = rig.story();
+    let money = rig.money_total();
+    assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
+
+    // The lane's own upgrade path: staff plan and apply.
+    let plan = rig.run(GOD, &format!("@atlas/pack plan {lane}"));
+    let fingerprint = plan
+        .split("@atlas/pack apply ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no fingerprint:\n{plan}"))
+        .to_owned();
+    let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
+    assert!(
+        applied.contains(&format!("Applied {lane}@14: ")),
+        "{plan}\n{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+    assert_eq!(rig.latched(lane), Some(14));
+
+    // Relay v3 differs from v2 only in its manifest: staff have nothing to apply.
+    let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
+    assert!(plan.contains("Nothing to do."), "{plan}");
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(14), Some(2)));
+    assert_eq!(rig.registry(), original);
+    assert_eq!(
+        rig.story(),
+        story,
+        "relay v2 beside lane v14 is still the full star"
+    );
+
+    // The operator's apply of the shipped seed latches v3 and changes nothing else.
+    rig.apply_content(vec![
+        mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
+    ])
+    .await;
+    assert_eq!(rig.latched(relay), Some(3));
+    assert_eq!(rig.registry(), original);
+    rig.flush().await;
+    rig.restart().await.unwrap();
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(14), Some(3)));
+    assert_eq!(rig.registry(), original);
+    assert_eq!(rig.operator_org(), org);
+    assert_eq!(
+        rig.story(),
+        story,
+        "relay v3 is the full star: the Terms story boots unchanged"
+    );
+    assert!(rig.run(GOD, "@relay/check").contains("Bindings OK"));
+    assert_eq!(rig.money_total(), money);
+    assert!(rig.tw.world().refused_namespace_writes().is_empty());
+}
 #[tokio::test]
 async fn r10_named_terms_case_deduplicates_unrelated_principals_and_cure() {
     let mut rig = Rig::new(true).await;
@@ -4322,7 +4493,9 @@ fn r10_public_star_content_digests_are_pinned() {
         ),
         (
             "tacsim.relay.luna_ceres",
-            "6d99bd6f999c88285404f05242100945416191a2dc67e18b4838514124d61401",
+            // Doc 20 cut SM.12a: v3, v2's star re-signed to require lane v14 (was
+            // `6d99bd6f…` at v2, requiring lane v13).
+            "a9bf71ef8d19db900ea566b4de01bca7563c106d919a17b112523d6be553b051",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

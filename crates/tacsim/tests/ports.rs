@@ -1852,14 +1852,32 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 commerce_lines += 1;
             }
         }
+        // Doc 20 cut SM.12a: one Mill line per mill row, after the port's Bids lines;
+        // nothing milled yet reads Ready (reported, never gated).
+        for vendor in &def.vendors {
+            for mill in &vendor.mill {
+                want.push(format!(
+                    "  {entry} mill {} {}: nothing milled yet; 0 t of ore waits; {} to {}, {} t \
+                     a batch, at most {} t an IC day. [ready]",
+                    vendor.org,
+                    mill.ore,
+                    mill.ratio.ore,
+                    mill.ratio.product,
+                    mill.batch_t,
+                    mill.per_ic_day_t
+                ));
+                commerce_lines += 1;
+            }
+        }
     }
     // Doc 19 cut A.8: one vendor, ask and bid line per authored row, pinned against
     // the shipped lane (a count of report lines, not a vertex): Ceres 3 + 4 + 6 (doc 20
-    // cut SM.5: the four ore intakes), Stickney 3 + 4 + 2, Luna 4 + 4 + 3, Deimos 2 + 2 +
-    // 4, Titan 3 + 4 + 2. The bid-only vendors' lines are counted though they read Ready.
+    // cut SM.5: the four ore intakes) + 2 mills (doc 20 cut SM.12a), Stickney 3 + 4 + 2,
+    // Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The bid-only vendors' lines are
+    // counted though they read Ready.
     assert_eq!(
-        commerce_lines, 50,
-        "the shipped lane's vendor, ask and bid lines at the five ports"
+        commerce_lines, 52,
+        "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();
     // Doc 19 cut A.8: every line that is not ready — the orgs' tranches, the

@@ -263,6 +263,38 @@ impl MarketStore {
             .and_then(|set| set.iter().next().copied())
     }
 
+    /// **The Draw quotes in flight on one storefront pool** (doc 20 cut SM.12a; the rule
+    /// tacsim's stock arm read since doc 18 cut IC8): `(undrawn, in_flight)` — Σ quantity
+    /// over unsettled Draw quotes on `(endpoint, commodity)` whose goods have not yet
+    /// been drawn, and whether any unsettled Draw quote is on it at all. The one copy:
+    /// `restock_ask` and tacsim's `ask_reading` both read it.
+    #[must_use]
+    pub fn draw_reading(
+        &self,
+        endpoint: mush_inventory::EndpointRef,
+        commodity: &mush_core::CanonicalId,
+    ) -> (u64, bool) {
+        let mut undrawn: u64 = 0;
+        let mut in_flight = false;
+        for quote in self.quotes() {
+            let Some(lot) = &quote.lot else {
+                continue;
+            };
+            if lot.kind != crate::record::PaidKind::Draw
+                || lot.source.0 != endpoint
+                || &lot.commodity.0 != commodity
+                || quote.settled.is_some()
+            {
+                continue;
+            }
+            in_flight = true;
+            if quote.drawn_at.is_none() {
+                undrawn = undrawn.saturating_add(quote.quantity);
+            }
+        }
+        (undrawn, in_flight)
+    }
+
     /// **What matter a listing sells, and how it moves** (doc 18 §4.3, D-18-26; cut
     /// IC7, lead note 2b) — the one accessor, so which op a listing takes is never
     /// re-derived inline.

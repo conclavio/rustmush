@@ -62,13 +62,16 @@ impl Story {
 pub fn current(w: &World) -> Option<&Story> {
     w.module_state::<crate::TacsimStore>()?.relay_world.as_ref()
 }
+/// The relay seed latched at its full public star. The full star is the network
+/// topology since v2; every later version only re-signs it to require a newer lane
+/// (doc 20 cut SM.12a: v3 requires lane v14), so any version from 2 is the star.
 fn full_star(w: &World) -> bool {
     let Ok(id) = CanonicalId::new("tacsim.relay.luna_ceres") else {
         return false;
     };
     w.module_state::<mush_content::ContentState>()
         .and_then(|s| s.latches.applied(&id))
-        .is_some_and(|a| a.version() == 2 && !a.is_retired() && a.anomaly().is_none())
+        .is_some_and(|a| a.version() >= 2 && !a.is_retired() && a.anomaly().is_none())
 }
 fn clock_ok(w: &World, s: &Story) -> Result<(), String> {
     let sim = w

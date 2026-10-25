@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 13,
+    "version": 14,
     "kind": "campaign_seed",
-    "digest": "34d47907dd42dbcd5192aae05d6eaf76c89dd40abd877845ac83ec35968e47c1",
+    "digest": "c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8",
     "requires": []
   },
   "entries": {
@@ -2595,14 +2595,16 @@
             "bids":  [ { "good": "structural_alloys", "price_major": 520, "intake": 7000, "as": "Freeport Works", "boards": ["exchange"] },
                        { "good": "metal_ore", "price_major": 70, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } },
                        { "good": "carbon_ore", "price_major": 50, "intake": 120, "boards": ["exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } },
-                       { "good": "strategic_ore", "price_major": 600, "intake": 12, "boards": ["exchange"], "refresh": { "per_ic_day": 2, "cap": 12 } } ] },
+                       { "good": "strategic_ore", "price_major": 600, "intake": 12, "boards": ["exchange"], "refresh": { "per_ic_day": 2, "cap": 12 } } ],
+            "mill":  [ { "ore": "metal_ore", "into": "metals", "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
           { "org": "occator", "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.qureshi",
             "stock": [ { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
                        { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "volatiles", "price_major": 100, "boards": ["exchange"] },
                        { "good": "propellant", "price_major": 40, "boards": ["exchange"] } ],
-            "bids":  [ { "good": "ice_ore", "price_major": 35, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } } ] },
+            "bids":  [ { "good": "ice_ore", "price_major": 35, "intake": 240, "boards": ["exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } } ],
+            "mill":  [ { "ore": "ice_ore", "into": "volatiles", "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
           { "org": "coop", "storefront": "neighborhood.ceres_freeport.item.chandlery_cage",
             "agent": "ceres_port.clerk", "signatory": "neighborhood.ceres_freeport.npc.akintola",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],

@@ -112,8 +112,9 @@ pub const NOTICE_HEADING: &str = "While you were off watch:";
 
 /// Register the port tick (doc 18 cut IC5): the port's typed families, the crate's
 /// one `outcome` and one `action` validator, the `tacsim_port_stock` provider (doc 18
-/// cut IC8) and the `tacsim_port_burn` provider (cut IC9) — each when the inventory
-/// cell is filled (and the burn's drive table built), their definitions regardless —
+/// cut IC8), the `tacsim_port_burn` provider (cut IC9) and doc 20 cut SM.12a's
+/// `tacsim_port_mill` provider — each when the inventory cell is filled (and the
+/// burn's drive table built), their definitions regardless —
 /// in a test world the probe (family, definitions and provider), [`PortHandles`],
 /// [`PortTickState`], the `tacsim.port` tick and the [`ReconnectNotices`] hook. Cut
 /// IC11's order arm registers no provider of its own: it runs the burn and the
@@ -166,6 +167,11 @@ pub fn register(
         .get(crate::port::stock::STOCK_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the stock outcome did not register"))?;
+    // Doc 20 cut SM.12a: the mill's batch.
+    let mill_outcome = outcome_refs
+        .get(crate::port::mill::MILL_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the mill outcome did not register"))?;
     let burn_outcome = outcome_refs
         .get(crate::port::burn::BURN_OUTCOME)
         .cloned()
@@ -192,7 +198,7 @@ pub fn register(
         .cloned()
         .ok_or_else(|| ModError::msg("relay fabrication outcome missing"))?;
     let actions = action_descriptors(
-        &stock_outcome,
+        (&stock_outcome, &mill_outcome),
         &relay_outcome,
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
@@ -379,6 +385,27 @@ pub fn register(
     } else {
         None
     };
+    // Doc 20 cut SM.12a: `tacsim_port_mill`, the mill's batch — registered only when the
+    // inventory cell is filled (its prepare debits and credits through the delegated
+    // families; the stock provider's rule); the definitions register regardless.
+    let mill_action = match (
+        action_refs.get(crate::port::mill::MILL_ACTION).cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::mill::MillProvider {
+                    action: action.clone(),
+                    outcome: mill_outcome,
+                    mills: port_families.mills.clone(),
+                    inventory,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -391,7 +418,7 @@ pub fn register(
         chart_forget,
         site_work,
     });
-    reg.state(PortTickState::new(probe_action, stock_action));
+    reg.state(PortTickState::new(probe_action, stock_action, mill_action));
     reg.tick(
         PORT_TICK,
         TickCadence::Coarse(PORT_TICK_PERIOD),
@@ -420,7 +447,8 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 }
 
 /// **Every `outcome` definition this crate registers** — doc 18 cut IC8's
-/// `tacsim_port_stock_result`, cut IC9's `tacsim_port_burn_result` and doc 20 cut SM.3b's
+/// `tacsim_port_stock_result`, doc 20 cut SM.12a's `tacsim_port_mill_result`, cut IC9's
+/// `tacsim_port_burn_result` and doc 20 cut SM.3b's
 /// `tacsim_surface_act_result` and `tacsim_surface_done_result` on every roster, and the
 /// probe's in a test world: a second `definition_validator` call
 /// for one kind is a registration conflict, so there is exactly one validator per
@@ -436,6 +464,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::port::stock::STOCK_OUTCOME,
             json!({ "fields": ["actor", "issue", "lot", "qty", "vault"] }),
+        )?,
+        // Doc 20 cut SM.12a: the mill's batch.
+        descriptor(
+            "outcome",
+            crate::port::mill::MILL_OUTCOME,
+            json!({ "fields": ["actor", "mill", "ordinal", "ore_t", "product_t"] }),
         )?,
         descriptor(
             "outcome",
@@ -477,12 +511,14 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 }
 
 /// **Every `action` definition this crate registers**, each referencing its
-/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock`, cut
-/// IC9's `tacsim_port_burn` and doc 20 cut SM.3b's `tacsim_surface_act` and
+/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock`, doc 20 cut
+/// SM.12a's `tacsim_port_mill` (its outcome paired with the stock's in
+/// `stock_outcomes`, so the list stays under clippy's argument bound), cut IC9's
+/// `tacsim_port_burn` and doc 20 cut SM.3b's `tacsim_surface_act` and
 /// `tacsim_surface_done` on every roster, and the probe's when its outcome is
 /// registered (a test world); one validator per kind for the crate.
 fn action_descriptors(
-    stock_outcome: &DefinitionRef,
+    stock_outcomes: (&DefinitionRef, &DefinitionRef),
     relay_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
@@ -506,7 +542,18 @@ fn action_descriptors(
                 "family": families::PORT_STOCK_FAMILY,
             }),
         )?
-        .with_references(vec![stock_outcome.clone()]),
+        .with_references(vec![stock_outcomes.0.clone()]),
+        // Doc 20 cut SM.12a: the mill's batch writes the mill's `tacsim.port_mill` ledger.
+        descriptor(
+            "action",
+            crate::port::mill::MILL_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::port::mill::MILL_FAMILY,
+            }),
+        )?
+        .with_references(vec![stock_outcomes.1.clone()]),
         descriptor(
             "action",
             crate::port::burn::BURN_ACTION,
@@ -667,6 +714,25 @@ pub struct PortTickState {
     /// `(vault, good, kind)` — keyed apart by [`crate::port::stock::DripWarn`], so a
     /// first warning never hides the second; each is logged once.
     pub(crate) drip_warned: BTreeSet<(u64, CanonicalId, crate::port::stock::DripWarn)>,
+    /// **Doc 20 cut SM.12a**: the registered `tacsim_port_mill` action, set at `register`;
+    /// `Some` exactly when its provider registered (the inventory cell filled).
+    pub(crate) mill_action: Option<DefinitionRef>,
+    /// **Doc 20 cut SM.12a** (D8, lead ruling L24's rule as the drip applies it): the mill
+    /// acts refused today, by `(storefront vault, the mill's ore, which act)`, with the IC
+    /// day of that refusal. The clerk passes such a mill's act over for the rest of that
+    /// IC day, so one bad mill never stalls the other mill, the drip or the bids. Bounded
+    /// by `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.
+    pub(crate) mill_refused: BTreeMap<(u64, CanonicalId, crate::port::mill::MillAct), i64>,
+    /// **Doc 20 cut SM.12a** (the stock rule's `stock_attempts`, lead ruling L24): a mill's
+    /// batch submitted with its ledger not yet advanced, by `(storefront vault, the mill's
+    /// ore)` -> `(the ordinal, the submissions)`. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) mill_attempts: BTreeMap<(u64, CanonicalId), (u64, u8)>,
+    /// **Doc 20 cut SM.12a**: the mill's warnings this boot, by `(storefront vault, the
+    /// mill's ore, kind)` — `crate::port::mill::MillWarn::Underflow`, which no single mill
+    /// owns, by the ask's good instead; each is logged once. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) mill_warned: BTreeSet<(u64, CanonicalId, crate::port::mill::MillWarn)>,
     /// Doc 20 cut SM.5 (lead ruling L24's rule, applied to the drip): the refresh rows
     /// whose drip act the market refused having moved nothing, by `(vault, good)`, with
     /// the IC day of that refusal. The drip passes over such a row for the rest of that
@@ -674,6 +740,14 @@ pub struct PortTickState {
     /// stalls the other intakes or the lapsed-bid re-post behind it. Bounded by
     /// `crate::port::stock::MAX_CLERK_ROWS`.
     pub(crate) drip_refused: BTreeMap<(u64, CanonicalId), i64>,
+    /// **Doc 20 cut SM.12a** (D8; lead ruling L24's rule, as the drip applies it): the asks
+    /// whose listing the market refused, by `(storefront vault, good)`, with the IC day of
+    /// that refusal. The list step passes over such an ask for the rest of that IC day, so
+    /// a pool its house cannot list (a suspended or retired house; a mill makes such a pool
+    /// out of a sold-out ask) never spends the clerk's every act and stalls the drip, the
+    /// mills and the bids behind it. Bounded by `crate::port::stock::MAX_CLERK_ROWS`; stale
+    /// days are pruned at each insert.
+    pub(crate) list_refused: BTreeMap<(u64, CanonicalId), i64>,
     /// Doc 19 cut A.4b: when each port's emergency reading was last taken with
     /// nothing to do, by entry id (real seconds); the clerk reads it again
     /// `crate::port::price::EMERGENCY_CHECK_SECS` later.
@@ -706,10 +780,12 @@ impl PortTickState {
     fn new(
         probe_action: Option<DefinitionRef>,
         stock_action: Option<DefinitionRef>,
+        mill_action: Option<DefinitionRef>,
     ) -> PortTickState {
         PortTickState {
             probe_action,
             stock_action,
+            mill_action,
             ..PortTickState::default()
         }
     }

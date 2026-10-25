@@ -3967,3 +3967,510 @@ hull's ice ore goes through the same `plan_ask`/`CompileInput.hold_room_t` per-f
 
 None: this commit folds its own — doc 20 §5's and §8's "As built (SM.11r)" notes, and doc 20a §10's
 as-built bullet. The next fold marks doc 20a §2's SM.11r row landed with this commit's hash.
+
+## SM.12a
+
+**The mill** (doc 20 §13's SM.12 row, first part, as the lead split it; doc 20a §3, the plan of record; the consolidated brief revision 3). Base `8cc0aa64` (SM.11r), 2026-10-25, built in a worktree on `claude/sm12-train` after the owner lifted the SM.12 hold on 2026-10-24. Run `wf_db2d51f7-363`: an Opus builder from brief r3, three review lenses (20 findings), a fixer, gate 1 green on the first run, and a judge who held the cut do-not-ship on one blocker only — lane v14 could not boot, because relay R10's seed requires the lane at an exact version. The lead's round `wf_78441e67-a62` re-signed the relay seed with the lane, applied the builder's held lane rows, help sentence and readiness pin, moved the mill tests onto the shipped lane, ruled on the restock's Draw wait and closed four residuals; its gate ran green on the first run. On the Ceres clerk's stock arm, after the intake drip and before the bids, one mill act a fire: a **batch** debits 20 t of ore and credits 8 t of product at the storefront under the mill's ledger in one bundle, and a later **restock** raises the house's drawn ask by the units milled and not yet listed, never minting; `@tacsim/port status` gains a Mill line per mill and the Listings line nets the unlisted units. O-1, O-5 and O-7b are the owner's provisional defaults of 2026-10-24.
+
+### What landed
+
+1. **The mill's lane data and its validator** (`crates/tacsim/src/port/def.rs`). `MillRatio { ore, product }` and `MillDef { ore, into, ratio, batch_t, per_ic_day_t }` are both strict. `VendorDef.mill` defaults empty and is skipped when empty, so a vendor without a mill re-encodes byte-identically. The constants are `MAX_VENDOR_MILLS` 4 and `MAX_MILL_RATIO` 100. `MillDef`'s doc carries O-1's basis: 5 : 2 so that buy-and-mill never loses (175 < 200, 87.5 < 100); 40 t an IC day, the drip's rate; 4.8× and 1.2× headroom at rate 24; the resale bounded by the trade run's draw, so the Exchange's intakes close on capital in about a real month whether the mill runs or not; 20 t a batch. `check_vendor_mills` runs after the refresh loop and before the boards loop, with the seven sentences verbatim. `check_ports`' goods-table loop adds the family rule, "{ore} and {into} are not one family's goods". The tests are `sm12a_each_mill_rule_refuses_with_its_sentence` and `sm12a_a_vendor_without_a_mill_re_encodes_byte_identically`.
+
+2. **`port::mill`** (`crates/tacsim/src/port/mill.rs`, new):
+   - Constants: `MILL_ACTION` `tacsim_port_mill`, `MILL_OUTCOME`, `MILL_FAMILY` `tacsim.port_mill`, `MILL_KEY_PREFIX`, `MAX_RECENT_BATCHES` 16, `MAX_MILL_ATTEMPTS` 3.
+   - Pure arithmetic: `batch`, `ic_day`, `room_today` and `conserves`. `room_today` reads a tally dated later than today as today's.
+   - `MillId(pack, entry, org, ore)`, golden `e84b53ba…0850e`.
+   - `MillLedger`: totals, the IC day's tally and a 16-batch audit tail. Its `check()` also refuses a first recent ordinal of 0.
+   - `ledger_at`, the key rule, fails closed and logs once a process.
+   - The module doc states the two writes, debit and credit, the lineage consequence (O-7b), the restart argument with D1's "nothing RAM-only" departure stated outright, and the withdraw remedy.
+
+3. **The batch provider** (`MillProvider` in `mill.rs`, registered in `crates/tacsim/src/port_tick.rs`). The offer carries the clerk's rows and the IC `now` as fixed parameters. The prepare runs B4's thirteen steps in order and stages nothing before step 11. It debits `batch_t` of ore and credits `batch_t / 5 × 2` of product at the one storefront, then inserts or replaces the ledger, all in one ActionTxn. The outcome is witnessed by the principal. The provider registers only when the inventory cell is filled. `action_descriptors`' first parameter becomes the pair `(stock, mill)` outcomes, so the list stays under clippy's argument bound. `PortTickState::new(probe, stock, mill)` takes the mill action.
+
+4. **The family** (`crates/tacsim/src/port/families.rs`). `PortFamilies.mills` is the eighth production family, `tacsim.port_mill`, keyed `tacsim.mill_id.v1`. The doc counts now read eight, with module-doc bullets for pockets, claims, relay_fabrications and port_mill.
+
+5. **The step** (`mill_step` in `mill.rs`). It runs after `drip_step` and before `bid_step`, so behind the emergency bids and the list step, and makes one act a fire.
+   - **Pass (a), the restock first.** It reads `owed`, skips a listing `mush_market::listing_lapsed` reads lapsed, and waits while a Draw is in flight on the pool. It computes the next map first, then calls `restock_ask` as the clerk and `put_port_map` in the same outbox.
+   - **Pass (b), the batch.** It checks D9's terms and the pool less holds, applies the attempt rule (3 submissions, then pass-over for the IC day with the entry cleared), and uses the idempotency key `tacsim.port.mill/{key}/{n}` through `stock::swapped`.
+   - **Back-offs and warnings.** The RAM back-offs `mill_refused`, `mill_attempts` and `mill_warned` are bounded by `MAX_CLERK_ROWS`. The warnings `Unreadable`, `Counter`, `Underflow`, `Terms`, `Storefront`, `Refused` and `Stalled` are each logged once a boot, keyed (vault, ore, kind), with Underflow keyed by the good.
+
+6. **`owed` and `unlisted`** (`mill.rs`). They give the ledger's `product_t` less the vendor row's `mill_listed` counter, read by the ledger's `into`. A counter past its ledger, or a counter with no ledger, is `Err(Counter)`. An error blocks only the good it is about: an unreadable ledger blocks its row's authored `into`. Nothing is summed by leftover counter keys.
+
+7. **The stock arm** (`crates/tacsim/src/port/stock.rs`).
+   - The drift check and the list step net out `unlisted` and skip only that ask on an error or underflow, never returning early.
+   - A fresh listing sets the counters of that good's mills to their ledger totals, writing the map only when one differs, so the seed listings write no counter.
+   - The mill sits in the chain between the drip and the bids. `ask_reading` reads `MarketStore::draw_reading`. `IC_DAY` and `swapped` are now `pub(crate)`.
+   - **(Fix round)** An ask whose `list_goods` the market refuses is passed over for the rest of that IC day (`PortTickState.list_refused`, L24's rule), so a milled pool a suspended or retired house cannot list no longer spends the shared clerk's every act.
+
+8. **The counter** (`crates/tacsim/src/port/map.rs`, `crates/tacsim/src/port/vendor.rs`). `VendorRow.mill_listed` maps a mill's ore to the units listed. It is serde-default and skipped when empty, so `PORT_MAP_SCHEMA` stays 1. The applier's one `VendorRow` literal gains the empty field and the applier never writes it.
+
+9. **The market** (`crates/mush-market/src/{store,api,lib}.rs`):
+   - `MarketStore::draw_reading`, the one copy of the undrawn rule.
+   - `listing_lapsed`, the one public deadline reader.
+   - `RestockSpec` and `restock_ask`. It checks, in order: the live listing; `may_take` over the storefront ("No such listing.", existence before kind); the vendor present, trading and its org trading; the vault; a drawn ask via `lot_matter`; the good; the units and `MAX_QUANTITY`; and the backing (balance less holds ≥ quantity + undrawn + units). It writes one listing with `revision + 1` and nothing on any refusal. It never mints.
+
+10. **Readiness** (`crates/tacsim/src/port/readiness.rs`, `crates/tacsim/src/port/coop.rs`, `mill.rs`). `Binding::Mill` is ungated. One Mill line is added per mill row after the Bids lines, through the pure `mill_line_text`: Ready milled or nothing yet, Pending not seeded, Flagged for an unreadable ledger, a changed ratio, a changed product or an unreadable storefront. The Listings line nets the unlisted units in both branches, with the clause ", {u} t milled and not yet listed" and the SOLD OUT clause. An unreadable mill ledger of that good, or an underflow, reads Flagged "its mill ledger cannot be read." With no units unlisted every text is byte-identical.
+
+11. **Tests.**
+   - `crates/tacsim/tests/mill.rs` (new): 24 world tests on the composition root through the real verbs, 23 of them per B12 plus the fix round's `sm12a_a_milled_pool_its_house_cannot_list_stalls_nothing_else`. They include the month at rate 24 (1,000 fires, one reboot between a batch and its restock) and test 15's measured writes 5/6/2/3. After the lead's round every world test boots the production roster (the shipped lane v14 and relay v3), except where it needs rows the shipped lane lacks (30 t of seeded concentrate, test 8's twin arms, test 19's mill-less seed); `mill_lane()`, `add_mill` and `milled_variant` are gone. The round added a 25th test, `sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it`.
+   - `crates/tacsim/tests/support/mill.rs` (new): `strip_mill`, called first by `support::claims::strip_claims`.
+   - `mill.rs` unit tests: 7, including the pure month pinned 848/840/336/8, `GOLDEN_MILL`, every ledger check, every Mill line and the warning keys.
+   - `crates/mush-market/tests/ic7.rs`: five `restock_ask` tests on a probe-delegate rig.
+   - `crates/mush-market/tests/e7r2.rs`: `e7r2_p1_the_restock_creates_no_matter`.
+
+12. **Lane v14** (`crates/tacsim/content/lane/ceres_phobos.json`, `crates/tacsim/src/definitions/content.rs`; the lead's round applied the builder's held patches). The Exchange's `mill` row (`metal_ore` into `metals`) and Occator's (`ice_ore` into `volatiles`), both 5 : 2, 20 t a batch, 40 t of ore an IC day; manifest 14, digest `c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8`; `LANE_VERSION` 14 with its history clause. `docs/help/trade.md` gains O-2's sentence. `@tacsim/port status` lists two Ready Mill lines ("nothing milled yet").
+
+13. **The relay seed follows the lane** (the lead's ruling; relay-owned files edited under it). Relay R10's `tacsim.relay.luna_ceres` required the lane at exactly 13 and `mush_content::PackRequirement` takes no ranges, so lane v14 refused every fresh boot. `crates/tacsim/content/relays/luna_ceres.json` is re-signed as version 3 requiring lane 14, entries byte-identical (digest `a9bf71ef8d19db900ea566b4de01bca7563c106d919a17b112523d6be553b051`, was `6d99bd6f…`). `relay_world`'s `full_star` reads any version from 2 (was `== 2`) and `relay_content`'s upgrade preflight refuses below 2 (was `!= 2`), each with its doc line. `LANE_VERSION`'s doc states the rule for every later bump: the relay seed re-signs at its next version requiring the new lane (v13 ↔ relay v2, v14 ↔ v3), and names the pins that move. The new `crates/mush-server/tests/relay_registry.rs` test `sm12a_a_kept_v13_star_takes_lane_v14_and_relay_v3` rebuilds the published lane v13 and relay v2 from the shipped bytes, boots a kept world on them with the full star live, takes the lane to 14 by staff `@atlas/pack plan`/`apply`, and proves the catalog, operator, nodes, pairs, halves, bindings, the Terms story and the money unchanged across the restarts; with `full_star` reverted to `== 2` it fails at the restart.
+
+### Deferred, and why
+
+- **The relay seed's coupling, resolved by the lead (the judge's path (a)).** The judge held the cut do-not-ship on one blocker only: relay R10 (`57c5747d`) made `luna_ceres.json` (manifest v2) require the lane at exactly 13, so lane v14 could not boot (19 of 23 world tests failed at boot when the builder tried), and the brief forbade relay files. The relay train is complete (R1–R10 accepted, doc 15b), and a dormant landing would only move the same wall to SM.12b's v15, so the lead re-signed the relay seed with the lane (What landed 13) and applied the held lane, help and readiness-pin patches. Left as they are:
+  - **A kept world's relay latch stays at v2.** v3's entries equal v2's, so staff `@atlas/pack plan tacsim.relay.luna_ceres` reads "Nothing to do." and `apply` refuses a no-op plan; no boot pass latches it. That is harmless, since the relay code reads any version from 2 as the full star (pinned by the new test), but the latch no longer names the shipped version on a dev world. Making it match needs a manifest-only re-latch path in mush-content: a design decision for the content system, not taken here.
+  - **The relay track's live-gate scripts are stale**: `scripts/relay-policy-live.mjs:23-24`, `relay-r10-live.mjs:28,32` and `relay-r9b-live.mjs:40` expect "Applied tacsim.lane.ceres_phobos@13" and "Applied tacsim.relay.luna_ceres@2". They are the relay track's recorded harnesses and were not edited; whoever next runs a live relay gate updates them.
+  - **Every later lane bump repeats the re-sign** (SM.12b's v15 ↔ relay v4), including `relay_registry.rs`'s `lane_v13`, which must strip that cut's rows too.
+- **Rulings taken in the build, confirmed by the lead:**
+  - The restock waits while any unsettled Draw quote is on the pool. This is not in B6 pass (a). It was measured: test 2's hand-over failed without it. The fixer kept it, because the narrower "attempt, then defer on a backing refusal" would spend the clerk's act every fire and would copy a market rule. It is the list step's own `!in_flight` rule. The lead's ruling: accepted as built, a delay and never a loss; documented in `mill.rs` ("The restock's wait") and pinned by `sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it`.
+  - The list step's per-IC-day back-off `list_refused` departs from B7's "the list step's predicate is unchanged", justified by D8. It also closes the older path of an ask lapsing while its house is suspended.
+  - `MillWarn::Storefront` replaces B6's prescribed `Unreadable` at the batch's pool read. It is one staff text beyond O-2b's list: "tacsim: a mill's storefront ore cannot be read; the clerk tries that mill's batch again next fire".
+  - `room_today` reads a later-dated tally as today's.
+  - `MillLedger::check` also refuses a first recent ordinal of 0.
+  - ic7 has five tests, not four: the vendor-cannot-trade refusals have their own test, and the gone-vendor arm is pinned.
+  - Test 12 asserts the Listings line and its gated state, not `enrol_gate` (D22).
+- **Departures the brief itself recorded, built as it says:**
+  - D1/D2 on the lead note's ruling 3: two writes instead of one bundle, debit and credit instead of a marked transfer, and RAM back-offs. The letter of "nothing RAM-only" is not met; its purpose, that a restart changes nothing durable, is.
+  - D21: `checked_sub` → Flagged in place of 0b's `saturating_sub`. It fails closed on a store fault only.
+  - The `vendor.rs` literal, against 0b and doc 20a CMP-13 (B8).
+  - D29: the fresh-product-pool batch measured and pinned at 6.
+  - The relay-owned `tacsim.relay_fabrications` bullet in families.rs (C12). The content.rs v13 clause landed with B2.
+- **Owner-critical defaults, all built as the brief gives them:**
+  - **O-1:** 5 : 2, 20 t a batch, 40 t of ore an IC day, both mills. Taken provisionally by the owner on 2026-10-24. Its consequence: the resale is bounded by the trade run's draw (at most 16,000 cr a real day at the Exchange), so at full drip the Exchange's intakes close on capital in about 33 real days without the mill and 38 with it. Doc 20 §7.3's "unless the mill's resale refunds it" does not hold.
+  - **O-2:** the help sentence, in `docs/help/trade.md`.
+  - **O-2b:** the staff texts verbatim, plus `Storefront`'s new text.
+  - **O-3:** milled ore is consumed, with no tailings.
+  - **O-4:** a restock stales open quotes (`STALE_QUOTE`).
+  - **O-5:** a mill's ratio and product are fixed for its ledger's life. Provisional.
+  - **O-6:** an unreadable ledger flags the gated Listings line.
+  - **O-7:** removing a mill row pages drift until `@market/vendor withdraw`.
+  - **O-7b:** milled product is credited with no tranche or lineage. Provisional, and the expensive one to reverse once this lands.
+- **Smaller residue:**
+  - F3 (a removed row's stale counter on re-add), the `enrol_gate` doc, T6 (the reboot keeps the world rate, now asserted before `set_rate`) and T8 (the cannot-trade refusals write and stage nothing) were closed in the lead's round.
+  - The prepare's `Unauthorized` and row-key `Integrity` arms are untested; no tacsim harness drives `prepare_authoritative` with a hand-built txn.
+  - Doc 18's notes, `docs/ops.md` (the Mill line and both staff remedies) and the README row are owed to the lead's doc fold after SM.12c.
+
+### Residual risks the judge named
+
+- A kept world's relay latch stays at v2 beside lane v14 (staff `@atlas/pack plan` reads "Nothing to do." for an entry-identical pack); the relay code reads it as the full star, so nothing breaks, but the latch no longer names the shipped version until mush-content gains a manifest-only re-latch.
+- The relay track's live-gate scripts (`scripts/relay-policy-live.mjs`, `relay-r10-live.mjs`, `relay-r9b-live.mjs`) still expect lane @13 and relay @2.
+- A buyer who accepts a Draw and never draws holds the restock until the market's sweep lapses the quote (`DRAW_WINDOW_SECS`); the restock then lands within a fire (pinned). A delay, never a loss.
+- A removed mill row's `mill_listed` counter goes stale; re-adding the row without a withdraw makes drift page and the Listings line read Flagged until a second withdraw. Documented in `MillDef`'s O-7 rule, not changed in code.
+- The prepare's `Unauthorized` ("that mill is another clerk's") and row-key `Integrity` arms are unreachable through a server-built offer and untested; the engine's idempotency dedupe of `tacsim.port.mill/{key}/{n}` is never exercised by the rig.
+- `--test mill` ran 68.5 s at gate 1 and 48.8 s at the round's gate against its 90 s debug budget; it adds about a minute to CI's tacsim-integration shard.
+
+### The lead's fix round (before the commit)
+
+the relay seed luna_ceres re-signed as v3 for lane v14 (the relay code reads any version from 2 as the full star), the builder's held lane rows, help sentence and readiness pin applied, the mill tests moved onto the shipped lane, the restock's Draw wait ruled and pinned, four residuals closed (run wf_78441e67-a62; its reviewer's one should-fix re-fixed; the gate, eleven commands, green on the first run).
+
+Five items, the lead's list, each with the fixer's account; then the round's review, the re-fix, the pins it moved and its gate.
+
+1. **1. The relay pack follows the lane** — fixed: (a) crates/tacsim/content/relays/luna_ceres.json: manifest version 2 -> 3, the tacsim.lane.ceres_phobos requirement 13 -> 14. Re-signed with `cargo run -p mush-content --example pack_digest`, which also verifies that the pack loads. New digest a9bf71ef8d19db900ea566b4de01bca7563c106d919a17b112523d6be553b051 (was 6d99bd6f... at v2). Only those three lines changed; no entry byte moved.
+(b) relay_world.rs full_star: `== 2` -> `>= 2`, with a doc comment: the full star is the topology since v2, and later versions only re-sign it for a newer lane.
+(c) relay_content.rs preflight: `!= 2` -> `< 2`, with a comment: every version from 2 carries v2's network, so the historical v1 slice migrates the same way. A grep of `version()` over relay_*.rs found no other comparison against 2. relay_content.rs:432 (`== 1` picks LEGACY_CHARTER) and the relay_foundry recipe versions are not the pack version, so they stay.
+(d) Pins moved because 2 was the current version:
+- tests/stations.rs ic1 `Some(2)` -> `Some(3)`
+- tests/stations.rs ic12 `Some(2)` -> `Some(3)`: the boot installs the shipped seed
+- tests/stations.rs, the relay's requires list `(LANE_PACK, 13)` -> 14 (found by grep)
+- mush-server/tests/boot_parity.rs `Some(2)` -> `Some(3)`
+- relay_registry.rs r10_public_star_content_digests_are_pinned: luna_ceres digest -> a9bf71ef..., with the old digest named in a comment
+`schedules[..].revision, 2` was left alone.
+(e) New test relay_registry.rs `sm12a_a_kept_v13_star_takes_lane_v14_and_relay_v3`, with helpers `resigned`, `lane_v13`, `relay_v2` and `Rig::{v13_star, latched, operator_org, story}`.
+- It rebuilds lane v13 (the shipped lane less its mill rows, asserted equal to published 34d47907...) and relay v2 (asserted equal to published 6d99bd6f...), and applies both the way old_star does. The kept world then boots today's binary with neither latch moved.
+- The lane is taken to 14 by staff `@atlas/pack plan`/`apply`: "Applied ...@14".
+- Finding: staff `@atlas/pack plan tacsim.relay.luna_ceres` reads "Nothing to do.". v3 differs from v2 only in its manifest, so `mush_content::plan` is a no-op and `@atlas/pack apply` refuses no-op plans. A kept world's relay latch therefore stays at 2 under staff verbs. The test pins that a restart there still boots the full star.
+- Relay v3 is then latched the way the existing v1->v2 tests drive it (`apply_content`, i.e. `mush_content::apply_pack`).
+- After a further restart: the registry (operator, nodes, pairs, halves), the operator Organization, `@relay/check` "Bindings OK", the Terms story and money_total are all unchanged, and no namespace write was refused.
+- Defect proof: with full_star reverted to `== 2`, the test fails at the restart with "module boot failed: Terms receipts require the full public star". The existing `r10_historical_pack_upgrade_*` and `r10_expansion_*` tests now take v1 -> v3 through the `< 2` preflight and pass.
+(f) Doc on LANE_VERSION states the coupling: every lane version re-signs luna_ceres at its next version requiring the new lane (lane v13 <-> relay v2, lane v14 <-> relay v3). It also covers the kept-world latch staying at the older version and lists the pins that move.
+(g) scripts/relay-*-live.mjs and support::boot_packs_with_lane are untouched.
+2. **2. Apply the held lane and help patches; mill tests on the shipped lane** — fixed: All three patches applied with `git apply`: b2-lane-v14, b2-ports-pin, b11-help. The lane digest c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8 verified unchanged: `--test lane` ic2 passes, so no re-sign was needed.
+Test 1 rewritten:
+- asserts LANE_VERSION 14 and the shipped manifest version 14;
+- the SHIPPED pack (load_pack(LANE_JSON)) carries exactly the two mill rows with B2's values;
+- `lane_variant(13, strip_mill)` of the shipped lane equals LANE_V13_DIGEST;
+- strip_mill removes exactly those two rows and is idempotent.
+add_mill, mill_lane and milled_variant are deleted; every `milled_variant(v, f)` is now `lane_variant(v, f)`.
+Moved onto the production roster (Roster::default(), shipped lane plus relay v3): `stocked()` (every test using it) and test 15's fresh-pool rig. `Roster::next` is now the production roster with the variant shelved and loaded as extra_lane, in commerce.rs ic8's shape.
+Seeded variants kept only where rows differ:
+- thirty_tonnes (30 t of concentrate);
+- test 8's two rigs, both seeded so both boot the same historical relay. A is the shipped lane re-signed, B is strip_mill;
+- test 19's mill-less seed.
+The header paragraph is rewritten. tests/mill.rs: 25 passed.
+3. **3. Re-run the watch list on the shipped mills** — fixed: Every listed suite passes, and no pin moved beyond the held patches' own:
+- lane: the digest and the v14 ladder;
+- sites: LANE_VERSION 14;
+- ports: commerce_lines 50 -> 52 with the two `nothing milled yet ... [ready]` Mill lines. This pin was never run before; it passes.
+The relay pins from item 1 also moved. Nothing else did, including:
+- plumbing's sm5_* at 50/76/86 t;
+- plans P1's 46,297 IC s span and the arm equality;
+- unloading, commerce, sale, claims, mining, stations, chart (the sky_chart.json fixture; no re-bless needed), geology, content;
+- sm_story, ic_slice_loop, ic_buyout_dormancy, boot_parity (35 packs), e7r2_proving_loop and relay_registry.
+The story suites do not sell metal or ice ore into the mills during their figures, so no Exchange ask or fire count moved. No assertion was loosened. The full tacsim suite on the shipped mills: 65 result lines, 3,297 passed, 0 failed.
+4. **4. The lead's ruling on conformance F2 and the T7 test** — fixed: Comments:
+- mill.rs module doc gains a "The restock's wait" section stating the lead's ruling and why the narrower form was not taken: it spends the clerk's one act every fire and copies a market rule.
+- mill_step's pass (a) doc and the inline comment at the draw_reading check say that while any Draw quote on the pool is unsettled the restock is deferred, a delay and never a loss, with no warning and no refused mark.
+New test `sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it`:
+- A 10 t Draw is accepted and kept undrawn while a batch lands. Over 12 fires: no restock, listing 3990 and the counter None; the whole Listings line reads Ready with the "10 t in hand-over, 8 t milled and not yet listed" clauses; no drift page.
+- (i) The Draw is landed. The restock comes on the fire whose market sweep settles the quote, or the first fire after it, never later: it landed on fire 9 after the draw, the 60 s sweep. Listing 3998, counter 8.
+- (ii) A second Draw is never drawn. It holds the restock across 12 fires and a half-window stride. Past DRAW_WINDOW_SECS the sweep lapses it and refunds the 10 t (3998), and the restock lands 1 fire later (4006). Counter 16, ledger 2 batches and 16 t.
+- Under a WARN capture, no "tacsim: a mill" warning appears.
+5. **5a. coop.rs enrol_gate doc** — fixed: Re-wrapped the paragraph. It now states the Listings comparison against the net pool, `q ≤ p − u ≤ q + undrawn`, with u the milled units not yet listed, and that milled stock not yet listed reads Ready and never closes the desk.
+6. **5b. O-7's re-add authoring rule** — fixed: MillDef's doc (def.rs) gains "Removing a row" and "Re-adding a removed row" paragraphs. After a withdraw, the removed mill's mill_listed counter is stale. The same ore names the same ledger again, so a re-added row's owed units are units already listed: drift pages and the Listings line reads Flagged until a second withdraw. The rule: re-add a row only together with a withdraw of its good's ask, or after none since its removal. No code change: resetting leftover counters in the list step is a behaviour change, not an obvious one-liner.
+7. **5c. The reboot's world rate (T6)** — fixed: In the month test's day-15 reboot, `assert_eq!(world_rate, 24, "a reboot keeps the world rate")` now runs before set_rate. It passes, so a reboot keeps the rate (the world timeline is durable) and SM.12b/12c can rely on it. A comment records this; set_rate is then a no-op.
+8. **5d. ic7 vendor-cannot-trade refusals (T8)** — fixed: sm12a_restock_ask_refuses_a_vendor_that_cannot_trade now drains module ops before each restock call. After the suspended-org, retired-vendor and gone-vendor refusals it asserts `listing_writes(..).is_empty()` and `take_authoritative_submit().is_none()`, the same form as the sibling refuses_and_writes_nothing test. mush-market ic7: 27 passed.
+
+**The round's review.** I reviewed `git diff e7f1751f bcc170db` (scratch-index tree; it matches the fixer's tree id; 17 files, +503/-108) against the lead's five items. I ran no cargo and did not touch the real index. All five items are done; I found nothing must-fix, one should-fix (a doc sentence) and six notes.
+
+Item 1, relay follows lane: done.
+- luna_ceres.json: only the version (2 to 3), the lane requirement (13 to 14) and the digest changed; I parsed both versions and their entries are equal.
+- The new test's `relay_v2()` rebuilds the published v2 digest `6d99bd6f` from the shipped v3, which proves no entry byte moved.
+- relay_world.rs `full_star` is now `>= 2` and relay_content.rs's preflight is now `< 2`, each with its doc line.
+- The `version()` grep over relay_*.rs finds nothing else. relay_content.rs:434's `== 1` (charter) and relay_foundry's recipe versions are not the pack version.
+- Pins moved, each with its reason: stations.rs ic1 and ic12 `Some(3)`, the stations.rs requires list `(LANE_PACK, 14)`, boot_parity `Some(3)`, and the relay_registry digest `a9bf71ef…`. relay_registry.rs:5228's schedule revision stays at 2.
+- The new test `sm12a_a_kept_v13_star_takes_lane_v14_and_relay_v3`:
+  - lane v14 is taken by staff `@atlas/pack plan`/`apply`;
+  - staff cannot latch relay v3 (the plan reads "Nothing to do."), so v3 is latched by the existing tests' `apply_content` driver;
+  - registry, operator org, bindings, Terms story, money and refused writes are checked across two restarts.
+- The defect proof is real: relay_neg.log shows it failing at the second restart with `== 2`. The `< 2` preflight is exercised by the existing r10 v1-to-v3 upgrade tests.
+- The LANE_VERSION coupling doc is present. The scripts and `boot_packs_with_lane` are untouched.
+
+Item 2, held lane and help: done.
+- b2-ports-pin and b11-help reverse-apply cleanly, so they are fully in the tree. b2-lane-v14 is present with the fixer's extra LANE_VERSION doc on top.
+- The help text is verbatim B11.
+- Test 1 now asserts LANE_VERSION 14, the two rows read from the shipped pack, and `strip_mill` re-signed at 13 equals `34d47907`.
+- `add_mill`, `mill_lane` and `milled_variant` are gone. `stocked()`, test 15's fresh rig and `Roster::next` now use the production roster.
+- Seeded rigs are kept only for `thirty_tonnes`, the mill-less seeds of tests 8 and 19, and test 8's comparable pair. Test 8 is justified: both rigs must boot the same historical relay so the map documents compare.
+
+Item 3, watch list: no assertion was loosened. The only pins that moved are the lane, relay and ports ones.
+- The logs show lane, sites, ports (ic3's 52-line pin ran and passed), plumbing (sm5_* all ok), plans, unloading, commerce, sale, claims, mining, stations, sm_story, ic_slice_loop, ic_buyout_dormancy, boot_parity, e7r2_proving_loop and relay_registry all green.
+- The full tacsim suite was green as well.
+
+Item 4, the F2 ruling and T7: the ruling is written in mill.rs's module doc ("The restock's wait") and in the pass (a) doc and inline comment.
+- `sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it` discriminates the ruled form. Without the wait the restock's backing check would pass (4008 >= 3990 + 10 + 8), so the narrower form would fail the test.
+- Across 12 fires it checks the whole Ready Listings line with the "10 t in hand-over, 8 t milled and not yet listed" clauses, and that no drift page appears.
+- It requires the restock on the settling fire or the next, for both the drawn quote and the lapsed one, and fails the test otherwise.
+- A WARN capture checks that no mill warning is raised; the restock landing on time implies no refused mark.
+
+Item 5:
+- (a) coop.rs is re-wrapped and its formula is now `q ≤ p − u ≤ q + undrawn`, which matches readiness.rs:929.
+- (b) The rule is documented, but it names only the withdraw. A sell-out or lapse relist stales the counter the same way (R1).
+- (c) `world_rate == 24` is asserted after the reboot and before `set_rate`, with a comment that a reboot keeps the rate.
+- (d) ic7 drains module ops, then asserts no listing or meta write and nothing staged after each of the three refusals, in the sibling test's form.
+
+No RNG, no new refusal texts, no truth leak, no scope creep. Nothing under docs/design was edited.
+
+Notes for the lead:
+- `scripts/relay-policy-live.mjs:23-24`, `relay-r10-live.mjs:28,32` and `relay-r9b-live.mjs:40` are stale after this cut.
+- A kept world's relay latch stays at v2 under staff verbs (R4).
+
+- **R1** (should-fix): def.rs:743-750 (MillDef doc, item 5b) gives the authoring rule as: "Re-add a row only together with a withdraw of its good's ask, or after none since its removal." A withdraw is not the only way the counter goes stale. The list step relists whenever the ask has no listing: stock.rs:738-759 (`reading.listing.is_none() && !reading.in_flight && pool > 0`). That covers a sell-out to 0 and a lapse after MAX_LISTING_TTL_SECS (90 days, mush-market api.rs:44) that the sweep deletes, as well as a withdraw. Each such relist lists the whole pool and sets counters only for authored rows: stock.rs:799-803 `counters_set`, and `mill_targets` at :829-847 iterates `vendor.mill` only. Example: a row is removed with 8 t unlisted; the ask then sells out with no withdraw; the list step lists the 8 t and leaves the removed mill's counter at its old value. If the row is re-added, `owed` counts those 8 t again, drift pages and the Listings line reads Flagged. Staff who follow the documented rule ('no withdraw since its removal') hit exactly the state the rule is meant to prevent.
+- **R2** (note): The module doc's 'The restock's wait' (mill.rs:59-68) and the inline comment at :1093 both say 'the first fire after the quote settles or lapses restocks them'. That holds only when the clerk's one act is free on that fire: emergency bids, the list step, the drip and an earlier mill's act all come first (stock.rs:762-773). The doc also says 'A buyer who accepts and never draws holds the restock for up to one draw window'. That understates the case the judge's residual risk and correctness F4 named: back-to-back or overlapping accepts each hold it for up to DRAW_WINDOW_SECS, so together they can defer it indefinitely. The T7 test pins the single-quote case correctly; only the prose overstates.
+- **R3** (note): The LANE_VERSION doc (content.rs:825-829) lists the pins that move with the next lane bump: the relay digest, the relay versions in stations.rs and boot_parity.rs, and the lane requirement in stations.rs. It omits the new relay test. `relay_registry.rs:4195` `lane_v13()` strips only the `mill` rows from the shipped lane and asserts the result is the published v13 `34d47907…`. At SM.12b's lane v15, the new rows remain after the strip, so that assertion fails. `relay_registry.rs:4312` also hard-codes `Applied {lane}@14: `. Both fail loudly, so this is not a silent hazard. (`relay_v2()`'s digest assertion is a good tripwire, because it fails if a later relay version edits any entry, which is the invariant `full_star`'s `>= 2` relies on.)
+- **R4** (note): The fixer's finding is confirmed and pinned at :4318-4327: on a kept world at relay v2 (dev1 from the relay train), `@atlas/pack plan tacsim.relay.luna_ceres` reads 'Nothing to do.', and no staff verb or boot pass latches v3. Only `mush_content::apply_pack` (the rig's `apply_content`, :4061, a test shortcut) does. The kept world then permanently carries a latched relay v2 whose manifest requires lane@13, beside a latched lane 14. Today nothing re-checks latched requirements, and `full_star`/preflight read any version from 2 (relay_world.rs:74, relay_content.rs:184), so this is harmless. Any future 'latched requirements consistent' check, or an `@atlas/pack list` reader, would see dev1 as skewed.
+- **R5** (note): Test 19 (mill.rs:2535-2572) still proves the kept-world apply on synthetic versions. It seeds a mill-less v14 that never shipped (`lane_variant(LANE_VERSION, strip_mill)`), applies a re-signed v15, and the lane line reads '@15 applied; this server ships @14. [flagged]'. Now that v14 ships, no test drives dev1's real path end to end: the published v13 to the shipped `LANE_JSON` v14 through `@atlas/pack plan`/`apply`, then the mills batching and restocking with the lane line Ready. The new relay test applies v14 on a kept v13 star (relay_registry.rs:4300-4315) but never sells ore or reads a Mill line.
+- **R6** (note): mill.rs:13, in the rewritten header paragraph (item 2), is a 166-character doc line: 'On the port tick's stock arm, after the intake drip ... a **batch** (`tacsim_port_mill`:'. That is the same kind of broken wrap item 5a fixed in coop.rs. content.rs:825 also has a short broken wrap ('do." when no entry differs — keeps its star; the pins that'). rustfmt does not wrap comments here (rustfmt.toml sets only edition and newline_style), so the gate will not catch either.
+- **R7** (note): The fixer's logs show these three files were rewritten at 01:13:07, after their last test runs: crates/mush-market/tests/ic7.rs (+3 lines), crates/mush-server/tests/relay_registry.rs (-1 line) and crates/tacsim/tests/mill.rs. Compare scratchpad/fix/before.txt and after.txt with market.log and server1.log, both at 01:12. tests/mill.rs was re-run afterwards (tacsim_all.log, 01:32), and clippy compiled every target at 01:33. But `mush-market --test ic7` and `mush-server --test relay_registry` were not re-run on their final bytes. This was most likely a rustfmt pass. The relay and lane bump also reaches suites this round never ran: mushd's durability_e2e and relay_bridge, which boot the production content, and mush-contract-tests.
+
+**Re-fixed after the review:**
+
+- **R1** — fixed: Confirmed against the code. stock.rs:738-759 relists whenever `reading.listing.is_none() && !reading.in_flight && pool > 0`, so a sell-out to 0 or a sweep-deleted lapse relists the pool just as a staff withdraw does. `mill_targets` (stock.rs:829-847) iterates `vendor.mill` only, so a removed row's counter goes stale in all three cases. Reworded the MillDef doc in C:/Users/faeni/cc/rustmush/.claude/worktrees/festive-davinci-45dba9/crates/tacsim/src/port/def.rs (the 'Removing a row' / 'Re-adding a removed row' paragraph). 'Removing a row' now says a sell-out of the ask to 0, or a lapse the sweep deletes, clears the page the same way, because the list step relists whenever the ask has no listing. 'Re-adding' now says any fresh listing of that good's ask since the removal (a staff withdraw, a sell-out to 0, or a lapse the sweep deleted) relists the whole pool and leaves the removed mill's `mill_listed` counter stale. The rule now ends: 'Re-add a row only together with a withdraw of its good's ask, or when that ask has not been listed afresh since the removal.' This is a doc-only change. A grep found no other copy of the rule anywhere in the tree (no doc 20 or help text).
+
+**Pins the round moved.**
+
+- **Lane pack** (held patch b2-lane-v14): crates/tacsim/content/lane/ceres_phobos.json version 13 -> 14, digest 34d47907... -> c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8 (the two mill rows). LANE_VERSION 13 -> 14 with the v13 and v14 history clauses. tests/lane.rs LANE_DIGEST and the version ladder message -> 14. tests/sites.rs `LANE_VERSION, 14`. Reason: B2.
+- **Ports pin** (held patch b2-ports-pin): tests/ports.rs ic3 adds two `nothing milled yet ... [ready]` Mill lines and moves commerce_lines 50 -> 52. Reason: the shipped lane now authors the two mills.
+- **Relay pack**: crates/tacsim/content/relays/luna_ceres.json version 2 -> 3, lane requirement 13 -> 14, digest 6d99bd6f999c88285404f05242100945416191a2dc67e18b4838514124d61401 -> a9bf71ef8d19db900ea566b4de01bca7563c106d919a17b112523d6be553b051. Reason: the relay requires the lane at an exact version, so it re-signs beside lane v14.
+- **Pins that follow the relay pack:**
+  - crates/mush-server/tests/relay_registry.rs r10_public_star_content_digests_are_pinned: the luna_ceres digest -> a9bf71ef...
+  - crates/tacsim/tests/stations.rs ic1 and ic12: relay latch `Some(2)` -> `Some(3)` (the shipped seed is v3).
+  - crates/tacsim/tests/stations.rs, the relay's requires list: `(LANE_PACK, 13)` -> `(LANE_PACK, 14)`.
+  - crates/mush-server/tests/boot_parity.rs: relay latch `Some(2)` -> `Some(3)`.
+- **Mill test 1**: tests/mill.rs test 1 now asserts LANE_VERSION 14, and its two mill rows are read from the shipped pack (previously the held-back 13 and "no mill").
+- **Unmoved:**
+  - GOODS_DIGEST, the geology pins and the sky_chart.json fixture (tacsim --test chart and --test geology pass);
+  - boot_parity's 35 packs;
+  - relay_registry.rs:5055's schedule revision;
+  - every watch-list figure: plumbing sm5_* 50/76/86 t, plans P1 46,297 IC s, sm_story, ic_slice_loop, ic_buyout_dormancy.
+
+### Pins re-blessed
+
+- **`coop.rs` `ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky`:** `EVERY: [Binding; 20]` → `[Binding; 21]`, with `Binding::Mill` appended, and `| Binding::Mill` added to the `ungated` list. Reason: a new binding, reported and never gated (B10, D15).
+- **`support::claims::strip_claims` now calls `support::mill::strip_mill` first.** It removes lane v14's two mill rows first, so the v11 rebuild (`c7239b0a…`), `sm5_strip_ore_rebuilds_the_published_v10` and every older strip chain stay green unedited.
+- **New pins:**
+  - `GOLDEN_MILL` `e84b53bacd9be0e7bf01d9d080afc719c84f1c03f0c91fd97fb6816516e0850e`, the mill id of (lane, ceres_port, freeport_exchange, metal_ore);
+  - test 15's measured write counts: batch 5, a batch into a fresh product pool 6, the restock 2, a relisting with a counter write 3;
+  - the pure month: inflow 848, ore 840, product 336, remainder 8;
+  - `LANE_V13_DIGEST` `34d47907…` as test 1's strip target.
+- **Moved by the lead's round** (each for lane v14 or the relay seed beside it):
+  - `LANE_VERSION` 13 → 14; the lane manifest 14 and digest `c507f74c…`; `tests/lane.rs`'s `LANE_DIGEST` and its version ladder; `tests/sites.rs`'s `LANE_VERSION, 14`;
+  - `tests/ports.rs` ic3: two Ready Mill lines, `commerce_lines` 50 → 52;
+  - the relay seed: `luna_ceres.json` version 3 and digest `a9bf71ef…`; `relay_registry.rs`'s `r10_public_star_content_digests_are_pinned`; the relay latch `Some(2)` → `Some(3)` in `tests/stations.rs` (ic1, ic12) and `mush-server/tests/boot_parity.rs`; the relay's lane requirement `(LANE_PACK, 13)` → 14 in `tests/stations.rs`;
+  - `tests/mill.rs` test 1 asserts the shipped lane at v14 with exactly the two rows, and its strip equals the published v13.
+
+- **Expected unmoved and confirmed green on the gate's runs:**
+  - the panic budgets;
+  - state-slot owners (no new `module_state_mut` reach);
+  - module-ns-owners, the legacy-handler allowlist, restriction lints and the CI gated-test inventory (no `#[ignore]`);
+  - `provider_rng_policy`;
+  - boot parity (orgs 24, packs 35);
+  - `REFUSAL_CODES` 64 and `INDUSTRY_SEAMS` 12, in suites that pass unedited.
+
+  The lead round's gate confirmed them, the apply-plan pins and the readiness whole-report pin on the shipped mills: no story figure moved (the story suites sell no metal or ice ore into the mills during their figures).
+
+### How it was verified
+
+Gate 1, run once in the worktree on base `8cc0aa64` with the cut's 19 files uncommitted. No rerun was needed: there was no LNK1104, no hang and no load flake.
+
+**fmt.** `cargo fmt --all -- --check` could not run on this box: "The filename or extension is too long. (os error 206)", an environment fault. The fallback checked the same files:
+- `cargo fmt -p <pkg> -- --check` over all 48 packages: clean, with the CRLF `restriction_lints.rs` not flagged;
+- `rustfmt --check --edition 2024` on the cut's 19 .rs files: rc=0.
+
+**clippy.** `cargo clippy --workspace --all-targets -j 8 -- -D warnings` → `Finished dev profile … in 16.00s`, rc=0.
+
+**rustdoc.** `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` → `Finished … in 49.64s`, rc=0.
+
+**The mill suite.** `cargo test -j 8 -p tacsim --test mill -- --nocapture` → `test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.52s`. It printed:
+- `SM.12a writes: batch 5, batch into a fresh pool 6, restock 2, relisting 3`
+- `SM.12a month: 1000 fires, 68.4 s wall, metal ore sold 1025 t, ice ore sold 993 t, metals bought 38 t, the Exchange milled 1020 t into 408 t, Occator 980 t into 392 t`
+
+Against the 90 s budget the binary measured 68.52 s at the gate, 61.43 s in the loaded sweep, 49.4 s for the builder and 47.7 s for the fixer.
+
+**mush-market.** `cargo test -j 8 -p mush-market` → lib 30, e7r2 22, ic0 5, ic10 24, ic7 27, ic8 11, projection_bounds 2, projection_cost 1, all `ok`.
+
+**mush-server.** `cargo test -j 8 -p mush-server --test ic_slice_loop --test sm_story --test boot_parity --test e7r2_proving_loop --test ic_buyout_dormancy` → boot_parity 21, e7r2_proving_loop 6, ic_buyout_dormancy 14, ic_slice_loop 10, sm_story 2, all `ok`.
+
+**Contract tests.** `cargo test -p mush-contract-tests -j 8` → 32 runs ok: panic_budget 8, restriction_lints 11, state_slot_owners 5, module_ns_owners 4, ci_gated_test_inventory 6, legacy_handler_allowlist 4.
+
+**Workspace sweep.** `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8` → rc=0. All 441 `test result: ok.` lines: 9,006 passed, 0 failed, 93 ignored. tacsim lib: 1,494 passed, 1 ignored.
+
+**mush-bot.** `cargo test -p mush-bot -j 8` → 25 runs ok, 717 passed.
+
+**Peers and deliberate faults.** None of the known peer failures reproduced: the panic budget passed and the org-capability vocabulary passed. The one `process_fault.rs:197` panic line in the sweep is `server_panic_relaunch`'s armed fault, and that suite passed.
+
+**Defect test.** The fixer showed the new list-step test catches its defect: with the `list_refused` guard disabled it panics with "Occator milled"; with the guard it passes.
+
+**Review lenses.** Correctness, conformance and tests, 20 findings. Fixed: correctness F1 and F2, conformance F3, tests T2–T5. Rebutted: conformance F2, the Draw wait. Deferred to the lead: conformance F1 and tests T1, the B2 coupling. Notes left open: F3–F5, F4–F7, T6–T8.
+
+**The judge's own pass.** I read the whole diff and the three new files, confirmed the relay coupling in `luna_ceres.json`, `relay_world.rs`, `relay_content.rs` and `pack.rs`, and checked:
+- no removed assertion in any test file;
+- no RNG;
+- nothing under `docs/`, `deploy/` or `crates/tacsim/content` changed.
+
+**After the lead's round** the whole gate ran again on the final tree, all first run: see the lead round's gate below. The lead then rewrapped two doc comments (`tests/mill.rs`'s header, `LANE_VERSION`'s doc) and re-checked them with `rustfmt --check --edition 2024` and `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` (clean).
+
+**Gate notes.** Gate 1 for SM.12a is green. Every command was run once in the worktree C:/Users/faeni/cc/rustmush/.claude/worktrees/festive-davinci-45dba9 at base 8cc0aa64, with the cut's 19 files uncommitted. Nothing needed a rerun: there was no LNK1104, no hang and no load flake. I edited no file in the repository and committed nothing. Before and after the run, git status --short showed the same 19 entries.
+
+1. Command 1 could not run as written on this Windows box. `cargo fmt --all -- --check` failed with "The filename or extension is too long. (os error 206)": the command line was too long, so no file was checked. That is an environment error, not a formatting result. The equivalent per-package check (`cargo fmt -p <pkg> -- --check` over all 48 packages) was clean. So was `rustfmt --check --edition 2024` on the cut's own 19 .rs files. The CRLF peer file restriction_lints.rs was not flagged by the per-package run.
+
+2. Another session's cargo was running when the gate started. It was `cargo doc` (pid 21788) in worktree unit-minds-m6-m7-status-984726. To avoid two builds at once, I waited for it to exit at 23:06:31 before starting command 2.
+
+3. The `--test mill` budget is met. The binary's debug wall time was 68.52 s against the 90 s budget (73 s for the whole command). In the loaded workspace sweep it took 61.43 s. The month printed 1000 fires and 68.4 s of wall time. It also printed: metal ore sold 1025 t, ice ore sold 993 t, metals bought 38 t, the Exchange milled 1020 t into 408 t, Occator milled 980 t into 392 t (both 5:2).
+
+4. Test 15's measured write counts are batch 5, batch into a fresh pool 6, restock 2 and relisting 3. They match the brief's expected 5/6/2/3.
+
+5. None of the known peer failures reproduced. In both the contract run and the sweep, `no_crate_exceeds_its_production_panic_budget` passed. `modules::tests::the_org_capability_vocabulary_covers_every_economy_capability` passed. The load-sensitive suites all passed on the first run: ipc_authoritative_action, server_panic_relaunch, observer_rule, world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped and journey::tests::e7c6_b2_*.
+
+6. The one "panicked at crates\mush-server\src\process_fault.rs:197" line in the sweep log is deliberate. server_panic_relaunch arms the fault ("WS01-S8 armed world-turn fault"), and that suite passed 5/5.
+
+7. Observation for the judge, not a gate failure: the shipped lane file crates/tacsim/content/lane/ceres_phobos.json is unmodified. It is still at version 13 with no mill rows. The header of crates/tacsim/tests/mill.rs says lane v14 is "held back" because relay pack tacsim.relay.luna_ceres@2 requires the lane at exactly v13. It says the tests boot the mills as an operator seed (`mill_lane`) instead and that the builder reported this under NOT DONE. So the "lane v14's mill rows" part of the cut is not in the shipped content.
+
+Logs, the runner script (run.sh) and progress.log with per-step rc and seconds are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush--claude-worktrees-festive-davinci-45dba9/2bc43039-0534-45b9-9eff-0c58b4b8fae6/scratchpad/train/cuts/SM.12a/gate1/.
+
+**The lead round's gate, all first run unless noted:**
+
+- pass: `cargo fmt --all -- --check (fallback: cargo fmt -p <pkg> -- --check for all 48 workspace packages + rustfmt --check --edition 2024 on the 28 changed/new .rs files)` — `cargo fmt --all -- --check` itself exited rc=1 with "The filename or extension is too long. (os error 206)" and printed the usage text. That is the known environment error on this box; it checked nothing. The fallback counts as the fmt step: `cargo fmt -p <pkg> -- --check` reported ok for all 48 workspace packages from cargo metadata, with 0 failures and no Diff lines, and `rustfmt --check --edition 2024` on the 28 changed or new .rs files exited rc=0 with no output. Logs: leadgate1/1-fmt.log, 1-fmt-perpkg.log, 1-fmt-cutfiles.log.
+- pass: `cargo clippy --workspace --all-targets -j 8 -- -D warnings` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.93s   (rc=0, 10 s wall. The only warning line is mush-net-web's build-script note "web/dist/index.html missing", which is not a lint. Only mush-gateway, mushd and mush-bot were re-checked; tacsim, mush-market and mush-server were already fresh from an earlier check of the same sources, and cargo replays cached diagnostics, so zero lints stands.)
+- pass: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 56.24s
+   Generated C:\Users\faeni\cc\rustmush\.claude\worktrees\festive-davinci-45dba9\target\doc\mush_ansi\index.html and 47 other files   (rc=0, 56 s wall)
+- pass: `cargo test -j 8 -p tacsim --test mill -- --nocapture` — test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.81s
+Printed: SM.12a wait: the drawn quote's restock landed on fire 9 after the draw
+Printed: SM.12a wait: the lapsed quote's restock landed 1 fire(s) after the lapse
+Printed: SM.12a writes: batch 5, batch into a fresh pool 6, restock 2, relisting 3
+Printed: SM.12a month: 1000 fires, 48.7 s wall, metal ore sold 1025 t, ice ore sold 993 t, metals bought 38 t, the Exchange milled 1020 t into 408 t, Occator 980 t into 392 t
+(rc=0, 49 s wall; 48.34 s for the same binary in the loaded workspace sweep, against the 90 s budget)
+- pass: `cargo test -j 8 -p tacsim --test lane --test sites --test ports --test plumbing --test plans --test unloading --test commerce --test sale --test claims --test mining --test stations` — claims:    test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 71.38s
+commerce:  test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.63s
+lane:      test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.94s
+mining:    test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.56s
+plans:     test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.36s
+plumbing:  test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.23s
+ports:     test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.91s
+sale:      test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.09s
+sites:     test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.40s
+stations:  test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.33s
+unloading: test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.96s
+(rc=0, 308 s wall)
+- pass: `cargo test -j 8 -p mush-content` — unittests: test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+apply:     test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+doc-tests: test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+(rc=0, 2 s wall)
+- pass: `cargo test -j 8 -p mush-market` — unittests:         test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+e7r2:              test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+ic0:               test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+ic10:              test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+ic7:               test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+ic8:               test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+projection_bounds: test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+projection_cost:   test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+doc-tests:         test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+(rc=0, 15 s wall)
+- pass: `cargo test -j 8 -p mush-server --test ic_slice_loop --test sm_story --test boot_parity --test e7r2_proving_loop --test ic_buyout_dormancy --test relay_registry` — boot_parity:        test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.41s
+e7r2_proving_loop:  test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+ic_buyout_dormancy: test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 62.71s
+ic_slice_loop:      test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 55.13s
+relay_registry:     test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.75s
+sm_story:           test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.65s
+(rc=0, 239 s wall)
+- pass: `cargo test -p mush-contract-tests -j 8` — rc=0, 78 s wall. All 32 result lines read ok with 0 failed, for example:
+unittests:     test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+panic_budget:  test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+scale_harness: test result: ok. 6 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 0.03s
+The peer-tracked no_crate_exceeds_its_production_panic_budget passed.
+- pass: `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8` — rc=0, 2935 s wall (about 49 min). There were 441 'test result:' lines and every one read 'ok' with 0 failed; summed: passed=9008 failed=0 ignored=93.
+Longest: observer_rule: test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 213.36s
+mill (under load): test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.34s
+Both peer-tracked tests passed: `test no_crate_exceeds_its_production_panic_budget ... ok` and `test modules::tests::the_org_capability_vocabulary_covers_every_economy_capability ... ok`.
+One 'panicked at crates\mush-server\src\process_fault.rs:197:9: WS01-S8 armed world-turn fault' line appears. It is the deliberate fault injection of the ws01_s8 process-fault test, whose tests all passed (a_faulted_world_* ... ok); it is not a failure.
+- pass: `cargo test -p mush-bot -j 8` — rc=0, 655 s wall. There were 25 'test result:' lines and all read ok; summed: passed=717 failed=0 ignored=7.
+unittests:   test result: ok. 469 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+arena_e2e:   test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 216.17s
+playtesting: test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 127.21s
+
+All 11 gate commands passed on the first run. No test failed, so none was rerun, and no load flake is involved.
+
+**Tree gated.** HEAD is 8cc0aa64. A scratch index (copied from the worktree's index; the real index was never touched, and `git diff --cached` stayed empty) gives tree e5dfb7bc5449bcd846c0bb7a1384cbc51739042c. The same tree was computed again after the run, so the working tree did not change while the gate ran.
+
+**What changed since the judge's tree.** Compared with the judge's tree e7f1751f, 17 files differ (+507/-108). The lead took the judge's path (a):
+- Lane `ceres_phobos.json` is now v14 with the Exchange's and Occator's `mill` rows (new digest c507f74c…).
+- `relay/luna_ceres.json` is re-signed at v3, requiring lane 14.
+- `relay_world.rs` `full_star` and `relay_content.rs` preflight now read `>= 2` / `< 2` instead of `== 2` / `!= 2`.
+- The version pins moved in `stations.rs`, `boot_parity.rs`, `relay_registry.rs`, `lane.rs` and `sites.rs`.
+- In `ports.rs`, `commerce_lines` went 50→52 with the Mill lines.
+- `mill.rs` tests were extended (25 tests now, 24 at gate 1).
+- The O-2 help sentence was added to `docs/help/trade.md`.
+- Docs were added for the restock wait and the re-add rule; the coop.rs `enrol_gate` wrap was fixed.
+
+Every suite on the judge's watch list passed with mills in the shipped lane: plumbing, plans, unloading, commerce, sale, sm_story, ic_slice_loop and ic_buyout_dormancy, along with lane, sites, ports and stations, and boot_parity and relay_registry.
+
+**fmt.** `cargo fmt --all -- --check` hit the known os error 206 and checked nothing. Per the lead note, the per-package `cargo fmt -p` fallback (48/48 clean) plus `rustfmt --check --edition 2024` on the 28 changed or new .rs files (clean) is counted as the fmt step.
+
+**Peers.** The only other cargo process on the box was PID 40616: the owner's `cargo run --release -- --profile play-6792`, which has been running w11term since 2026-10-22. It is not a build, so it was ignored. The run script waited for any other cargo.exe or rustc.exe before each step, and no wait was needed. Both known peer tests passed this time: mush-contract-tests' `no_crate_exceeds_its_production_panic_budget` and mush-server's `the_org_capability_vocabulary_covers_every_economy_capability`. No modified file outside this cut appears in git status; the 31 entries match the cut's file set.
+
+**Not covered by the gate (judge residual risk, still open).** The relay live scripts still expect 'Applied tacsim.lane.ceres_phobos@13': `scripts/relay-policy-live.mjs:23`, `scripts/relay-r10-live.mjs:28` and `scripts/relay-r9b-live.mjs:40`. Cargo does not run them, so they are untested here and will read @14 when run live.
+
+**Timings.**
+- `--test mill`: 48.81 s alone and 48.34 s in the loaded sweep, against the 90 s budget.
+- Workspace sweep: 49 min.
+- mush-bot: 11 min.
+
+**Logs.** All logs and the runner are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush--claude-worktrees-festive-davinci-45dba9/2bc43039-0534-45b9-9eff-0c58b4b8fae6/scratchpad/train/cuts/SM.12a/leadgate1/: progress.log, run.sh, 1-fmt*.log and 02-clippy.log through 11-bot.log.
+
+### Surface for the next cuts
+
+**`tacsim::port` (public)**
+- `MillRatio { ore: u32, product: u32 }` and `MillDef { ore, into: CanonicalId, ratio: MillRatio, batch_t: u64, per_ic_day_t: u64 }`, both `deny_unknown_fields`.
+- `VendorDef.mill: Vec<MillDef>`, serde-default and skipped when empty.
+- `MAX_VENDOR_MILLS` = 4 and `MAX_MILL_RATIO` = 100.
+- Validator sentences, each prefixed `vendor {org}: `:
+  - `at most 4 mill rows`
+  - `mill {ore} is authored twice`
+  - `mill into {into} is authored twice`
+  - `mill {ore}: the ore must be a good this vendor bids`
+  - `mill {ore}: {into} must be a good this vendor asks`
+  - `mill {ore}: the ratio is 1..=100 tonnes of ore to 1..=that many of product`
+  - `mill {ore}: batch_t is a whole number of ratios and at most per_ic_day_t, which is at most 100000`
+  - `mill {ore}: {ore} and {into} are not one family's goods` (from `check_ports`)
+
+**`tacsim::port::mill` (public)**
+- Constants: `MILL_ACTION` "tacsim_port_mill", `MILL_OUTCOME` "tacsim_port_mill_result", `MILL_FAMILY` "tacsim.port_mill", `MILL_KEY_PREFIX` "tacsim.port.mill/" (key `tacsim.port.mill/{key}/{ordinal}`), `MAX_RECENT_BATCHES` = 16, `MAX_MILL_ATTEMPTS` = 3.
+- `Milled { ore_t, product_t, remainder_t }`.
+- `batch(available_t, batch_t, ratio, room_today_t) -> Option<Milled>`.
+- `ic_day(i64) -> i64`, using `div_euclid` with `stock::IC_DAY`.
+- `room_today(Option<(i64, u64)>, today, per_ic_day_t) -> u64`.
+- `conserves(ore_t, product_t, ratio) -> bool`.
+- `MillId::{derive(pack, entry, org, ore) -> Result<MillId, String>, key_text(), parse()}`, domain `tacsim.mill_id.v1`. It names the ore, never the product or the ratio. Golden: `e84b53bacd9be0e7bf01d9d080afc719c84f1c03f0c91fd97fb6816516e0850e`.
+- `MillBatch { ordinal, at_ic, ore_t, product_t }`.
+- `MillLedger { pack, entry, org, ore, into, ratio, vault: VaultId, clerk: ObjId, batches, ore_t, product_t, day, day_ore_t, recent }`, with `mill_id()` and `check()`.
+
+**`pub(crate)` items SM.12b and SM.12c depend on**
+- `MillProvider`.
+- `ledger_at(ctx, handle, id) -> Result<Option<MillLedger>, ()>`, which fails closed on a key mismatch.
+- `owed` and `unlisted`, with `MillRead::{Unreadable { ore }, Counter { ore, good }}`.
+- `mill_step(ctx, state, fire, clerk, map, def) -> Option<Step>`.
+- `MillAct::{Restock, Batch}`.
+- `MillWarn::{Unreadable, Counter, Underflow, Terms, Storefront, Refused, Stalled}`, logged once a boot via `mill_warn(state, vault, key, kind, detail)` and keyed `(vault, ore, kind)`; `Underflow` is keyed by the good.
+- `MillLineRead`, `mill_line_text` and `mill_line`.
+- `PortFamilies.mills: StateFamilyHandle<MillId, MillLedger>`.
+- `PortTickState.{mill_action, mill_refused, mill_attempts, mill_warned, list_refused}`, all bounded by `MAX_CLERK_ROWS`; `PortTickState::new(probe, stock, mill)`.
+- `stock::IC_DAY` and `stock::swapped`.
+- `action_descriptors`' first parameter is now the pair `(stock_outcome, mill_outcome)`.
+- `VendorRow.mill_listed: BTreeMap<CanonicalId, u64>` (a mill's ore → units listed), serde-default and skipped when empty; `PORT_MAP_SCHEMA` stays 1.
+- `Binding::Mill`: ungated, placed after the Bids lines in `commerce_lines`.
+
+**Text**
+- The Listings clause `, {u} t milled and not yet listed` and its Flagged text `its mill ledger cannot be read.`.
+- The mill sits after `drip_step` and before `bid_step`, restock before batch.
+
+**`mush_market` (public)**
+- `listing_lapsed(&Listing, now) -> bool`.
+- `RestockSpec { listing: ListingId, good: CanonicalId, units: u64 }`.
+- `restock_ask(&mut Ctx, RestockSpec) -> Result<u64, MarketError>`.
+- `MarketStore::draw_reading(EndpointRef, &CanonicalId) -> (u64 undrawn, bool in_flight)`.
+
+**Test support**
+- `tests/support/mill.rs` `strip_mill`, the head of `strip_claims`.
+- `tests/mill.rs` boots the production roster; its seeded variants go through `lane_variant`.
+
+**Lane and relay**
+- Lane v14 ships the two mill rows: Exchange `metal_ore` → `metals` and Occator `ice_ore` → `volatiles`, both 5 : 2, 20 t a batch, 40 t an IC day.
+- The relay seed `tacsim.relay.luna_ceres` is v3, requiring lane 14. The next lane cut (SM.12b, v15) re-signs it as v4 requiring lane 15, moves the pins `LANE_VERSION`'s doc names, and extends `relay_registry.rs`'s kept-world upgrade test (its `lane_v13` strips that cut's rows too).
+
+### Doc 20 amendments owed
+
+**Doc 20 §7.3, the intake-drip paragraph.** "the capital clause binds Occator in about nine real days and the Exchange in about a month unless the mill's resale refunds it, which is the point" is wrong as built. The mill's resale is bounded by the trade run's draw: at most 16,000 cr a real day at the Exchange, against about 120,000 cr of full drip. So the Exchange's intakes close on capital in about 33 real days without the mill and about 38 with it. Occator nearly breaks even (32,000 against 33,600). It should say the drip and the capital, not the mill, size the intakes (O-1's consequence).
+
+**Doc 20 §7.3 "The mill".** It owes an "As built (SM.12a)" note. The "receipted port arm … raises the ask's quantity by the proven surplus" is two writes:
+- **The batch.** `tacsim_port_mill` debits `batch_t` of ore and credits `batch_t / 5 × 2` of product at the one storefront, with the mill's `MillLedger` (totals, IC-day tally, a 16-batch tail, the ordinal replay guard) in one bundle. No marker; product enters unrooted (O-7b).
+- **The restock.** On a later fire, a normal-lane `mush_market::restock_ask`: live listing, `may_take` before kind, a trading vendor and org, a drawn ask, the backing balance less holds ≥ quantity + undrawn + units, `revision + 1`. The per-mill `VendorRow.mill_listed` counter goes in the same outbox.
+
+The note should also say:
+- restock before batch; one act a fire, after the drip and before the bids;
+- the restock waits while a Draw is in flight on the pool;
+- a refused act passes its mill over for the IC day, and since SM.12a a refused list step passes its ask over for the IC day too;
+- a sold-out ask is relisted whole by the list step, which sets the counters;
+- the staff remedy for a split restock or a removed mill row is `@market/vendor withdraw`;
+
+**Doc 20 §11.**
+- A new **Mill** row: 5 : 2; 20 t a batch; 40 t of ore an IC day; at most 2 batches and 2 restocks a mill an IC day, out of 720 Ceres-clerk fires at rate 24; measured writes 5 a batch (6 into a fresh product pool), 2 a restock, 3 a relisting with a counter write.
+- The **Tick** row's "≤ 3 for any other act": the batch's 5 and 6 are pinned overruns for SM.12c to gate.
+- The **Prices** row's "buy-and-mill never loses" stands as built.
+
+**Doc 20 §12.3.**
+- "leaves it only through the mill" as built: the batch is the only path.
+- "the mill ratios" under "Levers, all data" now holds only for a mill's first authoring. A mill's ratio and product are fixed for its ledger's life (O-5, D9); `batch_t` and `per_ic_day_t` tune freely.
+
+**Doc 20 §13, the SM.12 row.** "since the relay backbone train took lane v13, SM.12a takes lane v14 and SM.12b v15" holds, with one addition: relay R10 (`57c5747d`) made `tacsim.relay.luna_ceres` require the lane at an exact version, so every SM lane cut re-signs the relay seed beside its lane (lane v14 ↔ relay v3 at SM.12a, v15 ↔ v4 at SM.12b). Record SM.12a landed with its own Depends-on cell ("SM.5, SM.8; built after SM.11 by the lead's order").
+
+**Doc 20 §14 D-20-10.** As built: raw ore goods are milled at Ceres by the two lane mills into the house's asks, in kind, never a cash or market mint.
+
+**Doc 20 §15.** Record the nine SM.12a defaults as the lead's standing until the owner rules: O-1, O-5 and O-7b taken provisionally by the owner on 2026-10-24; O-2, O-2b (plus the `Storefront` text), O-3, O-4, O-6 and O-7. Q-20-1 and Q-20-11 get as-built pointers.
+
+**Doc 20 §16.** Add the coupling as a standing cost: a relay pack pinning an exact lane version must be re-signed with every lane bump, and a kept world's relay latch then stays at its old version (`@atlas/pack plan` reads "Nothing to do."), which the relay code reads as the full star.
+
+**Doc 20 §18, the Doc 18 item.** "P5's supply half lands here (the mill, SM.12)": it landed with SM.12a (lane v14). D-18-26 is amended for milled and opened matter: it enters by `credit` under its own receipt with no tranche or lot lineage (SM.6, SM.12a, O-7b). Doc 18 owes as-built notes under D-18-27 and Q-18-19: the Exchange's and Occator's asks are restocked only by their mills, besides a refund and a fresh listing of the whole pool.
+
+**Doc 20a.**
+- §1.2 / §0.1's shared-version rule missed the exact-version coupling.
+- §3, B6 pass (a), gains the Draw-in-flight wait.
+- B7's "the list step's predicate is unchanged" gains the per-IC-day refused-ask skip.
+- B6's `Unreadable` at the pool read becomes `MillWarn::Storefront`.
+- §1.2's shared-version rule gains the exact-version coupling: a lane cut also re-signs the relay seed.
+
+**Doc 15b** owes a line under R10: the relay seed is re-signed with each lane version since SM.12a (v3 for lane 14), and the live-gate scripts' expectations are stale.

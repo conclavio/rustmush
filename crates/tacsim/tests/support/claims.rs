@@ -14,6 +14,9 @@ use serde_json::Value;
 /// block's two claim fees, Occator Rim's `papers` and its blocks' `paper` — the v11 shape
 /// (idempotent; the manifest is the caller's).
 pub fn strip_claims(doc: &mut Value) {
+    // Doc 20 cut SM.12a: v14's mills first, so every strip chain rebuilds its older lane
+    // unchanged.
+    super::mill::strip_mill(doc);
     let Some(entries) = doc["entries"].as_object_mut() else {
         return;
     };

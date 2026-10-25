@@ -98,6 +98,9 @@ pub enum Binding {
     /// Doc 20 cut SM.5: the prospecting licence the port's `licence` block issues;
     /// reported, never gated (`crate::port::licence::licence_line`).
     Licence,
+    /// Doc 20 cut SM.12a: one mill's ledger; reported, never gated
+    /// (`crate::port::mill::mill_line`).
+    Mill,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -508,8 +511,9 @@ pub(crate) fn markers_line(held: Option<usize>, max: usize) -> ReadinessLine {
 /// byte-identical — with the `MarketFacts` line spliced in right after the
 /// treasury line(s), (cut IC10) the `InventoryFacts` line right after it and (cut
 /// IC14) the `Markers` headroom line right after that, and per port, after its last line (the hulls line when it
-/// has one), one `Pools` line per vendor, one `Listings` line per ask and one
-/// `Bids` line per bid, in authored order. Pools and receipts are typed state,
+/// has one), one `Pools` line per vendor, one `Listings` line per ask, one
+/// `Bids` line per bid and (doc 20 cut SM.12a) one `Mill` line per mill row, in
+/// authored order. Pools, receipts and mill ledgers are typed state,
 /// readable only through a module context, which is why this takes `ctx`;
 /// `@tacsim/port status` and `+coop/enrol`'s gate both call it.
 #[must_use]
@@ -754,7 +758,15 @@ fn seeded_rows(
     Ok((seeded, rows, total))
 }
 
-/// **One port's IC8 lines** (cut IC8): the `Pools`, `Listings` and `Bids` lines.
+/// **One port's IC8 lines** (cut IC8): the `Pools`, `Listings` and `Bids` lines, and (doc 20
+/// cut SM.12a) the `Mill` lines after them.
+///
+/// Doc 20 cut SM.12a (12a-M4, D11, D15, D21): a `Listings` line nets the units the vendor's
+/// mills made and the ask does not yet carry (`crate::port::mill::unlisted`) out of the pool
+/// in both branches and names them in a clause, so the gap between a batch and its restock,
+/// and the gap after a sell-out, read Ready; a mill ledger of **this** good that cannot be
+/// read, or a pool below its unlisted units (a store fault only), reads Flagged — the gated
+/// line fails closed as an unreadable storefront's does.
 #[allow(clippy::too_many_lines)]
 fn commerce_lines(
     ctx: &mush_core::Ctx<'_>,
@@ -776,6 +788,11 @@ fn commerce_lines(
     let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
     let market = w.module_state::<mush_market::MarketStore>();
     let economy = w.module_state::<EconomyStore>();
+    // Doc 20 cut SM.12a: the mill ledgers' handle (absent on a roster without the layer's
+    // handles, where every pool read refuses first).
+    let mills = w
+        .module_state::<crate::port::families::PortHandles>()
+        .map(|handles| &handles.families.mills);
     let org_name = |org: &CanonicalId| {
         def.orgs
             .iter()
@@ -878,6 +895,28 @@ fn commerce_lines(
                 );
                 continue;
             };
+            // Doc 20 cut SM.12a: the units the vendor's mills made and the ask does not yet
+            // carry, netted out of the pool in both branches.
+            let unlisted = match mills {
+                Some(mills) => crate::port::mill::unlisted(ctx, mills, map, vendor, row, good),
+                None => Ok(0),
+            };
+            let Some((net, milled)) = unlisted
+                .ok()
+                .and_then(|u| pool.checked_sub(u).map(|net| (net, u)))
+            else {
+                push(
+                    Binding::Listings,
+                    LineState::Flagged,
+                    format!("{head}: its mill ledger cannot be read."),
+                );
+                continue;
+            };
+            let clause = if milled > 0 {
+                format!(", {milled} {unit} milled and not yet listed")
+            } else {
+                String::new()
+            };
             let reading = market
                 .map(|m| crate::port::stock::ask_reading(m, row.vault, good))
                 .unwrap_or_default();
@@ -887,7 +926,7 @@ fn commerce_lines(
                     let price = market
                         .and_then(|m| m.listing(listing))
                         .map_or_else(String::new, |l| money(w, l.price));
-                    let within = q <= pool && pool <= q.saturating_add(undrawn);
+                    let within = q <= net && net <= q.saturating_add(undrawn);
                     if !within {
                         push(
                             Binding::Listings,
@@ -903,7 +942,7 @@ fn commerce_lines(
                             LineState::Ready,
                             format!(
                                 "{head}: listing #{listing} at {price}/{unit}, {q} {unit} listed; \
-                                 the storefront holds {pool} {unit}."
+                                 the storefront holds {pool} {unit}{clause}."
                             ),
                         );
                     } else {
@@ -912,7 +951,8 @@ fn commerce_lines(
                             LineState::Ready,
                             format!(
                                 "{head}: listing #{listing} at {price}/{unit}, {q} {unit} listed; \
-                                 the storefront holds {pool} {unit}, {undrawn} {unit} in hand-over."
+                                 the storefront holds {pool} {unit}, {undrawn} {unit} in \
+                                 hand-over{clause}."
                             ),
                         );
                     }
@@ -928,10 +968,12 @@ fn commerce_lines(
                         LineState::Pending,
                         format!("{head}: not seeded yet."),
                     ),
-                    Ok((_, _, total)) if pool <= undrawn => push(
+                    // Doc 20 cut SM.12a (D11 as amended): stock the mills made waits for the
+                    // list step with the ask sold out, and never shuts the desk.
+                    Ok((_, _, total)) if net <= undrawn => push(
                         Binding::Listings,
                         LineState::Ready,
-                        format!("{head}: SOLD OUT: seeded {total} {unit}, 0 left."),
+                        format!("{head}: SOLD OUT: seeded {total} {unit}, 0 left{clause}."),
                     ),
                     Ok(_) => push(
                         Binding::Listings,
@@ -1049,6 +1091,13 @@ fn commerce_lines(
                     format!("{head}: listing #{listing} lapsed; it waits for the next apply."),
                 ),
             }
+        }
+    }
+    // ---- doc 20 cut SM.12a: the mills, per mill row (reported, never gated) ----
+    for vendor in &def.vendors {
+        for mill in &vendor.mill {
+            let (state, text) = crate::port::mill::mill_line(ctx, entry, map, vendor, mill);
+            push(Binding::Mill, state, text);
         }
     }
     out

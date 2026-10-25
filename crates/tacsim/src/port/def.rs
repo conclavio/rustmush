@@ -68,6 +68,11 @@ pub const MAX_PORT_ROUTES: usize = 8;
 pub const MAX_PORT_VENDORS: usize = 16;
 /// The most stock, ask or bid rows one vendor may author.
 pub const MAX_VENDOR_ROWS: usize = 16;
+/// The most mill rows one vendor may author (doc 20 cut SM.12a).
+pub const MAX_VENDOR_MILLS: usize = 4;
+/// The most tonnes of ore (and so of product) one mill ratio may name (doc 20
+/// cut SM.12a): `1 <= product <= ore <= MAX_MILL_RATIO`.
+pub const MAX_MILL_RATIO: u32 = 100;
 /// The most capital one institution may be authored with, in major units.
 pub const MAX_PORT_CAPITAL_MAJOR: u64 = 100_000_000;
 /// **The largest one capital tranche may be**, in major units (D-18-14): an
@@ -672,6 +677,96 @@ pub struct VendorDef {
     /// The Wanted bids.
     #[serde(default)]
     pub bids: Vec<BidDef>,
+    /// **Doc 20 cut SM.12a (§7.3 "The mill"; doc 18 §5's P5)**: the house mills an
+    /// ore it bids for into a good it asks, `batch_t` at a time, at most
+    /// `per_ic_day_t` of ore an IC day (`crate::port::mill`). A mill's `ratio` and
+    /// `into` are fixed for the life of its ledger (D9). Skipped when empty, so a
+    /// vendor without a mill re-encodes byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mill: Vec<MillDef>,
+}
+
+/// **A mill's ratio** (doc 20 cut SM.12a; §7.3's "5 : 2"): `ore` tonnes of ore
+/// make `product` tonnes of product, `1 <= product <= ore <= MAX_MILL_RATIO`
+/// ([`MAX_MILL_RATIO`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MillRatio {
+    /// Tonnes of ore a ratio consumes.
+    pub ore: u32,
+    /// Tonnes of product a ratio makes.
+    pub product: u32,
+}
+
+/// **One mill of a vendor** (doc 20 cut SM.12a; doc 20 §7.3 "The mill", §12.3's
+/// "Levers, all data", D-20-10, Q-20-1): on the port tick's stock arm the port's
+/// stock clerk mills `batch_t` tonnes of the house's storefront `ore` into
+/// `batch_t / ratio.ore × ratio.product` tonnes of `into` at a time, at most
+/// `per_ic_day_t` tonnes of ore an IC day, and restocks the house's drawn ask of
+/// `into` by what it made (`crate::port::mill`).
+///
+/// **The numbers are the lane's, and their basis is here** (doc 20a §6, O-1; the
+/// owner took them provisionally on 2026-10-24 — "put in some reasonable defaults
+/// and figure it out as we go" — so tune them in the lane's two `mill` rows and
+/// nowhere else):
+///
+/// - **The ratio, 5 : 2**, is §7.3's ore-goods table: buy-and-mill never loses a
+///   house money (a tonne of concentrate costs 2.5 t of metal ore at 70.00cr/t,
+///   175.00cr, under its 200.00cr ask; a tonne of water 2.5 t of ice ore at
+///   35.00cr/t, 87.50cr, under its 100.00cr ask — §11's Prices row).
+/// - **The rate, 40 t of ore an IC day**, equals the intake drip's `per_ic_day`
+///   (Q-20-11), so the mill keeps pace with what the drip lets the house buy and
+///   is never a second cap on the ore economy. At world rate 24 that is up to
+///   960 t of each bulk ore a real day milled into 384 t of product, against
+///   §12.3's draw of about 80 t of concentrate and 320 t of water a real day:
+///   4.8× and 1.2× headroom. Water holds only if Occator mills at least 33.3 t of
+///   ice an IC day (about 800 t a real day, some 11.4 fair miner-hours at 70 t an
+///   hour, unless SM.12b's drones feed it). With the mill at the drip's rate up to
+///   about 259 t can sit unmilled at full drip (the bid's standing 240 t plus a
+///   remainder under one batch).
+/// - **The resale is bounded by the trade run's draw** (80 t × 200 = 16,000 cr a
+///   real day at the Exchange against 67,200 cr of full metal-ore drip), so the
+///   mill does not refund the Exchange's capital; Occator nearly breaks even
+///   (320 × 100 = 32,000 against 33,600). At full drip the Exchange's intakes close
+///   on capital in about a real month whether the mill runs or not (C8).
+/// - **The batch, 20 t (four ratios)**, mills a day's drip in two acts, lets one
+///   sold hopper (12 t, §11's Hopper row) wait for the next sale, and keeps a mill
+///   to at most two batches an IC day.
+///
+/// `ratio` and `into` are fixed for the life of the mill's ledger (D9, O-5's
+/// default): the ledger is keyed by the ore, so a changed ratio or product is
+/// refused at tick time and paged; `batch_t` and `per_ic_day_t` change freely.
+///
+/// **Removing a row** (O-7's default): the mill stops, and the units it milled and
+/// the clerk had not listed make the drift check page and the gated Listings line of
+/// its good read Flagged until staff run `@market/vendor withdraw <listing>` on that
+/// ask; the stock arm's list step then re-lists the whole pool. A sell-out of that
+/// ask to 0, or its lapse the sweep deletes, clears the page the same way: the list
+/// step re-lists whenever the ask has no listing. **Re-adding a removed row** (the
+/// authoring rule; SM.12a's correctness F3): that list step sets only the authored
+/// mills' counters, so any fresh listing of that good's ask since the removal (a
+/// staff withdraw, a sell-out to 0, or a lapse the sweep deleted) re-lists the whole
+/// pool and leaves the removed mill's `mill_listed` counter stale; the same ore names
+/// the same ledger again (the mill id is pack, entry, org and ore), so the re-added
+/// row's owed units are units already listed — the drift check pages and the Listings
+/// line reads Flagged until a second withdraw. Re-add a row only together with a
+/// withdraw of its good's ask, or when that ask has not been listed afresh since the
+/// removal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MillDef {
+    /// The ore milled: one of this vendor's `bids`.
+    pub ore: CanonicalId,
+    /// The product made: one of this vendor's `asks`, of the ore's family.
+    pub into: CanonicalId,
+    /// Tonnes of ore to tonnes of product.
+    pub ratio: MillRatio,
+    /// Tonnes of ore one batch mills: a whole number of ratios, at most
+    /// `per_ic_day_t`.
+    pub batch_t: u64,
+    /// The most ore the mill takes in one IC day, tonnes, at most
+    /// `mush_market::MAX_QUANTITY`.
+    pub per_ic_day_t: u64,
 }
 
 /// One stock row of a vendor.
@@ -1229,11 +1324,78 @@ impl PortDef {
         Ok(())
     }
 
+    /// **A vendor's mill rows** (doc 20 cut SM.12a; §7.3 "The mill"), checked in
+    /// this order: at most [`MAX_VENDOR_MILLS`] rows; no ore and no product named
+    /// twice; the ore one of the vendor's bids and the product one of its asks (so
+    /// `ore != into`, a good never being both asked and bid); `1 <= product <= ore
+    /// <= MAX_MILL_RATIO`; `batch_t` a whole number of ratios with `1 <= batch_t <=
+    /// per_ic_day_t <= mush_market::MAX_QUANTITY`. The family rule (a mill's ore
+    /// and product are one family's goods) is [`check_ports`]', where the goods
+    /// table is loaded.
+    fn check_vendor_mills(
+        &self,
+        vendor: &VendorDef,
+        asks: &BTreeSet<&CanonicalId>,
+        bids: &BTreeSet<&CanonicalId>,
+    ) -> Result<(), String> {
+        let org = &vendor.org;
+        if vendor.mill.len() > MAX_VENDOR_MILLS {
+            return Err(format!(
+                "vendor {org}: at most {MAX_VENDOR_MILLS} mill rows"
+            ));
+        }
+        let mut ores: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(mill) = vendor.mill.iter().find(|mill| !ores.insert(&mill.ore)) {
+            return Err(format!("vendor {org}: mill {} is authored twice", mill.ore));
+        }
+        let mut intos: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(mill) = vendor.mill.iter().find(|mill| !intos.insert(&mill.into)) {
+            return Err(format!(
+                "vendor {org}: mill into {} is authored twice",
+                mill.into
+            ));
+        }
+        for mill in &vendor.mill {
+            let ore = &mill.ore;
+            if !bids.contains(ore) {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: the ore must be a good this vendor bids"
+                ));
+            }
+            if !asks.contains(&mill.into) {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: {} must be a good this vendor asks",
+                    mill.into
+                ));
+            }
+            let ratio = mill.ratio;
+            if ratio.product == 0 || ratio.product > ratio.ore || ratio.ore > MAX_MILL_RATIO {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: the ratio is 1..={MAX_MILL_RATIO} tonnes of ore to \
+                     1..=that many of product"
+                ));
+            }
+            if mill.batch_t == 0
+                || mill.batch_t % u64::from(ratio.ore) != 0
+                || mill.batch_t > mill.per_ic_day_t
+                || mill.per_ic_day_t > mush_market::MAX_QUANTITY
+            {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: batch_t is a whole number of ratios and at most \
+                     per_ic_day_t, which is at most {}",
+                    mush_market::MAX_QUANTITY
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// **One vendor's lines** (doc 18 cut IC8; §4.3 "Vendors and buyers"):
     /// stock, ask and bid goods each unique within the vendor; every ask drawn
-    /// from a stock row of the same vendor; no good both asked and bid; every
-    /// `boards` role a key of `rooms` other than `spine`, none repeated in one
-    /// line.
+    /// from a stock row of the same vendor; no good both asked and bid; (doc 20
+    /// cut SM.5) a refreshed intake's drip and cap; (doc 20 cut SM.12a) the mill
+    /// rows (`check_vendor_mills`); every `boards` role a key of `rooms` other
+    /// than `spine`, none repeated in one line.
     fn check_vendor_lines(&self, vendor: &VendorDef) -> Result<(), String> {
         let org = &vendor.org;
         let mut stock: BTreeSet<&CanonicalId> = BTreeSet::new();
@@ -1278,6 +1440,7 @@ impl PortDef {
                 ));
             }
         }
+        self.check_vendor_mills(vendor, &asks, &bids)?;
         let lines = vendor
             .asks
             .iter()
@@ -1448,6 +1611,7 @@ impl PortDef {
 ///   org is a vendor of that entry whose asks include the good;
 /// - (cut IC8) no stock clerk (`vendors[].agent`) serves two port entries;
 /// - (cut IC8) every stock, ask and bid good is a row of the goods table;
+/// - (doc 20 cut SM.12a) a mill's ore and product are one family's goods;
 /// - (doc 20 cut SM.5) a programme's `reference_minor` names a trade good, at
 ///   least 1 minor unit, that is not also in `reference` and that **no vendor of
 ///   any port entry of the pack asks** (§7.4: a fixed reference only for a good
@@ -1684,6 +1848,25 @@ pub fn check_ports(
                     return fail(format!(
                         "vendor {}: {good} is not a good of the goods table",
                         vendor.org
+                    ));
+                }
+            }
+            // Doc 20 cut SM.12a (§7.3 "The mill"): a mill turns an ore into its own
+            // family's good (metal ore into metal concentrate, ice ore into water).
+            for mill in &vendor.mill {
+                let family = |good: &CanonicalId| {
+                    goods
+                        .good(good)
+                        .and_then(|row| row.family.as_ref().cloned())
+                };
+                let one_family = match (family(&mill.ore), family(&mill.into)) {
+                    (Some(ore), Some(into)) => ore == into,
+                    _ => false,
+                };
+                if !one_family {
+                    return fail(format!(
+                        "vendor {}: mill {}: {} and {} are not one family's goods",
+                        vendor.org, mill.ore, mill.ore, mill.into
                     ));
                 }
             }
@@ -1969,6 +2152,7 @@ mod tests {
                 boards: Vec::new(),
             }],
             bids: Vec::new(),
+            mill: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor.clone());
@@ -2000,6 +2184,7 @@ mod tests {
             stock,
             asks: Vec::new(),
             bids: Vec::new(),
+            mill: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor(
@@ -2226,6 +2411,7 @@ mod tests {
                 })
                 .collect(),
             bids,
+            mill: Vec::new(),
         }
     }
 
@@ -2501,6 +2687,218 @@ mod tests {
             }),
             "ceres_port: programme coop.first_captain: reference_minor provisions is not a trade \
              good of the goods table"
+        );
+    }
+
+    /// A mill row of `ore` into `into`, `ore_t : product_t`, `batch_t` a batch and
+    /// `per_day_t` an IC day.
+    fn sm12a_mill(
+        ore: &str,
+        into: &str,
+        ratio: (u32, u32),
+        batch_t: u64,
+        per_day_t: u64,
+    ) -> MillDef {
+        MillDef {
+            ore: cid(ore),
+            into: cid(into),
+            ratio: MillRatio {
+                ore: ratio.0,
+                product: ratio.1,
+            },
+            batch_t,
+            per_ic_day_t: per_day_t,
+        }
+    }
+
+    /// The Exchange's shape: asks `metals` and `volatiles`, bids `metal_ore` and
+    /// `ice_ore`, mills the lane's metal-ore row.
+    fn sm12a_vendor(mills: Vec<MillDef>) -> VendorDef {
+        let mut vendor = sm5_vendor(
+            "coop",
+            "npc.someone",
+            &["metals", "volatiles"],
+            vec![
+                sm5_bid("metal_ore", 240, None),
+                sm5_bid("ice_ore", 240, None),
+            ],
+        );
+        vendor.mill = mills;
+        vendor
+    }
+
+    /// **Doc 20 cut SM.12a (§7.3 "The mill")**: each mill rule refuses at load with
+    /// its sentence, whole; the lane's two rows are accepted; the family rule is
+    /// `check_ports`'.
+    #[test]
+    fn sm12a_each_mill_rule_refuses_with_its_sentence() {
+        let with = |mills: Vec<MillDef>| {
+            let mut def = port();
+            def.vendors.push(sm12a_vendor(mills));
+            refused(&def)
+        };
+        let lane = || sm12a_mill("metal_ore", "metals", (5, 2), 20, 40);
+        assert_eq!(with(vec![lane()]), "accepted");
+        assert_eq!(
+            with(vec![
+                lane(),
+                sm12a_mill("ice_ore", "volatiles", (5, 2), 20, 40)
+            ]),
+            "accepted"
+        );
+        assert_eq!(with(Vec::new()), "accepted");
+        // At most four rows.
+        assert_eq!(
+            with(vec![lane(); MAX_VENDOR_MILLS + 1]),
+            "vendor coop: at most 4 mill rows"
+        );
+        // An ore named twice; a product named twice.
+        assert_eq!(
+            with(vec![
+                lane(),
+                sm12a_mill("metal_ore", "volatiles", (5, 2), 20, 40)
+            ]),
+            "vendor coop: mill metal_ore is authored twice"
+        );
+        assert_eq!(
+            with(vec![
+                lane(),
+                sm12a_mill("ice_ore", "metals", (5, 2), 20, 40)
+            ]),
+            "vendor coop: mill into metals is authored twice"
+        );
+        // The ore a bid; the product an ask.
+        assert_eq!(
+            with(vec![sm12a_mill("carbon_ore", "metals", (5, 2), 20, 40)]),
+            "vendor coop: mill carbon_ore: the ore must be a good this vendor bids"
+        );
+        assert_eq!(
+            with(vec![sm12a_mill("metal_ore", "propellant", (5, 2), 20, 40)]),
+            "vendor coop: mill metal_ore: propellant must be a good this vendor asks"
+        );
+        // The ratio.
+        let ratio = "vendor coop: mill metal_ore: the ratio is 1..=100 tonnes of ore to 1..=that \
+                     many of product";
+        for bad in [(5, 0), (2, 5), (101, 2), (0, 0)] {
+            assert_eq!(
+                with(vec![sm12a_mill("metal_ore", "metals", bad, 20, 40)]),
+                ratio,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            with(vec![sm12a_mill(
+                "metal_ore",
+                "metals",
+                (100, 100),
+                100,
+                100
+            )]),
+            "accepted"
+        );
+        // The batch and the rate.
+        let batch = "vendor coop: mill metal_ore: batch_t is a whole number of ratios and at most \
+                     per_ic_day_t, which is at most 100000";
+        for (batch_t, per_day_t) in [
+            (0, 40),
+            (21, 40),
+            (45, 40),
+            (20, mush_market::MAX_QUANTITY + 1),
+        ] {
+            assert_eq!(
+                with(vec![sm12a_mill(
+                    "metal_ore",
+                    "metals",
+                    (5, 2),
+                    batch_t,
+                    per_day_t
+                )]),
+                batch,
+                "{batch_t} / {per_day_t}"
+            );
+        }
+        assert_eq!(
+            with(vec![sm12a_mill(
+                "metal_ore",
+                "metals",
+                (5, 2),
+                40,
+                mush_market::MAX_QUANTITY
+            )]),
+            "accepted"
+        );
+
+        // The family rule, through `check_ports` on the two-port map: Stickney's
+        // vendor mills metal ore into `volatiles`, another family's good.
+        let family = |mill: MillDef| {
+            let mut entries = sm5_two_ports(&|_| {});
+            if let Some(PackEntry::Port(stickney)) = entries.get_mut(&cid("stickney_port"))
+                && let Some(vendor) = stickney.vendors.first_mut()
+            {
+                let mut milling = sm12a_vendor(vec![mill]);
+                milling.org = vendor.org.clone();
+                milling.agent = vendor.agent.clone();
+                *vendor = milling;
+            }
+            check_ports(&entries).err().map_or_else(
+                || "accepted".to_owned(),
+                |(entry, detail)| format!("{entry}: {detail}"),
+            )
+        };
+        assert_eq!(family(lane()), "accepted");
+        assert_eq!(
+            family(sm12a_mill("metal_ore", "volatiles", (5, 2), 20, 40)),
+            "stickney_port: vendor kasei: mill metal_ore: metal_ore and volatiles are not one \
+             family's goods"
+        );
+        assert_eq!(
+            family(sm12a_mill("ice_ore", "metals", (5, 2), 20, 40)),
+            "stickney_port: vendor kasei: mill ice_ore: ice_ore and metals are not one family's \
+             goods"
+        );
+    }
+
+    /// **Doc 20 cut SM.12a**: a vendor with no mill rows re-encodes with no `mill`
+    /// key, byte-identically; a mill row is strict at each level.
+    #[test]
+    fn sm12a_a_vendor_without_a_mill_re_encodes_byte_identically() {
+        let bare = sm5_vendor(
+            "coop",
+            "npc.someone",
+            &["metals"],
+            vec![sm5_bid("metal_ore", 240, Some((40, 240)))],
+        );
+        let json = serde_json::to_value(&bare).unwrap_or_default();
+        assert!(json.get("mill").is_none(), "{json}");
+        let text = serde_json::to_string(&bare).unwrap_or_default();
+        let back: VendorDef = serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(back, bare);
+        assert_eq!(serde_json::to_string(&back).unwrap_or_default(), text);
+        // With a mill row, the key is present and round-trips.
+        let milling = sm12a_vendor(vec![sm12a_mill("metal_ore", "metals", (5, 2), 20, 40)]);
+        let json = serde_json::to_value(&milling).unwrap_or_default();
+        assert_eq!(
+            json["mill"],
+            serde_json::json!([{ "ore": "metal_ore", "into": "metals",
+                "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 }])
+        );
+        assert_eq!(
+            serde_json::from_value::<VendorDef>(json).ok(),
+            Some(milling)
+        );
+        // Strict at each level.
+        assert!(
+            serde_json::from_value::<MillDef>(serde_json::json!({
+                "ore": "metal_ore", "into": "metals", "ratio": { "ore": 5, "product": 2 },
+                "batch_t": 20, "per_ic_day_t": 40, "x": 1
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<MillRatio>(serde_json::json!({
+                "ore": 5, "product": 2, "x": 1
+            }))
+            .is_err()
         );
     }
 }

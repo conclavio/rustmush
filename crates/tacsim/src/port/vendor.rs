@@ -566,6 +566,9 @@ pub(crate) fn put(
                     grant: None,
                     stock: Vec::new(),
                     bids: std::collections::BTreeMap::new(),
+                    // Doc 20 cut SM.12a: the applier never writes the counter; the
+                    // stock arm's mill restock and list step do.
+                    mill_listed: std::collections::BTreeMap::new(),
                 },
             );
             put_port_map(ctx, map);

@@ -335,6 +335,74 @@ fn e7r2_p1_no_path_in_the_market_mints() {
     );
 }
 
+/// **Doc 20 cut SM.12a: the restock creates no matter** (P5's supply half; the twin of
+/// [`e7r2_p1_no_path_in_the_market_mints`] for the one new raise of a drawn ask). The
+/// body of `restock_ask` reads the pool and writes one listing: it names no inventory
+/// writer, no inventory handle and no lot leg. And it is the one public function of the
+/// market that takes a `RestockSpec`, so no second door raises an ask by milled units.
+#[test]
+fn e7r2_p1_the_restock_creates_no_matter() {
+    let api = production("mush-market/src/api.rs");
+    let start = api
+        .find("pub fn restock_ask(")
+        .expect("restock_ask is defined in api.rs");
+    let body: String = api[start..]
+        .lines()
+        .take_while(|line| *line != "}")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.len() > 200,
+        "the probe read restock_ask's body: {body}"
+    );
+    for forbidden in [
+        "mint_origin(",
+        ".credit(",
+        ".debit(",
+        ".transfer",
+        "InventoryFamilies",
+        "lot::stage(",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "restock_ask names `{forbidden}`: the market moves matter and creates none"
+        );
+    }
+    let mut takers: Vec<String> = Vec::new();
+    let src = crates_dir().join("mush-market/src");
+    for entry in std::fs::read_dir(&src).expect("mush-market/src") {
+        let path = entry.expect("an entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = format!(
+            "mush-market/src/{}",
+            path.file_name().and_then(|n| n.to_str()).expect("a name")
+        );
+        let text = production(&relative);
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("pub fn ") {
+            let tail = &rest[at..];
+            let signature = tail.split('{').next().unwrap_or(tail);
+            if signature.contains("RestockSpec") {
+                let name = signature
+                    .trim_start_matches("pub fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                takers.push(format!("{relative}: {name}"));
+            }
+            rest = &tail["pub fn ".len()..];
+        }
+    }
+    assert_eq!(
+        takers,
+        vec!["mush-market/src/api.rs: restock_ask".to_owned()],
+        "restock_ask is the only public function that takes a RestockSpec"
+    );
+}
+
 /// **No `InventoryVerb` was added, and the structural lockout is intact** (10b §15.5's
 /// constraint (3)).
 #[test]

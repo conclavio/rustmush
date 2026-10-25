@@ -1023,10 +1023,10 @@ fn sm2_the_lane_carries_six_sites() {
     // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry). Doc 20 cut
     // SM.5: v11 (the ore bids, the fixed references, the licence, Occator's raise; no new
     // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
-    // paper; no new entry).
+    // paper; no new entry). Doc 20 cut SM.12a: v14 (the two mill rows; no new entry).
     assert_eq!(
-        LANE_VERSION, 13,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b"
+        LANE_VERSION, 14,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
