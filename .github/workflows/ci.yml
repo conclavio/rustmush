@@ -38,7 +38,11 @@ jobs:
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # 2026-10-25: no `max-parallel`. Each story runs on its own runner
+      # against its own in-process world, so the four share nothing, and one
+      # at a time made the job the sum of them: 31 + 131 + 18 + 55 min, about
+      # 236, in run 40211204236. In parallel it is the longest, the server
+      # story's 131.
       matrix:
         include:
           - name: author and buyer lifecycle
@@ -58,6 +62,13 @@ jobs:
       - name: Pinned Rust toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The automatic key is the job id, shared by every matrix cell, so
+          # the first story to finish would save its package's dependencies
+          # and the others would restore that set and never save their own
+          # (the test job's 2026-10-20 note). One key per package: the three
+          # tacsim stories share theirs.
+          key: ${{ matrix.package }}
       # Real Registry schedules make these unsuitable for the ordinary fast
       # workspace run. Each exact ignored case owns its actual service, native
       # receipt, cold recovery and failure assertions; no synthetic certificate
