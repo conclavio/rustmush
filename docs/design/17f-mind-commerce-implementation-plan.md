@@ -104,6 +104,15 @@ three things that neither side's own suite could see:
   pin was never moved with it. A bisect over the line found that commit the
   only mover. Stopping times and the float probe are unmoved, and Windows and
   Linux agree on the new values.
+- **The 16b harness baseline's five deterministic leaves moved for the same
+  reason.** These are the four minds lanes' `final_substep_hash` values and
+  `ledger_bytes_streamed` (+562 bytes). Setting only the API back to 4
+  restores all five exactly, and `origin/main` alone matches the old values.
+  They are recorded as `blessed.m7_deterministic_update` beside M6's; the VPS
+  timings and blessing host are unchanged.
+- **The M6 author story's frozen-game decoder now reads tape format 2.** M7's
+  `31d19f25` raised `TAPE_FORMAT`, because opening snapshots and seals carry
+  the filed certificates, but the dispatch-only story still pinned format 1.
 - **Merge-made repairs:** the SM.6/SM.10 industry seams run through M7's split
   registration helpers, and the composed scheduled path seeds main's
   `completes` flag.
