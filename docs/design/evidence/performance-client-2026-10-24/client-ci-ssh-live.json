@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "checks": [
+    "PTY ECHO=0 honored",
+    "line history recalls one gateway-stamped narrative once",
+    "TUI entry/exit retains line-history request ownership",
+    "stamped SSH output drains and closes on QUIT",
+    "PTY ECHO=1 honored",
+    "stamped SSH output drains and closes on QUIT"
+  ],
+  "transcripts": [
+    {
+      "echo": false,
+      "reply": "\r\nGod says, \"client-debt-1792892470910019031\"\r\n__CLIENT_DONE__\r\n"
+    },
+    {
+      "history": "\r\n--- older history: 1 line(s), oldest first ---\r\nGod says, \"client-debt-1792892470910019031\"\r\n--- that is the oldest history the server holds ---\r\n__CLIENT_DONE__\r\n"
+    },
+    {
+      "after_mode_flip": "\r\n--- older history: 1 line(s), oldest first ---\r\nGod says, \"client-debt-1792892470910019031\"\r\n--- that is the oldest history the server holds ---\r\n__CLIENT_DONE__\r\n"
+    },
+    {
+      "quit_exit_status": 0
+    },
+    {
+      "echo": true,
+      "reply": "say client-debt-1792892471131265808\r\nGod says, \"client-debt-1792892471131265808\"\r\n__CLIENT_DONE__\r\n"
+    },
+    {
+      "quit_exit_status": 0
+    }
+  ]
+}

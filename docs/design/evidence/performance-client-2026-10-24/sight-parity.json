@@ -1,0 +1,48 @@
+{
+  "ci": {
+    "deterministic_paths_equal": [
+      "world",
+      "substeps",
+      "counters",
+      "weapons",
+      "perception.total",
+      "perception.peak_per_pulse",
+      "motor.total",
+      "motor.peak_per_pulse",
+      "minds.states_at_end",
+      "cohort",
+      "loop.jitter_ms",
+      "window.traces_peak",
+      "window.cell_probes_peak",
+      "window.horizon_probes_peak",
+      "window.jam_checks_peak",
+      "window.share_ops_peak",
+      "frame_execution.state_hash"
+    ],
+    "snapshot_hash_ok": true,
+    "state_hash": 11501891080552343882
+  },
+  "authored": {
+    "deterministic_paths_equal": [
+      "world",
+      "substeps",
+      "counters",
+      "weapons",
+      "perception.total",
+      "perception.peak_per_pulse",
+      "motor.total",
+      "motor.peak_per_pulse",
+      "minds.states_at_end",
+      "cohort",
+      "loop.jitter_ms",
+      "window.traces_peak",
+      "window.cell_probes_peak",
+      "window.horizon_probes_peak",
+      "window.jam_checks_peak",
+      "window.share_ops_peak",
+      "frame_execution.state_hash"
+    ],
+    "snapshot_hash_ok": true,
+    "state_hash": 15052508131265082613
+  }
+}

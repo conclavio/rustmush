@@ -33,6 +33,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Default)]
 struct MockHooks {
     brackets: Mutex<mush_proto::OutputBrackets>,
+    delayed_line_release: tokio::sync::Notify,
     /// account (lowercase) -> (password, characters)
     accounts: Mutex<HashMap<String, (String, Vec<CharSummary>)>>,
     /// account (lowercase) -> registered OpenSSH public-key lines (M19).
@@ -231,6 +232,21 @@ impl SshHooks for MockHooks {
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.lines.lock().unwrap().push((conn, line.clone()));
+            if line == "hold-reply" {
+                let tx = self.tx_of(conn).unwrap();
+                tx.send(Arc::new(OutputEvent::Sys(RichText::plain(
+                    "reply-progress",
+                ))))
+                .await
+                .unwrap();
+                self.delayed_line_release.notified().await;
+                tx.send(Arc::new(OutputEvent::Sys(RichText::plain(
+                    "reply-complete",
+                ))))
+                .await
+                .unwrap();
+                return;
+            }
             if line.eq_ignore_ascii_case("quit") {
                 // The farewell must drain before the channel closes, as in production.
                 if let Some(tx) = self.tx_of(conn) {
@@ -2571,4 +2587,33 @@ async fn tui_coalescing_preserves_wire_reply_boundaries() {
     );
     assert_eq!(reply.matches("__BEGIN__").count(), 1);
     assert_eq!(reply.matches("__END__").count(), 1);
+}
+
+#[tokio::test]
+async fn delayed_command_progress_flushes_before_completion_and_queued_local_reply() {
+    let hooks = Arc::new(MockHooks::default());
+    let (_handle, mut term) = play_session("delayed-reply", &hooks).await;
+    let mark = term.seen.len();
+    term.send_bytes(b"hold-reply\r@sounds off\rsay after-completion\r")
+        .await;
+    // The test releases the command only AFTER its progress reached the client.
+    // Awaiting the hook inside russh's data callback deadlocks this handshake.
+    term.expect_after(mark, "reply-progress").await;
+    assert!(!strip_ansi(&term.seen[mark..]).contains("Sounds are off"));
+    assert_eq!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, line)| line == "say after-completion")
+            .count(),
+        0
+    );
+    hooks.delayed_line_release.notify_one();
+    term.expect_after(mark, "Sounds are off").await;
+    term.expect_after(mark, "Nick says").await;
+    let text = strip_ansi(&term.seen[mark..]);
+    assert!(text.find("reply-complete").unwrap() < text.find("Sounds are off").unwrap());
+    assert!(text.find("Sounds are off").unwrap() < text.find("Nick says").unwrap());
 }

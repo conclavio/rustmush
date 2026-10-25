@@ -1,0 +1,62 @@
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.56s
+     Running tests/observer_rule.rs (target/debug/deps/observer_rule-13ee4d395a7dc8a2)
+
+running 32 tests
+test e3_the_traffic_stops_one_line_names_nothing_and_places_nothing ... ok
+test ae1_the_slope_hold_names_nothing_and_places_nothing ... ok
+test a_taken_name_is_refused_the_same_way_whatever_it_collided_with ... ok
+test a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_match ... ok
+test i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing ... ok
+test i1_a_replay_is_public_names_nobody_and_a_running_match_has_none ... ok
+test a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held has been running for over 60 seconds
+test ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_reads_miss has been running for over 60 seconds
+test ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh has been running for over 60 seconds
+test af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read has been running for over 60 seconds
+test ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_reads_miss ... ok
+test i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round has been running for over 60 seconds
+test i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else has been running for over 60 seconds
+test a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held ... ok
+test ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh ... ok
+test m5_the_fog_sweep_finds_each_leak_it_names ... ok
+test m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detection has been running for over 60 seconds
+test i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round ... ok
+test m1b3_the_arming_names_nothing_but_the_pilots_own_slot has been running for over 60 seconds
+test i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else ... ok
+test af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read ... ok
+test m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds has been running for over 60 seconds
+test m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detection ... ok
+test m5_a_slots_mind_is_read_by_its_own_character_alone has been running for over 60 seconds
+test m5_the_mind_object_names_nothing_but_the_pilots_own_seal has been running for over 60 seconds
+test m1b3_the_arming_names_nothing_but_the_pilots_own_slot ... ok
+test neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found has been running for over 60 seconds
+test nothing_about_an_undetected_unit_crosses_on_any_surface has been running for over 60 seconds
+test m5_a_slots_mind_is_read_by_its_own_character_alone ... ok
+test m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds ... ok
+test nothing_of_the_shooting_crosses_to_the_world_or_to_the_target has been running for over 60 seconds
+test m5_the_mind_object_names_nothing_but_the_pilots_own_seal ... ok
+test neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found ... ok
+test the_receiver_and_the_regression_name_only_what_that_pilot_already_holds ... ok
+test the_retain_marker_the_arena_sends_is_the_one_the_session_ring_reads ... ok
+test o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot has been running for over 60 seconds
+test o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_receiver has been running for over 60 seconds
+test nothing_of_the_shooting_crosses_to_the_world_or_to_the_target ... ok
+test o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot ... ok
+test the_victims_own_lines_name_nothing_but_the_victims_own_tank ... ok
+test nothing_about_an_undetected_unit_crosses_on_any_surface ... ok
+test o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own has been running for over 60 seconds
+test the_board_withholds_the_other_sides_standing_from_a_seated_pilot has been running for over 60 seconds
+test o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own ... ok
+test o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_receiver ... ok
+test the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field has been running for over 60 seconds
+test the_switch_names_a_contact_at_the_first_pass_over_the_real_composition has been running for over 60 seconds
+test the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field ... ok
+test the_board_withholds_the_other_sides_standing_from_a_seated_pilot ... ok
+test the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found has been running for over 60 seconds
+test z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_no_one_else has been running for over 60 seconds
+test the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found ... ok
+test the_switch_names_a_contact_at_the_first_pass_over_the_real_composition ... ok
+test z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_no_one_else ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 297.24s
+

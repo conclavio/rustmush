@@ -1,0 +1,27 @@
+{
+  "utc": "2026-10-25T01:41:45.575043+00:00",
+  "http_status": 200,
+  "health": {
+    "connections": 1,
+    "integrity_ok": true,
+    "loop_lag_ms": 0,
+    "ok": true,
+    "store_ok": true,
+    "supervision_ok": true,
+    "uptime_s": 0,
+    "version": "0.1.0",
+    "world_loop_unixtime": 1792892505,
+    "world_max_age_s": 5,
+    "world_ok": true
+  },
+  "frame_policy": "serial default; acceptance override removed",
+  "frame_env": [],
+  "gateway_pid": 1497605,
+  "server_pid": 1497617,
+  "release_sha256": {
+    "gateway": "54bd962dcd83cbb0c8fd576931ed9da55fb6e9f6f82ec93b1544d41803be552c",
+    "server": "91722cf42c774d562a71e265621f8fbef2212c27aa30ad471212cc163603fe0e"
+  },
+  "dev2_gateway_pid": 539467,
+  "dev2_pid_unchanged": true
+}

@@ -821,7 +821,8 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
     // follow it in the file, so the slice runs on through those two and ends
     // at the next function that is neither. **17b cut M5.4** put
     // `Arena::frame_mind` (the frame's `mind`) between them, and the slice
-    // runs through it too.
+    // runs through it too. T-106 inserts the worker policy and pure parallel
+    // candidate builder; both remain inside the same observer-isolation scan.
     let lines: Vec<&str> = step.lines().collect();
     let start = lines
         .iter()
@@ -846,6 +847,8 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
                 && (trimmed.starts_with("fn ")
                     || trimmed.starts_with("pub fn ")
                     || trimmed.starts_with("pub(crate) fn "))
+                && !trimmed.starts_with("pub fn set_frame_workers(")
+                && !trimmed.starts_with("fn frame_candidates(")
                 && !trimmed.starts_with("pub(crate) fn frame_for(")
                 && !trimmed.starts_with("fn frame_mind(")
                 && !trimmed.starts_with("pub fn frame_odds(")
@@ -858,10 +861,12 @@ fn the_observer_has_no_path_into_a_pilot_feed() {
          the wrong place:\n{frames_text}"
     );
     assert!(
-        frames_text.contains("fn frame_for(")
+        frames_text.contains("fn frame_candidates(")
+            && frames_text.contains("fn set_frame_workers(")
+            && frames_text.contains("fn frame_for(")
             && frames_text.contains("fn frame_mind(")
             && frames_text.contains("fn frame_odds("),
-        "the slice of step.rs read as `Arena::frames` stops before `frame_for`, `frame_mind` \
+        "the slice of step.rs read as `Arena::frames` stops before its worker policy, candidates, `frame_for`, `frame_mind` \
          and `frame_odds`, which build its frames (17b cut M1a.3, 17b cut M5.4); re-point \
          it:\n{frames_text}"
     );

@@ -1,0 +1,96 @@
+{
+  "passed": true,
+  "checks": [
+    "world, local staff, asynchronous store, and gateway action replies close after their bodies",
+    "SSH-local history, pixel, sound, and TUI transition replies are framed",
+    "three pipelined commands produce sequential, unnested pairs",
+    "same SSH connection retains both delimiters through a real server SIGKILL/relaunch",
+    "clearing delimiters uses the old prefix and new suffix semantics",
+    "QUIT farewell and suffix drain before clean channel close"
+  ],
+  "transcripts": [
+    {
+      "command": "think world-reply-probe",
+      "reply": "\r\n__REPLY_BEGIN__\r\nworld-reply-probe\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@stats",
+      "reply": "\r\n__REPLY_BEGIN__\r\nServer statistics:\r\nUptime: 15m 1s (since unix 1792891567)\r\nObjects: 713 (188 rooms, 260 exits, 179 things, 24 players, 62 NPCs)\r\nConnected: 14 (ssh 0, web 0)\r\nLoop lag: last 0ms, max 785ms, p99 10ms\r\nStore: healthy; last write 2s ago; write-queue 0\r\nAuthoritative lane: slot free; hold last 0ms, p99 0ms, max 0ms; last bundle 0 bytes / 0 writes; commits 0 finalized, 0\r\nrefused, 0 integrity, 0 quarantined\r\nEconomy journal: 84 entries, 0/h since boot; last replay 3ms (35us/entry; fetch 16ms); the 5s line is ~142857 entries:\r\nno posts since boot\r\nNPC agents: 0 active, 0 thinking\r\nNPC decisions: 0 ready, 0 leased, 0 resolving\r\nIPC boundary: 0 frames shed, 0 write timeouts, 0 to_gw overflows; high-water to_server 0, to_gw 72\r\nLLM today: 0 in + 0 out tokens, $0.0000 (kill switch: off)\r\nMechanics: 167 definitions from 7 owners, 0 bridges, 1 migrations; fingerprint\r\n95a2abdd03214aab60c5fd48d17ea36758fdf3f2fc477257cabb47f2116662d2\r\nRecovery tactics: 30 active, 0 frozen, 0 migrating, 0 quarantined; 0 incidents, 0 migration plans\r\nDb size: 713 objects (next id #717)\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@ps",
+      "reply": "\r\n__REPLY_BEGIN__\r\nScheduler:\r\nWaits: 0\r\nModule ticks: 26\r\n  comsys:comsys.handoff  coarse 1s  next in 0s\r\n  scenes:nudge  coarse 30s  next in 27s\r\n  sim:sim.journey  coarse 1s  next in 0s\r\n  sim:sim.domain_pulse  coarse 1s  next in 0s\r\n  atlas:atlas.travel  coarse 1s  next in 0s\r\n  tactics:tactics.contact_ledger  coarse 1s  next in 0s\r\n  propagation:propagation.delivery  coarse 1s  next in 0s\r\n  propagation:propagation.detection  coarse 2s  next in 0s\r\n  economy:economy.sweep  coarse 30s  next in 27s\r\n  inventory:inventory.sweep  coarse 60s  next in 57s\r\n  industry:industry.sweep  coarse 60s  next in 57s\r\n  campaign:campaign.operations  coarse 15s  next in 12s\r\n  mail:mail.handoff  coarse 1s  next in 0s\r\n  housing:housing.assess  coarse 30s  next in 27s\r\n  weather:weather  coarse 300s  next in 297s\r\n  party:party.expire  coarse 60s  next in 57s\r\n  market:market.sweep  coarse 60s  next in 57s\r\n  npc:agent  coarse 1s  next in 0s\r\n  tacsim:relay.capital  coarse 5s  next in 3s\r\n  tacsim:relay.fleet  coarse 5s  next in 3s\r\n  tacsim:mind-traces  coarse 1s  next in 0s\r\n  tacsim:mind-bulk-maintenance  coarse 1s  next in 0s\r\n  tacsim:mind-author-results  coarse 1s  next in 0s\r\n  tacsim:tacsim.board  coarse 1s  next in 0s\r\n  tacsim:tacsim.port  coarse 5s  next in 3s\r\n  tacsim:tacsim.surface  coarse 1s  next in 0s\r\nScene ticks: 0\r\nTotal scheduled entries: 26\r\nDisplayed earliest entries: 26 (0 omitted)\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@siteban/list",
+      "reply": "\r\n__REPLY_BEGIN__\r\nUnknown switch \"/list\" for @siteban.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@sshkey/list",
+      "reply": "\r\n__REPLY_BEGIN__\r\n@sshkey: you have no registered SSH keys. Add one with @sshkey/add <public key line>.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@dump",
+      "reply": "\r\n__REPLY_BEGIN__\r\nGAME: Dumping database.\r\n@dump: snapshot acknowledged by the store.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "+act broken with []",
+      "reply": "\r\n__REPLY_BEGIN__\r\nAction parameters must be one JSON object.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "say reply-history-1792892468224115994",
+      "reply": "\r\n__REPLY_BEGIN__\r\nGod says, \"reply-history-1792892468224115994\"\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@history 1",
+      "reply": "\r\n__REPLY_BEGIN__\r\n--- older history: 1 line(s), oldest first ---\r\nGod says, \"reply-history-1792892468224115994\"\r\n--- @history more for older ---\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@pixel/encoder",
+      "reply": "\r\n__REPLY_BEGIN__\r\nPicture encoder: auto. Your terminal is asked what it can show when you enter @tui.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@pixel/stats",
+      "reply": "\r\n__REPLY_BEGIN__\r\nThe picture is drawn inside @tui (Ctrl-G there); its numbers are told there.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@sounds off",
+      "reply": "\r\n__REPLY_BEGIN__\r\nSounds are off for this connection. The cockpit's sounds are played inside @tui.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@sounds on",
+      "reply": "\r\n__REPLY_BEGIN__\r\nSounds are on for this connection. The cockpit's sounds are played inside @tui.\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "@tui",
+      "reply": "\r\n__REPLY_BEGIN__\r\nrustmush 1 scene 2sheet3mail4chan5rolls6intel7actions8damage9unitcchartqquarryVisiting Berth Gallery#202\u00b7IC18:10\u00b7Pressure Lobby <PL>\u250c rustmush \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u250cWHO\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502\u2502(loading...)\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2502\u2502\u250cscene\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502\u2502(loading...)\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2502\u2502\u250cactions\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502\u2502(loading...)\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u250cinput \u2039nav\u203a Enter to type\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518llook \u00b7 iinventory \u00b7 ppage \u00b7 rroll \u00b7 aact \u00b7 Entertype \u00b7 ?help\u001b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u001b\\\u2014 no older history \u2014     01:41world-reply-probe       God\"reply-history-1792892468224115994\"  Name          Idle\u2022God          0sR6bob1b16df  34sR6carol1f812734sfaenix       10mFrame04fd00ca34sFramec9ef15a134s  3  42  5 6  7  8 9   cq                           God \u25cf 14 on 01:41n scene)  +act claim-contest \u2014Contest a claim  Move a claim'scontest state.+act claim-file \u2014 Filea claim  File tenure over an__REPLY_END__\r\n"
+    },
+    {
+      "command": "@notui",
+      "reply": "\u250cinput\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2191history \u00b7 \u21e5 complete\u00b7 ^P mode \u00b7 Esc nav                       __REPLY_BEGIN__\r\n\r__REPLY_END__\r\n"
+    },
+    {
+      "command": "@history 1",
+      "reply": "\r\n__REPLY_BEGIN__\r\n--- older history: 1 line(s), oldest first ---\r\nGod says, \"reply-history-1792892468224115994\"\r\n--- @history more for older ---\r\n__REPLY_END__\r\n"
+    },
+    {
+      "pipelined": "\r\n\r\n\r\n__REPLY_BEGIN__\r\nServer statistics:\r\nUptime: 15m 1s (since unix 1792891567)\r\nObjects: 713 (188 rooms, 260 exits, 179 things, 24 players, 62 NPCs)\r\nConnected: 14 (ssh 0, web 0)\r\nLoop lag: last 1ms, max 785ms, p99 10ms\r\nStore: healthy; last write 2s ago; write-queue 0\r\nAuthoritative lane: slot free; hold last 0ms, p99 0ms, max 0ms; last bundle 0 bytes / 0 writes; commits 0 finalized, 0\r\nrefused, 0 integrity, 0 quarantined\r\nEconomy journal: 84 entries, 0/h since boot; last replay 3ms (35us/entry; fetch 16ms); the 5s line is ~142857 entries:\r\nno posts since boot\r\nNPC agents: 0 active, 0 thinking\r\nNPC decisions: 0 ready, 0 leased, 0 resolving\r\nIPC boundary: 0 frames shed, 0 write timeouts, 0 to_gw overflows; high-water to_server 0, to_gw 72\r\nLLM today: 0 in + 0 out tokens, $0.0000 (kill switch: off)\r\nMechanics: 167 definitions from 7 owners, 0 bridges, 1 migrations; fingerprint\r\n95a2abdd03214aab60c5fd48d17ea36758fdf3f2fc477257cabb47f2116662d2\r\nRecovery tactics: 30 active, 0 frozen, 0 migrating, 0 quarantined; 0 incidents, 0 migration plans\r\nDb size: 713 objects (next id #717)\r\n__REPLY_END__\r\n__REPLY_BEGIN__\r\nUnknown switch \"/list\" for @siteban.\r\n__REPLY_END__\r\n__REPLY_BEGIN__\r\npipelined-last\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "think after-hot-restart",
+      "reply": "Visiting Berth Gallery #202\r\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\r\nThe gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar\r\nunder each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of\r\nmoving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand\r\nover hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered\r\nand smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward.\r\n\r\nHere     Lunar entanglement foundry\r\nExits    Pressure Lobby <PL>\r\nGAME: Reconnected. Resuming where you left off.\r\n\r\n__REPLY_BEGIN__\r\nafter-hot-restart\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "OUTPUTPREFIX",
+      "reply": "\r\n__REPLY_BEGIN__\r\n__REPLY_END__\r\n"
+    },
+    {
+      "command": "QUIT",
+      "reply": "\r\n__REPLY_BEGIN__\r\nGoodbye.\r\n__REPLY_END__\r\n"
+    }
+  ],
+  "restart": {
+    "gateway_pid": 1483837,
+    "old_server_pid": 1483850
+  }
+}

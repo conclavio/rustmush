@@ -4310,6 +4310,8 @@ pub struct Arena {
     /// **The last frame each pilot was sent** (doc 16 §3.1's *latest-wins slot per
     /// pilot*), so a pulse that changed nothing a pilot can see sends nothing.
     pub last_frames: FrameSlots,
+    /// Host execution policy for pure pilot-frame reads; never hashed or saved.
+    pub(crate) frame_workers: usize,
     /// **What each platform held and was when its pilot lost sight of it** (16b
     /// cut Y.4; doc 07 §1.3 step 5), by **unit** — the baseline of the catch-up
     /// report ([`crate::arena::catchup`]).
@@ -5076,6 +5078,7 @@ impl Arena {
             stop: None,
             now_ms: 0,
             last_frames: FrameSlots::new(),
+            frame_workers: 1,
             // 16b cut Y.4: nobody has lost sight of anything yet.
             at_release: BTreeMap::new(),
             pending_catchup: BTreeMap::new(),

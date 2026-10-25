@@ -1,0 +1,18 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+    Finished `test` profile [unoptimized] target(s) in 34.15s
+     Running tests/panic_budget.rs (target/debug/deps/panic_budget-87e3618a8f49c175)
+
+running 8 tests
+test a_ratchet_crate_cannot_be_raised_without_a_reason ... ok
+test the_gate_names_the_crate_and_the_delta ... ok
+test only_a_leading_file_test_fence_exempts_an_out_of_line_module ... ok
+test the_walk_skips_tests_benches_and_build_scripts ... ok
+test only_production_code_counts_toward_the_budget ... ok
+test bless_writes_files_the_gate_accepts_and_refuses_a_silent_ratchet_raise ... ok
+test no_profile_turns_a_world_panic_into_an_abort ... ok
+test no_crate_exceeds_its_production_panic_budget ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+

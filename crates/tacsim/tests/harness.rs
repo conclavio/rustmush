@@ -3035,6 +3035,10 @@ fn open_field(knobs: &Knobs, reach: Reach) -> Field {
         &sensors_cfg,
     )
     .expect("the harness arena opens");
+    // Host policy only: use 1 for a serial A/B reference on the identical seed.
+    let frame_workers = env_u32("TACSIM_FRAME_WORKERS", 1);
+    arena.set_frame_workers(frame_workers as usize);
+    eprintln!("pilot frame workers: {}", frame_workers.clamp(1, 4));
     let arena_open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
     // D-16-2: the tempo decides only how often `step` runs. The measurement is of
     // `Engaged`, which is where the p99 ceiling applies, so it is held there.
@@ -4274,6 +4278,12 @@ fn measure_arena(knobs: &Knobs, reach: Reach) {
 
     let report = serde_json::json!({
         "what": "17b cut M4.5: `Arena::step` at the harness's scale, the fielded catalog flown by unit minds at the ROM, woken where the task wakes it, the thinks delivered inline outside the lens, with the cell-probe and jam-check bounds asserted",
+        // Report-only execution-policy check; the committed deterministic block
+        // and its baseline stay unchanged.
+        "frame_execution": {
+            "state_hash": tacsim::arena::hash::state_hash(&arena),
+            "requested_workers": env_u32("TACSIM_FRAME_WORKERS", 1),
+        },
         "cohort": cohort,
         "world": {
             "units": placed,

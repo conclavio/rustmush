@@ -1030,6 +1030,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             now_ms,
             // Reset: a view; a resumed pilot's first frame is a keyframe.
             last_frames: _last_frames,
+            frame_workers: _frame_workers,
             at_release,
             pending_catchup,
             // Reset: a view of who is watching, set by the task.
@@ -1276,6 +1277,7 @@ impl ArenaState {
             stop,
             now_ms,
             last_frames: FrameSlots::new(),
+            frame_workers: 1,
             at_release,
             pending_catchup,
             watched: false,

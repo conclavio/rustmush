@@ -74,6 +74,7 @@ rand.workspace = true
 rand_chacha.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rayon.workspace = true
 # Bounded frozen proving starts; opaque canonical snapshot bytes stay exact.
 flate2.workspace = true
 # 16b cut A.1: the arena definition's identity and the match ledger's digest

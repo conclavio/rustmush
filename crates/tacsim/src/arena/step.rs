@@ -2694,13 +2694,7 @@ impl Arena {
     /// same function a pilot's frame is; this keeps its two passes and the one
     /// `pending_notices.clear()`.
     fn frames(&mut self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
-        let mut candidates: Vec<(ObjId, Frame)> = Vec::with_capacity(self.pilots.len());
-        for pilot in &self.pilots {
-            let Some(frame) = self.frame_for(pilot.unit, tempo) else {
-                continue;
-            };
-            candidates.push((pilot.pilot, frame));
-        }
+        let mut candidates = self.frame_candidates(tempo);
         // One pulse's worth, and no more: a platform nobody is seated on
         // accumulates nothing.
         self.pending_notices.clear();
@@ -2732,6 +2726,69 @@ impl Arena {
             }
         }
         changed
+    }
+
+    /// Select a bounded host policy for pure frame construction. The standalone
+    /// library defaults to one worker; task hosts set their available CPU budget.
+    /// This changes no saved state, draw, ledger record, or ordering.
+    pub fn set_frame_workers(&mut self, workers: usize) {
+        self.frame_workers = workers.clamp(1, 4);
+    }
+
+    fn frame_candidates(&self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
+        let build = |pilots: &[super::state::Pilot]| {
+            // Preserve the serial path's one allocation, including short cohorts.
+            let mut frames = Vec::with_capacity(pilots.len());
+            for pilot in pilots {
+                if let Some(frame) = self.frame_for(pilot.unit, tempo) {
+                    frames.push((pilot.pilot, frame));
+                }
+            }
+            frames
+        };
+        // At least four pilots per lane, at most three lanes. This admits the
+        // shipped twelve-seat lobby. Only immutable reads run here;
+        // consumption and latest-frame publication follow in pilot-id order.
+        let workers = self.frame_workers.min(3).min(self.pilots.len() / 4).max(1);
+        if workers == 1 {
+            return build(&self.pilots);
+        }
+        // Reuse one bounded process-wide pool: creating OS threads every pulse
+        // cost more than the work saved in the dev1 A/B measurement. The caller
+        // builds one chunk; at most three pool workers serve all arenas. A host
+        // unable to create the pool retains the identical serial path.
+        static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+        let Some(pool) = POOL.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(
+                    std::thread::available_parallelism()
+                        .map_or(1, usize::from)
+                        .saturating_sub(1)
+                        .clamp(1, 3),
+                )
+                .thread_name(|index| format!("tacsim-frame-{index}"))
+                .build()
+                .ok()
+        }) else {
+            return build(&self.pilots);
+        };
+        let chunk_size = self.pilots.len().div_ceil(workers);
+        let (first, rest) = self.pilots.split_at(chunk_size);
+        let mut outputs: Vec<Vec<(ObjId, Frame)>> =
+            rest.chunks(chunk_size).map(|_| Vec::new()).collect();
+        let mut candidates = Vec::with_capacity(self.pilots.len());
+        pool.in_place_scope(|scope| {
+            for (chunk, output) in rest.chunks(chunk_size).zip(&mut outputs) {
+                scope.spawn(move |_| *output = build(chunk));
+            }
+            candidates.extend(build(first));
+        });
+        // Scope joins every borrowed chunk and propagates panics to the arena's
+        // existing unwind boundary before any mutable publication can happen.
+        for output in outputs {
+            candidates.extend(output);
+        }
+        candidates
     }
 
     /// **One hull's frame, as the pulse would build it now** (17b cut M1a.3; doc
@@ -4483,6 +4540,69 @@ mod tests {
                 .lines()
                 .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
                 .collect()
+        }
+    }
+
+    #[test]
+    fn parallel_pilot_frames_match_serial_bytes_and_consumption() {
+        fn check_cohort(pilot_count: u32) {
+            let units = (0_u32..pilot_count)
+                .map(|i| {
+                    tank(
+                        ObjId(10 + i),
+                        Team::Red,
+                        pose(
+                            1_500 + i64::from(i % 6) * 1_000,
+                            1_500 + i64::from(i / 6) * 1_000,
+                        ),
+                    )
+                })
+                .collect();
+            let mut serial = arena_at_epoch(units, 1);
+            // Reverse seat order: publication still sorts by pilot, independent of chunks.
+            serial.pilots.reverse();
+            serial.stage_notice(ObjId(10), FrameNotice::PowerOnline);
+            let baseline = serial.snapshot_at_release(ObjId(10)).unwrap();
+            serial.pending_catchup.insert(
+                ObjId(1000),
+                serial.catchup_since(ObjId(10), &baseline, None),
+            );
+            let initial = serial.clone();
+            let expected = serial.frames(Tempo::Engaged);
+            let wire = |frames: &[(ObjId, Frame)]| {
+                frames
+                    .iter()
+                    .map(|(pilot, frame)| {
+                        (
+                            *pilot,
+                            serde_json::to_vec(&crate::match_::cockpit::status_frame(
+                                crate::arena_task::MatchId(1),
+                                frame,
+                            ))
+                            .unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for workers in [0, 2, 4, 100] {
+                let mut parallel = initial.clone();
+                parallel.set_frame_workers(workers);
+                let actual = parallel.frames(Tempo::Engaged);
+                assert_eq!(wire(&actual), wire(&expected));
+                // Include fields omitted from the public projection and same_as.
+                assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                assert_eq!(
+                    format!("{:?}", parallel.last_frames),
+                    format!("{:?}", serial.last_frames)
+                );
+                assert!(parallel.pending_catchup.is_empty());
+                assert_eq!(state_hash(&parallel), state_hash(&serial));
+                assert!(parallel.frames(Tempo::Engaged).is_empty());
+                assert_eq!(parallel.pending_notices, serial.pending_notices);
+            }
+        }
+        for pilot_count in [1, 4, 8, 12, 24] {
+            check_cohort(pilot_count);
         }
     }
 

@@ -324,6 +324,8 @@ impl russh::server::Server for Ingress {
             shell_started: false,
             connected: Arc::new(AtomicBool::new(false)),
             preauth_watchdog: None,
+            commands: None,
+            command_task: None,
             counted,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
         }
@@ -492,6 +494,9 @@ struct ConnHandler {
     connected: Arc<AtomicBool>,
     /// Owned by the transport so a closed connection cannot later log a timeout.
     preauth_watchdog: Option<tokio::task::JoinHandle<()>>,
+    /// Bounded typed-command queue; the SSH event loop must remain free to write.
+    commands: Option<mpsc::Sender<String>>,
+    command_task: Option<tokio::task::JoinHandle<()>>,
     /// Whether this connection claimed a per-IP slot at accept time
     /// (`SshHooks::connection_opened`); released exactly once in `Drop`.
     /// `false` means over-cap: refused at the first auth message.
@@ -503,6 +508,9 @@ impl Drop for ConnHandler {
     fn drop(&mut self) {
         if let Some(watchdog) = self.preauth_watchdog.take() {
             watchdog.abort();
+        }
+        if let Some(task) = self.command_task.take() {
+            task.abort();
         }
         // Release the per-IP slot symmetrically with new_client — every
         // path (auth refused, welcome squatter, mid-connect teardown, clean
@@ -757,7 +765,7 @@ const BLOCKED_FALLBACK: &str = "Too many failed logins from your address; try ag
 
 impl ConnHandler {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared.lock().expect("conn state poisoned")
+        connection_state(&self.shared)
     }
 
     /// Write text to the channel, one CRLF per line.
@@ -813,6 +821,16 @@ impl ConnHandler {
         }
     }
 
+    fn queue_line(&self, line: String) -> Result<(), russh::Error> {
+        let Some(commands) = &self.commands else {
+            return Err(russh::Error::Disconnect);
+        };
+        // Never await capacity in a russh callback: that would also stop writes.
+        commands
+            .try_send(line)
+            .map_err(|_| russh::Error::Disconnect)
+    }
+
     // ---- line dispatch --------------------------------------------------
 
     async fn handle_line(
@@ -823,20 +841,11 @@ impl ConnHandler {
         let line = sanitize_line(&raw);
         let mode = self.lock().mode.clone();
         match mode {
-            Mode::InGame => {
-                if self.local_line(session, &line).await? {
-                    return Ok(());
-                }
-                self.hooks.line(self.conn_id, line).await;
-                Ok(())
-            }
+            Mode::InGame => self.queue_line(line),
             // Reached only if a line is submitted through the editor while in
             // TUI mode (the normal TUI input path is `ConnHandler::data`);
             // forward it so the world still sees the command.
-            Mode::Tui => {
-                self.hooks.line(self.conn_id, line).await;
-                Ok(())
-            }
+            Mode::Tui => self.queue_line(line),
             Mode::Welcome => self.welcome_line(session, &line).await,
             Mode::CharSelect { account, chars } => {
                 self.charselect_line(session, &account, &chars, &line).await
@@ -854,96 +863,10 @@ impl ConnHandler {
         notify.notify_one();
     }
 
-    /// `@tui`: build the [`TuiSession`], enter the alternate screen, paint the
-    /// first frame, and kick a WHO refresh. From here the output pump owns all
-    /// steady-state repaints (a single writer), so no frame races the enter.
-    async fn enter_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
-        let Some(channel) = self.channel else {
-            return Ok(());
-        };
-        let (bytes, queries) = {
-            let mut sh = self.lock();
-            let caps = sh.caps;
-            let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
-            tui.set_pixel_choice(sh.pixel_choice);
-            tui.set_sounds(sh.sounds_on);
-            tui.set_pixel_config(self.hooks.pixel_config());
-            let mut out = TuiSession::enter_bytes().to_vec();
-            out.extend_from_slice(&tui.paint());
-            // Pixel cockpit spike (2026-10-21): ask the terminal whether it
-            // speaks the kitty graphics protocol; the answer comes back
-            // through the input path as marker keys.
-            out.extend_from_slice(&tui.probe_bytes());
-            let queries = tui.entry_queries();
-            sh.tui = Some(tui);
-            sh.history_request = None;
-            sh.mode_generation = sh.mode_generation.wrapping_add(1);
-            sh.mode = Mode::Tui;
-            (out, queries)
-        };
-        self.write_ordered(session, channel, bytes).await?;
-        // Read-only hydration (WHO, the command table, channels, vitals, the
-        // screen's own feeds); every reply lands on the pump, which repaints.
-        // None of it stamps idle (design M15 D5, interface plan I1 D-I-3).
-        for (name, args) in queries {
-            submit_query(
-                self.hooks.as_ref(),
-                &self.shared,
-                self.conn_id,
-                name,
-                args,
-                None,
-            )
-            .await;
-        }
-        Ok(())
-    }
-
-    /// `@notui` / detach: leave the alternate screen, restore the cursor, drop
-    /// the TUI state, and hand the resumed line client its prompt back
-    /// (invariant T5 — never leave a client stuck on the alternate screen).
-    async fn leave_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
-        let Some(channel) = self.channel else {
-            return Ok(());
-        };
-        let stop_orders: Vec<String>;
-        let bytes = {
-            let mut sh = self.lock();
-            // Pixel cockpit spike (2026-10-21): free the picture's image
-            // before the screen it sits on goes away.
-            let mut out = sh
-                .tui
-                .as_ref()
-                .map(|t| t.pixel_close_bytes())
-                .unwrap_or_default();
-            // Doc 21 cut G.4: a turn in progress stops where it was shown.
-            stop_orders = sh
-                .tui
-                .as_mut()
-                .map(|t| t.pixel_leave_orders())
-                .unwrap_or_default();
-            sh.tui = None;
-            sh.history_request = None;
-            sh.mode_generation = sh.mode_generation.wrapping_add(1);
-            sh.history.pending = None;
-            sh.mode = Mode::InGame;
-            out.extend_from_slice(TuiSession::leave_bytes());
-            // Repaint the line editor's prompt + in-progress buffer so the
-            // resumed line client is not left on a blank line.
-            sh.editor.redraw(&mut out);
-            out
-        };
-        self.write_ordered(session, channel, bytes).await?;
-        for line in stop_orders {
-            self.hooks.control_line(self.conn_id, line).await;
-        }
-        Ok(())
-    }
-
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
     /// repaint / submit / detach. Painting is left to the pump (fired via the
     /// repaint signal) so there is one steady-state frame writer.
-    async fn tui_data(&mut self, data: &[u8], session: &mut Session) -> Result<(), russh::Error> {
+    async fn tui_data(&mut self, data: &[u8], _session: &mut Session) -> Result<(), russh::Error> {
         let result = {
             let mut sh = self.lock();
             match sh.tui.as_mut() {
@@ -952,7 +875,7 @@ impl ConnHandler {
             }
         };
         if result.detach {
-            return self.leave_tui(session).await;
+            return self.queue_line("@notui".to_owned());
         }
         if !result.submit.is_empty() {
             // Show the cleared input line immediately; the world's echo
@@ -961,10 +884,7 @@ impl ConnHandler {
             // A burst can carry more than one line (a multi-line paste); each
             // is forwarded in order so none is dropped.
             for line in result.submit {
-                if self.local_line(session, &line).await? {
-                    continue;
-                }
-                self.hooks.line(self.conn_id, line).await;
+                self.queue_line(line)?;
             }
             return Ok(());
         }
@@ -991,253 +911,6 @@ impl ConnHandler {
             self.fire_repaint();
         }
         Ok(())
-    }
-
-    // ---- the picture's encoder (doc 21 cut G.2) ---------------------------
-
-    /// `@pixel/encoder`: set or show this connection's choice, applied to an
-    /// open TUI at once (a change closes the picture), and the answer's text.
-    fn pixel_encoder(&self, req: PixelEncoderReq) -> String {
-        let mut sh = self.lock();
-        if let PixelEncoderReq::Set(choice) = req {
-            sh.pixel_choice = choice;
-            if let Some(tui) = sh.tui.as_mut() {
-                tui.set_pixel_choice(choice);
-            }
-        }
-        let choice = sh.pixel_choice;
-        let report = sh.tui.as_mut().map(|t| t.pixel_report());
-        pixel_encoder_reply(req, choice, report)
-    }
-
-    // ---- the sounds (doc 21 cut G.10) ---------------------------------------
-
-    /// `@sounds [on|off]`: set or show this connection's sounds, applied to
-    /// an open TUI at once, and the answer's text.
-    fn sounds(&self, req: Result<Option<bool>, ()>) -> String {
-        let Ok(req) = req else {
-            return SOUNDS_USAGE.to_string();
-        };
-        let mut sh = self.lock();
-        if let Some(on) = req {
-            sh.sounds_on = on;
-            if let Some(tui) = sh.tui.as_mut() {
-                tui.set_sounds(on);
-            }
-        }
-        let report = sh.tui.as_ref().map(|t| t.sounds_report());
-        sounds_reply(sh.sounds_on, report)
-    }
-
-    // ---- line-mode scene history (interface plan I12) --------------------
-
-    /// Write one transport-side system line the way a world `Sys` line
-    /// looks (this connection's caps and the shared theme), around the line
-    /// editor exactly as the pump does.
-    async fn write_sys(&self, session: &mut Session, text: &str) -> Result<(), russh::Error> {
-        let Some(ch) = self.channel else {
-            return Ok(());
-        };
-        let event = OutputEvent::Sys(RichText::tag("system", text));
-        let bytes = {
-            let mut sh = self.lock();
-            if let Some(tui) = sh.tui.as_mut() {
-                let _ = tui.apply_event(&event);
-                tui.paint()
-            } else {
-                let mut bytes = Vec::new();
-                render_line_event(&mut sh, &event, &AnsiTheme::default(), &mut bytes);
-                bytes
-            }
-        };
-        self.write_ordered(session, ch, bytes).await
-    }
-
-    async fn write_ordered(
-        &self,
-        session: &mut Session,
-        channel: ChannelId,
-        bytes: Vec<u8>,
-    ) -> Result<(), russh::Error> {
-        tokio::time::timeout(WRITE_TIMEOUT, session.handle().data(channel, bytes))
-            .await
-            .map_err(|_| russh::Error::Disconnect)?
-            .map_err(|_| russh::Error::Disconnect)
-    }
-
-    async fn flush_output(&self) -> Result<(), russh::Error> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        {
-            let mut sh = self.lock();
-            sh.output_fence = Some(tx);
-            sh.repaint.notify_one();
-        }
-        tokio::time::timeout(WRITE_TIMEOUT, rx)
-            .await
-            .map_err(|_| russh::Error::Disconnect)?
-            .map_err(|_| russh::Error::Disconnect)
-    }
-
-    async fn write_marker(
-        &self,
-        session: &mut Session,
-        tag: &str,
-        text: &str,
-    ) -> Result<(), russh::Error> {
-        let Some(channel) = self.channel else {
-            return Ok(());
-        };
-        let mut bytes = Vec::new();
-        mush_ansi::render(
-            &OutputEvent::Sys(RichText::tag(tag, text)),
-            &self.lock().caps,
-            &AnsiTheme::default(),
-            &mut bytes,
-        );
-        self.write_ordered(session, channel, bytes).await
-    }
-
-    /// All transport-local typed commands share one reply boundary and one writer.
-    async fn local_line(
-        &mut self,
-        session: &mut Session,
-        line: &str,
-    ) -> Result<bool, russh::Error> {
-        let in_tui = matches!(self.lock().mode, Mode::Tui);
-        let enter = !in_tui && line.trim().eq_ignore_ascii_case("@tui");
-        let leave = in_tui && line.trim().eq_ignore_ascii_case("@notui");
-        let history = if in_tui { None } else { parse_history(line) };
-        let encoder = parse_pixel_encoder(line);
-        let sounds = parse_sounds(line);
-        let stats = is_pixel_stats(line);
-        if !enter && !leave && history.is_none() && encoder.is_none() && sounds.is_none() && !stats
-        {
-            return Ok(false);
-        }
-        let reply = self.hooks.begin_local_reply(self.conn_id).await;
-        let framed = reply.brackets.prefix.is_some() || reply.brackets.suffix.is_some();
-        if framed {
-            self.flush_output().await?;
-        }
-        if let Some(prefix) = &reply.brackets.prefix {
-            self.write_marker(session, mush_proto::OUTPUT_PREFIX_TAG, prefix)
-                .await?;
-        }
-        if enter {
-            self.enter_tui(session).await?;
-        } else if leave {
-            self.leave_tui(session).await?;
-        } else if let Some(request) = history {
-            self.history_line(session, request).await?;
-            if framed {
-                let notify = self.lock().history_rendered.clone();
-                let completed = tokio::time::timeout(HISTORY_LATCH, async {
-                    loop {
-                        let notified = notify.notified();
-                        if self.lock().history_request.is_none() {
-                            break;
-                        }
-                        notified.await;
-                    }
-                })
-                .await
-                .is_ok();
-                if !completed {
-                    {
-                        let mut sh = self.lock();
-                        sh.history_request = None;
-                        sh.history.pending = None;
-                    }
-                    self.write_sys(session, "History is unavailable; please try again.")
-                        .await?;
-                }
-            }
-        } else if let Some(request) = encoder {
-            let text = self.pixel_encoder(request);
-            self.write_sys(session, &text).await?;
-        } else if let Some(request) = sounds {
-            let text = self.sounds(request);
-            self.write_sys(session, &text).await?;
-        } else if stats {
-            let lines = self
-                .lock()
-                .tui
-                .as_mut()
-                .map(|t| t.pixel_stats_lines())
-                .unwrap_or_else(|| vec![PIXEL_STATS_OUTSIDE_TUI.to_owned()]);
-            for text in lines {
-                self.write_sys(session, &text).await?;
-            }
-        }
-        if framed {
-            self.flush_output().await?;
-        }
-        if let Some(suffix) = &reply.brackets.suffix {
-            self.write_marker(session, mush_proto::OUTPUT_SUFFIX_TAG, suffix)
-                .await?;
-        }
-        Ok(true)
-    }
-
-    /// `@history [n|more]`: ask the gateway for a page of this viewer's own
-    /// resume ring. The page itself arrives asynchronously as a
-    /// `Reply{Panel{narrative, Delta}}` and is rendered by the output pump
-    /// (see `render_history_page`); only the refusals are written here.
-    async fn history_line(
-        &mut self,
-        session: &mut Session,
-        req: HistoryReq,
-    ) -> Result<(), russh::Error> {
-        let HistoryReq::Page { limit, more } = req else {
-            return self.write_sys(session, HISTORY_USAGE).await;
-        };
-        /// Either ask, or say why not — decided under the lock, acted on
-        /// after it drops (the hooks call is `async`).
-        enum Next {
-            Ask(Option<u64>),
-            Say(&'static str),
-        }
-        let next = {
-            let mut sh = self.lock();
-            if sh
-                .history
-                .pending
-                .is_some_and(|at| at.elapsed() < HISTORY_LATCH)
-            {
-                Next::Say("Your last history request is still on its way.")
-            } else if more && !sh.history.more {
-                Next::Say("There is no older history.")
-            } else {
-                if !more {
-                    // A bare `@history` starts again from the newest.
-                    sh.history.before = None;
-                    sh.history.more = true;
-                }
-                sh.history.pending = Some(Instant::now());
-                Next::Ask(sh.history.before)
-            }
-        };
-        match next {
-            Next::Say(msg) => self.write_sys(session, msg).await,
-            Next::Ask(before) => {
-                // An explicit, non-zero limit: the gateway does
-                // `.unwrap_or(0).clamp(1, 200)`, so an absent or zero limit
-                // would silently yield a ONE-line page with `more: true`.
-                submit_query(
-                    self.hooks.as_ref(),
-                    &self.shared,
-                    self.conn_id,
-                    "narrative.backlog".to_owned(),
-                    serde_json::json!({
-                        "before_seq": before,
-                        "limit": limit.clamp(1, HISTORY_MAX),
-                    }),
-                    None,
-                )
-                .await;
-                Ok(())
-            }
-        }
     }
 
     async fn welcome_line(
@@ -1506,6 +1179,30 @@ impl ConnHandler {
                     sh.mode = Mode::InGame;
                     Arc::clone(&sh.repaint)
                 };
+                let (tx, mut commands) = mpsc::channel::<String>(64);
+                self.commands = Some(tx);
+                let mut worker = GameCommands {
+                    hooks: Arc::clone(&self.hooks),
+                    shared: Arc::clone(&self.shared),
+                    conn_id: self.conn_id,
+                    channel: Some(channel),
+                    handle: session.handle(),
+                };
+                self.command_task = Some(tokio::spawn(async move {
+                    while let Some(line) = commands.recv().await {
+                        match worker.local_line(&line).await {
+                            Ok(true) => {}
+                            Ok(false) => worker.hooks.line(worker.conn_id, line.clone()).await,
+                            Err(_) => {
+                                let _ = worker.handle.close(channel).await;
+                                break;
+                            }
+                        }
+                        if line.trim().eq_ignore_ascii_case("QUIT") {
+                            break;
+                        }
+                    }
+                }));
                 spawn_output_pump(
                     rx,
                     stamped_rx,
@@ -1651,7 +1348,7 @@ impl ConnHandler {
             // In game, ^D is QUIT: route it through the world so the
             // binary detaches cleanly and announces it.
             self.lock().mode = prev;
-            self.hooks.line(self.conn_id, "QUIT".to_owned()).await;
+            self.queue_line("QUIT".to_owned())?;
             Ok(())
         } else {
             self.close_polite(session, "Goodbye.")
@@ -2155,6 +1852,341 @@ impl Handler for ConnHandler {
     }
 }
 
+// Connected typed commands may wait on persistence, restart, or output fences.
+// Their worker owns a Handle, never a borrowed Session, so the SSH event loop
+// can flush progress and process window adjustments throughout that wait.
+struct GameCommands {
+    hooks: Arc<dyn SshHooks>,
+    shared: Arc<Mutex<Shared>>,
+    conn_id: u64,
+    channel: Option<ChannelId>,
+    handle: russh::server::Handle,
+}
+
+fn connection_state(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
+    shared.lock().expect("conn state poisoned")
+}
+
+impl GameCommands {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
+        connection_state(&self.shared)
+    }
+    /// `@tui`: build the [`TuiSession`], enter the alternate screen, paint the
+    /// first frame, and kick a WHO refresh. From here the output pump owns all
+    /// steady-state repaints (a single writer), so no frame races the enter.
+    async fn enter_tui(&mut self) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let (bytes, queries) = {
+            let mut sh = self.lock();
+            let caps = sh.caps;
+            let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
+            tui.set_pixel_choice(sh.pixel_choice);
+            tui.set_sounds(sh.sounds_on);
+            tui.set_pixel_config(self.hooks.pixel_config());
+            let mut out = TuiSession::enter_bytes().to_vec();
+            out.extend_from_slice(&tui.paint());
+            // Pixel cockpit spike (2026-10-21): ask the terminal whether it
+            // speaks the kitty graphics protocol; the answer comes back
+            // through the input path as marker keys.
+            out.extend_from_slice(&tui.probe_bytes());
+            let queries = tui.entry_queries();
+            sh.tui = Some(tui);
+            sh.history_request = None;
+            sh.mode_generation = sh.mode_generation.wrapping_add(1);
+            sh.mode = Mode::Tui;
+            (out, queries)
+        };
+        self.write_ordered(channel, bytes).await?;
+        // Read-only hydration (WHO, the command table, channels, vitals, the
+        // screen's own feeds); every reply lands on the pump, which repaints.
+        // None of it stamps idle (design M15 D5, interface plan I1 D-I-3).
+        for (name, args) in queries {
+            submit_query(
+                self.hooks.as_ref(),
+                &self.shared,
+                self.conn_id,
+                name,
+                args,
+                None,
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    /// `@notui` / detach: leave the alternate screen, restore the cursor, drop
+    /// the TUI state, and hand the resumed line client its prompt back
+    /// (invariant T5 — never leave a client stuck on the alternate screen).
+    async fn leave_tui(&mut self) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let stop_orders: Vec<String>;
+        let bytes = {
+            let mut sh = self.lock();
+            // Pixel cockpit spike (2026-10-21): free the picture's image
+            // before the screen it sits on goes away.
+            let mut out = sh
+                .tui
+                .as_ref()
+                .map(|t| t.pixel_close_bytes())
+                .unwrap_or_default();
+            // Doc 21 cut G.4: a turn in progress stops where it was shown.
+            stop_orders = sh
+                .tui
+                .as_mut()
+                .map(|t| t.pixel_leave_orders())
+                .unwrap_or_default();
+            sh.tui = None;
+            sh.history_request = None;
+            sh.mode_generation = sh.mode_generation.wrapping_add(1);
+            sh.history.pending = None;
+            sh.mode = Mode::InGame;
+            out.extend_from_slice(TuiSession::leave_bytes());
+            // Repaint the line editor's prompt + in-progress buffer so the
+            // resumed line client is not left on a blank line.
+            sh.editor.redraw(&mut out);
+            out
+        };
+        self.write_ordered(channel, bytes).await?;
+        for line in stop_orders {
+            self.hooks.control_line(self.conn_id, line).await;
+        }
+        Ok(())
+    }
+
+    // ---- the picture's encoder (doc 21 cut G.2) ---------------------------
+
+    /// `@pixel/encoder`: set or show this connection's choice, applied to an
+    /// open TUI at once (a change closes the picture), and the answer's text.
+    fn pixel_encoder(&self, req: PixelEncoderReq) -> String {
+        let mut sh = self.lock();
+        if let PixelEncoderReq::Set(choice) = req {
+            sh.pixel_choice = choice;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_pixel_choice(choice);
+            }
+        }
+        let choice = sh.pixel_choice;
+        let report = sh.tui.as_mut().map(|t| t.pixel_report());
+        pixel_encoder_reply(req, choice, report)
+    }
+
+    // ---- the sounds (doc 21 cut G.10) ---------------------------------------
+
+    /// `@sounds [on|off]`: set or show this connection's sounds, applied to
+    /// an open TUI at once, and the answer's text.
+    fn sounds(&self, req: Result<Option<bool>, ()>) -> String {
+        let Ok(req) = req else {
+            return SOUNDS_USAGE.to_string();
+        };
+        let mut sh = self.lock();
+        if let Some(on) = req {
+            sh.sounds_on = on;
+            if let Some(tui) = sh.tui.as_mut() {
+                tui.set_sounds(on);
+            }
+        }
+        let report = sh.tui.as_ref().map(|t| t.sounds_report());
+        sounds_reply(sh.sounds_on, report)
+    }
+
+    // ---- line-mode scene history (interface plan I12) --------------------
+
+    /// Write one transport-side system line the way a world `Sys` line
+    /// looks (this connection's caps and the shared theme), around the line
+    /// editor exactly as the pump does.
+    async fn write_sys(&self, text: &str) -> Result<(), russh::Error> {
+        let Some(ch) = self.channel else {
+            return Ok(());
+        };
+        let event = OutputEvent::Sys(RichText::tag("system", text));
+        let bytes = {
+            let mut sh = self.lock();
+            if let Some(tui) = sh.tui.as_mut() {
+                let _ = tui.apply_event(&event);
+                tui.paint()
+            } else {
+                let mut bytes = Vec::new();
+                render_line_event(&mut sh, &event, &AnsiTheme::default(), &mut bytes);
+                bytes
+            }
+        };
+        self.write_ordered(ch, bytes).await
+    }
+
+    async fn write_ordered(&self, channel: ChannelId, bytes: Vec<u8>) -> Result<(), russh::Error> {
+        tokio::time::timeout(WRITE_TIMEOUT, self.handle.data(channel, bytes))
+            .await
+            .map_err(|_| russh::Error::Disconnect)?
+            .map_err(|_| russh::Error::Disconnect)
+    }
+
+    async fn flush_output(&self) -> Result<(), russh::Error> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut sh = self.lock();
+            sh.output_fence = Some(tx);
+            sh.repaint.notify_one();
+        }
+        tokio::time::timeout(WRITE_TIMEOUT, rx)
+            .await
+            .map_err(|_| russh::Error::Disconnect)?
+            .map_err(|_| russh::Error::Disconnect)
+    }
+
+    async fn write_marker(&self, tag: &str, text: &str) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let mut bytes = Vec::new();
+        mush_ansi::render(
+            &OutputEvent::Sys(RichText::tag(tag, text)),
+            &self.lock().caps,
+            &AnsiTheme::default(),
+            &mut bytes,
+        );
+        self.write_ordered(channel, bytes).await
+    }
+
+    /// All transport-local typed commands share one reply boundary and one writer.
+    async fn local_line(&mut self, line: &str) -> Result<bool, russh::Error> {
+        let in_tui = matches!(self.lock().mode, Mode::Tui);
+        let enter = !in_tui && line.trim().eq_ignore_ascii_case("@tui");
+        let leave = in_tui && line.trim().eq_ignore_ascii_case("@notui");
+        let history = if in_tui { None } else { parse_history(line) };
+        let encoder = parse_pixel_encoder(line);
+        let sounds = parse_sounds(line);
+        let stats = is_pixel_stats(line);
+        if !enter && !leave && history.is_none() && encoder.is_none() && sounds.is_none() && !stats
+        {
+            return Ok(false);
+        }
+        let reply = self.hooks.begin_local_reply(self.conn_id).await;
+        let framed = reply.brackets.prefix.is_some() || reply.brackets.suffix.is_some();
+        // A preceding world command may have finished by queueing its body;
+        // drain that body before writing a transport-local answer, framed or not.
+        self.flush_output().await?;
+        if let Some(prefix) = &reply.brackets.prefix {
+            self.write_marker(mush_proto::OUTPUT_PREFIX_TAG, prefix)
+                .await?;
+        }
+        if enter {
+            self.enter_tui().await?;
+        } else if leave {
+            self.leave_tui().await?;
+        } else if let Some(request) = history {
+            self.history_line(request).await?;
+            if framed {
+                let notify = self.lock().history_rendered.clone();
+                let completed = tokio::time::timeout(HISTORY_LATCH, async {
+                    loop {
+                        let notified = notify.notified();
+                        if self.lock().history_request.is_none() {
+                            break;
+                        }
+                        notified.await;
+                    }
+                })
+                .await
+                .is_ok();
+                if !completed {
+                    {
+                        let mut sh = self.lock();
+                        sh.history_request = None;
+                        sh.history.pending = None;
+                    }
+                    self.write_sys("History is unavailable; please try again.")
+                        .await?;
+                }
+            }
+        } else if let Some(request) = encoder {
+            let text = self.pixel_encoder(request);
+            self.write_sys(&text).await?;
+        } else if let Some(request) = sounds {
+            let text = self.sounds(request);
+            self.write_sys(&text).await?;
+        } else if stats {
+            let lines = self
+                .lock()
+                .tui
+                .as_mut()
+                .map(|t| t.pixel_stats_lines())
+                .unwrap_or_else(|| vec![PIXEL_STATS_OUTSIDE_TUI.to_owned()]);
+            for text in lines {
+                self.write_sys(&text).await?;
+            }
+        }
+        if framed {
+            self.flush_output().await?;
+        }
+        if let Some(suffix) = &reply.brackets.suffix {
+            self.write_marker(mush_proto::OUTPUT_SUFFIX_TAG, suffix)
+                .await?;
+        }
+        Ok(true)
+    }
+
+    /// `@history [n|more]`: ask the gateway for a page of this viewer's own
+    /// resume ring. The page itself arrives asynchronously as a
+    /// `Reply{Panel{narrative, Delta}}` and is rendered by the output pump
+    /// (see `render_history_page`); only the refusals are written here.
+    async fn history_line(&mut self, req: HistoryReq) -> Result<(), russh::Error> {
+        let HistoryReq::Page { limit, more } = req else {
+            return self.write_sys(HISTORY_USAGE).await;
+        };
+        /// Either ask, or say why not — decided under the lock, acted on
+        /// after it drops (the hooks call is `async`).
+        enum Next {
+            Ask(Option<u64>),
+            Say(&'static str),
+        }
+        let next = {
+            let mut sh = self.lock();
+            if sh
+                .history
+                .pending
+                .is_some_and(|at| at.elapsed() < HISTORY_LATCH)
+            {
+                Next::Say("Your last history request is still on its way.")
+            } else if more && !sh.history.more {
+                Next::Say("There is no older history.")
+            } else {
+                if !more {
+                    // A bare `@history` starts again from the newest.
+                    sh.history.before = None;
+                    sh.history.more = true;
+                }
+                sh.history.pending = Some(Instant::now());
+                Next::Ask(sh.history.before)
+            }
+        };
+        match next {
+            Next::Say(msg) => self.write_sys(msg).await,
+            Next::Ask(before) => {
+                // An explicit, non-zero limit: the gateway does
+                // `.unwrap_or(0).clamp(1, 200)`, so an absent or zero limit
+                // would silently yield a ONE-line page with `more: true`.
+                submit_query(
+                    self.hooks.as_ref(),
+                    &self.shared,
+                    self.conn_id,
+                    "narrative.backlog".to_owned(),
+                    serde_json::json!({
+                        "before_seq": before,
+                        "limit": limit.clamp(1, HISTORY_MAX),
+                    }),
+                    None,
+                )
+                .await;
+                Ok(())
+            }
+        }
+    }
+}
+
 // ---- output pump --------------------------------------------------------
 
 /// Query correlation belongs to the physical connection and survives mode flips.
@@ -2167,7 +2199,9 @@ async fn submit_query(
     generation: Option<u64>,
 ) {
     let id = if name == "narrative.backlog" {
-        let mut sh = shared.lock().expect("conn state poisoned");
+        let Ok(mut sh) = shared.lock() else {
+            return;
+        };
         if generation.is_some_and(|generation| generation != sh.mode_generation) {
             return;
         }
@@ -2771,7 +2805,9 @@ fn spawn_output_pump(
                 }
             }
             {
-                let mut sh = shared.lock().expect("conn state poisoned");
+                let Ok(mut sh) = shared.lock() else {
+                    return;
+                };
                 sh.history_rendered.notify_waiters();
                 if fence_wake && let Some(fence) = sh.output_fence.take() {
                     let _ = fence.send(());

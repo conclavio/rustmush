@@ -1,0 +1,274 @@
+{
+  "classes": {
+    "grass": 11428,
+    "ground": 22054,
+    "road": 3084,
+    "rubble": 2184,
+    "water": 14278,
+    "woods_heavy": 4396,
+    "woods_light": 8112
+  },
+  "cohort": "ci",
+  "cohort_mix": {
+    "biped": 38,
+    "eccm": 36,
+    "ecm": 36,
+    "laser": 38,
+    "line_tank": 114,
+    "thermal": 38
+  },
+  "command": {
+    "commanders": 64,
+    "max_span": 4,
+    "ordered_lines": 0,
+    "orders": 0,
+    "orders_per_commander_minute_max": 0,
+    "orders_per_minute": 12,
+    "span_max": 0,
+    "squads": 64
+  },
+  "counters": {
+    "blocked_causes": {
+      "edge": 0,
+      "impassable": 74,
+      "occupied": 9,
+      "too_steep": 0
+    },
+    "blocked_events": 83,
+    "blocked_impassable": 74,
+    "blocked_interior_passable": 9,
+    "blocked_ring_passable": 0,
+    "ended": null,
+    "frames_per_pulse_mean": 21.25,
+    "held_at_end": 7,
+    "lagged_pulses": 0,
+    "ledger_bytes_streamed": 1642437,
+    "ledger_chunks": 103,
+    "moving_at_end": 123
+  },
+  "frame_execution": {
+    "requested_workers": 1,
+    "state_hash": 11501891080552343882
+  },
+  "loop": {
+    "arena_s": 30.0,
+    "jitter_ms": 0,
+    "short_substeps": 0,
+    "substep_ms": 250,
+    "substeps_per_wake_mean": 1.0,
+    "wakes": 120,
+    "wakes_per_arena_s": 4.0
+  },
+  "memory": {
+    "horizon_bytes": 26112,
+    "rss_end_kib": 172836,
+    "rss_start_kib": 18760,
+    "vmrss_end_kib": 172836,
+    "vmrss_start_kib": 18976
+  },
+  "minds": {
+    "states_at_end": {
+      "approach": 6,
+      "disabled": 12,
+      "engage": 169,
+      "patrol": 113,
+      "startup": 0,
+      "unknown": 0,
+      "withdraw": 0
+    }
+  },
+  "motor": {
+    "decide_ms": 1000,
+    "max_path_queries_per_window": 64,
+    "path_max_cells": 65536,
+    "peak_per_pulse": {
+      "corner_refusals": 51,
+      "intents": 278,
+      "path_cells": 3692,
+      "path_deferred": 29,
+      "path_failures": 2,
+      "path_queries": 32,
+      "path_refused_unchanged": 0,
+      "shots": 37,
+      "slope_refusals": 134
+    },
+    "repath_ms": 4000,
+    "total": {
+      "corner_refusals": 638,
+      "intents": 19670,
+      "path_cells": 56105,
+      "path_deferred": 367,
+      "path_failures": 23,
+      "path_queries": 464,
+      "path_refused_unchanged": 0,
+      "shots": 1088,
+      "slope_refusals": 391
+    },
+    "waypoint_nodes": 256,
+    "waypoint_pitch_cells": 16
+  },
+  "perception": {
+    "alert_range_cm": 362000,
+    "contacts_at_end": 797,
+    "lost_after_passes": 3,
+    "pass_ms": 1000,
+    "peak_per_pulse": {
+      "candidates": 756,
+      "cell_probes": 2843,
+      "classified": 23,
+      "detected": 26,
+      "horizon_probes": 2874,
+      "jam_checks": 405,
+      "lost": 54,
+      "passes": 94,
+      "share_ops": 66,
+      "traces": 574
+    },
+    "sensor_cells": 24,
+    "share_cells": 8,
+    "total": {
+      "candidates": 75647,
+      "cell_probes": 262661,
+      "classified": 694,
+      "detected": 999,
+      "horizon_probes": 268939,
+      "jam_checks": 33474,
+      "lost": 1013,
+      "passes": 8922,
+      "share_ops": 5729,
+      "traces": 53364
+    }
+  },
+  "relief": {
+    "edges_over_45": 73,
+    "edges_over_70": 32,
+    "terraces": [
+      {
+        "radius_cells": 16,
+        "rise_cm": 800,
+        "x": 78,
+        "y": 252
+      },
+      {
+        "radius_cells": 14,
+        "rise_cm": 500,
+        "x": 253,
+        "y": 165
+      }
+    ]
+  },
+  "setup_ms": {
+    "arena_open": 13489.772,
+    "boot": 726.332,
+    "generate": 90.588,
+    "killed_warming": 0,
+    "pack_apply": 417.365,
+    "terrain_convert": 61.986,
+    "warm_pulses": 47,
+    "warm_up": 3632.474,
+    "window_open": 460.98
+  },
+  "slope": {
+    "refusals": 391,
+    "units_at_45": 262,
+    "units_at_70": 38
+  },
+  "snapshot": {
+    "at_ms": [
+      11750,
+      15000,
+      20000,
+      25000,
+      30000,
+      35000,
+      40000
+    ],
+    "bytes_max": 5088487,
+    "bytes_mean": 5025152,
+    "count": 7,
+    "decode_ms_max": 1567.982,
+    "encode_ms": {
+      "max": 924.175,
+      "p50": 766.977,
+      "p99": 783.727
+    },
+    "every_ms": 5000,
+    "hash_ok": true,
+    "max_snapshot_bytes": 7340032,
+    "wake_plus_encode_ms_max": 1019.773
+  },
+  "substeps": {
+    "per_wake_max": 1,
+    "per_wake_min": 1,
+    "substep_divides_periods": true,
+    "substep_ms": 250
+  },
+  "tempos": [
+    {
+      "max_ms": 135.681,
+      "name": "arena_engaged",
+      "p50_ms": 91.644,
+      "p95_ms": 113.58,
+      "p99_ms": 118.021,
+      "period_ms": 500,
+      "pulses": 120
+    }
+  ],
+  "thresholds": {
+    "assert": false,
+    "cut_a_p99_ms": 5.0,
+    "cut_s_p99_ms": 20.0,
+    "engaged_p99_ms": 40,
+    "lens": "report-only",
+    "max_cell_probes_per_pulse": 32000,
+    "max_jam_checks_per_pulse": 2048,
+    "max_ledger_bytes": 67108864,
+    "max_path_cells_per_pulse": 48128,
+    "max_path_queries_per_pulse": 64,
+    "max_share_ops_per_pulse": 768,
+    "max_traces_per_pulse": 4000,
+    "window_p99_ms": 22.0
+  },
+  "weapons": {
+    "armed_units": 284,
+    "disabled_at_end": 0,
+    "fired_events": 1123,
+    "hits": 1026,
+    "impact_events": 1117,
+    "in_flight_at_end": 6,
+    "locked_events": 443,
+    "misses": 91,
+    "rounds_left": 628357,
+    "rounds_loaded": 629480,
+    "rounds_spent": 1033,
+    "sections_destroyed": 30,
+    "shot_seq_at_end": 1123,
+    "units_destroyed": 12,
+    "wrecks_at_end": 12
+  },
+  "what": "17b cut M4.5: `Arena::step` at the harness's scale, the fielded catalog flown by unit minds at the ROM, woken where the task wakes it, the thinks delivered inline outside the lens, with the cell-probe and jam-check bounds asserted",
+  "window": {
+    "cell_probes_peak": 4987,
+    "horizon_probes_peak": 4968,
+    "jam_checks_peak": 677,
+    "ms_max": 244.705,
+    "ms_p50": 183.553,
+    "ms_p95": 212.872,
+    "ms_p99": 221.229,
+    "share_ops_peak": 108,
+    "traces_peak": 967,
+    "window_ms": 500,
+    "windows": 60
+  },
+  "world": {
+    "arena_ms": 41500,
+    "cell_cm": 1000,
+    "move_cost_table": "harness-local (harness_move_cost), one table for every row: the cohort measures the arena and not the shipped table (16b cut AE.1)",
+    "passable_cells": 51258,
+    "pilots": 24,
+    "pulses": 120,
+    "seed": 2350,
+    "side_cells": 256,
+    "units": 300
+  }
+}
