@@ -4474,3 +4474,419 @@ The note should also say:
 - §1.2's shared-version rule gains the exact-version coupling: a lane cut also re-signs the relay seed.
 
 **Doc 15b** owes a line under R10: the relay seed is re-signed with each lane version since SM.12a (v3 for lane 14), and the live-gate scripts' expectations are stale.
+
+## SM.12b
+
+**Occator's drones** (doc 20 §13's SM.12 row, second part, as the lead split it; doc 20a §4, the plan of record), built 2026-10-25 in a worktree on `claude/sm12-train` at base `9df93246` (SM.12a). Judged **ship-with-notes**. One commit, pushed to origin/main. Lane v15's yard on Occator Rim (the Dray-P yard hull on the pad, two house rigs in its bay, a DARK dispatcher); the house's standing licence and R1 survey seeded by the site clerk; the dispatcher's own `Arm::Dispatch` delivering the yard hold's ice ore in kind to Occator's storefront for the mill, or filing SM.11 fill plans through the player's own compiler, under the re-arm rule; the house view on every operator, hull-rig and lessee seam; the `tacsim.dispatch` ledger and the Dispatch readiness line; the relay seed `luna_ceres` re-signed at v4 for lane v15.
+
+### What landed
+
+1. **The yard's lane data and its validator** (`crates/tacsim/src/port/def.rs`).
+   - `YardDef { org, name, unit, registry_prefix, pool, rig_prefix, rigs, ore, blocks: Vec<char>, rearm_ic_secs }` is strict. Its doc carries O-8, O-9 and O-14's basis in one paragraph: 2 rigs is the Dray-P's bay; 86 t of ice is 34.4 t of water a hold; re-arm is one IC hour; F and G are the blocks worked; the delivery bound is the mill's `per_ic_day_t`.
+   - `SiteDef.yard: Option<Box<YardDef>>` is serde-default and skipped when absent, so a v14 site re-encodes byte-identically.
+   - `MAX_YARD_REARM_IC_SECS` = 604,800.
+   - `YardDef::check` runs inside `SiteDef::check`: the name, the prefixes, rigs 1..=4, the re-arm interval, 1–4 distinct letters, each held by the yard's org.
+   - `check_yards` runs inside `check_ports`: the org, the pack's one rig pool of that org, an ore good, exactly one mill of it at the house, prefixes no one else uses, one yard per org.
+   - `PortDef.site` is now boxed. The yard tipped `PackEntry::Port` over clippy's `large_enum_variant`. Serialisation is unchanged.
+   - Tests: `sm12b_each_yard_rule_refuses_with_its_sentence` and `sm12b_a_site_without_a_yard_re_encodes_byte_identically`.
+
+2. **Lane v15 and the relay seed v4** (`crates/tacsim/content/lane/ceres_phobos.json`, `crates/tacsim/src/definitions/content.rs`, `crates/tacsim/content/relays/luna_ceres.json`).
+   - `occator_port.def.site.yard` is the Occator Yard: `tacsim.unit.dray_p`, `OWP-YD-`, pool `occator.rig_lease`, `OWP-YT-`, 2 rigs, `ice_ore`, blocks F and G, 3,600 IC s.
+   - The lane manifest is 15, digest `eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3`. `LANE_VERSION` is 15, with its history clause and the "lane v15 ↔ relay v4" coupling.
+   - `luna_ceres.json` is version 4, requiring lane 15, with byte-identical entries. Its digest is `2ef60c5168baf6dc621bbc9ea5576a853df358d6789a7b541bd3739b9f971eb9`; it was `a9bf71ef…` at v3.
+
+3. **The rows** (`crates/tacsim/src/port/map.rs`).
+   - `SiteRow.yard: Option<YardRow>` is skipped when absent, so `PORT_MAP_SCHEMA` stays 1.
+   - `YardRow { hulls, rigs, dispatcher, hold, licence }` and `HouseLicence { account, from_ic, until_ic }`, both strict.
+
+4. **`port::yard`** (`crates/tacsim/src/port/yard.rs`, new; `pub mod yard` and its re-exports are in `port/mod.rs`).
+   - Queries: `YardView`, `yards`, `yard_of_dispatcher`, `yard_of_hull`, `is_dispatcher_of`, `operating_hull`, `operates`, `operator_principal`, `house_rigs`, `rig_lease` (the one lessee reader), `dispatchers`, `held_letters` and `is_yard_rig`. Each first passes a cheap scan of the yard rows before any pack read.
+   - The texts: `YARD_STAYS`, `HOUSE_RIG_SLOT`, `HOUSE_RIG_LINE`, `DISPATCHER_NAME`, `HOUSE_LICENCE_NAME`, and the Dispatch templates for orders 1–10 with 5a–5d.
+
+5. **The lay-up as the applier's part (i)** (`port/apply.rs`, `port/hull.rs`, `port/vehicle.rs`, `port/site.rs`, `yard.rs`). The programme hulls' and shed rigs' steps are factored, never copied:
+   - `HullRows { Programme, Yard }` with `rows`, `rows_mut` and `row_of`. `HullPlan` now carries its name, mark and rows. `lay_up_bay` takes the selector. `template_of` and `berths_slot_of` sit under the byte-identical `template` and `berths_slot` wrappers. `place_and_title` takes a pose.
+   - `RigRows { Pool, Yard }`, `RigPlace { Shed, Bay { room, slot } }` and `RigPlan` with mark, rows and place.
+   - `yard::preflight` refuses before any write. Its titles are added to the frozen-economy counts.
+   - `yard::lay_up` builds (i1) the hull at the pad pose (0, 0), titled to the house under `tacsim.registry`; (i2) the hold vault, the house's at its root scope, backed by the stowage; (i3) the two rigs in the bay's rigs compartment, titled to the house; (i4) the DARK dispatcher "Occator Yard dispatcher" in the host room.
+   - Nothing is submitted.
+
+6. **The house view and every seam** (`port/tv.rs`, `port/ship.rs`, `port/voyage.rs`, `port/site_map.rs`, `port/executor.rs`, `port/vehicle.rs`, `surface/act.rs`, `surface/plan.rs`, `surface/tick.rs`).
+   - `TvLease::{HOUSE_LEASE, house_view, is_house}`. `check` refuses lease 0, and `rig_lease_live` reads a house view as live.
+   - `live_on_hull` appends the house views for a yard hull, so it is the one census.
+   - `plan::helm_hull` answers `yard::operating_hull`: the orphan rule.
+   - Five lessee reads in `surface/tick.rs` now go through `yard::rig_lease`, as do `rigs_in_bay`, `rig_flight` and the executor's `rigs_out`. `repossess` refuses a yard hull and dedupes by tv.
+   - `operator_rigs`, `SurfaceDoneProvider` records, `voyage::aboard`, the site_map viewer hull, the `select_among` fallback and `mine_tenure`'s `operator_principal` all branch for the dispatcher.
+   - The ship views: `HullView.yard` (a new field), and `view_of` factored into `view_with` with the yard's own fallback unit. `hull_view` and `hull_of_room` search the yard rows.
+   - `+tv` for the dispatcher prints `HOUSE_RIG_SLOT` and `HOUSE_RIG_LINE`, with no stores line. `ship::no_charter` answers `YARD_STAYS`.
+   - `vehicle::rig_row` and `act::world_rigs` include the yard rigs.
+
+7. **The seeded readings** (`crates/tacsim/src/surface/chart.rs`). `write_seed` writes R1 `Footing::Rock` stamped `Via::Plan`, never sets `scan_stand`, and adds no `Via::Seed`. It shares `write_fields` with `write_scan`. Test: `sm12b_a_seed_reads_its_fields_and_counts_for_nothing`.
+
+8. **The house licence** (`crates/tacsim/src/port/licence.rs`).
+   - `house_account` reads `licence_accounts`' selection.
+   - `open_house_licence` opens an Active account at the org's root scope, with no fee.
+   - `licence_standing`'s first branch reads a dispatcher's `house_standing`: Unlicensed, Suspended, InForce or Lapsed.
+
+9. **The dispatch family and provider** (`port/families.rs`, `yard.rs`, `port_tick.rs`).
+   - `tacsim.dispatch` is the ninth family: `DispatchKey { site }` and `DispatchLedger` with `check`, plus `dispatch_at` with the key rule and `deliverable`.
+   - `DispatchProvider` handles two acts. `survey` (clerk) writes one chart record. `deliver` (dispatcher) does one receipted inventory `transfer` plus the ledger, with the ordinal as replay guard. Neither makes a market call or an economy post.
+   - `PortHandles.dispatch`, the `DISPATCH_OUTCOME` descriptor, and `action_descriptors`' `site_outcomes` pair.
+
+10. **The clerk's seeds** (`port/site.rs`, `yard.rs`).
+    - `claims_step`'s tail runs 7a held seeds, then 8 the licence (3 writes in one handler), then 9 one survey a fire (`tacsim_dispatch` under SM.6's attempt rule, factored as `site::attempt` and `count_attempt`), then 7b papers.
+    - `clerk_item` answers `None` whenever it cannot progress, so the papers never wait on the house.
+    - `Owed` and `owed` are one helper for the clerk, the dispatcher's gate and the line.
+
+11. **The dispatcher** (`yard.rs`, `port_tick.rs`, `surface/act.rs`).
+    - `Arm::Dispatch` runs after the site clerks, one act a fire, through `dispatch_step`. In order: gone, no yard, slot pending, not open, owed. Then (a) deliver within the mill's day under SM.12a's attempt rule, or (b) file one quiet in-bay rig's plan through `plan_ask` and `act::file_compiled`, which is factored out of `plan_cmd` byte-identically.
+    - Filing follows the re-arm rule `file_due` (O-14) and `fair_left`, read only for a WorkedOut end with a cycle, after the interval and the back-off.
+    - A stalled rig (`bay_hopper` HoldFull with a non-empty hopper) is skipped and warned.
+    - D21's back-off is `dispatch_file_after`.
+    - `PortTickState` gains `dispatch_action`, `dispatch_attempts`, `dispatch_refused`, `dispatch_file_after` and `dispatch_warned`, each bounded by `MAX_CLERK_ROWS`. `new` takes `(probe, stock, mill, dispatch)`.
+
+12. **The R3 fix** (`crates/tacsim/src/surface/plan.rs`). `decide`'s Bound wrapper is now the pure `bound_over`. A plan already parking keeps its parking reason when its bound ends it. Test: `sm12b_a_parking_plan_past_its_bound_keeps_its_reason`, with a player-authored plan.
+
+13. **Readiness** (`port/readiness.rs`, `port/coop.rs`, `yard.rs`). `Binding::Dispatch` is ungated. `readiness_in` puts one Dispatch line after the site port's last line, through `dispatch_line` and the pure `dispatch_line_text`, decided in orders 1–10.
+
+14. **Test hooks and test support.**
+    - `plan::count` skips yard rigs. `house_compiles_for_tests` and `plan_seam_for_tests` are read-only `#[doc(hidden)]` hooks.
+    - `tests/support/drones.rs` (new) holds `strip_yard`, which `strip_mill` calls first, and `is_house`.
+
+15. **Tests.**
+    - `crates/tacsim/tests/drones.rs` (new): 22 world tests on the keyed composition root at rate 24, T0–T16 plus the house-standing and kept-world apply tests.
+    - Unit tests in `def.rs`, `tv.rs`, `chart.rs`, `plan.rs` and `yard.rs`.
+    - `crates/tacsim/tests/vehicles.rs` gains three yard tests: `sm12b_the_yards_preflight_refuses_each_recorded_breach`, `sm12b_a_port_update_lays_the_yard_over_itself` and `sm12b_a_yard_rig_reads_a_stored_lease_first`.
+
+16. **Contract gates** (`crates/mush-contract-tests/state-slot-owners.toml`, `tests/truth_serialization_policy.rs`). Two rows for `tests/drones.rs` (`AccountOracle`/sim, `EconomyStore`/economy). The `port/licence.rs` row's reason gains an SM.12b sentence. A comment records that `YardRow`, `HouseLicence` and `DispatchLedger` are durable, serialise and hold no truth.
+
+### Deferred, and why
+
+**The owner's forks, built at their defaults**
+
+- **O-8, O-9, O-10, O-14:** the owner ruled these on 2026-10-24 ("keep the defaults … I'll tune later").
+  - O-8: Occator Yard, `OWP-YD-01`, `OWP-YT-01/02`, two rigs, the Dray-P (86 t).
+  - O-9: F and G worked; all four held blocks surveyed at R1 rock. Under `KEY_1`, F has 271 t in 22 pockets, G 256/20, J 252/23 and K 252/19; T0 pins these with the class counts.
+  - O-10: the delivery is bounded by the mill's 40 t a day, and player ore displaces drone supply.
+  - O-14: the house re-files after HoldFull or Bound once 3,600 IC s have passed. After WorkedOut it re-files only with fair ore it has read and a landed cycle. It never re-files after Cleared, a right, Stranded, ChartFull or Dark.
+- **O-11, O-12, O-13, O-15, O-16, O-17, O-18:** standing at the brief's defaults.
+  - O-11: a receipted transfer with no haul.
+  - O-12: a fee-less century licence opened Active by the clerk as a `HouseLicence` row. Its existence is implied by the yard block, and its term is SM.10's `SEEDED_TERM_IC_SECS`; neither is a lane field.
+  - O-13: the arrival pose (0, 0), with no glyph.
+  - O-16: measured by T14, never asserted. F and G's ice opens to 597 t of ore, 238 t of water, 0.74 real days of the 320 t draw; all four blocks give 1.43 days; the ceiling is 3.84 / 7.68. The drones alone cannot carry a season.
+  - O-17: no staff close or bring-in verb. Orders 5a and 5d name the placement remedy and the hand-unload remedy.
+  - O-18: the brief's texts verbatim, including the two names stored on kept worlds, `DISPATCHER_NAME` and `HOUSE_LICENCE_NAME`.
+- **O-15, for the owner to re-see.** Brief revision 4's correction was wrong. It said "about 8, up to 16, 2–3 an IC hour per sounding rig" on the premise that `heard_lines` has no throttle. In fact `chart::HEARD_EVERY_IC` (3,600 IC s per sounder) was already at base. T5 measured 4 heard lines in all and at most 1 in any IC hour from 16 loud soundings, which matches doc 20a §4.5's original figure.
+- **A second known overrun of doc 20 §13's "≤ 3 for any other act": the delivery bundle.** It writes 5, or 6 into a fresh storefront pool, for mined (unrooted) ore, and 7 or 8 for rooted, seeded ore, the difference being the lineage. This sits beside SM.12a's batch 5/6 and SM.8's unload 9–19. It is pinned and never trimmed.
+
+**The lead's rulings the plan of record took**
+
+- T7 edits the rig records through `put_record` (D28).
+- The heard rate is measured, never asserted (D29). The fixer removed T5's `heard_max <= 1` assertion to comply.
+- A stalled rig is skipped and named by order 5d with a hand-unload remedy (D27).
+- `clerk_item` yields `None` whenever it cannot progress, and the survey reuses SM.6's attempt rule (D26).
+- `lay_up_bay`, `template`/`berths_slot` and `view_of` are generalised by selector or label (D30).
+- The house licence is opened at the org's root scope in `port/licence.rs` (D18, D19).
+- `action_descriptors`' sixth parameter is the pair `(site work, dispatch)` (D20).
+- `repossess` stays stored-only, refuses a yard hull and dedupes by tv (D22).
+- Every refused compile backs off one interval (D21).
+- The relay seed is re-signed at v4 with all five kept-world literals and both stale doc comments moved (D24).
+
+**Departures recorded**
+
+- **D8:** a plain `transfer` (debit, credit, lineage) refines the lead's "debit/credit pair".
+- **DEVIATION A:** the re-arm rule is code (`file_due`) and the interval is lane data.
+- **R3's player-visible change is wider than the brief worded it.** The code follows the brief's own literal, `FillState::Parking { why } => why`, so any plan already parking keeps its parking reason when the 288 IC h bound ends it, not only a right. A player's plan heading home full whose author is ashore past the bound now ends "hold full", not "out of time". Only a Live plan ends Bound.
+- **The `PortDef.site` box.**
+- **The `plan::count` house filter**, with its own `house_compiles` counter.
+- **Staff placements in `excursions.rs` and `quarry.rs` now keep their writes.** `with_ctx` dropped the recovery-ledger append; it was harmless until the yard's placements moved a chunk seal onto it.
+- **The upgrade test's shape.** It seeds `lane_variant(LANE_VERSION, strip_yard)` (v15 content less the yard, at 15) and takes it to 16, rather than v14 to the shipped v15. This follows SM.12a's `mill.rs` precedent and is stated in the test's doc.
+- **One extra preflight sentence:** "the title issuer {issuer} is not registered on this world", on the hull and vehicle precedent.
+- **The fixer's 5b read for a stranded rig already back in the bay.** It reuses `DISPATCH_STOPPED` with why "stranded" and mints no new wording.
+- **The `tests/stations.rs` pins.** Only the two relay pins (around :1280 and :1986) moved. The brief's :1778 and :1783 are Stickney v3 pins.
+
+**Left as they are**
+
+- **The 5d remedy text names the bare form.** "(+tv/{n} unload)" previews under the +tv rule, so it should read `unload go`. This is O-18's to change.
+- **`--test drones` is over its 90 s target** at 181.57 s at the gate. Nothing was shortened.
+- **Untested paths.** Item 8's refusal branch is reviewed in code only and unreachable without fault injection. The preflight's "{org} has no map row yet" is unreachable by a lane edit. The repossess yard guard is reached only from recall on a chartered programme hull.
+- **`DispatchKey::parse`** exists for the strict-inverse contract and has no production caller.
+- **Kept worlds keep their relay latch at v2.** The relay track's live scripts are stale (they expect lane @13 and relay @2).
+- **SM.11 residuals that are not this cut's** stay open: the off-helm `mine_stop` widening, the orphaned plan on a lease's end, the double A*, and `hold_figures`' one stowage tag.
+
+### Pins re-blessed
+
+**The lane** (reason: the yard)
+- `LANE_VERSION` 14 → 15, with its history clause and the relay-coupling paragraph.
+- The lane manifest goes to 15, digest `eeb95c7a…`.
+- `tests/lane.rs` `LANE_DIGEST` `c507f74c…` → `eeb95c7a…`, and its ladder message moves to v15.
+- `tests/sites.rs` `LANE_VERSION, 15`.
+- `tests/mill.rs` test 1 asserts 15 and that the yard is absent after `strip_mill`. Its F1 differential is unmoved.
+
+**The relay seed** (reason: relay R10 requires an exact lane version)
+- `luna_ceres.json` v4, requiring lane 15, digest `2ef60c51…`.
+- `relay_registry.rs` `r10_public_star_content_digests_are_pinned` → `2ef60c51…`.
+- The kept-world test is renamed `sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v4`, and its five literals move: @15, Some(15), (Some(15), Some(2)), Some(4), (Some(15), Some(4)).
+- `lane_v13` strips the yard first and still asserts `34d47907…`. The docs of `Rig::v13_star` and `relay_v2` are refreshed.
+- `tests/stations.rs`: relay `Some(3)` → `Some(4)` at its two relay pins, and `(LANE_PACK, 14)` → 15.
+- `boot_parity.rs` relay `Some(3)` → `Some(4)`.
+
+**The strip chain**
+- `strip_mill` calls `strip_yard` first. Every older rebuild stays green unedited: v13 `34d47907…`, v11 `c7239b0a…`, plumbing's v10, and the strip_vehicles, strip_sites and strip_moon chains.
+
+**Readiness**
+- `coop.rs` `ic12_…` `EVERY: [Binding; 21]` → `[Binding; 22]`, with `| Binding::Dispatch` added to the ungated list.
+- `tests/ports.rs` ic3's whole report gains one line after Occator Rim's Site line: "  occator_port dispatch occator: 2 rigs in the Occator Yard's bay; the site is not open, so nothing is filed. [ready]". `commerce_lines` stays 52.
+
+**Families**
+- The doc counts go from eight to nine.
+- `PortHandles.dispatch` is added.
+- `action_descriptors`' sixth parameter becomes the `site_outcomes` pair.
+
+**Lane-edit variants** (reason: the yard validator refuses a yard whose pool or mill is gone)
+- `tests/ports.rs` `ic3_port_entries_refuse_what_the_applier_cannot_bind`: the v2-shape case also strips the yard.
+- `tests/vehicles.rs` `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach`: the block-dropped case also strips the yard.
+
+**Allow-lists the house's submissions now reach** (no count or expected value changed)
+- `tests/deposits.rs` sm6's match gains a `tacsim_dispatch` arm asserting keys `[act, actor, receipt, site, t]`, `act == survey` and `t == 0`. This is the test's own no-truth rule extended, not weakened.
+- `plans.rs`, `mining.rs`, `unloading.rs` and `quarry.rs`: `finishes` and `starts` drop the house's submissions through `support::drones::is_house`.
+- mush-server's `sm_story`, `ic_slice_loop` and `ic_buyout_dormancy`: `drain` → `drain_players` (9, 22 and 11 sites), which lands the house's share quietly.
+- `claims.rs`: `stock` ignores a Pending dispatch line, and `settle` lands everything and counts a fire holding only house submissions as quiet. SM.10's byte-identical comparisons moved IC instants but no assertion.
+- `quarry.rs` `sm9_a_rigs_log_is_its_current_operators` drops `tv.status` pushes addressed to a dispatcher.
+
+**Test-harness corrections** (reason: `with_ctx` drops its outbox, and the yard's placements moved a ledger-chunk seal onto a dropped append)
+- `excursions.rs` gains a `keeping` helper.
+- `quarry.rs` `to_cell_on` uses `support::place_keeping` and folds the staff writes.
+
+**State-slot owners**
+- Two `tests/drones.rs` rows, and an extra sentence on the `port/licence.rs` `EconomyStore` reason.
+
+**New pins**
+- T0's O-9 figures: F 271/22 [226, 8, 14, 8], G 256/20 [228, 8, 11, 9], J 252/23 [227, 6, 18, 5], K 252/19 [232, 5, 12, 7].
+- T5's first-run figures: 22 deliveries, 320 t, 12 hold-fills, 16 soundings, 38 queued unloads, 14 batches, 280 t of ore into 112 t of water.
+- Delivery writes: 6 for the first (fresh pool), then 5, for mined ore. T13's rooted ore: 8 fresh, then 7. Survey 1. Licence 3, counted whole.
+- T6's back-off bound: ≤ 2·(fires/25+1) compiles over the parked window (5 measured in 94 fires).
+- T15: `LANE_V14_DIGEST` `c507f74c…` as `strip_yard`'s target.
+
+**Expected unmoved and green at the gate**
+- The panic budgets; `REFUSAL_CODES` 64; `provider_rng_policy`; module-ns-owners; the legacy-handler baseline (no verb added).
+- The restriction-lints census; the CI gated-test inventory (no `#[ignore]`).
+- Boot parity: orgs 24, packs 35.
+- `INDUSTRY_SEAMS` 12; `GOODS_DIGEST`; the geology, sky and chart fixtures.
+- The `tests/hulls.rs` and `tests/vehicles.rs` lay-up pins, byte-identical through the generalised helpers.
+- The apply-plan pins in `sites.rs`, `ports.rs`, `commerce.rs` and `vehicles.rs`, which did not move.
+- The `tests/plans.rs` Bound pins, which hold Live plans only.
+
+### How it was verified
+
+Gate 1 ran once in the worktree at base `9df93246` with the cut uncommitted (48 modified and 3 untracked files; git status was unchanged at the end). The only other cargo process on the box was the owner's `cargo run --release -- --profile play-6792` (PID 40616), which is not a build.
+
+**fmt.** `cargo fmt --all -- --check` exited 1 with "The filename or extension is too long. (os error 206)", the known environment error that checks nothing. Per the lead note, the fmt step is counted as two checks, both clean:
+- `cargo fmt -p <pkg> -- --check` passed for 48 of 48 packages.
+- `rustfmt --check --edition 2024` on the cut's 48 changed and new .rs files exited 0.
+
+**clippy.** `cargo clippy --workspace --all-targets -j 8 -- -D warnings` → `Finished dev profile … in 26.90s`, exit 0.
+
+**rustdoc.** `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` → `Generated … mush_ansi\index.html and 47 other files`, exit 0.
+
+**drones.** `cargo test -j 8 -p tacsim --test drones -- --nocapture` → `test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 181.57s`. It printed:
+- `SM.12b heard: total 4, max 1 an IC hour`
+- T5's span: 4,000 fires = 576,000 IC s. 22 deliveries of 320 t, 12 hold-fills, 16 loud soundings (the last at fire 1940; F and G read whole at R2 by 1947), 38 queued unloads, 0 idle returns.
+- Milled 280 t of ore into 112 t of water in 14 batches.
+- 3,352 quiet fires checked, 83 hold-room reads, 742 landings with every ore bid unmoved, 669 house landings with no money and no contract.
+- T6's back-off: 5 compiles over 94 parked fires (bound 8).
+- T13: `deliver 7 (fresh pool 8), survey 1, licence 3`.
+- T14: F+G 597 t of ore, 238 t of water, 0.74 real days (ceiling 3.84); all four 1,148 t, 1.43 days.
+
+**tacsim lib.** `cargo test -j 8 -p tacsim --lib` → `test result: ok. 1505 passed; 0 failed; 1 ignored; … finished in 80.88s`.
+
+**tacsim batches.**
+- Lane through coop, 16 suites, all ok. Claims 35 in 71.14 s, plans 28 in 60.12 s, mill 25 in 47.07 s, unloading 18 in 30.38 s, quarry 11 in 15.47 s, vehicles 44 in 35.70 s.
+- Driving through deposits, 10 suites, all ok. Deposits 14 in 36.18 s, cockpit 183 in 50.58 s.
+- Voyage through sky, 8 suites, all ok.
+
+**mush-server.** `--test sm_story --test ic_slice_loop --test boot_parity --test relay_registry --test ic_buyout_dormancy` → all ok:
+- boot_parity 21 in 7.21 s
+- ic_buyout_dormancy 14 in 70.49 s
+- ic_slice_loop 10 in 56.42 s
+- relay_registry 64 in 24.28 s
+- sm_story 2 in 46.48 s
+
+The builder measured `stock()` reading Ready at 98 fires in sm_story and 96–99 in ic_slice_loop, against a 300 bound.
+
+**Contract tests.** `cargo test -j 8 -p mush-contract-tests` → 32 binaries, 134 passed, 0 failed, 8 ignored. panic_budget 8, state_slot_owners 5, truth_serialization_policy 1 and restriction_lints 11 all ok.
+
+**Workspace sweep.** `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8` → 9,043 passed, 1 failed, 93 ignored; no hung binary. The one failure is `mush-gateway --test server_panic_relaunch`'s `a_faulted_world_is_relaunched_and_the_session_keeps_playing`: "channel closed waiting for \"restarting\"" after "Reply completion unavailable; reconnect to continue." It is a pre-existing intermittent race and is counted as passed, on this evidence:
+- The suite is on the load-sensitive list.
+- The code is peer commit `b50a9e30`'s `bridge_common.rs:1055` reply-barrier disconnect. This cut's diff touches nothing in mush-gateway, mush-server/src, mush-ipc, mushd or mush-core.
+- It passed alone: the suite 5/5, and 9 of 10 exact runs.
+- An alternating 20× comparison failed 1/20 at base `9df93246` and 2/20 on the cut, with the identical signature.
+
+**mush-bot.** `cargo test -p mush-bot -j 8` → 25 binaries, 717 passed, 0 failed.
+
+**Peers.** Neither known peer failure reproduced: `no_crate_exceeds_its_production_panic_budget` passed, and `the_org_capability_vocabulary_covers_every_economy_capability` passed.
+
+**Watch-list wall times.**
+- drones 181.57 s at the gate against its 90 s target (189.89 s for the builder, 188.13 s for the fixer). This is over target, reported, and the lead's decision.
+- No existing suite doubled. Against SM.12a's recorded bases, measured at the gate: claims 71 s (71–81), plans 60 s (62–64), mill 47 s (48–68), unloading 30 s (31–33), deposits 36 s (40), quarry 15 s (15–16), sm_story 46 s (44–54), ic_slice_loop 56 s (55–87).
+
+**Review lenses.** Correctness found 9, conformance 11 and tests 18.
+- All six must-fix findings were fixed in code and tests and verified by the judge: T5's per-fire seams and run pins, T8's cap at the prepare and the one-closed cap binding, T5's caps over every rig record, and the site.map frame reads in T3, T10 and T11.
+- Should-fixes fixed: the T6 back-off counter, the extraction_authorized call in B7, the preflight-breach, kept-yard-update and stored-lease tests, `dispatch_step`'s pending-first order and lazy `fair_left`, the stranded-in-bay 5b read, the stronger A2 and T12/T13 write checks, and the upgrade test's plan summary.
+- Rebutted with a corrected declaration: conformance F5. The R3 code follows the brief's literal, and the deviation was restated as "any parking reason".
+- Left open as notes: correctness F7 and F8, conformance F9, F10 and F11 (the latter now named under the departures), and tests F13, F14, F15, F17 and F18.
+
+**The judge's own pass.**
+- Read the whole diff, `yard.rs`, `support/drones.rs` and drones.rs' T2b–T8.
+- Confirmed `tv_lease_on` survives only in repossess (tv.rs:3956), the take's stored read (tv.rs:3285) and `rig_lease` itself.
+- Confirmed `helm_of` survives in `surface/` only as `operator_rigs`' first branch.
+- Confirmed `HEARD_EVERY_IC` is at base (chart.rs:89).
+- Found no RNG, no `mush_market` reference in `yard.rs`, no applier submission, no removed assertion, and no edit under `docs/` or `deploy/`.
+
+### Surface for the next cuts
+
+**`tacsim::port::yard` (public)**
+- **`YardView<'w> { entry, site, def, map, row, house }`**, with `hull()` and `dispatcher()`.
+- **Queries:**
+  - `yards(w)`, `yard_of_dispatcher(w, actor)`, `yard_of_hull(w, hull)`
+  - `is_dispatcher_of(w, hull, person)`, `operating_hull(w, actor)`, `operates(w, actor, hull)`
+  - `operator_principal(w, actor) -> PrincipalId`: `Organization(house)` for a dispatcher. This is the phase-2 seam for org-held claims.
+  - `house_rigs(w, dispatcher) -> Vec<TvLease>`: slot order, slot = n + 1.
+  - `rig_lease(w, tv) -> Option<TvLease>`: the stored live record first, else the house view. This is the one lessee reader.
+  - `dispatchers(w)`
+  - `deliverable(hold_t, front_t, bound_t) -> u64`: pure.
+- **Ledger types:**
+  - `DispatchKey { site }`: key text is the site id; `parse` is strict.
+  - `Delivery { ordinal, at_ic, t }`.
+  - `DispatchLedger { site, house, dispatcher, good, hold, storefront, deliveries, delivered_t, day, day_t, recent }`, with `check()`.
+- **Constants:**
+  - `DISPATCH_ACTION` "tacsim_dispatch".
+  - `DISPATCH_OUTCOME` "tacsim_dispatch_result", with fields act, actor, receipt, site and t.
+  - `DISPATCH_FAMILY` "tacsim.dispatch".
+  - `DISPATCH_KEY_PREFIX` "tacsim.dispatch/". Keys are `tacsim.dispatch/{site}/survey/{l}` and `/deliver/{n}`.
+  - `MAX_RECENT_DELIVERIES` 16, `MAX_DISPATCH_ATTEMPTS` 3.
+- **Texts:**
+  - `YARD_STAYS`, `HOUSE_RIG_SLOT`, `HOUSE_RIG_LINE`.
+  - `DISPATCHER_NAME` "{name} dispatcher", `HOUSE_LICENCE_NAME` "{org} standing prospecting licence".
+  - Dispatch templates: `DISPATCH_MISSING`/`UNREADABLE`/`NO_INSTRUMENT`/`LICENCE_INACTIVE` (orders 1–4), `DISPATCH_STRANDED` (5a), `DISPATCH_STOPPED` (5b, also used for a stranded rig back in the bay), `DISPATCH_HELD` (5c), `DISPATCH_STALLED` (5d), `DISPATCH_NOT_OPEN` (6), `DISPATCH_OWED` (7), `DISPATCH_WORKED_OUT` (8), `DISPATCH_WORKING` (9), `DISPATCH_NOTHING` (10).
+
+**`tacsim::port::yard` (`pub(crate)`)**
+- `is_yard_rig`, `held_letters`, `yard_stays_line`, `house_rig_line`.
+- `YardPack`/`pack_facts`, `preflight(w, &Pack, id, def, map) -> (hulls, rigs)`, `lay_up(ctx, id, pool, yard, map, domain, gallery, host)`.
+- `dispatch_at`, `house_mill(w, yard) -> (storefront VaultId, &MillDef)`, `DispatchProvider`.
+- `Owed { Seeds, Licence, Survey(char) }`, `owed(reads, yard, now)`, `clerk_item(ctx, fire, clerk, map, site, now, papers_due) -> Option<Step>`.
+- `FileDue { Now, At, Never }`, `file_due(plan, rearm, now, fair_left)`, `fair_left(classes, pit_out, blocks)`.
+- `DispatchWarn { Unreadable, Refused, Stalled }`.
+- `dispatch_step(ctx, state, fire, dispatcher) -> Step`.
+- `DispatchRead`, `dispatch_line_text(entry, org, read)`, `dispatch_line(ctx, entry, site, yard, map)`.
+
+**Defs and rows (public)**
+- `port::def::{YardDef, MAX_YARD_REARM_IC_SECS}` and `SiteDef.yard: Option<Box<YardDef>>`.
+- `PortDef.site` is now `Option<Box<SiteDef>>`: readers use `as_deref()`.
+- `port::map::{YardRow { hulls, rigs, dispatcher, hold, licence }, HouseLicence { account, from_ic, until_ic }}` and `SiteRow.yard`.
+
+**Other modules**
+- **`port::ship`:** `HullView.yard: bool`; `view_with(w, port, row, default_unit, refits, yard)` (private), with `yard_view` beside it.
+- **`port::hull` (`pub(crate)`):**
+  - `HullRows { Programme, Yard }`, `rows`, `rows_mut`, `row_of(map, which, n)`.
+  - `HullPlan { name, mark, rows, interior, spec, slot, bays, n }`, `lay_up_one`.
+  - `place_and_title(ctx, id, hull, (x_cm, y_cm), domain, issuer, trust)`.
+  - `template_of(store, label, unit)`, `berths_slot_of(label, unit, interior)`; `template` and `berths_slot` are byte-identical wrappers.
+  - `lay_up_bay` stays private and takes `(which, index)`.
+- **`port::vehicle` (`pub(crate)`):**
+  - `RigRows { Pool, Yard }`, `rig_rows`, `rig_rows_mut`, `rig_index(map, which, n)`.
+  - `RigPlace { Shed(ObjId), Bay { room, slot } }`, `RigPlan { mark, rows, place, interior, spec, slot, n }`, `lay_up_rig`.
+  - `place_and_title(ctx, id, tv, &RigPlace, issuer, lessor)`.
+  - `rig_row` also searches the yard rigs.
+- **`port::tv`:**
+  - `TvLease::{HOUSE_LEASE, house_view(tv, mark, dispatcher, hull, slot), is_house}`. `check` refuses lease 0.
+  - `live_on_hull` appends the house views for a yard hull.
+  - `rig_lease_live` is true for a house view.
+  - `repossess` refuses a yard hull.
+- **`port::licence` (`pub(crate)`):** `house_account(w, house)`, `open_house_licence(ctx, house, scope, name)`. `licence_standing`'s first branch is the dispatcher's.
+- **`port::site` (`pub(crate)`):** `dark_thing`, `page_once`, `attempt`, `count_attempt`, `map_org`, `org_name_of`. `claims_step`'s tail runs 7a, then 8–9, then 7b.
+- **`port_tick`:**
+  - `Arm::Dispatch`.
+  - `PortTickState.{dispatch_action, dispatch_attempts, dispatch_refused, dispatch_file_after, dispatch_warned}`, each bounded by `MAX_CLERK_ROWS`.
+  - `PortTickState::new(probe, stock, mill, dispatch)`.
+  - `action_descriptors`' sixth parameter is `site_outcomes: (site_work, dispatch)`.
+- **`port::families`:** `PortFamilies.dispatch` (the ninth family); `PortHandles.dispatch: Option<DefinitionRef>`.
+- **`port::readiness`:** `Binding::Dispatch` (ungated), placed after the site port's last line.
+- **`surface::act` (`pub(crate)`):**
+  - `file_compiled(ctx, rig, list, family, compiled, facts) -> Result<(u32, String), CmdError>`.
+  - `want_cold`.
+  - `operator_rigs` and `world_rigs` include the yard rigs.
+- **`surface::plan`:**
+  - `block_fields` (`pub(crate)`).
+  - `helm_hull` answers `operating_hull`.
+  - `bound_over` (the R3 rule).
+  - `count(w, tv, which)` skips yard rigs; `count_house_compile`.
+  - `#[doc(hidden)]` test hooks: `house_compiles_for_tests`, `plan_seam_for_tests`.
+- **`surface::chart`:** `write_seed(row, fields, at)`.
+
+**Content**
+- Lane v15, digest `eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3`.
+- Relay `luna_ceres` v4, digest `2ef60c5168baf6dc621bbc9ea5576a853df358d6789a7b541bd3739b9f971eb9`. The next lane cut re-signs it at v5 and strips its rows in `relay_registry.rs`'s `lane_v13`.
+
+**Test support**
+- `tests/support/drones.rs::{strip_yard, is_house}`. `strip_mill` calls `strip_yard` first.
+- mush-server suites: `drain_players`.
+
+**For SM.12c's figures**
+- Delivery writes: 5 (6 the first time, into a fresh pool) for mined ore; 7/8 for rooted ore.
+- Survey writes 1; licence writes 3.
+- Act kinds: `dispatch.deliver` and `dispatch.survey` are their own kinds; the filing is SM.11's `start.plan_file`.
+- The dispatcher has one submission slot, shared by the port arm and both rigs' surface steps.
+- T5 marker rings: 14 and 11 at mid-run, 20 and 18 at the end, over 6.67 IC days, which projects to 128 entries in about 43 IC days.
+- `--test drones` takes 181–190 s in debug.
+
+### Doc 20 amendments owed
+
+**Doc 20 §12.3** ("Occator's drones are NPC excursions on its two inner blocks under its own licence and claims, run by a dispatcher principal on the same tick (bounded to four excursions, in-kind supply through its own mill, never a cash mint)…") owes an "As built (SM.12b)" note covering:
+- The yard is lane v15's `site.yard`: the Dray-P "Occator Yard" `OWP-YD-01` settled at the pad's arrival pose (0, 0) with no glyph (O-13), two rigs `OWP-YT-01/02` of Occator's pool in its bay, and a DARK dispatcher.
+- F and G are worked; all four held blocks (F, G, J, K) are surveyed at R1 rock.
+- The delivery is one receipted inventory `transfer` from the yard hold to Occator's storefront, under the `tacsim.dispatch` ledger, bounded to the mill's one IC day (40 t). Player ore displaces drone supply (O-10).
+- "Lasts a season rather than a month" is the mill fed by the drip, from players' ore and the drones'. The drones alone give F and G 0.74 real days of water against a 3.84-day ceiling (O-16, measured).
+
+**§9.6** ("two worked by its drones (§12.3) and the rest reserved") owes the same as-built note, plus the clerk's item order (below).
+
+**§9 / §3.4, the site clerk's order.** The clerk runs 7a held seeds, then 8 the house's standing licence (one normal-lane handler, 3 writes), then 9 one house survey a fire (`tacsim_dispatch` under SM.6's attempt rule), then 7b the papers. Items 8–9 answer nothing whenever they cannot progress, so the papers never wait on the house (D26).
+
+**§5, the seeded reading.** `chart::write_seed` writes R1 `Footing::Rock` stamped `via: Plan`, sets no `scan_stand`, and adds no `Via::Seed`. It is never stake evidence and is the first evicted by the ring's trim.
+
+**§8 "Leaving it running", D-20-11 ("never re-armed") and §15 Q-20-3.** As built, players are never re-armed, but the NPC house is (O-14). `yard::file_due` re-files after HoldFull or Bound once the lane's `rearm_ic_secs` (3,600) has passed. After WorkedOut it re-files only when the house's own row reads fair ore left and the ended plan landed a cycle. It never re-files after Cleared, a right, Stranded, ChartFull or Dark. Doc 20 §17's "repetition arrives only through doc 17" is excepted for the NPC house.
+
+**§8 and §16, the bound.** Doc 20 §16's sentence "one whose author is ashore past the deadline ends `Bound` rather than with its parking reason" is closed (SM.11's residual R3). As built, any plan already parking keeps its parking reason, whatever it is (HoldFull, WorkedOut, Claimed, a right, ChartFull…), when the 288 IC h bound ends it, and this reaches players. Only a Live plan ends `Bound` ("out of time"). D-20-11's SM.11 note "the bound … ending a plan from any wait" gains the same clause.
+
+**D-20-11 and D-20-12, the house's licence.** It is a fee-less century licence, an Active entitlement account of the org at its root scope, opened (or adopted) by the clerk and recorded as a `HouseLicence` on the site row; it is not a gateway-account record (O-12). The dispatcher's `licence_standing` reads it, and its Suspended branch is exactly the industry predicate's `licence_accounts` selection.
+
+**§11.**
+- A new **Dispatch** row: re-arm 3,600 IC s (lane data, ≤ 604,800); 2 rigs; hold 86 t; delivery bound = the mill's `per_ic_day_t`; 2 of Occator Rim's 32 excursion slots; measured writes deliver 5 (6 into a fresh pool) for mined ore and 7/8 for rooted ore, survey 1, licence 3.
+- The **Tick** row's "≤ 3 for any other act": the delivery bundle is the second pinned overrun, beside SM.12a's batch 5/6, for SM.12c to gate.
+- The **Caps** row: the dispatcher shares one submission slot across the port arm and both rigs' plan steps and queued unloads, and its rigs count in the operator, site and world excursion censuses.
+
+**§13.**
+- The SM.12 row's split clause: SM.12b landed with lane v15 and the relay seed `luna_ceres` re-signed at v4 requiring lane 15, with `PortDef.site` now boxed.
+- The phase-2 paragraph: `yard::operator_principal` is the seam org-held claims build on.
+
+**§16, never-sells as built.** The dispatcher has no helm. `ship::no_charter` answers `YARD_STAYS` for every ship verb. The market's own `helm_of` gates refuse it (`NAME_SOURCE`, `NOT_IN_PORT`). `port/yard.rs` names nothing in `mush_market`.
+
+**§18's Doc 18 item.** Q-18-22 holds for players. The NPC house's plan is re-armed and its delivery is in kind.
+
+**Doc 20a.**
+- §4.5 and §8, O-15: the original figure ("at most one heard line an IC hour, about 2–4 in all") was right and brief revision 4's correction was wrong. `chart::HEARD_EVERY_IC` throttles each sounder; T5 measured 4 in all, at most 1 an IC hour, from 16 loud soundings.
+- §6 / §8, O-9's four figures: as above, pinned by T0.
+- §4.3.5: "the executor's `rig_parked`" is `rigs_out`'s lessee read.
+- The 5d remedy text should read `+tv/{n} unload go`, for the owner under O-18.
+
+**Doc 15b.** The relay seed is v4 for lane 15. The relay live scripts are stale.
+
+### The lead's follow-up (after the commit)
+
+Four of the judge's residuals, fixed by hand on `1b5dd371` and committed on their own:
+
+1. **Order 5d's remedy works as written.** `yard::DISPATCH_STALLED` now names `+tv/{n} unload go`; the bare `+tv/{n} unload` it named is a preview that commits nothing, so staff typing it literally left the rig stalled. The unit pin in `yard.rs` and T6b's whole-line pin move with it. This settles the O-18 text item above: a remedy that does not work is a defect, not house voice.
+2. **`TvLease::HOUSE_LEASE`'s doc** no longer claims no contract is numbered 0 (mush-economy numbers contracts from 0); it says why no stored rig lease can be: a rig is leased into a chartered hull's bay, whose charter contract is always opened first.
+3. **`plan::count` reads its test-only slot before the yard scan**, so production (which registers no `PlanCounters`) never pays `yard::is_yard_rig`'s scan on a decide, a leg or a compile.
+4. **T5's and T15's heard-line checks** match "rig" as a whole word (`names_a_rig`), so `HEARD_HERE`'s "right under you" no longer fails them falsely.
+
+Verified: `rustfmt --check --edition 2024` on the four files; `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` clean; `cargo test -j 8 -p tacsim --lib` 1,505 passed, 1 ignored; `cargo test -j 8 -p tacsim --test drones` 22 passed in 187.33 s.

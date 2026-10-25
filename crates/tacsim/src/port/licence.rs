@@ -339,10 +339,102 @@ fn record_for(w: &World, pilot: ObjId) -> LicenceState<'_> {
     }
 }
 
+/// **The house's licence account** (doc 20 cut SM.12b; B7): exactly the account
+/// `mush_industry::licence::licence_accounts` reads for an organization — the org's first account
+/// in the licence instrument, any scope, lowest id — with its status. `None` with no instrument or
+/// no such account.
+#[must_use]
+pub(crate) fn house_account(w: &World, house: &PrincipalId) -> Option<(AccountId, AccountStatus)> {
+    let instrument = crate::economy::licence_instrument()?;
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .accounts_of(house)
+        .find(|account| account.instrument == instrument)
+        .map(|account| (account.id, account.status))
+}
+
+/// **Open the house's standing licence account** (doc 20 cut SM.12b; B7, D18, D19; O-12's
+/// default): `+licence/buy`'s account opening, for an organization — `EconomyStore::alloc_account`
+/// then `mush_economy::open_account`, owned by `house` in the licence instrument at the org's root
+/// `scope` (the org-account convention), named `name`, opened **`Active`** (no fee: the house's
+/// licence is its standing, not a purchase). It lives here so the state-slot row that covers this
+/// file's allocator reach covers it. `None` when the instrument is not set or the allocator is
+/// spent (the caller pages; nothing is written).
+pub(crate) fn open_house_licence(
+    ctx: &mut Ctx<'_>,
+    house: &PrincipalId,
+    scope: mush_org::OrgScopeId,
+    name: &str,
+) -> Option<AccountId> {
+    let instrument = crate::economy::licence_instrument()?;
+    let id = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .and_then(EconomyStore::alloc_account)?;
+    mush_economy::open_account(
+        ctx,
+        Account {
+            id,
+            owner: house.clone(),
+            instrument,
+            scope: Some(scope),
+            name: SmolStr::new(name),
+            status: AccountStatus::Active,
+            posted_balance: Amount::ZERO,
+            held_amount: Amount::ZERO,
+            last_hold_seq: 0,
+            credit: CreditPolicy::forbid(),
+            last_journal_seq: 0,
+            revision: 1,
+            approval: None,
+        },
+    );
+    Some(id)
+}
+
+/// **A yard's house standing at `now_ic`** (doc 20 cut SM.12b; B7): no licence recorded on the
+/// yard row → `Unlicensed`; the account the industry predicate reads not `Active` → `Suspended`
+/// (12b-E6: exactly `licence_accounts`' selection); in its term → `InForce` with no grace (its
+/// lapse is its term's end); else `Lapsed` at the term's end. With no licence instrument →
+/// `Unlicensed` — an unreachable guard, since the instrument is a pinned constant.
+fn house_standing(
+    w: &World,
+    yard: &crate::port::yard::YardView<'_>,
+    now_ic: i64,
+) -> LicenceStanding {
+    let Some(licence) = yard.row.licence else {
+        return LicenceStanding::Unlicensed;
+    };
+    let Some(instrument) = crate::economy::licence_instrument() else {
+        return LicenceStanding::Unlicensed;
+    };
+    if mush_industry::licence::licence_accounts(w, &instrument, &yard.house)
+        != Some(AccountStatus::Active)
+    {
+        return LicenceStanding::Suspended;
+    }
+    if now_ic < licence.until_ic {
+        LicenceStanding::InForce {
+            expires_ic: licence.until_ic,
+            lapses_ic: licence.until_ic,
+        }
+    } else {
+        LicenceStanding::Lapsed {
+            at_ic: licence.until_ic,
+        }
+    }
+}
+
 /// **A pilot's standing at `now_ic`**: the record by gateway account (an alt of a
 /// licensed account reads `Other`), the entitlement account's status, then the dates.
+/// **Doc 20 cut SM.12b**: a yard's dispatcher reads its house's standing licence
+/// (`house_standing`), so `licence_gate`, `licence_verdict`, SM.7's frozen lapse and SM.11's
+/// compile and `decide` read it unchanged; players are byte-unchanged.
 #[must_use]
 pub fn licence_standing(w: &World, pilot: ObjId, now_ic: i64) -> LicenceStanding {
+    if let Some(yard) = crate::port::yard::yard_of_dispatcher(w, pilot) {
+        return house_standing(w, &yard, now_ic);
+    }
     match record_for(w, pilot) {
         LicenceState::Absent => LicenceStanding::Unlicensed,
         LicenceState::Unreadable => LicenceStanding::Unreadable,

@@ -371,11 +371,22 @@ pub struct RigAt {
 
 /// **The actor's rigs** (the brief's 3.3): the actor's live lease records
 /// (`TacsimStore::tv_leases_of`, `live()`) whose hull is the actor's helm hull
-/// (`crate::port::coop::helm_of`), by slot.
+/// (`crate::port::coop::helm_of`), by slot. **Doc 20 cut SM.12b**: a yard's dispatcher's rigs are
+/// its yard's, as house views (`crate::port::yard::house_rigs`), slot order — it operates them
+/// with no helm.
 #[must_use]
 pub(crate) fn operator_rigs(w: &World, actor: ObjId) -> Vec<RigAt> {
     let Some(helm) = crate::port::coop::helm_of(w, actor) else {
-        return Vec::new();
+        return crate::port::yard::house_rigs(w, actor)
+            .into_iter()
+            .map(|record| RigAt {
+                tv: record.tv,
+                slot: record.slot,
+                mark: record.mark.clone(),
+                hull: record.hull,
+                record,
+            })
+            .collect();
     };
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
@@ -2492,16 +2503,24 @@ pub(crate) fn battery_of<'t>(
 }
 
 /// **Every rig of every lessor's pool** (the caps' census, lead ruling 8): each port map's
-/// rig rows, bounded by `MAX_VEHICLE_POOL` a lessor.
+/// rig rows, bounded by `MAX_VEHICLE_POOL` a lessor. **Doc 20 cut SM.12b**: then every site map's
+/// yard rigs (bounded by `MAX_BAY_ITEMS` a yard), so the caps and the site map's other rigs count
+/// them.
 #[must_use]
 pub(crate) fn world_rigs(w: &World) -> Vec<ObjId> {
     w.module_state::<TacsimStore>()
         .map(|store| {
-            store
+            let mut rigs: Vec<ObjId> = store
                 .port_maps()
                 .filter_map(|map| map.vehicles.as_ref())
                 .flat_map(|row| row.rigs.iter().map(|rig| ObjId(rig.tv)))
-                .collect()
+                .collect();
+            rigs.extend(store.port_maps().flat_map(|map| {
+                crate::port::vehicle::rig_rows(map, crate::port::vehicle::RigRows::Yard)
+                    .iter()
+                    .map(|rig| ObjId(rig.tv))
+            }));
+            rigs
         })
         .unwrap_or_default()
 }
@@ -2625,8 +2644,9 @@ fn rig_battery(w: &World, handles: &PortHandles, rig: &RigAt) -> Option<BatteryD
 }
 
 /// **A cold site or home asked for** (doc 20 cut SM.4a; since SM.4b the home field too): the
-/// surface tick warms them, never this path (RAM only, the `RigPointer` precedent).
-fn want_cold(ctx: &mut Ctx<'_>, rig: &RigAt, refusal: &Refusal) {
+/// surface tick warms them, never this path (RAM only, the `RigPointer` precedent). Doc 20 cut
+/// SM.12b: the dispatcher's filing asks through it too.
+pub(crate) fn want_cold(ctx: &mut Ctx<'_>, rig: &RigAt, refusal: &Refusal) {
     if let Refusal::GroundCold { entry, .. } = refusal {
         crate::surface::want_site_ground(ctx.w, entry);
         if let Some((site, ramp)) = crate::surface::hull_home(ctx.w, rig.hull) {
@@ -3647,7 +3667,8 @@ pub fn plan_order_for_tests(w: &World, tv: ObjId) -> Option<u32> {
 
 /// **Test hook** (doc 20 cut SM.11; the brief's P5 and P8): how many times the start's offer
 /// compiled a filing, the interpreter ran and it planned a drive leg, this boot — so a test can
-/// prove a stale filing compiles nothing and a capped plan plans no leg. Reads only.
+/// prove a stale filing compiles nothing and a capped plan plans no leg. The players' plans only:
+/// a yard rig's are never counted (doc 20 cut SM.12b). Reads only.
 #[doc(hidden)]
 #[must_use]
 pub fn plan_counts_for_tests(w: &World) -> (u64, u64, u64) {
@@ -4187,7 +4208,9 @@ pub(crate) fn mine_tenure(
             }
         }
     }
-    let operator = mush_org::PrincipalId::Object(actor);
+    // Doc 20 cut SM.12b (D3): the operator principal — `Organization(house)` for a yard's
+    // dispatcher, whose seeded claims and licence are the house's; `Object(actor)` for a player.
+    let operator = crate::port::yard::operator_principal(w, actor);
     tenure_verdict(authored, &claims, now, &|claim| {
         bodies.get(&claim.id()).is_some_and(|body| {
             mush_industry::extraction_authorized(
@@ -4323,7 +4346,7 @@ pub(crate) fn site_def_of(w: &World, entry: &CanonicalId) -> Option<crate::port:
     ports
         .into_iter()
         .find(|(id, _)| id == entry)
-        .and_then(|(_, def)| def.site.clone())
+        .and_then(|(_, def)| def.site.as_deref().cloned())
 }
 
 /// **One measure-wise room less `units` of a good** (saturating), for the preview's hold room
@@ -5339,9 +5362,9 @@ pub(crate) fn plan_cmd(
         .module_state::<PortHandles>()
         .cloned()
         .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
-    let Some(action) = handles.surface_act.clone() else {
+    if handles.surface_act.is_none() {
         return Err(CmdError::msg(tv::TV_UNWIRED));
-    };
+    }
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     let tools = handles.surface_tools.clone().ok_or_else(dark)?;
@@ -5427,7 +5450,48 @@ pub(crate) fn plan_cmd(
         }
         return Ok(());
     }
-    // `go`: the order, then ONE submission as the actor.
+    // `go`: the order, then ONE submission as the actor (`file_compiled`, doc 20 cut SM.12b).
+    let (no, when) = file_compiled(ctx, rig, list, family, compiled, &facts)?;
+    crate::port::coop::say(
+        ctx,
+        tv::PLAN_FILED
+            .replace("{n}", &n)
+            .replace("{no}", &no.to_string())
+            .replace("{when}", &when),
+    );
+    Ok(())
+}
+
+/// **File a compiled plan** (doc 20 cut SM.12b, factored out of [`plan_cmd`]'s `go` half so the
+/// yard's dispatcher files through the very path `+tv/plan … go` uses; 12b-T6): the action from
+/// `PortHandles.surface_act` (`TV_UNWIRED`), the plan number `facts.record.plans + 1` (overflow →
+/// `TV_DARK`), its filing key (`TV_DARK`), the `when` of its bound, the RAM `ActOrder::Plan`
+/// (which `fill_fixed`'s re-compile equality then requires), and ONE `submit_authoritative` of
+/// `{ tv, act: "plan_file", ordinal }` as `ctx.actor`. It says nothing: the caller prints
+/// `PLAN_FILED` from its answer (`(no, when)`).
+///
+/// # Errors
+///
+/// `TV_UNWIRED` or `TV_DARK`, as a [`CmdError`].
+pub(crate) fn file_compiled(
+    ctx: &mut Ctx<'_>,
+    rig: &RigAt,
+    list: &str,
+    family: Option<OreFamily>,
+    compiled: crate::surface::plan::Compiled,
+    facts: &PlanFacts,
+) -> Result<(u32, String), CmdError> {
+    let actor = ctx.actor;
+    let Some(action) = ctx
+        .w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.surface_act.clone())
+    else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let now_ic = ctx.w.world_ic_now().at;
     let ordinal = facts.record.ordinal;
     let Some(no) = facts.record.plans.checked_add(1) else {
         return Err(dark());
@@ -5463,14 +5527,7 @@ pub(crate) fn plan_cmd(
         }),
         key,
     );
-    crate::port::coop::say(
-        ctx,
-        tv::PLAN_FILED
-            .replace("{n}", &n)
-            .replace("{no}", &no.to_string())
-            .replace("{when}", &when),
-    );
-    Ok(())
+    Ok((no, when))
 }
 
 /// The words a plan's lines name (`{n}`, `{name}`, `{site}`, `{ramp}`, `{body}`).
@@ -8442,7 +8499,7 @@ impl SurfaceActProvider {
         }) else {
             return FixedPlan::refused(Refusal::Unplanned.word());
         };
-        crate::surface::plan::count(w, |c| &c.compiles);
+        crate::surface::plan::count(w, rig.tv, |c| &c.compiles);
         let reads = crate::port::site_map::EngineReads(engine);
         match plan_ask(
             w,
@@ -8995,9 +9052,12 @@ impl ActionProvider for SurfaceDoneProvider {
         let Some(store) = w.module_state::<TacsimStore>() else {
             return Ok(None);
         };
-        let mut records: Vec<&TvLease> = store
+        // Doc 20 cut SM.12b: a yard's dispatcher finishes its house rigs' acts (house views).
+        let mut records: Vec<TvLease> = store
             .tv_leases_of(actor)
             .filter(|record| record.live())
+            .cloned()
+            .chain(crate::port::yard::house_rigs(w, actor))
             .collect();
         records.sort_by_key(|record| record.tv);
         records.dedup_by_key(|record| record.tv);
@@ -10363,6 +10423,7 @@ mod tests {
             .into_iter()
             .collect(),
             papers: std::collections::BTreeMap::new(),
+            yard: None,
         };
         assert_eq!(authored_of(&site, 'A'), Authored::Commons);
         assert_eq!(authored_of(&site, 'F'), Authored::Held);

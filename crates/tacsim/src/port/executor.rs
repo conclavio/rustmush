@@ -3153,9 +3153,8 @@ fn rigs_out(ctx: &Ctx<'_>, hull: ObjId, slot: Option<u8>) -> Vec<u8> {
             Some(Ok(found)) => Ok(found.cloned()),
             Some(Err(_)) | None => Err(()),
         };
-        let lessee = store
-            .and_then(|store| store.tv_lease_on(tv))
-            .map(|lease| lease.pilot);
+        // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`), feeding `rig_parked`.
+        let lessee = crate::port::yard::rig_lease(w, tv).map(|lease| lease.pilot);
         let projected = match store.and_then(|store| store.tv_rec(tv)) {
             Some(crate::surface::excursion::TvRecState::Present(rec)) => Some(rec.state),
             Some(crate::surface::excursion::TvRecState::Unreadable) | None => None,

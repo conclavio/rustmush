@@ -1,0 +1,19 @@
+{
+  "actor": 722,
+  "hull": 393,
+  "rate": 24,
+  "disconnected_at": "2026-10-25T02:42:43.919Z",
+  "departure_utc": "2026-10-25T02:43:13+00:00",
+  "flight_ic_seconds": 1598326,
+  "arrival_utc": "2026-10-25T21:13:10+00:00",
+  "watch_lines": [
+    {
+      "at": 1792896168,
+      "text": "Order 1 waits: Quote #0's goods have not come aboard yet; the Salt Moth waits for them."
+    },
+    {
+      "at": 1792896203,
+      "text": "Clearance granted. 52 t reaction mass and 19 crew-days committed; the Salt Moth is under way for Stickney Yards, arrival in 18.4 IC days."
+    }
+  ]
+}

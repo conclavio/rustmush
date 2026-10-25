@@ -504,11 +504,12 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
     (events, queued)
 }
 
-/// The surface finishes a fire queued.
-fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+/// The surface finishes a fire queued — the players' (the house's dropped: doc 20 cut SM.12b).
+fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_DONE_ACTION)
+        .filter(|submit| !support::drones::is_house(tw, submit))
         .collect()
 }
 
@@ -1033,7 +1034,11 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
         .expect("an act in flight");
     let (events, queued) = advance_to(rig, due);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish: {queued:?}"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -1047,7 +1052,11 @@ fn cycle(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     let run = run_of(&mut rig.tw, tv).expect("a run in flight");
     let (events, queued) = advance_to(rig, run.due_ic);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish at the cycle's due");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish at the cycle's due"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -4187,7 +4196,7 @@ fn sm11_a_full_unload_log_waits_and_the_plan_goes_on_by_itself() {
     assert!(loaded > 0, "the hopper holds the trip's ore");
     // The finish: refused, the queue re-filed after it, the plan live.
     let (_, queued) = advance_to(&mut rig, unload.due_ic);
-    assert_eq!(finishes(&queued).len(), 1);
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1);
     land_all(&mut rig, &queued);
     let record = record_of(&mut rig.tw, tv).expect("the record");
     assert_eq!(

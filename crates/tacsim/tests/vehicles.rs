@@ -3460,7 +3460,11 @@ fn assert_apply_refused(rig: &mut Rig, case: &str, words: &[&str]) {
 #[allow(clippy::too_many_lines)]
 fn sm3a_the_rig_pools_preflight_refuses_each_recorded_breach() {
     let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
+    // Doc 20 cut SM.12b: Occator's yard names this pool, and the lane refuses a yard whose pool
+    // is gone at load ("pool occator.rig_lease is not the pack's rig pool of occator"), so the
+    // case drops the yard with the block to reach the applier's preflight it pins.
     let mut rig = with_next(|doc| {
+        support::drones::strip_yard(doc);
         if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
             def.remove("vehicles");
         }
@@ -3670,4 +3674,236 @@ fn sm3a_the_vehicles_line_names_what_is_missing() {
         LineState::Ready,
         "mining content never closes the desk"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.12b: Occator's yard over the rig pool's machinery
+// ---------------------------------------------------------------------------
+
+/// `occator_port`'s yard block in a lane document.
+fn yard_block(doc: &mut Value) -> &mut Value {
+    &mut doc["entries"]["occator_port"]["def"]["site"]["yard"]
+}
+
+/// Occator Rim's recorded yard row.
+fn yard_row(tw: &TestWorld) -> tacsim::port::YardRow {
+    port_map(tw, "occator_port")
+        .site
+        .and_then(|site| site.yard)
+        .expect("Occator Rim's yard is laid up")
+}
+
+/// The apply of the next lane is refused with `sentence`, and nothing of the yard moved.
+fn assert_yard_apply_refused(rig: &mut Rig, case: &str, sentence: &str) {
+    let before = port_map(&rig.tw, "occator_port");
+    let objects = rig.tw.world().iter().count();
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(sentence),
+        "{case}: {sentence}\n{plan}\n{apply}"
+    );
+    assert!(!apply.contains("Applied "), "{case}:\n{apply}");
+    assert_eq!(
+        port_map(&rig.tw, "occator_port"),
+        before,
+        "{case}: the yard's map did not move"
+    );
+    assert_eq!(
+        rig.tw.world().iter().count(),
+        objects,
+        "{case}: nothing was made"
+    );
+}
+
+/// **The yard's preflight refuses each recorded breach** (doc 20 cut SM.12b; B4 item 14; the
+/// fixer round's tests/F12; `sm3a_the_rig_pools_preflight_refuses_each_recorded_breach`'s shape):
+/// an update of `occator_port` that would retire the recorded yard, ask its bay for more rigs than
+/// the unit carries, or re-mark its hull or its rigs; and an otherwise harmless update (the
+/// re-arm interval) over a recorded yard rig, hull or dispatcher staff destroyed, or over a yard
+/// row that (a store fault: the port map edited before a reboot) names a hold vault the house
+/// does not own — each refused before any write with its own sentence, the yard where it was.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm12b_the_yards_preflight_refuses_each_recorded_breach() {
+    let key = tacsim::port::port_map_key(&lane_id(), &cid("occator_port"));
+    let mut rig = with_next(support::drones::strip_yard);
+    assert_yard_apply_refused(
+        &mut rig,
+        "the yard dropped",
+        &format!(
+            "occator_port: the port map {key} records a yard but the site has none; a yard is \
+             never retired by a port update"
+        ),
+    );
+    let mut rig = with_next(|doc| yard_block(doc)["rigs"] = serde_json::json!(3));
+    assert_yard_apply_refused(
+        &mut rig,
+        "a bay too small",
+        "occator_port: yard Occator Yard: unit tacsim.unit.dray_p cannot carry 3 rigs and an ore \
+         hold",
+    );
+    let mut rig = with_next(|doc| {
+        yard_block(doc)["registry_prefix"] = serde_json::json!("OWP-YX-");
+    });
+    assert_yard_apply_refused(
+        &mut rig,
+        "the hull re-marked",
+        "occator_port: yard Occator Yard: the recorded mark OWP-YD-01 is not OWP-YX-01; a mark is \
+         never re-issued",
+    );
+    let mut rig = with_next(|doc| yard_block(doc)["rig_prefix"] = serde_json::json!("OWP-YR-"));
+    assert_yard_apply_refused(
+        &mut rig,
+        "the rigs re-marked",
+        "occator_port: yard Occator Yard: the recorded mark OWP-YT-01 is not OWP-YR-01; a mark is \
+         never re-issued",
+    );
+    // The re-arm interval moved, so the update reaches the preflight over what staff destroyed.
+    let rearm = |doc: &mut Value| yard_block(doc)["rearm_ic_secs"] = serde_json::json!(7_200);
+    let mut rig = with_next(rearm);
+    let hull = ObjId(yard_row(&rig.tw).hulls[0].hull);
+    destroy(&mut rig, hull);
+    assert_yard_apply_refused(
+        &mut rig,
+        "the hull destroyed",
+        &format!(
+            "occator_port: yard Occator Yard: the recorded hull #{} is gone; it is never \
+             re-created",
+            hull.0
+        ),
+    );
+    let mut rig = with_next(rearm);
+    let tv = ObjId(yard_row(&rig.tw).rigs[1].tv);
+    destroy(&mut rig, tv);
+    assert_yard_apply_refused(
+        &mut rig,
+        "a rig destroyed",
+        &format!(
+            "occator_port: yard Occator Yard: the recorded rig #{} is gone; it is never re-created",
+            tv.0
+        ),
+    );
+    let mut rig = with_next(rearm);
+    let dispatcher = ObjId(yard_row(&rig.tw).dispatcher.expect("a dispatcher"));
+    destroy(&mut rig, dispatcher);
+    assert_yard_apply_refused(
+        &mut rig,
+        "the dispatcher destroyed",
+        &format!(
+            "occator_port: yard Occator Yard: the recorded dispatcher #{} is gone; it is never \
+             re-created",
+            dispatcher.0
+        ),
+    );
+    // A store fault: the yard row names a live vault the house does not own (a pool rig's
+    // hopper, `tacsim.vehicles`').
+    let rig = with_next(rearm);
+    let hopper = rig_named(&rig.tw, "OWP-TV-01")
+        .vault
+        .expect("a hopper vault");
+    let occator_key = tacsim::port::port_map_key(&lane_id(), &cid("occator_port"));
+    let mut rig = reboot_editing(rig, &occator_key, |doc| {
+        doc["site"]["yard"]["hold"] = serde_json::json!(hopper);
+    });
+    assert_yard_apply_refused(
+        &mut rig,
+        "a hold vault the house does not own",
+        &format!(
+            "occator_port: yard Occator Yard: the recorded hold vault #{hopper} is gone; it is \
+             never re-created"
+        ),
+    );
+}
+
+/// **A port update lays the yard over itself** (doc 20 cut SM.12b; B4 item 15, "a re-apply creates
+/// nothing"; the fixer round's correctness/F4): with a yard rig out on Occator Rim's ground, an
+/// update of `occator_port` (the yard's re-arm interval tuned, O-14's provisional default) reads
+/// one update in the plan and applies: no object, vault or map row is made, the yard's row is
+/// byte-identical, the rig keeps its ground placement and the hull its pad pose, and nothing is
+/// submitted.
+#[test]
+fn sm12b_a_port_update_lays_the_yard_over_itself() {
+    let mut rig = with_next(|doc| yard_block(doc)["rearm_ic_secs"] = serde_json::json!(7_200));
+    let map = port_map(&rig.tw, "occator_port");
+    let row = yard_row(&rig.tw);
+    let (hull, tv) = (ObjId(row.hulls[0].hull), ObjId(row.rigs[0].tv));
+    let domain = mush_sim::DomainId(map.domain.expect("Occator Rim's domain"));
+    let staff = support::place_keeping(&mut rig.tw, domain, tv, (130, 124));
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
+    let placed = mush_sim::pose_of(rig.tw.world(), tv).expect("the rig is on the ground");
+    assert_eq!(placed.0, domain);
+    let hull_pose = mush_sim::pose_of(rig.tw.world(), hull).expect("the yard hull is placed");
+    let objects = rig.tw.world().iter().count();
+    let vaults = economy(&rig.tw).snapshot().vaults().count();
+    let _ = drain(&mut rig.tw);
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        plan.contains(&format!(
+            "Plan for {LANE_PACK}@{}: 0 create, 1 update, 0 retire, ",
+            LANE_VERSION + 1
+        )),
+        "{plan}"
+    );
+    assert!(
+        plan.lines().any(|line| {
+            line.split_whitespace().collect::<Vec<_>>() == ["update", "occator_port", "(port)"]
+        }),
+        "{plan}"
+    );
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
+        "{plan}\n{apply}"
+    );
+    assert_eq!(
+        rig.tw.engine().queued_authoritative_actors().count(),
+        0,
+        "the apply submits nothing"
+    );
+    assert_eq!(rig.tw.world().iter().count(), objects, "no object made");
+    assert_eq!(
+        economy(&rig.tw).snapshot().vaults().count(),
+        vaults,
+        "no vault made"
+    );
+    assert_eq!(yard_row(&rig.tw), row, "the yard's row is untouched");
+    assert_eq!(
+        mush_sim::pose_of(rig.tw.world(), tv),
+        Some(placed),
+        "the rig out on the ground stays where it is"
+    );
+    assert_eq!(
+        mush_sim::pose_of(rig.tw.world(), hull),
+        Some(hull_pose),
+        "the hull stays at the pad's pose"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// **A yard rig reads a stored lease first** (doc 20 cut SM.12b; B3 items 9 and 11, the one lessee
+/// reader; the fixer round's tests/F12): `yard::rig_lease` answers a yard rig's house view while
+/// the store holds no lease on it, and the store's live record once one names it (a store fault
+/// here: a player's lease record edited to name a yard rig before a reboot) — the stored record
+/// first, never the house view over it.
+#[test]
+fn sm12b_a_yard_rig_reads_a_stored_lease_first() {
+    let mut rig = stocked();
+    let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    let _ = lease_one(&mut rig, pilot);
+    let record = store(&rig.tw)
+        .tv_leases_of(pilot)
+        .find(|record| record.live())
+        .cloned()
+        .expect("the pilot's lease");
+    let tv = ObjId(yard_row(&rig.tw).rigs[0].tv);
+    let view = tacsim::port::yard::rig_lease(rig.tw.world(), tv).expect("the house view");
+    assert!(view.is_house(), "no stored lease: the house view");
+    let rig = reboot_editing_lease(rig, record.lease, |doc| {
+        doc["tv"] = serde_json::json!(tv.0);
+    });
+    let stored = tacsim::port::yard::rig_lease(rig.tw.world(), tv).expect("the stored lease");
+    assert_eq!(stored.lease, record.lease, "the stored record first");
+    assert_eq!(stored.pilot, pilot);
+    assert!(!stored.is_house());
+    no_refused_writes(&rig.tw);
 }

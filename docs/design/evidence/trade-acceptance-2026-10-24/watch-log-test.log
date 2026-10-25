@@ -1,0 +1,10 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.10s
+     Running tests/ic_slice_loop.rs (target/debug/deps/ic_slice_loop-f331c6e97f0d3405)
+
+running 1 test
+test trade_linkdead_watch_log_drains_once_on_revival ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 51.58s
+

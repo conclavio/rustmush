@@ -203,3 +203,16 @@ your account, what is held against deals you have accepted, and what you can
 spend now.
 
 See also: `help ships`, `help coop`, `help trade`, `help orders`.
+
+## Berth and departure boards
+
+`look` in a station's berth gallery shows the hulls currently alongside, their
+registry marks, registered title and agent, and public clearance status. A private
+registry stays unnamed. The berth field names the gallery; registry marks tell
+hulls apart.
+
+At the dockmaster or harbourmaster, `look` also shows filed departures and the
+origin port's underway sailings. FILED is a scheduled departure awaiting clearance;
+CLEARED has a frozen passage and arrival estimate; OVERDUE is a runnable departure
+whose hour has passed. IDLE means no current public clearance. A captain's cargo
+orders, prices, passengers and private holds never appear on these boards.

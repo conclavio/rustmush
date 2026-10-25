@@ -344,6 +344,7 @@ mod tests {
                 })
                 .collect(),
             papers: std::collections::BTreeMap::new(),
+            yard: None,
         }
     }
 

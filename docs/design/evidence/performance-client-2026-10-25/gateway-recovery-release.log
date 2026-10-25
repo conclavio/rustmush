@@ -1,0 +1,6 @@
+   Compiling mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+   Compiling mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+   Compiling mush-net-discord v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-discord)
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+    Finished `release` profile [optimized] target(s) in 1m 45s

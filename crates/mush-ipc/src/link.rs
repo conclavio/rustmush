@@ -142,4 +142,19 @@ pub trait GatewayLink: Send + Sync {
     fn is_restarting(&self) -> bool {
         false
     }
+
+    /// Generation of the supervised boundary. Capture before forwarding a line
+    /// so a failed reply can recognize even a restart that already completed.
+    /// In-process links have no supervisor and retain the default generation.
+    fn recovery_generation(&self) -> u64 {
+        0
+    }
+
+    /// Bounded opportunity for a failed reply's server to enter recovery. A
+    /// fault response can precede boundary EOF; returning true preserves the
+    /// transport but never promotes the failed reply to successful completion.
+    /// Links without supervised recovery immediately return false.
+    fn wait_for_recovery(&self, _generation: u64) -> BoxFuture<'_, bool> {
+        Box::pin(async { self.is_restarting() })
+    }
 }

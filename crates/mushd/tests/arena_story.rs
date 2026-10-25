@@ -452,11 +452,12 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
         let mark = term.mark();
         term.send_line(line).await;
         term.send_line(SENTINEL).await;
-        // The sentinel is a parser refusal and needs no authority, but it rides the
-        // same lane: a world mid-commit answers BOTH lines with the transient and
-        // the `Huh?` never comes. That is a retry, not a failure.
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
+        // Always consume this attempt's sentinel before retrying. A delayed
+        // refusal must not terminate the next command's reply early.
+        term.expect_after(mark, HUH).await;
+        let reply = strip_ansi(&term.seen[mark..]);
+        if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
+            return reply;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -1142,13 +1143,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(!seen.contains("Locked on"), "{seen}");
 
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
-    // The lock's own notice (`Locked on BA, 69% to hit.`) can land inside a
-    // `WEAPONSTATUS` answer that still renders the frame before the lock, so
-    // `Locked on` alone can be the notice. A weapon row carries its range band
-    // only in a frame that holds the lock ("no lock, no band"), and the notice
-    // never does.
-    let locked = poll_whole(&mut ada, "WEAPONSTATUS", "round(s)  band ").await;
-    assert!(locked.contains("Locked on"), "{locked}");
+    // The asynchronous lock notice (`Locked on BA, 69% to hit.`) can arrive
+    // beside an older weapon reply that still renders the frame before the
+    // lock. Wait for the command's weapon telemetry, not that out-of-band
+    // notice: a weapon row carries its range band only in a frame that holds
+    // the lock ("no lock, no band"), and the notice never does.
+    let locked = poll_whole(&mut ada, "WEAPONSTATUS", "band 1 of 2").await;
     assert!(locked.contains(&named), "the lock is the contact: {locked}");
     assert!(
         locked.contains("% to hit"),

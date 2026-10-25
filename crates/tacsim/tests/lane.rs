@@ -63,7 +63,8 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 20 cut SM.10: v12, the claim fees beside the licence's, the Pallas Syndicate and Occator
 /// Rim's paper (was `c7239b0a…` at v11).
 /// Doc 20 cut SM.12a: v14, the Exchange's and Occator's mills (was `34d47907…` at v13, relay R9b).
-const LANE_DIGEST: &str = "c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8";
+/// Doc 20 cut SM.12b: v15, Occator's yard (was `c507f74c…` at v14).
+const LANE_DIGEST: &str = "eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -236,9 +237,9 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        14,
-        "lane v14 since doc 20 cut SM.12a (v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 at SM.5, v10 at \
-         SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
+        15,
+        "lane v15 since doc 20 cut SM.12b (v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+         at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");

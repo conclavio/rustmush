@@ -1,0 +1,132 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 16s
+     Running tests/orders.rs (target/debug/deps/orders-63bda65c9bf1bfcf)
+
+running 34 tests
+test ic11_a_depart_short_of_fuel_holds_and_burns_nothing ... ok
+test ic11_a_depart_with_no_route_holds_until_edited ... ok
+test fill_and_clamp_plan_at_the_depart_instant ... ok
+test ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick ... ok
+test ic11_a_false_second_miss_heals_itself ... ok
+test ic11_a_house_that_cannot_pay_is_skipped ... ok
+test ic11_a_listed_passenger_ashore_is_left_behind ... ok
+test ic11_a_lapsed_charter_holds_and_stages_nothing ... ok
+test ic11_a_long_downtime_raises_no_false_second_miss ... ok
+test ic11_a_new_tenant_files_a_fresh_plan ... ok
+test ic11_a_pilot_ashore_holds_the_departure ... ok
+test ic11_a_rate_change_relabels_nothing ... ok
+test ic11_a_sold_out_buy_goes_partial ... ok
+test ic11_a_staff_stand_down_holds_the_order_and_files_nothing ... ok
+test ic11_a_stop_pauses_and_resume_runs_on ... ok
+test ic11_an_unfunded_bid_skips ... ok
+test ic11_an_unreadable_orders_document_fails_closed ... ok
+test ic11_a_reboot_mid_step_reruns_nothing ... ok
+test ic11_held_steps_wait_for_resume ... ok
+test ic11_the_cargo_clamp_reserves_the_next_departures_fuel_and_stores ... ok
+test ic11_the_plan_dry_runs_the_queue ... ok
+test ic11_the_clamp_logs_every_bound_that_bit ... ok
+test ic11_the_queue_runs_the_day_unattended ... ok
+test ic11_the_status_line_names_the_departure_hour ... ok
+test ic11_two_pilots_with_the_same_due_time_both_complete ... ok
+test ic11_the_verbs_edit_the_plan ... ok
+test ic14_a_full_queue_defers_the_sell_step_and_counts_nothing ... ok
+test ic12_resume_clears_the_refusal_count ... ok
+test ic14_a_short_buy_with_a_later_fill_does_not_hold ... ok
+test ic14_a_queued_depart_never_resolves_by_prefix ... ok
+test ic14_a_short_buy_with_later_units_that_cover_does_not_hold ... ok
+test ic14_pause_then_resume_over_an_inflight_hold_rearms_the_restage ... ok
+test pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne ... ok
+test sm11_await_tv_files_renders_and_runs ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 169.48s
+
+     Running tests/plans.rs (target/debug/deps/plans-eefc52101cec613d)
+
+running 26 tests
+test sm11_a_clear_retyped_across_a_queued_unload_is_one_intent ... ok
+test sm11_a_fifth_excursion_for_one_operator_refuses ... ok
+test sm11_a_full_unload_log_waits_and_the_plan_goes_on_by_itself ... ok
+test sm11_a_lapsed_licence_parks_the_plan_with_its_reason has been running for over 60 seconds
+test sm11_a_live_plan_holds_the_rig_and_clear_releases_it ... ok
+test sm11_a_lapsed_licence_parks_the_plan_with_its_reason ... ok
+test sm11_a_plan_never_rearms ... ok
+test sm11_a_plan_works_its_list_to_the_end ... ok
+test sm11_a_plan_previews_and_go_files_exactly_it ... ok
+test sm11_a_previous_lessees_plan_is_never_shown ... ok
+test sm11_a_ring_filled_under_a_submitted_start_is_refused_at_the_offer ... ok
+test sm11_a_ring_full_before_the_queued_start_is_queued_once_offline ... ok
+test sm11_a_ring_full_before_the_queued_start_is_said_once_online ... ok
+test sm11_a_stranded_rig_is_parked_where_it_stands_and_told_once ... ok
+test sm11_an_idle_return_refused_eight_times_pages_once ... ok
+test sm11_an_idle_rig_comes_home_after_a_day ... ok
+test sm11_await_tv_reads_a_stale_plan_and_a_stranded_rig has been running for over 60 seconds
+test sm11_await_tv_reads_a_stale_plan_and_a_stranded_rig ... ok
+test sm11_await_tv_waits_for_the_rigs has been running for over 60 seconds
+test sm11_await_tv_waits_for_the_rigs ... ok
+test sm11_plan_made_readings_carry_via_plan_and_never_stake ... ok
+test sm11_the_author_clears_their_plan_off_the_helm ... ok
+test sm11_the_bound_ends_a_plan_off_the_helm_and_off_the_hull ... ok
+test sm11_the_bound_ends_a_plan_waiting_ashore ... ok
+test sm11_the_bound_ends_a_plan_waiting_off_the_helm ... ok
+test sm11_the_compiler_names_only_your_own_knowledge_and_rights ... ok
+test sm11_the_notice_budget_queues_a_trip_not_a_cycle has been running for over 60 seconds
+test sm11_the_notice_budget_queues_a_trip_not_a_cycle ... ok
+test sm11_two_rigs_plans_fill_one_hold_and_neither_strands_ore ... ok
+test sm11_the_offline_story_fills_the_hold_parks_and_the_queue_sells has been running for over 60 seconds
+test sm11_the_offline_story_fills_the_hold_parks_and_the_queue_sells ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 640.77s
+
+     Running tests/port_tick.rs (target/debug/deps/port_tick-813b09800a4718e3)
+
+running 16 tests
+test ic5_a_connected_principal_is_told_live ... ok
+test ic5_a_corrupt_notice_document_is_dropped_for_that_character ... ok
+test ic5_a_disabled_layer_fires_nothing ... ok
+test ic5_a_probe_submitted_from_the_tick_lands ... ok
+test ic5_a_receipt_style_replay_is_refused ... ok
+test ic5_a_thing_principal_lands ... ok
+test ic5_a_shared_principal_under_a_biting_budget_starves_no_one ... ok
+test ic5_an_unwired_layer_refuses_the_read_and_submits_nothing ... ok
+test ic5_budgets_bound_a_fire ... ok
+test ic5_god_never_submits ... ok
+test ic5_one_actor_acts_once_per_fire_and_agents_sharing_it_alternate ... ok
+test ic5_queued_notices_render_once_on_reconnect ... ok
+test ic5_the_tick_reads_an_inventory_pool_through_action_state ... ok
+test ic5_two_agents_in_one_fire_do_not_void_each_other ... ok
+test ic8_a_principal_with_a_queued_submission_is_deferred ... ok
+test ic5_production_registers_no_probe ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.30s
+
+     Running tests/voyage.rs (target/debug/deps/voyage-c5279724f981ebe4)
+
+running 25 tests
+test a8_the_plan_names_the_throttle_that_fits ... ok
+test a_restart_between_burn_and_launch_yields_exactly_one_journey ... ok
+test ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent ... ok
+test ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lapsed_listing ... ok
+test ic14_a_grant_told_live_is_not_retold_after_a_reboot ... ok
+test ic14_a_held_launch_warns_once_across_backoffs ... ok
+test ic14_a_lapse_waits_while_a_commit_is_pending ... ok
+test ic14_a_reboot_between_launch_and_verify_tells_the_grant_once ... ok
+test ic14_an_unreadable_sailing_plan_fails_closed_everywhere ... ok
+test ic14_t7_a_lapse_defers_while_the_burn_is_still_queued ... ok
+test ic14_t9_a_rate_change_mid_journey_keeps_the_frozen_leg_seconds ... ok
+test ic14_the_burn_gauge_reads_the_filed_plan ... ok
+test ic9_a_held_launch_pages_and_recovers ... ok
+test ic9_a_lapsed_clearance_burns_nothing ... ok
+test ic9_a_pilot_moved_ashore_holds_the_launch ... ok
+test ic9_an_absent_pilot_reads_the_passage_on_reconnect ... ok
+test ic9_f2_a_ticket_that_disagrees_with_the_filed_plan_holds_the_launch ... ok
+test ic9_an_unreadable_sailing_plan_fails_closed ... ok
+test ic9_staff_cannot_fly_a_programme_hull_unplanned ... ok
+test ic9_goods_not_yet_aboard_hold_the_hull ... ok
+test ic9_the_burn_offer_takes_no_forged_plan ... ok
+test ic9_undock_flies_the_lane_and_docks_at_stickney ... ok
+test journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky ... ok
+test ic9_undock_refusals_move_nothing ... ok
+test ticket_freezes_the_plan_across_a_sky_change ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 118.35s
+

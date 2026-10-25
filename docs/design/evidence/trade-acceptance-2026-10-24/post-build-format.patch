@@ -1,0 +1,18 @@
+--- crates\tacsim\src\port\mod.rs
++++ crates\tacsim\src\port\mod.rs
+@@ -130,7 +130,6 @@
+ 
+ pub mod apply;
+ pub mod board;
+-mod traffic;
+ pub mod burn;
+ pub mod buyout;
+ pub mod capacity;
+@@ -169,6 +168,7 @@
+ /// Doc 20 cut SM.4b: the `site.map` feed and `+tv/map` (doc 20 §10).
+ pub mod site_map;
+ pub mod stock;
++mod traffic;
+ pub mod tv;
+ pub mod vehicle;
+ pub mod vendor;

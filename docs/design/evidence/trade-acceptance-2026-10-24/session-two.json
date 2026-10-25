@@ -1,0 +1,43 @@
+{
+  "passed": true,
+  "second_visit_at": "2026-10-25T22:01:42.828Z",
+  "harness_resume_at": "2026-10-25T22:02:20.635Z",
+  "watch_lines_delivered_once": 11,
+  "no_watch_replay_on_reconnect": true,
+  "harness_correction": "status says docked, not docked at; recovery replayed no mutation",
+  "pilot_command_count": 29,
+  "yard_walk_and_boards_passed": true,
+  "return_order": {
+    "announced": true,
+    "attempt": 1,
+    "id": 9,
+    "reached": {
+      "utc": 1792965743,
+      "venue": "stickney"
+    },
+    "refusals": 0,
+    "retry_at": null,
+    "state": "pending",
+    "what": {
+      "depart": {
+        "crew": [],
+        "not_after_s": null,
+        "not_before": {
+          "utc": 1792969341
+        },
+        "on_fail": "hold",
+        "to": "ceres"
+      }
+    }
+  },
+  "orders_cursor": 9,
+  "old_watch_queue_drained": true,
+  "new_notice_after_logoff": [
+    {
+      "at": 1792965743,
+      "text": "Departure for Ceres Freeport set for 23:02 UTC."
+    }
+  ],
+  "credits_goods_tickets_unchanged_by_second_visit": true,
+  "statement": "Statement: the Salt Moth (FPC-D-0401), First Captain programme.\n  Terms: stake 25000.00cr; 250\u2030 of trading margin; buyout 90000.00cr.\n  Sales: 2; margin 9600.00cr; Co-op share paid 2400.00cr.\n  Cash: 340.00cr available; the buyout is 90000.00cr.\n  Charter: in force."
+}

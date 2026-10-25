@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "before_pid": "1515397",
+  "after_pid": "1515921",
+  "gateway_pid": "1509170",
+  "health": {
+    "connections": 1,
+    "integrity_ok": true,
+    "loop_lag_ms": 0,
+    "ok": true,
+    "store_ok": true,
+    "supervision_ok": true,
+    "uptime_s": 835,
+    "version": "0.1.0",
+    "world_loop_unixtime": 1792896327,
+    "world_max_age_s": 5,
+    "world_ok": true
+  },
+  "server_sha256": "f0987369700226d00ac5e841b367d0a8dd1cb7e15cb9dc020e9022716682a91c",
+  "journey_preserved": true,
+  "one_burn_ticket_preserved": true,
+  "credits_and_goods_unchanged": true,
+  "watch_log_preserved": true,
+  "rate24_timeline_unchanged": true,
+  "dev2_gateway_pid": "539467"
+}

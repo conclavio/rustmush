@@ -91,13 +91,6 @@ const REPLY_BARRIER: BarrierPolicy = BarrierPolicy {
     max_retry_delay: Duration::from_millis(250),
 };
 
-/// How long a failed command-reply barrier waits for the supervisor to raise a
-/// restart gap before the producer is treated as live but unresponsive. A world
-/// that died answers `Unavailable` from a server process that is itself about to
-/// exit, a little before the supervisor sees the exit and raises the gap.
-const REPLY_RESTART_GRACE_POLLS: u32 = 80;
-const REPLY_RESTART_POLL: Duration = Duration::from_millis(25);
-
 /// How one ordered delivery barrier ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BarrierEnd {
@@ -342,18 +335,6 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         self.ordered_barrier(conn, operation, ServiceReq::Barrier, TEARDOWN_BARRIER)
             .await
             == BarrierEnd::Completed
-    }
-
-    /// Whether a restart gap is raised within [`REPLY_RESTART_GRACE_POLLS`]
-    /// polls: the reply's producer died and the supervisor is relaunching it.
-    async fn restart_follows(&self) -> bool {
-        for _ in 0..REPLY_RESTART_GRACE_POLLS {
-            if self.link.is_restarting() {
-                return true;
-            }
-            tokio::time::sleep(REPLY_RESTART_POLL).await;
-        }
-        self.link.is_restarting()
     }
 
     async fn ordered_barrier(
@@ -1091,6 +1072,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             return LineOutcome::Continue;
         };
         let _serial = handle.reply_lock().await;
+        let generation = self.link.recovery_generation();
         let nonempty = line.len() > MAX_LINE_CHARS.saturating_mul(4) || !line.trim().is_empty();
         if nonempty && let Some(prefix) = handle.output_brackets().prefix {
             send_event_to_conn(
@@ -1119,6 +1101,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             BarrierEnd::Completed
         };
         let completed = barrier == BarrierEnd::Completed;
+        // Observe recovery before closing the reply bracket. An unavailable
+        // world can answer before IPC EOF; a fast restart can finish before
+        // this task wakes. Neither case should discard the held transport. A
+        // boundary that went down under the barrier needs no wait: it left no
+        // producer to emit late output, and the session rides the restart (or,
+        // on a link with no supervisor, the loss) exactly as it would once a
+        // gap is raised.
+        let recovering = !completed
+            && (barrier == BarrierEnd::LinkLost || self.link.wait_for_recovery(generation).await);
         if !completed {
             send_event_to_conn(
                 &self.sessions,
@@ -1136,10 +1127,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 OutputEvent::Sys(RichText::tag(mush_core::OUTPUT_SUFFIX_TAG, suffix)),
             );
         }
-        // A boundary that went down under the barrier left no producer to emit
-        // late output; the supervisor's restart notice follows, and the session
-        // rides the restart exactly as it does once the gap is already raised.
-        if !completed && barrier != BarrierEnd::LinkLost && !self.restart_follows().await {
+        if !completed && !recovering {
             // A live but unresponsive producer could still emit late output. End
             // this physical connection rather than place it inside the next reply.
             send_event_to_conn(

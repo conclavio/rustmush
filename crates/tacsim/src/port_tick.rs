@@ -218,6 +218,11 @@ pub(crate) fn register_with_coverage(
         .get(crate::port::site::SITE_WORK_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the site work's outcome did not register"))?;
+    // Doc 20 cut SM.12b: the yard's survey and delivery.
+    let dispatch_outcome = outcome_refs
+        .get(crate::port::yard::DISPATCH_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the dispatch outcome did not register"))?;
     let relay_outcome = outcome_refs
         .get(crate::relay_foundry::OUTCOME)
         .cloned()
@@ -228,7 +233,7 @@ pub(crate) fn register_with_coverage(
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
         &chart_forget_outcome,
-        &site_work_outcome,
+        (&site_work_outcome, &dispatch_outcome),
         probe_outcome.as_ref(),
     )?;
     if let Some(ic) = ic {
@@ -437,6 +442,29 @@ pub(crate) fn register_with_coverage(
         }
         _ => None,
     };
+    // Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
+    // registered only when the inventory cell is filled (the delivery's transfer rides the
+    // delegated families; the stock provider's rule); the definitions register regardless.
+    let dispatch_action = match (
+        action_refs.get(crate::port::yard::DISPATCH_ACTION).cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::yard::DispatchProvider {
+                    action: action.clone(),
+                    outcome: dispatch_outcome,
+                    dispatch: port_families.dispatch.clone(),
+                    charts: port_families.charts.clone(),
+                    claims: port_families.claims.clone(),
+                    inventory,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -448,8 +476,14 @@ pub(crate) fn register_with_coverage(
         surface_tools,
         chart_forget,
         site_work,
+        dispatch: dispatch_action.clone(),
     });
-    reg.state(PortTickState::new(probe_action, stock_action, mill_action));
+    reg.state(PortTickState::new(
+        probe_action,
+        stock_action,
+        mill_action,
+        dispatch_action,
+    ));
     reg.tick(
         PORT_TICK,
         TickCadence::Coarse(PORT_TICK_PERIOD),
@@ -530,6 +564,13 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             crate::port::site::SITE_WORK_OUTCOME,
             json!({ "fields": ["actor", "deposit", "receipt"] }),
         )?,
+        // Doc 20 cut SM.12b (§12.3): a house survey (`t` 0) or a yard's delivery — never a
+        // reserve or a class.
+        descriptor(
+            "outcome",
+            crate::port::yard::DISPATCH_OUTCOME,
+            json!({ "fields": ["act", "actor", "receipt", "site", "t"] }),
+        )?,
     ];
     if test_world {
         descriptors.push(descriptor(
@@ -546,15 +587,17 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 /// SM.12a's `tacsim_port_mill` (its outcome paired with the stock's in
 /// `stock_outcomes`, so the list stays under clippy's argument bound), cut IC9's
 /// `tacsim_port_burn` and doc 20 cut SM.3b's `tacsim_surface_act` and
-/// `tacsim_surface_done` on every roster, and the probe's when its outcome is
-/// registered (a test world); one validator per kind for the crate.
+/// `tacsim_surface_done` on every roster, doc 20 cut SM.6's `tacsim_site_work` and doc 20 cut
+/// SM.12b's `tacsim_dispatch` (their outcomes paired in `site_outcomes`, the list kept at seven
+/// arguments), and the probe's when its outcome is registered (a test world); one validator per
+/// kind for the crate.
 fn action_descriptors(
     stock_outcomes: (&DefinitionRef, &DefinitionRef),
     relay_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
     chart_forget_outcome: &DefinitionRef,
-    site_work_outcome: &DefinitionRef,
+    site_outcomes: (&DefinitionRef, &DefinitionRef),
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
@@ -639,7 +682,19 @@ fn action_descriptors(
                 "family": crate::surface::cursor::POCKETS_FAMILY,
             }),
         )?
-        .with_references(vec![site_work_outcome.clone()]),
+        .with_references(vec![site_outcomes.0.clone()]),
+        // Doc 20 cut SM.12b (§12.3): the house survey writes the dispatcher's chart row, the
+        // delivery the yard's `tacsim.dispatch` ledger; the family named is the ledger's.
+        descriptor(
+            "action",
+            crate::port::yard::DISPATCH_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::port::yard::DISPATCH_FAMILY,
+            }),
+        )?
+        .with_references(vec![site_outcomes.1.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
@@ -805,6 +860,26 @@ pub struct PortTickState {
     /// the count (bounded by reboots); retained each fire to hulls whose governing
     /// enrolment still waits on a re-charter, so bounded by the pool of eight.
     pub(crate) relet_attempts: BTreeMap<ObjId, (u8, u64)>,
+    /// **Doc 20 cut SM.12b**: the registered `tacsim_dispatch` action, set at `register`; `Some`
+    /// exactly when its provider registered (the inventory cell filled).
+    pub(crate) dispatch_action: Option<DefinitionRef>,
+    /// **Doc 20 cut SM.12b** (SM.12a's mill rule): a yard's delivery submitted with its ledger not
+    /// yet advanced, by dispatcher -> `(the ordinal, the submissions)`. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) dispatch_attempts: BTreeMap<ObjId, (u64, u8)>,
+    /// **Doc 20 cut SM.12b**: a dispatcher whose delivery is passed over for the rest of the IC
+    /// day, with that day (a ledger that will not read, or an ordinal that never lands). Bounded
+    /// by `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.
+    pub(crate) dispatch_refused: BTreeMap<ObjId, i64>,
+    /// **Doc 20 cut SM.12b** (D21): a yard rig whose plan compile was refused, by rig -> the IC
+    /// instant its next compile may run (one re-arm interval on), so a standing refusal never
+    /// re-runs the compile every fire. Bounded by `crate::port::stock::MAX_CLERK_ROWS`; past
+    /// instants are pruned at each insert.
+    pub(crate) dispatch_file_after: BTreeMap<ObjId, i64>,
+    /// **Doc 20 cut SM.12b**: the dispatchers' warnings this boot, by `(dispatcher, kind, what)`;
+    /// each is logged once. Bounded by `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) dispatch_warned:
+        BTreeSet<(ObjId, crate::port::yard::DispatchWarn, smol_str::SmolStr)>,
 }
 
 impl PortTickState {
@@ -812,11 +887,13 @@ impl PortTickState {
         probe_action: Option<DefinitionRef>,
         stock_action: Option<DefinitionRef>,
         mill_action: Option<DefinitionRef>,
+        dispatch_action: Option<DefinitionRef>,
     ) -> PortTickState {
         PortTickState {
             probe_action,
             stock_action,
             mill_action,
+            dispatch_action,
             ..PortTickState::default()
         }
     }
@@ -1102,6 +1179,9 @@ enum Arm {
     /// move its next worked share ([`crate::port::site::site_step`]); agent and principal the
     /// clerk.
     Site,
+    /// Doc 20 cut SM.12b: a yard's dispatcher — deliver the yard hold's ore, or file one rig's
+    /// next plan ([`crate::port::yard::dispatch_step`]); agent and principal the dispatcher.
+    Dispatch,
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -1172,6 +1252,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         })
         .unwrap_or_default();
     let site_clerks = crate::port::site::site_clerks(ctx.w);
+    let dispatchers = crate::port::yard::dispatchers(ctx.w);
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
     // Doc 18 cut IC13 (lead ruling L12): the recall agents read tickets (`&Ctx`), and
@@ -1203,6 +1284,13 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // Doc 20 cut SM.6 (§3.4): every latched lane site's live clerk, agent and principal both.
     for clerk in site_clerks {
         offer(clerk, clerk, Arm::Site);
+    }
+    // Doc 20 cut SM.12b (§12.3): every yard's live dispatcher, agent and principal both. The house
+    // is its own principal, so its act never spends the Ceres stock clerk's (the emergency bids,
+    // the list step, the drip, the mills, the bids) nor the site clerk's; a fire's sixteen-agent
+    // budget gains one agent a yard.
+    for dispatcher in dispatchers {
+        offer(dispatcher, dispatcher, Arm::Dispatch);
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
@@ -1323,6 +1411,7 @@ fn step(
             crate::port::executor::order_step(ctx, state, fire, ObjId(hull), principal)
         }
         Arm::Site => crate::port::site::site_step(ctx, fire, agent),
+        Arm::Dispatch => crate::port::yard::dispatch_step(ctx, state, fire, agent),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,
@@ -2103,9 +2192,9 @@ fn clamp(mut text: String) -> String {
     text
 }
 
-/// Tell `who` now if connected (one `sys_to_actor(who, "tacsim", text)`), else queue it.
+/// Tell `who` over a live transport, else queue it (including linkdead grace).
 pub fn notify(ctx: &mut Ctx<'_>, who: ObjId, text: &str) {
-    if ctx.w.is_connected(who) {
+    if ctx.w.is_connected(who) && ctx.w.has_live_conns(who) {
         ctx.out.sys_to_actor(who, "tacsim", text);
     } else {
         queue_notice(ctx, who, text);
@@ -2129,7 +2218,7 @@ pub enum NoticeLevel {
 /// an unload, a plan's parking or end, an idle return, a stranded rig, a refused act — never a
 /// cycle, a reading, a drive, a launch or a recover. The ring's cap ([`MAX_NOTICE_LINES`]) stands.
 pub fn notify_budget(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
-    match delivery(ctx.w.is_connected(who), level) {
+    match delivery(ctx.w.is_connected(who) && ctx.w.has_live_conns(who), level) {
         Delivery::Say => ctx.out.sys_to_actor(who, "tacsim", text),
         Delivery::Queue => queue_notice(ctx, who, text),
         Delivery::Drop => {}
@@ -2219,6 +2308,12 @@ pub fn pending_notices(w: &World, who: ObjId) -> Vec<String> {
 pub struct ReconnectNotices;
 
 impl EventHook for ReconnectNotices {
+    // A linkdead session has no output recipient. Its trip notices are queued
+    // just like a fully disconnected pilot's and consumed on the first revival.
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        self.connected(ctx, actor);
+    }
+
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         let queue = {
             let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {

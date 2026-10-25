@@ -437,6 +437,19 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
+/// **The queue drained, the house's share landed** (doc 20 cut SM.12b): the Occator Yard's
+/// dispatcher works Occator Rim in every keyed world, its drones' plan steps and unloads queued by
+/// the ticks; they are landed here, quietly, and the rest — the players' and the clerks' — handed
+/// back, so what a typed line or a fire is counted to have queued is the players' world's.
+async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
+    let house = tacsim::port::yard::dispatchers(rig.tw.world());
+    let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
+        .into_iter()
+        .partition(|submit| house.contains(&submit.actor));
+    land_quietly(rig, &theirs).await;
+    rest
+}
+
 /// Land each; a refusal fails the test.
 async fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
@@ -470,7 +483,7 @@ async fn sweep(rig: &mut Rig, secs: i64) -> Vec<(Audience, OutputEvent)> {
 /// One port-tick fire (6 s on), its submissions drained, not landed.
 async fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let events = sweep(rig, 6).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     (events, queued)
 }
 
@@ -665,7 +678,7 @@ async fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = (ahead + rate - 1) / rate;
     let events = sweep(rig, real).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     land_quietly(rig, &queued).await;
     events
 }
@@ -676,7 +689,7 @@ async fn to_ic_queued(rig: &mut Rig, target: i64) -> Vec<AuthoritativeSubmit> {
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = (ahead + rate - 1) / rate;
     let _ = sweep(rig, real).await;
-    drain(&mut rig.tw)
+    drain_players(rig).await
 }
 
 fn credit_account(tw: &TestWorld, owner: &PrincipalId) -> mush_economy::AccountId {
@@ -750,7 +763,7 @@ async fn buy(rig: &mut Rig, pilot: ObjId, listing: ListingId, qty: u64) -> i64 {
     let quote = newest_quote(&rig.tw, pilot);
     let accepted = run(rig, pilot, &format!("+market/accept {quote}")).await;
     assert!(accepted.contains("Agreed."), "{accepted}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert_eq!(queued.len(), 1, "{accepted}");
     land_all(rig, &queued).await;
     price * i64::try_from(qty).expect("qty")
@@ -1110,6 +1123,13 @@ async fn assert_help(rig: &mut Rig, who: ObjId) {
     }
 }
 
+/// Read the real room hook as a bystander, without moving the pilot or hull.
+async fn traffic_look(rig: &mut Rig, viewer: ObjId, port: &str, room: &str) -> String {
+    let room = station_room(&rig.tw, port, room);
+    run(rig, GOD, &format!("@teleport {viewer}={room}")).await;
+    run(rig, viewer, "look").await
+}
+
 // ---------------------------------------------------------------------------
 // Part 1: one leg by hand
 // ---------------------------------------------------------------------------
@@ -1305,6 +1325,14 @@ async fn ic12_part_one_a_leg_by_hand() {
     walk(&mut rig, pilot, "arrivals", c03).await;
     walk(&mut rig, pilot, "lobby", c02).await;
     walk(&mut rig, pilot, "gallery", c01).await;
+    let board = run(&mut rig, pilot, "look").await;
+    assert!(board.contains("Berth board:"), "{board}");
+    assert!(
+        board.contains(
+            "Salt Moth / FPC-D-0401 / Visiting Berth Gallery / private registry / Vex / IDLE"
+        ),
+        "{board}"
+    );
     let boarded = run(&mut rig, pilot, "+ship/board").await;
     assert!(
         boarded.contains("You cycle the lock into the Salt Moth."),
@@ -1357,13 +1385,26 @@ async fn ic12_part_one_a_leg_by_hand() {
         filed.contains("Clearance filed for Stickney Yards"),
         "{filed}"
     );
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    let line = board
+        .lines()
+        .find(|line| line.contains("Salt Moth / FPC-D-0401"))
+        .expect("filed hull on public board");
+    assert!(
+        line.contains("Stickney Yards / CLEARED ") && line.contains("UTC"),
+        "{board}"
+    );
+    assert!(
+        !board.contains("crew-days") && !board.contains("min="),
+        "{board}"
+    );
     let events = sweep(&mut rig, 6).await;
     let stats = tacsim::port_tick::last_fire(rig.tw.world()).expect("the port tick fired");
     assert!(
         stats.deferred >= 1,
         "the launch deferred to the queued burn: {stats:?}"
     );
-    let burn_leg = drain(&mut rig.tw);
+    let burn_leg = drain_players(&mut rig).await;
     assert_eq!(
         burn_keys(&burn_leg),
         vec![format!("tacsim.port.burn/{}/undock/1", hull.0)],
@@ -1412,6 +1453,14 @@ async fn ic12_part_one_a_leg_by_hand() {
     // (`launch_verify`).
     let events = fire_quietly(&mut rig).await;
     assert!(under_way(&rig.tw, hull), "the next fire launches");
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    assert!(
+        board.contains("Salt Moth / FPC-D-0401 / under way / Stickney Yards / UNDER WAY"),
+        "{board}"
+    );
+    let gallery = traffic_look(&mut rig, GOD, "ceres_port", "room.c01_berth_gallery").await;
+    assert!(!gallery.contains("Salt Moth / FPC-D-0401"), "{gallery}");
+
     let mut granted = said(&rig.tw, &events, pilot);
     let events = fire_quietly(&mut rig).await;
     granted.push_str(&said(&rig.tw, &events, pilot));
@@ -1463,6 +1512,14 @@ async fn ic12_part_one_a_leg_by_hand() {
         "docked at the ticket's arrival (IC {}, due {arrival}): {at_arrival}",
         ic_now(&rig.tw)
     );
+
+    let board = traffic_look(&mut rig, GOD, "stickney_port", "room.p01_berth_gallery").await;
+    assert!(
+        board.contains("Salt Moth / FPC-D-0401 / Visiting Berth Gallery"),
+        "{board}"
+    );
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    assert!(!board.contains("Salt Moth / FPC-D-0401"), "{board}");
 
     // Steps 12–13 by hand: ashore, the walk to Kasei's Receiving Bay.
     let p01 = station_room(&rig.tw, "stickney_port", "room.p01_berth_gallery");
@@ -1527,7 +1584,7 @@ async fn ic12_part_one_a_leg_by_hand() {
             .last()
             .cloned()
             .expect("the sale");
-        let leg = drain(&mut rig.tw);
+        let leg = drain_players(&mut rig).await;
         assert_eq!(leg.len(), 1, "{sold}");
         land_all(&mut rig, &leg).await;
         contracts.push((q.contract.expect("contract"), gross));
@@ -3173,7 +3230,10 @@ async fn refused(
     let before = snapshot(rig);
     let out = run(rig, who, line).await;
     assert!(out.contains(want), "`{line}`: wanted `{want}`:\n{out}");
-    assert!(drain(&mut rig.tw).is_empty(), "`{line}` queued nothing");
+    assert!(
+        drain_players(rig).await.is_empty(),
+        "`{line}` queued nothing"
+    );
     assert_eq!(snapshot(rig), before, "`{line}` moved nothing");
 }
 
@@ -3203,7 +3263,7 @@ async fn accept_refused(rig: &mut Rig, who: ObjId, listing: ListingId, qty: u64,
             quoted.contains(want),
             "the quote: wanted `{want}`:\n{quoted}"
         );
-        assert!(drain(&mut rig.tw).is_empty());
+        assert!(drain_players(rig).await.is_empty());
         return;
     }
     let quote = newest_quote(&rig.tw, who);
@@ -3222,7 +3282,7 @@ async fn accept_refused(rig: &mut Rig, who: ObjId, listing: ListingId, qty: u64,
         (balance, free),
         "nothing charged and nothing held in escrow"
     );
-    assert!(drain(&mut rig.tw).is_empty(), "nothing staged");
+    assert!(drain_players(rig).await.is_empty(), "nothing staged");
 }
 
 /// Mint `minor` into `who`'s credit account from the treasury (a set-up act, so the
@@ -3265,7 +3325,7 @@ async fn bunker(rig: &mut Rig, who: ObjId, dest: &str, fuel: ListingId, food: Li
 /// coordinator before any intent; the refusal's detail.
 async fn inv_move_out(rig: &mut Rig, who: ObjId, hold: VaultId, store: u64) -> String {
     let out = run(rig, who, &format!("@inv/move {}/metals:1={store}", hold.0)).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert!(out.contains("Queued."), "{out}");
     assert_eq!(queued.len(), 1, "{out}");
     match land(rig, &queued[0]).await {
@@ -3632,7 +3692,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     let _ = run(&mut rig, vex, "+ship/board").await;
     let filed = run(&mut rig, vex, "+ship/undock stickney").await;
     assert!(filed.contains("Clearance filed"), "{filed}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(&mut rig).await;
     land_all(&mut rig, &queued).await;
     let stickney = port_map(&rig.tw, P).domain.expect("a domain");
     let _ = run(&mut rig, GOD, &format!("@domain/pause {stickney}")).await;
@@ -3698,7 +3758,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     assert_eq!(snap(&mut rig), before, "nothing left the docked hold");
     let filed = run(&mut rig, vex, "+ship/undock stickney").await;
     assert!(filed.contains("Clearance filed"), "{filed}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(&mut rig).await;
     land_all(&mut rig, &queued).await;
     let _ = fire_quietly(&mut rig).await;
     assert!(under_way(&rig.tw, hull), "launched");
@@ -3775,7 +3835,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     .await;
     let sold = run(&mut rig, vex, &format!("+market/sell {metals_bid}={m}")).await;
     assert!(sold.contains(&format!("Sold {m} t")), "{sold}");
-    let leg = drain(&mut rig.tw);
+    let leg = drain_players(&mut rig).await;
     land_all(&mut rig, &leg).await;
 
     // 9. An unfunded bid in the queue: Kasei's account drained by staff to 100.00cr —
@@ -3850,7 +3910,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     assert!(out.contains("Paid: transaction #"), "{out}");
     let sold = run(&mut rig, vex, &format!("+market/sell {ice_bid}={v}")).await;
     assert!(sold.contains(&format!("Sold {v} t")), "{sold}");
-    let leg = drain(&mut rig.tw);
+    let leg = drain_players(&mut rig).await;
     land_all(&mut rig, &leg).await;
     for _ in 0..12 {
         let _ = sweep(&mut rig, 31).await;
@@ -4214,7 +4274,7 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     set_rate(&mut rig, 3_600).await;
     let filed = run(&mut rig, ben, "+ship/undock stickney").await;
     assert!(filed.contains("Clearance filed"), "{filed}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(&mut rig).await;
     land_all(&mut rig, &queued).await;
     let _ = fire_quietly(&mut rig).await;
     let flown = ticket(&mut rig.tw, hull, 1).expect("the ticket");
@@ -4275,7 +4335,7 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
         .expect("the sale's contract");
     let _ = lost;
     let _ = sweep(&mut rig, 3_100).await;
-    let _ = drain(&mut rig.tw);
+    let _ = drain_players(&mut rig).await;
     let late = fire_until(
         &mut rig,
         4,
@@ -4370,7 +4430,7 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
         "the accept holds the price in escrow"
     );
     let _ = sweep(&mut rig, cutoff + 100).await;
-    let _ = drain(&mut rig.tw);
+    let _ = drain_players(&mut rig).await;
     let late = fire_until(
         &mut rig,
         4,
@@ -4445,7 +4505,7 @@ async fn ic14_a_counter_refusal_is_retried_on_the_shipped_packs() {
     set_rate(&mut rig, 3_600).await;
     let filed = run(&mut rig, cy, "+ship/undock stickney").await;
     assert!(filed.contains("Clearance filed"), "{filed}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(&mut rig).await;
     land_all(&mut rig, &queued).await;
     let _ = fire_quietly(&mut rig).await;
     let flown = ticket(&mut rig.tw, hull, 1).expect("the ticket");
@@ -4547,7 +4607,7 @@ async fn r9_schedule(rig: &mut Rig) {
 }
 async fn r9_command(rig: &mut Rig, who: ObjId, line: &str) -> String {
     let out = run(rig, who, line).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert!(!queued.is_empty(), "{line}: {out}");
     land_all(rig, &queued).await;
     out
@@ -4671,7 +4731,7 @@ async fn r9a_paid_manufacture_survives_restart_and_installs_once() {
     r9_command(&mut rig, who, &format!("@wo/restamp {order}=production")).await;
     for _ in 0..130 {
         sweep(&mut rig, 301).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(&mut rig).await;
         land_quietly(&mut rig, &queued).await;
         r9_schedule(&mut rig).await;
     }
@@ -5042,7 +5102,7 @@ async fn r9_bad_cargo(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foun
     r9_command(rig, who, &format!("@wo/submit {order}")).await;
     for _ in 0..121 {
         sweep(rig, 301).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(rig).await;
         land_quietly(rig, &queued).await;
         r9_schedule(rig).await;
     }
@@ -5172,7 +5232,7 @@ async fn r9_make_pair(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foun
     r9_command(rig, who, &format!("@wo/submit {order}")).await;
     for _ in 0..121 {
         sweep(rig, 301).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(rig).await;
         land_quietly(rig, &queued).await;
         r9_schedule(rig).await;
     }
@@ -5717,4 +5777,161 @@ async fn r9b_fleet_assignment_expiry_uses_the_economy_wall_timestamp() {
     );
     sweep(&mut rig, 31).await;
     assert_eq!(tacsim::relay_mobile::commander(rig.tw.world(), hull), None);
+}
+
+/// Public scheduling is the active head only; commerce, stopped plans and
+/// future legs are private. Plain boot preserves the projection without writes.
+#[tokio::test]
+async fn trade_public_boards_project_only_live_local_traffic() {
+    let mut rig = boot("traffic").await;
+    stock(&mut rig).await;
+    let captain = pilot(&mut rig, "Captain", "trafficcaptain").await;
+    let observer = pilot(&mut rig, "Observer", "trafficobserver").await;
+    enrol(&mut rig, captain, "Public Hull").await;
+    let board = traffic_look(&mut rig, observer, "ceres_port", "room.c01_berth_gallery").await;
+    assert!(board.contains("Public Hull / FPC-D-0401"), "{board}");
+    assert!(
+        board.contains("private registry / Captain / IDLE"),
+        "{board}"
+    );
+    let gallery = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    run(&mut rig, GOD, &format!("@teleport {captain}={gallery}")).await;
+    run(&mut rig, captain, "+ship/board").await;
+    let filed = run(&mut rig, captain, "+ship/order depart stickney at=+72h").await;
+    assert!(filed.contains("Order 1 filed"), "{filed}");
+    run(&mut rig, captain, "+ship/order sell metals all min=12345").await;
+    run(&mut rig, captain, "+ship/order depart ceres at=+96h").await;
+    let before = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    assert!(before.contains("Stickney Yards / FILED "), "{before}");
+    assert!(
+        !before.contains("12345") && !before.contains("metal concentrate"),
+        "{before}"
+    );
+    assert!(!before.contains(" / Ceres Freeport / FILED"), "{before}");
+    restart(&mut rig, |_| true).await;
+    let after = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    let row = |text: &str| {
+        text.lines()
+            .find(|l| l.contains("Public Hull / FPC-D-0401"))
+            .map(str::to_owned)
+    };
+    assert_eq!(row(&before), row(&after));
+    run(&mut rig, captain, "+ship/order pause").await;
+    let paused = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    assert!(
+        row(&paused).expect("local hull").contains(" / IDLE / "),
+        "{paused}"
+    );
+    let distant = traffic_look(
+        &mut rig,
+        observer,
+        "stickney_port",
+        "room.p05_harbourmaster",
+    )
+    .await;
+    assert!(
+        distant.contains("No hulls posted.") && !distant.contains("Public Hull"),
+        "{distant}"
+    );
+    let elsewhere = traffic_look(&mut rig, observer, "ceres_port", "room.c05_registry").await;
+    assert!(
+        !elsewhere.contains("Berth board:") && !elsewhere.contains("Departures board:"),
+        "{elsewhere}"
+    );
+}
+
+/// A lost browser is still connected during grace, but cannot receive output.
+/// Launch notices must survive that gap and drain once on revival, not vanish.
+#[tokio::test]
+async fn trade_linkdead_watch_log_drains_once_on_revival() {
+    let mut rig = boot("trade-linkdead").await;
+    stock(&mut rig).await;
+    let captain = pilot(&mut rig, "Watcher", "tradewatcher").await;
+    let row = enrol(&mut rig, captain, "Watch Keeper").await;
+    outfit(&mut rig, captain).await;
+    board_from_chandlery(&mut rig, captain, "Watch Keeper").await;
+    run(&mut rig, captain, "+ship/order depart stickney at=now").await;
+    let conns: Vec<_> = (1..=64)
+        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(captain))
+        .collect();
+    assert!(!conns.is_empty());
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    for conn in conns {
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: captain,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    assert!(rig.tw.world().is_connected(captain));
+    assert!(!rig.tw.world().has_live_conns(captain));
+    for _ in 0..40 {
+        fire_quietly(&mut rig).await;
+        if tacsim::port_tick::pending_notices(rig.tw.world(), captain)
+            .iter()
+            .any(|line| line.contains("Clearance granted."))
+        {
+            break;
+        }
+    }
+    assert!(under_way(&rig.tw, ObjId(row.hull)));
+    let notices = tacsim::port_tick::pending_notices(rig.tw.world(), captain);
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|line| line.contains("Clearance granted."))
+            .count(),
+        1,
+        "{notices:?}"
+    );
+    let mut out = mush_core::Outbox::new();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnUp {
+            conn: 90,
+            actor: captain,
+            caps_structured: false,
+            from_linkdead: true,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let heard = said(&rig.tw, &out.take(), captain);
+    assert_eq!(
+        heard.matches(tacsim::port_tick::NOTICE_HEADING).count(),
+        1,
+        "{heard}"
+    );
+    assert_eq!(heard.matches("Clearance granted.").count(), 1, "{heard}");
+    assert!(tacsim::port_tick::pending_notices(rig.tw.world(), captain).is_empty());
+    // Losing/reviving again, with no new trip event, must not replay it.
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnDown {
+            conn: 90,
+            actor: captain,
+            reason: mush_core::DisconnectKind::Lost,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let _ = out.take();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnUp {
+            conn: 91,
+            actor: captain,
+            caps_structured: false,
+            from_linkdead: true,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let again = said(&rig.tw, &out.take(), captain);
+    assert!(
+        !again.contains(tacsim::port_tick::NOTICE_HEADING),
+        "{again}"
+    );
 }

@@ -1,7 +1,7 @@
 //! **The port's typed families** (doc 18 cut IC5; §4.2 "the ticket", §4.3
 //! "Finite seeded stock", §4.8 "the seams", D-18-11, D-18-33, D-18-46).
 //!
-//! Eight production families, all registered unconditionally (a family is a fact
+//! Nine production families, all registered unconditionally (a family is a fact
 //! about the composition, and hydrating a later cut's records must never depend
 //! on a flag):
 //!
@@ -40,6 +40,11 @@
 //!   sixteen batches. Written in the batch's own bundle by `tacsim_port_mill`
 //!   (`crate::port::mill`), and read by the restock, the stock arm's list step and the
 //!   readiness report.
+//! - **`tacsim.dispatch`** (doc 20 cut SM.12b; §12.3 "Occator's drones") — one
+//!   [`crate::port::yard::DispatchLedger`] per yard, keyed by its site
+//!   ([`crate::port::yard::DispatchKey`]): the yard's delivery totals, its IC day's tally and its
+//!   last sixteen deliveries. Written in the delivery's own bundle by `tacsim_dispatch`
+//!   (`crate::port::yard`), and read by the dispatcher's step and the readiness report.
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -490,7 +495,7 @@ impl StockReceipt {
 
 // ---- the families and the handles ------------------------------------------
 
-/// The port's eight production family handles.
+/// The port's nine production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
     /// Conserved private relay production receipts, one bounded book per foundry.
@@ -518,6 +523,10 @@ pub struct PortFamilies {
     /// **`tacsim.port_mill`** (doc 20 cut SM.12a; §7.3 "The mill"): one ledger per mill,
     /// keyed by its [`crate::port::mill::MillId`] — the batch's receipt and replay guard.
     pub mills: StateFamilyHandle<crate::port::mill::MillId, crate::port::mill::MillLedger>,
+    /// **`tacsim.dispatch`** (doc 20 cut SM.12b; §12.3): one delivery ledger per yard, keyed by
+    /// its site — the delivery's receipt and replay guard.
+    pub dispatch:
+        StateFamilyHandle<crate::port::yard::DispatchKey, crate::port::yard::DispatchLedger>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -560,6 +569,10 @@ pub struct PortHandles {
     /// worked transfer, `crate::port::site::SiteWorkProvider`); `Some` exactly when its
     /// provider registered (the inventory cell filled).
     pub site_work: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.12b** (§12.3): the registered `tacsim_dispatch` action (a site clerk's
+    /// house survey and a yard dispatcher's delivery, `crate::port::yard::DispatchProvider`);
+    /// `Some` exactly when its provider registered (the inventory cell filled).
+    pub dispatch: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -586,10 +599,11 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the eight production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// Register the nine production families (doc 18 cut IC5; doc 20 cut SM.3b's
 /// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
 /// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`; relay cut R9a's
-/// `tacsim.relay_fabrications`; doc 20 cut SM.12a's `tacsim.port_mill`), unconditionally.
+/// `tacsim.relay_fabrications`; doc 20 cut SM.12a's `tacsim.port_mill`; doc 20 cut SM.12b's
+/// `tacsim.dispatch`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -729,6 +743,27 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
                 serde_json::to_value(value).map_err(|e| e.to_string())
             },
         )?;
+    // Doc 20 cut SM.12b (§12.3): one delivery ledger per yard, keyed by its site.
+    let dispatch = reg.state_family::<
+        crate::port::yard::DispatchKey,
+        crate::port::yard::DispatchLedger,
+        _,
+        _,
+        _,
+        _,
+    >(
+        family_descriptor(
+            crate::port::yard::DISPATCH_FAMILY,
+            "tacsim.dispatch_key.v1",
+            "tacsim.dispatch",
+        )?,
+        |key: &crate::port::yard::DispatchKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::port::yard::DispatchLedger| value.check(),
+        |value: &crate::port::yard::DispatchLedger| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -738,6 +773,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         pockets,
         claims,
         mills,
+        dispatch,
     })
 }
 

@@ -1,0 +1,92 @@
+{
+  "at": "2026-10-25T02:41:56.950178+00:00",
+  "passed": true,
+  "database": 1,
+  "hull": 393,
+  "vault": null,
+  "rate": 24,
+  "clock_generations": 1,
+  "credit_accounts": 25,
+  "credit_total_minor": 0,
+  "issued_credit_minor": 1495000000,
+  "hold": {},
+  "compartments": {
+    "cargo": {
+      "load": {
+        "si.mass_kg": 0,
+        "si.volume_l": 0
+      },
+      "limits": {
+        "si.mass_kg": 100000,
+        "si.volume_l": 120000
+      }
+    },
+    "propellant": {
+      "load": {
+        "si.mass_kg": 0
+      },
+      "limits": {
+        "si.mass_kg": 80000
+      }
+    },
+    "provisions": {
+      "load": {
+        "si.mass_kg": 0,
+        "si.volume_l": 0
+      },
+      "limits": {
+        "si.mass_kg": 480,
+        "si.volume_l": 1200
+      }
+    }
+  },
+  "lineage": {},
+  "goods_conservation": {
+    "provisions": {
+      "seeded": 13000,
+      "held": 13000,
+      "burned": 0
+    },
+    "propellant": {
+      "seeded": 25000,
+      "held": 25000,
+      "burned": 0
+    },
+    "instrument_boards": {
+      "seeded": 2080,
+      "held": 2080,
+      "burned": 0
+    },
+    "structural_alloys": {
+      "seeded": 10120,
+      "held": 10120,
+      "burned": 0
+    },
+    "volatiles": {
+      "seeded": 11400,
+      "held": 11400,
+      "burned": 0
+    },
+    "industrial_parts": {
+      "seeded": 5400,
+      "held": 5400,
+      "burned": 0
+    },
+    "carbon_feedstock": {
+      "seeded": 600,
+      "held": 600,
+      "burned": 0
+    },
+    "metals": {
+      "seeded": 4000,
+      "held": 4000,
+      "burned": 0
+    }
+  },
+  "escalations": 0,
+  "ticket_count": 0,
+  "orders_cursor": null,
+  "contract_states": {
+    "Offered": 1
+  }
+}

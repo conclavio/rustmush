@@ -382,6 +382,10 @@ impl EventHook for BoardLook {
 /// Never today; the `Result` is the registrar's shape.
 pub fn register_hooks(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.hook(HookPoint::LookRendered, Arc::new(BoardLook));
+    reg.hook(
+        HookPoint::LookRendered,
+        Arc::new(super::traffic::TrafficLook),
+    );
     Ok(())
 }
 

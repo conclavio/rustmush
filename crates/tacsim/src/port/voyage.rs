@@ -866,7 +866,7 @@ pub(crate) fn tell_absent_tenant(ctx: &mut Ctx<'_>, hull: ObjId, line: &str) {
     let Some(tenant) = crate::port::coop::helm_holder(ctx.w, hull) else {
         return;
     };
-    if !ctx.w.is_connected(tenant) {
+    if !ctx.w.is_connected(tenant) || !ctx.w.has_live_conns(tenant) {
         queue_notice(ctx, tenant, line);
     }
 }
@@ -1251,8 +1251,14 @@ pub(crate) fn souls_aboard(w: &World, airlock: ObjId) -> Vec<ObjId> {
 /// **`person` is aboard `hull`**: `Interior`-placed in the hull's airlock space
 /// (any member room). The one predicate `+ship/undock`, the burn's offer and the
 /// launch share (lead rulings L12, L14: a burned hull never launches with its
-/// pilot ashore, whatever moved them).
+/// pilot ashore, whatever moved them). **Doc 20 cut SM.12b** (D2): a yard's dispatcher is aboard
+/// its own yard hull wherever it stands, and nowhere else (`crate::port::yard::is_dispatcher_of`);
+/// every ship, burn and executor reader of this gates on `helm_of` first, so the dispatcher's
+/// `aboard` reaches no ship verb.
 pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
+    if crate::port::yard::is_dispatcher_of(w, hull, person) {
+        return true;
+    }
     let Some(airlock) = hull_view(w, hull).and_then(|view| view.airlock()) else {
         return false;
     };

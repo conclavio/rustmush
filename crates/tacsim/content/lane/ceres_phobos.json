@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 14,
+    "version": 15,
     "kind": "campaign_seed",
-    "digest": "c507f74c135562151b6dbf36fb1d977e14f4c8ac1884f67082be901fcd94a8f8",
+    "digest": "eeb95c7adc4db753041722854fcc9e312bd8c69c620d86dba3217adf870829b3",
     "requires": []
   },
   "entries": {
@@ -2901,7 +2901,10 @@
                         "N": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "O": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "P": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } }
-                      } }
+                      },
+                  "yard": { "org": "occator", "name": "Occator Yard", "unit": "tacsim.unit.dray_p",
+                            "registry_prefix": "OWP-YD-", "pool": "occator.rig_lease", "rig_prefix": "OWP-YT-",
+                            "rigs": 2, "ore": "ice_ore", "blocks": ["F", "G"], "rearm_ic_secs": 3600 } }
       }
     },
     "rheasilvia_port": {

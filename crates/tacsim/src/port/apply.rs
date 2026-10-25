@@ -36,7 +36,12 @@
 //!   spaces, its hopper vault (the system principal `tacsim.vehicles`'s), its
 //!   placement in the shed and its title to the lessor
 //!   (`crate::port::vehicle::lay_up`). Part (f) gained step 6b the same cut:
-//!   every programme hull's refit bay ([`crate::port::hull`]).
+//!   every programme hull's refit bay ([`crate::port::hull`]);
+//! - **(i) the yard** (doc 20 cut SM.12b) — for a site whose block authors a `yard`, right
+//!   after part (g): the yard hull (laid up by part (f)'s steps over the site row's yard
+//!   rows, settled on the pad at `(0, 0)` and titled to the house), its hold vault, its rigs
+//!   of the pack's rig pool placed in its bay and titled to the house, and its `DARK`
+//!   dispatcher in the host room (`crate::port::yard::lay_up`). Nothing is submitted.
 //!
 //! Every act is recorded in the port map ([`crate::port::PortMap`]) written
 //! **immediately after** it, in the apply's one batch — the sole dedup, since
@@ -281,10 +286,11 @@ impl PortApplier {
     fn preflight(
         reg: &mush_core::Registry,
         w: &World,
-        pack: &CanonicalId,
+        source: &Pack,
         id: &CanonicalId,
         def: &PortDef,
     ) -> Result<(), String> {
+        let pack = source.manifest().id();
         let Some(tacsim) = w.module_state::<TacsimStore>() else {
             return Err(format!(
                 "{id}: the TacSim layer is not composed on this world"
@@ -369,6 +375,12 @@ impl PortApplier {
         // Doc 20 cut SM.3a (part h): the rig pool's template, issuer and every rig
         // drift, and how many rigs this pass would title.
         let rigs_to_title = crate::port::vehicle::preflight(w, pack, id, def, map)?;
+        // Doc 20 cut SM.12b (part i): the yard's unit, pool, house and every recorded object, and
+        // how many hulls and rigs this pass would title (added to parts f's and h's, so the
+        // frozen-economy sentences are unchanged).
+        let (yard_hulls, yard_rigs) = crate::port::yard::preflight(w, source, id, def, map)?;
+        let hulls_to_title = hulls_to_title.saturating_add(yard_hulls);
+        let rigs_to_title = rigs_to_title.saturating_add(yard_rigs);
         // The mint cap (D-18-14): the largest tranche still to be created. The
         // drift rule above makes every recorded row's capital the authored one,
         // so what is still to be created is exactly the unrecorded indices.
@@ -603,7 +615,7 @@ impl PortApplier {
         let def = PortApplier::decode(id, entry)?;
         // The same answers `check` gave before the apply touched anything; asked
         // again so a refusal here can never follow a partial write of this entry.
-        PortApplier::preflight(ctx.reg, ctx.w, &pack_id, id, &def)?;
+        PortApplier::preflight(ctx.reg, ctx.w, pack, id, &def)?;
         // (0) The host, the gallery, the map.
         let host = placed
             .get(&def.location)
@@ -673,6 +685,26 @@ impl PortApplier {
         // is applied, and the boot installs every table.
         if let Some(site) = &def.site {
             crate::port::site::lay_up(ctx, id, site, &mut map, host)?;
+        }
+
+        // (i) Doc 20 cut SM.12b (§12.3): the house's yard, right after the site — its hull in the
+        // pad, its hold, its rigs in its bay and its dispatcher in the host room. The pool the
+        // rigs are of is the pack's one rig pool (a port entry applied before this one).
+        if let Some(yard) = def.site.as_ref().and_then(|site| site.yard.as_deref()) {
+            let domain = map
+                .domain
+                .map(mush_sim::data::DomainId)
+                .ok_or_else(|| format!("{id}: no domain is recorded"))?;
+            let pool = crate::port::yard::pack_facts(pack)
+                .pool
+                .filter(|pool| pool.id == yard.pool)
+                .ok_or_else(|| {
+                    format!(
+                        "{id}: site: yard: pool {} is not the pack's rig pool of {}",
+                        yard.pool, yard.org
+                    )
+                })?;
+            crate::port::yard::lay_up(ctx, id, &pool, yard, &mut map, domain, gallery, host)?;
         }
 
         // (b) The treasury (L9: the credit first, create-only — a roster with no
@@ -985,7 +1017,7 @@ impl EntryApplier for PortApplier {
         let Some(PackEntry::Port(def)) = rules.entry(id) else {
             return Err(format!("{id}: not a port entry"));
         };
-        PortApplier::preflight(ctx.reg, ctx.w, pack.manifest().id(), id, def)
+        PortApplier::preflight(ctx.reg, ctx.w, pack, id, def)
     }
 
     fn create(

@@ -1,0 +1,9 @@
+{
+  "base_commit": "ce8b480f9515a8e50345be61be5562fd6407c014",
+  "files": {
+    "crates/mush-ipc/src/link.rs": "899ac27195ed4d1aff9c8419b67a896e470e6aaba3e8d35ea4e0dcb948da230c",
+    "crates/mush-gateway/src/lib.rs": "7ffb3838895809de06e2fc8ad9f5069965619102cc649082adeab8c8b1c49cd0",
+    "crates/mush-gateway/src/bridge_common.rs": "41765614044af84342fd6088c8fbfd0ae157947b1a192359395fb6be71241f71",
+    "crates/mushd/tests/arena_story.rs": "72ee01c1c967d48671f79239583455d0db7c801238791222e649342b165efc78"
+  }
+}
