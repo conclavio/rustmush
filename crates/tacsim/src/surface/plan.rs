@@ -548,8 +548,10 @@ pub(crate) struct CompileInput<'a> {
     pub scanner: &'a ScannerDef,
     /// The rig's drill row.
     pub drill: &'a DrillDef,
-    /// The hold's unreserved room, whole tonnes (`hold_unreserved_kg`).
-    pub hold_room_t: u64,
+    /// **The hold's unreserved room in whole tonnes of a family's ore, in every measure** (doc 20
+    /// cut SM.11r: [`room_in_tonnes_of`] over `hold_unreserved`; it was the mass entry alone,
+    /// `hold_unreserved_kg`), asked of the plan's frozen family once step 4 has fixed it.
+    pub hold_room_t: &'a dyn Fn(OreFamily) -> u64,
     /// The hopper's mass limit, whole tonnes (a trip's tonnes for the estimate).
     pub hopper_t: u64,
 }
@@ -982,8 +984,10 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
             }
         }
     }
-    // 9. One landed hold: a plan that could only park is refused.
-    if input.hold_room_t < u64::from(blind_room_t(input.drill)) {
+    // 9. One landed hold, in every measure (doc 20 cut SM.11r): a plan that could only park is
+    // refused — the family's room, so a hold whose packed volume is full refuses here, as the
+    // interpreter's own step gate (`hold_room_t`) would park it at once.
+    if (input.hold_room_t)(family) < u64::from(blind_room_t(input.drill)) {
         return Err(PlanRefusal::HoldFull);
     }
     // 10. The bound: a lower bound of the work.
@@ -1507,13 +1511,29 @@ fn hold_room_t(
     let goods = w
         .module_state::<crate::TacsimStore>()
         .and_then(crate::TacsimStore::goods)?;
+    room_in_tonnes_of(goods, &room, family)
+}
+
+/// **A per-measure room in whole tonnes of `family`'s ore good** (doc 20 cut SM.11r; doc 20a §10
+/// "Defects at HEAD", SM.11r-2, the owner's external review of 2026-10-23, item 2), pure: how many
+/// tonnes of the family's ore fit the room in **every** measure it weighs in
+/// (`capacity::fits_in`, mining's own fit rule) — the one conversion the interpreter
+/// ([`hold_room_t`]), the compiler's input (`act.rs`'s `plan_ask`) and the plan's end summary
+/// (`tick.rs`'s `hold_figures`) share, so the compile never accepts a plan on the hold's mass
+/// alone while its packed volume is full. `None` when the family's ore good is not in the table or
+/// does not weigh in one of the room's measures.
+pub(crate) fn room_in_tonnes_of(
+    goods: &crate::definitions::GoodsTable,
+    room: &crate::port::capacity::Load,
+    family: OreFamily,
+) -> Option<u64> {
     let good = CanonicalId::new(crate::surface::opening::ore_good(family)).ok()?;
     let def = goods.good(&good)?;
     let mut per_unit: Vec<(CanonicalId, u64)> = Vec::with_capacity(room.len());
     for measure in room.keys() {
         per_unit.push((measure.clone(), def.per_unit(measure)?));
     }
-    Some(crate::port::capacity::fits_in(&room, &per_unit).0)
+    Some(crate::port::capacity::fits_in(room, &per_unit).0)
 }
 
 /// **What a plan does in the bay with a hopper that cannot take one more cycle** (the SM.11 fixer
@@ -2500,6 +2520,8 @@ mod tests {
         home: u32,
         far: BTreeMap<(i64, i64), u32>,
         hold: u64,
+        /// A family's own room, where it differs from `hold` (doc 20 cut SM.11r).
+        hold_of: BTreeMap<OreFamily, u64>,
         licence: Result<i64, LicenceEnd>,
         lease: Result<(), LeaseBar>,
         claimed: Option<char>,
@@ -2514,6 +2536,7 @@ mod tests {
                 home: 1_000,
                 far: BTreeMap::new(),
                 hold: 60,
+                hold_of: BTreeMap::new(),
                 licence: Ok(9_999_999),
                 lease: Ok(()),
                 claimed: None,
@@ -2551,6 +2574,8 @@ mod tests {
             let home = self.home;
             let far = self.far.clone();
             let home_of = move |stand: (i64, i64)| Some(far.get(&stand).copied().unwrap_or(home));
+            let hold_room =
+                |family: OreFamily| self.hold_of.get(&family).copied().unwrap_or(self.hold);
             compile(&CompileInput {
                 row,
                 list,
@@ -2565,7 +2590,7 @@ mod tests {
                 battery: &battery,
                 scanner: &scanner,
                 drill: &drill,
-                hold_room_t: self.hold,
+                hold_room_t: &hold_room,
                 hopper_t: 12,
             })
         }
@@ -2814,6 +2839,69 @@ mod tests {
                 .compile("C117,C118", Some(OreFamily::Metals))
                 .is_ok()
         );
+    }
+
+    /// **The compile reads the hold's room in the plan's family** (doc 20 cut SM.11r; doc 20a §10
+    /// "Defects at HEAD", SM.11r-2): C117 reads fair in metals and in volatiles; the hold's room
+    /// is the one `sm11r_the_room_in_tonnes_binds_in_every_measure` pins for 42,000 kg and 2,000 L
+    /// — 4 t of metal ore, 2 t of ice ore, under a blind core's 3 t — so the metals plan compiles
+    /// and the volatiles plan is refused `HoldFull` at the preview, where the mass alone (42 t)
+    /// accepted both.
+    #[test]
+    fn sm11r_the_compile_reads_the_familys_room() {
+        let (_, drill) = tools();
+        let c117 = address::parse_pocket_address("C117").unwrap_or_else(|| panic!("C117"));
+        let mut fixture = Fixture::new(row(&[], &[c117]));
+        fixture
+            .classes
+            .insert(c117, [Word::Fair, Word::Fair, Word::Barren, Word::Barren]);
+        fixture.hold_of.insert(OreFamily::Metals, 4);
+        fixture.hold_of.insert(OreFamily::Volatiles, 2);
+        assert!(
+            u64::from(blind_room_t(&drill)) > 2,
+            "2 t is under a blind core"
+        );
+        assert!(
+            fixture.compile("C117", Some(OreFamily::Metals)).is_ok(),
+            "the metals plan"
+        );
+        assert_eq!(
+            fixture.compile("C117", Some(OreFamily::Volatiles)),
+            Err(PlanRefusal::HoldFull)
+        );
+    }
+
+    /// **The room in tonnes of a family's ore binds in every measure** (doc 20 cut SM.11r), over
+    /// the shipped goods table: 42,000 kg and 2,000 L of room fit 4 t of metal ore (500 L a
+    /// tonne), 2 t of ice ore (1,000 L), 1 t of carbon ore (1,200 L) and 3 t of strategic ore
+    /// (600 L) — where the mass alone reads 42 t of each; with the volume to spare, the mass binds.
+    #[test]
+    fn sm11r_the_room_in_tonnes_binds_in_every_measure() {
+        let goods = crate::definitions::goods::goods_table().unwrap_or_else(|e| panic!("{e:?}"));
+        let room = |kg: u64, litres: u64| -> crate::port::capacity::Load {
+            [
+                (crate::definitions::logistics::MASS_KG, kg),
+                (crate::definitions::logistics::VOLUME_L, litres),
+            ]
+            .into_iter()
+            .map(|(measure, free)| {
+                (
+                    CanonicalId::new(measure).unwrap_or_else(|_| panic!("{measure}")),
+                    free,
+                )
+            })
+            .collect()
+        };
+        let tonnes = |load: &crate::port::capacity::Load| -> Vec<u64> {
+            OreFamily::ALL
+                .iter()
+                .map(|family| {
+                    room_in_tonnes_of(&goods, load, *family).unwrap_or_else(|| panic!("{family:?}"))
+                })
+                .collect()
+        };
+        assert_eq!(tonnes(&room(42_000, 2_000)), vec![4, 2, 1, 3]);
+        assert_eq!(tonnes(&room(42_000, 103_200)), vec![42, 42, 42, 42]);
     }
 
     /// The estimate: a fair pocket on regolith is three 1,800 s cycles; rock doubles; a block adds

@@ -3809,3 +3809,161 @@ Logs (one per command, with .meta start/end times) are in C:/Users/faeni/AppData
 - §14 D-20-11, "idle return after 24 IC h": as built a code constant `IDLE_PARK_IC_SECS`, the recover submitted as the operator with `by: idle`, never the queue's bound.
 - §18, the doc 18 item (Q-18-22 extended): as built — one fill of one hold, never re-armed; `await tv` one closed kind beside the queue's buy/sell/depart/stop.
 - §19 item 3 (T13's reading): as built every plan-made reading carries `via: Plan` and is the character's own for every use but a stake (`repeat_refused` treats the plan's sounding stand as theirs, P9 step 7).
+
+## SM.11r
+
+**Two SM.11 defects from the owner's external review of 2026-10-23** (doc 20a §2's SM.11r row and
+§10 "Defects at HEAD"; the review read `origin/main` at `7c886408`): **(1)** the stake evidence rule
+lost the discovery of a chart row written before SM.11 — such a row carries no `first_hand_at`, and
+once four later stamps had pushed its first stamp out of its four-entry ring, `evidence_at` read a
+later stamp, so a rival's loud sounding in between could win a contest it should lose (the review's
+probe read 200 where the discovery was 100, and a sounding at 150 won); **(2)** the fill plan's
+compile, its preview and its end summary read the hold's unreserved room by mass alone
+(`hold_unreserved_kg`), while the interpreter already read it in every measure for the plan's family,
+so a Dray-P whose packed volume was full with tonnes to spare accepted a plan that parked at its first
+step. No lane, pack or digest moved; no verb, player-facing text, state family or wire shape changed.
+Built 2026-10-24 by the lead on main `6995adda` (doc 20 Draft 0.12) in the lead's own worktree — the
+session's harness refuses edits in the base checkout, a departure from doc 20a §1.1's "build in the
+main tree" — reviewed by two independent lenses, fixed, gated and committed. One commit, pushed.
+
+### What landed
+
+1. **`surface::chart::first_hand_of(first_local_at, provenance, first_hand_at) -> Option<i64>`**
+   (`pub`): a row's first hand-made stamp — `first_hand_at` when set; else `first_local_at` for a row
+   whose provenance ring is not empty and holds `via: Hand` entries only. Every stamp written before
+   SM.11 was a hand's, so such a row's first stamp is its discovery; a row SM.11 or later wrote has
+   `first_hand_at` set by its first hand stamp, and a plan-first row always keeps a `Plan` entry in
+   its ring (the trim evicts the oldest plan entry first), so the rule never reads a plan's stamp.
+2. **The backfill in `chart`'s `stamp`**: before anything else, a row with no `first_hand_at` takes
+   `first_hand_of`'s answer, so a legacy row's next stamp — a hand's, which would otherwise set
+   `first_hand_at` to its own later instant, or a plan's, which would put a `Plan` entry in the ring
+   the rule then refuses to read past — keeps the discovery. A row created by the stamp has an empty
+   ring and backfills nothing; the backfilled value is the old first stamp, inside `check_stamps`'
+   bounds.
+3. **`surface::tenure::evidence_at`** reads each of the block's rows' first hand stamp through
+   `first_hand_of`; the docs of `FieldRow.first_hand_at`, `PocketBlock.first_hand_at`, `stamp` and
+   `evidence_at` now say a plan's stamp never sets `first_hand_at` *to the plan's own instant*.
+4. **`surface::plan::room_in_tonnes_of(goods, room, family) -> Option<u64>`** (`pub(crate)`, pure):
+   a per-measure room in whole tonnes of the family's ore good by mining's fit rule
+   (`capacity::fits_in`) — the one conversion the interpreter's `hold_room_t`, the compile's input
+   and the end summary share.
+5. **`plan::CompileInput.hold_room_t: &dyn Fn(OreFamily) -> u64`** (was the mass figure); rule 9
+   ("one landed hold: a plan that could only park is refused") asks it of the family step 4 froze.
+6. **`act::plan_ask`** reads the goods table once and `ship::hold_unreserved_with` once, converts the
+   room for all four families up front (any that does not convert is `TV_DARK`, fail-closed and
+   unreachable with the shipped table), hands the compile the per-family reader, and sets
+   `PlanFacts.room_t` — the preview's `{room}` — to the compiled plan's family's figure.
+7. **`tick`'s `hold_figures(ctx, hull, family)`**: `PLAN_ENDED`'s `{room}` is the room in the plan's
+   own ore in every measure; `{held}` stays the tonnes aboard by mass. `ship::hold_unreserved_kg`'s
+   doc now names its remaining readers (the `site.map` frame's hold line and the end summary's
+   `{held}`).
+8. **Tests.** `chart.rs` `sm11r_a_legacy_rows_next_stamp_keeps_its_discovery` (a legacy full ring
+   reads 100; its next hand or plan scan backfills 100; the plan's branch — a ring of three hand
+   scans, a plan scan whose entry stays, then two hand scans that push 100 out — still reads 100,
+   where without the backfill at the plan's stamp it would read 700; a plan-created row backfills
+   nothing). `tenure.rs` `sm11r_a_row_written_before_sm11_stakes_at_its_discovery` (a legacy field
+   row and pocket block read 100, inside the epoch only; a plan-first row reads nothing — this test
+   compiles on the base and fails there, reading 200). `plan.rs`
+   `sm11r_the_compile_reads_the_familys_room` (4 t of metal-ore room compiles, 2 t of ice-ore room
+   refuses `HoldFull`) and `sm11r_the_room_in_tonnes_binds_in_every_measure` (42,000 kg and 2,000 L
+   fit 4 / 2 / 1 / 3 t of metal / ice / carbon / strategic ore; with volume to spare, 42 t of each).
+   `tests/plans.rs` `sm11r_a_plan_reads_the_holds_room_in_every_measure` (44 t of industrial parts
+   aboard a Dray-P: the metals plan on A, its family inferred, previews "(4 t unreserved" where the
+   mass read 42; an ice plan on an ice-bearing pocket the same soundings read is refused
+   `PLAN_HOLD_FULL` at the preview and at `go`; 3 t of metals more refuse the metals plan too;
+   nothing written) and `sm11r_a_plan_ends_naming_the_holds_room_in_every_measure` (the metals plan
+   run to its end mines 4 t in two fair cycles, recovers, unloads and ends `HoldFull`, its end line
+   reading "holds 48 t, 0 t of it unreserved." where the mass read 38).
+9. **Docs.** Doc 20 "As built (SM.11r)" notes in §5 (after SM.11's `first_hand_at` note) and in §8
+   "Leaving it running" ("one landed hold" in every measure); doc 20a §10's as-built bullet with the
+   four departures below and its "Not SM.11r's" bullet corrected.
+
+### Deferred, and why
+
+- **Departure: the write-side backfill is built** (doc 20a §10 proposed the read side only and said
+  the backfill "is not taken"). The read side alone fails at a legacy row's next stamp, as item 2
+  says; both reviewers confirmed it.
+- **Departure: `PLAN_ENDED`'s `{room}` moved, not `{held}`** (doc 20a said `{held}`): `{held}` is the
+  tonnes aboard by mass and does not depend on the family.
+- **Departure: the `metal_ore` stowage-tag residual stays open** (doc 20a said SM.11r-2 closes it):
+  `ship::hold_unreserved_with` reads the same tag, so changing `hold_figures` alone would let the two
+  drift. Harmless while the four ores share `stow.ore`; the next cut that adds an ore stowage tag
+  fixes both reads.
+- **Departure: doc 20a's carbon test case is replaced** — "previews 77 t, not 86" was wrong
+  arithmetic (10 m³ of fittings is 4.35 t, so the mass alone reads about 81); the tests above pin a
+  sharper volume-binds case and the family choice with an ice pocket.
+- **Departure: built in the lead's worktree**, not the main tree (the harness refuses edits in the
+  base checkout from this session). And `cargo fmt --all -- --check` exceeds Windows' command-line
+  length in this worktree's long paths (os error 206): formatting was checked with `rustfmt --check
+  --edition 2024` over the cut's seven files, the train's documented fallback.
+
+### Residual risks the review named
+
+- **Rows SM.11 code itself stamped cannot be repaired** (`09854d6a` until this cut): a legacy row
+  hand-stamped under SM.11 already carries the later instant, and one plan-stamped while its ring had
+  room keeps a `Plan` entry; one case is unsound — a plan stamp earlier than `first_local_at` on a
+  full legacy ring under SM.11 code leaves an all-hand ring whose first stamp is the plan's. No world
+  holds such a row: dev2 runs `3aa8238b` (before SM.11) on a store wiped before it, and dev1 ran no
+  surface mining before the relay train's post-SM.11 gate builds.
+- **The eager four-family conversion** goes `TV_DARK` for every family if any ore good fails to
+  convert, where the interpreter goes dark only for the plan's own family; unreachable with the
+  shipped goods table (the correctness lens's N1).
+- **`hopper_t` stays mass-only** in the compile's trip estimate: a hopper takes 11 t of carbon ore,
+  not 12, so a carbon plan's trips are undercounted — the estimate stays a lower bound, but the
+  288-hour `TooLong` gate is looser for carbon (N4).
+- **The site map and the plan disagree with bulky cargo aboard**: `site.map`'s hold line stays the
+  mass entry (42 t) while the preview prints the family's room (4 t); the frame has a viewed family in
+  scope, so showing it is possible — the owner's call (N5).
+- **`PLAN_ENDED`'s wording** "holds {held} t, {room} t of it unreserved" reads oddly once the volume
+  binds (held by mass plus room by volume no longer sum to the limit) — owner's text (N6).
+- **Rule 9 refuses on a blind core's room** (3 t) even for a pocket the author has read, where the
+  interpreter's step gate needs only the class's yield (2 t for fair): SM.11's behaviour, unchanged
+  here (the tests lens's N3).
+
+### Pins re-blessed
+
+None. No existing assertion changed; the new tests are additions. `REFUSAL_CODES`, the panic budget,
+the state-slot owners, the legacy-handler baseline, the restriction lints and every content digest are
+unmoved.
+
+### How it was verified
+
+Two independent review lenses read the diff before the gate. **Correctness**: no must-fix; two
+should-fix, both fixed — the stale "a plan's stamp never touches it" docs and `hold_unreserved_kg`'s
+doc, and the missing test of `PLAN_ENDED`'s `{room}` (now `sm11r_a_plan_ends_…`) — and seven notes,
+the residuals above. **Tests and conformance**: one must-fix, fixed — `first_hand_of`'s public doc
+linked the private `stamp`, which the workspace's `private_intra_doc_links = "deny"` fails in CI's
+docs job — and six should-fix, all fixed: the world test's seed (3 t of metals, under a fair cycle
+too) and its comment, the unit test's impossible hold, the family choice tested end to end (the ice
+plan), the end summary's room tested, the backfill's plan branch tested on a ring it can lose, and
+the `metal_ore` tag residual recorded open. Both lenses traced that every new world test and the
+`tenure` unit test fail on the base code.
+
+The gate, at `6995adda` plus this cut, Windows, `-j 8`, one command at a time: `rustfmt --check
+--edition 2024` over the seven changed Rust files clean (`cargo fmt --all` exceeds the command line in
+this worktree, os error 206); `cargo clippy --workspace --all-targets -j 8 -- -D warnings` clean
+(121 s); `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items
+-j 8` clean (386 s); `cargo test -p tacsim --lib` 1,484 passed; `--test plans` 28 (both SM.11r world
+tests), `claims` 35, `knowing` 32, `orders` 34, `unloading` 18; `cargo test -p mush-contract-tests`
+84 passed, 1 failed; `cargo test --workspace --exclude mush-bot --no-fail-fast` 8,964 passed, 93
+ignored, 1 failed over 440 binaries (3,004 s); `cargo test -p mush-bot` 717 passed (799 s). **The one
+failure, in both, is peer-attributed**: `mush-contract-tests`' `no_crate_exceeds_its_production_panic_budget`
+reads `mush-net-ssh` at 16 production panic sites against its budget of 14, raised by the SSH
+session's `bcf27b59` and `b50a9e30` (main's CI has been red on them since); this cut touches no file in
+`mush-net-ssh` and repairs nothing of it. Rebased over `8d4abdac` and `e5599e5e` (tacsim's arena and
+`Cargo.toml`, none of this cut's files) before the push, with the cut's tacsim suites re-run on the
+rebased tree: `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `cargo test -p tacsim --lib` 1,485 passed, 0 failed, 1 ignored; `--test plans` 28 passed; `--test claims` 35 passed.
+
+### Surface for the next cuts
+
+`surface::chart::first_hand_of` (`pub`): read any chart row's first hand stamp through it, never
+`first_hand_at` directly. SM.12b's seeded survey writes `via: Plan` (its brief), which the rule never
+reads as a hand's; a future non-hand `Via` is likewise never read as one. `surface::plan::room_in_tonnes_of`
+(`pub(crate)`): any hold figure in tonnes of ore — SM.12b's dispatcher filing plans for the yard
+hull's ice ore goes through the same `plan_ask`/`CompileInput.hold_room_t` per-family reader.
+`plan::CompileInput.hold_room_t` is now `&dyn Fn(OreFamily) -> u64`.
+
+### Doc 20 amendments owed
+
+None: this commit folds its own — doc 20 §5's and §8's "As built (SM.11r)" notes, and doc 20a §10's
+as-built bullet. The next fold marks doc 20a §2's SM.11r row landed with this commit's hash.

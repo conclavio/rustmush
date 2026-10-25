@@ -199,7 +199,9 @@ pub struct FieldRow {
     /// stamps ([`write_scan`]'s trim, doc 20 cut SM.11).
     pub provenance: Vec<ChartProvenance>,
     /// **The earliest hand-made stamp ever written** (doc 20 cut SM.11; lead ruling 4): a plan's
-    /// stamp never touches it, so SM.10's stake evidence reads it. Skipped when `None`.
+    /// stamp never sets it to the plan's own instant, so SM.10's stake evidence reads it; a row
+    /// written before SM.11 has none until its next stamp backfills it from `first_local_at`
+    /// (doc 20 cut SM.11r, [`first_hand_of`]). Skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_hand_at: Option<i64>,
 }
@@ -220,7 +222,9 @@ pub struct PocketBlock {
     /// The newest four provenance entries by stamp, oldest first — hand stamps kept before plan
     /// stamps (doc 20 cut SM.11).
     pub provenance: Vec<ChartProvenance>,
-    /// **The earliest hand-made stamp ever written** (doc 20 cut SM.11); skipped when `None`.
+    /// **The earliest hand-made stamp ever written** (doc 20 cut SM.11; a row written before SM.11
+    /// has none until its next stamp backfills it, doc 20 cut SM.11r, [`first_hand_of`]); skipped
+    /// when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_hand_at: Option<i64>,
 }
@@ -605,12 +609,23 @@ struct Stamps<'a> {
 /// move `last_at` to the latest. **The ring is ordered by stamp** (the pre-commit round's item 4;
 /// SM.10's contest evidence reads it): the entry goes in after every entry stamped no later than
 /// `at` (ties keep their insertion order). **Doc 20 cut SM.11** (lead ruling 4; the reviewer's F7):
-/// a hand stamp also moves `first_hand_at` to the earliest hand stamp (a plan's never touches it);
+/// a hand stamp also moves `first_hand_at` to the earliest hand stamp (a plan's never sets it to the
+/// plan's own instant);
 /// and the trim, while the ring holds more than four, drops **the oldest `via: Plan` entry if the
 /// ring holds one, else the oldest entry** — so the ring holds the four newest hand stamps, then
 /// the newest plan stamps in what room is left: a plan's stamps never evict a hand stamp, and for a
 /// pilot who never files a plan the ring behaves byte for byte as SM.4a built it.
+///
+/// **Doc 20 cut SM.11r** (the owner's external review of 2026-10-23, item 1): a row written before
+/// SM.11 carries no `first_hand_at`, so before anything else this stamp backfills it from
+/// [`first_hand_of`] — the row's first stamp, which was a hand's. Without it the row's next stamp
+/// would lose the discovery: a hand stamp would set `first_hand_at` to its own later instant, and a
+/// plan's would put a `Plan` entry in the ring that [`first_hand_of`] then refuses to read past. A
+/// row created by this very stamp has an empty ring and backfills nothing.
 fn stamp(stamps: Stamps<'_>, instrument: Instrument, at: i64, via: Via) {
+    if stamps.first_hand.is_none() {
+        *stamps.first_hand = first_hand_of(*stamps.first, stamps.provenance.as_slice(), None);
+    }
     *stamps.first = (*stamps.first).min(at);
     *stamps.last = (*stamps.last).max(at);
     if via == Via::Hand {
@@ -635,6 +650,31 @@ fn stamp(stamps: Stamps<'_>, instrument: Instrument, at: i64, via: Via) {
             .position(|entry| matches!(entry, ChartProvenance::Local { via: Via::Plan, .. }));
         provenance.remove(oldest_plan.unwrap_or(0));
     }
+}
+
+/// **A row's first hand-made stamp, rows written before SM.11 included** (doc 20 cut SM.11r; the
+/// owner's external review of 2026-10-23, item 1): `first_hand_at` when it is set; otherwise, for
+/// a row whose provenance ring is not empty and holds hand-made entries only, its
+/// `first_local_at`. Every stamp written before SM.11 was a hand's, and those rows carry no
+/// `first_hand_at`, so their first stamp is their first hand stamp — the discovery SM.10's stake
+/// evidence reads ([`crate::surface::tenure::evidence_at`]), which their four-entry ring may no
+/// longer hold. A row SM.11 or later wrote has `first_hand_at` set by its first hand stamp; one
+/// that has had only a plan's stamps keeps a `Plan` entry in its ring (the private `stamp`'s trim evicts
+/// the oldest plan entry first, so a plan's entries leave only for other entries), so this never
+/// reads a plan's stamp as a hand's.
+#[must_use]
+pub fn first_hand_of(
+    first_local_at: i64,
+    provenance: &[ChartProvenance],
+    first_hand_at: Option<i64>,
+) -> Option<i64> {
+    first_hand_at.or_else(|| {
+        (!provenance.is_empty()
+            && provenance
+                .iter()
+                .all(|entry| matches!(entry, ChartProvenance::Local { via: Via::Hand, .. })))
+        .then_some(first_local_at)
+    })
 }
 
 /// A row about to be written under the current rule: one under another rule keeps only its
@@ -2447,6 +2487,102 @@ mod tests {
             .unwrap_or_else(|| panic!("the block"));
         assert_eq!(block.first_hand_at, Some(175));
         assert_eq!(b.check(), Ok(()));
+    }
+
+    /// **A row written before SM.11 keeps its discovery through its next stamp** (doc 20 cut
+    /// SM.11r; doc 20a §10 "Defects at HEAD", SM.11r-1, the owner's external review of 2026-10-23,
+    /// item 1): a legacy field row — no `first_hand_at`, its first scan at 100 pushed out of its
+    /// ring by four later hand scans — reads 100 through [`first_hand_of`]; a later hand scan
+    /// backfills `first_hand_at` with 100 (not its own 600), and so does a later plan scan. The
+    /// plan's branch is the one the backfill exists for: a legacy ring of three hand scans (100,
+    /// 200, 300) then a plan scan at 600 keeps the plan's entry in the ring, and hand scans at 700
+    /// and 800 then push 100 out — without the backfill at the plan's stamp the row would read 700.
+    /// A row a plan creates backfills nothing (review of SM.11r, the tests lens's S6).
+    #[test]
+    fn sm11r_a_legacy_rows_next_stamp_keeps_its_discovery() {
+        let legacy = || {
+            let mut r = row();
+            r.fields.insert(
+                27,
+                FieldRow {
+                    footing: Footing::Regolith,
+                    first_local_at: 100,
+                    last_at: 500,
+                    provenance: (2..=5)
+                        .map(|n| ChartProvenance::Local {
+                            instrument: Instrument::Scan,
+                            at: n * 100,
+                            via: Via::Hand,
+                        })
+                        .collect(),
+                    first_hand_at: None,
+                },
+            );
+            assert_eq!(r.check(), Ok(()));
+            r
+        };
+        let first = |r: &ChartRecord| {
+            r.fields
+                .get(&27)
+                .map(|field| {
+                    (
+                        field.first_hand_at,
+                        first_hand_of(field.first_local_at, &field.provenance, field.first_hand_at),
+                    )
+                })
+                .unwrap_or_else(|| panic!("the field row"))
+        };
+        assert_eq!(first(&legacy()), (None, Some(100)), "read as it stands");
+        for via in [Via::Hand, Via::Plan] {
+            let mut r = legacy();
+            write_scan(&mut r, [128, 124], &[27], Footing::Regolith, 600, via);
+            assert_eq!(first(&r), (Some(100), Some(100)), "{via:?}");
+            assert_eq!(r.check(), Ok(()));
+        }
+        // Three hand scans, then a plan scan whose entry stays in the ring, then two hand scans.
+        let mut three = row();
+        three.fields.insert(
+            27,
+            FieldRow {
+                footing: Footing::Regolith,
+                first_local_at: 100,
+                last_at: 300,
+                provenance: (1..=3)
+                    .map(|n| ChartProvenance::Local {
+                        instrument: Instrument::Scan,
+                        at: n * 100,
+                        via: Via::Hand,
+                    })
+                    .collect(),
+                first_hand_at: None,
+            },
+        );
+        assert_eq!(three.check(), Ok(()));
+        for (at, via) in [(600, Via::Plan), (700, Via::Hand), (800, Via::Hand)] {
+            write_scan(&mut three, [128, 124], &[27], Footing::Regolith, at, via);
+        }
+        assert_eq!(first(&three), (Some(100), Some(100)), "the plan's branch");
+        assert_eq!(three.check(), Ok(()));
+        // A row created by a plan's scan backfills nothing, and its hand scan sets its own stamp.
+        let mut fresh = row();
+        write_scan(
+            &mut fresh,
+            [128, 124],
+            &[27],
+            Footing::Regolith,
+            300,
+            Via::Plan,
+        );
+        assert_eq!(first(&fresh), (None, None));
+        write_scan(
+            &mut fresh,
+            [128, 124],
+            &[27],
+            Footing::Regolith,
+            400,
+            Via::Hand,
+        );
+        assert_eq!(first(&fresh), (Some(400), Some(400)));
     }
 
     /// **The trim evicts a plan's stamp before a hand stamp** (doc 20 cut SM.11; the reviewer's

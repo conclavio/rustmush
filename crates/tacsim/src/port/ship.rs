@@ -358,9 +358,11 @@ pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
 }
 
 /// **The hold's unreserved room for ore, kilograms** (doc 20 cut SM.4b; the brief's reviewer
-/// resolution R6 and decision P11; §19 item 1): [`hold_unreserved`]'s mass entry — the one rule
-/// the `site.map` frame's `hold.room_t` and the mining plan both read. `None` as
-/// [`hold_unreserved`].
+/// resolution R6 and decision P11; §19 item 1): [`hold_unreserved`]'s mass entry, read by the
+/// `site.map` frame's `hold.room_t` and by a plan's end summary for the tonnes the hold holds.
+/// Since doc 20 cut SM.11r the mining plan's compile, its preview and its end summary's room read
+/// the room in every measure instead (`crate::surface::plan`'s `room_in_tonnes_of` over
+/// [`hold_unreserved`]), never this mass entry alone. `None` as [`hold_unreserved`].
 #[must_use]
 pub(crate) fn hold_unreserved_kg(
     w: &World,
