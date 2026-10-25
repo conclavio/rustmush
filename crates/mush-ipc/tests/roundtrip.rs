@@ -150,6 +150,10 @@ fn every_to_server() -> Vec<ToServer> {
         },
         ToServer::ReAnnounce(vec![
             AttachRec {
+                output_brackets: mush_proto::OutputBrackets {
+                    prefix: Some("begin".into()),
+                    suffix: Some("end".into()),
+                },
                 conn: 5,
                 actor: ObjId(11),
                 account: Some("nick".to_string()),
@@ -157,6 +161,7 @@ fn every_to_server() -> Vec<ToServer> {
                 caps_structured: true,
             },
             AttachRec {
+                output_brackets: Default::default(),
                 conn: 6,
                 actor: ObjId(12),
                 account: None,
@@ -166,6 +171,10 @@ fn every_to_server() -> Vec<ToServer> {
         ]),
         ToServer::ReAnnounce(vec![]),
         // Each ServiceReq.
+        ToServer::Request {
+            id: 108,
+            req: ServiceReq::ReplyBarrier { conn: 5 },
+        },
         ToServer::Request {
             id: 100,
             req: ServiceReq::CreatePlayer {
@@ -245,6 +254,17 @@ fn every_to_gateway() -> Vec<ToGateway> {
     }))
     .expect("sample legal offer");
     vec![
+        ToGateway::SetOutputBrackets {
+            conn: 5,
+            brackets: mush_proto::OutputBrackets {
+                prefix: Some("begin".into()),
+                suffix: Some("end".into()),
+            },
+        },
+        ToGateway::SetOutputBrackets {
+            conn: 5,
+            brackets: Default::default(),
+        },
         ToGateway::Deliver {
             target: SendTarget::Char(42),
             event: OutputEvent::Sys(RichText::plain("hello")),
@@ -433,11 +453,9 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    // 16b cut F.4: 6, because `ServiceReq::CreatePlayer` gained the account the
-    // character is being made for. A v5 gateway would create characters the
-    // server's account oracle never learns of, which is the trap that cut
-    // closed, so the two halves must be built together.
-    assert_eq!(IPC_VERSION, 8, "the boundary protocol version is pinned");
+    // Version 9 carries mirrored reply settings and reply-completion fences.
+    // Deploy both peers together; an older peer cannot honor those contracts.
+    assert_eq!(IPC_VERSION, 9, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -469,6 +487,7 @@ fn version_is_present_and_travels_in_hello() {
 fn maximum_lifecycle_reannounce_snapshot_fits_one_frame() {
     let recs = (0..MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS)
         .map(|i| AttachRec {
+            output_brackets: Default::default(),
             conn: i as u64,
             actor: ObjId(i as u32),
             account: Some("a".repeat(20)),

@@ -287,6 +287,16 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// success response, `Busy` gets a few retries, and boundary/protocol/world
     /// failures return `false` for an explicit degraded detach.
     pub(crate) async fn delivery_barrier(&self, conn: ConnId, operation: &'static str) -> bool {
+        self.ordered_barrier(conn, operation, ServiceReq::Barrier)
+            .await
+    }
+
+    async fn ordered_barrier(
+        &self,
+        conn: ConnId,
+        operation: &'static str,
+        request: ServiceReq,
+    ) -> bool {
         let deadline = Instant::now() + DELIVERY_BARRIER_TIMEOUT;
         for attempt in 1..=DELIVERY_BARRIER_ATTEMPTS {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -294,8 +304,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 break;
             }
             let response =
-                match tokio::time::timeout(remaining, self.link.request(ServiceReq::Barrier)).await
-                {
+                match tokio::time::timeout(remaining, self.link.request(request.clone())).await {
                     Ok(response) => response,
                     Err(_) => {
                         tracing::warn!(conn = conn.0, operation, "delivery barrier timed out");
@@ -477,7 +486,13 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         );
     }
 
-    async fn handle_legal_action_line(&self, conn: ConnId, actor: ObjId, line: &str) -> bool {
+    async fn handle_legal_action_line(
+        &self,
+        conn: ConnId,
+        actor: ObjId,
+        line: &str,
+        forwarded: &mut bool,
+    ) -> bool {
         let (command, argument) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         if command.eq_ignore_ascii_case("action/status")
             || command.eq_ignore_ascii_case("+action/status")
@@ -663,6 +678,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 parameters: selection.parameters,
             })
             .await;
+        *forwarded = matches!(&outcome, ActionSend::Accepted);
         self.action_error(conn, actor, outcome);
         true
     }
@@ -977,15 +993,91 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     /// One input line from an attached connection.
     pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
-        self.line_inner(conn, line, true).await
+        self.line_framed(conn, line, true).await
     }
 
     /// Discord's identified channel probe already spent this input token.
     pub(crate) async fn line_prechecked(&self, conn: ConnId, line: &str) -> LineOutcome {
-        self.line_inner(conn, line, false).await
+        self.line_framed(conn, line, false).await
     }
 
-    async fn line_inner(&self, conn: ConnId, line: &str, check_flood: bool) -> LineOutcome {
+    pub(crate) async fn control_line(&self, conn: ConnId, line: &str) {
+        let mut forwarded = false;
+        self.line_inner(conn, line, true, &mut forwarded).await;
+    }
+
+    async fn line_framed(&self, conn: ConnId, line: &str, check_flood: bool) -> LineOutcome {
+        let Some(handle) = self.sessions.conn_handle(conn) else {
+            return LineOutcome::Continue;
+        };
+        let _serial = handle.reply_lock().await;
+        let nonempty = line.len() > MAX_LINE_CHARS.saturating_mul(4) || !line.trim().is_empty();
+        if nonempty && let Some(prefix) = handle.output_brackets().prefix {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag(mush_core::OUTPUT_PREFIX_TAG, prefix)),
+            );
+        }
+        let mut forwarded = false;
+        let outcome = self
+            .line_inner(conn, line, check_flood, &mut forwarded)
+            .await;
+        // QUIT carries its suffix in the final Disconnect, before transport close.
+        if outcome == LineOutcome::Close {
+            return outcome;
+        }
+        let completed = !forwarded
+            || self
+                .ordered_barrier(
+                    conn,
+                    "command reply",
+                    ServiceReq::ReplyBarrier { conn: conn.0 },
+                )
+                .await;
+        if !completed {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag(
+                    "error",
+                    "Reply interrupted: the server could not confirm completion.",
+                )),
+            );
+        }
+        if nonempty && let Some(suffix) = handle.output_brackets().suffix {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag(mush_core::OUTPUT_SUFFIX_TAG, suffix)),
+            );
+        }
+        if !completed && !self.link.is_restarting() {
+            // A live but unresponsive producer could still emit late output. End
+            // this physical connection rather than place it inside the next reply.
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Disconnect {
+                    reason: RichText::tag(
+                        "error",
+                        "Reply completion unavailable; reconnect to continue.",
+                    ),
+                },
+            );
+            self.disconnected(conn).await;
+            return LineOutcome::Close;
+        }
+        outcome
+    }
+
+    async fn line_inner(
+        &self,
+        conn: ConnId,
+        line: &str,
+        check_flood: bool,
+        forwarded: &mut bool,
+    ) -> LineOutcome {
         // Idle bookkeeping first — even a throttled keypress is activity.
         self.sessions.record_input(conn);
         // Cheap byte-length reject BEFORE the O(n) `sanitize_line` scan: a
@@ -1039,7 +1131,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn = conn.0, "line from unattached connection dropped");
             return LineOutcome::Continue;
         };
-        if self.handle_legal_action_line(conn, actor, trimmed).await {
+        if self
+            .handle_legal_action_line(conn, actor, trimmed, forwarded)
+            .await
+        {
             return LineOutcome::Continue;
         }
         match self
@@ -1051,7 +1146,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             }))
             .await
         {
-            InputSend::Sent => {}
+            InputSend::Sent => {
+                *forwarded = true;
+            }
             // M18 input-shed: the gateway->server queue is full (a wedged or slow
             // server), so this Cmd was dropped with a logged warn + counter bump.
             // Tell the player it did not land — the connection is NOT dropped.
@@ -1299,12 +1396,21 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 .await;
             self.delivery_barrier(conn, "quit").await;
         }
+        let mut farewell = RichText::tag("system", "Goodbye.");
+        if let Some(suffix) = self
+            .sessions
+            .conn_handle(conn)
+            .and_then(|handle| handle.output_brackets().suffix)
+        {
+            farewell.0.extend(RichText::plain("\n").0);
+            farewell
+                .0
+                .extend(RichText::tag(mush_core::OUTPUT_SUFFIX_TAG, suffix).0);
+        }
         send_event_to_conn(
             &self.sessions,
             conn,
-            OutputEvent::Disconnect {
-                reason: RichText::tag("system", "Goodbye."),
-            },
+            OutputEvent::Disconnect { reason: farewell },
         );
         self.sessions.detach(conn, DetachReason::Quit);
         self.forget_view_sequences(conn);

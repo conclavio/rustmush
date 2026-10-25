@@ -9,8 +9,8 @@ protocol is authorized by this delivery.
 |---|---|---|
 | 1 | B-85 split-process health | Accepted on dev1 |
 | 2 | T-99 SSH echo; history correlation/dedup; keyframe coordination | Accepted on dev1 |
-| 3 | T-102 restart-safe reply framing and completion ordering | In progress |
-| 4 | T-106 parallel pilot frames; T-107 sight-cache investigation | Pending |
+| 3 | T-102 restart-safe reply framing and completion ordering | Accepted on dev1 |
+| 4 | T-106 parallel pilot frames; T-107 sight-cache investigation | In progress |
 
 ## Gate 1: authoritative health
 
@@ -102,3 +102,72 @@ Accepted release SHA-256:
 
 - server: `24c27a40dc0da32de6aab533224b7b7f45c05963f06b175f4dd07adc7814c029`
 - gateway: `677b8c9a211d72fd3af9d3af6d5fca8d9721840ee73fd98a2299a1554f99f1d0`
+
+## Gate 3: connection reply completion
+
+The gateway now retains `OUTPUTPREFIX`/`OUTPUTSUFFIX` for the physical connection
+and restores them before reattachment completes. The command engine still validates
+settings through the ordinary command/input-context path. IPC version 9 requires
+upgrading both peers together. Standalone embedded Engine callers retain the older
+engine-owned framing; deployed world loops explicitly delegate it to the gateway.
+
+One connection serializes typed replies. Its prefix is the old setting and its
+suffix is the newly accepted setting, preserving the setter/clear semantics.
+Completion follows the input-custody release handshake, exact world delivery and
+the sequential staff executor. `@dump` waits for the store's acknowledgment.
+Malformed or locally refused actions do not wait for nonexistent server work.
+A stalled completion produces an explicit interruption; an unresponsive live
+producer closes that connection so late output cannot nest inside its next reply.
+The completion wait uses the existing bounded five-second barrier budget. The
+staff fence is conservative: it also waits for earlier work in the shared staff
+executor. Ordinary delivery barriers stay independent so staff work can call back
+into the world without deadlocking itself.
+
+SSH-local history, TUI transitions, pixel and sound commands share the connection
+reply lock. Ordered transport writes and pump fences keep their bodies inside the
+pair. TUI coalescing preserves raw delimiter boundaries. QUIT carries its suffix
+after Goodbye in the final event, before channel close. Asynchronous game events
+can still arrive between delimiters; continuous pixel-control traffic remains
+unframed. These delimiters identify command completion, not an isolated event feed.
+
+The split restart regression initially exposed a custody race: the old barrier
+could run before the command's release round trip. The repair waits for the
+connection's existing custody entries, atomically queues release and disposition
+output, then sends the completion fence. A direct IPC regression pins that order.
+
+Validation on dev1: 738 affected core/protocol/session/server library tests passed
+(two ignored); 347 SSH library/real-loopback tests; 83 gateway library and split
+restart/TUI/SSH/web tests; 15 wire/parity tests; and 49 persistence/in-process tests.
+The final local-refusal and gateway reruns passed (16 and 71 tests respectively).
+Strict affected-crate Clippy and the TLS release build passed. All 26 changed
+source/script files match the tested VPS tree by normalized SHA-256.
+
+The live front door passed all six acceptance groups: world/staff/store replies,
+SSH-local history/pixel/sounds/TUI replies, three pipelined commands, same-connection
+SIGKILL/relaunch with retained delimiters, clearing settings, and QUIT/farewell/
+suffix before exit status 0. The gateway PID stayed 1408489 across the child restart.
+The bounded delayed-commit and held-BGSAVE test also proves that a second command
+cannot nest its markers and that an ordinary world barrier remains responsive.
+
+Evidence: [live acceptance](evidence/performance-client-2026-10-24/reply-live.json),
+[SSH](evidence/performance-client-2026-10-24/reply-ssh-tests.log),
+[split regressions](evidence/performance-client-2026-10-24/reply-split-tests.log),
+[core tests](evidence/performance-client-2026-10-24/reply-core-tests.log),
+[persistence](evidence/performance-client-2026-10-24/reply-inprocess-tests.log),
+[final refusals](evidence/performance-client-2026-10-24/reply-refusals-final.log),
+[wire tests](evidence/performance-client-2026-10-24/reply-wire-final.log),
+[Clippy](evidence/performance-client-2026-10-24/reply-clippy-final.log),
+[final gateway Clippy](evidence/performance-client-2026-10-24/reply-gateway-clippy.log),
+[release](evidence/performance-client-2026-10-24/reply-release-accepted.log),
+[source manifest](evidence/performance-client-2026-10-24/reply-source-manifest.json).
+Reproduce with `scripts/client-replies-live.py` on dev1.
+
+Accepted release SHA-256:
+
+- server: `02857922144e7e4e1244453283df60128e740b3ca9aa4a13aa121aad51fd2b2b`
+- gateway: `323018f4416cb0b19db8dad962befa14213d0cdb70c14e8cf34f9286cc8b318f`
+
+CI lookback: gate 1 run 40140644435 failed only the pre-admission `fence create:
+Busy` fixture in `m5_module_persistence_round_trip_in_memory`. Gate 2 (`bcf27b59`)
+already repaired that fixture; the full persistence suite is green on dev1.
+Both earlier CodeQL runs passed; gate 2's main CI was still running at this gate.

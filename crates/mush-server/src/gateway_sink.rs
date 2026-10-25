@@ -52,6 +52,9 @@ pub trait GatewaySink: Send + Sync {
         self.transmit(vec![(target, event)]);
     }
 
+    /// Mirror an accepted connection setting before the reply completion barrier.
+    fn set_output_brackets(&self, _conn: u64, _brackets: mush_proto::OutputBrackets) {}
+
     /// Set/clear a character's flood-exempt flag on the gateway throttle.
     fn set_flood_exempt(&self, char: u64, exempt: bool);
 
@@ -217,6 +220,9 @@ impl SocketSink {
 }
 
 impl GatewaySink for SocketSink {
+    fn set_output_brackets(&self, conn: u64, brackets: mush_proto::OutputBrackets) {
+        self.send(ToGateway::SetOutputBrackets { conn, brackets });
+    }
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
         for (target, ev) in sends {
             self.send(ToGateway::Deliver {

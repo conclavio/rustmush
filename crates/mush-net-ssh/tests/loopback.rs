@@ -32,6 +32,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Default)]
 struct MockHooks {
+    brackets: Mutex<mush_proto::OutputBrackets>,
     /// account (lowercase) -> (password, characters)
     accounts: Mutex<HashMap<String, (String, Vec<CharSummary>)>>,
     /// account (lowercase) -> registered OpenSSH public-key lines (M19).
@@ -115,6 +116,11 @@ fn backlog_reply(lines: serde_json::Value, more: bool, evicted: bool) -> OutputE
 }
 
 impl SshHooks for MockHooks {
+    fn begin_local_reply(&self, _conn: u64) -> BoxFuture<'_, mush_net_ssh::LocalReply> {
+        let brackets = self.brackets.lock().unwrap().clone();
+        Box::pin(async move { mush_net_ssh::LocalReply::with_guard(brackets, ()) })
+    }
+
     fn auth_account<'a>(
         &'a self,
         account: &'a str,
@@ -2479,4 +2485,90 @@ async fn pty_echo_zero_keeps_input_private_while_delivering_commands() {
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
+}
+
+#[tokio::test]
+async fn local_reply_markers_surround_history_and_mode_changes() {
+    let hooks = Arc::new(MockHooks::default());
+    let (_handle, mut term) = play_session("local-frames", &hooks).await;
+    *hooks.brackets.lock().unwrap() = mush_proto::OutputBrackets {
+        prefix: Some("__BEGIN__".into()),
+        suffix: Some("__END__".into()),
+    };
+    for (command, body) in [
+        ("@history 2", "second words"),
+        ("@pixel/encoder", "Picture encoder"),
+        ("@sounds off", "Sounds are off"),
+    ] {
+        let mark = term.seen.len();
+        term.send_line(command).await;
+        term.expect_after(mark, "__END__").await;
+        let reply = &term.seen[mark..];
+        assert!(
+            reply.find("__BEGIN__").unwrap() < reply.find(body).unwrap(),
+            "{reply}"
+        );
+        assert!(
+            reply.find(body).unwrap() < reply.find("__END__").unwrap(),
+            "{reply}"
+        );
+    }
+    let mark = term.seen.len();
+    term.send_line("@tui").await;
+    term.expect_after(mark, "__END__").await;
+    let reply = &term.seen[mark..];
+    assert!(
+        reply.find("__BEGIN__").unwrap() < reply.find("\u{1b}[?1049h").unwrap(),
+        "{reply}"
+    );
+    assert!(
+        reply.find("\u{1b}[?1049h").unwrap() < reply.find("__END__").unwrap(),
+        "{reply}"
+    );
+    term.send_bytes(b"\r").await;
+    let mark = term.seen.len();
+    term.send_line("@notui").await;
+    term.expect_after(mark, "__END__").await;
+    let reply = &term.seen[mark..];
+    assert!(
+        reply.find("__BEGIN__").unwrap() < reply.find("\u{1b}[?1049l").unwrap(),
+        "{reply}"
+    );
+    assert!(
+        reply.find("\u{1b}[?1049l").unwrap() < reply.find("__END__").unwrap(),
+        "{reply}"
+    );
+}
+
+#[tokio::test]
+async fn tui_coalescing_preserves_wire_reply_boundaries() {
+    let hooks = Arc::new(MockHooks::default());
+    let (_handle, mut term) = play_session("tui-wire-frames", &hooks).await;
+    term.send_line("@tui").await;
+    term.expect("Alice").await; // Term.expect strips ANSI; inspect raw bytes separately.
+    assert!(term.seen.contains("\u{1b}[?1049h"));
+    let tx = hooks.txs.lock().unwrap().values().next().unwrap().clone();
+    let mark = term.seen.len();
+    for (tag, text) in [
+        ("system", "before-boundary"),
+        (mush_proto::OUTPUT_PREFIX_TAG, "__BEGIN__"),
+        ("system", "reply-body"),
+        (mush_proto::OUTPUT_SUFFIX_TAG, "__END__"),
+    ] {
+        tx.send(Arc::new(OutputEvent::Sys(RichText::tag(tag, text))))
+            .await
+            .unwrap();
+    }
+    term.expect_after(mark, "__END__").await;
+    let reply = &term.seen[mark..];
+    assert!(
+        reply.find("__BEGIN__").unwrap() < reply.find("reply-body").unwrap(),
+        "{reply}"
+    );
+    assert!(
+        reply.find("reply-body").unwrap() < reply.find("__END__").unwrap(),
+        "{reply}"
+    );
+    assert_eq!(reply.matches("__BEGIN__").count(), 1);
+    assert_eq!(reply.matches("__END__").count(), 1);
 }

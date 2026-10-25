@@ -1901,7 +1901,7 @@ mod tests {
         fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
             Box::pin(async move {
                 Some(match req {
-                    ServiceReq::Barrier => ServiceResp::Barrier,
+                    ServiceReq::Barrier | ServiceReq::ReplyBarrier { .. } => ServiceResp::Barrier,
                     ServiceReq::ConnectionReady { .. } => {
                         if self.stall_ready.load(Ordering::Relaxed) {
                             self.ready_release.notified().await;

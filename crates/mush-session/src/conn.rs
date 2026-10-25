@@ -56,6 +56,8 @@ pub enum Sink {
 /// store and WHO can reconstruct an `Instant` exactly.
 #[derive(Debug)]
 pub struct ConnectionHandle {
+    output_brackets: RwLock<mush_proto::OutputBrackets>,
+    reply_serial: Arc<tokio::sync::Mutex<()>>,
     /// Connection id (allocated by the transport layer; unique per process).
     pub id: ConnId,
     /// Peer address.
@@ -129,6 +131,8 @@ impl ConnectionHandle {
         connected_at: Instant,
     ) -> Self {
         Self {
+            output_brackets: RwLock::new(Default::default()),
+            reply_serial: Arc::new(tokio::sync::Mutex::new(())),
             id,
             addr,
             caps: RwLock::new(caps),
@@ -139,6 +143,26 @@ impl ConnectionHandle {
             last_input: AtomicI64::new(0),
             output_dropped: AtomicBool::new(false),
         }
+    }
+
+    /// Current delimiters for this physical connection; never copied to another login.
+    pub fn output_brackets(&self) -> mush_proto::OutputBrackets {
+        read_locked(&self.output_brackets, "reply brackets").clone()
+    }
+
+    /// Replace the row validated by the server's command dispatcher.
+    pub fn set_output_brackets(&self, brackets: mush_proto::OutputBrackets) {
+        *write_locked(&self.output_brackets, "reply brackets") = brackets;
+    }
+
+    /// Serialize typed replies until their complete body has been delivered.
+    pub async fn reply_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.reply_serial.lock().await
+    }
+
+    /// An owned reply guard for a transport-local command.
+    pub async fn owned_reply_lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.reply_serial.clone().lock_owned().await
     }
 
     /// Whether this connection's sink is [`Sink::Structured`] (web).

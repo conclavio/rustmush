@@ -1926,6 +1926,7 @@ pub async fn reader_loop(
                 let recs = recs
                     .into_iter()
                     .map(|r| world_task::ReAttachRec {
+                        output_brackets: r.output_brackets,
                         conn: r.conn,
                         actor: r.actor,
                         caps_structured: r.caps_structured,
@@ -2031,6 +2032,7 @@ pub async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp
             Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
         },
         ServiceReq::Barrier => barrier_response(world.barrier_result().await),
+        ServiceReq::ReplyBarrier { .. } => barrier_response(world.reply_barrier_result().await),
         ServiceReq::DiscordInteraction(interaction) => {
             match world.discord_interaction(interaction).await {
                 Ok(result) => ServiceResp::DiscordInteraction(result),

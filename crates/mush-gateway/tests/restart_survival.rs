@@ -733,3 +733,71 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
 
     drop(god1);
 }
+
+/// Retained delimiters belong to one gateway connection, survive a server restart,
+/// and are restored before the first post-restart setting command is evaluated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reply_settings_survive_restart_and_remain_connection_local() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let (addr, trigger) = start_split(Box::new(ThreadLauncher { store })).await;
+    let (_a, mut a) = play_client(addr).await;
+    a.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    a.expect("Connected as God").await;
+    a.expect("Limbo #0").await;
+    let (_b, mut b) = play_client(addr).await;
+    b.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    b.expect("Connected as God").await;
+    b.expect("Limbo #0").await;
+    let mark = a.mark();
+    a.send_line("OUTPUTSUFFIX __END__").await;
+    a.expect_after(mark, "\n__END__\r\n").await;
+    let mark = a.mark();
+    a.send_line("OUTPUTPREFIX __BEGIN__").await;
+    a.expect_after(mark, "\n__END__\r\n").await;
+
+    let mark = a.mark();
+    a.send_line("think before-restart").await;
+    a.expect_after(mark, "\n__END__\r\n").await;
+    let text = strip_ansi(&a.seen[mark..]);
+    assert!(
+        text.find("__BEGIN__").unwrap() < text.rfind("before-restart").unwrap(),
+        "{text}"
+    );
+    assert!(
+        text.rfind("before-restart").unwrap() < text.find("__END__").unwrap(),
+        "{text}"
+    );
+    let peer = b.mark();
+    b.send_line("think peer-unframed").await;
+    b.expect_after(peer, "\npeer-unframed\r\n").await;
+    let text = strip_ansi(&b.seen[peer..]);
+    assert!(
+        !text.contains("__BEGIN__") && !text.contains("__END__"),
+        "{text}"
+    );
+
+    let mark = a.mark();
+    assert!(trigger.restart().await);
+    a.expect_after(mark, "Reconnected").await;
+    let mark = a.mark();
+    a.send_line("think after-restart").await;
+    a.expect_after(mark, "\n__END__\r\n").await;
+    let text = strip_ansi(&a.seen[mark..]);
+    assert!(
+        text.find("__BEGIN__").unwrap() < text.rfind("after-restart").unwrap(),
+        "{text}"
+    );
+    assert!(
+        text.rfind("after-restart").unwrap() < text.find("__END__").unwrap(),
+        "{text}"
+    );
+    // A suffix-only update after restart must keep the restored prefix.
+    let mark = a.mark();
+    a.send_line("OUTPUTSUFFIX __NEW_END__").await;
+    a.expect_after(mark, "\n__NEW_END__\r\n").await;
+    assert!(strip_ansi(&a.seen[mark..]).contains("__BEGIN__"));
+    let mark = a.mark();
+    a.send_line("think restored-prefix").await;
+    a.expect_after(mark, "\n__NEW_END__\r\n").await;
+    assert!(strip_ansi(&a.seen[mark..]).contains("__BEGIN__"));
+}

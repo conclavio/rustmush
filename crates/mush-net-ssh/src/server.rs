@@ -304,6 +304,8 @@ impl russh::server::Server for Ingress {
                 tui: None,
                 manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
+                output_fence: None,
+                history_rendered: Arc::new(Notify::new()),
                 history: HistoryCursor::default(),
                 history_request: None,
                 next_history_request: 1 << 63,
@@ -406,6 +408,8 @@ struct Shared {
     /// (resize, input edit). Only pulsed while `Mode::Tui`, so line mode is
     /// never woken by it (invariant T1).
     repaint: Arc<Notify>,
+    output_fence: Option<tokio::sync::oneshot::Sender<()>>,
+    history_rendered: Arc<Notify>,
     /// Where line mode's `@history` has read back to (interface plan I12).
     history: HistoryCursor,
     /// Only this correlated page may consume either mode's paging latch.
@@ -820,40 +824,8 @@ impl ConnHandler {
         let mode = self.lock().mode.clone();
         match mode {
             Mode::InGame => {
-                // `@tui` is intercepted transport-side, before the world sees
-                // it (design M15 D2); every other line forwards unchanged, so
-                // a connection that never types `@tui` behaves exactly as
-                // today (invariant T1).
-                if line.trim().eq_ignore_ascii_case("@tui") {
-                    return self.enter_tui(session).await;
-                }
-                // Interface plan I12: `@history [n|more]` is answered from
-                // the gateway's per-viewer resume ring through the read-only
-                // query seam, intercepted here exactly like `@tui`. The
-                // world never sees it — which also means, as a consequence
-                // and not an oversight, that it does NOT stamp idle
-                // (`Core::query` deliberately skips `record_input`;
-                // D-I-3, M15 D5). A player reading a scene back therefore
-                // reads as idle in WHO, the same as one sitting in the TUI.
-                // If staff ever want it otherwise the fix is a
-                // `record_input` here, never a change to the query seam.
-                if let Some(req) = parse_history(&line) {
-                    return self.history_line(session, req).await;
-                }
-                // Doc 21 cut G.2: the picture's encoder is the front end's,
-                // never the world's.
-                if let Some(req) = parse_pixel_encoder(&line) {
-                    let text = self.pixel_encoder(req);
-                    return self.write_sys(session, &text);
-                }
-                // Doc 21 cut G.10: so are its sounds.
-                if let Some(req) = parse_sounds(&line) {
-                    let text = self.sounds(req);
-                    return self.write_sys(session, &text);
-                }
-                // Doc 21 cut G.1b: the picture's numbers live in `@tui`.
-                if is_pixel_stats(&line) {
-                    return self.write_sys(session, PIXEL_STATS_OUTSIDE_TUI);
+                if self.local_line(session, &line).await? {
+                    return Ok(());
                 }
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
@@ -909,7 +881,7 @@ impl ConnHandler {
             sh.mode = Mode::Tui;
             (out, queries)
         };
-        session.data(channel, bytes)?;
+        self.write_ordered(session, channel, bytes).await?;
         // Read-only hydration (WHO, the command table, channels, vitals, the
         // screen's own feeds); every reply lands on the pump, which repaints.
         // None of it stamps idle (design M15 D5, interface plan I1 D-I-3).
@@ -961,9 +933,9 @@ impl ConnHandler {
             sh.editor.redraw(&mut out);
             out
         };
-        session.data(channel, bytes)?;
+        self.write_ordered(session, channel, bytes).await?;
         for line in stop_orders {
-            self.hooks.line(self.conn_id, line).await;
+            self.hooks.control_line(self.conn_id, line).await;
         }
         Ok(())
     }
@@ -989,38 +961,7 @@ impl ConnHandler {
             // A burst can carry more than one line (a multi-line paste); each
             // is forwarded in order so none is dropped.
             for line in result.submit {
-                // `@notui` typed at the TUI input line also detaches.
-                if line.trim().eq_ignore_ascii_case("@notui") {
-                    return self.leave_tui(session).await;
-                }
-                // Doc 21 cut G.2: answered here, into the TUI's own
-                // scrollback, as `@history` is in line mode.
-                if let Some(req) = parse_pixel_encoder(&line) {
-                    let text = self.pixel_encoder(req);
-                    if let Some(tui) = self.lock().tui.as_mut() {
-                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
-                    }
-                    self.fire_repaint();
-                    continue;
-                }
-                // Doc 21 cut G.10: the sounds, answered the same way.
-                if let Some(req) = parse_sounds(&line) {
-                    let text = self.sounds(req);
-                    if let Some(tui) = self.lock().tui.as_mut() {
-                        let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
-                    }
-                    self.fire_repaint();
-                    continue;
-                }
-                // Doc 21 cut G.1b: this connection's picture in numbers.
-                if is_pixel_stats(&line) {
-                    if let Some(tui) = self.lock().tui.as_mut() {
-                        for text in tui.pixel_stats_lines() {
-                            let _ =
-                                tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
-                        }
-                    }
-                    self.fire_repaint();
+                if self.local_line(session, &line).await? {
                     continue;
                 }
                 self.hooks.line(self.conn_id, line).await;
@@ -1093,29 +1034,149 @@ impl ConnHandler {
     /// Write one transport-side system line the way a world `Sys` line
     /// looks (this connection's caps and the shared theme), around the line
     /// editor exactly as the pump does.
-    fn write_sys(&self, session: &mut Session, text: &str) -> Result<(), russh::Error> {
+    async fn write_sys(&self, session: &mut Session, text: &str) -> Result<(), russh::Error> {
         let Some(ch) = self.channel else {
             return Ok(());
         };
+        let event = OutputEvent::Sys(RichText::tag("system", text));
         let bytes = {
-            let sh = self.lock();
-            let mut bytes = Vec::new();
-            let interrupted = sh.editor.has_visible_line();
-            if interrupted {
-                bytes.extend_from_slice(b"\r\x1b[K");
+            let mut sh = self.lock();
+            if let Some(tui) = sh.tui.as_mut() {
+                let _ = tui.apply_event(&event);
+                tui.paint()
+            } else {
+                let mut bytes = Vec::new();
+                render_line_event(&mut sh, &event, &AnsiTheme::default(), &mut bytes);
+                bytes
             }
-            mush_ansi::render(
-                &OutputEvent::Sys(RichText::tag("system", text)),
-                &sh.caps,
-                &AnsiTheme::default(),
-                &mut bytes,
-            );
-            if interrupted {
-                sh.editor.redraw(&mut bytes);
-            }
-            bytes
         };
-        session.data(ch, bytes)
+        self.write_ordered(session, ch, bytes).await
+    }
+
+    async fn write_ordered(
+        &self,
+        session: &mut Session,
+        channel: ChannelId,
+        bytes: Vec<u8>,
+    ) -> Result<(), russh::Error> {
+        tokio::time::timeout(WRITE_TIMEOUT, session.handle().data(channel, bytes))
+            .await
+            .map_err(|_| russh::Error::Disconnect)?
+            .map_err(|_| russh::Error::Disconnect)
+    }
+
+    async fn flush_output(&self) -> Result<(), russh::Error> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut sh = self.lock();
+            sh.output_fence = Some(tx);
+            sh.repaint.notify_one();
+        }
+        tokio::time::timeout(WRITE_TIMEOUT, rx)
+            .await
+            .map_err(|_| russh::Error::Disconnect)?
+            .map_err(|_| russh::Error::Disconnect)
+    }
+
+    async fn write_marker(
+        &self,
+        session: &mut Session,
+        tag: &str,
+        text: &str,
+    ) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let mut bytes = Vec::new();
+        mush_ansi::render(
+            &OutputEvent::Sys(RichText::tag(tag, text)),
+            &self.lock().caps,
+            &AnsiTheme::default(),
+            &mut bytes,
+        );
+        self.write_ordered(session, channel, bytes).await
+    }
+
+    /// All transport-local typed commands share one reply boundary and one writer.
+    async fn local_line(
+        &mut self,
+        session: &mut Session,
+        line: &str,
+    ) -> Result<bool, russh::Error> {
+        let in_tui = matches!(self.lock().mode, Mode::Tui);
+        let enter = !in_tui && line.trim().eq_ignore_ascii_case("@tui");
+        let leave = in_tui && line.trim().eq_ignore_ascii_case("@notui");
+        let history = if in_tui { None } else { parse_history(line) };
+        let encoder = parse_pixel_encoder(line);
+        let sounds = parse_sounds(line);
+        let stats = is_pixel_stats(line);
+        if !enter && !leave && history.is_none() && encoder.is_none() && sounds.is_none() && !stats
+        {
+            return Ok(false);
+        }
+        let reply = self.hooks.begin_local_reply(self.conn_id).await;
+        let framed = reply.brackets.prefix.is_some() || reply.brackets.suffix.is_some();
+        if framed {
+            self.flush_output().await?;
+        }
+        if let Some(prefix) = &reply.brackets.prefix {
+            self.write_marker(session, mush_proto::OUTPUT_PREFIX_TAG, prefix)
+                .await?;
+        }
+        if enter {
+            self.enter_tui(session).await?;
+        } else if leave {
+            self.leave_tui(session).await?;
+        } else if let Some(request) = history {
+            self.history_line(session, request).await?;
+            if framed {
+                let notify = self.lock().history_rendered.clone();
+                let completed = tokio::time::timeout(HISTORY_LATCH, async {
+                    loop {
+                        let notified = notify.notified();
+                        if self.lock().history_request.is_none() {
+                            break;
+                        }
+                        notified.await;
+                    }
+                })
+                .await
+                .is_ok();
+                if !completed {
+                    {
+                        let mut sh = self.lock();
+                        sh.history_request = None;
+                        sh.history.pending = None;
+                    }
+                    self.write_sys(session, "History is unavailable; please try again.")
+                        .await?;
+                }
+            }
+        } else if let Some(request) = encoder {
+            let text = self.pixel_encoder(request);
+            self.write_sys(session, &text).await?;
+        } else if let Some(request) = sounds {
+            let text = self.sounds(request);
+            self.write_sys(session, &text).await?;
+        } else if stats {
+            let lines = self
+                .lock()
+                .tui
+                .as_mut()
+                .map(|t| t.pixel_stats_lines())
+                .unwrap_or_else(|| vec![PIXEL_STATS_OUTSIDE_TUI.to_owned()]);
+            for text in lines {
+                self.write_sys(session, &text).await?;
+            }
+        }
+        if framed {
+            self.flush_output().await?;
+        }
+        if let Some(suffix) = &reply.brackets.suffix {
+            self.write_marker(session, mush_proto::OUTPUT_SUFFIX_TAG, suffix)
+                .await?;
+        }
+        Ok(true)
     }
 
     /// `@history [n|more]`: ask the gateway for a page of this viewer's own
@@ -1128,7 +1189,7 @@ impl ConnHandler {
         req: HistoryReq,
     ) -> Result<(), russh::Error> {
         let HistoryReq::Page { limit, more } = req else {
-            return self.write_sys(session, HISTORY_USAGE);
+            return self.write_sys(session, HISTORY_USAGE).await;
         };
         /// Either ask, or say why not — decided under the lock, acted on
         /// after it drops (the hooks call is `async`).
@@ -1157,7 +1218,7 @@ impl ConnHandler {
             }
         };
         match next {
-            Next::Say(msg) => self.write_sys(session, msg),
+            Next::Say(msg) => self.write_sys(session, msg).await,
             Next::Ask(before) => {
                 // An explicit, non-zero limit: the gateway does
                 // `.unwrap_or(0).clamp(1, 200)`, so an absent or zero limit
@@ -2123,6 +2184,19 @@ async fn submit_query(
     hooks.query(conn, id, name, args).await;
 }
 
+fn reply_wire_boundary(event: &OutputEvent) -> bool {
+    match event {
+        OutputEvent::Sys(text) => text.0.iter().any(|span| {
+            matches!(
+                span.tag.as_deref(),
+                Some(mush_proto::OUTPUT_PREFIX_TAG | mush_proto::OUTPUT_SUFFIX_TAG)
+            )
+        }),
+        OutputEvent::Disconnect { .. } => true,
+        _ => false,
+    }
+}
+
 fn accept_history_reply(sh: &mut Shared, event: &OutputEvent) -> bool {
     let OutputEvent::Reply { id, event } = event else {
         return true;
@@ -2398,6 +2472,7 @@ fn spawn_output_pump(
             Frame,
         }
 
+        let mut pending = std::collections::VecDeque::new();
         let mut legacy_open = true;
         let mut stamped_open = true;
         let mut exit_status = 0;
@@ -2412,13 +2487,17 @@ fn spawn_output_pump(
                         _ => crate::tui::pixel::FRAME_INTERVAL,
                     }
                 });
-            let wake = tokio::select! {
-                biased;
-                ev = rx.recv(), if legacy_open => Wake::Event(ev),
-                ev = stamped_rx.recv(), if stamped_open => Wake::Stamped(ev),
-                () = repaint.notified() => Wake::Repaint,
-                _ = who_timer.tick() => Wake::Tick,
-                () = tokio::time::sleep_until(next_frame) => Wake::Frame,
+            let wake = if let Some(wake) = pending.pop_front() {
+                wake
+            } else {
+                tokio::select! {
+                    biased;
+                    ev = rx.recv(), if legacy_open => Wake::Event(ev),
+                    ev = stamped_rx.recv(), if stamped_open => Wake::Stamped(ev),
+                    () = repaint.notified() => Wake::Repaint,
+                    _ = who_timer.tick() => Wake::Tick,
+                    () = tokio::time::sleep_until(next_frame) => Wake::Frame,
+                }
             };
             // Real adapters keep only one sender. A closed unused stream is not logout.
             if matches!(wake, Wake::Event(None)) {
@@ -2488,6 +2567,7 @@ fn spawn_output_pump(
                 continue;
             }
 
+            let fence_wake = matches!(wake, Wake::Repaint);
             let mut done = false;
             // Doc 21 cut G.1b: this wake's bytes carry a picture, whose write
             // is timed for the step-down.
@@ -2522,6 +2602,16 @@ fn spawn_output_pump(
                         // opens on the room this connection was last shown.
                         remember_the_room(&mut sh.manifest, &ev);
                         match sh.mode {
+                            Mode::Tui if reply_wire_boundary(&ev) => {
+                                let mut bytes = Vec::new();
+                                if done {
+                                    bytes.extend_from_slice(TuiSession::leave_bytes());
+                                    sh.tui = None;
+                                    sh.mode = Mode::InGame;
+                                }
+                                mush_ansi::render(&ev, &sh.caps, &theme, &mut bytes);
+                                bytes
+                            }
                             Mode::Tui => {
                                 // Coalesce: apply this event and every other
                                 // ready one, then paint a single frame.
@@ -2529,6 +2619,10 @@ fn spawn_output_pump(
                                     queries.extend(t.apply_stamped_event(&ev, stamp));
                                 }
                                 while let Ok(next) = rx.try_recv() {
+                                    if reply_wire_boundary(&next) {
+                                        pending.push_back(Wake::Event(Some(next)));
+                                        break;
+                                    }
                                     if !accept_history_reply(&mut sh, &next) {
                                         continue;
                                     }
@@ -2540,7 +2634,14 @@ fn spawn_output_pump(
                                         queries.extend(t.apply_event(&next));
                                     }
                                 }
-                                while let Ok(next) = stamped_rx.try_recv() {
+                                while pending.is_empty() {
+                                    let Ok(next) = stamped_rx.try_recv() else {
+                                        break;
+                                    };
+                                    if reply_wire_boundary(&next.event) {
+                                        pending.push_back(Wake::Stamped(Some(next)));
+                                        break;
+                                    }
                                     if !accept_history_reply(&mut sh, &next.event) {
                                         continue;
                                     }
@@ -2630,7 +2731,7 @@ fn spawn_output_pump(
                 .await;
             }
             for line in lines {
-                hooks.line(conn_id, line).await;
+                hooks.control_line(conn_id, line).await;
             }
 
             if !bytes.is_empty() {
@@ -2667,6 +2768,13 @@ fn spawn_output_pump(
                         exit_status = 1;
                         break;
                     }
+                }
+            }
+            {
+                let mut sh = shared.lock().expect("conn state poisoned");
+                sh.history_rendered.notify_waiters();
+                if fence_wake && let Some(fence) = sh.output_fence.take() {
+                    let _ = fence.send(());
                 }
             }
             if done {
@@ -2958,6 +3066,8 @@ mod tests {
             tui: None,
             manifest: TuiManifest::default(),
             repaint: Arc::new(Notify::new()),
+            output_fence: None,
+            history_rendered: Arc::new(Notify::new()),
             history: HistoryCursor::default(),
             history_request: None,
             next_history_request: 1 << 63,

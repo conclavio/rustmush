@@ -56,7 +56,7 @@ pub use mush_core::ControlMsg;
 // insert; it needs no further bump because no released peer has ever spoken 6.
 // Version 7 adds closed module invokes under claim/release custody.
 // Version 8 adds authoritative world health; deploy both halves together.
-pub const IPC_VERSION: u32 = 8;
+pub const IPC_VERSION: u32 = 9;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -667,6 +667,9 @@ impl TryFrom<Inbound> for WireInbound {
 /// reconstruct the connection map after a restart (M16c re-attach).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AttachRec {
+    /// Gateway-retained connection settings, restored before accepting input.
+    #[serde(default)]
+    pub output_brackets: mush_proto::OutputBrackets,
     /// The physical connection id.
     pub conn: u64,
     /// The actor the connection is playing.
@@ -683,6 +686,8 @@ pub struct AttachRec {
 /// matched to their [`ServiceResp`] by the `id` on [`ToServer::Request`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServiceReq {
+    /// Delivery plus the sequential staff executor, for a typed reply boundary.
+    ReplyBarrier { conn: u64 },
     /// Create a Player object (account/character creation). Answered once the
     /// creation batch is acknowledged by the store.
     CreatePlayer {
@@ -1033,6 +1038,13 @@ pub enum ToServer {
 /// Server → gateway. Everything the server half sends across the boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToGateway {
+    /// Accepted connection settings; gateway lifetime survives a world restart.
+    SetOutputBrackets {
+        /// Physical connection id.
+        conn: u64,
+        /// The complete replacement row.
+        brackets: mush_proto::OutputBrackets,
+    },
     /// Periodic authoritative liveness. Source timestamps remain unchanged when
     /// the world stalls, even if the IPC writer and gateway are still running.
     WorldHealth {

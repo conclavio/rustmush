@@ -358,6 +358,7 @@ struct CustodiedInput {
 /// ceilings are enforced before a frame enters the writer queue.
 #[derive(Default)]
 struct InputCustody {
+    changed: Arc<tokio::sync::Notify>,
     entries: BTreeMap<RequestUid, CustodiedInput>,
     per_connection: HashMap<u64, ConnectionInputCustody>,
     bytes: usize,
@@ -1144,6 +1145,37 @@ impl GatewayLink for SocketGatewayLink {
             tracing::error!("ipc service-request correlation id space exhausted; refusing request");
             return Box::pin(async move { Some(ServiceResp::Unavailable) });
         };
+        if let ServiceReq::ReplyBarrier { conn: physical } = req {
+            let (pending, changed) = {
+                let custody = locked(&self.input_custody, "input custody");
+                let pending: Vec<_> = custody
+                    .entries
+                    .iter()
+                    .filter(|(_, held)| held.request.input.conn() == physical)
+                    .map(|(uid, _)| *uid)
+                    .collect();
+                (pending, Arc::clone(&custody.changed))
+            };
+            return Box::pin(async move {
+                loop {
+                    let notified = changed.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    let held = {
+                        let custody = locked(&self.input_custody, "input custody");
+                        pending.iter().any(|uid| custody.entries.contains_key(uid))
+                    };
+                    if !held {
+                        break;
+                    }
+                    notified.await;
+                }
+                // Legacy release was queued before custody became observable as
+                // empty. This fence therefore follows execution admission, not
+                // merely the first half of the custody handshake.
+                conn.request_with_id(id, req).await
+            });
+        }
         conn.request_with_id(id, req)
     }
 
@@ -1252,6 +1284,11 @@ async fn gateway_reader(
                 // the world loop ever touching the session layer.
                 transport.transmit(vec![(target, Arc::new(event))]);
             }
+            ToGateway::SetOutputBrackets { conn, brackets } => {
+                if let Some(handle) = sessions.conn_handle(mush_session::ConnId(conn)) {
+                    handle.set_output_brackets(brackets);
+                }
+            }
             ToGateway::SetFloodExempt { char, exempt } => {
                 transport.set_flood_exempt(char, exempt);
             }
@@ -1277,7 +1314,10 @@ async fn gateway_reader(
                 request,
                 disposition,
             } => {
-                let held = locked(&input_custody, "input custody").remove(request);
+                // Keep removal, release enqueue and disposition output atomic
+                // to the reply fence. No await or socket write occurs here.
+                let mut custody = locked(&input_custody, "input custody");
+                let held = custody.remove(request);
                 match (held, disposition) {
                     (Some(_held), GatewayRequestDisposition::LegacyClaimed) => {
                         // Release our exact replay copy BEFORE authorizing
@@ -1344,6 +1384,7 @@ async fn gateway_reader(
                         );
                     }
                 }
+                custody.changed.notify_waiters();
             }
             ToGateway::CloseSession { char, cause } => {
                 close_char_sessions(&sessions, &to_server_tx, char, cause);
@@ -1825,6 +1866,7 @@ fn build_attach_recs(sessions: &SessionManager) -> Vec<AttachRec> {
         let actor = char_key_obj(meta.character);
         for handle in sessions.conns_of_session(meta.sess) {
             recs.push(AttachRec {
+                output_brackets: handle.output_brackets(),
                 conn: handle.id.0,
                 actor,
                 account: Some(meta.account.clone()),
@@ -4536,6 +4578,83 @@ mod tests {
             .unwrap();
         reader_task.await.unwrap();
         assert_eq!(_metrics.world_loop_last_iter_unix(), 0);
+    }
+
+    #[tokio::test]
+    async fn reply_barrier_waits_for_the_legacy_release_round_trip() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pending = SocketGatewayLink::pending_table();
+        let link = test_link(tx, Arc::clone(&pending));
+        assert_eq!(
+            link.to_server_input(ToServer::Inbound(WireInbound::Cmd {
+                conn: 5,
+                actor: ObjId(7),
+                line: "OUTPUTSUFFIX done".into(),
+            }))
+            .await,
+            InputSend::Sent
+        );
+        let Some(ToServer::Input(input)) = rx.recv().await else {
+            panic!("input");
+        };
+        let barrier = link.request(ServiceReq::ReplyBarrier { conn: 5 });
+        tokio::pin!(barrier);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut barrier)
+                .await
+                .is_err()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "completion cannot overtake custody release"
+        );
+        let boundary = link.boundary.current().unwrap();
+        let (io, mut peer) = tokio::io::duplex(64 * 1024);
+        let (read, _write) = tokio::io::split(io);
+        let task = tokio::spawn(gateway_reader(
+            FrameReader::new(Box::new(read) as BoxRead),
+            SessionDelivery::new(Arc::clone(&link.sessions), boundary.tx.clone()),
+            pending,
+            boundary.tx.clone(),
+            Arc::clone(&link.sessions),
+            Arc::new(Mutex::new(HelloManifest::default())),
+            Arc::clone(&link.input_custody),
+            Arc::clone(&link.metrics),
+        ));
+        mush_ipc::write_frame(
+            &mut peer,
+            &ToGateway::RequestDisposition {
+                request: input.uid,
+                disposition: GatewayRequestDisposition::LegacyClaimed,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rx.recv().await,
+            Some(ToServer::GatewayReleased { request: input.uid })
+        );
+        let respond = async {
+            let Some(ToServer::Request {
+                id,
+                req: ServiceReq::ReplyBarrier { conn: 5 },
+            }) = rx.recv().await
+            else {
+                panic!("reply fence");
+            };
+            mush_ipc::write_frame(
+                &mut peer,
+                &ToGateway::Reply {
+                    id,
+                    resp: ServiceResp::Barrier,
+                },
+            )
+            .await
+            .unwrap();
+        };
+        let (answer, ()) = tokio::join!(barrier, respond);
+        assert_eq!(answer, Some(ServiceResp::Barrier));
+        task.abort();
     }
 
     /// A minimal [`AuthBackend`] for the bridge-level notice test.

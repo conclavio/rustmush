@@ -93,49 +93,54 @@ def wait_ready():
     raise AssertionError('dev1 did not become healthy')
 
 
-term = None
-try:
-    wait_ready()
-    for echo in (False, True):
-        term = Terminal(echo)
-        suffix = '__CLIENT_DONE__'
-        term.line('OUTPUTSUFFIX ' + suffix)
-        term.read(lambda raw, text: '\n' + suffix + '\r\n' in text)
-        token = 'client-debt-' + str(time.time_ns())
-        command = 'say ' + token
-        term.line(command)
-        _, reply = term.read(lambda raw, text: '\n' + suffix + '\r\n' in text)
-        assert token in reply
-        assert (command in reply) == echo, (echo, reply)
-        RESULT['checks'].append('PTY ECHO=' + str(int(echo)) + ' honored')
-        RESULT['transcripts'].append({'echo': echo, 'reply': reply})
-        if not echo:
-            term.line('@history 1')
-            _, reply = term.read(lambda raw, text: '--- @history more for older ---' in text or '--- that is the oldest history the server holds ---' in text)
-            assert token in reply and reply.count(token) == 1
-            RESULT['checks'].append('line history recalls one gateway-stamped narrative once')
-            RESULT['transcripts'].append({'history': reply})
-            term.line('@tui')
-            term.read(lambda raw, text: b'\x1b[?1049h' in raw)
-            term.line('')  # Enter switches TUI navigation to command input.
-            term.line('@notui')
-            term.read(lambda raw, text: b'\x1b[?1049l' in raw)
-            term.line('@history 1')
-            _, reply = term.read(lambda raw, text: '--- @history more for older ---' in text or '--- that is the oldest history the server holds ---' in text)
-            assert token in reply and reply.count(token) == 1
-            RESULT['checks'].append('TUI entry/exit retains line-history request ownership')
-            RESULT['transcripts'].append({'after_mode_flip': reply})
-        term.line('QUIT')
-        term.read(lambda raw, text: 'Goodbye.' in text)
-        term.proc.wait(timeout=15)
-        assert term.proc.returncode == 0
-        RESULT['transcripts'].append({'quit_exit_status': term.proc.returncode})
-        RESULT['checks'].append('stamped SSH output drains and closes on QUIT')
-        term.close()
-        term = None
-    RESULT['passed'] = True
-finally:
-    if term is not None:
-        term.close()
-    (OUT / 'ssh-live.json').write_text(json.dumps(RESULT, indent=2) + '\n')
-print('CLIENT_SSH_LIVE_PASSED')
+def main():
+    term = None
+    try:
+        wait_ready()
+        for echo in (False, True):
+            term = Terminal(echo)
+            suffix = '__CLIENT_DONE__'
+            term.line('OUTPUTSUFFIX ' + suffix)
+            term.read(lambda raw, text: '\n' + suffix + '\r\n' in text)
+            token = 'client-debt-' + str(time.time_ns())
+            command = 'say ' + token
+            term.line(command)
+            _, reply = term.read(lambda raw, text: '\n' + suffix + '\r\n' in text)
+            assert token in reply
+            assert (command in reply) == echo, (echo, reply)
+            RESULT['checks'].append('PTY ECHO=' + str(int(echo)) + ' honored')
+            RESULT['transcripts'].append({'echo': echo, 'reply': reply})
+            if not echo:
+                term.line('@history 1')
+                _, reply = term.read(lambda raw, text: '--- @history more for older ---' in text or '--- that is the oldest history the server holds ---' in text)
+                assert token in reply and reply.count(token) == 1
+                RESULT['checks'].append('line history recalls one gateway-stamped narrative once')
+                RESULT['transcripts'].append({'history': reply})
+                term.line('@tui')
+                term.read(lambda raw, text: b'\x1b[?1049h' in raw)
+                term.line('')  # Enter switches TUI navigation to command input.
+                term.line('@notui')
+                term.read(lambda raw, text: b'\x1b[?1049l' in raw)
+                term.line('@history 1')
+                _, reply = term.read(lambda raw, text: '--- @history more for older ---' in text or '--- that is the oldest history the server holds ---' in text)
+                assert token in reply and reply.count(token) == 1
+                RESULT['checks'].append('TUI entry/exit retains line-history request ownership')
+                RESULT['transcripts'].append({'after_mode_flip': reply})
+            term.line('QUIT')
+            term.read(lambda raw, text: 'Goodbye.' in text)
+            term.proc.wait(timeout=15)
+            assert term.proc.returncode == 0
+            RESULT['transcripts'].append({'quit_exit_status': term.proc.returncode})
+            RESULT['checks'].append('stamped SSH output drains and closes on QUIT')
+            term.close()
+            term = None
+        RESULT['passed'] = True
+    finally:
+        if term is not None:
+            term.close()
+        (OUT / 'ssh-live.json').write_text(json.dumps(RESULT, indent=2) + '\n')
+    print('CLIENT_SSH_LIVE_PASSED')
+
+
+if __name__ == "__main__":
+    main()

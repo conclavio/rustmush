@@ -1,0 +1,10 @@
+    Checking mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+    Checking mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+    Checking mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+    Checking mush-net-discord v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-discord)
+    Checking tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Checking mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+    Checking mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+    Checking mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Checking mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `dev` profile [unoptimized] target(s) in 1m 13s

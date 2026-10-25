@@ -398,7 +398,7 @@ fn boot(store: Arc<dyn ObjectStore>) -> PersistHandles {
 /// second half of the coverage gate — [`variant_name`] refuses to COMPILE when
 /// a variant is added, and this refuses to PASS when an arm is added there
 /// without a sample below.
-const SERVICE_REQ_VARIANTS: usize = 10;
+const SERVICE_REQ_VARIANTS: usize = 11;
 
 /// Name each variant through an exhaustive match.
 ///
@@ -416,6 +416,7 @@ fn variant_name(req: &ServiceReq) -> &'static str {
         ServiceReq::LegalActions { .. } => "LegalActions",
         ServiceReq::ActionStatus { .. } => "ActionStatus",
         ServiceReq::Barrier => "Barrier",
+        ServiceReq::ReplyBarrier { .. } => "ReplyBarrier",
         ServiceReq::DiscordInteraction(_) => "DiscordInteraction",
         ServiceReq::RelaySpeak(_) => "RelaySpeak",
     }
@@ -453,6 +454,7 @@ fn every_service_req() -> Vec<ServiceReq> {
             .expect("sample action status id"),
         },
         ServiceReq::Barrier,
+        ServiceReq::ReplyBarrier { conn: 1 },
         ServiceReq::DiscordInteraction(DiscordInteraction {
             user_id: 7,
             account: None,

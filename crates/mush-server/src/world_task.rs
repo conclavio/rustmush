@@ -326,6 +326,8 @@ pub enum CreatePlayerErr {
 /// carried here.
 #[derive(Clone, Debug)]
 pub struct ReAttachRec {
+    /// Gateway-retained connection reply delimiters.
+    pub output_brackets: OutputBrackets,
     /// The physical connection id.
     pub conn: u64,
     /// The actor the connection is playing.
@@ -337,6 +339,10 @@ pub struct ReAttachRec {
 /// Everything the world task can receive: engine inbound traffic plus typed
 /// service requests from async subsystems that must not touch `World`.
 pub enum WorldMsg {
+    /// Fence the sequential staff executor after prior world delivery.
+    StaffBarrier {
+        reply: oneshot::Sender<Result<(), WorldReadError>>,
+    },
     /// Ordinary engine input (commands, connection lifecycle, applies,
     /// control).
     Inbound(Inbound),
@@ -1055,7 +1061,8 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         | WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. }
-        | WorldMsg::LegalActions { .. } => IngressClass::WorldRead,
+        | WorldMsg::LegalActions { .. }
+        | WorldMsg::StaffBarrier { .. } => IngressClass::WorldRead,
         WorldMsg::Barrier { .. } => IngressClass::OrderingBarrier,
     }
 }
@@ -1101,6 +1108,7 @@ fn waits_in_defer_queue(msg: &WorldMsg) -> bool {
             | WorldMsg::InInputContext { .. }
             | WorldMsg::ConnectionReady { .. }
             | WorldMsg::LegalActions { .. }
+            | WorldMsg::StaffBarrier { .. }
     )
 }
 
@@ -1764,6 +1772,18 @@ impl WorldHandle {
             .unwrap_or(Err(AuthoritativeActionStartError::Unavailable))
     }
 
+    /// Typed reply completion: committed world delivery followed by all prior
+    /// sequential staff work, including the store acknowledgment for a dump.
+    pub async fn reply_barrier_result(&self) -> Result<(), WorldReadError> {
+        self.barrier_result().await?;
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(WorldMsg::StaffBarrier { reply })
+            .await
+            .map_err(|_| WorldReadError::Unavailable)?;
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
     /// Typed round-trip barrier: resolves once everything sent through this
     /// handle before the call has been processed and its output delivered.
     /// A line or a read still waiting in the world's defer queue behind a
@@ -2287,13 +2307,14 @@ pub fn spawn_persist_with_gateway_and_outbox(
 /// Shared spawn implementation. Unit tests can start the real loop in a hard
 /// mode; delayed-decision production wiring supplies the optional runtime.
 fn spawn_persist_with_gateway_mode(
-    engine: Engine,
+    mut engine: Engine,
     deps: ServerDeps,
     durable_outbox: Arc<DurableOutboxRegistry>,
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
+    engine.use_gateway_reply_framing();
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     // 16b cut T.2 (T1, T4): the game layer's shared arena-task table, created by
@@ -4083,7 +4104,7 @@ async fn run(
     tx: mpsc::WeakSender<WorldMsg>,
     writer: StoreWriter,
     deps: ServerDeps,
-    staff_ops: mpsc::Sender<StaffOp>,
+    staff_ops: mpsc::Sender<StaffWork>,
     gateway: Gateway,
     high_water: Arc<AtomicU64>,
     mut signals: WriterSignalReceiver,
@@ -4521,7 +4542,7 @@ async fn run(
                                         if is_typed_line(&msg) {
                                             metrics.command_processed();
                                         }
-                                        let brackets = output_brackets_of(&engine.world, &msg);
+                                        let brackets = output_brackets_for_engine(&engine, &msg);
                                         refuse_world_msg(msg, reason, &gateway, brackets);
                                     }
                                 },
@@ -4530,7 +4551,7 @@ async fn run(
                             if is_typed_line(&msg) {
                                 metrics.command_processed();
                             }
-                            let brackets = output_brackets_of(&engine.world, &msg);
+                            let brackets = output_brackets_for_engine(&engine, &msg);
                             refuse_world_msg(msg, reason, &gateway, brackets);
                         }
                         StepOutcome::Continue
@@ -4546,7 +4567,7 @@ async fn run(
                         if is_typed_line(&msg) {
                             metrics.command_processed();
                         }
-                        let brackets = output_brackets_of(&engine.world, &msg);
+                        let brackets = output_brackets_for_engine(&engine, &msg);
                         refuse_world_msg(msg, RefusalReason::StoreUnavailable, &gateway, brackets);
                         StepOutcome::Continue
                     }
@@ -4869,6 +4890,22 @@ async fn run(
                             }
                             StepOutcome::Continue
                         }
+                        WorldMsg::StaffBarrier { reply } => {
+                            // Previous world work has crossed its exact receipt and
+                            // the previous iteration dispatched its local/store ops.
+                            if let Err(error) = staff_ops.try_send(StaffWork::Barrier(reply)) {
+                                let result = if matches!(&error, mpsc::error::TrySendError::Full(_))
+                                {
+                                    WorldReadError::Busy
+                                } else {
+                                    WorldReadError::Unavailable
+                                };
+                                if let StaffWork::Barrier(reply) = error.into_inner() {
+                                    let _ = reply.send(Err(result));
+                                }
+                            }
+                            StepOutcome::Continue
+                        }
                         WorldMsg::Barrier { reply } => {
                             if !defer.is_empty() {
                                 // 16b cut B.5: lines queued ahead of it have
@@ -4911,7 +4948,7 @@ async fn run(
                     if is_typed_line(&msg) {
                         metrics.command_processed();
                     }
-                    let brackets = output_brackets_of(&engine.world, &msg);
+                    let brackets = output_brackets_for_engine(&engine, &msg);
                     refuse_world_msg(msg, RefusalReason::CommitTimedOut, &gateway, brackets);
                     metrics.command_defer_timed_out();
                 }
@@ -5790,7 +5827,7 @@ async fn run(
                             if is_typed_line(&msg) {
                                 metrics.command_processed();
                             }
-                            let brackets = output_brackets_of(&engine.world, &msg);
+                            let brackets = output_brackets_for_engine(&engine, &msg);
                             refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
                         }
                         DeferEntry::Barrier(reply) => {
@@ -5804,7 +5841,7 @@ async fn run(
                     // not need queue capacity, and the prior exact commit gets
                     // a bounded grace period to finish normally.
                     if let Some(blocked) = deferred_world_msg.take() {
-                        let brackets = output_brackets_of(&engine.world, &blocked);
+                        let brackets = output_brackets_for_engine(&engine, &blocked);
                         refuse_world_msg(blocked, RefusalReason::CommitPending, &gateway, brackets);
                     }
                     deferred_world_msg =
@@ -6104,6 +6141,11 @@ async fn run(
                     );
                 }
             }
+        }
+        // Publish settings validated by the command path, including clears.
+        // This precedes any subsequent delivery/ReplyBarrier acknowledgement.
+        for (conn, brackets) in engine.world.take_output_bracket_changes() {
+            gateway.set_output_brackets(conn, brackets);
         }
         // Staff ops the step's handlers queued. Local ops (@boot/@ps/@stats)
         // run inline here — the engine, scheduler, and session manager are
@@ -6497,7 +6539,7 @@ async fn run(
                 if is_typed_line(&msg) {
                     metrics.command_processed();
                 }
-                let brackets = output_brackets_of(&engine.world, &msg);
+                let brackets = output_brackets_for_engine(&engine, &msg);
                 refuse_world_msg(msg, RefusalReason::CommitPending, &gateway, brackets);
             }
             DeferEntry::Barrier(reply) => {
@@ -6525,6 +6567,14 @@ async fn run(
 /// The `OUTPUTPREFIX`/`OUTPUTSUFFIX` row of the connection a typed line came
 /// from (16b cut AP.4), cloned for [`refuse_world_msg`]; `None` for anything
 /// that is not a typed line, and for a connection that set neither.
+fn output_brackets_for_engine(engine: &Engine, msg: &WorldMsg) -> Option<OutputBrackets> {
+    if engine.gateway_frames_replies() {
+        None
+    } else {
+        output_brackets_of(&engine.world, msg)
+    }
+}
+
 fn output_brackets_of(world: &World, msg: &WorldMsg) -> Option<OutputBrackets> {
     match msg {
         WorldMsg::Inbound(Inbound::Cmd { conn, .. }) => world.output_brackets(*conn).cloned(),
@@ -6700,7 +6750,7 @@ fn refuse_world_msg(
             };
             let _ = request.reply.send(Err(error));
         }
-        WorldMsg::Barrier { reply } => {
+        WorldMsg::Barrier { reply } | WorldMsg::StaffBarrier { reply } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
             } else {
@@ -8145,7 +8195,7 @@ async fn run_staff_ops(
     _deps: &ServerDeps,
     gateway: &Gateway,
     writer: &StoreWriter,
-    staff_ops: &mpsc::Sender<StaffOp>,
+    staff_ops: &mpsc::Sender<StaffWork>,
     ops: Vec<StaffOp>,
 ) -> bool {
     let mut shutdown = false;
@@ -8158,13 +8208,13 @@ async fn run_staff_ops(
                 ref reason,
             } => {
                 tracing::info!(%actor, %ip, ?until_unix, reason, "@siteban requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@siteban failed: staff executor gone.");
                 }
             }
             StaffOpKind::ClearBan { ref ip } | StaffOpKind::LiftTempban { ref ip, .. } => {
                 tracing::info!(%actor, %ip, operation = ?op.kind, "@siteban pardon requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(
                         gateway,
                         actor,
@@ -8174,7 +8224,7 @@ async fn run_staff_ops(
             }
             StaffOpKind::ListBans => {
                 tracing::info!(%actor, "@siteban list requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@siteban failed: staff executor gone.");
                 }
             }
@@ -8182,7 +8232,7 @@ async fn run_staff_ops(
                 // Audit: actor + target only — the op's password never
                 // reaches a log (Secret redacts even derived Debug).
                 tracing::info!(%actor, %target, "@newpassword requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@newpassword failed: staff executor gone.");
                 }
             }
@@ -8193,19 +8243,19 @@ async fn run_staff_ops(
                 // line never reached this op — the command handler validated
                 // and normalized it, queuing only the public key (S7).
                 tracing::info!(%actor, fingerprint, "@sshkey/add requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
                 }
             }
             StaffOpKind::ListSshKeys { .. } => {
                 tracing::info!(%actor, "@sshkey/list requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
                 }
             }
             StaffOpKind::DelSshKey { ref which, .. } => {
                 tracing::info!(%actor, which, "@sshkey/del requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
                 }
             }
@@ -8213,7 +8263,7 @@ async fn run_staff_ops(
                 // Audit: actor + the requested name (both public). The account
                 // is resolved store-side in the executor (invariant N1).
                 tracing::info!(%actor, name, "@newchar requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@newchar failed: staff executor gone.");
                 }
             }
@@ -8225,7 +8275,7 @@ async fn run_staff_ops(
             | StaffOpKind::DiscordUnlinkSelf { .. }
             | StaffOpKind::DiscordSet { .. } => {
                 tracing::info!(%actor, kind = ?op.kind, "@discord self-service op requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@discord failed: staff executor gone.");
                 }
             }
@@ -8257,33 +8307,28 @@ async fn run_staff_ops(
             | StaffOpKind::DiscordUnlink { target, .. }
             | StaffOpKind::DiscordBan { target, .. } => {
                 tracing::info!(%actor, %target, kind = ?op.kind, "@discord staff op requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@discord failed: staff executor gone.");
                 }
             }
             StaffOpKind::DiscordUnban { .. } => {
                 tracing::info!(%actor, "@discord/unban requested");
-                if staff_ops.send(op).await.is_err() {
+                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
                     send_sys(gateway, actor, "@discord failed: staff executor gone.");
                 }
             }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
-                let writer = writer.clone();
-                let gateway = gateway.clone();
-                tokio::spawn(async move {
-                    let (done, done_rx) = oneshot::channel();
-                    if writer.send(StoreJob::Bgsave { done }).await.is_err() {
-                        send_sys(&gateway, actor, "@dump failed: store writer gone.");
-                        return;
-                    }
-                    let text = match done_rx.await {
-                        Ok(Ok(())) => "@dump: snapshot acknowledged by the store.".to_string(),
-                        Ok(Err(e)) => format!("@dump failed: {e}"),
-                        Err(_) => "@dump failed: store writer gone.".to_string(),
-                    };
-                    send_sys(&gateway, actor, &text);
-                });
+                if staff_ops
+                    .send(StaffWork::Dump {
+                        actor,
+                        writer: writer.clone(),
+                    })
+                    .await
+                    .is_err()
+                {
+                    send_sys(gateway, actor, "@dump failed: staff executor gone.");
+                }
             }
             StaffOpKind::Shutdown => {
                 tracing::info!(%actor, "@shutdown requested");
@@ -8730,11 +8775,17 @@ fn siteban_latency_note() -> String {
 /// staff issued them — a `@siteban/clear` can never lose to the `@siteban`
 /// it follows. Confirmations are delivered to the requesting actor after
 /// the store acknowledged. Exits when the world loop drops its sender.
+enum StaffWork {
+    Op(StaffOp),
+    Dump { actor: ObjId, writer: StoreWriter },
+    Barrier(oneshot::Sender<Result<(), WorldReadError>>),
+}
+
 async fn staff_ops_loop(
     store: Arc<dyn ObjectStore>,
     guard: Arc<IpGuard>,
     world: mpsc::WeakSender<WorldMsg>,
-    mut rx: mpsc::Receiver<StaffOp>,
+    mut rx: mpsc::Receiver<StaffWork>,
     gateway: Gateway,
 ) {
     // The staff executor's server->gateway output (confirmations, the target's
@@ -8744,7 +8795,28 @@ async fn staff_ops_loop(
     // (`structured_conns_of` / `detach_conn_local`) go through the same sink; in
     // split mode they resolve on the gateway process (this sink emits a
     // fire-and-forget `CloseWebSessions` instead).
-    while let Some(op) = rx.recv().await {
+    while let Some(work) = rx.recv().await {
+        let op = match work {
+            StaffWork::Barrier(reply) => {
+                let _ = reply.send(Ok(()));
+                continue;
+            }
+            StaffWork::Dump { actor, writer } => {
+                let (done, done_rx) = oneshot::channel();
+                let text = if writer.send(StoreJob::Bgsave { done }).await.is_err() {
+                    "@dump failed: store writer gone.".to_owned()
+                } else {
+                    match done_rx.await {
+                        Ok(Ok(())) => "@dump: snapshot acknowledged by the store.".to_owned(),
+                        Ok(Err(error)) => format!("@dump failed: {error}"),
+                        Err(_) => "@dump failed: store writer gone.".to_owned(),
+                    }
+                };
+                send_sys(&gateway, actor, &text);
+                continue;
+            }
+            StaffWork::Op(op) => op,
+        };
         let actor = op.actor;
         let text = match op.kind {
             StaffOpKind::SetBan {
@@ -9319,6 +9391,12 @@ fn link_created_character(
 fn apply_reattach_snapshot(engine: &mut Engine, recs: &[ReAttachRec], out: &mut Outbox) {
     for rec in recs {
         engine.reattach(rec.conn, rec.actor, rec.caps_structured, out);
+        engine
+            .world
+            .set_output_prefix(rec.conn, rec.output_brackets.prefix.clone());
+        engine
+            .world
+            .set_output_suffix(rec.conn, rec.output_brackets.suffix.clone());
     }
 }
 
@@ -16996,6 +17074,7 @@ mod tests {
             let replaced = pending
                 .coalesce_reattach(
                     vec![ReAttachRec {
+                        output_brackets: Default::default(),
                         conn,
                         actor: GOD,
                         caps_structured: conn % 2 == 0,
@@ -17038,6 +17117,7 @@ mod tests {
         pending
             .coalesce_reattach(
                 vec![ReAttachRec {
+                    output_brackets: Default::default(),
                     conn: 41,
                     actor: GOD,
                     caps_structured: false,
@@ -17048,6 +17128,7 @@ mod tests {
 
         let oversized = (0..=MAX_PENDING_REATTACH_RECORDS)
             .map(|i| ReAttachRec {
+                output_brackets: Default::default(),
                 conn: u64::try_from(i).expect("test index fits u64") + 100,
                 actor: GOD,
                 caps_structured: true,
@@ -17075,6 +17156,7 @@ mod tests {
         };
         let mut sparse = Vec::with_capacity(100_000);
         sparse.push(ReAttachRec {
+            output_brackets: Default::default(),
             conn: 41,
             actor: GOD,
             caps_structured: false,
@@ -17094,6 +17176,7 @@ mod tests {
 
         let oversized = (0..=MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS)
             .map(|i| ReAttachRec {
+                output_brackets: Default::default(),
                 conn: u64::try_from(i).expect("test index fits u64"),
                 actor: GOD,
                 caps_structured: false,
@@ -18760,6 +18843,7 @@ mod tests {
                 assert!(
                     handle
                         .reattach(vec![ReAttachRec {
+                            output_brackets: Default::default(),
                             conn,
                             actor: GOD,
                             caps_structured: false,

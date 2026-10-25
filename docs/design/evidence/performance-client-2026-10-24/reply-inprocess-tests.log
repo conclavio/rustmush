@@ -1,0 +1,62 @@
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 11.53s
+     Running tests/persistence.rs (target/debug/deps/persistence-4e8c88fab0d2ed8b)
+
+running 33 tests
+test an_unclean_world_exit_takes_no_shutdown_bgsave ... ok
+test dump_announces_and_acks ... ok
+test boot_round_trip_redis_gated ... ok
+test destroy_sweeps_and_deletes_from_store ... ok
+test boot_seed_persist_reload_round_trip_in_memory ... ok
+test closed_store_durable_ack_reports_failure ... ok
+test economy_journal_round_trip_redis_gated ... ok
+test a_macro_survives_a_restart_through_the_store ... ok
+test inventory_pool_round_trip_redis_gated ... ok
+test m5_module_persistence_round_trip_redis_gated ... ok
+test npc_agent_persistence_round_trip_redis_gated ... ok
+test onboarding_persistence_round_trip_redis_gated ... ok
+test persisted_bans_load_into_ipguard_at_boot ... ok
+test onboarding_persistence_round_trip_in_memory ... ok
+test repeated_ban_reloads_leave_the_shared_guard_unchanged ... ok
+test reply_frames_wait_for_commit_and_staff_without_nesting ... ok
+test read_only_refuses_exit_aliases_and_creation ... ok
+test scene_archive_reads_cold_chunks_redis_gated ... ok
+test ordinary_success_and_barrier_wait_for_exact_store_ack ... ok
+test sheet_persistence_round_trip_redis_gated ... ok
+test siteban_persists_updates_ipguard_and_clears ... ok
+test siteban_set_then_immediate_clear_lands_cleared ... ok
+test account_creation_confirmation_waits_for_store_ack ... ok
+test economy_journal_round_trip_in_memory ... ok
+test worldgen_persistence_round_trip_redis_gated ... ok
+test inventory_pool_round_trip_in_memory ... ok
+test wrong_receipt_serial_never_releases_success ... ok
+test npc_agent_persistence_round_trip_in_memory ... ok
+test m5_module_persistence_round_trip_in_memory ... ok
+test sheet_persistence_round_trip_in_memory ... ok
+test scene_archive_reads_cold_chunks_in_memory ... ok
+test worldgen_persistence_round_trip_in_memory ... ok
+test store_failure_enters_read_only_and_recovery_exits ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.41s
+
+     Running tests/server.rs (target/debug/deps/server-fb3fff1d7ce69ab2)
+
+running 16 tests
+test bridge_ip_guard_blocks_after_failures ... ok
+test gateway_refusals_keep_one_connection_scoped_reply_pair ... ok
+test bridge_multi_connect_fans_out_and_single_drop_is_silent ... ok
+test create_player_is_a_typed_world_message ... ok
+test quit_flushes_pending_output_first ... ok
+test bridge_flood_control_throttles ... ok
+test bridge_connect_look_say_quit_flow ... ok
+test slowtest_reenters_typed_without_blocking_the_loop ... ok
+test say_does_not_leak_to_other_rooms ... ok
+test slow_client_is_detached_and_goes_linkdead ... ok
+test world_task_fans_out_say_and_who ... ok
+test bridge_linkdead_announces_then_reaps_after_grace ... ok
+test bridge_reconnect_cancels_linkdead ... ok
+test wait_timer_fires_through_the_loop ... ok
+test ssh_full_stack::two_players_create_talk_who_quit_over_real_ssh ... ok
+test accounts_create_auth_connect_end_to_end ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.88s

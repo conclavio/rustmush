@@ -1,0 +1,28 @@
+   Compiling mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+    Finished `test` profile [unoptimized] target(s) in 1.48s
+     Running tests/roundtrip.rs (target/debug/deps/roundtrip-d97a7e478ef2d8d5)
+
+running 12 tests
+test a_gateway_action_is_refused_by_the_inbound_conversion ... ok
+test oversized_length_prefix_is_rejected ... ok
+test inbound_itself_round_trips_including_internal_arms ... ok
+test every_to_server_variant_round_trips ... ok
+test maximum_lifecycle_reannounce_snapshot_fits_one_frame ... ok
+test partial_frame_is_needs_more_bytes_not_a_panic ... ok
+test sub_prefix_buffer_needs_more_bytes ... ok
+test framed_multi_message_stream_decodes_in_order ... ok
+test wire_inbound_is_the_cross_boundary_subset ... ok
+test every_to_gateway_variant_round_trips ... ok
+test version_is_present_and_travels_in_hello ... ok
+test typed_invoke_round_trips_under_custody_with_independent_size_limit ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/gateway_link_parity.rs (target/debug/deps/gateway_link_parity-3505032cf42e4396)
+
+running 3 tests
+test both_links_answer_identically_on_a_dead_world ... ok
+test the_disposition_table_is_pinned ... ok
+test both_links_answer_identically_under_commit_pending ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
