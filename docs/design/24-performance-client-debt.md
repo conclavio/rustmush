@@ -365,3 +365,22 @@ performance result; a production sight cache remains a separate, unimplemented
 follow-up. The next GitHub CI run is still required to confirm the final push on
 its runners; the failures identified in gates 2 and 3 have passing local/dev1
 regressions recorded above.
+
+
+### CI follow-up: rematch reply framing
+
+The `test (rest)` job in GitHub run 40151828391 (baseline `8d4abdac`)
+failed `a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_again`:
+`easting_m` received only `Huh?` instead of a complete `STATUS` reply.
+`sim_rematch` retained the old whole-reply helper after the corresponding
+`sim_units` and `observer_rule` repairs. On a transient refusal it retried
+without draining that attempt's sentinel; a delayed refusal could then finish
+the next attempt before its real reply arrived.
+
+The helper now consumes its sentinel before deciding whether to retry, and
+recognizes both pending-commit and control-state transients. Position and restart
+assertions remain unchanged. Both real-SSH rematch integration tests passed on
+the dev1 host (`cargo test -p mushd --test sim_rematch -- --test-threads=2`),
+including the reported restart case: 2 passed in 51.42 s. Targeted Rust formatting
+and `git diff --check` passed. [Test log](evidence/performance-client-2026-10-24/client-ci-sim-rematch.log).
+The subsequent GitHub run still has to confirm the repair on its runners.
