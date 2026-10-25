@@ -181,6 +181,7 @@ impl PlayerWorld {
             f, saved, false, false, false, false, false, false, false, true,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -221,6 +222,7 @@ impl PlayerWorld {
             f, saved, true, true, true, true, false, false, false, false, true, true,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_qualification(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -261,6 +263,7 @@ impl PlayerWorld {
             f, saved, false, false, false, false, false, false, false, true, false, false, true,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_attestation(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -315,6 +318,7 @@ impl PlayerWorld {
             Some(policy),
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_recall(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -372,6 +376,7 @@ impl PlayerWorld {
             Some(policy),
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_registry(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -416,6 +421,7 @@ impl PlayerWorld {
             None, true,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_facts(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -462,6 +468,7 @@ impl PlayerWorld {
             None, false, true,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_resales(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -511,6 +518,7 @@ impl PlayerWorld {
         )
     }
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn boot_options_with_derived_updates(
         f: &PurchaseFixture,
         saved: &Durable,

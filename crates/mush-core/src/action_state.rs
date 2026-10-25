@@ -1134,6 +1134,7 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn mind_entitlement_purchase_capacity_with_follow(
         &mut self,
         owner: &OwnerId,
@@ -1744,6 +1745,7 @@ impl StateFamilyRegistry {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn state_family_fingerprint<'a>(
     entries: impl Iterator<Item = &'a Arc<dyn ErasedStateFamily>>,
     delegations: &BTreeSet<(OwnerId, OwnerId)>,

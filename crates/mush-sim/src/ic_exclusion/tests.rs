@@ -606,45 +606,45 @@ fn real_owner_is_inert_until_install_and_only_the_hull_is_excluded() -> Result {
             &inv,
             CommitToken::from_bytes([8; 16]),
         );
-    assert!(
+    check!(
         matches!(refused, Err(mush_core::action::ActionProviderPrepareError::Provider{source,..})
         if source.code() == ActionErrorCode::ProviderRejected)
     );
-    assert!(identity_of(f.world.world(), f.unit).is_none());
+    check!(identity_of(f.world.world(), f.unit).is_none());
     let (p, o, inv) = prepare(&mut f)?;
     let persisted = row_writes(&p)?;
-    assert_eq!(persisted.len(), 1);
-    assert!(identity_of(f.world.world(), f.unit).is_none());
+    check_eq!(persisted.len(), 1);
+    check!(identity_of(f.world.world(), f.unit).is_none());
     stage(&mut f, p, o, &inv)?;
-    assert!(identity_of(f.world.world(), f.unit).is_none());
+    check!(identity_of(f.world.world(), f.unit).is_none());
     let held = f
         .world
         .engine_mut()
         .take_staged_action()?
         .ok_or("staged image")?;
-    assert!(identity_of(f.world.world(), f.unit).is_none());
+    check!(identity_of(f.world.world(), f.unit).is_none());
     let (_, installation) = held.into_parts();
     f.world.engine_mut().install_composed_action(installation)?;
-    assert_eq!(
+    check_eq!(
         identity_of(f.world.world(), f.unit).map(|i| i.open),
         Some(token())
     );
-    assert!(crate::deployed::refuse_if_custodied(f.world.world(), f.unit).is_err());
-    assert!(crate::deployed::mark_of(f.world.world(), f.unit).is_none());
-    assert!(crate::deployed::excluded(
+    check!(crate::deployed::refuse_if_custodied(f.world.world(), f.unit).is_err());
+    check!(crate::deployed::mark_of(f.world.world(), f.unit).is_none());
+    check!(crate::deployed::excluded(
         f.world.world(),
         crate::deployed::Shown::Unit(f.unit)
     ));
-    assert!(!crate::deployed::excluded(
+    check!(!crate::deployed::excluded(
         f.world.world(),
         crate::deployed::Shown::Unit(f.base)
     ));
-    assert!(!crate::deployed::excluded(
+    check!(!crate::deployed::excluded(
         f.world.world(),
         crate::deployed::Shown::Domain(f.domain)
     ));
     let state = crate::state(f.world.world()).ok_or("spatial")?;
-    assert!(
+    check!(
         crate::transition::plan(
             state,
             f.world.world(),
@@ -659,13 +659,13 @@ fn real_owner_is_inert_until_install_and_only_the_hull_is_excluded() -> Result {
         .is_err()
     );
     let cold = setup(persisted.clone(), true, false)?;
-    assert!(identity_of(cold.world.world(), cold.unit).is_some());
-    assert!(crate::deployed::deployed_units(cold.world.world()).is_empty());
-    assert!(
+    check!(identity_of(cold.world.world(), cold.unit).is_some());
+    check!(crate::deployed::deployed_units(cold.world.world()).is_empty());
+    check!(
         setup(persisted.clone(), true, true).is_err(),
         "missing held placement must not be healed"
     );
-    assert!(
+    check!(
         setup(persisted, false, false).is_err(),
         "disabled mode cannot discard durable IC exclusion"
     );
@@ -680,17 +680,17 @@ fn actual_stage_and_take_recheck_placement_base_and_crossed_action() -> Result {
             if after_stage {
                 stage(&mut f, p, o, &inv)?;
                 drift(&mut f, field)?;
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             } else {
                 drift(&mut f, field)?;
-                assert!(stage(&mut f, p, o, &inv).is_err());
+                check!(stage(&mut f, p, o, &inv).is_err());
             }
-            assert!(identity_of(f.world.world(), f.unit).is_none());
+            check!(identity_of(f.world.world(), f.unit).is_none());
         }
     }
     let mut f = setup(vec![], true, false)?;
     let inv = invocation(&f)?;
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&f.wrong, &inv, token())
@@ -729,22 +729,22 @@ fn exact_base_and_strict_history_refuse_ambiguous_data() -> Result {
     crossed.open.identity.open = CommitToken::from_bytes([8; 16]);
     crossed.open.identity.unit = ObjId(99);
     crossed.open.placement.object = ObjId(99);
-    assert!(
+    check!(
         IcExclusions::reconstruct([original.clone(), crossed]).is_err(),
         "sortie cannot be reused for another hull"
     );
     let mut missing = value.clone();
     missing.as_object_mut().ok_or("record")?.remove("closed");
-    assert!(serde_json::from_value::<Record>(missing).is_err());
+    check!(serde_json::from_value::<Record>(missing).is_err());
     let mut unknown = value.clone();
     unknown
         .as_object_mut()
         .ok_or("record")?
         .insert("receipt_authority".into(), json!(true));
-    assert!(serde_json::from_value::<Record>(unknown).is_err());
+    check!(serde_json::from_value::<Record>(unknown).is_err());
     let mut stale = original.open.base.space.clone();
     stale.rooms.clear();
-    assert!(ConfiguredIcBase::new(original.open.base.definition.clone(), stale).is_err());
+    check!(ConfiguredIcBase::new(original.open.base.definition.clone(), stale).is_err());
     let mut f = setup(vec![], true, false)?;
     f.world
         .world_mut()
@@ -754,8 +754,8 @@ fn exact_base_and_strict_history_refuse_ambiguous_data() -> Result {
         .get_mut(&f.unit)
         .ok_or("placement")?
         .parent = crate::SpatialParent::Unplaced;
-    assert!(prepare(&mut f).is_err());
-    assert!(
+    check!(prepare(&mut f).is_err());
+    check!(
         setup(vec![], false, false).is_ok(),
         "default spatial boot remains usable"
     );
@@ -786,7 +786,7 @@ fn retained_plans_and_domain_retirement_cannot_cross_actual_ic_custody() -> Resu
         f.world.world(),
         &crate::transition::Transition::Retire { domain: f.domain },
     );
-    assert!(matches!(normal_retire,
+    check!(matches!(normal_retire,
         Err(crate::transition::SpatialError::DomainReferenced(domain, n)) if domain == f.domain && n > 0));
     for plan in [
         held_before,
@@ -821,18 +821,18 @@ fn assert_ic_plan_refused_without_effect(f: &mut Fixture, plan: crate::transitio
     let location = f.world.world().get(f.unit).ok_or("hull")?.location;
     let mut out = Outbox::new();
     let result = crate::transition::apply(&mut spatial, f.world.world_mut(), &mut out, plan);
-    assert!(
+    check!(
         matches!(result, Err(crate::transition::SpatialError::IcCustody(unit)) if unit == f.unit)
     );
-    assert!(
+    check!(
         spatial == before,
         "refused IC transition changed spatial state"
     );
-    assert_eq!(
+    check_eq!(
         f.world.world().get(f.unit).ok_or("hull")?.location,
         location
     );
-    assert!(
+    check!(
         out.events().is_empty(),
         "refused IC transition emitted persistence/output"
     );

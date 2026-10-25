@@ -500,6 +500,7 @@ impl ActionProvider for Provider {
         }))
     }
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     families: CommerceFamilies,

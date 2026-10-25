@@ -21,6 +21,7 @@ const PAGE: usize = 128;
 /// No receipt/capability escapes this synchronous final audit. The World task
 /// cannot interleave a source change or typed transaction between scan and open.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn audit_and_open(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,

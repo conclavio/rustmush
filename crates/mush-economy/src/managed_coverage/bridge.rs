@@ -6,6 +6,7 @@ use crate::{ContractId, EconomySnapshot, HoldId};
 use mush_core::{ObjId, participant::ParticipantError};
 use std::collections::BTreeMap;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn recover(
     book: &mut CoverageBook,
     journal_holds: &BTreeMap<HoldId, Hold>,

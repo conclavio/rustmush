@@ -247,29 +247,29 @@ async fn actual_vacant_refusal_is_consumed_before_retry_and_dispatch_actor_is_im
     let store = InMemoryStore::new();
     let mut driver = CommandSubmitDriver::new(1);
     let mut rejected = one(submit(&mut engine, &captures, "@observed 0")?)?;
-    assert_eq!(rejected.take_terminal(), None);
-    assert!(matches!(
+    check_eq!(rejected.take_terminal(), None);
+    check!(matches!(
         driver.drive_one(&mut engine, &store).await?,
         CommandSubmitDrive::Refused {
             integrity: false,
             ..
         }
     ));
-    assert_eq!(
+    check_eq!(
         rejected.take_terminal(),
         Some(SubmissionDisposition::NoIntent)
     );
     let mut accepted = one(submit(&mut engine, &captures, "@observed/mutate 3")?)?;
     let (bundle, installation, proof) = stage(&mut engine, &store, &mut driver).await?;
-    assert_eq!(
+    check_eq!(
         bundle.idempotency().scope().principal,
         mush_core::PrincipalId::Object { id: GOD }
     );
-    assert_eq!(rejected.take_terminal(), None);
-    assert_eq!(accepted.take_terminal(), None);
+    check_eq!(rejected.take_terminal(), None);
+    check_eq!(accepted.take_terminal(), None);
     engine.abort_prepared_action(installation)?;
     drop(proof);
-    assert_eq!(
+    check_eq!(
         accepted.take_terminal(),
         None,
         "an arbitrary local abort is not durable vacancy proof"
@@ -282,14 +282,14 @@ async fn real_fanout_and_handler_error_report_retry_only() -> TestResult {
     for line in ["@observed/twice 3", "@observed/error 3"] {
         let (mut engine, captures) = fixture()?;
         let observations = submit(&mut engine, &captures, line)?;
-        assert!(!observations.is_empty());
-        assert!(!engine.has_authoritative_submit());
+        check!(!observations.is_empty());
+        check!(!engine.has_authoritative_submit());
         for mut observed in observations {
-            assert_eq!(
+            check_eq!(
                 observed.take_terminal(),
                 Some(SubmissionDisposition::NotDispatched)
             );
-            assert_eq!(observed.take_terminal(), None);
+            check_eq!(observed.take_terminal(), None);
         }
     }
     Ok(())
@@ -305,7 +305,7 @@ async fn real_pending_and_finalized_retry_never_publish_no_intent() -> TestResul
     store.reserve_authoritative_intent(*bundle.clone()).await?;
     drop(installation);
     drop(proof);
-    assert_eq!(
+    check_eq!(
         first.take_terminal(),
         None,
         "lost post-intent installation stays unresolved"
@@ -321,13 +321,13 @@ async fn real_pending_and_finalized_retry_never_publish_no_intent() -> TestResul
         let result = CommandSubmitDriver::new(1)
             .drive_one(&mut retry, &store)
             .await?;
-        assert!(matches!(
+        check!(matches!(
             (finalized, result),
             (false, CommandSubmitDrive::AlreadyOwned { .. })
                 | (true, CommandSubmitDrive::AlreadyFinished { .. })
         ));
-        assert_eq!(observation.take_terminal(), None);
-        assert!(!retry.has_staged_action());
+        check_eq!(observation.take_terminal(), None);
+        check!(!retry.has_staged_action());
     }
     Ok(())
 }
@@ -374,24 +374,24 @@ async fn actual_writer_absent_refusal_completes_only_after_exact_installation_ab
         .await
         .err()
         .ok_or("actual writer refusal")?;
-    assert!(matches!(&failure, AuthoritativeCommitFailure::Refused(_)));
-    assert!(matches!(
+    check!(matches!(&failure, AuthoritativeCommitFailure::Refused(_)));
+    check!(matches!(
         owned.await?,
         Err(AuthoritativeCommitFailure::Refused(_))
     ));
-    assert_eq!(
+    check_eq!(
         observation.take_terminal(),
         None,
         "durable Absent alone has not aborted the local image"
     );
-    assert!(!complete(&mut engine, pending, Err(failure), store.clone()));
-    assert_eq!(
+    check!(!complete(&mut engine, pending, Err(failure), store.clone()));
+    check_eq!(
         observation.take_terminal(),
         Some(SubmissionDisposition::NoIntent)
     );
-    assert_eq!(observation.take_terminal(), None);
+    check_eq!(observation.take_terminal(), None);
     let (token, hash) = identity.ok_or("identity")?;
-    assert_eq!(
+    check_eq!(
         store.authoritative_status(token, hash).await?,
         BundleStatus::Absent
     );
@@ -417,15 +417,15 @@ async fn dropped_exact_receipt_freezes_without_releasing_observed_custody() -> T
         .await
         .err()
         .ok_or("dropped exact receipt")?;
-    assert!(matches!(&failure, AuthoritativeCommitFailure::Integrity(_)));
-    assert!(complete(&mut engine, pending, Err(failure), store.clone()));
-    assert_eq!(observation.take_terminal(), None);
-    assert!(
+    check!(matches!(&failure, AuthoritativeCommitFailure::Integrity(_)));
+    check!(complete(&mut engine, pending, Err(failure), store.clone()));
+    check_eq!(observation.take_terminal(), None);
+    check!(
         engine.action_state().has_prepared(),
         "unknown installation cannot be reused"
     );
-    assert!(engine.action_state().reservation_lost());
-    assert_eq!(
+    check!(engine.action_state().reservation_lost());
+    check_eq!(
         store
             .authoritative_status(bundle.token(), bundle.bundle_hash())
             .await?,
@@ -442,7 +442,7 @@ async fn crossed_refusal_identity_cannot_complete_or_release_the_installation() 
     let (bundle, installation, proof) =
         stage(&mut engine, &store, &mut CommandSubmitDriver::new(1)).await?;
     let failure = AuthoritativeCommitFailure::Refused("test wrong exact identity".into());
-    assert!(
+    check!(
         proof
             .abort_refused(
                 &mut engine,
@@ -452,8 +452,8 @@ async fn crossed_refusal_identity_cannot_complete_or_release_the_installation() 
             )
             .is_err()
     );
-    assert_eq!(observation.take_terminal(), None);
-    assert!(engine.action_state().has_prepared());
-    assert!(engine.action_state().reservation_lost());
+    check_eq!(observation.take_terminal(), None);
+    check!(engine.action_state().has_prepared());
+    check!(engine.action_state().reservation_lost());
     Ok(())
 }

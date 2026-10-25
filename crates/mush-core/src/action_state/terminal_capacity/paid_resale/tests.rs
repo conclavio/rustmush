@@ -405,6 +405,7 @@ fn publish(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 fn publish_extra(
     f: &mut Fixture,
     row: Value,

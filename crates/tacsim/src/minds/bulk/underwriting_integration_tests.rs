@@ -904,6 +904,7 @@ fn cold_terminal_corruption(f: &PurchaseFixture, base: &IcWorld, saved: &Durable
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 fn loss_branch(
     f: &PurchaseFixture,
     base: &IcWorld,

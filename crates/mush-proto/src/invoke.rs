@@ -734,7 +734,7 @@ mod tests {
         let wire = r#"{"service":"mind","request":{"op":"remove","name":"mine"}}"#;
         let request: InvokeRequest = serde_json::from_str(wire)?;
         request.validate()?;
-        assert_eq!(serde_json::to_string(&request)?, wire);
+        check_eq!(serde_json::to_string(&request)?, wire);
         for field in [
             "actor",
             "account",
@@ -748,16 +748,16 @@ mod tests {
             let raw = format!(
                 r#"{{"service":"mind","request":{{"op":"remove","name":"mine","{field}":1}}}}"#
             );
-            assert!(serde_json::from_str::<InvokeRequest>(&raw).is_err());
+            check!(serde_json::from_str::<InvokeRequest>(&raw).is_err());
         }
-        assert!(
+        check!(
             serde_json::from_str::<InvokeRequest>(
                 r#"{"service":"mind","request":{"op":"remove","name":"mine","name":"other"}}"#
             )
             .is_err()
         );
         for name in ["", "mine@1", "mine:other", "a\0b"] {
-            assert!(
+            check!(
                 InvokeRequest::Mind(MindRequest::Remove { name: name.into() })
                     .validate()
                     .is_err()
@@ -766,12 +766,12 @@ mod tests {
         let reply = MindResponse::RemovalRequested {
             name: "mine".into(),
         };
-        assert!(reply.is_final()); // Transport completed; mutation has not been claimed.
-        assert_eq!(
+        check!(reply.is_final()); // Transport completed; mutation has not been claimed.
+        check_eq!(
             serde_json::to_string(&reply)?,
             r#"{"status":"removal_requested","name":"mine"}"#
         );
-        assert_ne!(
+        check_ne!(
             reply,
             MindResponse::Removed {
                 name: "mine".into()

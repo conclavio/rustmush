@@ -131,6 +131,7 @@ impl Provider {
         .map_err(bad)?;
         Ok((b, filed, ownership))
     }
+    #[allow(clippy::too_many_arguments)]
     fn fence(
         &self,
         inv: &ActionInvocation,

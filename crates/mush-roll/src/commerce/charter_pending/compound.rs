@@ -24,6 +24,7 @@ use mush_economy::{
     registry_filing::{EconomyRequest, InitialFilingParticipant},
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare(
     f: &CommerceFamilies,
     ready: &Readiness,

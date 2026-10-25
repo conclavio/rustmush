@@ -39,6 +39,7 @@ impl RenewalHolderBasisV1 {
     /// The real completed native book supplies this immutable origin. This is
     /// deliberately independent of today's holder, source, title, or issuer.
     /// The actual Roll observation retains those fresh admission predicates.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn require_origin(
         &self,
         book: &PaidResaleBook,

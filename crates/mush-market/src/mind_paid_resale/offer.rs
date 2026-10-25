@@ -8,6 +8,7 @@ use mush_economy::managed_paid_resale::{
 use mush_economy::{AccountId, Amount};
 use mush_roll::commerce::paid_resale::{ResaleRates, protocol, reader::PaidResaleFacts};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build(
     world: &World,
     txn: &mut ActionTxn<'_>,

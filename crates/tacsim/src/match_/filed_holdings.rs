@@ -126,6 +126,7 @@ impl FiledExecutable {
     /// Validate exact full profiles without changing source, declared schema
     /// limits or card digest. Missing/Class0 hardware selects the independent
     /// captured ROM outside this function; it never reinterprets these cards.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_profiles(
         &self,
         hardware: CoreClass,

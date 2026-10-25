@@ -488,6 +488,7 @@ impl Drop for Login<'_> {
 }
 
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn exercise(
     accounts: &Accounts,
     snapshot: &Durable,

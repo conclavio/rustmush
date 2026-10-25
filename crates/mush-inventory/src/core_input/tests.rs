@@ -102,6 +102,10 @@ struct ProbeState(Arc<AtomicU64>);
 struct CaptureControl {
     mode: Arc<AtomicU64>,
     captured: Arc<Mutex<Option<Arc<CoreInputWitness>>>>,
+    /// Set when mode 3's crossed publish was NOT refused. A provider cannot
+    /// panic (`clippy::panic_in_result_fn`), and returning a refusal would look
+    /// like the very refusal the test expects, so the test reads this instead.
+    uncaught: Arc<std::sync::atomic::AtomicBool>,
 }
 struct ProbeOwner {
     input: RegisteredCoreInputs,
@@ -227,7 +231,9 @@ impl ActionProvider for Provider {
             let result = self.input.publish(txn, ctx, &captured);
             if self.control.mode.load(Ordering::SeqCst) == 3 {
                 // Catching a comparison refusal must not rescue preparation.
-                assert!(result.is_err());
+                if result.is_ok() {
+                    self.control.uncaught.store(true, Ordering::SeqCst);
+                }
                 return Ok(AuthoritativeActionOutput::new(
                     RulesValue::new(self.outcome.clone(), json!({"caught":true}))
                         .map_err(|_| refuse())?,
@@ -692,7 +698,7 @@ fn actual_hold_consume_is_atomic_and_cold_keeps_exact_k_and_lot_census() -> Resu
     let lot = LotId(7);
     r.mint(lot, 1)?;
     let (plain, _) = r.cold(r.boot.clone(), false)?;
-    assert!(
+    check!(
         plain
             .world()
             .module_state::<InventoryStore>()
@@ -701,24 +707,24 @@ fn actual_hold_consume_is_atomic_and_cold_keeps_exact_k_and_lot_census() -> Resu
     );
     let before = r.boot.clone();
     let (p, inv) = r.prep(0, 2, 0, lot)?;
-    assert!(
+    check!(
         r.w.engine()
             .action_state()
             .get(&r.f.core_inputs.as_ref().unwrap().shared.operations, &0)?
             .is_none()
     );
-    assert!(
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "inert preparation"
     );
     r.stage(p, inv, 0, 2)?;
     r.take_install()?;
-    assert_eq!(r.op(0)?.state()?, CoreInputState::Held);
+    check_eq!(r.op(0)?.state()?, CoreInputState::Held);
     r.act(1, 3, 0, lot)?;
-    assert_eq!(r.op(0)?.state()?, CoreInputState::Consumed);
-    assert_eq!(r.op(0)?.terminal_commit(), Some(token(3)));
-    assert!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_none());
-    assert_eq!(
+    check_eq!(r.op(0)?.state()?, CoreInputState::Consumed);
+    check_eq!(r.op(0)?.terminal_commit(), Some(token(3)));
+    check!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_none());
+    check_eq!(
         r.w.engine()
             .action_state()
             .get(&r.f.lot_census, &r.endpoints[0])?
@@ -727,22 +733,22 @@ fn actual_hold_consume_is_atomic_and_cold_keeps_exact_k_and_lot_census() -> Resu
         0
     );
     let (cold, f) = r.cold(r.boot.clone(), true)?;
-    assert!(
+    check!(
         cold.world()
             .module_state::<InventoryStore>()
             .ok_or("store")?
             .is_complete()
     );
-    assert_eq!(
+    check_eq!(
         cold.engine()
             .action_state()
             .get(&f.core_inputs.as_ref().unwrap().shared.operations, &0)?,
         Some(r.op(0)?)
     );
-    assert!(r.cold(r.boot.clone(), false).is_err());
-    assert!(r.act(1, 4, 0, lot).is_err());
-    assert!(r.act(2, 5, 0, lot).is_err());
-    assert!(r.mint(lot, 1).is_err());
+    check!(r.cold(r.boot.clone(), false).is_err());
+    check!(r.act(1, 4, 0, lot).is_err());
+    check!(r.act(2, 5, 0, lot).is_err());
+    check!(r.mint(lot, 1).is_err());
     Ok(())
 }
 
@@ -761,7 +767,7 @@ fn native_paths_protect_expired_hold_and_release_keeps_a_permanent_reusable_chai
     let b = r.endpoints[1];
     let before = r.boot.clone();
     for mode in 0..4 {
-        assert!(
+        check!(
             r.native(|tx| match mode {
                 0 => f.split(tx, a, lot, 1, LotId(20)).map(|_| ()),
                 1 => f.relocate(tx, lot, a, b).map(|_| ()),
@@ -771,30 +777,30 @@ fn native_paths_protect_expired_hold_and_release_keeps_a_permanent_reusable_chai
             .is_err()
         );
     }
-    assert!(
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "native refusals preserve evidence"
     );
-    assert!(r.act(1, 3, 0, lot).is_err());
+    check!(r.act(1, 3, 0, lot).is_err());
     r.act(2, 4, 0, lot)?;
-    assert_eq!(r.op(0)?.state()?, CoreInputState::Released);
+    check_eq!(r.op(0)?.state()?, CoreInputState::Released);
     r.act(0, 5, u64::MAX, lot)?;
-    assert_eq!(r.op(u64::MAX)?.previous, Some(0));
-    assert_eq!(r.op(u64::MAX)?.attempt, 2);
-    assert!(r.act(0, 6, 2, lot).is_err());
+    check_eq!(r.op(u64::MAX)?.previous, Some(0));
+    check_eq!(r.op(u64::MAX)?.attempt, 2);
+    check!(r.act(0, 6, 2, lot).is_err());
     r.act(2, 7, u64::MAX, lot)?;
     r.native(|tx| f.relocate(tx, lot, a, b).map(|_| ()))?;
     let (cold, _) = r.cold(r.boot.clone(), true)?;
-    assert!(
+    check!(
         cold.world()
             .module_state::<InventoryStore>()
             .unwrap()
             .is_complete()
     );
     r.native(|tx| f.dissolve(tx, b, lot).map(|_| ()))?;
-    assert!(r.mint(lot, 1).is_err());
+    check!(r.mint(lot, 1).is_err());
     let (cold, _) = r.cold(r.boot.clone(), true)?;
-    assert!(
+    check!(
         cold.world()
             .module_state::<InventoryStore>()
             .unwrap()
@@ -818,22 +824,22 @@ fn every_native_birth_rejects_the_released_then_retired_identity() -> Result {
     let commodity = cid("test.material")?;
     r.native(|tx| f.dissolve(tx, a, lot).map(|_| ()))?;
     let before = r.boot.clone();
-    assert!(r.mint(lot, 1).is_err());
-    assert!(
+    check!(r.mint(lot, 1).is_err());
+    check!(
         r.native(|tx| f.split(tx, a, LotId(11), 1, lot).map(|_| ()))
             .is_err()
     );
-    assert!(
+    check!(
         r.native(|tx| f.merge(tx, a, &[LotId(11), LotId(12)], lot).map(|_| ()))
             .is_err()
     );
-    assert!(
+    check!(
         r.native(|tx| f
             .crystallize(tx, a, &commodity, 1, Grade::new(3).unwrap(), lot)
             .map(|_| ()))
             .is_err()
     );
-    assert!(
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "retired identity refusals are inert"
     );
@@ -858,14 +864,14 @@ fn every_native_birth_rejects_the_released_then_retired_identity() -> Result {
             buyer_lot: if buyer { lot } else { LotId(30) },
             remainder_lot: if buyer { LotId(31) } else { lot },
         };
-        assert!(
+        check!(
             r.native(|tx| f
                 .settle_sale(tx, a, &commodity, reservation, 1, &now, token(9), sale)
                 .map(|_| ()))
                 .is_err()
         );
     }
-    assert!(
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "both sale births refuse without consuming the pool hold"
     );
@@ -878,7 +884,7 @@ fn actual_action_actor_and_owner_generation_fences_refuse_without_publication() 
     let lot = LotId(15);
     r.mint(lot, 1)?;
     let before = r.boot.clone();
-    assert!(
+    check!(
         r.prep(3, 2, 1, lot).is_err(),
         "wrong actual registered action"
     );
@@ -891,21 +897,21 @@ fn actual_action_actor_and_owner_generation_fences_refuse_without_publication() 
         GOD,
         PrincipalId::Object { id: ObjId(2) },
     );
-    assert_ne!(
+    check_ne!(
         crossed.principal(),
         &PrincipalId::Object {
             id: crossed.actor()
         }
     );
-    assert!(
+    check!(
         r.w.engine_mut()
             .prepare_registered_composed_authoritative_action(&actions()[0], &crossed, token(3))
             .is_err()
     );
     let (p, inv) = r.prep(0, 4, 1, lot)?;
     r.state.0.fetch_add(1, Ordering::SeqCst);
-    assert!(r.stage(p, inv, 0, 4).is_err());
-    assert!(
+    check!(r.stage(p, inv, 0, 4).is_err());
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "wrong identity/generation preserves actual evidence"
     );
@@ -924,16 +930,16 @@ fn expiry_and_timeline_fences_stop_stage_and_take_but_owned_work_is_not_revalida
         if at_take {
             r.stage(p, inv, 1, 3)?;
             r.w.world_mut().set_now(1000 + crate::RESERVATION_TTL_SECS);
-            assert!(r.w.engine_mut().take_staged_action().is_err());
+            check!(r.w.engine_mut().take_staged_action().is_err());
         } else {
             r.w.world_mut().set_now(1000 + crate::RESERVATION_TTL_SECS);
-            assert!(r.stage(p, inv, 1, 3).is_err());
+            check!(r.stage(p, inv, 1, 3).is_err());
         }
-        assert!(
+        check!(
             boot_image(&r.boot) == boot_image(&before),
             "expired completion remains held"
         );
-        assert_eq!(r.op(1)?.state()?, CoreInputState::Held);
+        check_eq!(r.op(1)?.state()?, CoreInputState::Held);
         r.act(2, 4, 1, lot)?;
     }
     let mut r = Rig::new()?;
@@ -942,7 +948,7 @@ fn expiry_and_timeline_fences_stop_stage_and_take_but_owned_work_is_not_revalida
     r.act(0, 2, 1, lot)?;
     let epoch = r.w.world().next_world_timeline_epoch(2)?;
     r.w.world_mut().append_world_timeline_epoch(epoch)?;
-    assert!(r.prep(1, 3, 1, lot).is_err());
+    check!(r.prep(1, 3, 1, lot).is_err());
     r.act(2, 4, 1, lot)?;
     let mut r = Rig::new()?;
     r.mint(lot, 1)?;
@@ -954,7 +960,7 @@ fn expiry_and_timeline_fences_stop_stage_and_take_but_owned_work_is_not_revalida
     let (bundle, install) = held.into_parts();
     r.w.engine_mut().install_composed_action(install)?;
     fold_writes(&mut r.boot, bundle.writes().to_vec());
-    assert_eq!(r.op(1)?.state()?, CoreInputState::Consumed);
+    check_eq!(r.op(1)?.state()?, CoreInputState::Consumed);
     Ok(())
 }
 
@@ -969,13 +975,13 @@ fn local_bind_refusal_after_custody_applies_neither_owner_nor_typed_images() -> 
     let before = r.boot.clone();
     r.state.0.fetch_add(1, Ordering::SeqCst);
     let (_, install) = held.into_parts();
-    assert!(r.w.engine_mut().install_composed_action(install).is_err());
-    assert!(
+    check!(r.w.engine_mut().install_composed_action(install).is_err());
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "no applied receipt"
     );
-    assert!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_some());
-    assert!(
+    check!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_some());
+    check!(
         r.w.engine()
             .action_state()
             .get(&r.f.core_inputs.as_ref().unwrap().shared.operations, &1)?
@@ -1029,7 +1035,7 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
                 .retain(|(key, _)| !mush_core::is_action_state_persistence_key(key));
         }
         let (mut cold, _) = r.cold(boot, true)?;
-        assert!(
+        check!(
             !cold
                 .world()
                 .module_state::<InventoryStore>()
@@ -1039,7 +1045,7 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
         // Re-run the actual module reconciliation with unchanged real legacy
         // evidence; no replacement Inventory state or fake health flag.
         cold.try_modules_loaded(legacy)?;
-        assert!(
+        check!(
             !cold
                 .world()
                 .module_state::<InventoryStore>()
@@ -1058,7 +1064,7 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
             };
         })?;
         if let Ok((cold, _)) = r.cold(boot, true) {
-            assert!(
+            check!(
                 !cold
                     .world()
                     .module_state::<InventoryStore>()
@@ -1072,7 +1078,7 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
     edit_family(&mut bad, registration::OPERATIONS, |v| {
         v["value"]["terminal"]["commit"] = json!(token(4))
     })?;
-    assert!(
+    check!(
         r.cold(bad, true).is_err(),
         "exact K commit differs from terminal proof"
     );
@@ -1093,7 +1099,7 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
             })
     });
     let (cold, _) = r.cold(absent, true)?;
-    assert!(
+    check!(
         cold.world()
             .module_state::<InventoryStore>()
             .unwrap()
@@ -1130,8 +1136,8 @@ fn admission_preflights_complete_terminal_room_and_strict_wire_before_writing() 
             0,
         )?;
         if let Ok(sizes) = writer::require_terminal_room(&op) {
-            assert!(sizes.into_iter().all(|size| size <= MAX_ENVELOPE_BYTES));
-            assert!(sizes[1] > sizes[0] && sizes[2] > sizes[0]);
+            check!(sizes.into_iter().all(|size| size <= MAX_ENVELOPE_BYTES));
+            check!(sizes[1] > sizes[0] && sizes[2] > sizes[0]);
             largest = Some(op.clone());
         }
         if encode(&op).is_ok() && writer::require_terminal_room(&op).is_err() {
@@ -1161,9 +1167,9 @@ fn admission_preflights_complete_terminal_room_and_strict_wire_before_writing() 
     })?;
     r.act(0, 10, 3, large_lot)?;
     r.act(1, 11, 3, large_lot)?;
-    assert_eq!(r.op(3)?.state()?, CoreInputState::Consumed);
+    check_eq!(r.op(3)?.state()?, CoreInputState::Consumed);
     let (cold, _) = r.cold(r.boot.clone(), true)?;
-    assert!(
+    check!(
         cold.world()
             .module_state::<InventoryStore>()
             .ok_or("store")?
@@ -1190,20 +1196,20 @@ fn admission_preflights_complete_terminal_room_and_strict_wire_before_writing() 
         .map(|_| ())
     })?;
     let before = r.boot.clone();
-    assert!(r.prep(0, 3, 2, newlot).is_err());
-    assert!(
+    check!(r.prep(0, 3, 2, newlot).is_err());
+    check!(
         boot_image(&r.boot) == boot_image(&before),
         "capacity refusal is inert"
     );
     let mut unknown = encode(&original)?;
     unknown["extra"] = json!(true);
-    assert!(decode::<CoreInputOperation>(&unknown).is_err());
+    check!(decode::<CoreInputOperation>(&unknown).is_err());
     let mut null = encode(&original)?;
     null["terminal"] = Value::Null;
-    assert!(decode::<CoreInputOperation>(&null).is_err());
+    check!(decode::<CoreInputOperation>(&null).is_err());
     let mut crossed = original.clone();
     crossed.scalar = mush_core::BoundedScalar::new(0, 1, 0, 1)?;
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     Ok(())
 }
 
@@ -1217,7 +1223,7 @@ fn exact_owner_binding_rejects_same_token_cross_action_or_changed_invocation_eve
         let before = r.boot.clone();
         let captured = invocation(0, 8, 1, lot, r.endpoints[0], GOD);
         r.control.mode.store(1, Ordering::SeqCst);
-        assert!(
+        check!(
             r.w.engine_mut()
                 .prepare_registered_composed_authoritative_action(
                     &actions()[0],
@@ -1226,7 +1232,7 @@ fn exact_owner_binding_rejects_same_token_cross_action_or_changed_invocation_eve
                 )
                 .is_err()
         );
-        assert!(
+        check!(
             r.control
                 .captured
                 .lock()
@@ -1248,22 +1254,26 @@ fn exact_owner_binding_rejects_same_token_cross_action_or_changed_invocation_eve
             ),
         };
         // Always reuse the exact commit token and actual owner handle.
-        assert!(
+        check!(
             r.w.engine_mut()
                 .prepare_registered_composed_authoritative_action(&action, &inv, token(8))
                 .is_err()
         );
-        assert!(
+        check!(
+            !r.control.uncaught.load(Ordering::SeqCst),
+            "the crossed publish was refused before the provider caught it"
+        );
+        check!(
             boot_image(&r.boot) == boot_image(&before),
             "crossed preparation produces no evidence"
         );
-        assert!(
+        check!(
             r.w.engine()
                 .action_state()
                 .get(&r.f.core_inputs.as_ref().unwrap().shared.operations, &1)?
                 .is_none()
         );
-        assert!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_some());
+        check!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_some());
     }
     Ok(())
 }

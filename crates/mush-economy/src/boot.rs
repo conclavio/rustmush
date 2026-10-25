@@ -79,6 +79,7 @@ use crate::snapshot::EconomySnapshot;
 
 /// Rebuild the [`EconomyStore`] from boot data.
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -103,6 +104,7 @@ pub(crate) fn load_boot(
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_renewals(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -129,6 +131,7 @@ pub(crate) fn load_boot_with_renewals(
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_line_updates(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -157,6 +160,7 @@ pub(crate) fn load_boot_with_line_updates(
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_charter_transfers(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -186,6 +190,7 @@ pub(crate) fn load_boot_with_charter_transfers(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_core_integration(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -216,6 +221,7 @@ pub(crate) fn load_boot_with_core_integration(
         false,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_charter_pending(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -248,6 +254,7 @@ pub(crate) fn load_boot_with_charter_pending(
         false,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_house_renewals(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -282,6 +289,7 @@ pub(crate) fn load_boot_with_house_renewals(
         false,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_paid_resale(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -318,6 +326,7 @@ pub(crate) fn load_boot_with_paid_resale(
         false,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_core_refit(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
@@ -1904,6 +1913,7 @@ fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -
     healed_obligations
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_boot_with_coverage(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,

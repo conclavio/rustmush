@@ -5027,6 +5027,7 @@ impl ActionProviderRegistry {
         .and_then(|(prepared, output)| Ok((prepared.into_typed()?, output)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_authoritative_invocation_seeded<F>(
         &self,
         action: &DefinitionRef,

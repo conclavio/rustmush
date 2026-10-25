@@ -497,6 +497,7 @@ fn invocation(
         ),
     })?)
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare(
     f: &mut Fixture,
     index: usize,

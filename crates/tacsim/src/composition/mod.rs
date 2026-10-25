@@ -252,6 +252,7 @@ enum TacsimComposition<'a> {
 /// IC5): `tacsim_delegate` adds [`crate::NS`] to `mush-inventory`'s quantity delegates, and
 /// the returned cell is the roster's inventory handle cell (filled by `mush-inventory`'s own
 /// `register`, so any module composed after it finds it filled).
+#[allow(clippy::too_many_arguments)]
 fn compose_server_modules<E>(
     weather: mush_weather::WeatherConfig,
     mut economy: mush_economy::EconomyConfig,

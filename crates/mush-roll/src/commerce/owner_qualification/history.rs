@@ -90,6 +90,7 @@ pub(crate) fn verify(
 /// Immutable selected-holder attribution, separate from the accepted term's
 /// holder and today's licence pointer. Old omitted evidence keeps the exact
 /// original term-holder rule; a new capture must resolve the actual settlement.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn require_selected_holder(
     ctx: &impl CommerceRead,
     f: &CommerceFamilies,

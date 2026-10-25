@@ -180,6 +180,7 @@ impl InitialFilingParticipant {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -206,6 +207,7 @@ pub(crate) fn register(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_core(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -234,6 +236,7 @@ pub(crate) fn register_with_core(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_pending(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -264,6 +267,7 @@ pub(crate) fn register_with_pending(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_house_purchases(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -296,6 +300,7 @@ pub(crate) fn register_with_house_purchases(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_house_renewals(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -330,6 +335,7 @@ pub(crate) fn register_with_house_renewals(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_paid_resale(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -366,6 +372,7 @@ pub(crate) fn register_with_paid_resale(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_core_refits(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -405,6 +412,7 @@ pub(crate) fn register_with_core_refits(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_coverage(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -447,6 +455,7 @@ pub(crate) fn register_with_coverage(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_derived_updates(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -491,6 +500,7 @@ pub(crate) fn register_with_derived_updates(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_original_majors(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,
@@ -537,6 +547,7 @@ pub(crate) fn register_with_original_majors(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_with_house_updates(
     reg: &mut mush_core::Registrar<'_>,
     policy: InitialFilingPolicy,

@@ -205,6 +205,7 @@ impl OwnerReadService for PaidResaleReader {
         .map_err(fail)
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn observe(
     roll: &RollStore,
     ctx: &impl CommerceRead,

@@ -19,7 +19,8 @@
 //! frame no more than the assert it replaced (`clippy::large_stack_frames`
 //! measures test functions too). A `macro_rules!` does not cross crates, so each
 //! crate that needs these keeps this module as its own copy: `mush-economy`,
-//! `mush-industry`, `mush-market`, `mush-roll` and `tacsim`.
+//! `mush-industry`, `mush-inventory`, `mush-market`, `mush-proto`, `mush-roll`,
+//! `mush-server`, `mush-sim`, `mush-tactics` and `tacsim`.
 
 use std::error::Error;
 use std::fmt;

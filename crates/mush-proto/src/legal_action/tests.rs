@@ -27,7 +27,7 @@ fn exact_i64_values_survive_public_json_without_javascript_numbers() -> TestResu
         else {
             return Err("wrong typed request".into());
         };
-        assert_eq!(parameters.to_json()?["payer"].as_i64(), Some(expected));
+        check_eq!(parameters.to_json()?["payer"].as_i64(), Some(expected));
     }
     for bad in [
         "+1",
@@ -39,9 +39,9 @@ fn exact_i64_values_survive_public_json_without_javascript_numbers() -> TestResu
         "9223372036854775808",
         "-9223372036854775809",
     ] {
-        assert!(LegalActionInteger::new(bad.into()).is_err(), "{bad}");
+        check!(LegalActionInteger::new(bad.into()).is_err(), "{bad}");
     }
-    assert!(
+    check!(
         serde_json::from_value::<ClientCommand>(submit(
             json!({"payer":{"kind":"integer","value":9}})
         ))
@@ -65,12 +65,12 @@ fn closed_request_refuses_authority_fields_and_nested_unknown_fields() -> TestRe
     ] {
         let mut wire = submit(json!({}));
         wire["d"]["request"]["request"][key] = json!("injected");
-        assert!(
+        check!(
             serde_json::from_value::<ClientCommand>(wire).is_err(),
             "{key}"
         );
     }
-    assert!(
+    check!(
         serde_json::from_value::<ClientCommand>(submit(
             json!({"name":{"kind":"text","value":"name","actor":1}})
         ))
@@ -82,7 +82,7 @@ fn closed_request_refuses_authority_fields_and_nested_unknown_fields() -> TestRe
         json!({"kind":"text","value":[]}),
         json!({"kind":"float","value":1.5}),
     ] {
-        assert!(serde_json::from_value::<ClientCommand>(submit(json!({"name":bad}))).is_err());
+        check!(serde_json::from_value::<ClientCommand>(submit(json!({"name":bad}))).is_err());
     }
     Ok(())
 }
@@ -103,8 +103,8 @@ fn scalar_count_text_and_encoded_byte_limits_are_independent() -> TestResult {
     let value = LegalActionScalar::Text {
         value: "x".repeat(MAX_LEGAL_ACTION_TEXT_BYTES),
     };
-    assert!(LegalActionParameters::new(BTreeMap::from([("name".into(), value.clone())])).is_ok());
-    assert!(
+    check!(LegalActionParameters::new(BTreeMap::from([("name".into(), value.clone())])).is_ok());
+    check!(
         LegalActionParameters::new(BTreeMap::from([(
             "name".into(),
             LegalActionScalar::Text {
@@ -121,7 +121,7 @@ fn scalar_count_text_and_encoded_byte_limits_are_independent() -> TestResult {
             )
         })
         .collect();
-    assert!(LegalActionParameters::new(small).is_ok());
+    check!(LegalActionParameters::new(small).is_ok());
     let large = (0..=MAX_LEGAL_ACTION_PARAMETERS)
         .map(|i| {
             (
@@ -130,13 +130,13 @@ fn scalar_count_text_and_encoded_byte_limits_are_independent() -> TestResult {
             )
         })
         .collect();
-    assert!(LegalActionParameters::new(large).is_err());
+    check!(LegalActionParameters::new(large).is_err());
     let encoded = (0..MAX_LEGAL_ACTION_PARAMETERS)
         .map(|i| (format!("field_{i}"), value.clone()))
         .collect();
-    assert!(LegalActionParameters::new(encoded).is_err());
+    check!(LegalActionParameters::new(encoded).is_err());
     for key in ["", ".name", "name.", "a..b", "UPPER", "has-space "] {
-        assert!(
+        check!(
             LegalActionParameters::new(BTreeMap::from([(
                 key.into(),
                 LegalActionScalar::Boolean { value: true }
@@ -144,14 +144,14 @@ fn scalar_count_text_and_encoded_byte_limits_are_independent() -> TestResult {
             .is_err()
         );
     }
-    assert!(
+    check!(
         LegalActionParameters::new(BTreeMap::from([(
             "field.name".into(),
             LegalActionScalar::Boolean { value: true }
         )]))
         .is_ok()
     );
-    assert!(
+    check!(
         LegalActionParameters::new(BTreeMap::from([(
             "x".repeat(97),
             LegalActionScalar::Boolean { value: true }
@@ -164,7 +164,7 @@ fn scalar_count_text_and_encoded_byte_limits_are_independent() -> TestResult {
 #[test]
 fn tokens_and_status_are_strict_and_carry_no_chosen_actor() -> TestResult {
     let valid = ProjectedOfferId::new(OFFER.into())?;
-    assert_eq!(
+    check_eq!(
         serde_json::from_str::<ProjectedOfferId>(&serde_json::to_string(&valid)?)?,
         valid
     );
@@ -174,15 +174,15 @@ fn tokens_and_status_are_strict_and_carry_no_chosen_actor() -> TestResult {
         "g".repeat(64),
         format!(" {OFFER}"),
     ] {
-        assert!(ProjectedOfferId::new(bad).is_err());
+        check!(ProjectedOfferId::new(bad).is_err());
     }
     let reference = "k5:toy:brace:0000000000000007:01010101010101010101010101010101";
     let valid = json!({"op":"status","reference":reference});
-    assert!(serde_json::from_value::<LegalActionRequest>(valid.clone()).is_ok());
+    check!(serde_json::from_value::<LegalActionRequest>(valid.clone()).is_ok());
     let mut invalid = valid;
     invalid["actor"] = json!(9);
-    assert!(serde_json::from_value::<LegalActionRequest>(invalid).is_err());
-    assert!(
+    check!(serde_json::from_value::<LegalActionRequest>(invalid).is_err());
+    check!(
         serde_json::from_value::<LegalActionRequest>(
             json!({"op":"status","reference":"not-a-status"})
         )
@@ -195,17 +195,17 @@ fn tokens_and_status_are_strict_and_carry_no_chosen_actor() -> TestResult {
 fn outcome_variants_are_closed_and_do_not_collapse_ownership_or_absence() -> TestResult {
     let pending = LegalActionResponse::Queued {};
     let unknown = LegalActionResponse::Unavailable { reference: None };
-    assert_ne!(pending, unknown);
+    check_ne!(pending, unknown);
     for state in [
         "queued", "busy", "rejected", "unknown", "expired", "invalid",
     ] {
-        assert!(serde_json::from_value::<LegalActionResponse>(json!({"state":state})).is_ok());
-        assert!(
+        check!(serde_json::from_value::<LegalActionResponse>(json!({"state":state})).is_ok());
+        check!(
             serde_json::from_value::<LegalActionResponse>(json!({"state":state,"actor":1}))
                 .is_err()
         );
     }
-    assert_eq!(
+    check_eq!(
         serde_json::from_slice::<LegalActionResponse>(&serde_json::to_vec(&unknown)?)?,
         unknown
     );

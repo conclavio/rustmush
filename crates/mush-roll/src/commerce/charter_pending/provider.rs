@@ -102,6 +102,7 @@ impl Provider {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn admission(
         &self,
         ctx: &PrepareCtx<'_>,

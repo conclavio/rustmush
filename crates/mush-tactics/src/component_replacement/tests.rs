@@ -506,26 +506,26 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
     let before = stored(&f);
     let (p, o, inv) = prepare(&mut f)?;
     let writes = p.authoritative_replay_writes();
-    assert_eq!(writes.len(), 2);
-    assert!(f.world.engine().action_state().is_empty());
-    assert_eq!(stored(&f), before);
+    check_eq!(writes.len(), 2);
+    check!(f.world.engine().action_state().is_empty());
+    check_eq!(stored(&f), before);
     stage(&mut f, p, o, &inv)?;
     let held = f.world.engine_mut().take_staged_action()?.ok_or("staged")?;
-    assert_eq!(stored(&f), before);
+    check_eq!(stored(&f), before);
     let (_, installation) = held.into_parts();
     f.world.engine_mut().install_composed_action(installation)?;
-    assert!(!f.world.engine().action_state().is_empty());
+    check!(!f.world.engine().action_state().is_empty());
     let after = stored(&f);
     let unit = after.units.get(&f.hull).ok_or("after unit")?;
-    assert_eq!(
+    check_eq!(
         unit.schema(),
         &f.rules.specs.get(1).ok_or("target")?.definition
     );
-    assert_eq!(
+    check_eq!(
         unit.revision(),
         before.units.get(&f.hull).ok_or("before unit")?.revision() + 1
     );
-    assert_eq!(
+    check_eq!(
         unit.cell(&crate::CellAddr::Unit {
             cell: crate::CellId::new("heat")?
         })
@@ -533,7 +533,7 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
         .current,
         7
     );
-    assert_eq!(
+    check_eq!(
         unit.component(&ComponentId::new("core")?)
             .ok_or("core")?
             .asset,
@@ -544,7 +544,7 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
         f.hull,
         after.record_definition.as_ref().ok_or("schema")?,
     )?;
-    assert_eq!(record.unit.as_ref(), Some(unit));
+    check_eq!(record.unit.as_ref(), Some(unit));
     let receipt = writes
         .iter()
         .find_map(|write| match write {
@@ -555,12 +555,12 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
         })
         .ok_or("actual typed fixture receipt")?;
     let receipt: FixtureReceipt = serde_json::from_value(receipt["value"].clone())?;
-    assert_eq!(receipt.action, f.rules.action);
-    assert_eq!(receipt.commit, token());
-    assert_eq!(receipt.actor, GOD);
-    assert_eq!(receipt.unit, f.hull);
-    assert_eq!(receipt.from + 1, unit.revision());
-    assert_eq!(receipt.to, unit.revision());
+    check_eq!(receipt.action, f.rules.action);
+    check_eq!(receipt.commit, token());
+    check_eq!(receipt.actor, GOD);
+    check_eq!(receipt.unit, f.hull);
+    check_eq!(receipt.from + 1, unit.revision());
+    check_eq!(receipt.to, unit.revision());
     let ReplayWrite::ModuleJsonSet { key, value, .. } = writes
         .iter()
         .find(|write| {
@@ -571,7 +571,7 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
     else {
         return Err("wrong write".into());
     };
-    assert!(crate::module::replacement_write_is_exact(
+    check!(crate::module::replacement_write_is_exact(
         key.as_str(),
         value,
         after.record_definition.as_ref().ok_or("schema")?
@@ -595,7 +595,7 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
         &mut mush_core::Outbox::new(),
         &mut mush_core::Effects::new(),
     )?;
-    assert_eq!(
+    check_eq!(
         engine
             .world
             .module_state::<UnitStore>()
@@ -638,8 +638,8 @@ fn stale_lifecycle_and_payload_images_refuse_before_any_install() -> Result {
             }
         }
         let before = stored(&f);
-        assert!(stage(&mut f, p, o, &inv).is_err());
-        assert_eq!(stored(&f), before);
+        check!(stage(&mut f, p, o, &inv).is_err());
+        check_eq!(stored(&f), before);
     }
     Ok(())
 }
@@ -648,14 +648,14 @@ fn actual_actor_action_commit_and_stale_authority_refuse() -> Result {
     let mut f = fixture()?;
     let before = stored(&f);
     let inv = invocation(&f, GOD, CommitToken::from_bytes([9; 16]))?;
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&f.rules.action, &inv, token())
             .is_err()
     );
     let inv = invocation(&f, GOD, token())?;
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&f.rules.other, &inv, token())
@@ -667,19 +667,19 @@ fn actual_actor_action_commit_and_stale_authority_refuse() -> Result {
         .create(ObjKind::Player, "Other fitter", GOD, None)?;
     clear(&mut f.world);
     let inv = invocation(&f, actor, token())?;
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&f.rules.action, &inv, token())
             .is_err()
     );
-    assert_eq!(stored(&f), before);
+    check_eq!(stored(&f), before);
     let (p, o, inv) = prepare(&mut f)?;
     stage(&mut f, p, o, &inv)?;
     f.world.world_mut().chown(f.asset, actor)?;
     clear(&mut f.world);
-    assert!(f.world.engine_mut().take_staged_action().is_err());
-    assert_eq!(stored(&f), before);
+    check!(f.world.engine_mut().take_staged_action().is_err());
+    check_eq!(stored(&f), before);
     Ok(())
 }
 #[test]
@@ -692,7 +692,7 @@ fn actual_deployment_and_unavailable_spatial_ownership_refuse() -> Result {
         f.hull,
         mush_sim::DeployedMark::new(42, "real-test-arena"),
     );
-    assert!(f.world.engine_mut().take_staged_action().is_err());
+    check!(f.world.engine_mut().take_staged_action().is_err());
     let mut f = fixture()?;
     f.world
         .world_mut()
@@ -700,7 +700,7 @@ fn actual_deployment_and_unavailable_spatial_ownership_refuse() -> Result {
         .ok_or("journeys")?
         .held
         .insert("cjourney:bad".into(), "unreadable".into());
-    assert!(prepare(&mut f).is_err());
+    check!(prepare(&mut f).is_err());
     Ok(())
 }
 #[test]
@@ -718,7 +718,7 @@ fn changed_definition_owner_refuses_at_final_recheck() -> Result {
         mush_core::IncidentId(1),
         reason,
     )?;
-    assert!(f.world.engine_mut().take_staged_action().is_err());
+    check!(f.world.engine_mut().take_staged_action().is_err());
     Ok(())
 }
 
@@ -744,7 +744,7 @@ fn actual_definition_digest_drift_refuses_frozen_composition() -> Result {
     .with_references(descriptor.references().to_vec());
     // The real registered root now has a different digest; the retained catalog
     // and adapter still name the original exact root. Final freeze must refuse.
-    assert!(
+    check!(
         mush_core::Engine::with_modules(
             mush_core::World::new_minimal(),
             mush_core::Registry::new(),
@@ -778,13 +778,13 @@ fn local_bind_refusal_after_custody_cannot_partially_publish() -> Result {
         .ok_or("lifecycle")?
         .payload_digest = None;
     let before = stored(&f);
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .install_composed_action(installation)
             .is_err()
     );
-    assert!(f.world.engine().action_state().is_empty());
-    assert_eq!(stored(&f), before);
+    check!(f.world.engine().action_state().is_empty());
+    check_eq!(stored(&f), before);
     Ok(())
 }

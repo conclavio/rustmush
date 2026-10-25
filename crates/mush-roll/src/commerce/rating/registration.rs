@@ -174,6 +174,7 @@ pub(crate) trait Installer: Send {
         executions: &[super::execution::RatingExecution],
     ) -> Result<(), super::RatingError>;
 
+    #[allow(clippy::too_many_arguments)]
     fn register(
         &self,
         reg: &mut Registrar<'_>,

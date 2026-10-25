@@ -537,7 +537,7 @@ async fn public_commerce_setup_accepts_generic_committed_receipts() -> TestResul
         let initialized = server
             .offer(GOD, "roll-initialize-commerce", json!({}))
             .await?;
-        assert!(
+        check!(
             initialized.result().is_none(),
             "actual provider uses generic receipt"
         );
@@ -551,18 +551,18 @@ async fn public_commerce_setup_accepts_generic_committed_receipts() -> TestResul
         let reserved = server
             .offer(GOD, "roll-reserve-mind-charter", json!({}))
             .await?;
-        assert!(
+        check!(
             reserved.result().is_none(),
             "actual shell provider uses generic receipt"
         );
         let shell = one_row(&store, "roll", "initial_filing_shells").await?;
         let commit = CommitToken::from_hex(reserved.commit())?;
-        assert!(
+        check!(
             field(&shell, "receipt")? == &json!(commit),
             "actual shell receipt commit"
         );
-        assert!(rows(&store, "roll", "rating_jobs").await?.is_empty());
-        assert!(
+        check!(rows(&store, "roll", "rating_jobs").await?.is_empty());
+        check!(
             rows(&store, "market", "market_mind_purchase")
                 .await?
                 .is_empty()

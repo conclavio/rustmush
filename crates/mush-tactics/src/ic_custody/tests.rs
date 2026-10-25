@@ -484,7 +484,7 @@ fn setup() -> Result<Fixture> {
     engine.modules_loaded(HashMap::new(), &mut Outbox::new(), &mut Effects::new())?;
     let mut world = TestWorld::from_engine(engine);
     world.run(GOD, &format!("@unit/create #{}=physical_hull", hull.0));
-    assert!(
+    check!(
         world
             .world()
             .module_state::<UnitStore>()
@@ -701,8 +701,8 @@ fn actual_open_retains_unit_bytes_and_fences_mutations_until_exact_close() -> Re
     let before = stored(&f);
     let prepared = prepare(&mut f, false)?;
     let persisted = rows(&prepared.0)?;
-    assert_eq!(persisted.len(), 2);
-    assert_eq!(stored(&f), before);
+    check_eq!(persisted.len(), 2);
+    check_eq!(stored(&f), before);
     let unit = before.units.get(&f.hull).ok_or("unit")?;
     let schema = before.record_definition.as_ref().ok_or("schema")?;
     let unit_value = persisted
@@ -711,25 +711,25 @@ fn actual_open_retains_unit_bytes_and_fences_mutations_until_exact_close() -> Re
         .ok_or("unit write")?
         .1
         .clone();
-    assert_eq!(
+    check_eq!(
         unit_value,
         encode_unit_document(schema, unit, None)?.0,
         "Open preserves old unit codec bytes"
     );
-    assert!(unit_value.get("ic_custody").is_none());
+    check!(unit_value.get("ic_custody").is_none());
     stage(&mut f, false, prepared)?;
-    assert_eq!(stored(&f), before);
+    check_eq!(stored(&f), before);
     let held = f.world.engine_mut().take_staged_action()?.ok_or("held")?;
-    assert_eq!(stored(&f), before);
+    check_eq!(stored(&f), before);
     let (_, installation) = held.into_parts();
     f.world.engine_mut().install_composed_action(installation)?;
-    assert!(stored(&f).is_ic_custodied(f.hull));
-    assert!(stored(&f).deployed.is_empty());
-    assert!(mush_sim::deployed::mark_of(f.world.world(), f.hull).is_none());
+    check!(stored(&f).is_ic_custodied(f.hull));
+    check!(stored(&f).deployed.is_empty());
+    check!(mush_sim::deployed::mark_of(f.world.world(), f.hull).is_none());
     // This deliberately tests the owner-local fallback with no Sim exclusion
     // installed. Such a partial union is not an activatable full IC world.
     let held = stored(&f);
-    assert!(refuse_mutation(f.world.world(), f.hull).is_err());
+    check!(refuse_mutation(f.world.world(), f.hull).is_err());
     let plan = UnitMutationPlan::new(
         vec![UnitMutationOp::SetCell {
             addr: crate::CellAddr::Unit {
@@ -749,33 +749,33 @@ fn actual_open_retains_unit_bytes_and_fences_mutations_until_exact_close() -> Re
         ),
     );
     f.world.run(GOD, &format!("@unit/remove #{}", f.hull.0));
-    assert_eq!(stored(&f), held);
+    check_eq!(stored(&f), held);
     let reopened = cold(&f, persisted.clone(), true)?;
-    assert!(
+    check!(
         reopened
             .world
             .module_state::<UnitStore>()
             .ok_or("cold slot")?
             .is_ic_custodied(f.hull)
     );
-    assert!(cold(&f, persisted.clone(), false).is_err());
+    check!(cold(&f, persisted.clone(), false).is_err());
     let mut missing = persisted.clone();
     missing.retain(|(k, _)| !k.starts_with("unit:"));
-    assert!(cold(&f, missing, true).is_err());
+    check!(cold(&f, missing, true).is_err());
     let prepared = prepare(&mut f, true)?;
     let closed = rows(&prepared.0)?;
-    assert_eq!(stored(&f), held);
+    check_eq!(stored(&f), held);
     stage(&mut f, true, prepared)?;
-    assert_eq!(stored(&f), held);
+    check_eq!(stored(&f), held);
     install(&mut f)?;
     let after = stored(&f);
-    assert!(!after.is_ic_custodied(f.hull));
-    assert_eq!(after.ic.rows.len(), 1);
-    assert_eq!(
+    check!(!after.is_ic_custodied(f.hull));
+    check_eq!(after.ic.rows.len(), 1);
+    check_eq!(
         after.units.get(&f.hull).ok_or("after")?.revision(),
         unit.revision() + 1
     );
-    assert_eq!(
+    check_eq!(
         after
             .units
             .get(&f.hull)
@@ -787,16 +787,16 @@ fn actual_open_retains_unit_bytes_and_fences_mutations_until_exact_close() -> Re
             .current,
         9
     );
-    assert!(refuse_mutation(f.world.world(), f.hull).is_ok());
+    check!(refuse_mutation(f.world.world(), f.hull).is_ok());
     let reopened = cold(&f, closed, true)?;
-    assert!(
+    check!(
         !reopened
             .world
             .module_state::<UnitStore>()
             .ok_or("cold slot")?
             .is_ic_custodied(f.hull)
     );
-    assert!(
+    check!(
         prepare(&mut f, true).is_err(),
         "a decoded repeated close is not a new event"
     );
@@ -809,31 +809,31 @@ fn actual_preparation_stage_take_and_bind_refuse_changed_owner_images() -> Resul
         let prepared = prepare(&mut f, false)?;
         if at == 0 {
             drift(&mut f)?;
-            assert!(stage(&mut f, false, prepared).is_err());
+            check!(stage(&mut f, false, prepared).is_err());
         } else {
             stage(&mut f, false, prepared)?;
             if at == 1 {
                 drift(&mut f)?;
-                assert!(f.world.engine_mut().take_staged_action().is_err());
+                check!(f.world.engine_mut().take_staged_action().is_err());
             } else {
                 let held = f.world.engine_mut().take_staged_action()?.ok_or("held")?;
                 let (_, installation) = held.into_parts();
                 drift(&mut f)?;
                 let before = stored(&f);
-                assert!(
+                check!(
                     f.world
                         .engine_mut()
                         .install_composed_action(installation)
                         .is_err()
                 );
-                assert_eq!(stored(&f), before);
+                check_eq!(stored(&f), before);
             }
         }
-        assert!(!stored(&f).is_ic_custodied(f.hull));
+        check!(!stored(&f).is_ic_custodied(f.hull));
     }
     let mut f = setup()?;
     let inv = invocation(&f)?;
-    assert!(
+    check!(
         f.world
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&f.rules.wrong, &inv, open_token())
@@ -846,7 +846,7 @@ fn actual_preparation_stage_take_and_bind_refuse_changed_owner_images() -> Resul
         f.hull,
         mush_sim::DeployedMark::new(9, "other-arena"),
     );
-    assert!(f.world.engine_mut().take_staged_action().is_err());
+    check!(f.world.engine_mut().take_staged_action().is_err());
     Ok(())
 }
 fn drift(f: &mut Fixture) -> Result {
@@ -881,17 +881,17 @@ fn strict_history_and_condition_only_close_preserve_old_ooc_boundary() -> Result
     )?;
     let mut value = serde_json::to_value(&record)?;
     value.as_object_mut().ok_or("object")?.remove("closed");
-    assert!(serde_json::from_value::<Record>(value).is_err());
+    check!(serde_json::from_value::<Record>(value).is_err());
     let mut value = serde_json::to_value(&record)?;
     value
         .as_object_mut()
         .ok_or("object")?
         .insert("receipt_authority".into(), json!(true));
-    assert!(serde_json::from_value::<Record>(value).is_err());
+    check!(serde_json::from_value::<Record>(value).is_err());
     let mut crossed = record.clone();
     crossed.open.operation = CommitToken::from_bytes([22; 16]);
     crossed.open.unit = ObjId(900);
-    assert!(
+    check!(
         IcCustodies::reconstruct([record, crossed]).is_err(),
         "sortie IDs are unique"
     );
@@ -906,16 +906,16 @@ fn strict_history_and_condition_only_close_preserve_old_ooc_boundary() -> Result
         Some(unit.revision()),
         None,
     )?;
-    assert!(
+    check!(
         close_unit(unit, &asset, f.world.world().now()).is_err(),
         "close cannot replace an asset"
     );
     let stale = UnitMutationPlan::new(vec![], Some(unit.revision() + 1), None)?;
-    assert!(close_unit(unit, &stale, 0).is_err());
+    check!(close_unit(unit, &stale, 0).is_err());
     let absent = UnitMutationPlan::new(vec![], None, None)?;
-    assert!(close_unit(unit, &absent, 0).is_err());
+    check!(close_unit(unit, &absent, 0).is_err());
     let mut disabled = cold(&f, vec![], false)?;
-    assert!(
+    check!(
         disabled
             .world
             .module_state_mut::<UnitStore>()

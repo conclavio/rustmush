@@ -273,6 +273,7 @@ fn register_origin_paths(
 }
 
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn finish_origin_registration(
     reg: &mut Registrar<'_>,
     config: CoreOriginConfig,

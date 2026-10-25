@@ -243,6 +243,7 @@ impl<P: CoreOutputPolicy> CoreOutputReservations<P> {
         .map_err(state_error)?;
         Ok(image)
     }
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reserve(
         &self,
         world: &World,
@@ -328,6 +329,7 @@ impl<P: CoreOutputPolicy> CoreOutputReservations<P> {
             image,
         ))
     }
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn consume(
         &self,
         world: &World,
