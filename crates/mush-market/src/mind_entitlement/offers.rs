@@ -85,12 +85,11 @@ impl Provider {
         }
         .map_err(|e| e.to_string())
         .and_then(|r| {
-            if let Request::List(v) = &r {
-                if v.royalty_permille > 300
-                    || (matches!(v.form, Form::Sealed) && v.royalty_permille != 0)
-                {
-                    return Err("invalid explicit downstream consent".into());
-                }
+            if let Request::List(v) = &r
+                && (v.royalty_permille > 300
+                    || (matches!(v.form, Form::Sealed) && v.royalty_permille != 0))
+            {
+                return Err("invalid explicit downstream consent".into());
             }
             Ok(r)
         })

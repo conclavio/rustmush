@@ -160,10 +160,10 @@ fn release(before: &View<'_>, after: &View<'_>, r: &Row) -> Result<(), ActionSta
     Ok(())
 }
 fn admission_heads(before: &View<'_>, r: &Row) -> Result<(), ActionStateError> {
-    if let Some(a) = value(before, &r.key(ASSET)?)? {
-        if a.pointer("/position/state") != Some(&json!("released")) {
-            return Err(refused("core refit incoming preimage"));
-        }
+    if let Some(a) = value(before, &r.key(ASSET)?)?
+        && a.pointer("/position/state") != Some(&json!("released"))
+    {
+        return Err(refused("core refit incoming preimage"));
     }
     match (value(before, &r.key(HULL)?)?, r.displaced()?) {
         (None, None) => {}

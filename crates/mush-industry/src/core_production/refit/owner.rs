@@ -1,9 +1,8 @@
 //! Additional closed requests on the one existing Industry owner slot. Install
 //! has no request here: its exact two native images are Economy and Tactics.
 use super::{
-    CoreRefitFactoryConfig, Error,
+    CoreRefitFactoryConfig,
     authority::{self, Live},
-    bad,
     records::*,
     state::Projection,
 };

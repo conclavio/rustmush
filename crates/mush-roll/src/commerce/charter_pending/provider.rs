@@ -1,6 +1,6 @@
 //! Actual seller consent, buyer hold and private terminal providers.
 use super::{
-    PendingCharterTransferConfig, Readiness, bad, current, history, protocol,
+    PendingCharterTransferConfig, Readiness, bad, current, history,
     publication::{Admission, Mode, PendingFence, PendingRoots},
     records::*,
     service,

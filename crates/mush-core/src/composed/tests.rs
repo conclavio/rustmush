@@ -48,7 +48,7 @@ fn owner<const N: u8>() -> OwnerId {
     OwnerId::new(if N == 3 { "writer" } else { "legacy" }).unwrap()
 }
 fn key<const N: u8>() -> AuthoritativeKey {
-    AuthoritativeKey::parse_canonical(&format!("slot{N}")).unwrap()
+    AuthoritativeKey::parse_canonical(format!("slot{N}")).unwrap()
 }
 impl<const N: u8> BoundParticipant for Bound<'_, N> {
     fn apply(self) {

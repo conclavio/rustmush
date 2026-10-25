@@ -80,7 +80,7 @@ impl ConductBudget {
                 .iter()
                 .enumerate()
                 .any(|(index, case)| usize::from(case.index) != index)
-            || self.cases.chunks_exact(2).any(|pair| match pair {
+            || self.cases.as_chunks::<2>().0.iter().any(|pair| match pair {
                 [a, b] => {
                     a.units != b.units || a.native_ms != b.native_ms || a.maximum_ms != b.maximum_ms
                 }

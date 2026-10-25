@@ -27,7 +27,7 @@ impl GameModule for Fixture {
         .map_err(super::super::error)?;
         reg.definition_validator(
             descriptor.kind().clone(),
-            crate::lot::exact_validator(&[descriptor.clone()]),
+            crate::lot::exact_validator(std::slice::from_ref(&descriptor)),
         )?;
         let action = reg.definition(descriptor)?;
         let capture = self.0.clone();

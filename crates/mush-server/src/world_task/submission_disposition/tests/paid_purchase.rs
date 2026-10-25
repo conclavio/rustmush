@@ -345,15 +345,14 @@ async fn operation_quote(store: &PurchaseFaultStore, quote: CommitToken) -> Test
 async fn wait_selected(store: &PurchaseFaultStore, owned: bool) -> TestResult<Exact> {
     let end = Instant::now() + STEP;
     loop {
-        if let Some(exact) = store.selected()? {
-            if !owned
+        if let Some(exact) = store.selected()?
+            && (!owned
                 || matches!(
                     store.authoritative_status(exact.token, exact.hash).await?,
                     BundleStatus::PendingExact
-                )
-            {
-                return Ok(exact);
-            }
+                ))
+        {
+            return Ok(exact);
         }
         if Instant::now() >= end {
             return Err("actual paid service did not submit Grant".into());

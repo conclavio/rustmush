@@ -6,7 +6,7 @@ use super::*;
 use crate::commerce::{families::CommerceFamilies, records::Record};
 use mush_core::{DefinitionDigest, Engine, GameModule, Registrar, Registry, StateFamilyHandle};
 use mush_economy::{AccountId, Amount, InstrumentId, TransactionId};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

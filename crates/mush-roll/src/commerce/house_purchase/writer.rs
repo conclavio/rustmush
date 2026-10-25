@@ -733,7 +733,7 @@ impl RegisteredHouseWriter {
     pub fn materialize_listing(
         &self,
         ctx: &mut PrepareCtx<'_>,
-        txn: &mut ActionTxn<'_>,
+        _txn: &mut ActionTxn<'_>,
         observation: &PreparedHouseSale,
     ) -> Result<(), PublicationError> {
         let facts = self.observed(ctx, observation)?;

@@ -265,10 +265,10 @@ fn owner_term(
             ctx, roll, f, birth, next,
         )?)
     } else {
-        if let Some(next) = next_generation(generation)? {
-            if optional(ctx, &f.terms, OwnerTerm::encoded_key(licence.id, next))?.is_some() {
-                return Err(PublicationError::Mismatch);
-            }
+        if let Some(next) = next_generation(generation)?
+            && optional(ctx, &f.terms, OwnerTerm::encoded_key(licence.id, next))?.is_some()
+        {
+            return Err(PublicationError::Mismatch);
         }
         None
     };
@@ -329,16 +329,15 @@ fn paid_term(
         granted(ctx, f, ratings, licence, row)?;
         Some(row.clone())
     } else {
-        if let Some(next) = next_generation(generation)? {
-            if optional(
+        if let Some(next) = next_generation(generation)?
+            && optional(
                 ctx,
                 &f.paid_terms,
                 format!("{}/{}", licence.id().key(), next.key()),
             )?
             .is_some()
-            {
-                return Err(PublicationError::Mismatch);
-            }
+        {
+            return Err(PublicationError::Mismatch);
         }
         None
     };

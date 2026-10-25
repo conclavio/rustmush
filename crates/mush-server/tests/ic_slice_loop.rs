@@ -251,7 +251,7 @@ async fn restart(rig: &mut Rig, probe: impl FnOnce(&mut TestWorld) -> bool) {
     let booted = boxed_boot_engine(&rig.cfg, &rig.store, &rig.spool)
         .await
         .expect("the restart boots over the kept store");
-    rig.tw = Box::new(TestWorld::from_engine(booted.engine));
+    *rig.tw = TestWorld::from_engine(booted.engine);
     rig.tw.set_now(now);
     rig.epoch = rig.epoch.saturating_add(1);
     rig.boots = rig.boots.saturating_add(1);

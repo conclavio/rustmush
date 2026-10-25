@@ -209,7 +209,7 @@ impl Protocol {
             .collect()
     }
     pub(super) fn recognizes_historical(&self, effect: &DefinitionRef) -> bool {
-        effect.key() == self.house[0].key() && matches!(effect.version(), 1 | 2 | 3)
+        effect.key() == self.house[0].key() && matches!(effect.version(), 1..=3)
     }
     pub(super) fn require_product(&self, allocation: &Value) -> Result<(), ActionStateError> {
         let kind = allocation_kind(allocation)?;
@@ -381,7 +381,7 @@ fn action_reference(
         kind.version(),
         action_payload(
             kind,
-            *TRANSITIONS
+            TRANSITIONS
                 .get(index)
                 .ok_or_else(|| refused("house transition index"))?,
         ),

@@ -300,10 +300,10 @@ pub(super) fn current(
                     return Err(refused());
                 }
             }
-            CharterPendingDecisionKindV1::RecipientUnavailable => {
-                if recipients(state, ctx.world(), consent) {
-                    return Err(refused());
-                }
+            CharterPendingDecisionKindV1::RecipientUnavailable
+                if recipients(state, ctx.world(), consent) =>
+            {
+                return Err(refused());
             }
             _ => (),
         }

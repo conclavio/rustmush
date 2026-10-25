@@ -193,15 +193,14 @@ impl Record for AttestationOperation {
         {
             return Err(PublicationError::Invalid);
         }
-        if let Some(parent) = &evidence.parent {
-            if parent.charter == self.charter
+        if let Some(parent) = &evidence.parent
+            && (parent.charter == self.charter
                 || parent.line == self.line
                 || parent.selected.licence == self.licence
                 || parent.source.filed == self.filed
-                || parent.selected.filed == self.filed
-            {
-                return Err(PublicationError::Mismatch);
-            }
+                || parent.selected.filed == self.filed)
+        {
+            return Err(PublicationError::Mismatch);
         }
         mush_core::canonical_json_bytes_with_limit(
             &serde_json::to_value(self).map_err(invalid)?,

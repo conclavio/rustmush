@@ -256,18 +256,18 @@ impl MindRunner for MeteredRunner {
         // Return the actual answer unchanged even after an evidence failure.
         // The case owner rejects the measurement; ordinary settlement still
         // sees exactly what the submitted source produced.
-        if let Ok(mut state) = self.state.lock() {
-            if state.invalid.is_none() {
-                let recorded = if let Some(mut physical) = state.physical.take() {
-                    let recorded = physical.record(&mut state, &self.profile, job, &result);
-                    state.physical = Some(physical);
-                    recorded
-                } else {
-                    record(&mut state, &self.profile, job, &result)
-                };
-                if let Err(error) = recorded {
-                    state.invalid = Some(error);
-                }
+        if let Ok(mut state) = self.state.lock()
+            && state.invalid.is_none()
+        {
+            let recorded = if let Some(mut physical) = state.physical.take() {
+                let recorded = physical.record(&mut state, &self.profile, job, &result);
+                state.physical = Some(physical);
+                recorded
+            } else {
+                record(&mut state, &self.profile, job, &result)
+            };
+            if let Err(error) = recorded {
+                state.invalid = Some(error);
             }
         }
         result

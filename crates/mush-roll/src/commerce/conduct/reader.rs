@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use mush_core::{
-    CommitToken, DefinitionRef, Flags, ModError, ModuleCtx, ObjKind, Registrar,
+    CommitToken, DefinitionRef, Flags, ModError, ObjKind, Registrar,
     action::PrincipalId,
     mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,

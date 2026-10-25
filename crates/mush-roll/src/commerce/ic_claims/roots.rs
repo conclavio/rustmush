@@ -74,6 +74,6 @@ pub(crate) fn required(row: &ClaimRecord) -> Result<RequiredRoot, PublicationErr
     row.validate()?;
     Ok(RequiredRoot {
         anchor: RootAnchor::IcClaim(row.open.operation, row.open.digest()?),
-        identity: row.open.revision.clone(),
+        identity: row.open.revision,
     })
 }

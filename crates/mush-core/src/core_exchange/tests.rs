@@ -89,7 +89,7 @@ impl<const N: u8> OwnerParticipant for Adapter<N> {
             patch,
             vec![ReplayWrite::ModuleJsonSet {
                 namespace: OwnerId::new(owner::<N>()).unwrap(),
-                key: AuthoritativeKey::parse_canonical(&format!("fixture_slot_{N}")).unwrap(),
+                key: AuthoritativeKey::parse_canonical(format!("fixture_slot_{N}")).unwrap(),
                 value: json!(1),
             }],
         ))

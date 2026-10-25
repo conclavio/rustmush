@@ -163,20 +163,14 @@ impl Intent {
             Reason::RecipientUnavailable
                 if now.clock == consent.accepted_at_ic.clock
                     && now.at >= consent.accepted_at_ic.at
-                    && !receivers(world, consent)? =>
-            {
-                ()
-            }
+                    && !receivers(world, consent)? => {}
             Reason::LastClaimClosed { next_transition }
                 if now.clock == consent.accepted_at_ic.clock
                     && now.at >= consent.accepted_at_ic.at
                     && receivers(world, consent)?
                     && self.claims.as_ref().is_some_and(|c| {
                         c.open_owned == 0 && c.next_transition == *next_transition
-                    }) =>
-            {
-                ()
-            }
+                    }) => {}
             Reason::DeadlineReached {
                 next_transition,
                 open_owned,
@@ -184,10 +178,7 @@ impl Intent {
                 && consent.deadline_reached(&now).map_err(bad)?
                 && self.claims.as_ref().is_some_and(|c| {
                     c.next_transition == *next_transition && c.open_owned == *open_owned
-                }) =>
-            {
-                ()
-            }
+                }) => {}
             Reason::RegistryRevoked {
                 licence,
                 generation,
@@ -195,10 +186,7 @@ impl Intent {
                 ..
             } if *licence == consent.terms.owner_term.licence
                 && *generation == consent.terms.owner_term.generation
-                && *term_digest == consent.terms.owner_term.digest =>
-            {
-                ()
-            }
+                && *term_digest == consent.terms.owner_term.digest => {}
             _ => return Err(PublicationError::Unavailable),
         }
         Ok(())

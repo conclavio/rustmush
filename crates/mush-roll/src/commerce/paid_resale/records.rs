@@ -90,7 +90,7 @@ impl PaidResaleBinding {
             charter: self.charter.object(),
             line: self.line.get(),
             birth: self.birth.clone(),
-            holder: self.ownership.clone(),
+            holder: self.ownership,
             term: PaidResaleTermBasisV1 {
                 generation: self.term.generation().get(),
                 operation: self.term.operation(),
@@ -534,7 +534,7 @@ impl PaidHolderRecord {
                 .ok_or(PublicationError::Capacity)?,
             holder: c.terms.buyer,
             birth: binding.birth.clone(),
-            predecessor: binding.ownership.clone(),
+            predecessor: binding.ownership,
             operation,
             action,
             acceptance: c.operation,

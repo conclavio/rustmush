@@ -121,13 +121,12 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<(), Error>
                 return Err(Error::Capacity);
             }
             let lot = entry.value();
-            if let Lineage::Origin { source } = lot.lineage() {
-                if source.provider.as_str() == crate::NS
-                    && source.kind.starts_with("certified_core_die")
-                {
-                    let c = lots.get(&lot.id()).ok_or(Error::Integrity)?;
-                    c.matches_lot(lot)?;
-                }
+            if let Lineage::Origin { source } = lot.lineage()
+                && source.provider.as_str() == crate::NS
+                && source.kind.starts_with("certified_core_die")
+            {
+                let c = lots.get(&lot.id()).ok_or(Error::Integrity)?;
+                c.matches_lot(lot)?;
             }
         }
         after = page.next_after().map(|cursor| cursor.to_string());

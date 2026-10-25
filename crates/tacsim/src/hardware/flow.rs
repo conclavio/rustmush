@@ -120,13 +120,12 @@ struct Rig {
 }
 impl Drop for Rig {
     fn drop(&mut self) {
-        if let Some(w) = &self.w {
-            if let Some(r) = w
+        if let Some(w) = &self.w
+            && let Some(r) = w
                 .world()
                 .module_state::<crate::arena_bridge::ArenaRegistry>()
-            {
-                r.tasks().signal_stop_all();
-            }
+        {
+            r.tasks().signal_stop_all();
         }
     }
 }

@@ -120,6 +120,6 @@ impl RevocationFence {
     }
 }
 pub(crate) use authority::Readiness;
-pub(crate) use provider::{register, register_with_resale};
+pub(crate) use provider::register_with_resale;
 #[cfg(test)]
 mod tests;

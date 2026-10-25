@@ -152,7 +152,7 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     }
     if action == 0 {
         let k = key(OFFER, identity.commit.to_hex())?;
-        exact_puts(store, mutations, &[k.clone()])?;
+        exact_puts(store, mutations, std::slice::from_ref(&k))?;
         let o = offer(&after, identity.commit)?;
         if value(&before, &k)?.is_some()
             || num(&o, "seller")? != u64::from(identity.actor.0)

@@ -70,7 +70,7 @@ impl Provider {
             authorization,
             filed,
             revision: file.content.revision(),
-            rating: file.rating.clone(),
+            rating: file.rating,
             initial_operation: initial.commit,
             initial_issuer: initial.economic.issuer.clone(),
             withdrawn_by: before.withdrawn_by,

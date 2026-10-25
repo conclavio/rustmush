@@ -853,12 +853,11 @@ pub(super) fn completed(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, done: Complet
         .entries
         .values_mut()
         .find(|e| e.account == account && e.binding.is_some_and(|b| b.run == run))
+        && matches!(entry.phase, Phase::Working)
     {
-        if matches!(entry.phase, Phase::Working) {
-            entry.phase = Phase::Returned(Some(Box::new(done)));
-            entry.schedule_after = 0;
-            return;
-        }
+        entry.phase = Phase::Returned(Some(Box::new(done)));
+        entry.schedule_after = 0;
+        return;
     }
     // This can only indicate corrupted in-process custody. Keep the real paid
     // receipt in the existing bounded repair queue rather than publish legacy.

@@ -36,7 +36,7 @@ impl<const N: u8> OwnerParticipant for Adapter<N> {
     ) -> Result<(), ParticipantError> {
         Err(ParticipantError::Authority)
     }
-    fn bind<'a>(self: Arc<Self>, _: &'a mut Cell<N>, _: ()) -> Result<Never, ParticipantError> {
+    fn bind(self: Arc<Self>, _: &mut Cell<N>, _: ()) -> Result<Never, ParticipantError> {
         Err(ParticipantError::Authority)
     }
     fn accepts_write(&self, _: &crate::ReplayWrite) -> bool {

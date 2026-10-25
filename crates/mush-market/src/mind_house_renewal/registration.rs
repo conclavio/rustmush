@@ -19,7 +19,7 @@ pub(crate) fn register(
     let policy = config.policy_descriptor()?;
     reg.definition_validator(
         DefinitionKind::new("house_renewal_policy").map_err(error)?,
-        crate::lot::exact_validator(&[policy.clone()]),
+        crate::lot::exact_validator(std::slice::from_ref(&policy)),
     )?;
     if reg.definition(policy)? != config.policy_ref()? {
         return Err(error("renewal policy differs"));

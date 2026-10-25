@@ -912,7 +912,7 @@ fn complete_maximum_width_record_and_replay_envelope_fit_without_changing_old_sh
     canonical_json_bytes_with_limit(&document, RECORD_BYTES + 1024).unwrap();
     let write = ReplayWrite::ModuleJsonSet {
         namespace: OwnerId::new("industry").unwrap(),
-        key: crate::authoritative::AuthoritativeKey::parse_canonical(&format!(
+        key: crate::authoritative::AuthoritativeKey::parse_canonical(format!(
             "action-state/v1/core_output_reservations/{}",
             u64::MAX
         ))

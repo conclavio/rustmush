@@ -285,7 +285,8 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
         // retirement (its own stories), queued rather than refused, and not
         // issued here because this child is used below. The separate B2 child
         // exercises actual current-rights Check/Save.
-        for command in ["@mind/localcopy child=copy"] {
+        {
+            let command = "@mind/localcopy child=copy";
             let before = disk(&world);
             let events = line(&mut world, command)?;
             let text = PlayerWorld::private_text(&events, BUYER);

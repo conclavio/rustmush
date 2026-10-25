@@ -10,7 +10,6 @@ use crate::record::{
     HoldEffectKind, HoldPurpose, HoldStatus, IdempotencyKey,
 };
 use crate::{ContractId, HoldId, TransactionId};
-use mush_core::CommitToken;
 use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
 

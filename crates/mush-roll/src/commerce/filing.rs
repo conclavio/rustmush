@@ -378,7 +378,7 @@ impl InitialFilingBuilder {
                 content,
                 definition: rating.subject().definition(),
                 duplicate,
-                rating: request.rating.clone(),
+                rating: request.rating,
                 operation: commit,
             },
             status: RevisionStatus {

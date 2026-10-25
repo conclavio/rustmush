@@ -205,12 +205,12 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
                 (Some(h), old) if h.pending.is_none() && h.mounted == old => {}
                 _ => return Err(Error::Integrity),
             }
-            if let Some(old) = o.displaced.installed.asset {
-                if assets.get(&old).is_none_or(
+            if let Some(old) = o.displaced.installed.asset
+                && assets.get(&old).is_none_or(
                     |a| !matches!(a.position,AssetPosition::Mounted{hull,..}if hull==o.hull),
-                ) {
-                    return Err(Error::Integrity);
-                }
+                )
+            {
+                return Err(Error::Integrity);
             }
             assets.insert(
                 o.incoming,
@@ -423,16 +423,15 @@ fn capacity(ctx: &ModuleCtx<'_>, r: &Runtime, row: &RefitOrder) -> Result<(), Er
         {
             return Err(Error::Integrity);
         }
-    } else if let Some(actual) = actual {
-        if actual.resource() != initial.resource()
+    } else if let Some(actual) = actual
+        && (actual.resource() != initial.resource()
             || actual.holder() != initial.holder()
             || actual.amount() != 1
             || actual.expires() != initial.expires()
             || actual.revision() != 2
-            || actual.state() != ReservationState::Released
-        {
-            return Err(Error::Integrity);
-        }
+            || actual.state() != ReservationState::Released)
+    {
+        return Err(Error::Integrity);
     }
     Ok(())
 }

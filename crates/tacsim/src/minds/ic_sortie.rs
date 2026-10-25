@@ -19,12 +19,10 @@ pub(crate) use host::coverage::{
     audit_qualified_history as audit_qualified_coverage_history,
 };
 pub use host::{
-    HostClose, HostStart, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
-    IcSubmissionState, IcUnadmittedOpen,
+    IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution, IcSubmissionState,
+    IcUnadmittedOpen,
 };
-pub use participant::{
-    CloseEvent, IcSortieOutput, IcSortieParticipant, IcSortieRequest, StartPermit,
-};
+pub use participant::{CloseEvent, IcSortieParticipant, StartPermit};
 pub use state::IcSorties;
 
 #[cfg(test)]

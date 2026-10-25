@@ -42,12 +42,12 @@ fn cut(
     instrument: &InstrumentId,
     value: &GrossRecipientCut,
 ) -> Result<(), String> {
-    if let Some(r) = &value.recipient {
-        if e.snapshot().account(r.account).is_none_or(|a| {
+    if let Some(r) = &value.recipient
+        && e.snapshot().account(r.account).is_none_or(|a| {
             a.owner != r.owner || a.instrument != *instrument || a.status != AccountStatus::Active
-        }) {
-            return Err(super::records::invalid());
-        }
+        })
+    {
+        return Err(super::records::invalid());
     }
     Ok(())
 }

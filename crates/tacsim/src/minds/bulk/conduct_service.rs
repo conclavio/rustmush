@@ -243,7 +243,7 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
     let qualified = current_proof(ctx, operation).is_ok();
     ctx.out.info(
         GOD,
-        &format!(
+        format!(
             "Conduct {}: {:?}; current qualification {}.",
             operation,
             state.execution().observation().phase,

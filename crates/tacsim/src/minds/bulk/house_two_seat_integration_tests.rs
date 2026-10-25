@@ -360,7 +360,7 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     check!(w.held(second)? && w.held(third)?);
     close(&mut w, GOD, FIRST + 17, FIRST + 22, second)?;
     close(&mut w, GOD, FIRST + 21, FIRST + 23, third)?;
-    let mut w = w.reboot_house(registry, &w.snapshot())?;
+    let w = w.reboot_house(registry, &w.snapshot())?;
     check_eq!(pointer(&w)?, transferred);
     check!(!w.held(first)? && !w.held(second)? && !w.held(third)?);
     exercise_new_holder_renewal(

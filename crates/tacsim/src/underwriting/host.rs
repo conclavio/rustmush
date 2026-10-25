@@ -54,13 +54,13 @@ pub enum CoverageSubmissionState {
 }
 impl Attempt {
     fn poll(&mut self) {
-        if let Self::Observed(o) = self {
-            if matches!(
+        if let Self::Observed(o) = self
+            && matches!(
                 o.take_terminal(),
                 Some(SubmissionDisposition::NotDispatched | SubmissionDisposition::NoIntent)
-            ) {
-                *self = Self::Retryable;
-            }
+            )
+        {
+            *self = Self::Retryable;
         }
     }
     fn status(&self) -> CoverageSubmissionState {

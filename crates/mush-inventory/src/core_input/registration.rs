@@ -140,12 +140,11 @@ impl OwnerReadService for Reader {
         {
             return Err(OwnerReadError::Unavailable);
         }
-        if let Some(endpoint) = request.endpoint {
-            if state.is_quarantined(endpoint)
-                || !mush_economy::endpoint_state(ctx.world(), endpoint.0).is_live()
-            {
-                return Err(OwnerReadError::Unavailable);
-            }
+        if let Some(endpoint) = request.endpoint
+            && (state.is_quarantined(endpoint)
+                || !mush_economy::endpoint_state(ctx.world(), endpoint.0).is_live())
+        {
+            return Err(OwnerReadError::Unavailable);
         }
         Ok(Observation {
             actor: ctx.actor(),

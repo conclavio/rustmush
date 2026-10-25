@@ -418,7 +418,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let phase = text(field(&market, "state")?, "kind")?.to_owned();
     if number(&market, "format")? != 1
         || number(&roll, "format")? != 1
-        || !matches!(number(binding, "format")?, 1 | 2 | 3 | 4)
+        || !matches!(number(binding, "format")?, 1..=4)
         || token(field(&market, "operation")?)? != operation
         || predecessor.checked_add(1) != Some(next)
         || !matches!(
@@ -1511,18 +1511,16 @@ pub(super) fn audit_boot(
                 }
                 ids.insert(token(field(&row, "last_operation")?)?);
             }
-            TERM | ECONOMICS => {
-                if shared_output_is_renewal(view, key)? {
-                    let row = required(
-                        view,
-                        &Key {
-                            owner: key.owner.clone(),
-                            family: key.family.clone(),
-                            encoded: key.encoded.clone(),
-                        },
-                    )?;
-                    ids.insert(token(field(&row, "operation")?)?);
-                }
+            TERM | ECONOMICS if shared_output_is_renewal(view, key)? => {
+                let row = required(
+                    view,
+                    &Key {
+                        owner: key.owner.clone(),
+                        family: key.family.clone(),
+                        encoded: key.encoded.clone(),
+                    },
+                )?;
+                ids.insert(token(field(&row, "operation")?)?);
             }
             _ => (),
         }

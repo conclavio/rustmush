@@ -257,136 +257,6 @@ fn conduct_physical_key(key: &str) -> bool {
             .nth(5)
             .is_some_and(|part| part.starts_with("conduct_"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::minds::bulk::{artifacts::PreparedBlob, model::BulkConfig};
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-    fn loaded(docs: &[(SmolStr, Value)]) -> Result<Artifacts, BulkError> {
-        let store = BulkStore::new(BulkConfig::default())?;
-        let mut artifacts = Artifacts::default();
-        artifacts.load(docs);
-        artifacts.hydrate_conduct(&store, docs);
-        Ok(artifacts)
-    }
-    #[test]
-    fn empty_actual_native_load_is_distinct_from_unloaded_history() -> TestResult {
-        check!(Artifacts::default().conduct_history.require().is_err());
-        check_eq!(loaded(&[])?.conduct_history.count()?, 0);
-        Ok(())
-    }
-    #[test]
-    fn orphan_conduct_manifests_chunks_and_unknown_parts_refuse_even_without_index_or_quota()
-    -> TestResult {
-        let account = mush_core::AccountId::mint("conduct-orphan-physical", 1)?;
-        for part in [Part::ConductStart, Part::ConductResult] {
-            let key = Key {
-                account,
-                run: RunId(1),
-                part,
-            };
-            for physical in [
-                key.document(),
-                key.chunk(0),
-                format!("{}:unexpected", key.document()).into(),
-            ] {
-                let docs = vec![(physical, serde_json::json!({"retained":"orphan"}))];
-                check!(loaded(&docs)?.conduct_history.require().is_err());
-            }
-        }
-        let malformed = format!(
-            "tacsim:mindbulk:blob:{}:1:conduct_unknown",
-            account.canonical_hash().to_hex()
-        );
-        check!(
-            loaded(&[(malformed.into(), Value::Null)])?
-                .conduct_history
-                .require()
-                .is_err()
-        );
-        Ok(())
-    }
-    #[test]
-    fn legacy_account_quarantine_never_becomes_verified_empty_conduct() -> TestResult {
-        let account = mush_core::AccountId::mint("conduct-legacy-quarantine", 1)?;
-        let key = super::super::publication::account_key(account);
-        for extra in [
-            None,
-            Some(("tacsim:conduct:admission:head".into(), Value::Null)),
-            Some((
-                Key {
-                    account,
-                    run: RunId(1),
-                    part: Part::ConductStart,
-                }
-                .chunk(0),
-                Value::Null,
-            )),
-        ] {
-            let mut docs = vec![(
-                key.clone(),
-                serde_json::json!({"malformed_legacy_account":true}),
-            )];
-            if let Some(extra) = extra.clone() {
-                docs.push(extra);
-            }
-            let mut store = BulkStore::new(BulkConfig::default())?;
-            check!(store.load(account, b"{}").is_err());
-            let mut artifacts = Artifacts::default();
-            artifacts.load(&docs);
-            artifacts.hydrate_conduct(&store, &docs);
-            check!(artifacts.conduct_history.require().is_err());
-            check!(artifacts.conduct_history.count().is_err());
-            check_eq!(
-                artifacts.conduct_history.require_disabled().is_ok(),
-                extra.is_none()
-            );
-        }
-        // Even a malformed quota document with an actual Conduct marker is
-        // retained evidence; it cannot take the legacy-only compatibility path.
-        for value in [
-            serde_json::json!({"runs":{"1":{"plan":{"kind":"conduct"}}}}),
-            serde_json::json!({"runs":[{"conduct_job":"retained"}]}),
-            serde_json::json!({"runs":null}),
-            serde_json::json!({"runs":{"1":"unreadable"}}),
-            serde_json::json!({"runs":{"1":{"plan":[]}}}),
-        ] {
-            let docs = vec![(key.clone(), value)];
-            let mut store = BulkStore::new(BulkConfig::default())?;
-            check!(store.load(account, b"{}").is_err());
-            let mut artifacts = Artifacts::default();
-            artifacts.load(&docs);
-            artifacts.hydrate_conduct(&store, &docs);
-            check!(artifacts.conduct_history.require_disabled().is_err());
-        }
-        Ok(())
-    }
-    #[test]
-    fn ordinary_actual_blob_namespace_does_not_become_conduct_evidence() -> TestResult {
-        let key = Key {
-            account: mush_core::AccountId::mint("ordinary-blob", 1)?,
-            run: RunId(1),
-            part: Part::Start,
-        };
-        let mut bytes = ArtifactBytes::new(br#"{"ordinary":true}"#.to_vec())?;
-        let prepared = PreparedBlob::prepare(key, &mut bytes, vec![])?;
-        let docs = prepared
-            .writes
-            .iter()
-            .filter_map(|w| match w {
-                mush_core::ModuleWrite::JsonSet { key, value } => {
-                    Some((key.clone(), value.clone()))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let artifacts = loaded(&docs)?;
-        check!(artifacts.get(key).is_ok());
-        check_eq!(artifacts.conduct_history.count()?, 0);
-        Ok(())
-    }
-}
 fn retain_keys(
     artifacts: &Artifacts,
     key: Key,
@@ -537,4 +407,134 @@ pub(super) fn audit(
         return Err(invalid("Conduct omitted typed history"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::minds::bulk::{artifacts::PreparedBlob, model::BulkConfig};
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    fn loaded(docs: &[(SmolStr, Value)]) -> Result<Artifacts, BulkError> {
+        let store = BulkStore::new(BulkConfig::default())?;
+        let mut artifacts = Artifacts::default();
+        artifacts.load(docs);
+        artifacts.hydrate_conduct(&store, docs);
+        Ok(artifacts)
+    }
+    #[test]
+    fn empty_actual_native_load_is_distinct_from_unloaded_history() -> TestResult {
+        check!(Artifacts::default().conduct_history.require().is_err());
+        check_eq!(loaded(&[])?.conduct_history.count()?, 0);
+        Ok(())
+    }
+    #[test]
+    fn orphan_conduct_manifests_chunks_and_unknown_parts_refuse_even_without_index_or_quota()
+    -> TestResult {
+        let account = mush_core::AccountId::mint("conduct-orphan-physical", 1)?;
+        for part in [Part::ConductStart, Part::ConductResult] {
+            let key = Key {
+                account,
+                run: RunId(1),
+                part,
+            };
+            for physical in [
+                key.document(),
+                key.chunk(0),
+                format!("{}:unexpected", key.document()).into(),
+            ] {
+                let docs = vec![(physical, serde_json::json!({"retained":"orphan"}))];
+                check!(loaded(&docs)?.conduct_history.require().is_err());
+            }
+        }
+        let malformed = format!(
+            "tacsim:mindbulk:blob:{}:1:conduct_unknown",
+            account.canonical_hash().to_hex()
+        );
+        check!(
+            loaded(&[(malformed.into(), Value::Null)])?
+                .conduct_history
+                .require()
+                .is_err()
+        );
+        Ok(())
+    }
+    #[test]
+    fn legacy_account_quarantine_never_becomes_verified_empty_conduct() -> TestResult {
+        let account = mush_core::AccountId::mint("conduct-legacy-quarantine", 1)?;
+        let key = super::super::publication::account_key(account);
+        for extra in [
+            None,
+            Some(("tacsim:conduct:admission:head".into(), Value::Null)),
+            Some((
+                Key {
+                    account,
+                    run: RunId(1),
+                    part: Part::ConductStart,
+                }
+                .chunk(0),
+                Value::Null,
+            )),
+        ] {
+            let mut docs = vec![(
+                key.clone(),
+                serde_json::json!({"malformed_legacy_account":true}),
+            )];
+            if let Some(extra) = extra.clone() {
+                docs.push(extra);
+            }
+            let mut store = BulkStore::new(BulkConfig::default())?;
+            check!(store.load(account, b"{}").is_err());
+            let mut artifacts = Artifacts::default();
+            artifacts.load(&docs);
+            artifacts.hydrate_conduct(&store, &docs);
+            check!(artifacts.conduct_history.require().is_err());
+            check!(artifacts.conduct_history.count().is_err());
+            check_eq!(
+                artifacts.conduct_history.require_disabled().is_ok(),
+                extra.is_none()
+            );
+        }
+        // Even a malformed quota document with an actual Conduct marker is
+        // retained evidence; it cannot take the legacy-only compatibility path.
+        for value in [
+            serde_json::json!({"runs":{"1":{"plan":{"kind":"conduct"}}}}),
+            serde_json::json!({"runs":[{"conduct_job":"retained"}]}),
+            serde_json::json!({"runs":null}),
+            serde_json::json!({"runs":{"1":"unreadable"}}),
+            serde_json::json!({"runs":{"1":{"plan":[]}}}),
+        ] {
+            let docs = vec![(key.clone(), value)];
+            let mut store = BulkStore::new(BulkConfig::default())?;
+            check!(store.load(account, b"{}").is_err());
+            let mut artifacts = Artifacts::default();
+            artifacts.load(&docs);
+            artifacts.hydrate_conduct(&store, &docs);
+            check!(artifacts.conduct_history.require_disabled().is_err());
+        }
+        Ok(())
+    }
+    #[test]
+    fn ordinary_actual_blob_namespace_does_not_become_conduct_evidence() -> TestResult {
+        let key = Key {
+            account: mush_core::AccountId::mint("ordinary-blob", 1)?,
+            run: RunId(1),
+            part: Part::Start,
+        };
+        let mut bytes = ArtifactBytes::new(br#"{"ordinary":true}"#.to_vec())?;
+        let prepared = PreparedBlob::prepare(key, &mut bytes, vec![])?;
+        let docs = prepared
+            .writes
+            .iter()
+            .filter_map(|w| match w {
+                mush_core::ModuleWrite::JsonSet { key, value } => {
+                    Some((key.clone(), value.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let artifacts = loaded(&docs)?;
+        check!(artifacts.get(key).is_ok());
+        check_eq!(artifacts.conduct_history.count()?, 0);
+        Ok(())
+    }
 }

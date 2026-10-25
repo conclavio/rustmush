@@ -257,16 +257,15 @@ fn tick(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), PublicationError> {
             state.after = page.next_after().map(ToString::to_string);
             state.candidates = rows;
         }
-        if let Some(filed) = state.candidates.pop_front() {
-            if let Ok(proof) = history::resolve(ctx, &s.f, &s.ratings, filed, &s.expected) {
-                if proof.status.recalled_by.is_none() {
-                    let intent = Intent::new(protocol::Request { filed }, proof, ctx.w, &s.action)?;
-                    state.pending = Some(Pending {
-                        intent,
-                        observation: None,
-                    });
-                }
-            }
+        if let Some(filed) = state.candidates.pop_front()
+            && let Ok(proof) = history::resolve(ctx, &s.f, &s.ratings, filed, &s.expected)
+            && proof.status.recalled_by.is_none()
+        {
+            let intent = Intent::new(protocol::Request { filed }, proof, ctx.w, &s.action)?;
+            state.pending = Some(Pending {
+                intent,
+                observation: None,
+            });
         }
     }
     let schedule = state

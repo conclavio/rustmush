@@ -212,7 +212,7 @@ fn draft(w: &mut PlayerWorld, actor: ObjId, name: &str) -> TestResult<ContractId
     let open: Vec<_> = snapshot
         .contracts()
         .filter(|c| c.issuer == issuer && !c.state.is_terminal())
-        .map(|c| (c.id, c.name.clone(), c.state.clone()))
+        .map(|c| (c.id, c.name.clone(), c.state))
         .collect();
     let drafted = snapshot.contract(id).is_some_and(|c| c.name == name);
     check!(

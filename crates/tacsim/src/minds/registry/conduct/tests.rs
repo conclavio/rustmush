@@ -190,7 +190,8 @@ fn capture_refuses_missing_changed_or_unfitted_actual_carrier_capacity() -> Test
         })?;
         // These are otherwise valid, actually rebound definitions, not a test
         // mutation of a cached capacity or of an already-captured Policy.
-        let catalog = crate::definitions::Catalog::build_fielded(&[changed.clone()], crate::NS)?;
+        let catalog =
+            crate::definitions::Catalog::build_fielded(std::slice::from_ref(&changed), crate::NS)?;
         check_ne!(
             catalog.references.get(original.carrier()),
             Some(original_ref)

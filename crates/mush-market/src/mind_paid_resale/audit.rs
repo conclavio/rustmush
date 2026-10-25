@@ -2,7 +2,6 @@
 use super::{
     PaidResaleConfig,
     families::{Families, Row},
-    records::*,
 };
 use mush_core::{CommitToken, ModError, ModuleCtx, StateFamilyHandle};
 use mush_economy::EconomyStore;
@@ -185,10 +184,10 @@ impl Families {
     }
 }
 pub(crate) fn require_disabled(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-    if let Some(e) = ctx.state::<EconomyStore>() {
-        if e.paid_resale_histories().map_err(error)?.len() != 0 {
-            return Err(error("disabled native"));
-        }
+    if let Some(e) = ctx.state::<EconomyStore>()
+        && e.paid_resale_histories().map_err(error)?.len() != 0
+    {
+        return Err(error("disabled native"));
     }
     Ok(())
 }

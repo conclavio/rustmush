@@ -88,16 +88,15 @@ impl Record {
         {
             return Err(refused("open"));
         }
-        if let Some(c) = &self.closed {
-            if c.operation == self.open.operation
+        if let Some(c) = &self.closed
+            && (c.operation == self.open.operation
                 || !action(&c.action, "close_ic_mind")
                 || c.event.sequence == 0
                 || [c.event.digest, c.unit_digest]
                     .iter()
-                    .any(|d| d.as_bytes() == &[0; 32])
-            {
-                return Err(refused("close"));
-            }
+                    .any(|d| d.as_bytes() == &[0; 32]))
+        {
+            return Err(refused("close"));
         }
         mush_core::canonical_json_bytes_with_limit(
             &serde_json::to_value(self).map_err(refused)?,

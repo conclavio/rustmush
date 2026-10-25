@@ -672,18 +672,18 @@ fn check_artifacts(state: &Artifacts, patch: &ArtifactPatch) -> Result<(), Parti
     if let Some(admission) = &patch.admission {
         state.conduct_index.check(admission).map_err(refuse)?;
     }
-    if let Some(retained) = &patch.retained {
-        if state.conduct_index.get(patch.quota.job()).map_err(refuse)? != retained {
-            return Err(ParticipantError::Authority);
-        }
+    if let Some(retained) = &patch.retained
+        && state.conduct_index.get(patch.quota.job()).map_err(refuse)? != retained
+    {
+        return Err(ParticipantError::Authority);
     }
     if let Some(blob) = &patch.blob {
         state.check_new(blob).map_err(refuse)?;
     }
-    if let Some((key, value)) = &patch.existing {
-        if serde_json::to_value(state.get(*key).map_err(refuse)?).map_err(refuse)? != *value {
-            return Err(ParticipantError::Authority);
-        }
+    if let Some((key, value)) = &patch.existing
+        && serde_json::to_value(state.get(*key).map_err(refuse)?).map_err(refuse)? != *value
+    {
+        return Err(ParticipantError::Authority);
     }
     Ok(())
 }

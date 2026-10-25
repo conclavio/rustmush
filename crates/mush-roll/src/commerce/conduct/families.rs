@@ -1,5 +1,4 @@
 //! Fixed Core profile descriptors; structural codecs never mint a proof.
-use super::*;
 use crate::commerce::records::Record;
 use mush_core::{
     CommitToken, ModError, Registrar, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,

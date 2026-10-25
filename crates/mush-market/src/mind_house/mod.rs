@@ -24,7 +24,7 @@ mod families;
 mod registration;
 pub(crate) use families::Families;
 pub(crate) use guard::HouseGuard;
-pub(crate) use registration::{register, register_with_renewal_definitions};
+pub(crate) use registration::register_with_renewal_definitions;
 
 #[cfg(test)]
 mod tests;

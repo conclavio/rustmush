@@ -41,14 +41,13 @@ impl ClaimInventory {
             {
                 return Err(PublicationError::Capacity);
             }
-            if let Some(closed) = &row.closed {
-                if !closes.insert(closed.operation)
+            if let Some(closed) = &row.closed
+                && (!closes.insert(closed.operation)
                     || events
                         .insert(closed.transition, (row.open.operation, true))
-                        .is_some()
-                {
-                    return Err(PublicationError::Mismatch);
-                }
+                        .is_some())
+            {
+                return Err(PublicationError::Mismatch);
             }
             value.history.insert(row.open.operation, Arc::new(row));
         }
@@ -229,10 +228,10 @@ impl ClaimInventory {
         {
             return Err(PublicationError::Capacity);
         }
-        if let Capacity::PaidSeats { seats } = row.open.capacity {
-            if self.paid_open(row.open.licence) >= usize::from(seats.get()) {
-                return Err(PublicationError::Capacity);
-            }
+        if let Capacity::PaidSeats { seats } = row.open.capacity
+            && self.paid_open(row.open.licence) >= usize::from(seats.get())
+        {
+            return Err(PublicationError::Capacity);
         }
         let mut post = self.clone();
         post.generation = post

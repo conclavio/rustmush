@@ -55,10 +55,10 @@ pub(super) fn paired(view: &View<'_>, r: &Row, historical: bool) -> Result<(), A
             {
                 return Err(refused("core refit retained heads/schedule"));
             }
-            if let Some(old) = r.displaced()? {
-                if !mounted(&required(view, &key(ASSET, old.0.to_string())?)?, r.hull()?)? {
-                    return Err(refused("core refit displaced pending head"));
-                }
+            if let Some(old) = r.displaced()?
+                && !mounted(&required(view, &key(ASSET, old.0.to_string())?)?, r.hull()?)?
+            {
+                return Err(refused("core refit displaced pending head"));
             }
             let scalar: BoundedScalar = parsed(&required(view, &r.key(SLOTS)?)?)?;
             let book: ReservationBook = parsed(&required(view, &r.key(BOOK)?)?)?;
@@ -126,10 +126,9 @@ pub(super) fn paired(view: &View<'_>, r: &Row, historical: bool) -> Result<(), A
         }
         if r.installation()?.is_some()
             && let Some(old) = r.displaced()?
+            && required(view, &key(ASSET, old.0.to_string())?)? != detached(r)?
         {
-            if required(view, &key(ASSET, old.0.to_string())?)? != detached(r)? {
-                return Err(refused("core refit displaced terminal condition"));
-            }
+            return Err(refused("core refit displaced terminal condition"));
         }
     }
     Ok(())
@@ -148,13 +147,12 @@ pub(super) fn heads(view: &View<'_>, rows: &BTreeMap<u64, Row>) -> Result<(), Ac
         {
             return Err(refused("core refit duplicate journal identity"));
         }
-        if let Some(t) = r.terminal()? {
-            if events
+        if let Some(t) = r.terminal()?
+            && events
                 .insert(number(t, "journal_seq")?, (*id, true))
                 .is_some()
-            {
-                return Err(refused("core refit duplicate terminal identity"));
-            }
+        {
+            return Err(refused("core refit duplicate terminal identity"));
         }
     }
     let mut assets = BTreeMap::<ObjId, Value>::new();
@@ -179,15 +177,14 @@ pub(super) fn heads(view: &View<'_>, rows: &BTreeMap<u64, Row>) -> Result<(), Ac
                         && h.get("mounted") == Some(&json!(old)) => {}
                 _ => return Err(refused("core refit historical hull reservation")),
             }
-            if let Some(old) = r.displaced()? {
-                if !assets
+            if let Some(old) = r.displaced()?
+                && !assets
                     .get(&old)
                     .map(|v| mounted(v, unit))
                     .transpose()?
                     .unwrap_or(false)
-                {
-                    return Err(refused("core refit historical displaced head"));
-                }
+            {
+                return Err(refused("core refit historical displaced head"));
             }
             assets.insert(incoming, asset(r, false)?);
             hulls.insert(unit, hull(r, false)?);

@@ -453,7 +453,7 @@ impl PurchaseRoll {
     ) -> Result<CommerceConfig, ModError> {
         let config = if self.renewals {
             let renewal =
-                renewal_configuration(&purchase, manifest.clone()).map_err(module_error)?;
+                renewal_configuration(purchase, manifest.clone()).map_err(module_error)?;
             let renewal = if self.renewal_service {
                 renewal.with_service()?
             } else {

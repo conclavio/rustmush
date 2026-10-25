@@ -335,7 +335,7 @@ pub(crate) fn current(
     licence: &PersonalPaidLicence,
 ) -> Result<PaidHolderRefV1, PublicationError> {
     let reference = match licence.ownership() {
-        Some(r) => r.clone(),
+        Some(r) => *r,
         None => {
             let b = birth(ctx, f, ratings, licence)?;
             PaidHolderRefV1 {

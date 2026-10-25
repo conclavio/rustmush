@@ -13,7 +13,7 @@ use mush_core::{
     ModError, ObjId, OwnerId, Registrar,
 };
 use mush_roll::commerce::{
-    coverage::{CoverageOpenReader, CoverageProtocol, CoverageWriter},
+    coverage::{CoverageOpenReader, CoverageWriter},
     module::CommerceConfig,
     purchase::PurchaseParticipants,
 };

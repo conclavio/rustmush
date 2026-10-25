@@ -733,7 +733,7 @@ fn largest_actual_offer_keeps_both_complete_terminal_images_with_unchanged_f0_ca
     let mut lo = 1usize;
     let mut hi = MAX_RENEWAL_OFFER_BYTES;
     while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
+        let mid = lo + (hi - lo).div_ceil(2);
         replace_instrument(&mut r, mid)?;
         if r.prepare().is_ok() {
             lo = mid;

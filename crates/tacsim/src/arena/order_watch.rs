@@ -272,10 +272,10 @@ impl Arena {
                 CharacterRef::Character { id } if id.0 == 0 => return Err(bad()),
                 _ => {}
             }
-            if let Some(issuer) = group.issuer {
-                if !self.unit(issuer).is_some_and(|u| u.team == squad.team) {
-                    return Err(bad());
-                }
+            if let Some(issuer) = group.issuer
+                && !self.unit(issuer).is_some_and(|u| u.team == squad.team)
+            {
+                return Err(bad());
             }
             for (unit, expiry) in &group.members.0 {
                 let own = self.unit(*unit).ok_or_else(bad)?;

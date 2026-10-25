@@ -1091,10 +1091,10 @@ fn paid_follow_renewal_reserves_seven_targets_and_preserves_acquisition_through_
     assert_eq!(pair.binding()?["filed"], json!("1"));
     let mut broken = f.disk.clone();
     for ((_, _), row) in &mut broken {
-        if row["family"]["id"] == json!(MARKET) || row["family"]["id"] == json!(ROLL) {
-            if row["value"]["operation"] == json!(second) {
-                row["value"]["binding"]["revision_policy"]["line"] = json!("2");
-            }
+        if (row["family"]["id"] == json!(MARKET) || row["family"]["id"] == json!(ROLL))
+            && row["value"]["operation"] == json!(second)
+        {
+            row["value"]["binding"]["revision_policy"]["line"] = json!("2");
         }
     }
     assert!(hydrate(&f, &broken).is_err());

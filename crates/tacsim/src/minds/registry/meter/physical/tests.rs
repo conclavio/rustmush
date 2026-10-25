@@ -139,7 +139,7 @@ fn invocation_bound_includes_rom_and_failed_evidence_never_resets_it() -> TestRe
     // single total cap remains occupied by the earlier source invocation.
     let consequence = crate::arena::resolution::Consequence::DestroyCore;
     let plan = mush_tactics::UnitMutationPlan::new(
-        arena.core_ops(OWN, &[consequence.clone()]),
+        arena.core_ops(OWN, std::slice::from_ref(&consequence)),
         None,
         None,
     )?;

@@ -331,11 +331,11 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         return Err(unavailable());
     }
     // Exact completion proof wins even when the original observation is lost.
-    if let Some(intent) = r.close.as_ref() {
-        if checked(ctx, s, intent.before.operation()).is_ok_and(|v| !v.state().pending()) {
-            r.close = None;
-            r.close_observation = None;
-        }
+    if let Some(intent) = r.close.as_ref()
+        && checked(ctx, s, intent.before.operation()).is_ok_and(|v| !v.state().pending())
+    {
+        r.close = None;
+        r.close_observation = None;
     }
     if r.close_observation
         .as_mut()
@@ -359,51 +359,52 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
                 row.binding().holder(),
             );
         }
-        if r.close.is_none() {
-            if let Some(reason) = close_reason(ctx.w, &row) {
-                let exact = checked(ctx, s, row.operation())?;
-                if exact != row {
-                    return Err(unavailable());
-                }
-                let action = s
-                    .config
-                    .service_action()
-                    .map_err(|_| unavailable())?
-                    .ok_or_else(unavailable)?;
-                let key = IdempotencyKeyText::parse_canonical(format!(
-                    "renewal.close.{}.{}.{}",
-                    if reason == Reason::DeadlineReached {
-                        "d"
-                    } else {
-                        "c"
-                    },
-                    row.operation().to_hex(),
-                    action.digest().to_hex()
-                ))
-                .map_err(|_| unavailable())?;
-                r.close = Some(CloseIntent {
-                    before: row,
-                    action,
-                    reason,
-                    key,
-                });
+        if r.close.is_none()
+            && let Some(reason) = close_reason(ctx.w, &row)
+        {
+            let exact = checked(ctx, s, row.operation())?;
+            if exact != row {
+                return Err(unavailable());
             }
+            let action = s
+                .config
+                .service_action()
+                .map_err(|_| unavailable())?
+                .ok_or_else(unavailable)?;
+            let key = IdempotencyKeyText::parse_canonical(format!(
+                "renewal.close.{}.{}.{}",
+                if reason == Reason::DeadlineReached {
+                    "d"
+                } else {
+                    "c"
+                },
+                row.operation().to_hex(),
+                action.digest().to_hex()
+            ))
+            .map_err(|_| unavailable())?;
+            r.close = Some(CloseIntent {
+                before: row,
+                action,
+                reason,
+                key,
+            });
         }
     }
-    if r.close_observation.is_none() && !ctx.authoritative_pending(GOD) {
-        if let Some(intent) = r.close.clone() {
-            // Retain the immutable intent before entering the existing selector
-            // queue. A dropped/refused timer or Unknown never authorizes a new one.
-            r.close_observation = Some(ctx.submit_authoritative_observed(
-                intent.action.clone(),
-                PerceivedRef::SelfActor,
-                vec![],
-                // The private offer fixes the exact retained operation/reason.
-                // Selectors supply only public parameters; this schema is empty.
-                serde_json::json!({}),
-                intent.key,
-            )?);
-        }
+    if r.close_observation.is_none()
+        && !ctx.authoritative_pending(GOD)
+        && let Some(intent) = r.close.clone()
+    {
+        // Retain the immutable intent before entering the existing selector
+        // queue. A dropped/refused timer or Unknown never authorizes a new one.
+        r.close_observation = Some(ctx.submit_authoritative_observed(
+            intent.action.clone(),
+            PerceivedRef::SelfActor,
+            vec![],
+            // The private offer fixes the exact retained operation/reason.
+            // Selectors supply only public parameters; this schema is empty.
+            serde_json::json!({}),
+            intent.key,
+        )?);
     }
     let inventory = ctx
         .read_owner(&s.reader, RenewalRequest::inventory(r.due_after.clone()))
@@ -497,14 +498,13 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     }
     // An actual funded row proves this exact acceptance completed even when
     // its original observation remains Unknown; it can now advance to Grant.
-    if let Selection::Pending(op) = e.selection {
-        if e.attempt
+    if let Selection::Pending(op) = e.selection
+        && e.attempt
             .as_ref()
             .is_some_and(|(a, _)| a.key().id.as_str() == Transition::Fund.id())
-            && checked(ctx, s, op).is_ok_and(|v| matches!(v.state(), RenewalStateV1::Funded { .. }))
-        {
-            e.attempt = None;
-        }
+        && checked(ctx, s, op).is_ok_and(|v| matches!(v.state(), RenewalStateV1::Funded { .. }))
+    {
+        e.attempt = None;
     }
     if let Some((_, observation)) = &mut e.attempt {
         if observation.take_terminal().is_none() {

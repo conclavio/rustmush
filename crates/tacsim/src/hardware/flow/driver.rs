@@ -351,10 +351,10 @@ mod progress_diagnostic {
             }
             let mut visitor = PhaseVisitor(None);
             event.record(&mut visitor);
-            if let Ok(mut value) = self.0.lock() {
-                if value.is_none() {
-                    *value = visitor.0;
-                }
+            if let Ok(mut value) = self.0.lock()
+                && value.is_none()
+            {
+                *value = visitor.0;
             }
         }
         fn enter(&self, _: &tracing::span::Id) {}

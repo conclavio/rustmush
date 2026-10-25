@@ -37,7 +37,7 @@ impl<const ID: u8, const SLOT: u8> OwnerParticipant for Adapter<ID, SLOT> {
     ) -> Result<(), ParticipantError> {
         Err(ParticipantError::Unavailable)
     }
-    fn bind<'a>(self: Arc<Self>, _: &'a mut Self::State, _: ()) -> Result<Bound, ParticipantError> {
+    fn bind(self: Arc<Self>, _: &mut Self::State, _: ()) -> Result<Bound, ParticipantError> {
         Err(ParticipantError::Unavailable)
     }
     fn accepts_write(&self, _: &ReplayWrite) -> bool {

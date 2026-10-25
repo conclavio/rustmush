@@ -84,12 +84,11 @@ fn context(
     {
         return Err(Error::Unavailable);
     }
-    if let Some(endpoint) = request.endpoint() {
-        if state.is_quarantined(endpoint)
-            || !mush_economy::endpoint_state(ctx.world(), endpoint.0).is_live()
-        {
-            return Err(Error::Unavailable);
-        }
+    if let Some(endpoint) = request.endpoint()
+        && (state.is_quarantined(endpoint)
+            || !mush_economy::endpoint_state(ctx.world(), endpoint.0).is_live())
+    {
+        return Err(Error::Unavailable);
     }
     Ok(())
 }

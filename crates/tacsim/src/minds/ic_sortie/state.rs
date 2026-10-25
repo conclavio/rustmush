@@ -42,13 +42,12 @@ impl IcSorties {
             {
                 return Err(bad("duplicate or excess history"));
             }
-            if let Some(c) = &r.closed {
-                if !commits.insert(c.operation)
+            if let Some(c) = &r.closed
+                && (!commits.insert(c.operation)
                     || !requests.insert(c.request)
-                    || order.insert(c.transition, (open, true)).is_some()
-                {
-                    return Err(bad("crossed close"));
-                }
+                    || order.insert(c.transition, (open, true)).is_some())
+            {
+                return Err(bad("crossed close"));
             }
             s.reserved_bytes = s
                 .reserved_bytes

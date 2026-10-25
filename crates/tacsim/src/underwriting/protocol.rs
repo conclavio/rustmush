@@ -4,7 +4,6 @@ use mush_core::{DefinitionDescriptor, DefinitionRef};
 use mush_roll::commerce::coverage::CoverageProtocol;
 use serde::{Deserialize, Serialize};
 
-pub(super) use mush_roll::commerce::coverage::COVERAGE_ACTIONS as ACTIONS;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Protocol {

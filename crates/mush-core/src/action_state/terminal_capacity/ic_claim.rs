@@ -135,7 +135,7 @@ impl Claim {
     fn parse(raw: Value, operation: CommitToken) -> Result<Self, ActionStateError> {
         strict(&raw, &["format", "open", "closed"])?;
         let format = number(&raw, "format")?;
-        if !matches!(format, 1 | 2 | 3) {
+        if !matches!(format, 1..=3) {
             return Err(refused("IC claim format"));
         }
         let open = field(&raw, "open")?.clone();

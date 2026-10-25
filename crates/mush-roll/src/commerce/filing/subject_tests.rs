@@ -250,7 +250,7 @@ fn individually_valid_crossed_revision_shell_rating_economic_and_root_rows_refus
     check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));
     mixed = a.rows.clone();
     mixed.filed.rating = b.rating.reference()?;
-    mixed.operation.rating = mixed.filed.rating.clone();
+    mixed.operation.rating = mixed.filed.rating;
     mixed.filed.validate()?;
     mixed.operation.validate()?;
     check_eq!(a.check(&mixed), Err(PublicationError::Mismatch));

@@ -118,13 +118,12 @@ impl CoverageBook {
             if row.terminal().is_none() && !covered_hulls.insert(row.consent().basis.hull) {
                 return Err(refused());
             }
-            if let Some(t) = row.terminal() {
-                if !commits.insert(t.decision().operation)
+            if let Some(t) = row.terminal()
+                && (!commits.insert(t.decision().operation)
                     || !transactions.insert(t.transaction())
-                    || !sequences.insert(t.journal_seq())
-                {
-                    return Err(refused());
-                }
+                    || !sequences.insert(t.journal_seq()))
+            {
+                return Err(refused());
             }
         }
         Ok(())

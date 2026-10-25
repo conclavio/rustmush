@@ -114,12 +114,11 @@ pub(crate) fn rebuild(
             _ => None,
         };
         let mut change = Change::certificate(filed, job, execution, receipt)?;
-        if let Kind::Certificate { rating, .. } = &mut change.0 {
-            if let Some(reference) = rating {
-                if !active(ctx, ratings, &reference.reference)? {
-                    *rating = None;
-                }
-            }
+        if let Kind::Certificate { rating, .. } = &mut change.0
+            && let Some(reference) = rating
+            && !active(ctx, ratings, &reference.reference)?
+        {
+            *rating = None;
         }
         let prepared = index.prepare(&change)?;
         index.apply(prepared);

@@ -123,8 +123,8 @@ impl Provider {
         }
         .map_err(|e| e.to_string())
         .and_then(|request| {
-            if let Request::Expire(row) = &request {
-                if inv.actor() != mush_core::GOD
+            if let Request::Expire(row) = &request
+                && (inv.actor() != mush_core::GOD
                     || row.quotes.is_empty()
                     || row.quotes.len() > super::index::RETIRE_BATCH
                     || row
@@ -133,10 +133,9 @@ impl Provider {
                         .copied()
                         .collect::<std::collections::BTreeSet<_>>()
                         .len()
-                        != row.quotes.len()
-                {
-                    return Err("invalid expiry actor or bounded batch".into());
-                }
+                        != row.quotes.len())
+            {
+                return Err("invalid expiry actor or bounded batch".into());
             }
             Ok(request)
         })

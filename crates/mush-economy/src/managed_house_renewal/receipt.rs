@@ -373,8 +373,7 @@ pub(super) fn terminal_plan(
         "{} of contract {}",
         if grant { "settlement" } else { "refund" },
         history.origin.contract
-    )
-    .into();
+    );
     plan.visibility = EconomicVisibility::Parties;
     if grant {
         plan.expected_hold_revisions

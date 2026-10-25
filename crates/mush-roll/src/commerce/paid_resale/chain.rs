@@ -44,10 +44,11 @@ pub(crate) fn verify(
         {
             return Err(PublicationError::Mismatch);
         }
-        if let Some(t) = row.state().terminal() {
-            if t != row.operation() && !commits.insert(t) {
-                return Err(PublicationError::Mismatch);
-            }
+        if let Some(t) = row.state().terminal()
+            && t != row.operation()
+            && !commits.insert(t)
+        {
+            return Err(PublicationError::Mismatch);
         }
     }
     let mut current = PaidHolderRefV1 {
@@ -81,7 +82,7 @@ pub(crate) fn verify(
                 if &next.ownership()? != ownership || !transferred.insert(next.generation()) {
                     return Err(PublicationError::Mismatch);
                 }
-                current = ownership.clone();
+                current = *ownership;
                 holder = next.holder();
             }
             PaidResaleState::Funded {} => {

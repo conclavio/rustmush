@@ -619,16 +619,15 @@ impl Record for RenewalOperationV1 {
                 && commit != self.binding.predecessor_operation
                 && commit != self.binding.birth_operation
         };
-        if let Some(funding) = self.state.funding() {
-            if !distinct(funding.commit())
+        if let Some(funding) = self.state.funding()
+            && (!distinct(funding.commit())
                 || funding.contract() != self.contract
                 || funding.consent_hash() != &self.consent_hash
                 || funding.at_ic().clock != self.created_at_ic.clock
                 || funding.at_ic().at < self.created_at_ic.at
-                || funding.posted_at_utc() < self.created_at_utc
-            {
-                return Err(PublicationError::Mismatch);
-            }
+                || funding.posted_at_utc() < self.created_at_utc)
+        {
+            return Err(PublicationError::Mismatch);
         }
         if let Some(terminal) = self.state.terminal() {
             let funding = self.state.funding().ok_or(PublicationError::Missing)?;

@@ -4,7 +4,7 @@
 //! receipt fixture is inert: it does not prove a paid licence, seller offer,
 //! claim census, Registry sanction or a production service intent.
 use super::*;
-use crate::record::{AccountStatus, CatalogRef, EconomicCause, HoldStatus};
+use crate::record::{AccountStatus, CatalogRef, HoldStatus};
 use crate::registry_filing::{EconomyRequest, InitialFilingParticipant, InitialFilingPolicy};
 use crate::{AccountId, Amount, EconomyStore, InstrumentId};
 use mush_core::action::{
@@ -39,7 +39,6 @@ type PreparedAction = (
 );
 
 use crate::managed_entitlement::{GrossRecipientCut, Recipient};
-use mush_core::{ClockRef, ClockStamp};
 
 #[derive(Clone)]
 struct Rules {

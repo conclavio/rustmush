@@ -414,10 +414,10 @@ impl Account {
             run.plan.validate()?;
             let (units, native, remaining) = run.charge()?;
             if run.status == Status::Complete {
-                if let (Some(budget), Some(cursor)) = (&run.plan.conduct, run.conduct) {
-                    if !budget.complete(cursor)? {
-                        return Err(invalid("Conduct completion at a partial trial"));
-                    }
+                if let (Some(budget), Some(cursor)) = (&run.plan.conduct, run.conduct)
+                    && !budget.complete(cursor)?
+                {
+                    return Err(invalid("Conduct completion at a partial trial"));
                 }
                 if let (Some(budget), Some(cursor)) = (&run.plan.registry, run.registry) {
                     // Complete is a quota-terminal result. Certification and

@@ -818,12 +818,11 @@ impl OwnerParticipant for IcExclusionParticipant {
         {
             return Err(error("stale preparation"));
         }
-        if let Some(expected) = &patch.placement {
-            if admit_world(ctx.world(), patch.identity.unit, patch.actor, &self.config)?
+        if let Some(expected) = &patch.placement
+            && admit_world(ctx.world(), patch.identity.unit, patch.actor, &self.config)?
                 != *expected
-            {
-                return Err(error("placement changed"));
-            }
+        {
+            return Err(error("placement changed"));
         }
         Ok(())
     }

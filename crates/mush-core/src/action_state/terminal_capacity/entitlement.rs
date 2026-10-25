@@ -452,10 +452,10 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     {
         return Err(refused("entitlement product or ancestry shape"));
     }
-    if let Some(first) = edges.first() {
-        if field(first, "parent")? != parent {
-            return Err(refused("entitlement immediate parent differs"));
-        }
+    if let Some(first) = edges.first()
+        && field(first, "parent")? != parent
+    {
+        return Err(refused("entitlement immediate parent differs"));
     }
     let sum = edges.iter().try_fold(0_u64, |sum, edge| {
         sum.checked_add(number(edge, "royalty_permille")?)

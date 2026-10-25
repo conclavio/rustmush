@@ -68,10 +68,10 @@ impl Configuration {
                 return Err(failed());
             }
         }
-        if let Some(action) = &self.service_close {
-            if action != &self.service_reference()? {
-                return Err(failed());
-            }
+        if let Some(action) = &self.service_close
+            && action != &self.service_reference()?
+        {
+            return Err(failed());
         }
         Ok(())
     }

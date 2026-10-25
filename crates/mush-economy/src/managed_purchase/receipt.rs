@@ -807,10 +807,10 @@ impl PurchaseReceiptAudit {
         {
             return Err(fail());
         }
-        if let Some(stamp) = &issued {
-            if stamp.clock != row.funding.at_ic.clock || stamp.at < row.funding.at_ic.at {
-                return Err(fail());
-            }
+        if let Some(stamp) = &issued
+            && (stamp.clock != row.funding.at_ic.clock || stamp.at < row.funding.at_ic.at)
+        {
+            return Err(fail());
         }
         let [effect] = tx.hold_effects.as_slice() else {
             return Err(fail());

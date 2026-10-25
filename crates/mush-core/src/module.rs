@@ -2611,23 +2611,23 @@ impl Registry {
             "decision_sources": decision_sources.fingerprint().to_hex(),
         });
         let mut domain = "mechanics_registry.v8";
-        if let Some(participants) = &self.participants {
-            if !participants.is_empty() {
-                material.as_object_mut()?.insert(
-                    "owner_participants".into(),
-                    serde_json::Value::String(participants.fingerprint().to_hex()),
-                );
-                domain = "mechanics_registry.v9";
-            }
+        if let Some(participants) = &self.participants
+            && !participants.is_empty()
+        {
+            material.as_object_mut()?.insert(
+                "owner_participants".into(),
+                serde_json::Value::String(participants.fingerprint().to_hex()),
+            );
+            domain = "mechanics_registry.v9";
         }
-        if let Some(readers) = &self.owner_reads {
-            if !readers.is_empty() {
-                material.as_object_mut()?.insert(
-                    "owner_reads".into(),
-                    serde_json::Value::String(readers.fingerprint().to_hex()),
-                );
-                domain = "mechanics_registry.v10";
-            }
+        if let Some(readers) = &self.owner_reads
+            && !readers.is_empty()
+        {
+            material.as_object_mut()?.insert(
+                "owner_reads".into(),
+                serde_json::Value::String(readers.fingerprint().to_hex()),
+            );
+            domain = "mechanics_registry.v10";
         }
         crate::mechanics::DefinitionDigest::for_canonical_value(domain, &material).ok()
     }

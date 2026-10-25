@@ -207,8 +207,8 @@ impl CorePaymentHistory {
             if t.hold != expected {
                 return Err(Error::Integrity);
             }
-            if let CoreTerminalResult::Completed { output, title } = &t.result {
-                if title.as_ref()
+            if let CoreTerminalResult::Completed { output, title } = &t.result
+                && title.as_ref()
                     != &title_birth(
                         &self.intent,
                         output,
@@ -216,9 +216,8 @@ impl CorePaymentHistory {
                         t.journal_seq,
                         t.posted_at,
                     )?
-                {
-                    return Err(Error::Integrity);
-                }
+            {
+                return Err(Error::Integrity);
             }
         }
         bounded(self, HISTORY_BYTES)?;

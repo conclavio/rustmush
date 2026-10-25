@@ -302,10 +302,7 @@ impl Record for PendingRecord {
             (Some(p), n)
                 if p.sequence.checked_add(1) == Some(n)
                     && p.operation != self.operation
-                    && p.operation != self.offer =>
-            {
-                ()
-            }
+                    && p.operation != self.offer => {}
             _ => return Err(PublicationError::Mismatch),
         }
         match (&self.state, self.economic.terminal()) {

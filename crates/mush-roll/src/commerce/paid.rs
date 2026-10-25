@@ -207,7 +207,7 @@ impl PersonalPaidLicence {
         self.validate()?;
         birth.validate().map_err(|_| PublicationError::Invalid)?;
         row.validate()?;
-        let before = self.ownership.clone().unwrap_or_else(|| PaidHolderRefV1 {
+        let before = self.ownership.unwrap_or(PaidHolderRefV1 {
             generation: 1,
             operation: self.operation,
             digest: birth.digest,

@@ -78,10 +78,10 @@ impl HouseFence {
         }
         if let Some(facts) = &self.fresh {
             facts.check_fresh(context, self.publication)?;
-            if !self.publication {
-                if let Some(policy) = &self.buyer_admission {
-                    policy.check(context.world(), facts.issuer(), self.requester)?;
-                }
+            if !self.publication
+                && let Some(policy) = &self.buyer_admission
+            {
+                policy.check(context.world(), facts.issuer(), self.requester)?;
             }
         }
         Ok(())

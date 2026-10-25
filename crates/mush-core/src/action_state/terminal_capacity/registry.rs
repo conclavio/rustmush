@@ -648,7 +648,7 @@ fn verify_pages(
             .as_array()
             .ok_or_else(|| refused("Registry page rows"))?;
         if token(field(&page, "job")?)? != id
-            || field(&page, "rating")? != field(&receipt, "id")?
+            || field(&page, "rating")? != field(receipt, "id")?
             || field(&page, "result")? != field(result, "id")?
             || number(content, "ordinal")? != ordinal as u64
             || number(reference, "ordinal")? != ordinal as u64

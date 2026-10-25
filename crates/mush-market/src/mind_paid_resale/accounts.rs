@@ -81,14 +81,14 @@ pub(super) fn cuts(
         if cut.permille > 1000 || (cut.permille == 0) != cut.recipient.is_none() {
             return Err("accepted cut differs".into());
         }
-        if let Some(r) = &cut.recipient {
-            if e.snapshot().account(r.account).is_none_or(|a| {
+        if let Some(r) = &cut.recipient
+            && e.snapshot().account(r.account).is_none_or(|a| {
                 a.owner != r.owner
                     || a.instrument != *instrument
                     || a.status != AccountStatus::Active
-            }) {
-                return Err("accepted recipient unavailable".into());
-            }
+            })
+        {
+            return Err("accepted recipient unavailable".into());
         }
     }
     Ok(())

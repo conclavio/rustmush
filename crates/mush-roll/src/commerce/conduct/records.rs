@@ -404,13 +404,12 @@ impl ConductResult {
         {
             return Err(PublicationError::Mismatch);
         }
-        if let Some(m) = &self.measurement {
-            if m.policy != job.admission.policy
+        if let Some(m) = &self.measurement
+            && (m.policy != job.admission.policy
                 || m.subject != job.admission.subject
-                || m.charged_unit_ms != execution.observation.charged_unit_ms
-            {
-                return Err(PublicationError::Mismatch);
-            }
+                || m.charged_unit_ms != execution.observation.charged_unit_ms)
+        {
+            return Err(PublicationError::Mismatch);
         }
         Ok(())
     }

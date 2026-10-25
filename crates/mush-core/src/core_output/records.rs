@@ -45,10 +45,10 @@ impl OutputRecord {
         {
             return Err(ParticipantError::Authority);
         }
-        if let OutputState::Consumed { completion, action } = &self.state {
-            if *completion == self.reservation || !fixed_action(action, COMPLETE_ACTION) {
-                return Err(ParticipantError::Authority);
-            }
+        if let OutputState::Consumed { completion, action } = &self.state
+            && (*completion == self.reservation || !fixed_action(action, COMPLETE_ACTION))
+        {
+            return Err(ParticipantError::Authority);
         }
         bounded(self)?;
         Ok(())

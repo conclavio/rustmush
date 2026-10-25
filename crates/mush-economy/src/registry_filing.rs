@@ -1004,18 +1004,17 @@ impl InitialFilingParticipant {
             fee: self.policy.fee,
         };
         let mut spent = BTreeMap::new();
-        if self.policy.fee != Amount::ZERO {
-            if let Some(window) = state
+        if self.policy.fee != Amount::ZERO
+            && let Some(window) = state
                 .snapshot
                 .account(request.payer)
                 .and_then(|a| a.approval.as_ref())
                 .and_then(|rule| rule.window.as_ref())
-            {
-                spent.insert(
-                    request.payer,
-                    state.spent_in_window(request.payer, world.now(), window.period_secs),
-                );
-            }
+        {
+            spent.insert(
+                request.payer,
+                state.spent_in_window(request.payer, world.now(), window.period_secs),
+            );
         }
         let gate = state.key_gate();
         let env = ValidateEnv {

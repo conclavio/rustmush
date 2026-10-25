@@ -359,63 +359,6 @@ impl Tickets {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-    fn binding() -> Result<Binding, Box<dyn std::error::Error>> {
-        Ok(Binding {
-            job: CommitToken::from_bytes([1; 16]),
-            account: AccountId::mint("ticket-bound", 1)?,
-            character: ObjId(7),
-            run: RunId(1),
-        })
-    }
-    #[test]
-    fn bounded_ticket_and_unread_ack_capacity_refuse_without_consuming_an_id() -> TestResult {
-        let mut tickets = Tickets::default();
-        let binding = binding()?;
-        let first = tickets.cancel(binding)?;
-        let captured = tickets.get(first)?;
-        for _ in 1..MAX_TICKETS {
-            tickets.cancel(binding)?;
-        }
-        let previous = (tickets.next, tickets.bytes, tickets.rows.len());
-        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
-        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
-        tickets.check(first, &captured)?;
-        tickets.acknowledge_checked(
-            &captured,
-            Acknowledged {
-                ticket: first,
-                operation: CommitToken::from_bytes([2; 16]),
-                job: binding.job,
-                transition: Transition::Cancel,
-            },
-        );
-        check_eq!(
-            tickets.cancel(binding),
-            Err(BulkError::QueueFull),
-            "unread ack retains the slot"
-        );
-        tickets.take_acknowledged().ok_or("ack")?;
-        let next = tickets.cancel(binding)?;
-        check_eq!(next.get(), u64::try_from(MAX_TICKETS)? + 1);
-        check!(tickets.check(first, &captured).is_err());
-        Ok(())
-    }
-    #[test]
-    fn encoded_ticket_budget_refuses_before_row_or_counter_mutation() -> TestResult {
-        let mut tickets = Tickets::default();
-        let binding = binding()?;
-        tickets.insert(TicketKind::Cancel(binding), MAX_ENCODED_TICKET_BYTES)?;
-        let previous = (tickets.next, tickets.bytes, tickets.rows.len());
-        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
-        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
-        Ok(())
-    }
-}
-
 /// Created on the actual executor thread, retained unchanged across publication
 /// refusal. It contains the real receipt/raw result and no synthetic evidence.
 pub(super) struct PreparedSettlement {
@@ -510,5 +453,62 @@ impl PreparedSettlement {
             _ => return Err(invalid("Registry receipt ticket completeness")),
         };
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    fn binding() -> Result<Binding, Box<dyn std::error::Error>> {
+        Ok(Binding {
+            job: CommitToken::from_bytes([1; 16]),
+            account: AccountId::mint("ticket-bound", 1)?,
+            character: ObjId(7),
+            run: RunId(1),
+        })
+    }
+    #[test]
+    fn bounded_ticket_and_unread_ack_capacity_refuse_without_consuming_an_id() -> TestResult {
+        let mut tickets = Tickets::default();
+        let binding = binding()?;
+        let first = tickets.cancel(binding)?;
+        let captured = tickets.get(first)?;
+        for _ in 1..MAX_TICKETS {
+            tickets.cancel(binding)?;
+        }
+        let previous = (tickets.next, tickets.bytes, tickets.rows.len());
+        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
+        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
+        tickets.check(first, &captured)?;
+        tickets.acknowledge_checked(
+            &captured,
+            Acknowledged {
+                ticket: first,
+                operation: CommitToken::from_bytes([2; 16]),
+                job: binding.job,
+                transition: Transition::Cancel,
+            },
+        );
+        check_eq!(
+            tickets.cancel(binding),
+            Err(BulkError::QueueFull),
+            "unread ack retains the slot"
+        );
+        tickets.take_acknowledged().ok_or("ack")?;
+        let next = tickets.cancel(binding)?;
+        check_eq!(next.get(), u64::try_from(MAX_TICKETS)? + 1);
+        check!(tickets.check(first, &captured).is_err());
+        Ok(())
+    }
+    #[test]
+    fn encoded_ticket_budget_refuses_before_row_or_counter_mutation() -> TestResult {
+        let mut tickets = Tickets::default();
+        let binding = binding()?;
+        tickets.insert(TicketKind::Cancel(binding), MAX_ENCODED_TICKET_BYTES)?;
+        let previous = (tickets.next, tickets.bytes, tickets.rows.len());
+        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
+        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
+        Ok(())
     }
 }

@@ -115,12 +115,11 @@ impl WorkshopCommands {
             }
             MindRequest::Lifecycle { name, base, edit } => {
                 let base = from_base(*base);
-                if matches!(edit, mush_proto::MindLifecycle::Remove {}) {
-                    if let Some(name) =
+                if matches!(edit, mush_proto::MindLifecycle::Remove {})
+                    && let Some(name) =
                         super::retirement::request(ctx, name, Some(base), Some(conn))?
-                    {
-                        return Ok(MindResponse::RemovalRequested { name });
-                    }
+                {
+                    return Ok(MindResponse::RemovalRequested { name });
                 }
                 let prepared = super::lifecycle(roll(ctx)?, ctx.actor, name, base, edit)?;
                 let response = match edit {
@@ -651,6 +650,15 @@ fn card_edit(edit: MindEdit) -> CardEdit {
             slot: usize::from(slot),
             text,
         },
+    }
+}
+
+// Shared display spelling only; this carries no authority or worker evidence.
+pub(super) fn picture_name(picture: Picture) -> &'static str {
+    match picture {
+        Picture::Empty => "empty",
+        Picture::Hostile450 => "hostile_450",
+        Picture::HurtTwo => "hurt_two",
     }
 }
 
@@ -1501,14 +1509,5 @@ mod tests {
             serde_json::from_slice::<InvokeResult>(&bytes).expect("reply decode"),
             result
         );
-    }
-}
-
-// Shared display spelling only; this carries no authority or worker evidence.
-pub(super) fn picture_name(picture: Picture) -> &'static str {
-    match picture {
-        Picture::Empty => "empty",
-        Picture::Hostile450 => "hostile_450",
-        Picture::HurtTwo => "hurt_two",
     }
 }

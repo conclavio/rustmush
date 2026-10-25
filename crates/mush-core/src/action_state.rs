@@ -3153,18 +3153,16 @@ impl ActionTxn<'_> {
         if let (Some(protocol), Some(identity)) = (
             &self.store.registry.hull_coverage,
             &self.registered_identity,
-        ) {
-            if let Some(required) = protocol.required_images(identity) {
-                required.check(images)?;
-            }
+        ) && let Some(required) = protocol.required_images(identity)
+        {
+            required.check(images)?;
         }
         if let (Some(p), Some(id)) = (
             &self.store.registry.conduct_trial,
             &self.registered_identity,
-        ) {
-            if let Some(required) = p.required_images(id) {
-                required.check(images)?;
-            }
+        ) && let Some(required) = p.required_images(id)
+        {
+            required.check(images)?;
         }
         Ok(())
     }

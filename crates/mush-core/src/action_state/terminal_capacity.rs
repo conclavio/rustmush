@@ -681,10 +681,10 @@ pub(super) fn prepare(
             let target = admitted
                 .get(key)
                 .ok_or_else(|| refused("unreserved delivery handoff key"))?;
-            if let TxnMutation::Put { canonical, .. } = mutation {
-                if canonical.len() > target.ceiling {
-                    return Err(refused("delivery handoff ceiling"));
-                }
+            if let TxnMutation::Put { canonical, .. } = mutation
+                && canonical.len() > target.ceiling
+            {
+                return Err(refused("delivery handoff ceiling"));
             }
         }
         store
@@ -763,10 +763,10 @@ pub(super) fn prepare(
                 }
                 return Err(refused("unreserved terminal key"));
             };
-            if let TxnMutation::Put { canonical, .. } = mutation {
-                if canonical.len() > target.ceiling {
-                    return Err(refused("terminal ceiling exceeded"));
-                }
+            if let TxnMutation::Put { canonical, .. } = mutation
+                && canonical.len() > target.ceiling
+            {
+                return Err(refused("terminal ceiling exceeded"));
             }
         }
         store
@@ -845,7 +845,7 @@ pub(super) fn prepare(
                     && !changes
                         .industry_delivery
                         .as_ref()
-                        .is_some_and(|r| r.funding.to_hex() == id.1 && &r.sponsor.owner == &id.0)
+                        .is_some_and(|r| r.funding.to_hex() == id.1 && r.sponsor.owner == id.0)
                     && !(changes.progress.as_ref() == Some(id)
                         && store.capacity.records.get(id).is_some_and(|record| {
                             core_integration::prospective_output(
@@ -866,25 +866,24 @@ pub(super) fn prepare(
         {
             return Err(refused("required existing key deletion"));
         }
-        if let Some(id) = store.capacity.sponsors.get(key) {
-            if changes.terminal.as_ref() != Some(id)
-                && !changes
-                    .industry_delivery
-                    .as_ref()
-                    .is_some_and(|r| r.funding.to_hex() == id.1 && &r.sponsor.owner == &id.0)
-            {
-                let record = store
-                    .capacity
-                    .records
-                    .get(id)
-                    .ok_or_else(|| refused("index integrity"))?;
-                store.capacity_verifiers.verify(
-                    &store.registry,
-                    Phase::Retained,
-                    &record.record,
-                    &view,
-                )?;
-            }
+        if let Some(id) = store.capacity.sponsors.get(key)
+            && changes.terminal.as_ref() != Some(id)
+            && !changes
+                .industry_delivery
+                .as_ref()
+                .is_some_and(|r| r.funding.to_hex() == id.1 && r.sponsor.owner == id.0)
+        {
+            let record = store
+                .capacity
+                .records
+                .get(id)
+                .ok_or_else(|| refused("index integrity"))?;
+            store.capacity_verifiers.verify(
+                &store.registry,
+                Phase::Retained,
+                &record.record,
+                &view,
+            )?;
         }
     }
     let usage = if changed || state.is_empty() {

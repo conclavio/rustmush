@@ -109,14 +109,13 @@ impl MindRenewalOperationV1 {
         {
             return Err(invalid());
         }
-        if let Some(funding) = self.state.funding() {
-            if funding.action() != &self.expected_action(Transition::Fund)?
+        if let Some(funding) = self.state.funding()
+            && (funding.action() != &self.expected_action(Transition::Fund)?
                 || funding.at_ic().clock != start.clock
                 || funding.at_ic().at < start.at
-                || funding.at_ic().at >= expiry.at
-            {
-                return Err(invalid());
-            }
+                || funding.at_ic().at >= expiry.at)
+        {
+            return Err(invalid());
         }
         match &self.state {
             RenewalStateV1::Granted { terminal, .. } => {

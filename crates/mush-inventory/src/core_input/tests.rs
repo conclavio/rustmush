@@ -1057,15 +1057,14 @@ fn cold_audit_reconstructs_heads_census_and_exact_k_proof_and_sweep_keeps_refusa
                 _ => h["sequence"] = json!(2),
             };
         })?;
-        match r.cold(boot, true) {
-            Ok((cold, _)) => assert!(
+        if let Ok((cold, _)) = r.cold(boot, true) {
+            assert!(
                 !cold
                     .world()
                     .module_state::<InventoryStore>()
                     .unwrap()
                     .is_complete()
-            ),
-            Err(_) => {}
+            )
         }
     }
     r.act(1, 3, 1, lot)?;

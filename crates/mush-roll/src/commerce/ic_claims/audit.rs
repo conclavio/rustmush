@@ -293,15 +293,15 @@ pub(crate) fn disabled(ctx: &ModuleCtx<'_>, f: &CommerceFamilies) -> Result<(), 
     }
     // Ordinary old-only rosters may omit either owner. A present physical
     // owner must have a completely loaded empty inventory, never absent data.
-    if let Some(units) = ctx.state::<UnitStore>() {
-        if !units.ic_custody_inventory().map_err(bad)?.is_empty() {
-            return Err(PublicationError::Unavailable);
-        }
+    if let Some(units) = ctx.state::<UnitStore>()
+        && !units.ic_custody_inventory().map_err(bad)?.is_empty()
+    {
+        return Err(PublicationError::Unavailable);
     }
-    if let Some(exclusions) = ctx.state::<IcExclusions>() {
-        if !exclusions.inventory().map_err(bad)?.is_empty() {
-            return Err(PublicationError::Unavailable);
-        }
+    if let Some(exclusions) = ctx.state::<IcExclusions>()
+        && !exclusions.inventory().map_err(bad)?.is_empty()
+    {
+        return Err(PublicationError::Unavailable);
     }
     Ok(())
 }

@@ -99,7 +99,7 @@ fn capture_or_match(
         Some(row) if row == &expected => Ok(row.clone()),
         Some(_) => Err(PublicationError::Mismatch),
         None => {
-            if creates.len() >= super::super::filed::MAX_PARENT_DEPTH + 1 {
+            if creates.len() > super::super::filed::MAX_PARENT_DEPTH {
                 return Err(PublicationError::Capacity);
             }
             creates.push(expected.clone());

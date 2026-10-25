@@ -92,7 +92,7 @@ impl MindPaidResaleOffer {
         if self.operation != row.offer()
             || self.digest()? != row.offer_digest()
             || &self.binding != row.binding()
-            || &self.terms != &row.economic().consent().terms
+            || self.terms != row.economic().consent().terms
         {
             return Err(invalid("offer pair"));
         }
@@ -134,10 +134,12 @@ impl MindPaidResaleOperation {
                     return Err(invalid("settled"));
                 }
             }
-            PaidResaleState::Refunded { terminal, reason } => {
-                if self.action != actions[2] || *terminal == self.operation || reason.settles() {
-                    return Err(invalid("refund"));
-                }
+            PaidResaleState::Refunded { terminal, reason }
+                if (self.action != actions[2]
+                    || *terminal == self.operation
+                    || reason.settles()) =>
+            {
+                return Err(invalid("refund"));
             }
             _ => (),
         }

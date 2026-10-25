@@ -90,10 +90,10 @@ impl ManagedTitleIndex {
             return Err(EconomyError::Unauthorized);
         };
         for history in audit.histories().map_err(|_| EconomyError::Unauthorized)? {
-            if let Some((object, birth)) = history.managed_title_birth() {
-                if rows.insert(object, birth).is_some() {
-                    return Err(EconomyError::Unauthorized);
-                }
+            if let Some((object, birth)) = history.managed_title_birth()
+                && rows.insert(object, birth).is_some()
+            {
+                return Err(EconomyError::Unauthorized);
             }
         }
         Ok(self)

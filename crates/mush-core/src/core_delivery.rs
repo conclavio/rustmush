@@ -486,7 +486,7 @@ impl<P: CoreOutputPolicy, D: CoreDeliveryPolicy> CoreOutputDeliveries<P, D> {
     pub fn audit(
         &self,
         ctx: &ModuleCtx<'_>,
-        mut output: impl FnMut(crate::core_output::CoreOutputHistory) -> Result<(), ParticipantError>,
+        output: impl FnMut(crate::core_output::CoreOutputHistory) -> Result<(), ParticipantError>,
         mut delivery: impl FnMut(CoreDeliveryHistory) -> Result<(), ParticipantError>,
     ) -> Result<(), ParticipantError> {
         let mut rows = BTreeMap::new();
@@ -523,7 +523,7 @@ impl<P: CoreOutputPolicy, D: CoreDeliveryPolicy> CoreOutputDeliveries<P, D> {
                     crate::core_output::require_birth_world(world, birth)
                 }
             },
-            |history| output(history),
+            output,
         )?;
         if seen.len() != rows.len() {
             return Err(ParticipantError::Authority);

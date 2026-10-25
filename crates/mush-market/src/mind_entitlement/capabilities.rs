@@ -17,15 +17,15 @@ impl AuthorityGuardValidator for Capabilities {
         ctx: &AuthorityGuardContext<'_>,
         guard: &AuthorityGuard,
     ) -> Result<bool, ActionError> {
-        if let Some(original) = &self.original {
-            if original.is_current(ctx, guard)? {
-                return Ok(true);
-            }
+        if let Some(original) = &self.original
+            && original.is_current(ctx, guard)?
+        {
+            return Ok(true);
         }
-        if let Some(entitlement) = &self.entitlement {
-            if entitlement.is_current(ctx, guard)? {
-                return Ok(true);
-            }
+        if let Some(entitlement) = &self.entitlement
+            && entitlement.is_current(ctx, guard)?
+        {
+            return Ok(true);
         }
         for house in &self.house {
             if house.is_current(ctx, guard)? {

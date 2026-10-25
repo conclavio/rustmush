@@ -3,7 +3,7 @@
 use super::{
     PaidResaleConfig, accounts,
     families::{Families, envelope},
-    records::{MindPaidResaleOffer, MindPaidResaleOperation, MindPaidResaleReceipt},
+    records::{MindPaidResaleOperation, MindPaidResaleReceipt},
 };
 use mush_core::action::{
     ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput, PerceivedRef,

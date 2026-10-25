@@ -876,14 +876,13 @@ impl ParticipantRegistry {
             .ic_claim
             .as_ref()
             .filter(|(actions, _)| actions.contains(provider.action()));
-        if let Some((_, participants)) = ic {
-            if !participants.contains(&r.definition)
+        if let Some((_, participants)) = ic
+            && (!participants.contains(&r.definition)
                 || images.0.iter().any(|image| {
                     !participants.contains(&image.definition) || image.action != *provider.action()
-                })
-            {
-                return Err(ParticipantError::Authority);
-            }
+                }))
+        {
+            return Err(ParticipantError::Authority);
         }
         let (max_images, max_modules) = if ic.is_some() {
             (4, 4)

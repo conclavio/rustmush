@@ -52,17 +52,17 @@ pub(crate) fn recover(
     // insured hull is still pledged. Check the inverse before moving contracts.
     for asset in assets.values().chain(journal_assets.values()) {
         for encumbrance in &asset.encumbrances {
-            if let Encumbrance::Collateral { contract } = encumbrance {
-                if contracts.get(contract).is_some_and(|c| {
+            if let Encumbrance::Collateral { contract } = encumbrance
+                && contracts.get(contract).is_some_and(|c| {
                     c.consent
                         .managed
                         .as_ref()
                         .and_then(|m| m.hull_coverage_marker())
                         .is_some()
-                }) && active.get(contract) != Some(&asset.object)
-                {
-                    return Err(refused());
-                }
+                })
+                && active.get(contract) != Some(&asset.object)
+            {
+                return Err(refused());
             }
         }
     }

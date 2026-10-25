@@ -144,10 +144,10 @@ impl RenewalWriter {
             ));
         }
         protocol::validate_refs(&manifest, &participants, &actions)?;
-        if let Some(service) = &service_close {
-            if service != &protocol::service_reference(&manifest, &participants)? {
-                return Err(ModError::msg("renewal service definition differs"));
-            }
+        if let Some(service) = &service_close
+            && service != &protocol::service_reference(&manifest, &participants)?
+        {
+            return Err(ModError::msg("renewal service definition differs"));
         }
         reg.delegate_state_family(&families.house_renewal_operations, "market")?;
         reg.delegate_state_family(&families.house_renewal_heads, "market")?;

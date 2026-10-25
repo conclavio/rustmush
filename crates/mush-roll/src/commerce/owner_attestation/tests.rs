@@ -13,7 +13,7 @@ use crate::commerce::{
     records::{OwnerLicence, OwnerTerm, Record},
 };
 use mush_core::{
-    DefinitionDigest, Engine, GameModule, ModError, Registrar, Registry, StateFamilyHandle, World,
+    DefinitionDigest, GameModule, ModError, Registrar, Registry, StateFamilyHandle, World,
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};

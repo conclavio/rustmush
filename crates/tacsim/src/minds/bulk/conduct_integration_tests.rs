@@ -362,25 +362,24 @@ pub(super) fn complete(
             install_submission(w, request, n)?;
             n = n.checked_add(1).ok_or("Conduct operation sequence")?;
         }
-        if let Some(op) = operation {
-            if let Some(value) = rows(&w.disk, "roll", ConductExecution::FAMILY)
+        if let Some(op) = operation
+            && let Some(value) = rows(&w.disk, "roll", ConductExecution::FAMILY)
                 .into_iter()
                 .find(|v| v.get("job") == Some(&json!(op)))
-            {
-                let execution: ConductExecution = serde_json::from_value(value)?;
-                if execution.observation().phase.terminal() {
-                    context(w, |ctx| {
-                        crate::minds::bulk::world::drain(ctx);
-                        Ok(())
-                    })?;
-                    if let Some(id) = conduct_service::fixture_entry(&w.engine.world) {
-                        w.command(&format!("@conduct/continue {id}"))?;
-                    }
-                    let proof = proof(w, op)?;
-                    check_eq!(proof.profile(), profile);
-                    check_eq!(rows(&w.disk, "roll", ConductJob::FAMILY).len(), before + 1);
-                    return Ok(proof);
+        {
+            let execution: ConductExecution = serde_json::from_value(value)?;
+            if execution.observation().phase.terminal() {
+                context(w, |ctx| {
+                    crate::minds::bulk::world::drain(ctx);
+                    Ok(())
+                })?;
+                if let Some(id) = conduct_service::fixture_entry(&w.engine.world) {
+                    w.command(&format!("@conduct/continue {id}"))?;
                 }
+                let proof = proof(w, op)?;
+                check_eq!(proof.profile(), profile);
+                check_eq!(rows(&w.disk, "roll", ConductJob::FAMILY).len(), before + 1);
+                return Ok(proof);
             }
         }
         std::thread::sleep(Duration::from_millis(2));

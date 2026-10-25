@@ -65,10 +65,10 @@ fn require_unused_offer(view: &View<'_>, p: &Pair) -> Result<(), ActionStateErro
 }
 fn no_pending_renewal(view: &View<'_>, licence: u64) -> Result<(), ActionStateError> {
     for family in ["roll_mind_renewal_head", "roll_house_mind_renewal_head"] {
-        if let Some(row) = optional(view, family, licence_key(licence))? {
-            if !field(&row, "pending")?.is_null() {
-                return Err(refused("resale cannot cross open renewal"));
-            }
+        if let Some(row) = optional(view, family, licence_key(licence))?
+            && !field(&row, "pending")?.is_null()
+        {
+            return Err(refused("resale cannot cross open renewal"));
         }
     }
     Ok(())
@@ -92,10 +92,10 @@ fn offer_current(view: &View<'_>, o: &Value) -> Result<(), ActionStateError> {
     {
         return Err(refused("resale seller current pointer differs"));
     }
-    if let Some(head) = value(view, &key(HEAD, licence_key(id))?)? {
-        if text(field(&head, "state")?, "phase")? == "funded" {
-            return Err(refused("resale prior custody pending"));
-        }
+    if let Some(head) = value(view, &key(HEAD, licence_key(id))?)?
+        && text(field(&head, "state")?, "phase")? == "funded"
+    {
+        return Err(refused("resale prior custody pending"));
     }
     no_pending_renewal(view, id)
 }
@@ -130,7 +130,7 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     };
     if action == 0 {
         let k = key(OFFER, identity.commit.to_hex())?;
-        exact_puts(store, mutations, &[k.clone()])?;
+        exact_puts(store, mutations, std::slice::from_ref(&k))?;
         let row = offer(&after, identity.commit)?;
         if value(&before, &k)?.is_some()
             || num(field(&row, "terms")?, "seller")? != u64::from(identity.actor.0)
@@ -486,10 +486,10 @@ pub(in crate::action_state::terminal_capacity) fn audit_boot(
                     }
                 }
             }
-            if let Some(h) = &holder {
-                if field(binding, "ownership")? != h {
-                    return Err(refused("resale holder chain discontinuity"));
-                }
+            if let Some(h) = &holder
+                && field(binding, "ownership")? != h
+            {
+                return Err(refused("resale holder chain discontinuity"));
             }
             let term = decimal(field(field(binding, "term")?, "generation")?, u64::MAX)?;
             if term < latest_term {

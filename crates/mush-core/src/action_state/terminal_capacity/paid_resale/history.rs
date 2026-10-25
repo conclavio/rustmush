@@ -345,10 +345,10 @@ pub(super) fn outputs(view: &View<'_>, p: &Pair, transition: bool) -> Result<(),
         }
         if p.phase == "settled" {
             require_holder(view, p)?;
-        } else if let Some(row) = value(view, &future)? {
-            if transition || field(&row, "acceptance")? == &json!(p.operation) {
-                return Err(refused("resale refund owns holder output"));
-            }
+        } else if let Some(row) = value(view, &future)?
+            && (transition || field(&row, "acceptance")? == &json!(p.operation))
+        {
+            return Err(refused("resale refund owns holder output"));
         }
     }
     Ok(())

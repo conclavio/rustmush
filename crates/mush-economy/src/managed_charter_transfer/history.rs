@@ -548,10 +548,10 @@ impl CharterPendingAudit {
             {
                 return Err(refused());
             }
-            if let Some(t) = &row.terminal {
-                if !commits.insert(t.decision.operation) {
-                    return Err(refused());
-                }
+            if let Some(t) = &row.terminal
+                && !commits.insert(t.decision.operation)
+            {
+                return Err(refused());
             }
         }
         Ok(())

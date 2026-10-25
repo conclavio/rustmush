@@ -111,18 +111,17 @@ impl PaidResaleBook {
             {
                 return Err(refused());
             }
-            if let Some(hold) = row.acceptance().hold() {
-                if !holds.insert(hold) {
-                    return Err(refused());
-                }
+            if let Some(hold) = row.acceptance().hold()
+                && !holds.insert(hold)
+            {
+                return Err(refused());
             }
-            if let Some(t) = row.terminal() {
-                if !commits.insert(t.decision().operation)
+            if let Some(t) = row.terminal()
+                && (!commits.insert(t.decision().operation)
                     || !transactions.insert(t.transaction())
-                    || !sequences.insert(t.journal_seq())
-                {
-                    return Err(refused());
-                }
+                    || !sequences.insert(t.journal_seq()))
+            {
+                return Err(refused());
             }
         }
         Ok(())

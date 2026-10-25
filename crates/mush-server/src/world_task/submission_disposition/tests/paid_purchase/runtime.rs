@@ -413,17 +413,17 @@ impl Running {
         handles.outbox_join.abort();
         for task in [&mut handles.writer_join, &mut handles.outbox_join] {
             let result = timeout(STEP, task).await?;
-            if let Err(error) = result {
-                if !error.is_cancelled() {
-                    return Err(error.into());
-                }
+            if let Err(error) = result
+                && !error.is_cancelled()
+            {
+                return Err(error.into());
             }
         }
         let result = timeout(STEP, &mut handles.world_join).await?;
-        if let Err(error) = result {
-            if !error.is_cancelled() {
-                return Err(error.into());
-            }
+        if let Err(error) = result
+            && !error.is_cancelled()
+        {
+            return Err(error.into());
         }
         self.handles.take();
         Ok(())

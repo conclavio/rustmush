@@ -100,8 +100,8 @@ impl OfferRecord {
         {
             return Err(refused());
         }
-        if let Some(close) = &self.closure {
-            if !action_matches(&close.action, CLOSE_ACTION)
+        if let Some(close) = &self.closure
+            && (!action_matches(&close.action, CLOSE_ACTION)
                 || close.commit == self.operation
                 || self.previous() == Some(close.commit)
                 || close.commit == self.offer.basis.predecessor_operation
@@ -110,10 +110,9 @@ impl OfferRecord {
                 || close.at_ic.at < self.created_at_ic.at
                 || close.at_utc < self.created_at_utc
                 || (close.reason == UnfundedCloseReason::Expired
-                    && close.at_ic.at < terms.expires_at.at)
-            {
-                return Err(refused());
-            }
+                    && close.at_ic.at < terms.expires_at.at))
+        {
+            return Err(refused());
         }
         let expected = contract(self)?;
         if expected.consent_hash != self.consent_hash {

@@ -128,16 +128,15 @@ impl WorkshopCommands {
             .lock()
             .ok()
             .and_then(|jobs| jobs.get(&id).cloned())
+            && row.ticket.is_live(ctx.w)
         {
-            if row.ticket.is_live(ctx.w) {
-                ctx.out.to_conn(
-                    row.ticket.connection(),
-                    OutputEvent::Sys(RichText::plain(format!(
-                        "Authoring job {} queued.",
-                        id.number()
-                    ))),
-                );
-            }
+            ctx.out.to_conn(
+                row.ticket.connection(),
+                OutputEvent::Sys(RichText::plain(format!(
+                    "Authoring job {} queued.",
+                    id.number()
+                ))),
+            );
         }
     }
     pub(super) fn is_authored(&self, id: JobId) -> bool {

@@ -219,13 +219,12 @@ impl GatewayLink for Link {
                 name,
                 args,
             } = &wire
+                && name == QUERY
             {
-                if name == QUERY {
-                    self.queries
-                        .lock()
-                        .expect("queries")
-                        .push((*conn, *actor, *id, args.clone()));
-                }
+                self.queries
+                    .lock()
+                    .expect("queries")
+                    .push((*conn, *actor, *id, args.clone()));
             }
             let mut engine = self.engine.lock().expect("engine");
             let mut out = Outbox::new();

@@ -45,7 +45,7 @@ impl Transition {
             Self::Close => "unfunded_close",
         }
     }
-    pub(crate) fn select<'a>(self, refs: &'a [DefinitionRef; 5]) -> &'a DefinitionRef {
+    pub(crate) fn select(self, refs: &[DefinitionRef; 5]) -> &DefinitionRef {
         let [draft, fund, grant, refund, close] = refs;
         match self {
             Self::Draft => draft,

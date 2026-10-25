@@ -7,7 +7,7 @@ use mush_core::mechanics::{
 use mush_core::read_service::{
     OwnerReadContext, OwnerReadError, OwnerReadHandle, OwnerReadService,
 };
-use mush_core::{DefinitionRef, ModError, Registrar};
+use mush_core::{ModError, Registrar};
 use mush_economy::{ContractFactScope, ExternalRef};
 use serde::Serialize;
 use std::collections::BTreeSet;

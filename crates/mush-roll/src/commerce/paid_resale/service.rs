@@ -121,18 +121,12 @@ impl Intent {
                 if same
                     && e.paid_resale_availability(w, self.acceptance)
                         .map_err(bad)?
-                        == PaidResaleAvailability::RecipientUnavailable =>
-            {
-                ()
-            }
+                        == PaidResaleAvailability::RecipientUnavailable => {}
             Reason::MonetaryBindingChanged {}
                 if same
                     && e.paid_resale_availability(w, self.acceptance)
                         .map_err(bad)?
-                        == PaidResaleAvailability::MonetaryBindingChanged =>
-            {
-                ()
-            }
+                        == PaidResaleAvailability::MonetaryBindingChanged => {}
             Reason::LastClaimClosed { next_transition }
                 if same
                     && e.paid_resale_availability(w, self.acceptance)
@@ -141,10 +135,7 @@ impl Intent {
                     && *next_transition > c.claims.next_transition
                     && self.claims.as_ref().is_some_and(|v| {
                         v.open_paid() == 0 && v.next_transition() == *next_transition
-                    }) =>
-            {
-                ()
-            }
+                    }) => {}
             Reason::DeadlineReached {
                 next_transition,
                 open_paid,
@@ -154,10 +145,7 @@ impl Intent {
                     == PaidResaleAvailability::Current
                 && self.claims.as_ref().is_some_and(|v| {
                     v.open_paid() == *open_paid && v.next_transition() == *next_transition
-                }) =>
-            {
-                ()
-            }
+                }) => {}
             Reason::RegistryRevoked {
                 licence,
                 generation,
@@ -167,10 +155,7 @@ impl Intent {
                 && *generation == c.terms.basis.term.generation
                 && *term_digest == c.terms.basis.term.digest
                 && now.at < c.terms.basis.term.window.grace_end
-                && (now.clock != c.accepted_at_ic.clock || same) =>
-            {
-                ()
-            }
+                && (now.clock != c.accepted_at_ic.clock || same) => {}
             _ => return Err(PublicationError::Unavailable),
         }
         Ok(())
