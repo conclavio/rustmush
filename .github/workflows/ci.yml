@@ -83,7 +83,11 @@ jobs:
       - name: Validate acceptance artifact comparison
         run: python -B scripts/test_mind_port_acceptance.py
       - name: Complete author story and fresh thirty-match external comparison
-        run: python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
+        # The script makes its evidence directory without parents, and a fresh
+        # runner has built nothing yet, so `target/` itself may not exist.
+        run: |
+          mkdir -p target
+          python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
       - uses: actions/upload-artifact@v4
         if: always()
         with:
