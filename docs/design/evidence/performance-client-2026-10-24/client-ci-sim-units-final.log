@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 2m 43s
+     Running tests/sim_units.rs (target/debug/deps/sim_units-02f25f2940246dee)
+
+running 8 tests
+test ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby ... ok
+test ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds_later ... ok
+test ae1_two_pilots_field_the_scout_car_and_the_heavy_tank ... ok
+test ae3_a_pilot_flies_the_drone_and_it_carries_no_weapon ... ok
+test ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack ... ok
+test two_pilots_field_two_different_machines_and_the_pods_are_pods_again ... ok
+test m5_sim_unit_is_never_refused_for_the_pool_at_the_stock_constants ... ok
+test o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so has been running for over 60 seconds
+test o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.58s
+

@@ -91,6 +91,11 @@ impl InProcessSink {
 }
 
 impl GatewaySink for InProcessSink {
+    fn set_output_brackets(&self, conn: u64, brackets: mush_proto::OutputBrackets) {
+        if let Some(handle) = self.sessions.conn_handle(ConnId(conn)) {
+            handle.set_output_brackets(brackets);
+        }
+    }
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
         // Relay lines (programme D4) go to the Discord bridge, not to sessions.
         let (relay, sends) = split_relay(sends);

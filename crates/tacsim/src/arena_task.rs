@@ -727,13 +727,22 @@ fn install_runners(
 fn spawn(
     runtime: &tokio::runtime::Handle,
     match_id: MatchId,
-    arena: Arena,
+    mut arena: Arena,
     arena_cfg: &ArenaConfig,
     pool: Arc<MindPool>,
     egress: mpsc::Sender<ArenaOut>,
     resumed: bool,
     tape_start: tape::Start,
 ) -> (ArenaHandle, JoinHandle<()>) {
+    // T-106 is opt-in: the dev1 cohorts did not demonstrate a timing gain.
+    // This host-only policy is deliberately absent from arena snapshots/hashes.
+    let frame_workers = std::env::var("RUSTMUSH_FRAME_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 4)
+        .min(std::thread::available_parallelism().map_or(1, usize::from));
+    arena.set_frame_workers(frame_workers);
     let (tape, tape_writes) = tape_start;
     let units = arena.units.len();
     // **16b cut AF.3**: a resumed task has already snapshotted the period its

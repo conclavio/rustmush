@@ -131,20 +131,7 @@ pub struct SessionStat {
     pub last_input: i64,
 }
 
-/// One connection's reply brackets — PennMUSH's `OUTPUTPREFIX` and
-/// `OUTPUTSUFFIX` (16b cut AP.4, 16c `N20`): text the engine prints on a
-/// line of its own before, and after, the answer to every line typed on that
-/// connection, so a client script knows where one reply ends and the next
-/// begins. A setting of a CONNECTION, not of the character: a second
-/// connection of the same actor reads nothing of it. Transient — see
-/// [`World::output_brackets`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OutputBrackets {
-    /// Printed before the answer, as the step's first event (`OUTPUTPREFIX`).
-    pub prefix: Option<String>,
-    /// Printed after the answer, as the step's last event (`OUTPUTSUFFIX`).
-    pub suffix: Option<String>,
-}
+pub use mush_proto::OutputBrackets;
 
 /// The entire game state, in RAM, dense by [`ObjId`].
 ///
@@ -190,9 +177,10 @@ pub struct World {
     /// `OUTPUTPREFIX`/`OUTPUTSUFFIX`, keyed by the transport connection.
     /// Transient and engine-fed like `live_conns`, never persisted, never
     /// dirty-tracked: on the World because a command handler holds the World
-    /// and no connection. Cleared by `ConnDown`; gone with the World on a
-    /// restart.
+    /// and no connection. Cleared by `ConnDown`; restored from the gateway
+    /// on a server restart.
     output_brackets: HashMap<ConnId, OutputBrackets>,
+    changed_output_brackets: std::collections::BTreeSet<ConnId>,
     /// The connection whose typed line the engine is running right now, set
     /// by `Engine::step`'s `Cmd` arm round the line's body and `None` at
     /// every other moment (16b cut AP.4) — how `OUTPUTPREFIX` knows which
@@ -902,7 +890,7 @@ impl World {
     /// when it set neither. PennMUSH's `OUTPUTPREFIX`/`OUTPUTSUFFIX`: a
     /// setting of a connection, held on the World because a command handler
     /// holds the World and no connection. Transient: cleared by `ConnDown`
-    /// and gone with the World on a restart.
+    /// locally; the gateway mirrors accepted changes and restores them on restart.
     #[must_use]
     pub fn output_brackets(&self, conn: ConnId) -> Option<&OutputBrackets> {
         self.output_brackets.get(&conn)
@@ -911,6 +899,7 @@ impl World {
     /// Set (`Some`) or clear (`None`) this connection's reply prefix
     /// (`OUTPUTPREFIX`). A row left with neither text is removed.
     pub fn set_output_prefix(&mut self, conn: ConnId, prefix: Option<String>) {
+        self.changed_output_brackets.insert(conn);
         let row = self.output_brackets.entry(conn).or_default();
         row.prefix = prefix;
         if row.prefix.is_none() && row.suffix.is_none() {
@@ -921,6 +910,7 @@ impl World {
     /// Set (`Some`) or clear (`None`) this connection's reply suffix
     /// (`OUTPUTSUFFIX`). A row left with neither text is removed.
     pub fn set_output_suffix(&mut self, conn: ConnId, suffix: Option<String>) {
+        self.changed_output_brackets.insert(conn);
         let row = self.output_brackets.entry(conn).or_default();
         row.suffix = suffix;
         if row.prefix.is_none() && row.suffix.is_none() {
@@ -932,6 +922,20 @@ impl World {
     /// (and `ConnUp`, for a row a re-used id might have left).
     pub fn clear_output_brackets(&mut self, conn: ConnId) {
         self.output_brackets.remove(&conn);
+        self.changed_output_brackets.remove(&conn);
+    }
+
+    /// Drain accepted command-setting changes for the gateway mirror.
+    pub fn take_output_bracket_changes(&mut self) -> Vec<(ConnId, OutputBrackets)> {
+        std::mem::take(&mut self.changed_output_brackets)
+            .into_iter()
+            .map(|conn| {
+                (
+                    conn,
+                    self.output_brackets.get(&conn).cloned().unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 
     /// Mark the connection whose typed line the engine is running (`Some`

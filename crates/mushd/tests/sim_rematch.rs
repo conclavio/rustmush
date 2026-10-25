@@ -350,8 +350,12 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
         let mark = term.mark();
         term.send_line(line).await;
         term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
+        // Drain this attempt's sentinel even when the command was refused.
+        // Otherwise its late Huh can terminate the next command's read early.
+        term.expect_after(mark, HUH).await;
+        let reply = strip_ansi(&term.seen[mark..]);
+        if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
+            return reply;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

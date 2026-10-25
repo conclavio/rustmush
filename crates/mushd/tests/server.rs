@@ -968,3 +968,94 @@ mod ssh_full_stack {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[tokio::test]
+async fn gateway_refusals_keep_one_connection_scoped_reply_pair() {
+    struct RefusingLink(AtomicU8);
+    impl mush_ipc::GatewayLink for RefusingLink {
+        fn to_server(&self, _: mush_ipc::ToServer) -> futures::future::BoxFuture<'_, bool> {
+            Box::pin(async { false })
+        }
+        fn to_server_input(
+            &self,
+            _: mush_ipc::ToServer,
+        ) -> futures::future::BoxFuture<'_, mush_ipc::InputSend> {
+            let gone = self.0.load(Ordering::SeqCst) == 1;
+            Box::pin(async move {
+                if gone {
+                    mush_ipc::InputSend::Gone
+                } else {
+                    mush_ipc::InputSend::Shed
+                }
+            })
+        }
+        fn request(
+            &self,
+            _: mush_ipc::ServiceReq,
+        ) -> futures::future::BoxFuture<'_, Option<mush_ipc::ServiceResp>> {
+            Box::pin(async { None })
+        }
+        fn is_restarting(&self) -> bool {
+            self.0.load(Ordering::SeqCst) == 1
+        }
+    }
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let sessions = Arc::new(SessionManager::new());
+    let link = Arc::new(RefusingLink(AtomicU8::new(0)));
+    let auth = Arc::new(FakeAuth { chars: Vec::new() });
+    let bridge = SshBridge::with_link(
+        auth,
+        sessions.clone(),
+        link.clone(),
+        Arc::new(IpGuard::new()),
+    );
+    let actor = ObjId(5);
+    let (tx, mut rx) = mpsc::channel(256);
+    let handle = ConnectionHandle::new(ConnId(80), ip(8), caps(), tx);
+    handle.set_output_brackets(mush_proto::OutputBrackets {
+        prefix: Some("<reply>".into()),
+        suffix: Some("</reply>".into()),
+    });
+    sessions.attach(handle, char_key(actor), "actor".into());
+    let (peer_tx, mut peer_rx) = mpsc::channel(256);
+    sessions.attach(
+        ConnectionHandle::new(ConnId(81), ip(8), caps(), peer_tx),
+        char_key(actor),
+        "actor".into(),
+    );
+    for (line, needle, mode) in [
+        ("think refused".to_owned(), "busy", 0),
+        ("think refused".to_owned(), "restarting", 1),
+        (
+            "x".repeat(mush_net_ssh::MAX_LINE_CHARS + 1),
+            "Line too long",
+            0,
+        ),
+        ("+act broken with []".to_owned(), "parameters", 0),
+    ] {
+        link.0.store(mode, Ordering::SeqCst);
+        bridge.line(ConnId(80), &line).await;
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|e| text_of(&e))
+            .collect();
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(events[0], "<reply>");
+        assert!(events[1].contains(needle), "{events:?}");
+        assert_eq!(events[2], "</reply>");
+        assert!(
+            peer_rx.try_recv().is_err(),
+            "reply must not fan out to another connection of the actor"
+        );
+    }
+    for _ in 0..40 {
+        sessions.check_input(ConnId(80));
+    }
+    bridge.line(ConnId(80), "think flood").await;
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|e| text_of(&e))
+        .collect();
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!(events[0], "<reply>");
+    assert!(events[1].contains("too fast"), "{events:?}");
+    assert_eq!(events[2], "</reply>");
+}

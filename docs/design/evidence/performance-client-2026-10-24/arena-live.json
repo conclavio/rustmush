@@ -1,0 +1,776 @@
+{
+  "passed": true,
+  "checks": [
+    "12 real accounts board opposite sides through gateway, server, and Redis",
+    "startup, steering, and private cockpit frames cross the real split host with three reusable worker threads",
+    "match abort returns custody through the real server"
+  ],
+  "commands": [
+    {
+      "actor": "God",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "OUTPUTSUFFIX __ARENA_DONE__",
+      "reply": ""
+    },
+    {
+      "actor": "God",
+      "line": "@find Simulator Lobby",
+      "reply": "Simulator Lobby(#7)\nSimulator Lobby <SIMULATOR>(#38)\nSimulator Lobby <LOBBY>(#47)\nSimulator Lobby <LOBBY>(#49)\n*** END OF LIST ***  (4 found)"
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #678=performance acceptance fixture",
+      "reply": "#678 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #678=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #679=performance acceptance fixture",
+      "reply": "#679 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #679=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #707=performance acceptance fixture",
+      "reply": "#707 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #707=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #708=performance acceptance fixture",
+      "reply": "#708 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #708=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #709=performance acceptance fixture",
+      "reply": "#709 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #709=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #710=performance acceptance fixture",
+      "reply": "#710 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #710=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #711=performance acceptance fixture",
+      "reply": "#711 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #711=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #712=performance acceptance fixture",
+      "reply": "#712 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #712=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d#711 Framecf4be07b10 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #713=performance acceptance fixture",
+      "reply": "#713 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #713=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d#711 Framecf4be07b10#712 Framec94097fad5 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #714=performance acceptance fixture",
+      "reply": "#714 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #714=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d#711 Framecf4be07b10#712 Framec94097fad5#713 Frame455530be04 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #715=performance acceptance fixture",
+      "reply": "#715 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #715=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d#711 Framecf4be07b10#712 Framec94097fad5#713 Frame455530be04#714 Frame264e7649f4 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "God",
+      "line": "@spatial/unplace #716=performance acceptance fixture",
+      "reply": "#716 is not placed"
+    },
+    {
+      "actor": "God",
+      "line": "@teleport #716=#7",
+      "reply": "Teleported."
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "look",
+      "reply": "Simulator Lobby #7 A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story. #27 Simulator Selector#678 R6bob1b16df#679 R6carol1f8127#707 Frame04fd00cae4#708 Framec9ef15a1de#709 Frame3a68e0ccc1#710 Framebb21d0f10d#711 Framecf4be07b10#712 Framec94097fad5#713 Frame455530be04#714 Frame264e7649f4#715 Frame030d500c52 Welcome Hall <W> whallwestBlue Room <B> bbluesouthsRed Room <R> rrednorthn   winter afternoon "
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "SIM TEAM red",
+      "reply": "The last match is cleared from the board and the tanks are back at muster.\nR6bob1b16df takes red slot 1. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "SIM TEAM blue",
+      "reply": "R6carol1f8127 takes blue slot 1. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "SIM TEAM red",
+      "reply": "Frame04fd00cae4 takes red slot 2. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "SIM TEAM blue",
+      "reply": "Framec9ef15a1de takes blue slot 2. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "SIM TEAM red",
+      "reply": "Frame3a68e0ccc1 takes red slot 3. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "SIM TEAM blue",
+      "reply": "Framebb21d0f10d takes blue slot 3. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "SIM TEAM red",
+      "reply": "Framecf4be07b10 takes red slot 4. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "SIM TEAM blue",
+      "reply": "Framec94097fad5 takes blue slot 4. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "SIM TEAM red",
+      "reply": "Frame455530be04 takes red slot 5. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "SIM TEAM blue",
+      "reply": "Frame264e7649f4 takes blue slot 5. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "SIM TEAM red",
+      "reply": "Frame030d500c52 takes red slot 6. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "SIM TEAM blue",
+      "reply": "Frame3f3f6197a4 takes blue slot 6. `SIM START` begins the match; the machines take the pods nobody claims."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "SIM START",
+      "reply": "Match 3 is boarding. Every pilot: BOARD your pod. The match starts when everyone is seated, or in 120 second(s)."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 1. The panel wakes when every pilot is seated, or in 120 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 1 #21 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 1 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 1. The panel wakes when every pilot is seated, or in 120 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 1 #12 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 1 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 2. The panel wakes when every pilot is seated, or in 120 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 2 #22 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 2 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 2. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 2 #13 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 2 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 3. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 3 #23 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 3 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 3. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 3 #14 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 3 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 4. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 4 #24 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 4 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 4. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 4 #15 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 4 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 5. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 5 #25 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 5 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 5. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 5 #16 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 5 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "red",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "BOARD",
+      "reply": "You climb into Red Pod 6. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nRed Pod 6 #26 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 6 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "blue",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "BOARD",
+      "reply": "You climb into Blue Pod 6. The panel wakes when every pilot is seated, or in 119 second(s). EXIT to get out — once the match is running, leaving abandons the tank for the rest of it.\nBlue Pod 6 #17 A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 6 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.     winter afternoon \nYou have been joined to channel BlueNet (alias: bf).\nMatch 3 is running. Good hunting.\narena.cockpit keyframe  BF                close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      off    arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue quiet  tacsim.unit.line_tank    cannon          machine_gun           \narena.cockpit keyframe  BF                close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      off    arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly.\narena.cockpit keyframe  RA                close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      starting    arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly.\narena.cockpit keyframe  RF      rear close   unknown  X2   43f62abe23246c00         right close   unknown  X5   7b2e7162ed107b1b         right close   unknown  X1   7e88779d0f8a6156         right close   unknown  X3   aa633938453dfb46         rear close   unknown  X4   f664525804075037                   close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      starting    arena.cockpit latest  unidentified intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "STARTUP",
+      "reply": "Startup sequence begun; power comes online shortly."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "STATUS",
+      "reply": "Callsign RA.\nRed Tank 1: power online, 0 kph, heading 90°\n  at 65 m east, 975 m north; scope clear\n  nearest spot: The Ford (A), 580 m at 090°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RA     X1 left close   red  ggggg  RB hull  16a33361aa20140b      tacsim.unit.line_tank  X3 left close   red  ggggg  RD hull  3cd3aa5417760b69      tacsim.unit.line_tank  X5 left close   red  ggggg  RF hull  5c1457e6356f0558      tacsim.unit.line_tank  X4 right close   red  ggggg  RE hull  f5be98d6c81513be      tacsim.unit.line_tank  X2 right close   red  ggggg  RC hull  fabbb1b0f75be6e1      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "STATUS",
+      "reply": "Callsign BA.\nBlue Tank 1: power online, 0 kph, heading 270°\n  at 2495 m east, 975 m north; scope clear\n  nearest spot: East Compound (E), 650 m at 321°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BA     X3 right close   blue  ggggg  BD hull  0ea6b6249910a461      tacsim.unit.line_tank  X4 left close   blue  ggggg  BE hull  2c4643f8ce723b8a      tacsim.unit.line_tank  X2 left close   blue  ggggg  BC hull  759b14931be7b716      tacsim.unit.line_tank  X1 right close   blue  ggggg  BB hull  8b547c2f1678059e      tacsim.unit.line_tank  X5 right close   blue  ggggg  BF hull  f312f6678ad2f405      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "STATUS",
+      "reply": "Callsign RB.\nRed Tank 2: power online, 0 kph, heading 90°\n  at 65 m east, 955 m north; scope clear\n  nearest spot: The Ford (A), 580 m at 088°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RB     X2 right close   red  ggggg  RC hull  17dad9afa3ffc5aa      tacsim.unit.line_tank  X4 right close   red  ggggg  RE hull  4582d7a80628857a      tacsim.unit.line_tank  X1 right close   red  ggggg  RA hull  9ab0c4a79c0d3e0b      tacsim.unit.line_tank  X5 front close   red  ggggg  RF hull  b4c246841239827f      tacsim.unit.line_tank  X3 left close   red  ggggg  RD hull  bf0b86f29382da7e      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "STATUS",
+      "reply": "Callsign BB.\nBlue Tank 2: power online, 0 kph, heading 270°\n  at 2495 m east, 955 m north; scope clear\n  nearest spot: East Compound (E), 670 m at 322°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BB     X3 right close   blue  ggggg  BD hull  0c75b2b5eaa6cae4      tacsim.unit.line_tank  X2 left close   blue  ggggg  BC hull  8fcbce671711a42b      tacsim.unit.line_tank  X4 left close   blue  ggggg  BE hull  c0b6c77a0913e22c      tacsim.unit.line_tank  X5 front close   blue  ggggg  BF hull  e77d054cbcd33f02      tacsim.unit.line_tank  X1 left close   blue  ggggg  BA hull  fba4df1e4241becc      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "STATUS",
+      "reply": "Callsign RC.\nRed Tank 3: power online, 0 kph, heading 90°\n  at 65 m east, 995 m north; scope clear\n  nearest spot: The Ford (A), 580 m at 091°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RC     X4 right close   red  ggggg  RE hull  032bc36406877e29      tacsim.unit.line_tank  X3 left close   red  ggggg  RD hull  19df3679f980f7d5      tacsim.unit.line_tank  X1 left close   red  ggggg  RA hull  5c84ef27573730f8      tacsim.unit.line_tank  X5 left close   red  ggggg  RF hull  7e0a85f3598e6450      tacsim.unit.line_tank  X2 left close   red  ggggg  RB hull  8b1abf2f4b777734      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "STATUS",
+      "reply": "Callsign BC.\nBlue Tank 3: power online, 0 kph, heading 270°\n  at 2495 m east, 995 m north; scope clear\n  nearest spot: East Compound (E), 640 m at 320°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BC     X1 right close   blue  ggggg  BA hull  77a0208f80e57a16      tacsim.unit.line_tank  X3 right close   blue  ggggg  BD hull  8701852245ca80af      tacsim.unit.line_tank  X5 right close   blue  ggggg  BF hull  8c28fe98265bfadd      tacsim.unit.line_tank  X4 left close   blue  ggggg  BE hull  8f4618354838cd53      tacsim.unit.line_tank  X2 right close   blue  ggggg  BB hull  fd1575e6b571428a      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "STATUS",
+      "reply": "Callsign RD.\nRed Tank 4: power online, 0 kph, heading 90°\n  at 65 m east, 935 m north; scope clear\n  nearest spot: The Ford (A), 580 m at 086°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RD     X3 right close   red  ggggg  RC hull  222adb4b86f99776      tacsim.unit.line_tank  X1 right close   red  ggggg  RA hull  4fc781457615f566      tacsim.unit.line_tank  X2 right close   red  ggggg  RB hull  535b7fa3046cb20f      tacsim.unit.line_tank  X5 front close   red  ggggg  RF hull  79c26397617e9c34      tacsim.unit.line_tank  X4 right close   red  ggggg  RE hull  cadf87cf59380507      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "STATUS",
+      "reply": "Callsign BD.\nBlue Tank 4: power online, 0 kph, heading 270°\n  at 2495 m east, 935 m north; scope clear\n  nearest spot: East Compound (E), 690 m at 323°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BD     X4 left close   blue  ggggg  BE hull  0e6f5bc2715bf07d      tacsim.unit.line_tank  X2 left close   blue  ggggg  BB hull  52eb182f84c04648      tacsim.unit.line_tank  X1 left close   blue  ggggg  BA hull  c0421fc6d69ed819      tacsim.unit.line_tank  X3 left close   blue  ggggg  BC hull  dd2aadf45996846f      tacsim.unit.line_tank  X5 front close   blue  ggggg  BF hull  f8bf69d8558b9663      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "STATUS",
+      "reply": "Callsign RE.\nRed Tank 5: power online, 0 kph, heading 90°\n  at 65 m east, 1015 m north; scope clear\n  nearest spot: The Ford (A), 580 m at 093°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RE     X1 left close   red  ggggg  RA hull  67010c4041a0bea8      tacsim.unit.line_tank  X4 left close   red  ggggg  RD hull  68c3157b38297bea      tacsim.unit.line_tank  X5 left close   red  ggggg  RF hull  a18555e82ef34e34      tacsim.unit.line_tank  X3 left close   red  ggggg  RC hull  b8370bfc44b81ea6      tacsim.unit.line_tank  X2 left close   red  ggggg  RB hull  f378aac33947d77d      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "STATUS",
+      "reply": "Callsign BE.\nBlue Tank 5: power online, 0 kph, heading 270°\n  at 2495 m east, 1015 m north; scope clear\n  nearest spot: East Compound (E), 620 m at 318°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BE     X5 right close   blue  ggggg  BF hull  043da918b08d38eb      tacsim.unit.line_tank  X4 right close   blue  ggggg  BD hull  42f5293a8f6f1ebe      tacsim.unit.line_tank  X2 right close   blue  ggggg  BB hull  52eb92ee4ef08cd5      tacsim.unit.line_tank  X1 right close   blue  ggggg  BA hull  799387e5e3d875b0      tacsim.unit.line_tank  X3 right close   blue  ggggg  BC hull  881c37d448256784      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "STATUS",
+      "reply": "Callsign RF.\nRed Tank 6: power online, 0 kph, heading 90°\n  at 45 m east, 945 m north; scope clear\n  nearest spot: The Ford (A), 600 m at 087°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  RF     X2 rear close   red  ggggg  RB hull  43f62abe23246c00      tacsim.unit.line_tank  X5 right close   red  ggggg  RE hull  7b2e7162ed107b1b      tacsim.unit.line_tank  X1 right close   red  ggggg  RA hull  7e88779d0f8a6156      tacsim.unit.line_tank  X3 right close   red  ggggg  RC hull  aa633938453dfb46      tacsim.unit.line_tank  X4 rear close   red  ggggg  RD hull  f664525804075037      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "STATUS",
+      "reply": "Callsign BF.\nBlue Tank 6: power online, 0 kph, heading 270°\n  at 2515 m east, 945 m north; scope clear\n  nearest spot: East Compound (E), 690 m at 321°\n  engine  intact  internals 120/120\n  hull  intact  internals 200/200\n    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100\n  left_track  intact  internals 100/100\n    left 120/120\n  right_track  intact  internals 100/100\n    right 120/120\n  turret  intact  internals 150/150\n    front 350/350  left 220/220  rear 140/140  right 220/220\narena.cockpit keyframe  BF     X3 left close   blue  ggggg  BC hull  22516022324f0899      tacsim.unit.line_tank  X5 left close   blue  ggggg  BE hull  91429633cb854b84      tacsim.unit.line_tank  X4 rear close   blue  ggggg  BD hull  96beb6ecd61e2caf      tacsim.unit.line_tank  X1 left close   blue  ggggg  BA hull  c3448e8988ec4d53      tacsim.unit.line_tank  X2 rear close   blue  ggggg  BB hull  e08d86361948c42e      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph.\narena.cockpit keyframe  BA     X3 right close   blue  ggggg  BD hull  0ea6b6249910a461      tacsim.unit.line_tank  X4 left close   blue  ggggg  BE hull  2c4643f8ce723b8a      tacsim.unit.line_tank  X2 left close   blue  ggggg  BC hull  759b14931be7b716      tacsim.unit.line_tank  X1 right close   blue  ggggg  BB hull  8b547c2f1678059e      tacsim.unit.line_tank  X5 right close   blue  ggggg  BF hull  f312f6678ad2f405      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph.\narena.cockpit keyframe  RC     X4 right close   red  ggggg  RE hull  032bc36406877e29      tacsim.unit.line_tank  X3 left close   red  ggggg  RD hull  19df3679f980f7d5      tacsim.unit.line_tank  X1 left close   red  ggggg  RA hull  5c84ef27573730f8      tacsim.unit.line_tank  X5 left close   red  ggggg  RF hull  7e0a85f3598e6450      tacsim.unit.line_tank  X2 left close   red  ggggg  RB hull  8b1abf2f4b777734      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph.\narena.cockpit keyframe  BD     X4 left close   blue  ggggg  BE hull  0e6f5bc2715bf07d      tacsim.unit.line_tank  X2 left close   blue  ggggg  BB hull  52eb182f84c04648      tacsim.unit.line_tank  X1 left close   blue  ggggg  BA hull  c0421fc6d69ed819      tacsim.unit.line_tank  X3 left close   blue  ggggg  BC hull  dd2aadf45996846f      tacsim.unit.line_tank  X5 front close   blue  ggggg  BF hull  f8bf69d8558b9663      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        blue alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "HEADING 90",
+      "reply": "Steering to 90°."
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph.\narena.cockpit keyframe  RF     X2 rear close   red  ggggg  RB hull  43f62abe23246c00      tacsim.unit.line_tank  X5 right close   red  ggggg  RE hull  7b2e7162ed107b1b      tacsim.unit.line_tank  X1 right close   red  ggggg  RA hull  7e88779d0f8a6156      tacsim.unit.line_tank  X3 right close   red  ggggg  RC hull  aa633938453dfb46      tacsim.unit.line_tank  X4 rear close   red  ggggg  RD hull  f664525804075037      tacsim.unit.line_tank             close_m Close distance  Sealed in exact stored units; presets copy values, never behavior. slider     mengage_band_permille Engage band  Sealed in exact stored units; presets copy values, never behavior. slider     %opening Opening waitsearchadvance wait Sealed in exact stored units; presets copy values, never behavior. choiceorbit_sense Orbit direction cwccwauto auto Sealed in exact stored units; presets copy values, never behavior. choicescreen_arc Screen arc  Sealed in exact stored units; presets copy values, never behavior. slider     degreesscreen_bearing Screen bearing  Sealed in exact stored units; presets copy values, never behavior. slider     degreesstance Stance holdcloseorbithuntscreen hold Sealed in exact stored units; presets copy values, never behavior. choiceturn_into_hits Turn into hits  Sealed in exact stored units; presets copy values, never behavior. toggleturn_s Turn duration  Sealed in exact stored units; presets copy values, never behavior. slider     s posture Posture helmaspect Aspect anyflankrear any Sealed in exact stored units; presets copy values, never behavior. choicemin_odds_permille Minimum odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_odds_pct Reserve odds  Sealed in exact stored units; presets copy values, never behavior. slider     %reserve_pct Reserve  Sealed in exact stored units; presets copy values, never behavior. slider     % fire Fire discipline fireprefer Target preference nearestexposedhurtbalancedbest_odds balanced Sealed in exact stored units; presets copy values, never behavior. choiceswitch_m Lock switch advantage  Sealed in exact stored units; presets copy values, never behavior. slider     mweight_facet Facet weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_health Health weight  Sealed in exact stored units; presets copy values, never behavior. slider     weight_range Range weight  Sealed in exact stored units; presets copy values, never behavior. slider      targeting Targeting sensorshunt_after_ms Hunt delay  Sealed in exact stored units; presets copy values, never behavior. slider     srally_ms Rally delay  Sealed in exact stored units; presets copy values, never behavior. slider     ssearch_ms Search duration  Sealed in exact stored units; presets copy values, never behavior. slider     sstand_min_permille Fight home health  Sealed in exact stored units; presets copy values, never behavior. slider     %stop_unseen Stop unseen  Sealed in exact stored units; presets copy values, never behavior. togglewithdraw_permille Break off health  Sealed in exact stored units; presets copy values, never behavior. slider     % survival Survival and search helm any     wait auto balanced       hold          helmsensorsfire I II Standard Doctrine   Line  skirmish      online   enginehullleft_trackright_trackturret arena.cockpit latest  clear intact  engine  intact   front  left  rear  right  top hull  intact   left left_track  intact   right right_track  intact   front  left  rear  right turret        red alert  tacsim.unit.line_tank    cannon          machine_gun           "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "HEADING 270",
+      "reply": "Steering to 270°."
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "SPEED 10",
+      "reply": "Making 10 kph."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "SIM ABORT",
+      "reply": "R6bob1b16df aborts match 3. Its units check back in when the arena answers.\narena.cockpit keyframe arena.cockpit latest  \nYou have been removed from channel RedNet.\nThe hatch of Red Pod 1 swings open.\nRed Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon \nMatch 3 is over (abort). Its units are checked in."
+    },
+    {
+      "actor": "God",
+      "line": "@arena/status",
+      "reply": "Simulator centre: aborted (match 3)\n  red: nobody\n  blue: nobody\n  `SIM TEAM red` or `SIM TEAM blue` opens the next match."
+    },
+    {
+      "actor": "R6bob1b16df",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#707 Frame04fd00cae4#709 Frame3a68e0ccc1#711 Framecf4be07b10#713 Frame455530be04#715 Frame030d500c52 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "R6carol1f8127",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#708 Framec9ef15a1de#710 Framebb21d0f10d#712 Framec94097fad5#714 Frame264e7649f4#716 Frame3f3f6197a4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame04fd00cae4",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#678 R6bob1b16df#709 Frame3a68e0ccc1#711 Framecf4be07b10#713 Frame455530be04#715 Frame030d500c52 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Framec9ef15a1de",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#679 R6carol1f8127#710 Framebb21d0f10d#712 Framec94097fad5#714 Frame264e7649f4#716 Frame3f3f6197a4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame3a68e0ccc1",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#678 R6bob1b16df#707 Frame04fd00cae4#711 Framecf4be07b10#713 Frame455530be04#715 Frame030d500c52 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Framebb21d0f10d",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#679 R6carol1f8127#708 Framec9ef15a1de#712 Framec94097fad5#714 Frame264e7649f4#716 Frame3f3f6197a4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Framecf4be07b10",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#678 R6bob1b16df#707 Frame04fd00cae4#709 Frame3a68e0ccc1#713 Frame455530be04#715 Frame030d500c52 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Framec94097fad5",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#679 R6carol1f8127#708 Framec9ef15a1de#710 Framebb21d0f10d#714 Frame264e7649f4#716 Frame3f3f6197a4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame455530be04",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#678 R6bob1b16df#707 Frame04fd00cae4#709 Frame3a68e0ccc1#711 Framecf4be07b10#715 Frame030d500c52 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame264e7649f4",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#679 R6carol1f8127#708 Framec9ef15a1de#710 Framebb21d0f10d#712 Framec94097fad5#716 Frame3f3f6197a4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    },
+    {
+      "actor": "Frame030d500c52",
+      "line": "look",
+      "reply": "Red Room #6 Six pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south. #21 Red Pod 1#22 Red Pod 2#23 Red Pod 3#24 Red Pod 4#25 Red Pod 5#26 Red Pod 6#706 faenix#678 R6bob1b16df#707 Frame04fd00cae4#709 Frame3a68e0ccc1#711 Framecf4be07b10#713 Frame455530be04 Simulator Lobby <LOBBY> lobbyoutsouths   winter afternoon "
+    },
+    {
+      "actor": "Frame3f3f6197a4",
+      "line": "look",
+      "reply": "Blue Room #5 Six pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north. #12 Blue Pod 1#13 Blue Pod 2#14 Blue Pod 3#15 Blue Pod 4#16 Blue Pod 5#17 Blue Pod 6#679 R6carol1f8127#708 Framec9ef15a1de#710 Framebb21d0f10d#712 Framec94097fad5#714 Frame264e7649f4 Simulator Lobby <LOBBY> lobbyoutnorthn   winter afternoon "
+    }
+  ],
+  "pilots": 12,
+  "cockpitFrames": {
+    "RA": 4,
+    "BA": 4,
+    "RB": 4,
+    "BB": 4,
+    "RC": 4,
+    "BC": 4,
+    "RD": 4,
+    "BD": 4,
+    "RE": 3,
+    "BE": 4,
+    "RF": 3,
+    "BF": 5
+  },
+  "serverSha256": "91722cf42c774d562a71e265621f8fbef2212c27aa30ad471212cc163603fe0e",
+  "frameWorkers": [
+    "tacsim-frame-0",
+    "tacsim-frame-1",
+    "tacsim-frame-2"
+  ]
+}

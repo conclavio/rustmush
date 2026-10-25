@@ -1,0 +1,24 @@
+{
+  "normalization": "CRLF to LF before SHA-256",
+  "base_commit": "6995adda9be0f8d1643871a86ae61126a5da1442",
+  "files": {
+    "Cargo.lock": "ada7ad0ec37f0e375196f9b1d8cfdf216b9beaac4060dd591432f5d87c8ad7de",
+    "Cargo.toml": "047a12e866e768820a5a3228c49d7932be0370d3b81b8f28db35a6fe2cdb040d",
+    "crates/mush-contract-tests/tests/arena_library.rs": "d04aae5beb7d56c946ed7b4d4ddc7d8549c5a24bd768c64be1a6e8efaf14915a",
+    "crates/mush-net-ssh/src/server.rs": "631fd1bbbb6735e0cbfe117bfbb660fc9dc15d0aad95802e89552c173afa314a",
+    "crates/mush-net-ssh/tests/loopback.rs": "d7be0f20e20b06c3f4cee5db2101a47a4f444abf37009990dd64ee2f193d7c65",
+    "crates/mushd/tests/observer_rule.rs": "e1592775d0c56879e24fffe0b655aa9474da416f54c4b72fa6877544578a2292",
+    "crates/mushd/tests/sim_units.rs": "70fc625a1f0aa2293205b1803a7c7a39a3a6c1c062e62e8959259c18c1e90301",
+    "crates/tacsim/Cargo.toml": "19eb86c2eaccfd6086724f15feb219008b9958ec85bf95a56ea2963c42023cf3",
+    "crates/tacsim/src/arena/snapshot.rs": "e1a9be5db4c6c51d1908abbdabceae428858eb3178fdc040f699edc4e98baf42",
+    "crates/tacsim/src/arena/state.rs": "e0ceaf0281f282622f6f9acc6aa571fa45a283584264e3c836df0a0b772ff174",
+    "crates/tacsim/src/arena/step.rs": "a4275941b23aa1d2d8f96f31b09f0fb453a08dcf77880c40dd1d78018828a7f6",
+    "crates/tacsim/src/arena_task.rs": "f24cea6abb40a21f691937c3af00372017cb648a7e299f28117d102a11c9eb02",
+    "crates/tacsim/tests/harness.rs": "a638aeebfbb19bb368f2053eae484a4855e01f4303c9eb31195019111fb5c427",
+    "scripts/client-arena-live.mjs": "405212ade6ab5a074d30937e27ee9fcfa7eaf509fb85be13ec60dd7fd2a8b449",
+    "scripts/investigate-sight.py": "a9a5a6d132e5805d92751bbfedc7c063a39fbe8e22f140e3a2bf97558e2e8adb",
+    "scripts/measure-pilot-frames.py": "d12d514bc54d9b3bf4199b9e431f1921bee2db76d53e3d7539d431e6d91327fb"
+  },
+  "integration_note": "Two concurrent documentation-only commits were incorporated after dev1 acceptance; runtime source is unchanged.",
+  "dev1_source_match": true
+}

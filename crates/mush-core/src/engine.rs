@@ -660,6 +660,8 @@ impl ModuleComposition {
 /// connection bookkeeping. The tokio loop in `mushd` owns exactly one of
 /// these.
 pub struct Engine {
+    /// Embedded engines frame locally; a deployed server delegates to its gateway.
+    gateway_reply_framing: bool,
     /// The game state.
     pub world: World,
     /// The command table (plus module registration tables).
@@ -760,6 +762,7 @@ impl Engine {
             .cloned()
             .map_or_else(ActionStateStore::unregistered, ActionStateStore::new);
         Engine {
+            gateway_reply_framing: false,
             world,
             registry,
             sched: Scheduler::new(),
@@ -3722,6 +3725,17 @@ impl Engine {
         self.conn_count.get(&actor).copied().unwrap_or(0)
     }
 
+    /// Delegate reply delimiters to the connection-owning gateway. The engine
+    /// still validates settings in the command/input-context dispatch path.
+    pub fn use_gateway_reply_framing(&mut self) {
+        self.gateway_reply_framing = true;
+    }
+
+    /// Whether the gateway owns reply boundaries for this engine.
+    pub fn gateway_frames_replies(&self) -> bool {
+        self.gateway_reply_framing
+    }
+
     /// Handle one inbound message. Output lands in `out`; deferred async
     /// work lands in `fx` (and timers in [`Engine::sched`]). Returns
     /// whether the loop should keep running.
@@ -3753,7 +3767,9 @@ impl Engine {
         // dispatched and so sits inside. An empty line is not bracketed.
         let bracketed = match &msg {
             Inbound::Cmd { conn, actor, line }
-                if self.world.get(*actor).is_some() && !line.trim().is_empty() =>
+                if !self.gateway_reply_framing
+                    && self.world.get(*actor).is_some()
+                    && !line.trim().is_empty() =>
             {
                 Some(*conn)
             }

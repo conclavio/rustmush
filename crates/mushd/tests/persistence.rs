@@ -10,7 +10,7 @@ mod support;
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -1384,6 +1384,7 @@ struct FlakyStore {
     /// WS07-S8: every snapshot this store is asked for, counted — so a test
     /// can say that a shutdown tail took none.
     bgsaves: AtomicUsize,
+    hold_bgsave: AtomicBool,
 }
 
 impl FlakyStore {
@@ -1392,6 +1393,7 @@ impl FlakyStore {
             inner: InMemoryStore::new(),
             mode: AtomicU8::new(MODE_NORMAL),
             bgsaves: AtomicUsize::new(0),
+            hold_bgsave: AtomicBool::new(false),
         }
     }
 
@@ -1625,7 +1627,12 @@ impl ObjectStore for FlakyStore {
 
     fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>> {
         self.bgsaves.fetch_add(1, Ordering::SeqCst);
-        self.inner.bgsave()
+        Box::pin(async move {
+            while self.hold_bgsave.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            self.inner.bgsave().await
+        })
     }
 
     fn drain(&self) -> BoxFuture<'_, Result<(), StoreError>> {
@@ -2494,5 +2501,100 @@ async fn a_macro_survives_a_restart_through_the_store() {
     assert!(
         reloaded.get(GOD).unwrap().attrs.get("macros").is_none(),
         "the deletion reached the store"
+    );
+}
+
+/// Reply boundaries follow exact commit custody and the staff executor, while
+/// ordinary world barriers remain usable by work running inside that executor.
+#[tokio::test(flavor = "multi_thread")]
+async fn reply_frames_wait_for_commit_and_staff_without_nesting() {
+    let flaky = Arc::new(FlakyStore::new());
+    let store: Arc<dyn ObjectStore> = flaky.clone();
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut rx = attach_direct(&sessions, &world, 41, GOD, "god").await;
+    assert!(world.barrier().await);
+    let accounts = Arc::new(Accounts::new(store, world.clone(), 3));
+    let bridge = Arc::new(mushd::ssh_bridge::SshBridge::new(
+        accounts,
+        sessions.clone(),
+        world.clone(),
+        guard,
+    ));
+    bridge.line(ConnId(41), "OUTPUTPREFIX <reply>").await;
+    bridge.line(ConnId(41), "OUTPUTSUFFIX </reply>").await;
+    assert_eq!(
+        sessions
+            .conn_handle(ConnId(41))
+            .unwrap()
+            .output_brackets()
+            .suffix
+            .as_deref(),
+        Some("</reply>")
+    );
+    while rx.try_recv().is_ok() {}
+
+    flaky.set_mode(MODE_HOLD);
+    let first_bridge = bridge.clone();
+    let first =
+        tokio::spawn(async move { first_bridge.line(ConnId(41), "@create framed-orb").await });
+    expect_text(&mut rx, "<reply>").await;
+    let second_bridge = bridge.clone();
+    let second = tokio::spawn(async move { second_bridge.line(ConnId(41), "@stats").await });
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(!first.is_finished() && !second.is_finished());
+    assert!(
+        rx.try_recv().is_err(),
+        "no second prefix or premature completion while the first commit waits"
+    );
+    flaky.set_mode(MODE_NORMAL);
+    first.await.unwrap();
+    second.await.unwrap();
+    let mut text = String::new();
+    while let Ok(event) = rx.try_recv() {
+        text.push_str(&text_of(&event));
+        text.push('\n');
+    }
+    let created = text.find("Created: framed-orb").expect(&text);
+    let close = text.find("</reply>").expect(&text);
+    let open = text.find("<reply>").expect(&text);
+    assert!(created < close && close < open, "{text}");
+    assert_eq!(text.matches("</reply>").count(), 2, "{text}");
+    assert_eq!(text.matches("<reply>").count(), 1, "{text}");
+    assert!(
+        text[open + "<reply>".len()..].trim().len() > "</reply>".len(),
+        "staff reply must precede suffix: {text}"
+    );
+
+    flaky.hold_bgsave.store(true, Ordering::SeqCst);
+    let dump_bridge = bridge.clone();
+    let dump = tokio::spawn(async move { dump_bridge.line(ConnId(41), "@dump").await });
+    expect_text(&mut rx, "<reply>").await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while flaky.bgsaves() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("snapshot reached staff executor");
+    assert!(
+        !dump.is_finished(),
+        "suffix waits for staff acknowledgement"
+    );
+    assert!(
+        world.barrier().await,
+        "world stays responsive while staff work waits"
+    );
+    flaky.hold_bgsave.store(false, Ordering::SeqCst);
+    dump.await.unwrap();
+    let mut text = String::new();
+    while let Ok(event) = rx.try_recv() {
+        text.push_str(&text_of(&event));
+        text.push('\n');
+    }
+    assert!(
+        text.find("snapshot acknowledged").expect(&text) < text.find("</reply>").expect(&text),
+        "{text}"
     );
 }

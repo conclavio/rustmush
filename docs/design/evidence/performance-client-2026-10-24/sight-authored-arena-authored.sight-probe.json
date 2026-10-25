@@ -1,0 +1,27 @@
+{
+  "callers_calls_and_repeats": {
+    "crates/tacsim/src/arena/perception.rs:1316": [
+      328429,
+      28268
+    ],
+    "crates/tacsim/src/arena/perception.rs:1657": [
+      63298,
+      56352
+    ]
+  },
+  "calls": 391727,
+  "canonical_changed_sight": 0,
+  "cell_probes": 2638296,
+  "changed_answers": 0,
+  "directed_changed_answers": 0,
+  "directed_repeated": 55536,
+  "entry_payload_bytes": 88,
+  "horizon_probes": 2397610,
+  "note": "Measurement only; all traces executed. Payload size excludes allocator/tree overhead.",
+  "outside_substep_calls": 0,
+  "peak_unique_keys_per_substep": 2342,
+  "repeated": 84620,
+  "repeated_cell_probes": 524518,
+  "repeated_horizon_probes": 490510,
+  "substeps": 166
+}

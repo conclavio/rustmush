@@ -1,0 +1,31 @@
+
+running 1 test
+test tacsim_harness_arena_step ... pilot frame workers: 1
+harness_arena_world: cohort=ci units=300/300 pilots=24 cell_cm=1000 side=256 passable_cells=51258 seed=2350 arena_ms=41500
+harness_arena_classes: cohort=ci grass=11428 ground=22054 road=3084 rubble=2184 water=14278 woods_heavy=4396 woods_light=8112
+harness_arena_setup_ms: cohort=ci generate=90.6 boot=726.3 pack_apply=417.4 window_open=461.0 terrain_convert=62.0 arena_open=13489.8 warm_up=3632.5 warm_pulses=47 killed_warming=0
+harness_arena_cohort: cohort=ci line_tank=114 laser=38 biped=38 thermal=38 ecm=36 eccm=36 slope_45=262 slope_70=38 slope_refusals=391 relief_edges_45=73 relief_edges_70=32
+harness_arena_terraces: cohort=ci (78,252) r=16 rise_cm=800 (253,165) r=14 rise_cm=500
+harness_arena_loop: cohort=ci wakes=120 arena_s=30.000 wakes_per_arena_s=4.00 substep_ms=250 jitter_ms=0 substeps_per_wake_mean=1.000 short_substeps=0
+harness_arena_engaged: cohort=ci period_ms=500 pulses=120 p50=91.644 p95=113.580 p99=118.021 max=135.681
+harness_arena_window: cohort=ci window_ms=500 windows=60 ms_p50=183.553 ms_p95=212.872 ms_p99=221.229 ms_max=244.705 traces_peak=967 cell_probes_peak=4987 horizon_probes_peak=4968 jam_checks_peak=677 share_ops_peak=108
+harness_arena_substeps: cohort=ci per_wake_min=1 per_wake_max=1 substep_ms=250 divides_periods=true
+harness_arena_blocked_split: cohort=ci interior=9 ring=0 impassable=74 of 83 lines
+harness_arena_blocked_causes: cohort=ci impassable=74 occupied=9 edge=0 too_steep=0 of 83 lines
+harness_arena_counters: cohort=ci blocked=83 ledger_bytes=1642437 chunks=103 frames_per_pulse_mean=21.25 moving_at_end=123 held_at_end=7 lagged_pulses=0 ended=none
+harness_arena_weapons: cohort=ci armed=284 locked=443 fired=1123 impacts=1117 in_flight_at_end=6 shot_seq=1123 rounds_spent=1033 rounds_left=628357
+harness_arena_damage: cohort=ci hits=1026 misses=91 sections_destroyed=30 units_destroyed=12 wrecks_at_end=12 disabled_at_end=0
+harness_arena_motor: cohort=ci waypoint_nodes=256 decide_ms=1000 path_max_cells=65536 max_path_queries=64 repath_ms=4000 intents=19670 shots=1088 path_queries=464 path_deferred=367 path_cells=56105 path_failures=23 slope_refusals=391 path_refused_unchanged=0 corner_refusals=638 peak_intents=278 peak_shots=37 peak_path_queries=32 peak_path_cells=3692
+harness_arena_minds: cohort=ci engine=rom class=0 thinks=8922 landings=8922 faults=0 overflows=0 cond_fires=835 settle_ms_p50=4.122 settle_ms_p99=6.270 (report-only)
+harness_arena_minds_states: cohort=ci startup=0 patrol=113 approach=6 engage=169 withdraw=0 disabled=12 unknown=0
+harness_arena_command: cohort=ci max_span=4 orders_per_minute=12 squads=64 commanders=64 ordered_lines=0 orders=0 orders_per_commander_minute_max=0 span_max=0
+harness_arena_snapshot: cohort=ci every_ms=5000 count=7 bytes_max=5088487 bytes_mean=5025152 encode_ms_p50=766.977 encode_ms_p99=783.727 encode_ms_max=924.175 decode_ms_max=1567.982 wake_plus_encode_ms_max=1019.773 max_snapshot_bytes=7340032 hash_ok=true
+harness_arena_perception_peak: cohort=ci passes=94 candidates=756 traces=574 cell_probes=2843 horizon_probes=2874 jam_checks=405 share_ops=66 detected=26 classified=23 lost=54
+harness_arena_perception_total: cohort=ci sensor_cells=24 share_cells=8 pass_ms=1000 lost_after_passes=3 passes=8922 candidates=75647 traces=53364 cell_probes=262661 horizon_probes=268939 jam_checks=33474 share_ops=5729 detected=999 classified=694 lost=1013 contacts_at_end=797 alert_range_cm=362000
+harness_arena_memory: cohort=ci rss_start_kib=18760 rss_end_kib=172836 horizon_bytes=26112 vmrss_start_kib=18976 vmrss_end_kib=172836
+harness_arena_thresholds: cohort=ci assert=false lens=report-only cut_a_p99_ms=5 cut_s_p99_ms=20 window_p99_ms=22 engaged_p99_ms=40 max_traces_per_pulse=4000 max_share_ops_per_pulse=768 max_path_queries_per_pulse=64 max_path_cells_per_pulse=48128 max_cell_probes_per_pulse=32000 max_jam_checks_per_pulse=2048 max_ledger_bytes=67108864
+harness_arena_json: cohort=ci /opt/rustmush/dev1/client-debt-evidence/sight-ci-arena.json
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 54.55s
+

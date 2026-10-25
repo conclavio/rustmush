@@ -1,0 +1,87 @@
+    Blocking waiting for file lock on build directory
+   Compiling crypto-common v0.2.2
+   Compiling tokio v1.53.1
+   Compiling ordered-float v2.10.1
+   Compiling serde-value v0.7.0
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling hmac v0.13.0
+   Compiling governor v0.10.4
+   Compiling twilight-model v0.17.1
+   Compiling mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+   Compiling tokio-util v0.7.19
+   Compiling h2 v0.4.19
+   Compiling hyper v1.11.0
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling tokio-stream v0.1.19
+   Compiling reqwest v0.12.28
+   Compiling fred v10.1.0
+   Compiling mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+   Compiling mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+   Compiling mush-canon v0.1.0 (/opt/rustmush/dev1/build/crates/mush-canon)
+   Compiling mush-scenes v0.1.0 (/opt/rustmush/dev1/build/crates/mush-scenes)
+   Compiling mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+   Compiling mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+   Compiling backon v1.6.0
+   Compiling mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+   Compiling mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+   Compiling mush-llm v0.1.0 (/opt/rustmush/dev1/build/crates/mush-llm)
+   Compiling mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+   Compiling mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+   Compiling twilight-validate v0.17.0
+   Compiling mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+   Compiling mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+   Compiling mush-dice v0.1.0 (/opt/rustmush/dev1/build/crates/mush-dice)
+   Compiling mush-comsys v0.1.0 (/opt/rustmush/dev1/build/crates/mush-comsys)
+   Compiling twilight-http-ratelimiting v0.17.1
+   Compiling inout v0.2.2
+   Compiling tokio-websockets v0.13.3
+   Compiling cipher v0.5.2
+   Compiling ssh-encoding v0.3.0
+   Compiling twilight-http v0.17.1
+   Compiling mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+   Compiling twilight-gateway-queue v0.17.0
+   Compiling base16ct v1.0.0
+   Compiling sec1 v0.8.1
+   Compiling twilight-gateway v0.17.1
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling ssh-cipher v0.3.0
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+   Compiling mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+   Compiling mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+   Compiling mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+   Compiling mush-script v0.1.0 (/opt/rustmush/dev1/build/crates/mush-script)
+   Compiling twilight-util v0.17.0
+   Compiling mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+   Compiling mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+   Compiling mush-party v0.1.0 (/opt/rustmush/dev1/build/crates/mush-party)
+   Compiling mush-roll v0.1.0 (/opt/rustmush/dev1/build/crates/mush-roll)
+   Compiling mush-mail v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mail)
+   Compiling mush-privileges v0.1.0 (/opt/rustmush/dev1/build/crates/mush-privileges)
+   Compiling signature v3.0.0
+   Compiling ssh-key v0.7.0-rc.11
+   Compiling mush-net-discord v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-discord)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-pixel v0.1.0 (/opt/rustmush/dev1/build/crates/mush-pixel)
+   Compiling mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9m 22s
+     Running tests/arena_library.rs (target/debug/deps/arena_library-34b9e57358d69c1d)
+
+running 5 tests
+test the_draw_label_set_is_pinned ... ok
+test the_observer_has_no_path_into_a_pilot_feed ... ok
+test sight_only_is_the_arenas_trace_and_nobody_elses ... ok
+test the_arena_library_has_no_path_to_the_store_the_runtime_or_the_world ... ok
+test custody_writes::the_custody_markers_are_the_only_unit_writes_during_a_match ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
+

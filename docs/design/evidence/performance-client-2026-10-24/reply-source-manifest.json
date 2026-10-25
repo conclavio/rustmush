@@ -1,0 +1,132 @@
+[
+  {
+    "path": "crates/mush-core/src/engine.rs",
+    "sha256": "68c261b6fc0dca5bd692afd3bda946439962498df4ab52d5e58ea4934095cd58",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-core/src/output.rs",
+    "sha256": "3facc5bafa727a8371c7bdd8e00e3c271f6e7b6fc321499080ecc7887b83a89b",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-core/src/world.rs",
+    "sha256": "170467c31adeb49c92506100f11609c569dc1d8f3c0d664fb44c5a673f42460d",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-gateway/src/bridge_common.rs",
+    "sha256": "fa809252e803db1ca7d88dc3b0ec3c1b329c06318ef7609aa51d3b0ae37cf71b",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-gateway/src/discord_bridge.rs",
+    "sha256": "c168530855dff18df4990b842861a2c7b0460a06529a414bc6600f378bcb3743",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-gateway/src/lib.rs",
+    "sha256": "347ac5ddb9ef60c4c7166d41555fb79411b22b4f418fd8c47a97fb836672c0a1",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-gateway/src/ssh_bridge.rs",
+    "sha256": "3357e276b2d351daf422aef762b5e7d12839a68d38a4ef60bd323abe1f2a1ba4",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-gateway/tests/restart_survival.rs",
+    "sha256": "c805d6f3b16b1418c44618caa3cc442f0e495d814409351404c5d30b5a77dc33",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-ipc/src/protocol.rs",
+    "sha256": "8675ee06f2e452bac59ce04176f790bc9434343692487858378c01740da7c6d7",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-ipc/tests/roundtrip.rs",
+    "sha256": "8fed125068b08313078c754f9ca362e7b235082fdf355b4ec382e103ed987d32",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-net-ssh/src/hooks.rs",
+    "sha256": "e46418cd304a3dbbb726595366b25ecc4eb0b7e1c951369a061169ab0ee830a0",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-net-ssh/src/lib.rs",
+    "sha256": "13503bc2a9a09787291f54588d0fe53d8004c274bf06b3cc4634b9e9f14cb642",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-net-ssh/src/server.rs",
+    "sha256": "add855ad4b816ee744b07ce871d73c79f11645ee819409988b9b9950f46dd58d",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-net-ssh/tests/loopback.rs",
+    "sha256": "1d6a756c1eb7abdae271f1f9b6ae56804cb8e2acc451f36e2e2cfff9edf2a096",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-proto/src/lib.rs",
+    "sha256": "62e2e42abf5516ef241a335c12802c4add8edd222af690ce16209ad4b8fb69c9",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-server/src/gateway_sink.rs",
+    "sha256": "e18028d4c84cd380dd88afd1a0bf1fbd43cbd17e4e7b3b271f4b2cc972132dcb",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-server/src/lib.rs",
+    "sha256": "a2950b92c32b7d60cb70dfa8c7cb6727ee32c472488909bd6cb1b0c37d2e2ee7",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-server/src/world_task.rs",
+    "sha256": "939ef02a3ebb549b92c3252ebfc6a85d7f9710cf3f5672862b3177ab6b70057a",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-server/tests/gateway_link_parity.rs",
+    "sha256": "cbfd0433dbfdde664d22843875e7812dd391eec9f83ce5127ab9597e2f673e20",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-session/src/conn.rs",
+    "sha256": "e02829f9908cbe3de121be19fc7acc6a89509020a2f674e46200921d9a13be81",
+    "matched": true
+  },
+  {
+    "path": "crates/mushd/src/inprocess.rs",
+    "sha256": "9a8c84037da78585a1efb7806efb35fea973f6ba25847ef793a88fc365897228",
+    "matched": true
+  },
+  {
+    "path": "crates/mushd/tests/persistence.rs",
+    "sha256": "b8a70b2a1a22278f98d4466846ec7e3b62881a42cdb0a8d4a695e76bb8183826",
+    "matched": true
+  },
+  {
+    "path": "crates/mushd/tests/server.rs",
+    "sha256": "76f8453e3a891e68302cea9bd2ed83f2a948d22d606119e9e17a605d101c646e",
+    "matched": true
+  },
+  {
+    "path": "crates/mush-proto/src/reply.rs",
+    "sha256": "7dc323e2f3e46a70ea24c338267c9076b22b0836fddfc191d454a70c6cad5bc3",
+    "matched": true
+  },
+  {
+    "path": "scripts/client-ssh-live.py",
+    "sha256": "f66d001ba724e6ce341d940347252384f01ee840e17363fcc4d195e9871c4aa8",
+    "matched": true
+  },
+  {
+    "path": "scripts/client-replies-live.py",
+    "sha256": "196c00615e6beb0926d6894fa052ee6f07e96fbb7515c06d987780c354989e8f",
+    "matched": true
+  }
+]

@@ -90,6 +90,23 @@ pub struct NewConn {
     pub stamped_tx: Option<mpsc::Sender<Arc<mush_proto::Envelope>>>,
 }
 
+/// A transport-local typed reply shares the gateway's physical-connection lock.
+#[derive(Default)]
+pub struct LocalReply {
+    /// Delimiters retained by the gateway.
+    pub brackets: mush_proto::OutputBrackets,
+    _guard: Option<Box<dyn Send>>,
+}
+impl LocalReply {
+    /// Retain a connection's reply guard until the transport finishes writing.
+    pub fn with_guard(brackets: mush_proto::OutputBrackets, guard: impl Send + 'static) -> Self {
+        Self {
+            brackets,
+            _guard: Some(Box::new(guard)),
+        }
+    }
+}
+
 /// The game-side callbacks the SSH ingress needs. Implemented by `mushd`;
 /// this crate only ever holds it as `Arc<dyn SshHooks>`.
 pub trait SshHooks: Send + Sync {
@@ -148,6 +165,17 @@ pub trait SshHooks: Send + Sync {
 
     /// One completed input line from a connected (in-game) connection.
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()>;
+
+    /// Serialize an SSH-local typed command with world and gateway replies.
+    fn begin_local_reply(&self, _conn: u64) -> BoxFuture<'_, LocalReply> {
+        Box::pin(async { LocalReply::default() })
+    }
+
+    /// A continuous cockpit control, not a typed reply. Its notices remain
+    /// ordinary asynchronous game output and do not open nested delimiters.
+    fn control_line(&self, conn: u64, line: String) -> BoxFuture<'_, ()> {
+        self.line(conn, line)
+    }
 
     /// Closed module request; results use this physical connection's event queue.
     fn invoke(

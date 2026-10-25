@@ -1,0 +1,263 @@
+    Blocking waiting for file lock on build directory
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+    Finished `test` profile [unoptimized] target(s) in 1m 02s
+     Running tests/authoritative_process_kill.rs (target/debug/deps/authoritative_process_kill-f266a6e38c2e9295)
+
+running 3 tests
+test authoritative_direct_process_worker ... ok
+test authoritative_server_process_worker ... ok
+test split_gateway_recovers_across_authoritative_process_cuts ... 
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:02:36.286236Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:40241
+[2m2026-10-25T01:02:36.286487Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:02:36.467874Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/offer-keys
+[2m2026-10-25T01:02:36.579551Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/resolution-keys
+[2m2026-10-25T01:02:36.714955Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/decision-keys
+[2m2026-10-25T01:02:36.720384Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m0 [3mretained_bytes[0m[2m=[0m0 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m0 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:02:36.722068Z[0m [32m INFO[0m [2mmush_store::migrate[0m[2m:[0m fresh store stamped at current schema [3mversion[0m[2m=[0m1
+[2m2026-10-25T01:02:36.722135Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:02:36.723079Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:02:36.723776Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:02:36.723807Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:02:36.724054Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:02:36.986541Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:02:36.987347Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:02:37.270527Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m empty store: seeded minimal world (Limbo #0, God #1)
+[2m2026-10-25T01:02:37.273981Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:02:37.275820Z[0m [32m INFO[0m [2mmush_server::modules[0m[2m:[0m fresh module namespace stamped [3mns[0m[2m=[0mscenes [3mversion[0m[2m=[0m3
+[2m2026-10-25T01:02:37.312742Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:02:37.314226Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m1 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:02:37.437213Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mregion.limbo [3mversion[0m[2m=[0m2 [3mcreated[0m[2m=[0m6
+[2m2026-10-25T01:02:37.492963Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.ooc_area [3mversion[0m[2m=[0m7 [3mcreated[0m[2m=[0m43
+[2m2026-10-25T01:02:37.558067Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.staff_lobby [3mversion[0m[2m=[0m5 [3mcreated[0m[2m=[0m41
+[2m2026-10-25T01:02:37.585537Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:02:37.586251Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:40241
+[2m2026-10-25T01:02:37.586539Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:02:37.586755Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:02:50.569255Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:02:56.470455Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"after_intent_before_ownership" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/cut.ready
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:02:56.737611Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:40241
+[2m2026-10-25T01:02:56.737871Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:02:56.743053Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/offer-keys
+[2m2026-10-25T01:02:56.743383Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/resolution-keys
+[2m2026-10-25T01:02:56.743596Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_intent_before_ownership-1454411-0/server-data/decision-keys
+[2m2026-10-25T01:02:56.778749Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m1 [3mretained[0m[2m=[0m1 [3mretained_bytes[0m[2m=[0m2140 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m1 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m1 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:02:56.780246Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:02:56.780965Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:02:56.781337Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:02:56.781356Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:02:56.781559Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:02:57.017358Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:02:57.018096Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:02:57.339835Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m world loaded from store [3mobjects[0m[2m=[0m88 [3mnext_id[0m[2m=[0m88
+[2m2026-10-25T01:02:57.341232Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:02:57.400529Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:02:57.414824Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m1 [3mfetch_ms[0m[2m=[0m2 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:02:57.544549Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:02:57.545294Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:40241
+[2m2026-10-25T01:02:57.545537Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:02:57.545616Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:03:11.714966Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:03:11.717855Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m re-attached held connections after restart [3mcount[0m[2m=[0m1
+[2m2026-10-25T01:03:11.748357Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world inbound channel closed; world task exiting
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.04s
+
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:03:21.549629Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:44445
+[2m2026-10-25T01:03:21.549904Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:03:21.559741Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/offer-keys
+[2m2026-10-25T01:03:21.567322Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/resolution-keys
+[2m2026-10-25T01:03:21.572736Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/decision-keys
+[2m2026-10-25T01:03:21.579316Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m0 [3mretained_bytes[0m[2m=[0m0 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m0 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:03:21.581847Z[0m [32m INFO[0m [2mmush_store::migrate[0m[2m:[0m fresh store stamped at current schema [3mversion[0m[2m=[0m1
+[2m2026-10-25T01:03:21.581914Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:03:21.582740Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:03:21.583569Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:03:21.583606Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:03:21.583867Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:03:21.837284Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:03:21.838067Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:03:22.159459Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m empty store: seeded minimal world (Limbo #0, God #1)
+[2m2026-10-25T01:03:22.164298Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:03:22.166968Z[0m [32m INFO[0m [2mmush_server::modules[0m[2m:[0m fresh module namespace stamped [3mns[0m[2m=[0mscenes [3mversion[0m[2m=[0m3
+[2m2026-10-25T01:03:22.200484Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:03:22.202018Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m0 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:03:22.334004Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mregion.limbo [3mversion[0m[2m=[0m2 [3mcreated[0m[2m=[0m6
+[2m2026-10-25T01:03:22.386186Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.ooc_area [3mversion[0m[2m=[0m7 [3mcreated[0m[2m=[0m43
+[2m2026-10-25T01:03:22.441648Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.staff_lobby [3mversion[0m[2m=[0m5 [3mcreated[0m[2m=[0m41
+[2m2026-10-25T01:03:22.469091Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:03:22.469695Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:44445
+[2m2026-10-25T01:03:22.469721Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:03:22.470105Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:03:36.521912Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:03:42.328955Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"after_ownership_before_materialization" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/cut.ready
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:03:42.593884Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:44445
+[2m2026-10-25T01:03:42.594190Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:03:42.598546Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/offer-keys
+[2m2026-10-25T01:03:42.598772Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/resolution-keys
+[2m2026-10-25T01:03:42.598902Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_ownership_before_materialization-1454411-1/server-data/decision-keys
+[2m2026-10-25T01:03:42.645551Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m1 [3mretained[0m[2m=[0m1 [3mretained_bytes[0m[2m=[0m2140 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m1 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m1 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:03:42.647011Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:03:42.647837Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:03:42.648281Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:03:42.648312Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:03:42.648622Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:03:42.900443Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:03:42.901135Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:03:43.289693Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m world loaded from store [3mobjects[0m[2m=[0m88 [3mnext_id[0m[2m=[0m88
+[2m2026-10-25T01:03:43.292750Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:03:43.404931Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:03:43.416428Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m3 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:03:43.534110Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:03:43.534908Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:44445
+[2m2026-10-25T01:03:43.535240Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:03:43.535426Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:03:57.564289Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:03:57.566967Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m re-attached held connections after restart [3mcount[0m[2m=[0m1
+[2m2026-10-25T01:03:57.596608Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world inbound channel closed; world task exiting
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.04s
+
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:04:07.372428Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:44551
+[2m2026-10-25T01:04:07.372765Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:04:07.385021Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/offer-keys
+[2m2026-10-25T01:04:07.393758Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/resolution-keys
+[2m2026-10-25T01:04:07.400983Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/decision-keys
+[2m2026-10-25T01:04:07.408021Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m0 [3mretained_bytes[0m[2m=[0m0 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m0 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:04:07.411087Z[0m [32m INFO[0m [2mmush_store::migrate[0m[2m:[0m fresh store stamped at current schema [3mversion[0m[2m=[0m1
+[2m2026-10-25T01:04:07.411212Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:04:07.412165Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:04:07.412932Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:04:07.412974Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:04:07.413222Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:04:07.656532Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:04:07.657311Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:04:07.935522Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m empty store: seeded minimal world (Limbo #0, God #1)
+[2m2026-10-25T01:04:07.937743Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:04:07.939363Z[0m [32m INFO[0m [2mmush_server::modules[0m[2m:[0m fresh module namespace stamped [3mns[0m[2m=[0mscenes [3mversion[0m[2m=[0m3
+[2m2026-10-25T01:04:07.965152Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:04:07.966535Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m0 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:04:08.075151Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mregion.limbo [3mversion[0m[2m=[0m2 [3mcreated[0m[2m=[0m6
+[2m2026-10-25T01:04:08.135622Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.ooc_area [3mversion[0m[2m=[0m7 [3mcreated[0m[2m=[0m43
+[2m2026-10-25T01:04:08.200152Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.staff_lobby [3mversion[0m[2m=[0m5 [3mcreated[0m[2m=[0m41
+[2m2026-10-25T01:04:08.231674Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:04:08.232227Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:04:08.232222Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:44551
+[2m2026-10-25T01:04:08.232337Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:04:22.317817Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:04:28.168073Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"after_finalize_before_checkpoint" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/cut.ready
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:04:28.439854Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:44551
+[2m2026-10-25T01:04:28.440098Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:04:28.444325Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/offer-keys
+[2m2026-10-25T01:04:28.444582Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/resolution-keys
+[2m2026-10-25T01:04:28.444738Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_finalize_before_checkpoint-1454411-2/server-data/decision-keys
+[2m2026-10-25T01:04:28.474411Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m1 [3mretained_bytes[0m[2m=[0m2141 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m1 [3mcheckpointed[0m[2m=[0m1 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:04:28.475584Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:04:28.476166Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:04:28.476610Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:04:28.476643Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:04:28.476855Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:04:28.749483Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:04:28.750257Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:04:29.117676Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m world loaded from store [3mobjects[0m[2m=[0m88 [3mnext_id[0m[2m=[0m88
+[2m2026-10-25T01:04:29.119684Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:04:29.179256Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:04:29.192469Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m2 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:04:29.329016Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:04:29.329744Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:44551
+[2m2026-10-25T01:04:29.329783Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:04:29.330089Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:04:43.416823Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:04:43.420152Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m re-attached held connections after restart [3mcount[0m[2m=[0m1
+[2m2026-10-25T01:04:43.449067Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world inbound channel closed; world task exiting
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.04s
+
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:04:53.478839Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:45061
+[2m2026-10-25T01:04:53.479121Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:04:53.502679Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/offer-keys
+[2m2026-10-25T01:04:53.512250Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/resolution-keys
+[2m2026-10-25T01:04:53.528820Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/decision-keys
+[2m2026-10-25T01:04:53.534563Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m0 [3mretained_bytes[0m[2m=[0m0 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m0 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:04:53.538317Z[0m [32m INFO[0m [2mmush_store::migrate[0m[2m:[0m fresh store stamped at current schema [3mversion[0m[2m=[0m1
+[2m2026-10-25T01:04:53.538405Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:04:53.539265Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:04:53.540169Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:04:53.540639Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:04:53.540876Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:04:53.831230Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:04:53.832028Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:04:54.154920Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m empty store: seeded minimal world (Limbo #0, God #1)
+[2m2026-10-25T01:04:54.158440Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:04:54.160537Z[0m [32m INFO[0m [2mmush_server::modules[0m[2m:[0m fresh module namespace stamped [3mns[0m[2m=[0mscenes [3mversion[0m[2m=[0m3
+[2m2026-10-25T01:04:54.200270Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:04:54.202044Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m1 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:04:54.318090Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mregion.limbo [3mversion[0m[2m=[0m2 [3mcreated[0m[2m=[0m6
+[2m2026-10-25T01:04:54.373070Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.ooc_area [3mversion[0m[2m=[0m7 [3mcreated[0m[2m=[0m43
+[2m2026-10-25T01:04:54.437488Z[0m [32m INFO[0m [2mmush_content::module[0m[2m:[0m content: first-boot pack applied [3mpack[0m[2m=[0mneighborhood.staff_lobby [3mversion[0m[2m=[0m5 [3mcreated[0m[2m=[0m41
+[2m2026-10-25T01:04:54.463241Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:04:54.464100Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:04:54.464099Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:45061
+[2m2026-10-25T01:04:54.464202Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:05:08.421272Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:05:14.452693Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"after_checkpoint_before_final_ack" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/cut.ready
+
+running 1 test
+test authoritative_server_process_worker ... [2m2026-10-25T01:05:14.709352Z[0m [33m WARN[0m [2mmush_config::config[0m[2m:[0m [ipc].listen is a TCP port, not a Unix socket: the gateway<->server boundary is UNAUTHENTICATED, so any local process can connect and impersonate the gateway. TCP is for Windows/portable development; on Linux prod use a Unix socket path in a mode-0750 RuntimeDirectory (docs/ops.md) [3mendpoint[0m[2m=[0m127.0.0.1:45061
+[2m2026-10-25T01:05:14.709654Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m connecting to Redis [3murl[0m[2m=[0mredis://127.0.0.1:6798/0
+[2m2026-10-25T01:05:14.714522Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable legal-action offer keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/offer-keys
+[2m2026-10-25T01:05:14.714712Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable authoritative resolution keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/resolution-keys
+[2m2026-10-25T01:05:14.714821Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m durable delayed-decision keys loaded [3mcurrent_version[0m[2m=[0m1 [3mkey_dir[0m[2m=[0m/tmp/mush-k8-process-after_checkpoint_before_final_ack-1454411-3/server-data/decision-keys
+[2m2026-10-25T01:05:14.718991Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m authoritative intent recovery barrier complete [3mindexed[0m[2m=[0m0 [3mretained[0m[2m=[0m0 [3mretained_bytes[0m[2m=[0m0 [3mretention_counters_repaired[0m[2m=[0mfalse [3mreconciled[0m[2m=[0m0 [3malready_finalized[0m[2m=[0m0 [3mcheckpointed[0m[2m=[0m0 [3mcheckpoint_deferred_outbox[0m[2m=[0m0 [3mscan_pages[0m[2m=[0m1
+[2m2026-10-25T01:05:14.720795Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m store schema current [3mschema[0m[2m=[0m1
+[2m2026-10-25T01:05:14.721945Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m M-E7c5 account oracle hydrated [3mmapped_characters[0m[2m=[0m0
+[2m2026-10-25T01:05:14.722725Z[0m [33m WARN[0m [2mmush_server::help[0m[2m:[0m help directory missing; no topics loaded [3mdir[0m[2m=[0m./docs/help
+[2m2026-10-25T01:05:14.722760Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m help topics loaded [3mtopics[0m[2m=[0m0
+[2m2026-10-25T01:05:14.722972Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m llm service built [3menabled[0m[2m=[0mfalse [3mproviders[0m[2m=[0m0 [3mroutes[0m[2m=[0m0
+[2m2026-10-25T01:05:14.995699Z[0m [33m WARN[0m [2mmush_server::boot[0m[2m:[0m tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and no stock tanks are applied, so the simulator centre cannot start a match
+[2m2026-10-25T01:05:14.996740Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m starter area on: the lot applies at a first boot
+[2m2026-10-25T01:05:15.459421Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m world loaded from store [3mobjects[0m[2m=[0m88 [3mnext_id[0m[2m=[0m88
+[2m2026-10-25T01:05:15.465037Z[0m [32m INFO[0m [2mmush_server::boot[0m[2m:[0m world timeline installed [3mgeneration[0m[2m=[0m1 [3mic_rate[0m[2m=[0m1
+[2m2026-10-25T01:05:15.554874Z[0m [32m INFO[0m [2mmush_canon[0m[2m:[0m canon: sealed-tail evidence window restored [3msealed_events[0m[2m=[0m0
+[2m2026-10-25T01:05:15.569755Z[0m [32m INFO[0m [2mmush_economy::module[0m[2m:[0m economy: journal replayed at boot [3mentries[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0 [3mfetch_ms[0m[2m=[0m4 [3mfrom_checkpoint[0m[2m=[0mNone [3mreplayed[0m[2m=[0m0 [3mcheckpoint_ms[0m[2m=[0m0
+[2m2026-10-25T01:05:15.687593Z[0m [33m WARN[0m [2mmush_server::world_task[0m[2m:[0m no [llm.routes.npc_decision] route: every npc decision will fall back to its idle action [3mowner[0m[2m=[0mnpc [3mroute[0m[2m=[0m"npc_decision"
+[2m2026-10-25T01:05:15.688319Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m mush-server up; awaiting gateway [3mipc[0m[2m=[0m127.0.0.1:45061
+[2m2026-10-25T01:05:15.688360Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:05:15.688656Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world task running
+[2m2026-10-25T01:05:29.673977Z[0m [32m INFO[0m [2mmush_server[0m[2m:[0m gateway connected
+[2m2026-10-25T01:05:29.676724Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m re-attached held connections after restart [3mcount[0m[2m=[0m1
+[2m2026-10-25T01:05:29.713847Z[0m [32m INFO[0m [2mmush_server::world_task[0m[2m:[0m world inbound channel closed; world task exiting
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.05s
+
+
+running 1 test
+test authoritative_direct_process_worker ... [2m2026-10-25T01:05:38.836064Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:05:38.856460Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"after_finalize_before_checkpoint" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-ledger_rollover-1454411-4/cut.ready
+
+running 1 test
+test authoritative_direct_process_worker ... [2m2026-10-25T01:05:38.942734Z[0m [32m INFO[0m [2mmush_server::persist[0m[2m:[0m store writer running
+[2m2026-10-25T01:05:38.957153Z[0m [33m WARN[0m [2mmush_server::persist[0m[2m:[0m deterministic authoritative reconciliation failure; retrying exact bundle before quarantine [3mtoken[0m[2m=[0md2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2 [3mattempt[0m[2m=[0m1 [3mmax_attempts[0m[2m=[0m3 [3merror[0m[2m=[0mredis: Unknown Error: Existing key has wrong Redis type script: 99c32235e8023cf3333affa83c471750f8cde9f1, on @user_script:113.
+[2m2026-10-25T01:05:38.964914Z[0m [33m WARN[0m [2mmush_server::persist[0m[2m:[0m deterministic authoritative reconciliation failure; retrying exact bundle before quarantine [3mtoken[0m[2m=[0md2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2 [3mattempt[0m[2m=[0m2 [3mmax_attempts[0m[2m=[0m3 [3merror[0m[2m=[0mredis: Unknown Error: Existing key has wrong Redis type script: 99c32235e8023cf3333affa83c471750f8cde9f1, on @user_script:113.
+[2m2026-10-25T01:05:38.975466Z[0m [33m WARN[0m [2mmush_server::process_fault[0m[2m:[0m K8 process cut armed [3mpoint[0m[2m=[0m"quarantine_after_temp_sync" [3mmarker[0m[2m=[0m/tmp/mush-k8-process-quarantine_interrupt-1454411-5/cut.ready
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 184.19s
+

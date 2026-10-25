@@ -62,7 +62,9 @@ pub use mush_core::ControlMsg;
 // Version 10 adds authoritative world health (`ToGateway::WorldHealth`), which
 // main's line numbered 8 on its own; the merged protocol carries both lines, so
 // neither an 8 nor a 9 peer decodes it. Deploy both halves together.
-pub const IPC_VERSION: u32 = 10;
+// Version 11 adds mirrored reply settings and reply-completion fences, main's
+// line's 9; again no earlier peer of either line honors them.
+pub const IPC_VERSION: u32 = 11;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -673,6 +675,9 @@ impl TryFrom<Inbound> for WireInbound {
 /// reconstruct the connection map after a restart (M16c re-attach).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AttachRec {
+    /// Gateway-retained connection settings, restored before accepting input.
+    #[serde(default)]
+    pub output_brackets: mush_proto::OutputBrackets,
     /// The physical connection id.
     pub conn: u64,
     /// The actor the connection is playing.
@@ -689,6 +694,8 @@ pub struct AttachRec {
 /// matched to their [`ServiceResp`] by the `id` on [`ToServer::Request`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServiceReq {
+    /// Delivery plus the sequential staff executor, for a typed reply boundary.
+    ReplyBarrier { conn: u64 },
     /// Create a Player object (account/character creation). Answered once the
     /// creation batch is acknowledged by the store.
     CreatePlayer {
@@ -1039,6 +1046,13 @@ pub enum ToServer {
 /// Server → gateway. Everything the server half sends across the boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToGateway {
+    /// Accepted connection settings; gateway lifetime survives a world restart.
+    SetOutputBrackets {
+        /// Physical connection id.
+        conn: u64,
+        /// The complete replacement row.
+        brackets: mush_proto::OutputBrackets,
+    },
     /// Periodic authoritative liveness. Source timestamps remain unchanged when
     /// the world stalls, even if the IPC writer and gateway are still running.
     WorldHealth {

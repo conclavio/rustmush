@@ -55,7 +55,9 @@ mod welcome;
 
 pub use caps::{DEFAULT_HEIGHT, DEFAULT_WIDTH, detect_caps, detect_color_depth, detect_utf8};
 pub use editor::{EchoMode, EditorAction, HISTORY_CAP, LineEditor, MAX_LINE_CHARS};
-pub use hooks::{AuthResult, BlockReason, CharSummary, CreateErr, NewConn, PixelEvent, SshHooks};
+pub use hooks::{
+    AuthResult, BlockReason, CharSummary, CreateErr, LocalReply, NewConn, PixelEvent, SshHooks,
+};
 pub use line::LineBuffer;
 pub use server::{BoundSshServer, SshConfig, SshError, SshServer};
 pub use tui::pixel::PixelConfig;

@@ -1,0 +1,12 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 06s
+     Running tests/sim_rematch.rs (target/debug/deps/sim_rematch-038ca55821af99cb)
+
+running 2 tests
+test a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_again ... ok
+test two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.42s
+

@@ -82,12 +82,12 @@ pub type ConnId = u64;
 /// The [`RichText`] tag of a connection's `OUTPUTPREFIX` line (16b cut AP.4,
 /// 16c `N20`): a `Sys` event addressed to that one connection, pushed by
 /// `Engine::step` first in every typed line's step, `BestEffort`.
-pub const OUTPUT_PREFIX_TAG: &str = "output-prefix";
+pub use mush_proto::OUTPUT_PREFIX_TAG;
 
 /// The [`RichText`] tag of a connection's `OUTPUTSUFFIX` line (16b cut AP.4):
 /// pushed by `Engine::step` last in every typed line's step, after its drain,
 /// as a [`DeliveryClass::Trailer`].
-pub const OUTPUT_SUFFIX_TAG: &str = "output-suffix";
+pub use mush_proto::OUTPUT_SUFFIX_TAG;
 
 /// The reserved relay sink staff-facing lines go to (interface programme D5):
 /// `+request` filings and staff alerts are published here as well, and the

@@ -1,0 +1,176 @@
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Finished `test` profile [unoptimized] target(s) in 2m 04s
+     Running tests/arena.rs (target/debug/deps/arena-e4deace836c55b2b)
+
+running 52 tests
+test adding_a_draw_label_shifts_no_existing_draw ... ok
+test a_tank_still_pushing_against_an_obstacle_still_reads_held ... ok
+test a_stop_tells_the_pilot_once_and_names_what_stopped_it ... ok
+test a_unit_at_its_ceiling_covers_the_same_ground_however_the_time_is_cut ... ok
+test a_tempo_change_mid_run_changes_no_outcome ... ok
+test a_released_seat_mid_run_is_one_event_list_at_three_cadences_and_moves_nobody_else ... ok
+test af1_a_snapshot_refuses_the_wrong_ground_the_wrong_physics_a_moved_field_a_moved_byte_and_another_format ... ok
+test af1_catalog_shape_ignores_identity_but_walks_every_definition_field ... ok
+test ae3_a_drone_on_the_spot_contests_nothing_at_three_cadences ... ok
+test ae1_one_scripted_walk_over_the_thick_woods_at_three_cadences_is_one_event_list_and_one_hash_sequence ... ok
+test a_concede_and_an_unattended_match_end_with_their_own_reason ... ok
+test af1_a_drop_before_the_snapshot_and_a_reclaim_after_it_is_one_catch_up ... ok
+test af1_the_encoding_is_deterministic_and_integer ... ok
+test af1_the_snapshot_shape_is_pinned ... ok
+test another_unit_holds_a_tank_for_two_seconds_and_then_stops_it_with_one_line ... ok
+test an_order_at_the_epoch_the_purge_published_is_still_admitted ... ok
+test ae3_one_scripted_match_with_a_drone_a_side_at_three_cadences_is_one_event_list_and_one_hash_sequence ... ok
+test af1_the_task_s_own_wakes_resume_on_the_lattice ... ok
+test i3_a_jittered_floor_is_the_same_match ... ok
+test i3_the_task_s_own_wakes_under_a_floor_are_the_floor_apart ... ok
+test i3_a_tempo_floor_moves_no_outcome_at_three_floors ... ok
+test m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row ... ok
+test l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document ... ok
+test m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document ... ok
+test m3_a_bank_then_a_parked_tank_in_the_same_cell_is_two_stops ... ok
+test m3_a_resumed_match_carries_its_closes_and_does_not_re_close ... ok
+test m3_a_destroyed_sortie_closes_at_its_destruction_and_not_again_at_the_end ... ok
+test m3_a_tank_turning_against_a_bank_is_one_stop_one_line_and_one_notice ... ok
+test m3_a_snapshot_carries_the_minds_with_their_pending_answers ... ok
+test i4_a_watched_match_is_the_same_match ... ok
+test m3_reversing_off_the_bank_clears_held_before_the_tank_leaves_its_cell ... ok
+test m2_a_duration_bound_mid_pulse_is_one_timeout_at_one_millisecond_at_three_cadences ... ok
+test m3_the_tape_opens_with_one_mind_sealed_per_unit_after_match_started ... ok
+test m3_the_pulse_backstops_close_every_open_sortie_before_the_end ... ok
+test m3_an_overflow_void_closes_and_a_ledger_full_end_closes_nothing ... ok
+test af1_a_snapshot_at_every_pulse_resumes_to_the_same_tape ... ok
+test o1_a_contested_hold_resets_and_the_match_runs_on_at_three_cadences ... ok
+test o1_a_hold_is_won_at_one_millisecond_at_three_cadences ... ok
+test startup_then_released_in_one_burst_never_starts ... ok
+test the_duration_bound_ends_the_match_and_a_further_step_does_nothing ... ok
+test one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence ... ok
+test one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequence ... ok
+test one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence ... ok
+test the_window_edge_stops_a_unit_with_one_notice ... ok
+test one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_sequence ... ok
+test two_different_tempos_produce_the_same_motion ... ok
+test the_hash_folds_a_screens_facing_and_a_supports_charge ... ok
+test the_task_s_own_wakes_at_three_periods_are_the_fixed_cadence_replay ... ok
+test y3_a_dropped_and_reclaimed_seat_is_one_event_list_and_one_hash_sequence_at_three_cadences ... ok
+test af1_a_squadded_arena_snapshots_after_its_first_pulse ... ok
+test af3_a_resume_with_every_seat_released_at_three_cadences_is_one_event_list_and_one_hash_sequence ... ok
+test af1_resumed_at_every_pulse_at_three_cadences_is_one_event_list_and_one_hash_sequence ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.82s
+
+     Running tests/arena_task.rs (target/debug/deps/arena_task-1d7f5862bafc3d45)
+
+running 33 tests
+test aa3_a_fast_pulse_that_ends_the_match_keeps_its_reason_and_its_units ... ok
+test aa3_a_stall_on_the_pulse_that_honours_an_abort_voids_it_and_ends_in_aborted ... ok
+test a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse ... ok
+test af2_the_pulse_before_the_end_s_snapshot_reaches_the_world_before_the_end ... ok
+test af3_a_resumed_task_pulses_on_the_lattice_and_skips_the_snapshot_s_own_period ... ok
+test d1_a_pulse_that_carries_a_frame_is_never_suppressed_by_the_clock ... ok
+test every_proof_has_its_own_match_seed ... ok
+test af2_a_snapshot_rides_the_egress_on_the_first_pulse_and_every_five_seconds ... ok
+test d1_the_shipped_config_publishes_its_clock_about_once_an_arena_second ... ok
+test d1_an_idle_match_publishes_its_clock_once_an_arena_second ... ok
+test m1_a_burst_is_bounded_per_unit_and_continuous_orders_coalesce ... ok
+test a_pulse_past_the_stall_bound_voids_the_match ... ok
+test m1_a_frame_the_world_can_take_is_never_cut ... ok
+test m1_a_pilot_is_held_at_most_sixty_four_notices ... ok
+test m1_a_release_displaced_in_one_window_still_takes_the_pilot_off_the_roster ... ok
+test m1_an_inbox_full_of_orders_still_takes_a_control_a_stop_and_an_ack ... ok
+test m1_seventeen_controls_and_a_release_collapse_to_the_highest_epoch ... ok
+test m1_an_end_waits_for_every_chunk_and_the_held_frame_and_reports_the_logs_digest ... ok
+test m1_frames_the_world_could_not_take_are_held_and_merged ... ok
+test aa3_a_stall_on_the_pulse_that_ends_the_match_voids_it_and_returns_no_units ... ok
+test m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone ... ok
+test m1_the_stop_signal_releases_an_end_waiting_on_a_full_egress ... ok
+test m1b5_a_card_change_is_held_to_the_reserve_and_refused_by_a_stopped_task ... ok
+test m2_a_pilots_startup_resolves_at_the_end_of_the_pulse_that_accepted_it ... ok
+test u1_a_late_wake_still_asks_for_the_next_lattice_point_from_the_base ... ok
+test af2_a_pulse_that_ends_or_stalls_the_match_takes_no_snapshot ... ok
+test m1b1_the_floor_is_captured_at_check_out_and_survives_a_resume ... ok
+test m3_spawn_and_resume_install_each_scripted_seal_s_runner_or_refuse ... ok
+test the_stop_signal_ends_the_task_without_a_result ... ok
+test u1_a_two_tank_match_wakes_on_the_lattice_at_most_once_a_substep ... ok
+test m3_the_class_table_is_captured_at_check_out_and_carried_by_the_resume ... ok
+test a_match_takes_orders_publishes_frames_and_chunks_and_reports_its_end ... ok
+test m1b5_two_card_changes_land_in_arrival_order ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.98s
+
+     Running tests/replay.rs (target/debug/deps/replay-f9a9cee324c58360)
+
+running 4 tests
+test i1_the_replay_fixtures_are_what_the_builders_produce ... ok
+test i1_the_replay_fixture_scene_exercises_the_clamp_the_cover_and_the_wreck ... ok
+test o1_a_held_replay_carries_its_words_and_its_mode ... ok
+test i1_a_real_fight_folds_to_one_objective_picture ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.77s
+
+     Running tests/resolution.rs (target/debug/deps/resolution-48975378043573ff)
+
+running 42 tests
+test a_gunner_with_no_reading_earns_none_by_shooting ... ok
+test a_section_the_gunner_watched_go_is_written_into_the_reading_they_hold ... ok
+test a_shot_at_a_target_behind_full_cover_costs_a_round_and_a_cycle_and_misses_cover ... ok
+test a_round_struck_through_another_sections_armour_quotes_that_sections_numbers ... ok
+test a_miss_carries_the_ledgers_own_reason_in_plain_words ... ok
+test a_section_is_destroyed_once_however_many_rounds_find_it_afterwards ... ok
+test a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled ... ok
+test an_unidentified_target_earns_no_section_word_and_no_section_lost_line ... ok
+test a_target_that_leaves_the_predicted_cell_misses_moved_and_one_cell_is_still_a_hit ... ok
+test an_order_the_arena_never_queued_and_a_shot_the_controller_took_are_both_silent ... ok
+test a_target_that_presents_nothing_resolves_at_zero_whatever_the_floor_says ... ok
+test a_target_that_turns_in_flight_re_resolves_against_the_same_draw ... ok
+test a_spent_section_is_one_ledger_at_three_cadences ... ok
+test d2_an_unidentified_gunner_reads_the_same_rounds_on_a_spent_and_a_live_target ... ok
+test ammunition_is_conserved_across_a_scripted_engagement ... ok
+test every_refusal_the_arena_makes_at_apply_reaches_the_pilot ... ok
+test m4_a_shot_past_the_last_band_is_paid_for_and_stays_blind_when_the_target_turns ... ok
+test each_weapon_carries_its_own_chance_and_the_lock_quotes_the_one_fire_would_take ... ok
+test d4_one_scripted_duel_carries_the_shooter_on_its_ledger_at_three_cadences ... ok
+test one_scripted_engagement_at_three_cadences_is_one_hit_sequence ... ok
+test one_drive_into_a_bank_and_two_refused_orders_are_one_list_at_three_cadences ... ok
+test t110a_frame_sections_is_the_lookup_walk ... ok
+test one_scripted_duel_at_three_cadences_tells_each_pilot_one_list_of_lines ... ok
+test m4_both_tracks_shot_off_stop_the_tank_at_three_cadences ... ok
+test d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadences ... ok
+test the_armour_floors_the_overflow_reaches_the_internals_and_the_wreck_is_one_plan ... ok
+test the_advertised_chance_is_read_off_the_plot_and_the_shot_off_the_tank ... ok
+test the_cockpit_shows_the_chance_against_the_lock_before_any_shot ... ok
+test the_fixtures_carry_the_shipped_packs_numbers ... ok
+test the_facet_draw_lands_inside_the_bands_authored_weights ... ok
+test the_frame_carries_the_tanks_own_status_block_and_status_prints_it_in_eighty_columns ... ok
+test the_percentage_is_printed_when_the_lock_resolves ... ok
+test team_elimination_ends_the_match_with_the_winner ... ok
+test the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed ... ok
+test one_meshed_engagement_at_three_cadences_is_one_set_of_gunners_words_and_readings ... ok
+test the_three_things_a_gunner_can_be_told_about_where_a_round_went ... ok
+test the_shooter_is_told_when_the_round_finishes_the_target ... ok
+test the_five_steps_are_the_pinned_table_of_angular_size_against_error ... ok
+test the_returned_units_carry_their_cells_their_poses_and_their_outcomes ... ok
+test two_locks_in_one_pulse_each_name_their_own_contact ... ok
+test the_wire_frame_carries_the_new_notice_with_its_designator_and_its_section ... ok
+test money::no_instrument_moves_while_a_match_runs ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.82s
+
+     Running tests/twin.rs (target/debug/deps/twin-b4207af334cd393d)
+
+running 12 tests
+test m1a6_the_wilson_interval_is_the_hand_worked_one ... ok
+test m2_the_fliers_name_their_runners ... ok
+test m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool ... ignored, 17b §1 (iii): over thirty debug seconds; run by ci.yml's named step on both hosts
+test m1b2_the_probes_line_rules_count_what_they_name ... ok
+test m1a6_fallback_waypoint_is_the_motors_fallback_on_the_shipped_graph ... ok
+test m1a6_line_to_the_plot_parts_from_fire_line_once_the_target_drives_behind_cover ... ok
+test m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing ... ok
+test m4_5_the_stock_pool_over_fifteen_seeds_is_its_record ... ok
+test twin_rhai_timing ... ok
+test m2_gate_a_over_the_pooled_lanes_matches ... ok
+test m2_gate_a_over_the_authored_lance_field ... ok
+test m2_gate_a_on_a_mixed_pool has been running for over 60 seconds
+test m2_gate_a_on_a_mixed_pool ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 60.33s
+

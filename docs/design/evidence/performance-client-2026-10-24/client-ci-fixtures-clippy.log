@@ -1,0 +1,272 @@
+    Checking libc v0.2.189
+    Checking subtle v2.6.1
+    Checking serde_core v1.0.229
+    Checking ctutils v0.4.2
+    Checking hybrid-array v0.4.14
+    Checking rand_core v0.10.1
+    Checking getrandom v0.4.3
+    Checking serde v1.0.229
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking bitflags v2.13.1
+    Checking tracing v0.1.44
+    Checking digest v0.11.3
+    Checking smallvec v1.15.2
+    Checking hmac v0.13.0
+    Checking sha2 v0.11.0
+    Checking serde_json v1.0.151
+    Checking parking_lot_core v0.9.12
+    Checking smol_str v0.3.6
+    Checking parking_lot v0.12.5
+    Checking mush-proto v0.1.0 (/opt/rustmush/dev1/build/crates/mush-proto)
+    Checking num-traits v0.2.19
+    Checking errno v0.3.14
+    Checking signal-hook-registry v1.4.8
+    Checking mio v1.2.2
+    Checking socket2 v0.6.5
+    Checking tokio v1.53.1
+    Checking mush-core v0.1.0 (/opt/rustmush/dev1/build/crates/mush-core)
+    Checking slab v0.4.12
+    Checking futures-util v0.3.34
+    Checking block-padding v0.4.2
+    Checking inout v0.2.2
+    Checking cipher v0.5.2
+    Checking getrandom v0.2.17
+    Checking tokio-util v0.7.19
+    Checking getrandom v0.3.4
+    Checking cpubits v0.1.1
+    Checking pem-rfc7468 v1.0.0
+    Checking rand_core v0.9.5
+    Checking universal-hash v0.6.1
+    Checking zlib-rs v0.6.7
+    Checking flate2 v1.1.9
+    Checking rand_chacha v0.9.0
+    Checking ring v0.17.14
+    Checking rand v0.9.5
+    Checking polyval v0.7.3
+   Compiling unicase v2.9.0
+    Checking fnv v1.0.7
+    Checking httpdate v1.0.3
+    Checking h2 v0.4.19
+    Checking mush-org v0.1.0 (/opt/rustmush/dev1/build/crates/mush-org)
+    Checking ghash v0.6.0
+    Checking icu_normalizer v2.3.0
+    Checking der v0.8.1
+    Checking mush-economy v0.1.0 (/opt/rustmush/dev1/build/crates/mush-economy)
+    Checking aes v0.9.2
+    Checking ctr v0.10.1
+    Checking aead v0.6.1
+    Checking pbkdf2 v0.13.0
+    Checking aes-gcm v0.11.1
+    Checking idna_adapter v1.2.2
+    Checking hyper v1.11.0
+    Checking salsa20 v0.11.0
+    Checking futures-executor v0.3.34
+    Checking hyper-util v0.1.20
+    Checking dashmap v6.2.1
+    Checking futures v0.3.34
+    Checking scrypt v0.12.0
+    Checking idna v1.1.0
+    Checking spki v0.8.0
+    Checking rustls-webpki v0.103.15
+    Checking cbc v0.2.1
+    Checking either v1.18.0
+    Checking pkcs5 v0.8.1
+    Checking rustls v0.23.43
+    Checking url v2.5.8
+    Checking crypto-common v0.1.7
+    Checking ff v0.14.0
+    Checking openssl-probe v0.2.1
+    Checking mime v0.3.17
+    Checking rustls-native-certs v0.8.4
+    Checking digest v0.10.7
+    Checking tokio-rustls v0.26.4
+    Checking pkcs8 v0.11.0
+    Checking mush-canon v0.1.0 (/opt/rustmush/dev1/build/crates/mush-canon)
+    Checking crypto-bigint v0.7.5
+    Checking mush-scenes v0.1.0 (/opt/rustmush/dev1/build/crates/mush-scenes)
+    Checking tower v0.5.3
+    Checking group v0.14.0
+   Compiling mime_guess v2.0.5
+    Checking rand_core v0.6.4
+    Checking compression-core v0.4.32
+    Checking base16ct v1.0.0
+    Checking sec1 v0.8.1
+    Checking compression-codecs v0.4.38
+    Checking hyper-rustls v0.27.9
+    Checking mush-sim v0.1.0 (/opt/rustmush/dev1/build/crates/mush-sim)
+    Checking serde_urlencoded v0.7.1
+    Checking hkdf v0.13.0
+    Checking signature v3.0.0
+    Checking raw-cpuid v11.6.0
+    Checking quanta v0.12.6
+    Checking elliptic-curve v0.14.1
+    Checking async-compression v0.4.43
+    Checking mush-jobs v0.1.0 (/opt/rustmush/dev1/build/crates/mush-jobs)
+    Checking chacha20 v0.10.2
+   Compiling typenum v1.20.1
+    Checking data-encoding v2.11.1
+   Compiling semver v1.0.28
+    Checking http-range-header v0.4.2
+    Checking governor v0.10.4
+    Checking tower-http v0.6.11
+   Compiling rustc_version v0.4.1
+    Checking primefield v0.14.0
+    Checking rfc6979 v0.6.0
+    Checking rand_chacha v0.3.1
+    Checking wnaf v0.14.0
+    Checking bytes-utils v0.1.4
+    Checking mush-content v0.1.0 (/opt/rustmush/dev1/build/crates/mush-content)
+    Checking ordered-float v2.10.1
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+    Checking toml_edit v0.22.27
+    Checking mush-atlas v0.1.0 (/opt/rustmush/dev1/build/crates/mush-atlas)
+    Checking redis-protocol v6.0.0
+    Checking serde-value v0.7.0
+    Checking rand v0.8.8
+    Checking primeorder v0.14.0
+    Checking ecdsa v0.17.0
+   Compiling curve25519-dalek v5.0.0
+    Checking tokio-stream v0.1.19
+    Checking float-cmp v0.10.0
+    Checking rmp v0.8.15
+    Checking tracing-serde v0.2.0
+    Checking socket2 v0.5.10
+    Checking fred v10.1.0
+    Checking tracing-subscriber v0.3.23
+    Checking twilight-model v0.17.1
+    Checking rmp-serde v1.3.1
+   Compiling const-random-macro v0.1.16
+    Checking toml v0.8.23
+    Checking password-hash v0.5.0
+    Checking blake2 v0.10.6
+    Checking ssh-encoding v0.3.0
+    Checking sha1 v0.11.0
+    Checking alloc-no-stdlib v2.0.4
+   Compiling const-oid v0.10.2
+    Checking byteorder v1.5.0
+    Checking blowfish v0.10.0
+    Checking tracing-appender v0.2.5
+    Checking alloc-stdlib v0.2.4
+    Checking argon2 v0.5.3
+    Checking const-random v0.1.18
+    Checking mush-ipc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ipc)
+    Checking twilight-validate v0.17.0
+    Checking mush-store v0.1.0 (/opt/rustmush/dev1/build/crates/mush-store)
+    Checking reqwest v0.12.28
+    Checking rand v0.10.2
+    Checking ed25519 v3.0.0
+    Checking sha1 v0.10.7
+    Checking backon v1.6.0
+    Checking poly1305 v0.9.1
+    Checking blake2 v0.11.0
+    Checking keccak v0.2.2
+   Compiling same-file v1.0.6
+   Compiling cpufeatures v0.3.1
+   Compiling walkdir v2.5.0
+    Checking argon2 v0.6.0
+    Checking mush-config v0.1.0 (/opt/rustmush/dev1/build/crates/mush-config)
+    Checking ssh-cipher v0.3.0
+    Checking mush-llm v0.1.0 (/opt/rustmush/dev1/build/crates/mush-llm)
+    Checking tungstenite v0.29.0
+    Checking ed25519-dalek v3.0.0
+    Checking ahash v0.8.12
+    Checking brotli-decompressor v5.0.3
+    Checking bcrypt-pbkdf v0.11.0
+    Checking p384 v0.14.0
+    Checking p521 v0.14.0
+    Checking p256 v0.14.0
+    Checking twilight-http-ratelimiting v0.17.1
+    Checking mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+    Checking num-integer v0.1.47
+    Checking hex v0.4.3
+    Checking simdutf8 v0.1.5
+    Checking sha1_smol v1.0.1
+    Checking foldhash v0.1.5
+    Checking hashbrown v0.15.5
+    Checking tokio-websockets v0.13.3
+    Checking rhai v1.26.0
+    Checking ssh-key v0.7.0-rc.11
+    Checking thiserror v1.0.69
+    Checking twilight-http v0.17.1
+    Checking nix v0.31.3
+    Checking tokio-tungstenite v0.29.0
+   Compiling rust-embed-utils v8.12.0
+    Checking sha3 v0.11.0
+    Checking mush-inventory v0.1.0 (/opt/rustmush/dev1/build/crates/mush-inventory)
+    Checking axum-core v0.5.6
+    Checking itertools v0.13.0
+    Checking castaway v0.2.4
+    Checking mush-comsys v0.1.0 (/opt/rustmush/dev1/build/crates/mush-comsys)
+    Checking twilight-gateway-queue v0.17.0
+    Checking mush-ansi v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ansi)
+    Checking module-lattice v0.2.3
+    Checking kem v0.3.0
+    Checking serde_path_to_error v0.1.20
+    Checking unicode-segmentation v1.13.3
+    Checking nonempty v0.7.0
+    Checking sponge-cursor v0.1.0
+    Checking iana-time-zone v0.1.65
+    Checking matchit v0.8.4
+    Checking unicode-width v0.1.14
+    Checking axum v0.8.9
+    Checking unicode-truncate v1.1.0
+    Checking chrono v0.4.45
+    Checking sha3 v0.12.0
+    Checking forwarded-header-value v0.1.1
+    Checking pin-project v1.1.13
+    Checking ml-kem v0.3.2
+    Checking mush-faction v0.1.0 (/opt/rustmush/dev1/build/crates/mush-faction)
+    Checking twilight-gateway v0.17.1
+    Checking compact_str v0.8.2
+   Compiling rust-embed-impl v8.12.0
+    Checking mush-pixel v0.1.0 (/opt/rustmush/dev1/build/crates/mush-pixel)
+    Checking russh-cryptovec v0.62.0
+    Checking strum v0.26.3
+    Checking lru v0.12.5
+    Checking num-bigint v0.4.8
+    Checking internal-russh-num-bigint v0.5.0
+    Checking twilight-util v0.17.0
+    Checking mush-dice v0.1.0 (/opt/rustmush/dev1/build/crates/mush-dice)
+    Checking generic-array v1.4.5
+    Checking russh-util v0.52.0
+    Checking serde_bytes v0.11.19
+    Checking cassowary v0.3.0
+    Checking hex-literal v1.1.0
+    Checking md5 v0.8.1
+    Checking unicode-width v0.2.0
+   Compiling mush-net-web v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-web)
+    Checking ratatui v0.29.0
+    Checking russh v0.63.1
+    Checking russh-sftp v3.0.1
+    Checking mush-net-discord v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-discord)
+    Checking rust-embed v8.12.0
+    Checking rayon v1.12.0
+    Checking tower_governor v0.8.0
+    Checking mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+    Checking mush-script v0.1.0 (/opt/rustmush/dev1/build/crates/mush-script)
+    Checking mush-mind v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mind)
+    Checking mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+    Checking mush-industry v0.1.0 (/opt/rustmush/dev1/build/crates/mush-industry)
+    Checking mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+    Checking mush-worldgen v0.1.0 (/opt/rustmush/dev1/build/crates/mush-worldgen)
+    Checking mush-weather v0.1.0 (/opt/rustmush/dev1/build/crates/mush-weather)
+    Checking mush-housing v0.1.0 (/opt/rustmush/dev1/build/crates/mush-housing)
+    Checking mush-campaign v0.1.0 (/opt/rustmush/dev1/build/crates/mush-campaign)
+    Checking mush-propagation v0.1.0 (/opt/rustmush/dev1/build/crates/mush-propagation)
+    Checking mush-session v0.1.0 (/opt/rustmush/dev1/build/crates/mush-session)
+    Checking mush-privileges v0.1.0 (/opt/rustmush/dev1/build/crates/mush-privileges)
+    Checking mush-party v0.1.0 (/opt/rustmush/dev1/build/crates/mush-party)
+    Checking mush-roll v0.1.0 (/opt/rustmush/dev1/build/crates/mush-roll)
+    Checking mush-mail v0.1.0 (/opt/rustmush/dev1/build/crates/mush-mail)
+    Checking mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+    Checking tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+    Checking mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+    Checking mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+    Checking tungstenite v0.30.0
+    Checking dotenvy v0.15.7
+    Checking tokio-tungstenite v0.30.0
+    Checking mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Checking mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 28s

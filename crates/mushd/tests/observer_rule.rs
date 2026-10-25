@@ -125,6 +125,10 @@ const BLUE_CELL: (i64, i64) = (160, 97);
 // The rig — `sim_cockpit.rs`' boot with `web_e2e.rs`' listener bolted on
 // ---------------------------------------------------------------------------
 
+// Bound complete worlds rather than extending production reply deadlines.
+// Each observer fixture also owns four runtime threads and real transports.
+static LIVE_SERVERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 struct Server {
     addr: SocketAddr,
     web: SocketAddr,
@@ -140,6 +144,7 @@ struct Server {
     /// arena an intent through when no verb types it yet (`FIRE … WHEN` is
     /// 17b cut M1b.4's).
     tasks: Option<tacsim::arena_bridge::ArenaTasks>,
+    _host_budget: tokio::sync::SemaphorePermit<'static>,
 }
 
 impl Drop for Server {
@@ -298,6 +303,7 @@ async fn boot_composed(
     grace: Duration,
     reuse: Option<Arc<dyn ObjectStore>>,
 ) -> Server {
+    let host_budget = LIVE_SERVERS.acquire().await.expect("live fixture budget");
     let dir = scratch_dir(tag);
     let seed = reuse.is_none();
     let store: Arc<dyn ObjectStore> = reuse.unwrap_or_else(|| Arc::new(InMemoryStore::new()));
@@ -459,6 +465,7 @@ async fn boot_composed(
         _web: web_task,
         store,
         tasks,
+        _host_budget: host_budget,
     }
 }
 
@@ -541,11 +548,13 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
         let mark = term.mark();
         term.send_line(line).await;
         term.send_line(SENTINEL).await;
-        // The sentinel is a parser refusal and needs no authority, but it rides
-        // the same lane: a world mid-commit answers BOTH lines with the transient
-        // and the `Huh?` never comes. That is a retry, not a failure.
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
+        // Parser refusals need no authority. Drain this attempt's sentinel
+        // before retrying a pre-admission refusal, or its late Huh can close
+        // the next attempt before that command's actual answer arrives.
+        term.expect_after(mark, HUH).await;
+        let reply = strip_ansi(&term.seen[mark..]);
+        if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
+            return reply;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

@@ -362,6 +362,22 @@ mod net {
             })
         }
 
+        fn begin_local_reply(&self, conn: u64) -> BoxFuture<'_, mush_net_ssh::LocalReply> {
+            Box::pin(async move {
+                let Some(handle) = self.core.sessions.conn_handle(ConnId(conn)) else {
+                    return mush_net_ssh::LocalReply::default();
+                };
+                let guard = handle.owned_reply_lock().await;
+                mush_net_ssh::LocalReply::with_guard(handle.output_brackets(), guard)
+            })
+        }
+
+        fn control_line(&self, conn: u64, line: String) -> BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.core.control_line(ConnId(conn), &line).await;
+            })
+        }
+
         fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()> {
             Box::pin(async move {
                 // On `Close` (QUIT) the detach already dropped the output

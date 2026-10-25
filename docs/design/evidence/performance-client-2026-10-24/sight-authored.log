@@ -1,0 +1,31 @@
+
+running 1 test
+test tacsim_harness_arena_authored_reach ... pilot frame workers: 1
+harness_arena_world: cohort=authored units=300/300 pilots=24 cell_cm=1000 side=256 passable_cells=51258 seed=2350 arena_ms=41500
+harness_arena_classes: cohort=authored grass=11428 ground=22054 road=3084 rubble=2184 water=14278 woods_heavy=4396 woods_light=8112
+harness_arena_setup_ms: cohort=authored generate=94.7 boot=671.4 pack_apply=344.4 window_open=370.2 terrain_convert=61.4 arena_open=12425.8 warm_up=4764.9 warm_pulses=47 killed_warming=0
+harness_arena_cohort: cohort=authored line_tank=114 laser=38 biped=38 thermal=38 ecm=36 eccm=36 slope_45=262 slope_70=38 slope_refusals=417 relief_edges_45=73 relief_edges_70=32
+harness_arena_terraces: cohort=authored (78,252) r=16 rise_cm=800 (253,165) r=14 rise_cm=500
+harness_arena_loop: cohort=authored wakes=120 arena_s=30.000 wakes_per_arena_s=4.00 substep_ms=250 jitter_ms=0 substeps_per_wake_mean=1.000 short_substeps=0
+harness_arena_engaged: cohort=authored period_ms=500 pulses=120 p50=125.214 p95=145.188 p99=150.039 max=174.004
+harness_arena_window: cohort=authored window_ms=500 windows=60 ms_p50=251.295 ms_p95=275.253 ms_p99=281.930 ms_max=294.906 traces_peak=5403 cell_probes_peak=36915 horizon_probes_peak=33254 jam_checks_peak=2302 share_ops_peak=899
+harness_arena_substeps: cohort=authored per_wake_min=1 per_wake_max=1 substep_ms=250 divides_periods=true
+harness_arena_blocked_split: cohort=authored interior=1 ring=0 impassable=57 of 58 lines
+harness_arena_blocked_causes: cohort=authored impassable=57 occupied=1 edge=0 too_steep=0 of 58 lines
+harness_arena_counters: cohort=authored blocked=58 ledger_bytes=2428878 chunks=151 frames_per_pulse_mean=20.46 moving_at_end=74 held_at_end=2 lagged_pulses=0 ended=none
+harness_arena_weapons: cohort=authored armed=285 locked=726 fired=1404 impacts=1388 in_flight_at_end=16 shot_seq=1404 rounds_spent=1403 rounds_left=628022
+harness_arena_damage: cohort=authored hits=1242 misses=146 sections_destroyed=41 units_destroyed=11 wrecks_at_end=11 disabled_at_end=3
+harness_arena_motor: cohort=authored waypoint_nodes=256 decide_ms=1000 path_max_cells=65536 max_path_queries=64 repath_ms=4000 intents=19542 shots=1362 path_queries=349 path_deferred=255 path_cells=74749 path_failures=13 slope_refusals=417 path_refused_unchanged=0 corner_refusals=770 peak_intents=281 peak_shots=47 peak_path_queries=37 peak_path_cells=5424
+harness_arena_minds: cohort=authored engine=rom class=0 thinks=8891 landings=8890 faults=0 overflows=0 cond_fires=1082 settle_ms_p50=4.325 settle_ms_p99=6.408 (report-only)
+harness_arena_minds_states: cohort=authored startup=0 patrol=55 approach=16 engage=216 withdraw=0 disabled=13 unknown=0
+harness_arena_command: cohort=authored max_span=4 orders_per_minute=12 squads=64 commanders=64 ordered_lines=0 orders=0 orders_per_commander_minute_max=0 span_max=0
+harness_arena_snapshot: cohort=authored every_ms=5000 count=7 bytes_max=5433407 bytes_mean=5346659 encode_ms_p50=811.761 encode_ms_p99=855.863 encode_ms_max=890.618 decode_ms_max=1710.347 wake_plus_encode_ms_max=1012.557 max_snapshot_bytes=7340032 hash_ok=true
+harness_arena_perception_peak: cohort=authored passes=94 candidates=3655 traces=3035 cell_probes=20061 horizon_probes=18362 jam_checks=1190 share_ops=469 detected=48 classified=34 lost=71
+harness_arena_perception_total: cohort=authored sensor_cells=authored share_cells=authored pass_ms=1000 lost_after_passes=3 passes=8891 candidates=364895 traces=281106 cell_probes=1893886 horizon_probes=1725864 jam_checks=101089 share_ops=49126 detected=1871 classified=1511 lost=2051 contacts_at_end=1342 alert_range_cm=362000
+harness_arena_memory: cohort=authored rss_start_kib=18804 rss_end_kib=175528 horizon_bytes=26112 vmrss_start_kib=19020 vmrss_end_kib=175528
+harness_arena_thresholds: cohort=authored assert=false lens=report-only cut_a_p99_ms=5 cut_s_p99_ms=20 window_p99_ms=32 engaged_p99_ms=40 max_traces_per_pulse=4000 max_share_ops_per_pulse=768 max_path_queries_per_pulse=64 max_path_cells_per_pulse=48128 max_cell_probes_per_pulse=32000 max_jam_checks_per_pulse=2048 max_ledger_bytes=67108864
+harness_arena_json: cohort=authored /opt/rustmush/dev1/client-debt-evidence/sight-authored-arena-authored.json
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 58.87s
+

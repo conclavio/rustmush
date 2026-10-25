@@ -46,6 +46,8 @@ mod event;
 mod invoke;
 mod legal_action;
 mod receipt;
+mod reply;
+pub use reply::{OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, OutputBrackets};
 mod text;
 
 pub use caps::{ClientCaps, ClientKind, ColorDepth};
