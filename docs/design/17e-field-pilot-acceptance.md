@@ -6,6 +6,15 @@ correctness gates passed with the provenance below. The original failed
 comparison and validator remain unchanged; this is a one-time acceptance
 exception, not a revised statistical criterion.
 
+**2026-10-25, owner ruling:** CI reports the win-rate parity comparison and
+does not fail on it. The point rate's position in the fresh external bot's
+95% Wilson interval is still computed, and recorded in `comparison.json` as
+`acceptance_passed` and `acceptance_failures`, unchanged. The CI job's exit
+follows only `ci_gate`'s hard checks: every artifact, revision and decoder
+`require`, the author story itself, and zero mind faults. A parity miss is
+printed as a warning that cites this exception (`scripts/mind_port_acceptance.py`,
+`PARITY_EXCEPTION`).
+
 This is the independent Picture/Pilot/Doctrine port required by
 [17d M6.10](17d-unit-minds-through-m6-plan.md#m610-acceptance-and-documentation).
 It is acceptance content, not Registry Doctrine and not a replacement for Standard.

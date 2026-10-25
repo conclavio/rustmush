@@ -21,6 +21,17 @@ SOURCE = ROOT / "crates/tacsim/content/minds/acceptance/field_pilot.rhai"
 MANIFEST = SOURCE.with_suffix(".manifest.json")
 ENVELOPE = SOURCE.with_suffix(".envelope.json")
 MAX_FROZEN_GAME_BYTES = 16 * 1024 * 1024
+# The owner accepted M6 on 2026-10-18 with the Field Pilot's win-rate parity
+# miss for the final c58c3d98 run as a one-time exception (17e). On 2026-10-25
+# the owner ruled that CI reports the parity comparison rather than failing on
+# it; the criterion, its verdict and every other check stay as they were.
+PARITY_EXCEPTION = {
+    "run": "c58c3d98",
+    "accepted": "2026-10-18",
+    "ci_report_only_since": "2026-10-25",
+    "scope": "Field Pilot pooled point win rate in the fresh external bot's 95% Wilson interval",
+    "note": "The comparison and its verdict are recorded unchanged; only the CI exit ignores this one check.",
+}
 
 
 def read(path):
@@ -329,11 +340,12 @@ def compare(directory):
     separate = left[1] < right[0] or right[1] < left[0]
     point_rate = embedded["wins"] / embedded["samples"]
     inside_external_interval = right[0] <= point_rate <= right[1]
-    failures = []
+    parity_failures, hard_failures = [], []
     if not inside_external_interval:
-        failures.append("Field Pilot pooled point win rate is outside the fresh external bot's 95% Wilson interval")
+        parity_failures.append("Field Pilot pooled point win rate is outside the fresh external bot's 95% Wilson interval")
     if all_mind_faults:
-        failures.append(f"actual proving recorded {all_mind_faults} mind faults across both sides")
+        hard_failures.append(f"actual proving recorded {all_mind_faults} mind faults across both sides")
+    failures = parity_failures + hard_failures
     result = {"format":1, "run_id":run["run_id"], "revision":run["revision"], "context":context,
               "source_sha256":source["source_sha256"], "opening":opening, "embedded_rhai":embedded,
               "fresh_external_bot":external_counts, "intervals_do_not_overlap":separate,
@@ -344,12 +356,19 @@ def compare(directory):
               "acceptance_passed":not failures, "acceptance_failures":failures,
               "acceptance_criterion":"Field Pilot pooled point win rate lies inside the fresh external bot's 95% Wilson interval, and actual proving records zero mind faults.",
               "interpretation":"95% intervals do not overlap" if separate else "Intervals overlap; no difference called",
-              "sampling":"Each pilot is pooled across both sides. The external live seeds and embedded paired seeds are independent samples."}
+              "sampling":"Each pilot is pooled across both sides. The external live seeds and embedded paired seeds are independent samples.",
+              "ci_gate":{"passed":not hard_failures, "hard_failures":hard_failures,
+                         "report_only":parity_failures, "parity_exception":PARITY_EXCEPTION}}
     (directory / "comparison.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))
     # Preserve the complete measured comparison even when its behavioral gate
-    # fails. Interval overlap remains the separate difference-report rule.
-    require(not failures, "; ".join(failures))
+    # fails. Interval overlap remains the separate difference-report rule. The
+    # criterion and its verdict above are recorded unchanged; CI fails only on
+    # the hard checks (every `require` above, and zero mind faults) and reports
+    # the parity comparison under the owner's exception.
+    for failure in parity_failures:
+        print(f"::warning title=M6 parity (report-only, c58c3d98 exception)::{failure}")
+    require(not hard_failures, "; ".join(hard_failures))
 
 
 def run(directory):
