@@ -1011,6 +1011,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             return LineOutcome::Continue;
         };
         let _serial = handle.reply_lock().await;
+        let generation = self.link.recovery_generation();
         let nonempty = line.len() > MAX_LINE_CHARS.saturating_mul(4) || !line.trim().is_empty();
         if nonempty && let Some(prefix) = handle.output_brackets().prefix {
             send_event_to_conn(
@@ -1035,6 +1036,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     ServiceReq::ReplyBarrier { conn: conn.0 },
                 )
                 .await;
+        // Observe recovery before closing the reply bracket. An unavailable
+        // world can answer before IPC EOF; a fast restart can finish before
+        // this task wakes. Neither case should discard the held transport.
+        let recovering = !completed && self.link.wait_for_recovery(generation).await;
         if !completed {
             send_event_to_conn(
                 &self.sessions,
@@ -1052,7 +1057,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 OutputEvent::Sys(RichText::tag(mush_core::OUTPUT_SUFFIX_TAG, suffix)),
             );
         }
-        if !completed && !self.link.is_restarting() {
+        if !completed && !recovering {
             // A live but unresponsive producer could still emit late output. End
             // this physical connection rather than place it inside the next reply.
             send_event_to_conn(

@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on build directory
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+     Running tests/arena_story.rs (target/debug/deps/arena_story-4c2c3573d4856ef9)
+
+running 1 test
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed has been running for over 60 seconds
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 92.57s
+

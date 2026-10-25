@@ -384,3 +384,57 @@ the dev1 host (`cargo test -p mushd --test sim_rematch -- --test-threads=2`),
 including the reported restart case: 2 passed in 51.42 s. Targeted Rust formatting
 and `git diff --check` passed. [Test log](evidence/performance-client-2026-10-24/client-ci-sim-rematch.log).
 The subsequent GitHub run still has to confirm the repair on its runners.
+
+
+### CI follow-up during trade acceptance (2026-10-25)
+
+GitHub run 40155411049 passed `sim_rematch` after `e5599e5e`, but failed two
+other targets. The arena story read `Locked on` from an asynchronous notice next
+to older weapon rows, then required the new range band immediately. It now waits
+for the weapon row's `band 1 of 2` before checking the same lock and hit chance;
+its whole-answer helper also drains each sentinel before transient retries.
+
+The panic/relaunch test exposed a gateway race: the IPC reader marked its request
+table down and woke failed reply fences before the supervisor published its
+restart gap. A waking reply could therefore close the player transport. Restart
+state now includes the current boundary's down marker; opening the explicit gap
+publishes its flag before clearing the pointer. Repetition caught an earlier
+window too: the failed world fence can return before IPC EOF. The final repair
+captures the supervised boundary generation before the command and waits at
+most two seconds for recovery after a failed fence, keeping the current reply
+bracket open meanwhile. A generation change recognizes even a restart that
+already completed. The reply remains explicitly interrupted; a live producer
+that never enters recovery still closes after the bounded wait.
+
+The link helpers have default in-process behavior and add no IPC wire frame or
+version change. Deterministic tests cover reader-down before supervisor handoff,
+a failure before EOF, a completed fast restart and a producer that stays live.
+The earlier partial repair's second repetition failed, so it is not the accepted
+result. Final validation and the live gateway result are recorded below.
+
+
+Final validation passed: **74 gateway unit tests**, **5 real-process
+panic/relaunch tests**, ten additional consecutive repetitions of the exact
+flaky case, and the real-SSH arena story (92.57 s). Strict gateway Clippy and
+Rust formatting passed. The final TLS gateway was deployed on dev1; the existing
+reply smoke passed all six groups, including a real server SIGKILL/relaunch
+while retaining the same SSH connection and output delimiters. Its helper was
+pointed at the isolated acceptance world's staff credentials and evidence
+folder; no credentials are included here. The post-smoke trade audit still
+reconciles every account and good at rate 24. Dev2's gateway PID remains 539467.
+
+Accepted gateway SHA-256:
+`a593b8afe5e1b0e9d5cd02934a6be5df48cafa5cfe871902dfead90da92aa141`.
+The game server retained the already accepted trade release; no live lane or
+clock migration was performed during this gateway repair.
+
+Evidence: [gateway regression](evidence/performance-client-2026-10-25/gateway-recovery-final.log),
+[ten repetitions](evidence/performance-client-2026-10-25/gateway-recovery-repeat.log),
+[arena story](evidence/performance-client-2026-10-25/arena-story-repair.log),
+[live SSH](evidence/performance-client-2026-10-25/gateway-recovery-live.json),
+[final trade audit](evidence/performance-client-2026-10-25/final-handoff-audit.json),
+[Clippy](evidence/performance-client-2026-10-25/gateway-recovery-clippy.log),
+[release build](evidence/performance-client-2026-10-25/gateway-recovery-release.log),
+[source manifest](evidence/performance-client-2026-10-25/source-manifest.json).
+The next push starts a fresh GitHub run; these passing results do not claim that
+new run is already green.

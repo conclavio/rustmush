@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "gateway_before": "1536377",
+  "gateway_after": "1541373",
+  "gateway_sha256": "a593b8afe5e1b0e9d5cd02934a6be5df48cafa5cfe871902dfead90da92aa141",
+  "server_sha256": "f0987369700226d00ac5e841b367d0a8dd1cb7e15cb9dc020e9022716682a91c",
+  "health": {
+    "connections": 1,
+    "integrity_ok": true,
+    "loop_lag_ms": 0,
+    "ok": true,
+    "store_ok": true,
+    "supervision_ok": true,
+    "uptime_s": 2,
+    "version": "0.1.0",
+    "world_loop_unixtime": 1792967064,
+    "world_max_age_s": 5,
+    "world_ok": true
+  },
+  "checks": [
+    "world, local staff, asynchronous store, and gateway action replies close after their bodies",
+    "SSH-local history, pixel, sound, and TUI transition replies are framed",
+    "three pipelined commands produce sequential, unnested pairs",
+    "same SSH connection retains both delimiters through a real server SIGKILL/relaunch",
+    "clearing delimiters uses the old prefix and new suffix semantics",
+    "QUIT farewell and suffix drain before clean channel close"
+  ],
+  "restart": {
+    "gateway_pid": 1541373,
+    "old_server_pid": 1541384
+  },
+  "dev2_gateway_pid": "539467"
+}

@@ -730,6 +730,8 @@ struct BoundaryHandle {
     /// progress), so the input path surfaces a clear "restarting" notice rather
     /// than a generic drop.
     restarting: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl BoundaryHandle {
@@ -742,18 +744,28 @@ impl BoundaryHandle {
     fn connect(&self, conn: Arc<BoundaryConn>) {
         *locked(&self.inner, "boundary handle") = Some(conn);
         self.restarting.store(false, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_waiters();
     }
 
     /// Enter the restart gap: drop the live boundary and refuse input until the
     /// next [`connect`](BoundaryHandle::connect).
     fn enter_gap(&self) {
-        *locked(&self.inner, "boundary handle") = None;
         self.restarting.store(true, Ordering::SeqCst);
+        *locked(&self.inner, "boundary handle") = None;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_waiters();
     }
 
-    /// Whether the boundary is currently in a restart gap.
+    /// Whether the boundary is down or the supervisor is replacing it.
     fn is_restarting(&self) -> bool {
+        // The reader marks its request table down before waking failed fences.
+        // Their callers can run before the supervisor observes reader exit and
+        // enters the explicit gap. Preserve player transports in that interval.
         self.restarting.load(Ordering::SeqCst)
+            || self
+                .current()
+                .is_some_and(|conn| locked(&conn.pending, "pending table").down)
     }
 }
 
@@ -1181,6 +1193,33 @@ impl GatewayLink for SocketGatewayLink {
 
     fn is_restarting(&self) -> bool {
         self.boundary.is_restarting()
+    }
+
+    fn recovery_generation(&self) -> u64 {
+        self.boundary.generation.load(Ordering::SeqCst)
+    }
+
+    fn wait_for_recovery(&self, generation: u64) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            // A failed world fence may precede EOF. Keep the current reply
+            // open while the supervisor observes it, but never wait forever
+            // for an unresponsive producer that remains alive.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let changed = self.boundary.changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    if self.recovery_generation() != generation || self.is_restarting() {
+                        return;
+                    }
+                    changed.await;
+                }
+            })
+            .await
+            .is_ok()
+                || self.recovery_generation() != generation
+                || self.is_restarting()
+        })
     }
 }
 
@@ -4269,6 +4308,57 @@ mod tests {
             handle.current().is_some(),
             "and the reconnect still installs the fresh boundary"
         );
+    }
+
+    /// A failed fence can wake before the supervisor consumes reader exit.
+    /// The connection-local down marker must already protect live transports.
+    #[test]
+    fn reader_down_is_a_restart_before_the_supervisor_enters_the_gap() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (to_server, _metrics, _lifecycle) = test_tx(tx, 8, 0);
+        let handle = BoundaryHandle::default();
+        let conn = Arc::new(BoundaryConn {
+            tx: to_server,
+            pending: SocketGatewayLink::pending_table(),
+        });
+        handle.connect(Arc::clone(&conn));
+        assert!(!handle.is_restarting());
+        conn.pending.lock().unwrap().down = true;
+        assert!(!handle.restarting.load(Ordering::SeqCst));
+        assert!(handle.is_restarting());
+        handle.enter_gap();
+        assert!(handle.is_restarting());
+    }
+
+    #[tokio::test]
+    async fn failed_reply_waits_for_supervisor_recovery_and_remembers_a_fast_restart() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let link = Arc::new(test_link(tx, SocketGatewayLink::pending_table()));
+        let generation = link.recovery_generation();
+        let waiting = tokio::spawn({
+            let link = Arc::clone(&link);
+            async move { link.wait_for_recovery(generation).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "an unavailable fence can precede EOF"
+        );
+        let current = link.boundary.current().unwrap();
+        link.boundary.enter_gap();
+        link.boundary.connect(current);
+        assert!(!link.is_restarting(), "the new boundary is already serving");
+        assert!(waiting.await.unwrap());
+        assert!(link.wait_for_recovery(generation).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_reply_recovery_wait_is_bounded_for_a_live_producer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let link = test_link(tx, SocketGatewayLink::pending_table());
+        let start = tokio::time::Instant::now();
+        assert!(!link.wait_for_recovery(link.recovery_generation()).await);
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
     }
 
     /// Losing the last connection converts its slot into a link-dead cleanup
