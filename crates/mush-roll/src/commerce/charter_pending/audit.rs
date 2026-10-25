@@ -7,7 +7,7 @@ use crate::commerce::{
     charter_transfer::{history as ownership, records::CharterTransfer},
     families::CommerceFamilies,
     ic_claims::ClaimInventory,
-    records::{PublicationError, Record},
+    records::PublicationError,
     registry_revocation::records::{AcceptedTerm, RevokedTerm},
     roots::{RequiredRoot, RootAnchor},
 };

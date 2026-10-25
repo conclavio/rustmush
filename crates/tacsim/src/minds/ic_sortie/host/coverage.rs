@@ -73,6 +73,7 @@ pub(in crate::minds::ic_sortie) struct CoverageCloseEvidence {
     _transition: HostTransition,
 }
 impl CoverageCloseEvidence {
+    #[cfg(test)]
     pub(in crate::minds::ic_sortie) fn from_transition(
         permit: Arc<WithheldDeparture>,
         zone: DefinitionRef,
@@ -128,9 +129,13 @@ fn departure_digest(
 }
 
 enum WithheldState {
+    // Built by `from_transition`, which waits for the absent region driver
+    // (17f); only the tests drive it until then.
+    #[cfg_attr(not(test), allow(dead_code))]
     New,
     Released {
         open: CommitToken,
+        #[cfg_attr(not(test), allow(dead_code))]
         binding: CommitToken,
     },
     Opening {
@@ -155,6 +160,7 @@ pub struct WithheldDeparture {
     _withheld: HostTransition,
 }
 impl WithheldDeparture {
+    #[cfg(test)]
     pub(in crate::minds::ic_sortie) fn from_transition(
         start: Arc<StartPermit>,
         zone: DefinitionRef,
@@ -281,12 +287,6 @@ impl CommittedCoverageClose {
             .ok_or_else(|| bad("close zone"))?
             .zone)
     }
-    pub(crate) fn destroyed(&self) -> Result<bool, ParticipantError> {
-        Ok(matches!(
-            self.close()?.kind,
-            crate::minds::ic_sortie::records::EventKind::Destroyed {}
-        ))
-    }
     pub(crate) fn kind(
         &self,
     ) -> Result<mush_roll::commerce::ic_claims::IcCloseKind, ParticipantError> {
@@ -317,6 +317,9 @@ impl CommittedCoverageClose {
 /// policy acknowledgement. It is not serializable or reconstructible from a
 /// receipt. The absent region driver must still consume this at its own seam.
 pub struct CoveredDeparture {
+    // Read by the exact-release check the absent region driver will make
+    // (17f); held until then, and read by the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     permit: Arc<WithheldDeparture>,
     open: CommitToken,
     binding: CommitToken,
@@ -328,6 +331,7 @@ impl CoveredDeparture {
     pub fn binding(&self) -> CommitToken {
         self.binding
     }
+    #[cfg(test)]
     pub(crate) fn exact(&self) -> Result<(), ParticipantError> {
         if !matches!(&*self.permit.state.lock().map_err(bad)?,WithheldState::Released{open,binding}
             if *open==self.open && *binding==self.binding)

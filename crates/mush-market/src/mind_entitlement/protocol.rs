@@ -7,6 +7,10 @@ use mush_core::{DefinitionDigest, DefinitionRef};
 use mush_economy::managed_entitlement::EntitlementProtocol;
 use mush_roll::commerce::purchase::PurchaseParticipants;
 
+// Grant and Refund are the closed protocol's other two names, pinned by the
+// tests; production names Fund here and the grant/refund providers carry their
+// own `Kind`.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub(super) enum Transition {
     Fund,

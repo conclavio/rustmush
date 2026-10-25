@@ -47,6 +47,7 @@ impl FactKey {
             _ => None,
         }
     }
+    #[cfg(test)]
     pub(super) fn reference(self) -> ExternalRef {
         let (kind, id, revision) = match self {
             Self::Filed(id) => (FILED, id.key(), 1),

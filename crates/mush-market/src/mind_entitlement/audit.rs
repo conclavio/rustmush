@@ -92,14 +92,6 @@ fn quote_listing(q: &super::EntitlementQuoteV1, l: &EntitlementListingV1) -> Res
     Ok(())
 }
 impl Families {
-    pub(crate) fn audit(
-        &self,
-        ctx: &ModuleCtx<'_>,
-        config: &EntitlementConfig,
-        original_enabled: bool,
-    ) -> Result<(), ModError> {
-        self.audit_with_house(ctx, config, original_enabled, false)
-    }
     pub(crate) fn audit_with_house(
         &self,
         ctx: &ModuleCtx<'_>,

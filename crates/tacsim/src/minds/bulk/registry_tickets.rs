@@ -211,6 +211,7 @@ impl Tickets {
     }
     /// Called on the off-world receipt preparation path. It validates the exact
     /// raw worker bytes once before any bounded world publication can name them.
+    #[cfg(test)]
     pub(super) fn settle(
         &mut self,
         binding: Binding,
@@ -398,6 +399,7 @@ impl PreparedSettlement {
             bytes,
         })
     }
+    #[cfg(test)]
     fn prepare(
         binding: Binding,
         receipt: Receipt,

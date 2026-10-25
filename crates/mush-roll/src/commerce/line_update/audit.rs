@@ -105,15 +105,6 @@ pub(crate) fn birth<'a>(
     Ok(initial)
 }
 
-pub(crate) fn audit(
-    ctx: &ModuleCtx<'_>,
-    roll: &RollStore,
-    f: &CommerceFamilies,
-    ratings: &RatingFamilies,
-    action: Option<&DefinitionRef>,
-) -> Result<u64, PublicationError> {
-    audit_with_derived(ctx, roll, f, ratings, action, None)
-}
 pub(crate) fn audit_with_derived(
     ctx: &ModuleCtx<'_>,
     roll: &RollStore,

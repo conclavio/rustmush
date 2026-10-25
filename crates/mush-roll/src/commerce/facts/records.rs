@@ -140,13 +140,6 @@ impl LapseOccurrence {
             identity: self.term.revision,
         })
     }
-    pub(super) fn truth(&self) -> mush_economy::FactState {
-        mush_economy::FactState {
-            satisfied: true,
-            actor: Some(self.actor),
-            at: self.at_utc,
-        }
-    }
 }
 pub(super) fn term_digest<T: Serialize>(
     kind: PersonalKind,

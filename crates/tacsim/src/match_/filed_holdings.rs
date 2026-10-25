@@ -9,15 +9,12 @@ use mush_core::DefinitionDigest;
 use mush_roll::commerce::personal_filed_reader::PersonalFiledHolding;
 use mush_roll::commerce::rating::RatingClass;
 use mush_roll::{Revision, RevisionAdapter as _, SourceAdapter};
-use smol_str::SmolStr;
 use std::sync::Arc;
 
-use crate::arena::core::{ClassTable, CoreClass};
-use crate::arena::profile_seal::{FiledCertificate, MindIdentity, MindOrigin, SealedCards};
-use crate::arena::rules::RuleWeapon;
+use crate::arena::core::CoreClass;
+use crate::arena::profile_seal::{FiledCertificate, MindIdentity, MindOrigin};
 use crate::arena::runtime_card::{CardDefinition, ProfileDefinition};
 use crate::arena::schema::{SchemaError, validate_envelope};
-use crate::arena::state::Channel;
 
 /// Server-private execution material. Unlike HeldMind, it carries a certified
 /// minimum separately from the immutable declaration and cannot silently enter
@@ -63,12 +60,6 @@ impl FiledExecutable {
             declared,
             minimum,
         })
-    }
-    pub(crate) fn holding(&self) -> &PersonalFiledHolding {
-        &self.holding
-    }
-    pub(crate) fn definition(&self) -> &CardDefinition {
-        &self.definition
     }
 
     /// A point-in-time selection, obtained only from the opaque Roll projection.
@@ -122,46 +113,6 @@ impl FiledExecutable {
     pub(crate) fn source_for_execution(&self) -> Arc<str> {
         Arc::clone(&self.source)
     }
-
-    /// Validate exact full profiles without changing source, declared schema
-    /// limits or card digest. Missing/Class0 hardware selects the independent
-    /// captured ROM outside this function; it never reinterprets these cards.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_profiles(
-        &self,
-        hardware: CoreClass,
-        cap: CoreClass,
-        classes: &ClassTable,
-        names: &[SmolStr],
-        weapons: &[RuleWeapon],
-        channels: &[Channel],
-        floor: u32,
-    ) -> Result<PreparedOriginalProfiles, SchemaError> {
-        let Some(execution) = execution_class(self.minimum, hardware, cap)? else {
-            return Ok(PreparedOriginalProfiles::RomRequired);
-        };
-        let cards = SealedCards::prepare(
-            (*self.definition).clone(),
-            names,
-            &classes.row(execution),
-            weapons,
-            channels,
-            floor,
-        )?;
-        Ok(PreparedOriginalProfiles::Scripted {
-            class: execution,
-            cards,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum PreparedOriginalProfiles {
-    RomRequired,
-    Scripted {
-        class: CoreClass,
-        cards: SealedCards,
-    },
 }
 
 fn class(value: RatingClass) -> CoreClass {
@@ -171,6 +122,7 @@ fn class(value: RatingClass) -> CoreClass {
         RatingClass::III => CoreClass::III,
     }
 }
+#[cfg(test)]
 fn execution_class(
     minimum: CoreClass,
     hardware: CoreClass,
@@ -357,7 +309,10 @@ fn invalid(field: &str, message: &str) -> SchemaError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_roll::{Envelope, RevisionAdapter as _, RollError, source_digest};
+    use crate::arena::core::ClassTable;
+    use crate::arena::profile_seal::SealedCards;
+    use crate::arena::state::Channel;
+    use mush_roll::{Envelope, RollError, source_digest};
     use serde_json::json;
 
     struct Source {

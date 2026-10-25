@@ -41,14 +41,6 @@ impl AuthorityGuardValidator for Capabilities {
         Ok(false)
     }
 }
-pub(crate) fn register(
-    reg: &mut Registrar<'_>,
-    original: Option<&crate::mind_trade::OriginalPurchaseConfig>,
-    entitlement: Option<&super::EntitlementConfig>,
-    gate: Option<Arc<dyn crate::VenueGate>>,
-) -> Result<(), ModError> {
-    register_with_house(reg, original, entitlement, None, gate)
-}
 pub(crate) fn register_with_house(
     reg: &mut Registrar<'_>,
     original: Option<&crate::mind_trade::OriginalPurchaseConfig>,

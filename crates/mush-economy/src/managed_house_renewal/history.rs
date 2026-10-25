@@ -357,24 +357,6 @@ impl OfferBook {
         self.rows.insert(row.operation, row);
         self.generation = generation;
     }
-    /// Private complete forward/reverse evidence join, still not a production
-    /// boot readiness setter. No document arrival order establishes ancestry.
-    pub(crate) fn from_documents_with_renewals(
-        snapshot: &EconomySnapshot,
-        documents: &[(String, Vec<u8>)],
-        receipts: &super::receipt::RenewalReceiptAudit,
-    ) -> Result<Self, ParticipantError> {
-        receipts.require_complete().map_err(|_| refused())?;
-        Self::reconstruct(snapshot, documents, Some(receipts), None)
-    }
-    /// Old unfunded-only reconstruction cannot mint the combined audit latch.
-    /// A format2 unfunded link still needs its actual closed predecessor image.
-    pub(crate) fn from_documents(
-        snapshot: &EconomySnapshot,
-        documents: &[(String, Vec<u8>)],
-    ) -> Result<Self, ParticipantError> {
-        Self::reconstruct(snapshot, documents, None, None)
-    }
     pub(crate) fn from_documents_with_resale(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],

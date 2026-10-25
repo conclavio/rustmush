@@ -133,6 +133,7 @@ impl AuthEval for UpdateAuth<'_> {
             && self.world.authorize(&self.actor, account, delta)
     }
 }
+#[cfg(test)]
 fn plan(
     kind: Option<UpdateKind>,
     policy: &InitialFilingPolicy,

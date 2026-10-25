@@ -16,12 +16,14 @@ fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
 }
 
+#[cfg(test)]
 pub(super) fn register(
     reg: &mut Registrar<'_>,
     policy: Arc<FrozenPolicy>,
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     register_with_ic(reg, policy, false)
 }
+#[cfg(test)]
 pub(super) fn register_with_ic(
     reg: &mut Registrar<'_>,
     policy: Arc<FrozenPolicy>,
@@ -29,6 +31,7 @@ pub(super) fn register_with_ic(
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     register_profiles(reg, policy, ic, false)
 }
+#[cfg(test)]
 pub(super) fn register_profiles(
     reg: &mut Registrar<'_>,
     policy: Arc<FrozenPolicy>,
@@ -37,6 +40,7 @@ pub(super) fn register_profiles(
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     register_profiles_with_coverage(reg, policy, ic, reconformance, false)
 }
+#[cfg(test)]
 pub(super) fn register_profiles_with_coverage(
     reg: &mut Registrar<'_>,
     policy: Arc<FrozenPolicy>,

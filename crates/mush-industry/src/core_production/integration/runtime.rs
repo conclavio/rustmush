@@ -96,17 +96,4 @@ impl Runtime {
             outcome,
         })
     }
-    pub(crate) fn action(&self, name: &str) -> Result<&DefinitionRef, Error> {
-        if name == super::delivery::ACTION {
-            return self
-                .delivery
-                .as_ref()
-                .map(|d| &d.action)
-                .ok_or(Error::Unavailable);
-        }
-        self.actions
-            .iter()
-            .find(|a| a.key().id.as_str() == name)
-            .ok_or(Error::Integrity)
-    }
 }

@@ -347,9 +347,6 @@ pub(super) struct PreparedHistory {
     after: PaidResaleHistoryV1,
 }
 impl PreparedHistory {
-    pub(super) fn row(&self) -> &PaidResaleHistoryV1 {
-        &self.after
-    }
     pub(super) fn matches(&self, state: &PaidResaleBook) -> bool {
         state.require_complete().is_ok()
             && state.histories.len() == self.count

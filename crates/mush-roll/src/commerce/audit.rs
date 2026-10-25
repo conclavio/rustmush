@@ -46,6 +46,7 @@ pub(crate) fn audit_and_open(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -72,6 +73,7 @@ pub(crate) fn audit_and_open_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_renewal_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -100,6 +102,7 @@ pub(crate) fn audit_and_open_renewal_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_update_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -130,6 +133,7 @@ pub(crate) fn audit_and_open_update_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_owner_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -162,6 +166,7 @@ pub(crate) fn audit_and_open_owner_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_attestation_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -196,6 +201,7 @@ pub(crate) fn audit_and_open_attestation_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_ic_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -232,6 +238,7 @@ pub(crate) fn audit_and_open_ic_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_house_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -270,6 +277,7 @@ pub(crate) fn audit_and_open_house_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_pending_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -310,6 +318,7 @@ pub(crate) fn audit_and_open_pending_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_house_renewal_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -352,6 +361,7 @@ pub(crate) fn audit_and_open_house_renewal_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_paid_resale_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,
@@ -396,6 +406,7 @@ pub(crate) fn audit_and_open_paid_resale_configured(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn audit_and_open_coverage_configured(
     ctx: &mut ModuleCtx<'_>,
     families: &CommerceFamilies,

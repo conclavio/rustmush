@@ -177,6 +177,7 @@ impl UpdateReceiptAudit {
     ) -> Result<(), ReceiptAuditError> {
         self.require_protocols(original, dependent, false)
     }
+    #[cfg(test)]
     pub(crate) fn require_protocols(
         &self,
         original: bool,

@@ -72,16 +72,6 @@ impl Registration {
         Ok(())
     }
 
-    pub(crate) fn register(
-        &self,
-        reg: &mut Registrar<'_>,
-        cfg: &TacsimConfig,
-        catalog: &Catalog,
-        ic: bool,
-        coverage: bool,
-    ) -> Result<(), ModError> {
-        self.register_with_conduct(reg, cfg, catalog, ic, coverage, false)
-    }
     pub(crate) fn register_with_conduct(
         &self,
         reg: &mut Registrar<'_>,

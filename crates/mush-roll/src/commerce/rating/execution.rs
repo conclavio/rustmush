@@ -785,6 +785,7 @@ impl MeasuredRating {
 
 /// Data projection consumed only by the closed core capacity adapter. These
 /// rows do not reserve anything or grant access to a typed family.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
     pub family: &'static str,
@@ -794,6 +795,7 @@ pub(crate) struct TerminalTarget {
     pub existing: bool,
 }
 impl RatingExecution {
+    #[cfg(test)]
     pub(crate) fn terminal_targets(&self) -> Result<Vec<TerminalTarget>, RatingError> {
         self.validate()?;
         let mut targets = Vec::with_capacity(usize::from(self.admission.maximum_pages) + 5);

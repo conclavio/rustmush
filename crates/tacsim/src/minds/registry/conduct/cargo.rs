@@ -213,9 +213,6 @@ impl Cargo {
         }
         Ok(())
     }
-    pub(super) fn delivered(&self) -> bool {
-        self.delivered_at.is_some()
-    }
     pub(super) fn report(&self) -> Result<CargoReport, RatingError> {
         self.check()?;
         Ok(CargoReport {

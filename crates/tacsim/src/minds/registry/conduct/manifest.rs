@@ -293,6 +293,7 @@ impl Policy {
     pub(super) fn maximum_ms(&self) -> u32 {
         self.recipe.maximum_ms
     }
+    #[cfg(test)]
     pub(super) fn references(&self) -> &[DefinitionRef] {
         &self.manifest.definitions
     }

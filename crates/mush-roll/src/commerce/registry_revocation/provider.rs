@@ -264,16 +264,6 @@ impl ActionProvider for Provider {
         }))
     }
 }
-pub(crate) fn register(
-    reg: &mut Registrar<'_>,
-    families: CommerceFamilies,
-    ratings: super::super::rating::RatingFamilies,
-    policy: RegistryRevocationPolicy,
-    definitions: [DefinitionRef; 3],
-    pending: Option<super::super::charter_pending::Readiness>,
-) -> Result<Readiness, ModError> {
-    register_with_resale(reg, families, ratings, policy, definitions, pending, None)
-}
 pub(crate) fn register_with_resale(
     reg: &mut Registrar<'_>,
     families: CommerceFamilies,

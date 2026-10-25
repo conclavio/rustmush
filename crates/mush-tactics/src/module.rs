@@ -2187,27 +2187,6 @@ fn fan_out_owner_freezes(
     Ok(())
 }
 
-/// Rebuild only the active mechanics index. Every authoritative input remains
-/// untouched; disagreements and legacy conversions are represented as
-/// lifecycle state, bounded incidents, and exact dry-run plans.
-fn boot_units(
-    ctx: &mut ModuleCtx<'_>,
-    data: ModuleBootData,
-    catalog: &UnitCatalog,
-    legacy_record_definition: &DefinitionRef,
-    current_record_definition: &DefinitionRef,
-) -> Result<(), ModError> {
-    let mut data = data;
-    let ic = crate::ic_custody::load(&mut data, false)?;
-    boot_units_with_ic(
-        ctx,
-        data,
-        catalog,
-        legacy_record_definition,
-        current_record_definition,
-        ic,
-    )
-}
 fn boot_units_with_ic(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,

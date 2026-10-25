@@ -125,6 +125,7 @@ impl RenewalBindingV1 {
         }
         bounded(self, MAX_OPERATION_BYTES)
     }
+    #[cfg(test)]
     pub(crate) fn capture(
         licence: &PersonalPaidLicence,
         term: &PaidTermRecord,

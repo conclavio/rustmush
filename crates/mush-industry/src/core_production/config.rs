@@ -1,8 +1,8 @@
 use super::*;
+use mush_core::ObjId;
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{DefinitionDigest, ObjId};
 use mush_economy::VaultId;
 use mush_inventory::Grade;
 use mush_org::{OrgId, OrgScopeId};
@@ -48,14 +48,6 @@ impl OriginPolicy {
             return Err(Error::Invalid);
         }
         Ok(())
-    }
-    pub(crate) fn digest(&self) -> Result<DefinitionDigest, Error> {
-        self.validate()?;
-        DefinitionDigest::for_canonical_value(
-            "industry.core_origin_policy.v1",
-            &encode(self).map_err(bad)?,
-        )
-        .map_err(bad)
     }
     pub(crate) fn action(&self, initialize: bool) -> Result<DefinitionDescriptor, ModError> {
         self.validate().map_err(mod_error)?;

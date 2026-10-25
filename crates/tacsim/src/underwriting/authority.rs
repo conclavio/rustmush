@@ -225,9 +225,6 @@ impl PublicationFence {
     pub(super) fn authority(&self) -> &CoveragePublicationAuthority {
         &self.captured
     }
-    pub(super) fn commit(&self) -> CommitToken {
-        self.commit
-    }
     pub(super) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), CoverageError> {
         self.readiness.check(&self.action)?;
         if ctx.action() != &self.action

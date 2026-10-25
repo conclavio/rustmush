@@ -50,15 +50,6 @@ struct Configuration {
 pub(super) fn configured(world: &mush_core::World) -> bool {
     world.module_state::<Configuration>().is_some()
 }
-/// No default composition calls this. The Registry registrar supplies its
-/// actual factory and manifest, after selecting both concrete participants.
-pub(in crate::minds) fn register(
-    reg: &mut Registrar<'_>,
-    factory: Arc<Factory>,
-    manifest: &mush_core::DefinitionRef,
-) -> Result<(), ModError> {
-    register_profiles(reg, factory, manifest, false)
-}
 pub(in crate::minds) fn register_profiles(
     reg: &mut Registrar<'_>,
     factory: Arc<Factory>,

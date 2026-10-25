@@ -127,9 +127,11 @@ impl ClaimInventory {
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
     }
+    #[cfg(test)]
     pub(crate) fn open_len(&self) -> usize {
         self.open_units.len()
     }
+    #[cfg(test)]
     pub(crate) fn history_len(&self) -> usize {
         self.history.len()
     }

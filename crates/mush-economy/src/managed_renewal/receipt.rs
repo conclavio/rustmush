@@ -434,9 +434,6 @@ impl RenewalHistory {
     pub(super) fn origin(&self) -> &OfferRecord {
         &self.origin
     }
-    pub(super) fn initial_hold(&self) -> &Hold {
-        &self.hold
-    }
     pub(super) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
         let mut c = contract(&self.origin).map_err(|_| RenewalAuditError::Refused)?;
         c.acceptances.push(Acceptance {

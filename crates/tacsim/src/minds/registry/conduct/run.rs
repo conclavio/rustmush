@@ -70,12 +70,11 @@ impl CompletedRun {
             .map(ResultRow::failure_summary)
             .unwrap_or_else(|| "no failed row".into())
     }
+    #[cfg(test)]
     pub(super) fn passed(&self) -> bool {
         self.passed
     }
-    pub(super) fn digest(&self) -> DefinitionDigest {
-        self.digest
-    }
+    #[cfg(test)]
     pub(super) fn measured_unit_ms(&self) -> u64 {
         self.charged_unit_ms
     }

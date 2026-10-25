@@ -145,9 +145,6 @@ impl HouseConfig {
     pub fn manifest(&self) -> &DefinitionRef {
         &self.manifest
     }
-    pub(super) fn policy_descriptor(&self) -> Result<DefinitionDescriptor, ModError> {
-        self.policy_descriptor_for_protocol(HouseProtocol::HouseV1)
-    }
     pub(super) fn policy_descriptor_for_protocol(
         &self,
         protocol: HouseProtocol,
@@ -241,12 +238,6 @@ impl HouseConfig {
 }
 
 impl HouseConfig {
-    pub(super) fn product(
-        &self,
-        f: &mush_roll::commerce::house_catalogue::HouseSaleFacts,
-    ) -> Result<super::HouseProductV1, String> {
-        self.product_for_protocol(HouseProtocol::HouseV1, f)
-    }
     pub(super) fn product_for_protocol(
         &self,
         protocol: HouseProtocol,

@@ -14,7 +14,6 @@ use crate::arena::core::{ClassTable, CoreClass};
 
 pub(super) const STARTUP_MS: u64 = 2_000;
 pub(super) const TRIAL_LIMIT_MS: u64 = 600_000;
-pub(super) const MAX_NATIVE_STEPS: u64 = 8;
 pub(super) const PROBES: [ProbeName; 12] = [
     ProbeName::EmptyArmed,
     ProbeName::EmptyUnarmed,
@@ -116,9 +115,6 @@ impl Case {
             .checked_add(u64::from(self.physics.native_ms))
             .and_then(|ms| ms.checked_mul(u64::from(self.physics.units)))
             .ok_or(RatingError::Bound)
-    }
-    pub(super) fn quantum_ms(&self) -> u64 {
-        u64::from(self.physics.native_ms) * MAX_NATIVE_STEPS
     }
 }
 
@@ -319,6 +315,7 @@ impl Schedule {
     pub(super) fn cases(&self) -> &[Case] {
         &self.cases
     }
+    #[cfg(test)]
     pub(super) fn maximum_unit_ms(&self) -> u64 {
         self.maximum_unit_ms
     }

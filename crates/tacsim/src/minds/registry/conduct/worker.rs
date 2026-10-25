@@ -38,9 +38,6 @@ impl Worker {
             measurement: None,
         }))
     }
-    pub(super) fn budget(&self) -> &ConductBudget {
-        &self.budget
-    }
     fn advance(&mut self, maximum: u64) -> Result<Turn, BulkError> {
         if self.finished || maximum < u64::from(self.case.native_ms) {
             return Err(invalid("lease"));

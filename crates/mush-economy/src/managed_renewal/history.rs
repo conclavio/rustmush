@@ -359,6 +359,7 @@ impl OfferBook {
     }
     /// Private complete forward/reverse evidence join, still not a production
     /// boot readiness setter. No document arrival order establishes ancestry.
+    #[cfg(test)]
     pub(crate) fn from_documents_with_renewals(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],
@@ -369,6 +370,7 @@ impl OfferBook {
     }
     /// Old unfunded-only reconstruction cannot mint the combined audit latch.
     /// A format2 unfunded link still needs its actual closed predecessor image.
+    #[cfg(test)]
     pub(crate) fn from_documents(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],

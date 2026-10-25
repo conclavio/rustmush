@@ -145,9 +145,6 @@ impl Tickets {
             ),
         }))
     }
-    pub(super) fn pristine(&self) -> bool {
-        self.next == 0 && self.bytes == 0 && self.rows.is_empty() && self.acknowledged.is_empty()
-    }
     fn room(&self, bytes: u64) -> Result<(), BulkError> {
         if self.next == u64::MAX
             || self.rows.len() + self.acknowledged.len() >= MAX_TICKETS

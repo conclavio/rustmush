@@ -309,6 +309,7 @@ impl CharterTransferReceiptAudit {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, tx: &EconomicTransaction) {
         // Old direct callers cannot authorize the new namespace. Actual fold
         // uses the separately replayed pending inventory below.

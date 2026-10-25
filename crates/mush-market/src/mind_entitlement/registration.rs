@@ -12,14 +12,6 @@ use std::sync::Arc;
 fn error(e: impl std::fmt::Display) -> ModError {
     super::error(e)
 }
-pub(crate) fn register(
-    reg: &mut Registrar<'_>,
-    config: &EntitlementConfig,
-    gate: Arc<dyn crate::VenueGate>,
-    validators_registered: bool,
-) -> Result<Families, ModError> {
-    register_with_house_definitions(reg, config, gate, validators_registered, &[])
-}
 pub(crate) fn register_with_house_definitions(
     reg: &mut Registrar<'_>,
     config: &EntitlementConfig,

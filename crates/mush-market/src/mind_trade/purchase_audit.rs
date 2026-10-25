@@ -119,15 +119,6 @@ impl PurchaseFamilies {
         Ok(row.clone())
     }
 
-    pub(crate) fn audit_with_entitlements(
-        &self,
-        ctx: &ModuleCtx<'_>,
-        config: &OriginalPurchaseConfig,
-        offers: &Families,
-        entitlements_enabled: bool,
-    ) -> Result<(), ModError> {
-        self.audit_with_houses(ctx, config, offers, entitlements_enabled, false)
-    }
     pub(crate) fn audit_with_houses(
         &self,
         ctx: &ModuleCtx<'_>,

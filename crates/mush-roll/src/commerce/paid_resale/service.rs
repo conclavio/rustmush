@@ -2,11 +2,8 @@
 //! selector, caller-supplied reason or service actor identity creates an intent.
 use super::{history, records::*};
 use crate::commerce::{
-    RevisionIdentity,
-    families::CommerceFamilies,
-    rating::RatingFamilies,
-    read::CommerceRead,
-    records::{PublicationError, Record},
+    RevisionIdentity, families::CommerceFamilies, rating::RatingFamilies, read::CommerceRead,
+    records::PublicationError,
 };
 use mush_core::action::{
     ActionInvocation, AuthorityGuard, IdempotencyKey, IdempotencyKeyText, PerceivedRef, PrincipalId,
