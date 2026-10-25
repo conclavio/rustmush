@@ -90,6 +90,27 @@ was in the per-product commerce glue, none in the economy core.
   `8c648527`; dev2 at main). The arena hydrate fix is the one commit `main`
   needs regardless.
 
+### Merged with main for CI (2026-10-24, branch `claude/m7-remerge`, PR #5)
+
+The line was merged with `main` up to `8cc0aa64`. That redid the 2026-10-23
+merge `2eb7f840`, which did not compile, from `a5a7c14c`. The merge settled
+three things that neither side's own suite could see:
+
+- **IPC version 11.** M7's 8 (FiledSource) and 9 (attributed Remove) stack on
+  main's 8 (world health) and 9 (reply framing).
+- **The D-UM-28 cross-platform corpus pins are re-blessed.** M7's `ec886bb4`
+  raised the mind API to 5. That moved `MIND_ABI`, the Standard Doctrine's
+  sealed identity and so every seal the state hash folds, but the `#[ignore]`d
+  pin was never moved with it. A bisect over the line found that commit the
+  only mover. Stopping times and the float probe are unmoved, and Windows and
+  Linux agree on the new values.
+- **Merge-made repairs:** the SM.6/SM.10 industry seams run through M7's split
+  registration helpers, and the composed scheduled path seeds main's
+  `completes` flag.
+
+The first PR run also showed the docs job's `unused_parens` and the features
+job's first lints; both are fixed.
+
 ### Follow-ups the campaign surfaced
 
 - A paid-holdings listing for `/filed` (owner: keep original-owner only for now).

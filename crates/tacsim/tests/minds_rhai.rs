@@ -3503,34 +3503,48 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// bitmask are unmoved. Were, by row: `4_167_350_372_244_564_158` /
 /// `304b5340…` / `1268fc5d…`, `1_964_900_014_152_180_428` / `91884ac2…` /
 /// `168c2998…`, `9_027_361_391_885_005_948` / `68516927…` / `5d1fa832…`.
+///
+/// **17f M7's declared encoding re-bless (mind API 5)**, captured on Windows on
+/// the M7 line merged with G.7b's ground and matching the Linux run CI's: M7's
+/// `ec886bb4` raised the station API to 5 (`entry_interior_cell`; the retained
+/// Registry path keeps API 4 sources as archives), so `MIND_ABI`, the Standard
+/// Doctrine's metadata and its sealed source identity moved and every seal the
+/// state hash folds moved with them. A bisect over the M7 line found that
+/// commit the only mover, and the pins were not moved with it (this test is
+/// `#[ignore]`d and the line ran without CI). All four stopping times and the
+/// float probe's 369098751 bitmask are unmoved. Were, by row:
+/// `12_887_324_004_819_823_052` / `e414b70d…` / `318da4b7…`,
+/// `7_649_434_552_267_006_567` / `5f0bdda7…` / `becdcb65…`,
+/// `9_329_786_118_378_962_729` / `004bd63f…` / `8de6e161…`,
+/// `5_200_400_847_644_332_931` / `6bf446e5…` / `3d5c4a8f…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         170250,
-        12887324004819823052,
-        "e414b70d36d84512f4b8c8a9f897cd257f2350a05cc6079ec0dac23fae5d0e08",
-        "318da4b76ce446033b69b393dae49a81b107d81e182afdf76a3916e9d639a636",
+        5751437098979270255,
+        "0435ea8a5ea54c73685d7fd69ad3925d0691cf49f8256e18ea74e6715b907934",
+        "91c474d043c4813fdc28f16d173f6fa02961bde1cbd22eaf513f4874fcba2113",
     ),
     (
         2351,
         192500,
-        7649434552267006567,
-        "5f0bdda7d7a9a3494378c9d69dd567e35db3d9464a106aa4010e018522b61ccd",
-        "becdcb65121a60296e73b150cda382444d4cc73f5f3065f65a59506da3156f99",
+        15239362189155377359,
+        "daad5d83c262db2451f0fcfce7f7d72c0e2b719a610c35c5e7cb168c52726b61",
+        "929f1c498f2307fe6604c59158e8ddef65005f5444f2b5cb31019c490b03a3d6",
     ),
     (
         2352,
         170000,
-        9329786118378962729,
-        "004bd63fcdcbc73885ed4fde7e5d2b96506bd4e3043e27edfc4c4310f1cbc104",
-        "8de6e16145685e46bde82b807ed847268f45de0e0684e9e385ad061a3c4231f2",
+        147138284034081668,
+        "ea5704215c831ced5ac793598c897adf37dd29177fc0d8ebd2a1fe481484c72c",
+        "22d343256c42614362e6ef15bff20fe29e148b05ad7398d77ec67456f0e6e418",
     ),
     (
         2350,
         900000,
-        5200400847644332931,
-        "6bf446e5a01bd3b97821706338dad12d3566cd21fbec2d748c4c7654cffeac2d",
-        "3d5c4a8ff59ee1ff1ba7cbdca552f7b862c2f4e002d43145d8d7c97361e569a6",
+        901248092712753737,
+        "3935bb86c6d21b77f1ba8168be3d65750615a6c4405d784c72b513caaf252817",
+        "de7720f6e56db31c1e67fa82f19939dc556ca198af0f36dd1d3bcba90aa49411",
     ),
 ];
 
