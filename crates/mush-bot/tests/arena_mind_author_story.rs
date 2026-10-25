@@ -345,10 +345,12 @@ fn frozen_game(row: &Value) -> Result<Value, &'static str> {
     }) {
         return Err("frozen game body shape");
     }
+    // The body's `format` is the tape header's: 2 since M7 (`31d19f25`), whose
+    // opening snapshots and seals carry the mandatory filed certificates.
     if body["seed"].as_u64() != Some(summary.seed)
         || body["swapped"].as_bool() != Some(summary.swapped)
         || body["match_id"].as_u64() != Some(summary.match_id)
-        || body["format"].as_u64() != Some(1)
+        || body["format"].as_u64() != Some(2)
         || body["seals"].as_array().map(Vec::len) != Some(usize::from(summary.unit_count))
     {
         return Err("frozen game body differs from summary");
@@ -359,7 +361,7 @@ fn frozen_game(row: &Value) -> Result<Value, &'static str> {
 #[test]
 fn retained_frozen_game_decoder_preserves_exact_state_and_rejects_stream_tail() {
     use std::io::Write as _;
-    let body = json!({"seed":u64::MAX,"swapped":true,"format":1,"match_id":17,
+    let body = json!({"seed":u64::MAX,"swapped":true,"format":2,"match_id":17,
         "limit":MAX_FROZEN_GAME_BYTES,"engine":{},"opening":{"state":"{\"z\":1,\"a\":2}"},
         "clock":{},"seals":[{"unit":100},{"unit":200}],"sources":[]});
     let raw = serde_json::to_vec(&body).unwrap();
