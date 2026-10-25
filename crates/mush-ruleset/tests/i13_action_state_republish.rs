@@ -400,3 +400,28 @@ fn one_commit_republishes_at_most_the_capped_number_of_subjects() {
         6
     );
 }
+
+/// A query between writes must not leave a republish fingerprint describing
+/// an older schema/visibility projection on a reconnected client.
+#[test]
+fn queried_keyframe_invalidates_next_push_baseline() {
+    let mut r = rig();
+    commit(&mut r.tw, &r.toy, &[(r.nick, 3)], false);
+    let view = SheetView {
+        target: r.nick,
+        schema: serde_json::json!({"queried_schema": 2}),
+        approved: serde_json::json!({}),
+        data: serde_json::json!({"staff_secret": 1}),
+        show_staff: true,
+    };
+    let _ = view.query_keyframe(r.tw.world(), &"toy.sheet".into(), 1);
+    let events = commit(&mut r.tw, &r.toy, &[(r.nick, 2)], true);
+    let sheet = panels_to(&events, r.nick, "toy.sheet");
+    assert_eq!(sheet[0].0, PanelFrameKind::Keyframe);
+    assert!(sheet[0].1["data"].get("staff_secret").is_none());
+    let events = commit(&mut r.tw, &r.toy, &[(r.nick, 1)], true);
+    assert_eq!(
+        panels_to(&events, r.nick, "toy.sheet")[0].0,
+        PanelFrameKind::Delta
+    );
+}

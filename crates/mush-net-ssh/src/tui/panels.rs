@@ -1003,7 +1003,7 @@ mod tests {
         st.apply_panel(
             &f,
             PanelFrameKind::Keyframe,
-            &serde_json::json!({ "schema": { "s": 1 }, "data": { "strength": 3 }, "revision": 5 }),
+            &serde_json::json!({ "schema": { "s": 1 }, "data": { "strength": 3, "staff_secret": 7 }, "revision": 5 }),
             0,
         );
 

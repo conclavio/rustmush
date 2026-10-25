@@ -23,7 +23,7 @@ use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, ModError, ObjId, QueryHandler, Registrar, Role, World,
     match_object, perm,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText};
+use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::doc::SheetDoc;
@@ -297,17 +297,14 @@ impl QueryHandler for SheetQuery {
             .module_state::<crate::VitalsRevisions>()
             .and_then(|r| r.0.get(&target).copied())
             .unwrap_or(0);
-        Ok(OutputEvent::Panel {
-            feed: self.feed.clone(),
-            kind: PanelFrameKind::Keyframe,
-            data: serde_json::json!({
-                "target": target.to_string(),
-                "schema": self.store.schema().describe(),
-                "approved": approval_json(&doc),
-                "data": data,
-                "revision": revision,
-            }),
-        })
+        Ok(crate::SheetView {
+            target,
+            schema: self.store.schema().describe(),
+            approved: approval_json(&doc),
+            data,
+            show_staff,
+        }
+        .query_keyframe(w, &self.feed, revision))
     }
 }
 

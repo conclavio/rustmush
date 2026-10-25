@@ -226,8 +226,14 @@ impl SshHooks for MockHooks {
         Box::pin(async move {
             self.lines.lock().unwrap().push((conn, line.clone()));
             if line.eq_ignore_ascii_case("quit") {
-                // The "world" detaches the connection: dropping the sender
-                // makes the pump close the transport.
+                // The farewell must drain before the channel closes, as in production.
+                if let Some(tx) = self.tx_of(conn) {
+                    let _ = tx
+                        .send(Arc::new(OutputEvent::Disconnect {
+                            reason: RichText::plain("Goodbye."),
+                        }))
+                        .await;
+                }
                 self.txs.lock().unwrap().remove(&conn);
             } else if let Some(said) = line.strip_prefix("say ")
                 && let Some(tx) = self.tx_of(conn)
@@ -305,7 +311,13 @@ impl SshHooks for MockHooks {
         })
     }
 
-    fn query(&self, conn: u64, name: String, args: serde_json::Value) -> BoxFuture<'_, ()> {
+    fn query(
+        &self,
+        conn: u64,
+        id: u64,
+        name: String,
+        args: serde_json::Value,
+    ) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.queries
                 .lock()
@@ -369,6 +381,10 @@ impl SshHooks for MockHooks {
                     Some(_) => backlog_reply(serde_json::json!([]), false, true),
                 },
                 _ => return,
+            };
+            let ev = match ev {
+                OutputEvent::Reply { event, .. } => OutputEvent::Reply { id, event },
+                other => other,
             };
             let _ = tx.send(Arc::new(ev)).await;
         })
@@ -682,6 +698,7 @@ async fn play_flow_create_connect_say_quit() {
 
     // QUIT: the "world" drops the queue; the server closes the transport.
     term.send_line("QUIT").await;
+    term.expect("Goodbye.").await;
     term.expect_close().await;
 
     let lines = hooks.lines.lock().unwrap().clone();
@@ -2392,6 +2409,75 @@ async fn the_asset_pack_is_served_over_sftp_to_a_player_in_game() {
     term.expect("Nick says, \"still here\"").await;
     term.send_line("QUIT").await;
     term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// Exercise the RFC PTY mode through a real SSH handshake, including async redraw.
+#[tokio::test]
+async fn pty_echo_zero_keeps_input_private_while_delivering_commands() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "echo",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Echo".into(),
+        }],
+    );
+    let addr = start_server("echo-zero", Arc::clone(&hooks)).await;
+    let mut handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .unwrap();
+    assert!(
+        handle
+            .authenticate_password("echo", "pw123")
+            .await
+            .unwrap()
+            .success()
+    );
+    let channel = handle.channel_open_session().await.unwrap();
+    channel
+        .request_pty(true, "xterm", 80, 24, 0, 0, &[(russh::Pty::ECHO, 0)])
+        .await
+        .unwrap();
+    channel.request_shell(true).await.unwrap();
+    let mut term = Term {
+        channel,
+        seen: String::new(),
+    };
+    term.expect("Welcome, echo!").await;
+    let mark = term.seen.len();
+    term.send_line("say echo-zero-token").await;
+    term.expect_after(mark, "Nick says, \"echo-zero-token\"")
+        .await;
+    assert!(!strip_ansi(&term.seen[mark..]).contains("say echo-zero-token"));
+    let conn = hooks.connected_chars.lock().unwrap()[0].0;
+    term.send_bytes(b"private-draft").await;
+    hooks
+        .tx_of(conn)
+        .unwrap()
+        .send(Arc::new(OutputEvent::Sys(RichText::plain(
+            "asynchronous notice",
+        ))))
+        .await
+        .unwrap();
+    term.expect("asynchronous notice").await;
+    assert!(!strip_ansi(&term.seen[mark..]).contains("private-draft"));
+    // Submit the hidden draft, then observe a later reply as an ordering fence.
+    term.send_bytes(b"\r").await;
+    term.send_line("say done-token").await;
+    term.expect("done-token").await;
+    assert!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, line)| line == "private-draft")
+    );
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;

@@ -1,0 +1,1431 @@
+   Compiling mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+   Compiling mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+   Compiling mush-session v0.1.0 (/opt/rustmush/dev1/build/crates/mush-session)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-contract-tests v0.1.0 (/opt/rustmush/dev1/build/crates/mush-contract-tests)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 2m 00s
+     Running unittests src/lib.rs (target/debug/deps/mush_gateway-236e7d18570caa1c)
+
+running 70 tests
+test accounts::commit_retry_tests::the_name_check_waits_for_the_commit_to_land ... ok
+test composing::tests::one_start_per_interval_and_a_stop_always_passes ... ok
+test bridge_common::projection_tests::line_action_parser_accepts_self_and_staff_subject_parameters ... ok
+test accounts::commit_retry_tests::an_answered_check_is_not_re_sent ... ok
+test accounts::pubkey_tests::verify_pubkey_matches_by_key_material_uniform_on_miss ... ok
+test accounts::commit_retry_tests::a_world_that_stays_mid_commit_is_still_reported_busy ... ok
+test discord_bridge::tests::banned_follow_must_stop_accepting_commands ... ok
+test discord_bridge::tests::a_minted_code_links_once_and_whoami_and_unlink_follow ... ok
+test discord_bridge::tests::discord_lines_come_in_as_the_linked_character_under_the_gates ... ok
+test discord_bridge::tests::follow_refusals_not_linked_banned_closed_dms_and_quit_in_the_dm ... ok
+test discord_bridge::tests::game_lines_go_out_through_the_webhook_or_as_the_bot ... ok
+test discord_bridge::tests::idle_detach_zero_means_never ... ok
+test discord_bridge::tests::notice_reply_buttons_open_a_prefilled_modal_whose_line_runs_as_the_character ... ok
+test discord_bridge::tests::old_discord_message_cannot_answer_a_reused_request_id ... ok
+test bridge_common::projection_tests::line_action_list_renders_only_projected_presentation ... ok
+test discord_bridge::tests::refusals_are_uniform_expired_banned_already_linked_either_side ... ok
+test discord_bridge::tests::revocation_cancels_an_attached_alt_and_its_buttons ... ok
+test discord_bridge::tests::revocation_during_world_admission_leaves_no_connection ... ok
+test discord_bridge::tests::request_buttons_answer_through_respond_and_mark_the_message ... ok
+test discord_bridge::tests::revocation_while_creating_a_dm_cannot_restore_the_link_or_attach ... ok
+test discord_bridge::tests::staff_sink_lines_post_to_the_staff_channel_as_the_bot ... ok
+test discord_bridge::tests::the_relay_map_honours_directions ... ok
+test discord_bridge::tests::unknown_prefixes_cross_to_the_server_with_the_account_and_actor ... ok
+test discord_bridge::tests::unlinked_follow_must_stop_accepting_commands ... ok
+test poison::tests::the_recovery_line_is_logged_once_per_process ... ok
+test poison::tests::a_poisoned_lock_is_recovered_with_its_state_intact ... ok
+test tests::a_poisoned_boundary_handle_still_swaps_the_boundary ... ok
+test tests::a_poisoned_lifecycle_table_keeps_every_other_connection_alive ... ok
+test tests::boundary_teardown_fails_inflight_request ... ok
+test tests::a_stop_closes_the_boundary_and_waits_for_the_server_to_exit ... ok
+test tests::crash_guard_backoff_grows_then_caps ... ok
+test tests::child_config_argument_is_passed_only_when_explicit ... ok
+test tests::crash_guard_trips_after_consecutive_failures ... ok
+test tests::close_web_sessions_drops_only_structured_conns ... ok
+test tests::crash_guard_prunes_stale_window_before_admission ... ok
+test tests::crash_guard_trips_after_max_restarts_in_window ... ok
+test tests::enter_game_barrier_failure_restores_revived_linkdead_session ... ok
+test tests::enter_game_untracked_connection_compensates_without_session_info ... ok
+test tests::enter_game_barrier_failure_compensates_and_removes_fresh_session ... ok
+test tests::enter_game_waits_for_durable_and_engine_connection_readiness ... ok
+test tests::flood_exempt_input_has_a_bounded_burst_window ... ok
+test tests::input_shed_drops_cmd_query_but_never_must_deliver ... ok
+test tests::lifecycle_busy_refuses_before_local_session_attach ... ok
+test tests::legacy_claim_drops_replay_copy_before_sending_release ... ok
+test composing::tests::the_table_is_bounded ... ok
+test tests::lifecycle_teardown_during_restart_gap_does_not_leak_custody ... ok
+test tests::lifecycle_obligations_are_bounded_before_session_custody ... ok
+test tests::line_shed_emits_busy_notice ... ok
+test tests::replay_custody_is_per_connection_bounded_and_exactly_released ... ok
+test tests::linkdead_cleanup_holds_lifecycle_capacity_until_session_gone ... ok
+test tests::resync_orders_full_roster_before_readiness_barrier ... ok
+test tests::request_after_boundary_down_fails_fast ... ok
+test tests::resync_readiness_barrier_times_out_and_teardown_drains_waiter ... ok
+test tests::reverse_slow_client_detach_is_linkdead_then_session_gone ... ok
+test tests::service_request_id_exhaustion_fails_before_enqueue ... ok
+test tests::siteban_refresh_reloads_wholesale_and_is_idempotent ... ok
+test tests::service_request_waiters_are_bounded_and_refused_before_enqueue ... ok
+test tests::version_skew_never_trips_the_crash_guard ... ok
+test tests::siteban_refresh_ejects_live_connections_from_banned_addresses ... ok
+test tests::tempban_lift_reaches_each_guard_once_and_cannot_clear_a_siteban ... ok
+test tests::uncertain_old_instance_exit_fail_stops_without_respawn ... ok
+test web_bridge::tests::a_busy_or_absent_world_is_never_a_credential_refusal ... ok
+test web_bridge::tests::a_store_that_cannot_answer_is_unavailable_not_refused ... ok
+test web_bridge::tests::tokens_are_64_hex_chars_and_unique ... ok
+test web_bridge::tests::token_hash_is_sha256_hex ... ok
+test web_bridge::tests::failed_resume_conn_up_restores_linkdead_without_conn_down ... ok
+test discord_bridge::tests::the_idle_sweep_detaches_idle_and_deaf_follows_but_not_scene_members ... ok
+test discord_bridge::tests::in_game_controls_follow_unfollow_and_retune_quiet ... ok
+test discord_bridge::tests::auto_follow_attaches_when_the_last_terminal_goes_linkdead ... ok
+test discord_bridge::tests::follow_attaches_a_structured_connection_of_the_characters_session ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running unittests src/main.rs (target/debug/deps/mush_gateway-c9b4235fdb801815)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/arena_custody_split.rs (target/debug/deps/arena_custody_split-a9142bee6af0e64a)
+
+running 3 tests
+test a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line ... ok
+test the_arena_surface_survives_the_split_and_a_server_restart ... ok
+test a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.46s
+
+     Running tests/arena_story_split.rs (target/debug/deps/arena_story_split-1b77398b971ba748)
+
+running 1 test
+test the_story_is_the_same_story_through_the_gateway has been running for over 60 seconds
+test the_story_is_the_same_story_through_the_gateway ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 69.30s
+
+     Running tests/authoritative_process_kill.rs (target/debug/deps/authoritative_process_kill-4595e06f8433e92a)
+
+running 3 tests
+test authoritative_direct_process_worker ... ok
+test authoritative_server_process_worker ... ok
+test split_gateway_recovers_across_authoritative_process_cuts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli_args.rs (target/debug/deps/cli_args-08585fce1a7ed908)
+
+running 6 tests
+test config_without_a_value_is_refused ... ok
+test help_exits_zero_with_the_usage ... ok
+test a_repeated_config_is_refused ... ok
+test a_mistyped_flag_is_refused_and_named ... ok
+test an_explicit_config_that_is_not_there_is_refused ... ok
+test flags_from_the_other_binaries_are_refused ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/front_door_split.rs (target/debug/deps/front_door_split-c6de782f9d836d67)
+
+running 1 test
+test two_accounts_made_after_boot_claim_a_slot_each_through_the_gateway ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.43s
+
+     Running tests/restart_survival.rs (target/debug/deps/restart_survival-8738fdcdf2ede3bb)
+
+running 5 tests
+test server_self_exit_auto_restarts_without_dropping_players ... ok
+test restart_mid_scene_resumes_in_current_room ... ok
+test client_disconnect_during_gap_leaves_survivor_intact ... ok
+test server_restart_keeps_connections_and_world ... ok
+test crash_loop_guard_gives_up_without_dropping_players ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.09s
+
+     Running tests/server_panic_relaunch.rs (target/debug/deps/server_panic_relaunch-ee4bb40421c34596)
+
+running 5 tests
+test ws01_s8_server_worker ... ok
+
+running 1 test
+test ws01_s8_server_worker ...
+running 1 test
+test ws01_s8_server_worker ...
+thread 'tokio-rt-worker' (1336468) panicked at crates/mush-server/src/process_fault.rs:197:9:
+WS01-S8 armed world-turn fault on "@ws01s8-fault"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test an_in_game_shutdown_exits_the_forked_server_cleanly ... ok
+mush-server: world task faulted at engine.step: WS01-S8 armed world-turn fault on "@ws01s8-fault"
+test a_faulted_world_exits_the_forked_server_non_zero ... ok
+test a_faulted_world_is_relaunched_and_the_session_keeps_playing ... ok
+test a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.03s
+
+     Running tests/supervision_abandoned.rs (target/debug/deps/supervision_abandoned-7a6eec7f89ae5657)
+
+running 2 tests
+test a_gateway_nobody_handed_the_restart_trigger_keeps_serving ... ok
+test an_abandoned_supervisor_is_visible_then_fatal ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.20s
+
+     Running tests/tui_split.rs (target/debug/deps/tui_split-493707094e9c15c1)
+
+running 1 test
+test the_split_gateway_paints_the_cockpit_on_screen_zero ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.12s
+
+     Running tests/two_process_e2e.rs (target/debug/deps/two_process_e2e-782155338cb40506)
+
+running 4 tests
+test two_process_connect_play_boot_disconnect ... ok
+test split_siteban_reaches_the_gateway_without_a_restart ... ok
+test split_siteban_expiry_stops_blocking_without_any_command ... ok
+test two_process_multiconnect_linkdead_and_newpassword ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.19s
+
+     Running tests/two_process_llm.rs (target/debug/deps/two_process_llm-920abe1b8e7bfc0f)
+
+running 1 test
+test the_split_world_task_asks_its_provider ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.02s
+
+     Running tests/web_restart_survival.rs (target/debug/deps/web_restart_survival-1b5024a74ce7f82f)
+
+running 1 test
+test web_connection_survives_server_restart_with_world_intact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.58s
+
+     Running tests/web_split_e2e.rs (target/debug/deps/web_split_e2e-89a2f534ef7f04ce)
+
+running 1 test
+test web_client_serves_through_split_gateway ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_net_ssh-230c64e4767bcecc)
+
+running 315 tests
+test assets::tests::bless ... ok
+test assets::tests::the_tones_are_wav_files_w11term_accepts ... ok
+test assets::tests::a_pack_that_breaks_a_rule_is_refused ... ok
+test backlog::tests::an_empty_page_is_terminal_and_missing_flags_default ... ok
+test caps::tests::caps_defaults_zero_dims ... ok
+test assets::tests::paths_normalise_and_never_climb ... ok
+test caps::tests::color_depth_table ... ok
+test editor::tests::backspace_and_del_edit ... ok
+test editor::tests::arrows_and_midline_insert ... ok
+test caps::tests::utf8_table ... ok
+test editor::tests::crlf_submits_once_lf_alone_submits ... ok
+test editor::tests::ctrl_c_clears_line ... ok
+test backlog::tests::a_malformed_page_is_rejected_whole ... ok
+test editor::tests::ctrl_d_empty_is_eof_quit_midline_deletes ... ok
+test backlog::tests::the_gateway_page_round_trips_including_a_null_actor_and_every_kind ... ok
+test editor::tests::ctrl_w_kills_word ... ok
+test editor::tests::delete_key_csi_3_tilde ... ok
+test editor::tests::ctrl_u_kills_to_start ... ok
+test editor::tests::has_visible_line_tracks_prompt_and_buffer ... ok
+test editor::tests::decoded_control_chars_are_rejected ... ok
+test editor::tests::history_skips_empty_and_duplicate_lines ... ok
+test editor::tests::history_up_down ... ok
+test editor::tests::home_end_ctrl_a_e ... ok
+test editor::tests::invalid_utf8_is_dropped_with_bell ... ok
+test editor::tests::history_caps_at_limit ... ok
+test editor::tests::masked_mode_echoes_stars_and_skips_history ... ok
+test editor::tests::midline_insert_redraws_fully ... ok
+test editor::tests::noecho_mode_emits_nothing_but_newline ... ok
+test editor::tests::plain_line_cr_submits_and_echoes ... ok
+test editor::tests::redraw_reprints_prompt_and_buffer ... ok
+test editor::tests::split_csi_across_feeds ... ok
+test editor::tests::forget_last_history_drops_the_sensitive_line ... ok
+test editor::tests::unknown_csi_sequences_are_swallowed ... ok
+test editor::tests::tab_is_ignored ... ok
+test editor::tests::utf8_multibyte_and_split_sequences ... ok
+test editor::tests::line_cap_rings_bell ... ok
+test editor::tests::ss3_arrows_work_like_csi ... ok
+test hostkey::tests::generate_persist_reload_roundtrip ... ok
+test line::tests::history_round_trip_and_cap ... ok
+test line::tests::insert_edit_and_move ... ok
+test mind_exec::tests::exact_command_vocabulary_has_no_shell_or_path_language ... ok
+test line::tests::kills_and_backspace ... ok
+test mind_exec::tests::selection_never_falls_back_when_requested_character_is_foreign ... ok
+test mind_exec::tests::oversized_chunk_and_cross_operation_fail_before_dispatch ... ok
+test line::tests::line_cap_holds ... ok
+test server::tests::an_event_that_renders_nothing_leaves_the_input_line_alone ... ok
+test server::tests::late_history_reply_cannot_consume_newer_request ... ok
+test server::tests::pty_echo_preference_survives_prompts_and_async_redraws ... ok
+test server::tests::pixel_encoder_reads_and_answers ... ok
+test server::tests::sounds_reads_and_answers ... ok
+test mind_exec::tests::split_utf8_and_json_chunks_are_preserved_and_second_document_refused ... ok
+test assets::tests::the_hello_names_the_shipped_pack ... ok
+test server::tests::the_coalescing_drain_remembers_a_room_queued_behind_the_wake ... ok
+test server::tests::the_last_room_shown_is_remembered_bare_or_as_a_reply ... ok
+test server::tests::pixel_stats_is_read_transport_side ... ok
+test tui::app::m6_workshop_tests::m6_flight_profile_prefill_needs_a_second_enter_and_current_seat ... ok
+test tui::app::m6_workshop_tests::m6_f10_edit_and_response_pump_use_typed_requests_only ... ok
+test tui::app::tests::a_clear_never_re_fetches_the_lines_that_arrived_after_it ... ok
+test tui::app::tests::a_backlog_page_prepends_oldest_first_above_the_live_tail ... ok
+test assets::tests::the_tree_is_served_read_only ... ok
+test assets::tests::the_shipped_pack_is_the_directory_and_passes ... ok
+test tui::app::tests::a_column_split_gives_every_pane_its_own_minimum ... ok
+test tui::app::m6_workshop_tests::m6_flight_waits_for_new_character_frame_even_if_old_panel_is_cached ... ok
+test tui::app::tests::a_hello_drops_every_open_ask ... ok
+test tui::app::tests::a_dead_seat_is_ended_by_the_unseated_map_answer ... ok
+test tui::app::tests::a_hello_rehydrates_the_active_screen ... ok
+test tui::app::tests::a_late_page_that_is_not_older_than_the_cursor_is_dropped ... ok
+test tui::app::tests::a_full_scrollback_says_so_instead_of_swallowing_the_gesture ... ok
+test tui::app::tests::a_malformed_page_stops_the_backlog_without_panicking ... ok
+test tui::app::tests::a_masked_prompt_never_inherits_a_half_typed_game_line ... ok
+test tui::app::tests::a_notice_lands_in_the_scrollback_with_its_category_and_action_hint ... ok
+test tui::app::m6_workshop_tests::m6_local_minds_never_reaches_game_line_and_source_reader_keeps_enter_local ... ok
+test tui::app::tests::a_narrative_backlog_reply_never_reaches_the_panel_store ... ok
+test tui::app::m6_workshop_tests::m6_trace_feed_is_private_to_workshop_and_not_retained_in_panels ... ok
+test tui::app::tests::a_page_never_evicts_the_live_tail_and_a_truncated_page_ends_the_backlog ... ok
+test tui::app::tests::a_differently_named_unit_feed_drives_the_tactical_screens ... ok
+test tui::app::tests::a_cleared_frame_empties_the_cockpit ... ok
+test tui::app::tests::an_empty_line_in_the_answer_box_cancels_the_ask ... ok
+test tui::app::tests::alt_letter_in_input_mode_performs_the_nav_binding_and_inserts_nothing ... ok
+test tui::app::tests::a_split_alt_burst_leaves_input_mode_keeps_the_draft_then_switches ... ok
+test tui::app::m6_workshop_tests::m6_workshop_returns_same_cockpit_frame_and_contact_budget ... ok
+test tui::app::tests::a_reply_lands_on_the_notices_pane_while_seated ... ok
+test tui::app::tests::an_unevicted_floor_says_there_is_simply_no_more ... ok
+test tui::app::tests::channel_enter_prefills_the_fallback_channel ... ok
+test tui::app::tests::channel_screen_splits_ic_and_ooc_with_ctrl_n_and_ctrl_o ... ok
+test tui::app::tests::a_text_ask_keeps_the_box_while_the_next_ask_waits ... ok
+test tui::app::tests::clear_hides_the_view_without_dropping_the_ring ... ok
+test tui::app::tests::a_restarted_world_is_asked_for_the_cockpit_off_screen_zero ... ok
+test tui::app::tests::an_expired_ask_is_never_painted ... ok
+test tui::app::tests::digits_switch_screens_in_nav_and_alt_digits_in_both_modes ... ok
+test tui::app::tests::ctrl_r_prefills_a_roll_and_tab_completes_sheet_traits ... ok
+test tui::app::tests::enter_enters_input_empty_or_prefilled_from_a_focused_row ... ok
+test tui::app::tests::entry_queries_cover_the_manifest_and_the_screen ... ok
+test tui::app::tests::enter_on_a_typed_line_submits_and_stays_in_input_mode ... ok
+test tui::app::tests::esc_keeps_the_draft_and_the_next_enter_restores_it ... ok
+test tui::app::tests::entry_queries_prime_the_first_narrative_page ... ok
+test tui::app::tests::a_panel_row_wider_than_its_pane_wraps_and_keeps_its_highlight ... ok
+test tui::app::tests::an_expired_front_ask_is_evicted_before_it_can_eat_a_key ... ok
+test tui::app::tests::gutter_lines_wrap_with_a_hanging_indent_and_never_bleed_left ... ok
+test tui::app::tests::hello_keeps_the_cursor_but_clears_the_latch ... ok
+test tui::app::tests::control_characters_in_panel_data_are_stripped ... ok
+test tui::app::tests::exits_are_keys_on_the_scene_screen_only ... ok
+test tui::app::tests::history_and_cursor_edits_match_the_line_editor ... ok
+test tui::app::tests::below_the_floor_the_keyboard_s_owner_is_drawn_and_a_letter_opens_the_box ... ok
+test tui::app::tests::esc_out_of_the_answer_box_cancels_the_ask_and_frees_the_queue ... ok
+test tui::app::tests::i2_a_dismissed_match_reopens_only_on_a_fresh_grid ... ok
+test tui::app::tests::i2_enter_on_a_contacts_row_moves_the_focus ... ok
+test tui::app::tests::i2_a_cleared_cockpit_keeps_the_replay_and_its_ground ... ok
+test tui::app::tests::help_overlay_toggles_and_legend_follows_the_mode ... ok
+test tui::app::tests::i2_an_unavailable_answer_closes_the_picture_and_dismisses_the_match ... ok
+test tui::app::tests::i4_a_live_keyframe_closes_an_open_replay ... ok
+test tui::app::tests::i4_enter_on_a_live_contacts_row_moves_the_focus ... ok
+test tui::app::tests::i2_a_seat_keeps_the_cockpit_and_closes_an_open_picture ... ok
+test tui::app::tests::deltas_resync_once_and_unknown_feeds_never_paint ... ok
+test tui::app::tests::i4_a_live_picture_opens_screen_zero_and_asks_only_the_ground ... ok
+test tui::app::tests::i4_the_heal_re_asks_a_quiet_live_picture ... ok
+test tui::app::tests::mode_resets_on_resume_and_masked_prompts_open_the_box ... ok
+test tui::app::tests::local_commands_and_detach ... ok
+test tui::app::tests::more_false_stops_asking_and_marks_the_floor ... ok
+test tui::app::tests::one_page_in_flight_and_the_latch_ages ... ok
+test tui::app::tests::paging_uses_the_oldest_seq_as_the_next_cursor ... ok
+test tui::app::tests::i4_x_and_the_steps_are_inert_on_a_live_picture ... ok
+test tui::app::tests::priming_and_live_delivery_deduplicate_in_both_orders ... ok
+test tui::app::tests::request_overlay_answers_across_kinds ... ok
+test tui::app::tests::i2_the_picture_steps_focuses_and_closes_on_its_own_keys ... ok
+test tui::app::tests::i4_watching_false_closes_the_live_picture_and_dismisses_it ... ok
+test tui::app::tests::i2_the_grid_opens_screen_zero_and_the_document_is_asked_once ... ok
+test tui::app::tests::screen_and_entry_queries_are_gated_on_the_pane_feed ... ok
+test tui::app::tests::shift_tab_moves_focus_back_in_nav_and_is_inert_in_input ... ok
+test tui::app::tests::placeholders_render_their_declared_text_and_degrade_before_every_live_pane ... ok
+test tui::app::tests::sticky_mode_prefixes_and_explicit_prefixes_win ... ok
+test tui::app::tests::scrollback_ring_is_capped_and_pgup_scrolls ... ok
+test tui::app::tests::prepending_does_not_move_the_reader ... ok
+test tui::app::tests::switching_onto_the_cockpit_arms_the_latch_on_its_map_ask ... ok
+test tui::app::tests::the_contacts_pane_prefills_lock_and_scan_and_sends_neither ... ok
+test tui::app::tests::the_heal_timer_asks_for_a_lost_map_without_a_frame ... ok
+test tui::app::tests::the_highlighted_contact_survives_a_row_appearing_above_it ... ok
+test tui::app::tests::request_overlay_queues_and_answers_oldest_first ... ok
+test tui::app::tests::tab_badges_follow_mail_notices_and_channel_unread ... ok
+test tui::app::tests::the_map_pane_rows_never_wrap ... ok
+test tui::app::tests::the_pull_key_re_asks_the_cockpit_and_a_missing_map ... ok
+test tui::app::tests::the_first_frame_of_a_match_opens_the_cockpit_and_the_next_one_does_not ... ok
+test tui::app::tests::the_map_is_pulled_once_every_two_seconds_until_it_arrives ... ok
+test tui::app::tests::the_request_queue_is_capped_at_the_engine_s_own_limit ... ok
+test tui::app::tests::the_history_local_command_asks_for_a_page ... ok
+test tui::app::tests::the_notices_ring_resets_on_a_new_match_and_on_the_cleared_frame ... ok
+test tui::app::tests::the_tactical_screens_ask_for_the_unit_feed_on_entry_and_on_refresh ... ok
+test tui::app::tests::triggers_enter_input_with_the_prefix_and_slash_opens_the_palette ... ok
+test tui::app::tests::the_tactical_screens_ask_nothing_on_a_manifest_without_the_unit_feed ... ok
+test tui::app::tests::unbound_keys_do_nothing_and_bound_letters_insert_in_input_mode ... ok
+test tui::app::tests::the_unit_screen_subscribes_the_contacts_feed_only_when_the_manifest_carries_it ... ok
+test tui::app::tests::the_scroll_follows_a_wrapped_highlight_down_the_pane ... ok
+test tui::backend::tests::bright_color_uses_9x_form ... ok
+test tui::backend::tests::clear_and_cursor_sequences ... ok
+test tui::backend::tests::color_depth_none_strips_sgr ... ok
+test tui::backend::tests::contiguous_cells_skip_redundant_cup ... ok
+test tui::backend::tests::draw_emits_cup_sgr_and_glyph ... ok
+test tui::backend::tests::geometry_is_clamped_to_a_sane_maximum ... ok
+test tui::backend::tests::non_contiguous_cells_reissue_cup ... ok
+test tui::backend::tests::size_reflects_geometry ... ok
+test tui::cockpit_text::tests::a_biped_gets_its_own_doll_and_a_lookless_unit_none ... ok
+test tui::cockpit_text::tests::the_contacts_point_from_the_camera_nearest_first ... ok
+test tui::cockpit_text::tests::the_doll_is_the_looks_grid_coloured_by_what_is_left ... ok
+test tui::app::tests::the_tab_goes_with_the_seat ... ok
+test tui::cockpit_text::tests::the_weapons_show_heat_readiness_rounds_and_odds ... ok
+test tui::helm::tests::a_held_turn_is_extended_before_it_runs_out ... ok
+test tui::helm::tests::a_helm_without_a_frame_orders_nothing ... ok
+test tui::helm::tests::a_turn_leads_by_a_pulse_and_a_release_orders_the_shown_heading ... ok
+test tui::helm::tests::an_unanswered_order_is_not_drawn_past_its_pulse ... ok
+test tui::helm::tests::arcs_are_short ... ok
+test tui::helm::tests::the_turn_rate_is_measured_while_short_of_the_order ... ok
+test tui::keys::tests::a_dcs_reply_is_swallowed_and_xtversion_is_the_terminals_name ... ok
+test tui::keys::tests::alt_is_esc_plus_printable_in_one_burst ... ok
+test tui::keys::tests::csi_and_ss3_sequences_including_shift_tab_and_fkeys ... ok
+test tui::keys::tests::graphics_replies_and_da1_are_markers_and_other_apcs_vanish ... ok
+test tui::keys::tests::printable_control_and_enter ... ok
+test tui::keys::tests::utf8_assembles_across_bursts_and_c1_is_dropped ... ok
+test tui::app::tests::unseen_notices_show_on_the_status_line_and_clear_when_the_tail_returns ... ok
+test tui::cockpit_text::tests::the_picture_takes_the_top_two_thirds ... ok
+test tui::mind_workshop::tests::m6_library_lifecycle_uses_exact_loaded_base_and_explicit_confirmation ... ok
+test tui::mind_workshop::tests::m6_trace_requires_correlated_selector_and_revokes_late_feed_or_reply ... ok
+test tui::mind_workshop::tests::m6_workshop_all_widgets_exact_integers_and_rule_cap ... ok
+test tui::mind_workshop::tests::m6_workshop_rule_prefill_uses_server_grammar_not_english ... ok
+test tui::mind_workshop::tests::m6_workshop_session_reset_forgets_source_and_rejects_late_reply ... ok
+test tui::app::tests::vitals_strip_shows_and_prompt_shows_without_it ... ok
+test tui::mind_workshop::tests::m6_workshop_slider_changes_only_on_enter_and_uses_exact_base ... ok
+test tui::mind_workshop::tests::m6_workshop_source_is_read_only_and_revision_cannot_mutate ... ok
+test tui::mind_workshop::tests::m6_workshop_stale_refusal_keeps_input_and_original_profile_target ... ok
+test tui::mind_workshop::tests::m6_workshop_unspellable_rule_never_becomes_an_empty_delete ... ok
+test tui::panels::tests::a_delta_without_a_merge_function_asks_for_exactly_one_resync ... ok
+test tui::mind_workshop::tests::m6_workshop_whole_edit_reads_after_success_without_auto_resubmission ... ok
+test tui::panels::tests::a_reply_of_several_lines_rings_line_by_line ... ok
+test tui::panels::tests::a_sheet_delta_applies_on_a_matching_base_ignores_stale_and_self_heals_on_a_gap ... ok
+test tui::app::tests::the_cockpit_degrades_damage_then_weapons_then_contacts ... ok
+test tui::panels::tests::a_sheet_delta_before_any_keyframe_asks_for_a_resync ... ok
+test tui::panels::tests::a_stale_resync_latch_re_arms_after_RESYNC_LATCH_S ... ok
+test tui::panels::tests::comsys_backlog_and_weather_deltas_merge ... ok
+test tui::panels::tests::a_keyframe_clears_the_latch_and_the_ring_caps_at_two_hundred ... ok
+test tui::mind_workshop::tests::m6_trace_public_rows_and_flight_station_fallback_are_bounded ... ok
+test tui::panels::tests::forget_forgets_the_cursor_and_the_latch ... ok
+test tui::panels::tests::ic_rejoin_clears_history_and_rejects_an_old_backlog_epoch ... ok
+test tui::panels::tests::the_cockpit_ring_is_one_match_capped_and_replies_only_while_seated ... ok
+test tui::panels::tests::rolls_ring_and_vitals_and_sheet_lookups ... ok
+test tui::panels::tests::views_follow_the_gap_detecting_disposition ... ok
+test tui::app::tests::below_the_floor_every_screen_says_so_and_comes_back ... ok
+test tui::app::tests::zero_reaches_the_cockpit_only_for_a_viewer_the_arena_sends_frames_to ... ok
+test tui::pixel::tests::a_sixel_picture_fills_its_cell_box ... ok
+test tui::mind_workshop::tests::m6_workshop_long_unicode_rules_and_flight_profiles_are_reachable ... ok
+test tui::pixel::tests::a_forced_encoder_opens_without_the_probe_and_off_never_does ... ok
+test tui::panels::tests::the_notice_sentence_tag_is_the_web_s ... ok
+test tui::panels::tests::a_tactics_unit_delta_rings_at_most_fifty_rows_and_asks_for_exactly_one_keyframe ... ok
+test tui::pixel::tests::the_config_is_held_to_sane_bounds ... ok
+test tui::panels::tests::keyframes_replace_and_unknown_feeds_are_bounded ... ok
+test tui::app::tests::every_screen_paints_at_every_size_without_panic_and_degrades_in_order ... ok
+test tui::pixel::tests::the_doll_page_is_drawn_on_change_and_deaf_to_the_helm ... ok
+test tui::pixel::tests::the_frame_is_shaped_to_the_top_two_thirds ... ok
+test tui::pixel::tests::the_image_box_keeps_the_aspect_and_fits ... ok
+test tui::pixel::tests::the_look_swings_the_camera_and_orders_nothing ... ok
+test tui::pixel::tests::the_picture_reads_the_feeds_the_tui_holds ... ok
+test tui::pixel::tests::the_probe_is_ok_before_da1_or_nothing ... ok
+test tui::pixel::tests::the_replay_clock_plays_seeks_and_stops_at_the_end ... ok
+test tui::pixel::tests::the_chart_picture_is_drawn_on_change_and_fetched_every_minute ... ok
+test tui::render::tests::a_capability_whose_source_is_not_in_the_frame_still_renders ... ok
+test tui::render::tests::a_crowded_legend_is_cut_to_the_pane_and_counts_the_rest ... ok
+test tui::render::tests::a_delta_before_any_keyframe_then_the_keyframe_leaves_the_before_after_table_consistent ... ok
+test tui::render::tests::a_generic_view_cut_by_the_row_or_field_cap_says_so ... ok
+test tui::render::tests::a_null_keyframe_still_shows_the_after_action_ring ... ok
+test tui::render::tests::a_null_or_garbage_unit_frame_is_the_no_unit_line_on_every_pane ... ok
+test tui::render::tests::a_truncated_generic_list_says_so ... ok
+test tui::render::tests::an_elided_delta_and_a_truncated_view_both_say_what_is_missing ... ok
+test tui::render::tests::canonical_rules_replace_the_incomplete_first_fire_convenience_line ... ok
+test tui::render::tests::catchup_words_match_the_committed_cases ... ok
+test tui::render::tests::catchup_words_refuse_a_malformed_report_and_bound_every_field ... ok
+test tui::render::tests::control_bytes_in_room_fields_cannot_break_the_fact_gutter ... ok
+test tui::render::tests::floor_line_names_the_floor_and_the_terminal ... ok
+test tui::render::tests::gauge_bar_tolerates_extreme_bounds ... ok
+test tui::render::tests::m1a3_a_contact_row_ends_in_the_compact_aspect_and_odds_tail ... ok
+test tui::render::tests::m1a3_a_frame_without_weapons_renders ... ok
+test tui::render::tests::m1b3_an_armed_weapon_prints_its_arming_line_under_its_row ... ok
+test tui::render::tests::m1b3_the_three_new_refusals_are_said ... ok
+test tui::render::tests::m1b4_slot_words_say_every_why ... ok
+test tui::render::tests::m5_d14_the_catch_up_says_its_own_mind_in_three_renderers ... ok
+test tui::pixel::tests::the_view_opens_only_on_support_and_closes_with_a_free ... ok
+test tui::render::tests::m5_the_mind_tail_draws_four_rows_under_the_weapons ... ok
+test tui::render::tests::mail_rows_prefill_and_channels_rows_key_by_name ... ok
+test tui::render::tests::markers_go_down_in_frame_order_and_a_contact_off_the_window_is_not_drawn ... ok
+test tui::render::tests::nothing_on_the_cockpit_is_non_ascii_without_utf8 ... ok
+test tui::render::tests::notice_words_cleans_and_bounds_every_field ... ok
+test tui::render::tests::notice_words_matches_the_committed_pairs ... ok
+test tui::render::tests::o2_the_scope_row_carries_the_pods_switch ... ok
+test tui::render::tests::ordered_rule_summaries_drop_invalid_slots_and_duplicate_or_unknown_actions ... ok
+test tui::render::tests::ordered_rules_show_every_slot_at_the_pane_floor_even_on_an_unarmed_hull ... ok
+test tui::render::tests::roll_narration_takes_the_roll_gutter_and_sys_takes_the_clock ... ok
+test tui::render::tests::room_renders_the_facts_and_channel_the_bracket ... ok
+test tui::render::tests::say_puts_the_speaker_in_the_gutter ... ok
+test tui::render::tests::the_before_after_pane_ignores_a_ring_row_for_another_object_and_prints_its_object_in_the_journal ... ok
+test tui::render::tests::the_cockpit_panes_read_the_frame_and_the_scan_table ... ok
+test tui::render::tests::the_cockpit_panes_wait_for_the_ground_and_empty_on_a_cleared_frame ... ok
+test tui::render::tests::the_cockpit_window_follows_the_pilot_and_clamps_at_the_edge ... ok
+test tui::render::tests::the_compact_sections_pane_never_drops_a_cell ... ok
+test tui::render::tests::the_damage_pane_packs_facet_cells_whole ... ok
+test tui::render::tests::the_legend_keeps_whole_entries_and_help_at_the_floor ... ok
+test tui::render::tests::the_legend_names_the_contact_that_owns_its_cell ... ok
+test tui::render::tests::the_map_sheds_its_chrome_at_four_three_and_two_rows ... ok
+test tui::render::tests::the_notice_word_tables_are_the_web_s ... ok
+test tui::render::tests::the_notices_pane_answers_the_tail_of_the_ring ... ok
+test tui::render::tests::the_status_pane_prints_the_receiver_and_the_tanks_own_limit ... ok
+test tui::render::tests::the_tab_strip_names_every_tab_at_one_twenty_and_elides_only_for_badges ... ok
+test tui::render::tests::unit_panes_render_the_frame_and_colour_only_from_state ... ok
+test tui::render::tests::view_rows_render_list_and_detail_shapes ... ok
+test tui::render::tests::view_rows_reproduce_actions_and_never_leak_undeclared_fields ... ok
+test tui::render::tests::vitals_rows_render_each_widget_and_clamp ... ok
+test tui::render::tests::vitals_status_tabs_and_legend_lines ... ok
+test tui::render::tests::who_rail_marks_here_and_counts ... ok
+test tui::render::tests::wrap_spans_breaks_at_spaces_keeps_styles_and_hard_splits_long_words ... ok
+test tui::replay::tests::every_outcome_fits_the_left_pane_at_four_digits ... ok
+test tui::replay::tests::i4_a_live_contacts_row_is_one_line_in_the_pane_at_the_floor ... ok
+test tui::replay::tests::i4_a_live_picture_reads_its_rows_and_its_words ... ok
+test tui::replay::tests::i4_the_live_status_rows_fit_the_left_pane_at_their_widest ... ok
+test tui::replay::tests::o1_the_replay_heading_carries_the_mode_tag ... ok
+test tui::replay::tests::the_clock_and_the_cadence_read_as_line_mode_reads_them ... ok
+test tui::replay::tests::the_last_keyframe_of_a_whole_replay_answers_to_the_end ... ok
+test tui::screen::tests::a_mutating_run_or_a_reserved_letter_fails_the_probe ... ok
+test tui::screen::tests::builtins_pass_the_probe_and_the_scene_screen_reserves_exit_letters ... ok
+test tui::screen::tests::i2_the_probe_holds_the_picture_table_to_every_rule ... ok
+test tui::screen::tests::the_cockpit_screen_is_last_gated_and_orders_nothing_from_a_bare_key ... ok
+test tui::screen::tests::the_digit_range_takes_zero_and_stops_at_nine ... ok
+test tui::screen::tests::the_run_allowlist_matches_the_committed_fixture_and_writes_nothing ... ok
+test tui::screen::tests::twelve_screens_validate_and_the_tactical_two_stay_inside_every_cap ... ok
+test tui::sheet::tests::malformed_payloads_degrade_instead_of_panicking ... ok
+test tui::sheet::tests::pips_and_bars_are_bounded ... ok
+test tui::sheet::tests::walks_every_kind_and_skips_absent_fields ... ok
+test tui::sound::tests::a_burst_sounds_its_most_important_name_the_pack_has ... ok
+test tui::sound::tests::a_plain_terminal_rings_its_bell_for_the_kinds_that_matter ... ok
+test tui::sound::tests::a_w11term_hears_every_kind_by_name_and_the_alarm_repeats ... ok
+test tui::sound::tests::a_w11term_is_told_the_pack_and_told_again_slowly ... ok
+test tui::sound::tests::off_is_silent_and_names_are_checked ... ok
+test tui::tests::a_seated_frames_notices_ring ... ok
+test tui::pixel::tests::r_swaps_the_size_and_u_uncaps_the_clock ... ok
+test tui::pixel::tests::the_da1_reply_says_sixel_and_the_view_draws_it ... ok
+test tui::pixel::tests::slow_writes_skip_a_frame_then_step_down_and_clean_ones_step_back_up ... ok
+test tui::tests::frame_text_reads_the_painted_buffer ... ok
+test tui::tests::ctrl_g_on_a_replay_draws_the_match ... ok
+test tui::tests::paint_produces_frame_bytes_with_who_and_scrollback ... ok
+test tui::tests::resize_repaint_is_safe ... ok
+test tui::tests::ctrl_g_on_the_chart_screen_draws_the_orbital_view ... ok
+test tui::pixel::tests::the_arrows_steer_the_tank_toggled_or_held ... ok
+test welcome::tests::parse_table ... ok
+test tui::tests::tui_opens_on_the_last_room_it_was_shown ... ok
+test tui::tests::the_text_cockpit_chats_while_flying ... ok
+test tui::pixel::tests::the_fixture_scene_paints_once_then_skips_until_the_camera_moves ... ok
+test tui::pixel::tests::a_sixel_picture_is_resent_after_text_and_wiped_when_its_box_moves ... ok
+test tui::tests::a_sixel_terminal_gets_a_sixel_picture_resent_after_a_clear_and_wiped_on_close ... ok
+test tui::tests::the_probe_reply_opens_the_pixel_view_and_paint_carries_a_kitty_frame ... ok
+test tui::render::tests::m5_every_mind_tail_row_is_at_most_44_columns ... ok
+
+test result: ok. 315 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+
+     Running tests/chart_screen.rs (target/debug/deps/chart_screen-7d83f38bb135369d)
+
+running 2 tests
+test a3b_the_chart_screen_is_the_eleventh_on_the_letter_c ... ok
+test a3b_alt_c_opens_the_chart_and_draws_the_blessed_frame ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/editor_proptest.rs (target/debug/deps/editor_proptest-964250ae8095be29)
+
+running 4 tests
+test chunking_is_transparent ... ok
+test feed_never_panics_and_keeps_invariants ... ok
+test cap_holds_under_flood ... ok
+test feed_hostile_alphabet_keeps_invariants ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.72s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-050f96d303b939ba)
+
+running 30 tests
+test a_connection_that_never_asks_for_history_sees_none_of_it ... ok
+test an_unsolicited_narrative_panel_prints_nothing_in_line_mode ... ok
+test a_tempbanned_address_is_told_why_and_offered_no_method ... ok
+test a_room_seen_in_tui_mode_is_remembered_for_the_next_tui ... ok
+test line_mode_history_is_read_inside_a_world_prompt ... ok
+test line_mode_history_more_pages_from_the_cursor ... ok
+test line_mode_history_prints_the_page_oldest_first ... ok
+test line_mode_plus_history_is_the_same_command ... ok
+test char_select_menu_newchar_and_cap ... ok
+test mind_exec_close_before_eof_discards_partial_source_without_invocation ... ok
+test pty_echo_zero_keeps_input_private_while_delivering_commands ... ok
+test play_flow_create_connect_say_quit ... ok
+test pubkey_plus_char_direct_enters_owned_character ... ok
+test pubkey_auth_lands_in_game ... ok
+test pubkey_plus_unowned_char_falls_to_char_select ... ok
+test sm4b_the_arrival_line_and_the_other_map_print_over_ssh ... ok
+test mind_exec_rejects_password_foreign_character_unknown_command_and_oversize ... ok
+test mind_exec_signed_key_pull_push_check_keep_exact_chunks_and_final_status ... ok
+test sm7_the_cycle_line_prints_over_ssh ... ok
+test the_front_door_is_unchanged_for_an_unblocked_address ... ok
+test the_asset_pack_is_served_over_sftp_to_a_player_in_game ... ok
+test tui_entry_surfaces_the_primed_history_page ... ok
+test tui_enter_shows_frame_then_notui_restores_line_mode ... ok
+test tui_opens_on_the_room_line_mode_was_last_shown ... ok
+test account_username_password_auth_auto_connects ... ok
+test a_sitebanned_address_gets_its_own_wording ... ok
+test auth_none_advertises_publickey_and_key_miss_is_not_counted ... ok
+test in_band_lockout_closes_open_welcome_screen ... ok
+test wrong_pubkey_falls_back_to_password ... ok
+test the_pump_tick_re_asks_a_lost_arena_map ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.72s
+
+     Running tests/quarry_screen.rs (target/debug/deps/quarry_screen-6ff1547a4e4e8be5)
+
+running 12 tests
+test sm9_a_rig_outside_the_window_lends_no_slot_digit ... ok
+test sm9_a_moving_rig_is_placed_along_its_leg ... ok
+test sm9_body_ground_is_asked_only_when_published ... ok
+test sm9_the_quarry_is_the_twelfth_screen_on_the_letter_q ... ok
+test sm9_a_frame_that_drops_the_picked_rig_clears_the_pick ... ok
+test sm9_the_rigs_and_readings_panes_read_the_frames_words ... ok
+test sm10_a_reason_frame_that_clears_the_pick_re_asks_once ... ok
+test sm9_a_status_keyframe_re_pulls_the_quarry ... ok
+test sm9_alt_q_asks_for_both_frames_and_no_key_submits ... ok
+test sm9_the_map_pane_draws_without_a_site_frame ... ok
+test sm9_the_side_pane_reads_its_sentences_from_their_keys ... ok
+test sm9_the_blessed_frames_draw_byte_identically_at_120_columns ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/site_map.rs (target/debug/deps/site_map-d79fed8acd2e4b08)
+
+running 1 test
+test sm4b_the_tui_decoder_draws_the_line_print ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/tui_golden.rs (target/debug/deps/tui_golden-f367186f50da8368)
+
+running 25 tests
+test a_narrow_legend_keeps_the_contacts_and_counts_the_spot_it_dropped ... ok
+test a_window_away_from_the_corner_subtracts_its_own_origin ... ok
+test i2_the_replay_map_composes_the_committed_grid ... ok
+test a_spot_under_the_pilot_s_own_marker_is_hidden_and_the_marker_is_never_listed ... ok
+test i2_the_status_pane_words_every_cut_inside_the_left_pane ... ok
+test a_malformed_catch_up_rings_nothing ... ok
+test i4_the_live_picture_paints_at_the_floor ... ok
+test a_line_tank_s_damage_is_whole_at_the_floor ... ok
+test o1_the_replay_map_heading_carries_the_mode_tag ... ok
+test m5_the_tui_and_the_web_draw_the_same_mind_tail ... ok
+test narrative_history_golden_frame ... ok
+test the_cockpit_map_composes_the_committed_grid ... ok
+test i2_the_replay_screen_paints_at_both_budget_sizes ... ok
+test a_reclaims_catch_up_rings_before_the_frames_notices ... ok
+test m5_the_mind_tail_takes_the_weapons_place_on_an_unarmed_hull ... ok
+test m5_the_replay_and_watch_screens_draw_no_mind_tail ... ok
+test every_screen_has_a_golden_at_the_budget_size ... ok
+test the_before_after_pane_shows_both_sides_at_one_twenty ... ok
+test the_cockpit_screen_reads_the_frame_and_nothing_else ... ok
+test the_vitals_strip_paints_the_character_first_and_counts_what_it_cut ... ok
+test scene_screen_golden_frames ... ok
+test the_unit_screen_keeps_every_section_cell_on_screen ... ok
+test the_jammed_wreck_s_status_is_painted_whole_at_the_floor ... ok
+test the_floor_is_one_sentence_on_every_screen ... ok
+test the_cockpit_screen_paints_at_both_budget_sizes ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/tui_line_proptest.rs (target/debug/deps/tui_line_proptest-63fa8c88eb77530e)
+
+running 1 test
+test tui_input_mode_matches_the_line_editor ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.68s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_ruleset-31ef368dc0a3f48f)
+
+running 42 tests
+test chargen::tests::assess_counts_dots_above_base ... ok
+test chargen::tests::cap_violation_detected ... ok
+test chargen::tests::overspend_and_underspend_detected ... ok
+test doc::tests::track_round_trip ... ok
+test narration::tests::notes_follow_in_order_and_none_is_fine ... ok
+test doc::tests::typed_accessors_round_trip ... ok
+test doc::tests::approval_label ... ok
+test chargen::tests::state_machine_gates_and_finalizes ... ok
+test narration::tests::a_contested_line_names_both_sides_and_the_verdict ... ok
+test render::tests::pips_render ... ok
+test render::tests::staff_view_shows_staff_only ... ok
+test render::tests::golden_player_view_hides_staff_only ... ok
+test schema::tests::compose_appends_without_touching_base ... ok
+test render::tests::banner_shows_approval ... ok
+test schema::tests::default_data_sizes_derived_tracks ... ok
+test narration::tests::a_roll_line_has_the_fixed_span_layout ... ok
+test schema::tests::derived_expr_eval ... ok
+test schema::tests::duplicate_section_and_field_rejected ... ok
+test schema::tests::extend_unknown_section_errors ... ok
+test store::tests::migration_upgrades_on_read ... ok
+test store::tests::put_get_round_trip_identical ... ok
+test store::tests::migration_producing_invalid_data_is_quarantined_on_read ... ok
+test store::tests::put_rejects_invalid_without_writing ... ok
+test store::tests::set_field_validates ... ok
+test store::tests::set_map_entry_validates_element ... ok
+test store::tests::wound_penalty_reads_deepest_level ... ok
+test validate::tests::nested_map_and_list_validated ... ok
+test validate::tests::track_slot_count_follows_derived_size ... ok
+test validate::tests::unknown_field_flagged ... ok
+test validate::tests::wrong_type_reported ... ok
+test vitals::tests::frame_truncates_past_the_caps_instead_of_dropping ... ok
+test vitals::tests::from_sheet_lists_only_flagged_gaugeable_non_staff_fields ... ok
+test vitals::tests::keyframe_carries_schema_and_revision_delta_omits_schema_and_bases_on_prev ... ok
+test vitals::tests::pools_follow_the_generic_thresholds_and_clamp ... ok
+test schema::tests::unknown_derived_ref_rejected ... ok
+test vitals::tests::sheet_view_fingerprint_flips_on_schema_or_staff_visibility ... ok
+test validate::tests::default_data_is_valid ... ok
+test validate::tests::dots_out_of_range ... ok
+test validate::tests::enum_membership_and_text_len ... ok
+test vitals::tests::track_reports_level_penalty_and_state ... ok
+test store::tests::an_oversized_document_is_refused_without_writing ... ok
+test store::tests::a_document_under_the_byte_cap_is_written ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/i13_action_state_republish.rs (target/debug/deps/i13_action_state_republish-1ae5c605e61371be)
+
+running 6 tests
+test a_subject_without_a_sheet_gets_no_frame ... ok
+test a_foreign_owners_family_of_the_same_name_republishes_nothing_here ... ok
+test a_second_commit_republishes_a_sheet_delta_on_the_prior_revision ... ok
+test an_action_state_commit_republishes_the_subjects_vitals_and_sheet_to_them_alone ... ok
+test queried_keyframe_invalidates_next_push_baseline ... ok
+test one_commit_republishes_at_most_the_capped_number_of_subjects ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/toy_ruleset.rs (target/debug/deps/toy_ruleset-0d8ca8fef5b1ad63)
+
+running 8 tests
+test chargen_flow_via_framework ... ok
+test schema_composes_for_a_splat ... ok
+test sheet_namespace_is_claimed ... ok
+test staff_set_creates_and_validates ... ok
+test ruleset_trait_surface ... ok
+test store_round_trips_through_world_attr ... ok
+test staff_only_field_gate ... ok
+test web_query_emits_schema_and_filters_staff_fields ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_session-4e717a21b57beecb)
+
+running 12 tests
+test flood::tests::burst_then_throttle ... ok
+test conn::tests::a_poisoned_caps_lock_still_reads_and_writes ... ok
+test flood::tests::clock_going_backward_is_harmless ... ok
+test flood::tests::burst_clamped_to_one ... ok
+test flood::tests::refills_at_rate ... ok
+test poison::tests::a_poisoned_mutex_is_recovered_with_its_state_intact ... ok
+test flood::tests::sustained_rate_passes ... ok
+test sanitize::tests::sanitize_table ... ok
+test manager::tests::a_delta_with_the_retain_marker_is_not_retained_latest ... ok
+test poison::tests::a_poisoned_rwlock_is_recovered_on_both_sides ... ok
+test poison::tests::the_recovery_line_is_logged_once_per_process ... ok
+test manager::tests::a_poisoned_flood_bucket_keeps_its_charge_and_its_connection ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/resume.rs (target/debug/deps/resume-75bc4e0be44dac4a)
+
+running 28 tests
+test a_panel_without_the_marker_is_never_coalesced ... ok
+test a_typed_view_coalesces_with_the_pulse_frames_of_its_own_feed ... ok
+test broadcast_stamps_per_session_for_mixed_transports ... ok
+test broadcast_all_refuses_a_narrative - should panic ... ok
+test mistyped_sink_sends_are_refused_without_flagging ... ok
+test backlog_matching_reports_evicted_once_the_ring_rolls ... ok
+test backlog_matching_is_newest_first_narrative_only_and_pages_by_before_seq ... ok
+test revoked_private_mind_feed_does_not_replay_on_reconnect ... ok
+test ring_wraparound_evicts_oldest_and_reports_too_old ... ok
+test conn_scoped_sends_consume_seqs_but_never_replay ... ok
+test send_event_to_session_refuses_a_narrative - should panic ... ok
+test replay_since_rejects_a_seq_the_session_never_stamped ... ok
+test send_to_conn_keeps_plain_events_for_ansi ... ok
+test send_to_session_refuses_a_narrative - should panic ... ok
+test replay_preserves_append_order_and_content ... ok
+test seq_stays_monotonic_across_reconnects_and_replay_fills_the_gap ... ok
+test sessions_have_independent_seq_streams ... ok
+test coalescing_never_moves_the_too_old_boundary_and_leaves_the_backlog_alone ... ok
+test legacy_arc_send_path_stamps_and_rings_identically ... ok
+test slow_structured_client_is_flagged_like_ansi ... ok
+test semantic_receipts_are_bounded_acknowledged_and_redelivered ... ok
+test structured_vs_ansi_fanout_one_event_two_renders ... ok
+test stamped_ssh_live_identity_matches_history_without_ack_retention ... ok
+test two_retained_feeds_coalesce_independently ... ok
+test the_latest_slot_replays_a_frame_carrying_a_catch_up_unchanged ... ok
+test the_latest_slot_replays_each_feeds_newest_keyframe_merged_by_seq ... ok
+test the_latest_slot_replays_the_committed_view_frame_unchanged ... ok
+test a_thousand_retained_frames_leave_one_slot_entry_and_disturb_nothing_else ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/session.rs (target/debug/deps/session-66ef627855cb82f2)
+
+running 15 tests
+test attach_multiconnect_fanout_shares_the_arc ... ok
+test close_session_returns_all_handles ... ok
+test broadcast_reaches_every_connection ... ok
+test detach_with_others_remaining ... ok
+test linkdead_lifecycle_grace_expiry ... ok
+test caps_update_round_trips ... ok
+test conns_of_session_lists_handles_in_attach_order ... ok
+test flood_bucket_over_manager_with_fake_clock ... ok
+test flood_exemption_bypasses_the_throttle_for_a_character ... ok
+test query_flood_check_ignores_the_exempt_and_shares_the_bucket ... ok
+test slow_client_full_buffer_sets_dropped_flag ... ok
+test quit_and_boot_close_immediately ... ok
+test sanitize_is_exported_and_strips_esc ... ok
+test who_reports_session_facts ... ok
+test reconnect_cancels_linkdead ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mush_testkit-e5029fb6da030d50)
+
+running 14 tests
+test proc::tests::ansi_is_stripped ... ok
+test tests::assert_actor_saw_panics_with_dump - should panic ... ok
+test tests::fold_keeps_streams_and_moves_ledger_chunks ... ok
+test tests::fold_into_is_cumulative ... ok
+test tests::last_room_view_picks_last ... ok
+test tests::text_of_flattens_spans ... ok
+test tests::ic12_from_engine_wraps_a_booted_engine_and_connects_god ... ok
+test tests::narrative_shapes ... ok
+test tests::run_drains_outbox ... ok
+test tests::room_text_renders_all_sections ... ok
+test tests::seen_by_resolves_audiences ... ok
+test tests::reboot_into_keeps_a_toy_modules_document ... ok
+test tests::spawn_player_is_connected_in_limbo ... ok
+test tests::who_text_counts ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/acceptance.rs (target/debug/deps/acceptance-4bb816a42d63e7a1)
+
+running 9 tests
+test dig_walk_through_and_look ... ok
+test locked_exit_blocks_with_fail_message ... ok
+test desc_then_look_shows_desc ... ok
+test who_lists_connected_players ... ok
+test examine_own_vs_others_object ... ok
+test page_between_rooms ... ok
+test plain_player_cannot_dig ... ok
+test two_players_see_say_and_pose ... ok
+test help_at_dig_returns_usage ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ledger_boundary.rs (target/debug/deps/ledger_boundary-b647ed83c386b976)
+
+running 3 tests
+test a_failed_command_records_nothing ... ok
+test mutation_and_ledger_append_land_in_one_batch ... ok
+test ledger_tail_rehydrates_on_reboot ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/toy_ruleset.rs (target/debug/deps/toy_ruleset-2837d5462b2d1f34)
+
+running 14 tests
+test a_pool_resolves_only_against_real_sheet_traits ... ok
+test the_agent_profile_grounds_the_stored_sheet ... ok
+test a_second_owner_may_share_the_family_name_without_publishing ... ok
+test a_subtle_act_reaches_only_the_gated_sense_channel ... ok
+test a_willpower_backed_toy_roll_projects_onto_the_authoritative_action ... ok
+test the_onboarding_trio_gates_spawns_greets_and_lifts ... ok
+test a_real_sheet_query_reestablishes_the_next_push_keyframe ... ok
+test the_sheet_round_trips_and_hides_staff_fields ... ok
+test hiding_conceals_from_anyone_whose_awareness_misses_the_stealth ... ok
+test toy_roll_sizes_the_pool_from_the_stored_sheet ... ok
+test chargen_files_a_job_and_approval_stamps_the_sheet ... ok
+test the_seed_makes_toy_roll_reproducible ... ok
+test the_authoritative_roll_commits_once_per_point_and_republishes_the_subject ... ok
+test the_typed_post_image_rehydrates_into_a_fresh_composition ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/vehicle_console.rs (target/debug/deps/vehicle_console-4c36d05c475fe697)
+
+running 7 tests
+test ambient_is_opt_in_and_a_container_outranks_carried ... ok
+test a_pilot_link_operates_a_remote_console_and_survives_reboot ... ok
+test carried_console_powers_up_and_the_subject_is_what_mutates ... ok
+test two_carried_consoles_are_ambiguous_and_nothing_mutates ... ok
+test destroying_the_operated_object_retires_the_assignment ... ok
+test unreachable_consoles_leave_the_verb_undefined ... ok
+test exits_and_globals_beat_behavior_verbs_and_prefixes_do_not_reach ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/mushd-0ee76b97dfe5ca8c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mushd-e685b08be423bb9c)
+
+running 12 tests
+test tests::a_caught_fault_carries_its_site_and_payload ... ok
+test tests::a_clean_world_outcome_is_never_a_fault ... ok
+test tests::a_faulted_world_refuses_the_snapshot_latch_or_no_latch ... ok
+test tests::a_cancelled_world_task_is_a_failure ... ok
+test tests::a_real_join_error_is_a_fault_panicked_or_cancelled ... ok
+test tests::a_panicked_world_task_is_a_failure ... ok
+test tests::shutdown_bgsave_requires_clean_drain_and_clear_integrity ... ok
+test tests::each_failing_ending_explains_itself ... ok
+test tests::the_exit_codes_are_the_shared_vocabulary ... ok
+test tests::a_world_that_finished_cleanly_is_clean ... ok
+test tests::a_world_that_never_joins_times_out_at_the_bound ... ok
+test tests::the_join_bound_outlasts_the_worlds_own_grace ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/admin.rs (target/debug/deps/admin-54abac165220074b)
+
+running 8 tests
+test render_ps_shows_waits_ticks_and_counts ... ok
+test render_ps_bounds_a_large_pending_set_and_reports_exact_omissions ... ok
+test render_stats_reports_counts_lag_and_store_health ... ok
+test ignored_room_speech_is_filtered_per_listener ... ok
+test ps_and_stats_deliver_through_the_world_task ... ok
+test wall_fans_out_to_every_connection ... ok
+test boot_disconnects_every_connection_with_the_message ... ok
+test tempban_lift_confirms_after_store_ack_and_does_not_clear_a_siteban ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/arena_custody.rs (target/debug/deps/arena_custody-0c65803743f86270)
+
+running 6 tests
+test an_injected_panic_voids_the_match_and_the_world_keeps_serving ... ok
+test af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result ... ok
+test a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong ... ok
+test a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed ... ok
+test a_restart_with_snapshots_or_the_layer_off_voids_by_name ... ok
+test a_match_takes_custody_of_two_units_and_gives_them_back ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.24s
+
+     Running tests/arena_story.rs (target/debug/deps/arena_story-e6c6c735ce393ee9)
+
+running 1 test
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed has been running for over 60 seconds
+test two_pilots_walk_in_fight_and_one_tank_is_destroyed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 79.30s
+
+     Running tests/attach_room.rs (target/debug/deps/attach_room-20615cb9147ad3da)
+
+running 1 test
+test a_second_connections_attach_look_is_not_printed_on_the_first ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
+
+     Running tests/boot_composition.rs (target/debug/deps/boot_composition-8d92dbcd068100f9)
+
+running 6 tests
+test mushd_delegates_the_composition_root ... ok
+test mushd_rejects_an_invalid_receipt_policy ... ok
+test check_config_rejects_a_typod_receipt_policy ... ok
+test mushd_installs_the_account_oracle ... ok
+test mushd_installs_the_pulse_config ... ok
+test mushd_provisions_the_decision_key_ring ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running tests/cli_args.rs (target/debug/deps/cli_args-abedbe2041ffca06)
+
+running 9 tests
+test a_mistyped_flag_is_refused_and_named ... ok
+test help_exits_zero_with_the_usage ... ok
+test config_without_a_value_is_refused ... ok
+test a_flag_from_another_binary_is_refused ... ok
+test a_repeated_config_is_refused ... ok
+test check_config_beats_repl ... ok
+test bootstrap_refuses_a_throwaway_store_without_booting ... ok
+test an_explicit_config_that_is_not_there_is_refused ... ok
+test repl_alone_still_runs ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/clock_e2e.rs (target/debug/deps/clock_e2e-95e760f62f344d6d)
+
+running 2 tests
+test ic_time_advances_at_the_configured_ratio ... ok
+test time_command_renders_over_ssh ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+
+     Running tests/durability_e2e.rs (target/debug/deps/durability_e2e-bf0865e93ff647aa)
+
+running 4 tests
+test relay_queue_and_frozen_leg_survive_process_death_redis_gated ... ok
+test kill9_mid_play_world_survives_redis_gated ... ok
+test kill9_journey_local_twin_in_memory ... ok
+test clean_shutdown_drains_and_snapshots ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.63s
+
+     Running tests/front_door.rs (target/debug/deps/front_door-8c3b21ba45df982b)
+
+running 3 tests
+test a_macro_made_at_the_front_door_survives_a_reconnect ... ok
+test an_alt_made_after_boot_shares_its_account_and_cannot_take_a_second_slot ... ok
+test two_accounts_made_after_boot_walk_in_and_each_claims_a_slot ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.59s
+
+     Running tests/intel_e2e.rs (target/debug/deps/intel_e2e-eedf68d963a301d5)
+
+running 2 tests
+test sharp_informant_pierces_and_files_intel_the_principal_pulls ... ok
+test dull_informant_perceives_nothing_and_files_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/load_soak.rs (target/debug/deps/load_soak-2aacf1d377448e76)
+
+running 4 tests
+test flood_throttles_abuser_not_paced_client ... ok
+test fanout_backpressure_isolates_slow_and_bounds_memory ... ok
+test slow_ws_client_is_detached_without_affecting_others ... ok
+test ssh_load_liveness_and_throughput ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.65s
+
+     Running tests/m10c_e2e.rs (target/debug/deps/m10c_e2e-c801c75aeba24713)
+
+running 6 tests
+test m10c_persistence_twin_redis_gated ... ok
+test m10c_persistence_twin_in_memory ... ok
+test m10c_reboot_mid_room_pass_downgrades_and_resumes ... ok
+test weather_flavor_generate_approve_and_tick_draws_approved ... ok
+test m10c_full_journey_building_and_dashboard ... ok
+test m10c_dashboard_role_gate_parity ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/modules_e2e.rs (target/debug/deps/modules_e2e-8c3b0fdf3c784739)
+
+running 1 test
+test m3_cross_module_journey ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.51s
+
+     Running tests/npc_e2e.rs (target/debug/deps/npc_e2e-e4ba47318c120667)
+
+running 7 tests
+test toy_roll_uses_the_npcs_real_sheet_pool ... ok
+test a_player_leaving_stops_all_wakes ... ok
+test tripped_budget_degrades_to_the_fallback_line ... ok
+test staff_configures_npc_and_it_greets_a_player_through_the_formatter ... ok
+test world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt ... ok
+test injection_line_yields_only_allowlisted_actions_never_a_command ... ok
+test llm_kill_parks_the_agent_and_revive_wakes_it ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/npc_smoke.rs (target/debug/deps/npc_smoke-7946f06e8129f554)
+
+running 1 test
+test live_npc_dialogue_openrouter_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/observer_rule.rs (target/debug/deps/observer_rule-e0320eb2672fe830)
+
+running 32 tests
+test e3_the_traffic_stops_one_line_names_nothing_and_places_nothing ... ok
+test ae1_the_slope_hold_names_nothing_and_places_nothing ... ok
+test a_taken_name_is_refused_the_same_way_whatever_it_collided_with ... ok
+test a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_match ... ok
+test ae3_the_drones_refusals_are_the_callers_and_its_mesh_is_the_mesh ... ok
+test i1_a_replay_is_public_names_nobody_and_a_running_match_has_none ... ok
+test i2_the_replay_screen_shows_both_sides_and_a_refusal_opens_nothing ... ok
+test af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read ... ok
+test a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held ... ok
+test m5_the_fog_sweep_finds_each_leak_it_names ... ok
+test ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_reads_miss ... ok
+test i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round ... ok
+test m5_the_mind_object_names_nothing_but_the_pilots_own_seal ... ok
+test neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found ... ok
+test i4_a_watch_reaches_the_staffer_who_asked_and_no_one_else ... ok
+test m1b3_the_arming_names_nothing_but_the_pilots_own_slot ... ok
+test m5_a_slots_mind_is_read_by_its_own_character_alone ... ok
+test m1a4_drive_refuses_a_designator_in_one_sentence_before_and_after_detection ... ok
+test m1b4_arming_and_its_sentences_name_only_what_the_pilot_holds ... ok
+test the_receiver_and_the_regression_name_only_what_that_pilot_already_holds ... ok
+test the_retain_marker_the_arena_sends_is_the_one_the_session_ring_reads ... ok
+test the_board_withholds_the_other_sides_standing_from_a_seated_pilot ... FAILED
+test o2_the_pods_switch_is_told_to_its_pilot_and_bo_learns_only_through_his_receiver ... ok
+test the_victims_own_lines_name_nothing_but_the_victims_own_tank ... ok
+test o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own ... ok
+test the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field ... ok
+test o1_the_hold_rule_is_public_and_its_clock_reaches_no_pilot ... ok
+test nothing_of_the_shooting_crosses_to_the_world_or_to_the_target ... ok
+test nothing_about_an_undetected_unit_crosses_on_any_surface ... ok
+test z4_a_net_line_names_the_callsign_the_speaker_and_the_words_and_reaches_no_one_else ... ok
+test the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found ... ok
+test the_switch_names_a_contact_at_the_first_pass_over_the_real_composition ... ok
+
+failures:
+
+---- the_board_withholds_the_other_sides_standing_from_a_seated_pilot stdout ----
+
+thread 'the_board_withholds_the_other_sides_standing_from_a_seated_pilot' (1342360) panicked at crates/mushd/tests/observer_rule.rs:4125:5:
+staff were refused the whole board: @arena/status
+Simulator centre: running (match 1)
+  red: 1 (RA): Ada, pod Red Pod 1, seated
+  blue: 1 (BA): Bo, pod Blue Pod 1, flown by its mind
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_board_withholds_the_other_sides_standing_from_a_seated_pilot
+
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 133.67s
+
+error: test failed, to rerun pass `-p mushd --test observer_rule`
+     Running tests/onboarding_e2e.rs (target/debug/deps/onboarding_e2e-8e4e1ce46a5cc3f0)
+
+running 2 tests
+test chargen_not_required_leaves_the_grid_open ... ok
+test new_player_signs_up_builds_a_pilot_is_approved_and_plays ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.58s
+
+     Running tests/perception_e2e.rs (target/debug/deps/perception_e2e-5857d22afef37af9)
+
+running 2 tests
+test a_dull_bartender_never_notices_a_concealed_speaker ... ok
+test a_sharp_bartender_pierces_the_concealment ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/persistence.rs (target/debug/deps/persistence-e6efa042c2482900)
+
+running 32 tests
+test closed_store_durable_ack_reports_failure ... ok
+test destroy_sweeps_and_deletes_from_store ... ok
+test boot_seed_persist_reload_round_trip_in_memory ... ok
+test an_unclean_world_exit_takes_no_shutdown_bgsave ... ok
+test boot_round_trip_redis_gated ... ok
+test inventory_pool_round_trip_redis_gated ... ok
+test a_macro_survives_a_restart_through_the_store ... ok
+test m5_module_persistence_round_trip_redis_gated ... ok
+test dump_announces_and_acks ... ok
+test npc_agent_persistence_round_trip_redis_gated ... ok
+test economy_journal_round_trip_redis_gated ... ok
+test onboarding_persistence_round_trip_redis_gated ... ok
+test persisted_bans_load_into_ipguard_at_boot ... ok
+test onboarding_persistence_round_trip_in_memory ... ok
+test repeated_ban_reloads_leave_the_shared_guard_unchanged ... ok
+test economy_journal_round_trip_in_memory ... FAILED
+test scene_archive_reads_cold_chunks_redis_gated ... ok
+test read_only_refuses_exit_aliases_and_creation ... ok
+test sheet_persistence_round_trip_redis_gated ... ok
+test siteban_persists_updates_ipguard_and_clears ... ok
+test siteban_set_then_immediate_clear_lands_cleared ... ok
+test ordinary_success_and_barrier_wait_for_exact_store_ack ... ok
+test scene_archive_reads_cold_chunks_in_memory ... FAILED
+test worldgen_persistence_round_trip_redis_gated ... ok
+test wrong_receipt_serial_never_releases_success ... ok
+test account_creation_confirmation_waits_for_store_ack ... ok
+test sheet_persistence_round_trip_in_memory ... ok
+test npc_agent_persistence_round_trip_in_memory ... ok
+test m5_module_persistence_round_trip_in_memory ... ok
+test inventory_pool_round_trip_in_memory ... ok
+test worldgen_persistence_round_trip_in_memory ... ok
+test store_failure_enters_read_only_and_recovery_exits ... ok
+
+failures:
+
+---- economy_journal_round_trip_in_memory stdout ----
+
+thread 'economy_journal_round_trip_in_memory' (1342613) panicked at crates/mushd/tests/persistence.rs:438:10:
+fence create: Busy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scene_archive_reads_cold_chunks_in_memory stdout ----
+
+thread 'scene_archive_reads_cold_chunks_in_memory' (1342739) panicked at crates/mushd/tests/persistence.rs:754:10:
+archivist create: Busy
+
+
+failures:
+    economy_journal_round_trip_in_memory
+    scene_archive_reads_cold_chunks_in_memory
+
+test result: FAILED. 30 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+
+error: test failed, to rerun pass `-p mushd --test persistence`
+     Running tests/power_use_e2e.rs (target/debug/deps/power_use_e2e-bc16da0b79cd3dc1)
+
+running 2 tests
+test dull_bartender_perceives_no_subtle_power_and_files_nothing ... ok
+test sharp_witnesses_subtle_power_and_files_intel_bystander_sees_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/relay_bridge.rs (target/debug/deps/relay_bridge-5d596c005dce32e6)
+
+running 1 test
+test r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.67s
+
+     Running tests/scripting_e2e.rs (target/debug/deps/scripting_e2e-f4b277cc013e17ab)
+
+running 1 test
+test scripting_room_trigger_demo ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.43s
+
+     Running tests/server.rs (target/debug/deps/server-28d08d0e3fdec1dc)
+
+running 15 tests
+test bridge_connect_look_say_quit_flow ... ok
+test bridge_multi_connect_fans_out_and_single_drop_is_silent ... ok
+test create_player_is_a_typed_world_message ... ok
+test bridge_ip_guard_blocks_after_failures ... ok
+test bridge_flood_control_throttles ... ok
+test slowtest_reenters_typed_without_blocking_the_loop ... ok
+test say_does_not_leak_to_other_rooms ... ok
+test quit_flushes_pending_output_first ... ok
+test slow_client_is_detached_and_goes_linkdead ... ok
+test world_task_fans_out_say_and_who ... ok
+test wait_timer_fires_through_the_loop ... ok
+test bridge_linkdead_announces_then_reaps_after_grace ... ok
+test bridge_reconnect_cancels_linkdead ... ok
+test ssh_full_stack::two_players_create_talk_who_quit_over_real_ssh ... ok
+test accounts_create_auth_connect_end_to_end ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+
+     Running tests/sigterm_exit.rs (target/debug/deps/sigterm_exit-40f0bc9aee1feb9b)
+
+running 1 test
+test sigterm_ends_mushd_through_its_own_shutdown ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s
+
+     Running tests/sim_cockpit.rs (target/debug/deps/sim_cockpit-96ce0a8e2fdfed2a)
+
+running 12 tests
+test ag1_a_spot_line_out_of_place_fails_the_shape - should panic ... ok
+test ag1_no_contacts_beside_a_contact_fails_the_shape - should panic ... ok
+test ag1_the_brief_readers_round_trip_the_golden_and_report_a_stray ... ok
+test ap4_a_brief_without_its_end_line_last_fails_the_shape ... ok
+test b4_board_and_exit_show_the_room_after_the_sentence ... ok
+test the_cockpit_verbs_are_contextual_and_the_window_is_a_map ... ok
+test a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing ... ok
+test board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_it ... ok
+test a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reconnect ... ok
+test two_pilots_board_fly_and_climb_out_twice_in_a_row ... ok
+test m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back ... ok
+test past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.16s
+
+     Running tests/sim_lobby.rs (target/debug/deps/sim_lobby-a5c40613f2aa1187)
+
+running 13 tests
+test d1_with_the_fill_off_the_claim_line_is_unchanged ... ok
+test d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines ... ok
+test d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_word ... ok
+test d1_the_boards_arena_clock_moves_while_nobody_drives ... ok
+test i1_a_finished_match_replays_to_both_pilots_and_a_bystander ... ok
+test b4_a_lead_who_exits_mid_match_hands_the_side_on ... ok
+test d3_a_lead_concedes_and_the_board_names_the_winner ... ok
+test aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede ... ok
+test o1_sim_mode_over_the_wire ... ok
+test the_staff_shortcut_runs_a_match_the_centre_knows_about ... ok
+test sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts ... ok
+test two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_account ... ok
+test z3_a_side_takes_six_claims_and_the_fill_is_one_to_six ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.86s
+
+     Running tests/sim_net.rs (target/debug/deps/sim_net-7909f48e246bb5dc)
+
+running 1 test
+test a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the_other ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.71s
+
+     Running tests/sim_range.rs (target/debug/deps/sim_range-a9b904326cc2fad5)
+
+running 1 test
+test one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.26s
+
+     Running tests/sim_reflex.rs (target/debug/deps/sim_reflex-05c5fdf8ba7417f4)
+
+running 4 tests
+test m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff ... ok
+test with_ai_fill_on_sim_ai_four_fields_four_a_side ... ok
+test with_ai_fill_on_the_default_size_is_the_larger_side ... ok
+test past_the_grace_the_reflex_controller_drives_the_tank_home ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.78s
+
+     Running tests/sim_rematch.rs (target/debug/deps/sim_rematch-9739468ad7c86dc8)
+
+running 2 tests
+test a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_again ... ok
+test two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec has been running for over 60 seconds
+test two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 104.78s
+
+     Running tests/sim_solo.rs (target/debug/deps/sim_solo-12036776338b4f53)
+
+running 6 tests
+test i3_staff_place_the_machine_and_the_tape_records_it ... ok
+test d3_the_match_a_lone_pilot_walks_out_of_ends_itself ... ok
+test m5_a_pilot_seals_a_mind_climbs_out_and_the_tank_is_flown_by_it ... ok
+test one_pilot_alone_starts_a_match_and_fights_the_machine ... ok
+test y1_a_lone_pilot_orders_their_wingman ... ok
+test ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keeps_the_flags ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.46s
+
+     Running tests/sim_units.rs (target/debug/deps/sim_units-181be7b64089de89)
+
+running 8 tests
+test m5_sim_unit_is_never_refused_for_the_pool_at_the_stock_constants ... ok
+test ae3_the_second_drone_and_a_gunless_side_are_refused_at_the_lobby ... ok
+test ae3_a_pilot_flies_the_drone_and_it_carries_no_weapon ... ok
+test ae1_two_pilots_field_the_scout_car_and_the_heavy_tank ... ok
+test o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so ... ok
+test ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack ... ok
+test ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds_later ... ok
+test two_pilots_field_two_different_machines_and_the_pods_are_pods_again ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.80s
+
+     Running tests/sim_weapons.rs (target/debug/deps/sim_weapons-a0a8edb0982861fe)
+
+running 2 tests
+test two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot ... ok
+test m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still_fires ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.82s
+
+     Running tests/ssh_e2e.rs (target/debug/deps/ssh_e2e-9dd36753557f6a65)
+
+running 4 tests
+test m20_newchar_creates_playable_second_character_e2e ... ok
+test m19_pubkey_and_plus_char_journey ... ok
+test m19_sshkey_command_registers_key_e2e ... ok
+test m1_exit_criterion_full_journey ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.76s
+
+     Running tests/typeahead.rs (target/debug/deps/typeahead-fb64dac12a6064d4)
+
+running 2 tests
+test brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice ... ok
+test four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.58s
+
+     Running tests/weather_e2e.rs (target/debug/deps/weather_e2e-b3035975a02fac10)
+
+running 1 test
+test rain_rolls_in_demo ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.62s
+
+     Running tests/web_bridge.rs (target/debug/deps/web_bridge-cd964c9101237eba)
+
+running 12 tests
+test register_then_connect_streams_stamped_envelopes ... ok
+test requests_round_trip_to_correlated_replies ... ok
+test line_over_the_char_cap_is_rejected_before_reaching_the_world ... ok
+test logout_revokes_one_token_only ... ok
+test login_mints_a_sliding_hashed_token ... ok
+test resume_replays_the_gap_in_order ... ok
+test connect_rejects_bad_tokens_and_foreign_characters ... ok
+test resume_too_old_and_reaped_sessions_rehydrate ... ok
+test sm9_a_panel_subscribe_forwards_its_params ... ok
+test unacknowledged_action_receipt_survives_transport_resume_then_exact_ack_retires_it ... ok
+test login_maps_bad_creds_bans_and_tempbans ... ok
+test newpassword_rehashes_and_revokes_web_sessions ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.61s
+
+     Running tests/web_e2e.rs (target/debug/deps/web_e2e-0cc816aaa06145bb)
+
+running 11 tests
+test spa_if_built_and_healthz_are_served ... ok
+test logout_kills_the_live_ws ... ok
+test metrics_healthz_and_stats_reflect_real_state ... ok
+test llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text ... ok
+test sheet_query_routes_to_the_ruleset_over_web ... ok
+test auth_routes_rate_limit_to_429 ... ok
+test ws_resume_replays_exactly_the_gap ... ok
+test ws_resume_too_old_falls_back_to_rehydrate ... ok
+test rest_auth_flow_register_login_logout ... ok
+test ssh_and_web_user_in_the_same_room ... ok
+test newpassword_boots_the_accounts_web_connections ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.36s
+
+     Running tests/world_fault.rs (target/debug/deps/world_fault-44ce3ce5c85834c9)
+
+running 2 tests
+test an_in_game_shutdown_still_exits_zero_with_one_bgsave ... ok
+test a_faulted_world_exits_non_zero_and_skips_the_shutdown_bgsave ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
+
+     Running tests/world_panic_exit.rs (target/debug/deps/world_panic_exit-c339660ce745c9e1)
+
+running 2 tests
+test the_half_child ... ignored, the child half of split_halves_write_distinct_log_files
+test split_halves_write_distinct_log_files ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/worldgen_e2e.rs (target/debug/deps/worldgen_e2e-4d56a1de6327f588)
+
+running 3 tests
+test draft_survives_store_reboot_before_accept ... ok
+test keyless_boot_disables_gen ... ok
+test worldgen_full_journey_over_ssh ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.12s
+
+     Running tests/worldgen_smoke.rs (target/debug/deps/worldgen_smoke-99e84c6bc4052d28)
+
+running 1 test
+test live_worldgen_openrouter_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 2 targets failed:
+    `-p mushd --test observer_rule`
+    `-p mushd --test persistence`

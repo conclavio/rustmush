@@ -375,7 +375,7 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
@@ -413,6 +413,28 @@ async fn m5_module_persistence_round_trip_in_memory() {
 // (ungated) and against a live Redis — the reboot-from-Redis-alone surrogate.
 // ---------------------------------------------------------------------------
 
+/// A background module tick may start a new commit after an ordering barrier.
+/// Busy is refusal before creation; retry only that disposition, boundedly.
+async fn create_persistence_probe(world: &WorldHandle, name: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match world.create_player(name, None).await {
+                Ok(_) => break,
+                Err(world_task::CreatePlayerErr::Busy) => {
+                    assert!(
+                        world.barrier().await,
+                        "probe waits for the intervening commit"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("{name} persistence probe failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("persistence probe admission deadline");
+}
+
 /// Open an account, post, place a hold and create an obligation on one boot; a
 /// second boot from the store alone shows the same balance, hold and
 /// obligation, and comes up spending — the boot's contiguity and conservation
@@ -441,7 +463,7 @@ async fn economy_journal_round_trip(store: Arc<dyn ObjectStore>) {
     );
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
@@ -754,7 +776,7 @@ async fn scene_archive_round_trip(store: Arc<dyn ObjectStore>) {
     expect_text(&mut god_rx, "Time resumes").await;
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
-    create_player_acked(&world, "Archivist").await;
+    create_persistence_probe(&world, "Archivist").await;
 
     // --- second boot: the closed scene's log is on disk only. -----------
     let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
@@ -954,7 +976,7 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let job = parse_job_id(&text_of(&ev));
     // Every chargen action crossed its exact barrier; creation independently
     // proves the world remains writable after the submitted sheet/job commit.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- reboot #1 (store alone): the sheet is Pending, unapproved. -------
     let reloaded = load_or_seed_world(&*store).await.expect("reload 1");
@@ -1146,7 +1168,7 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
     // Fence: an ack-gated create returns only once the strictly-ordered writer
     // has acknowledged its batch — so the draft's fire-and-forget batch (queued
     // before it) has certainly landed in the store.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- second boot: rebuild from the store alone. ----------------------
     let mock2 = Arc::new(MockProvider::new("openrouter"));
@@ -1285,7 +1307,7 @@ async fn sheet_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Every sheet edit crossed its exact barrier; creation independently
     // verifies the world remains writable afterward.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- reboot: hydrate a fresh world from the store alone. --------------
     let reloaded = load_or_seed_world(&*store).await.expect("reload");
@@ -2273,7 +2295,7 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Player creation is independently acknowledgement-gated after both
     // completion batches have landed.
-    create_player_acked(&world, "Fence").await;
+    create_persistence_probe(&world, "Fence").await;
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_npc_rig(&store, &guard, npc_service()).await;

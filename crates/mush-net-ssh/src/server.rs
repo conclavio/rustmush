@@ -292,6 +292,7 @@ impl russh::server::Server for Ingress {
             addr,
             shared: Arc::new(Mutex::new(Shared {
                 editor: LineEditor::new(),
+                base_echo: EchoMode::Normal,
                 caps: caps::detect_caps(None, None, None, None, 0, 0),
                 term: None,
                 colorterm: None,
@@ -304,6 +305,9 @@ impl russh::server::Server for Ingress {
                 manifest: TuiManifest::default(),
                 repaint: Arc::new(Notify::new()),
                 history: HistoryCursor::default(),
+                history_request: None,
+                next_history_request: 1 << 63,
+                mode_generation: 0,
                 pixel_choice: EncoderChoice::Auto,
                 sounds_on: true,
             })),
@@ -379,6 +383,8 @@ enum Route {
 /// is `std::sync` and never held across an await.
 struct Shared {
     editor: LineEditor,
+    /// PTY echo preference, restored after a server input prompt.
+    base_echo: EchoMode,
     caps: ClientCaps,
     term: Option<String>,
     colorterm: Option<String>,
@@ -402,6 +408,10 @@ struct Shared {
     repaint: Arc<Notify>,
     /// Where line mode's `@history` has read back to (interface plan I12).
     history: HistoryCursor,
+    /// Only this correlated page may consume either mode's paging latch.
+    history_request: Option<u64>,
+    next_history_request: u64,
+    mode_generation: u64,
     /// `@pixel/encoder` for this connection (doc 21 cut G.2; Q-21-2 asks
     /// for it per account, which waits on a per-account store). Kept here,
     /// not in the TUI, so it survives `@notui` and applies at the next `@tui`.
@@ -894,6 +904,8 @@ impl ConnHandler {
             out.extend_from_slice(&tui.probe_bytes());
             let queries = tui.entry_queries();
             sh.tui = Some(tui);
+            sh.history_request = None;
+            sh.mode_generation = sh.mode_generation.wrapping_add(1);
             sh.mode = Mode::Tui;
             (out, queries)
         };
@@ -902,7 +914,15 @@ impl ConnHandler {
         // screen's own feeds); every reply lands on the pump, which repaints.
         // None of it stamps idle (design M15 D5, interface plan I1 D-I-3).
         for (name, args) in queries {
-            self.hooks.query(self.conn_id, name, args).await;
+            submit_query(
+                self.hooks.as_ref(),
+                &self.shared,
+                self.conn_id,
+                name,
+                args,
+                None,
+            )
+            .await;
         }
         Ok(())
     }
@@ -931,6 +951,9 @@ impl ConnHandler {
                 .map(|t| t.pixel_leave_orders())
                 .unwrap_or_default();
             sh.tui = None;
+            sh.history_request = None;
+            sh.mode_generation = sh.mode_generation.wrapping_add(1);
+            sh.history.pending = None;
             sh.mode = Mode::InGame;
             out.extend_from_slice(TuiSession::leave_bytes());
             // Repaint the line editor's prompt + in-progress buffer so the
@@ -1010,7 +1033,15 @@ impl ConnHandler {
             self.hooks.invoke(self.conn_id, id, request).await;
         }
         for (name, args) in result.queries {
-            self.hooks.query(self.conn_id, name, args).await;
+            submit_query(
+                self.hooks.as_ref(),
+                &self.shared,
+                self.conn_id,
+                name,
+                args,
+                None,
+            )
+            .await;
         }
         for (id, epoch, choice) in result.responds {
             self.hooks.respond(self.conn_id, id, epoch, choice).await;
@@ -1131,16 +1162,18 @@ impl ConnHandler {
                 // An explicit, non-zero limit: the gateway does
                 // `.unwrap_or(0).clamp(1, 200)`, so an absent or zero limit
                 // would silently yield a ONE-line page with `more: true`.
-                self.hooks
-                    .query(
-                        self.conn_id,
-                        "narrative.backlog".to_owned(),
-                        serde_json::json!({
-                            "before_seq": before,
-                            "limit": limit.clamp(1, HISTORY_MAX),
-                        }),
-                    )
-                    .await;
+                submit_query(
+                    self.hooks.as_ref(),
+                    &self.shared,
+                    self.conn_id,
+                    "narrative.backlog".to_owned(),
+                    serde_json::json!({
+                        "before_seq": before,
+                        "limit": limit.clamp(1, HISTORY_MAX),
+                    }),
+                    None,
+                )
+                .await;
                 Ok(())
             }
         }
@@ -1377,12 +1410,14 @@ impl ConnHandler {
             return Ok(());
         };
         let (tx, rx) = mpsc::channel::<Arc<OutputEvent>>(OUTPUT_BUFFER);
+        let (stamped_tx, stamped_rx) = mpsc::channel(OUTPUT_BUFFER);
         let snapshot = self.lock().caps;
         let conn = NewConn {
             id: self.conn_id,
             addr: self.addr,
             caps: snapshot,
             tx,
+            stamped_tx: Some(stamped_tx),
         };
         // Armed *before* the await: if russh drops this future mid-connect
         // (connection torn down), Drop still fires `disconnected` and the
@@ -1412,12 +1447,14 @@ impl ConnHandler {
                 };
                 spawn_output_pump(
                     rx,
+                    stamped_rx,
                     Arc::clone(&self.shared),
                     session.handle(),
                     channel,
                     Arc::clone(&self.hooks),
                     self.conn_id,
                     repaint,
+                    Arc::clone(&self.connected),
                 );
                 Ok(())
             }
@@ -1484,6 +1521,7 @@ impl ConnHandler {
             addr: self.addr,
             caps,
             tx,
+            stamped_tx: None,
         };
         self.connected.store(true, Ordering::SeqCst);
         if self
@@ -1779,12 +1817,15 @@ impl Handler for ConnHandler {
         row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
-        _modes: &[(russh::Pty, u32)],
+        modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel == Some(channel) {
             self.pty_seen = true;
             let mut sh = self.lock();
+            sh.base_echo = pty_echo_mode(modes);
+            let base = sh.base_echo;
+            sh.editor.set_mode(base);
             sh.term = Some(term.to_owned());
             sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
             sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
@@ -2055,10 +2096,62 @@ impl Handler for ConnHandler {
 
 // ---- output pump --------------------------------------------------------
 
-/// Render one event the classic line way: the exact erase/redraw dance the
-/// pump has always used around the line editor. Kept as a function so the
-/// TUI branch can sit beside it without perturbing a byte of line output
-/// (invariant T1).
+/// Query correlation belongs to the physical connection and survives mode flips.
+async fn submit_query(
+    hooks: &dyn SshHooks,
+    shared: &Mutex<Shared>,
+    conn: u64,
+    name: String,
+    args: serde_json::Value,
+    generation: Option<u64>,
+) {
+    let id = if name == "narrative.backlog" {
+        let mut sh = shared.lock().expect("conn state poisoned");
+        if generation.is_some_and(|generation| generation != sh.mode_generation) {
+            return;
+        }
+        let id = sh.next_history_request;
+        let Some(next) = id.checked_add(1) else {
+            return;
+        };
+        sh.next_history_request = next;
+        sh.history_request = Some(id);
+        id
+    } else {
+        0
+    };
+    hooks.query(conn, id, name, args).await;
+}
+
+fn accept_history_reply(sh: &mut Shared, event: &OutputEvent) -> bool {
+    let OutputEvent::Reply { id, event } = event else {
+        return true;
+    };
+    let page = matches!(&**event, OutputEvent::Panel { feed, kind: PanelFrameKind::Delta, .. } if feed == "narrative");
+    if *id < (1 << 63) && !page {
+        return true;
+    }
+    if sh.history_request != Some(*id) {
+        return false;
+    }
+    sh.history_request = None;
+    true
+}
+
+fn pty_echo_mode(modes: &[(russh::Pty, u32)]) -> EchoMode {
+    if modes
+        .iter()
+        .rev()
+        .find(|(op, _)| *op == russh::Pty::ECHO)
+        .is_some_and(|(_, value)| *value == 0)
+    {
+        EchoMode::NoEcho
+    } else {
+        EchoMode::Normal
+    }
+}
+
+/// Render one event while preserving the line editor and its echo preference.
 fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes: &mut Vec<u8>) {
     // Remember what a TUI opened later needs to know (interface plan I2).
     match ev {
@@ -2071,7 +2164,7 @@ fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes
     match ev {
         OutputEvent::Prompt(spec) => {
             sh.editor.set_mode(match spec.mode {
-                InputMode::Normal => EchoMode::Normal,
+                InputMode::Normal => sh.base_echo,
                 InputMode::Masked => EchoMode::Masked,
                 InputMode::NoEcho => EchoMode::NoEcho,
             });
@@ -2169,6 +2262,7 @@ fn remember_the_room(manifest: &mut TuiManifest, ev: &OutputEvent) {
 /// so the room is usually NOT the event that woke the pump (that one is
 /// recorded before the pump's line/TUI branch) but one drained here (16b cut
 /// B.3); the unit test drives this with such a burst.
+#[cfg(test)]
 fn drain_into_tui(
     manifest: &mut TuiManifest,
     mut tui: Option<&mut TuiSession>,
@@ -2263,14 +2357,17 @@ fn render_history_page(
 /// after the lock drops (invariant T2). Ends when the sender is dropped
 /// (session closed) or after a [`OutputEvent::Disconnect`], restoring the
 /// terminal first if a TUI was active (invariant T5).
+#[allow(clippy::too_many_arguments)] // Both legacy and stamped adapters share one output pump.
 fn spawn_output_pump(
     mut rx: mpsc::Receiver<Arc<OutputEvent>>,
+    mut stamped_rx: mpsc::Receiver<Arc<mush_proto::Envelope>>,
     shared: Arc<Mutex<Shared>>,
     handle: russh::server::Handle,
     channel: ChannelId,
     hooks: Arc<dyn SshHooks>,
     conn_id: u64,
     repaint: Arc<Notify>,
+    connected: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
         let theme = AnsiTheme::default();
@@ -2295,11 +2392,15 @@ fn spawn_output_pump(
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
+            Stamped(Option<Arc<mush_proto::Envelope>>),
             Repaint,
             Tick,
             Frame,
         }
 
+        let mut legacy_open = true;
+        let mut stamped_open = true;
+        let mut exit_status = 0;
         loop {
             // A poisoned lock here only picks the idle wait; the next wake's
             // own lock reports it.
@@ -2313,10 +2414,31 @@ fn spawn_output_pump(
                 });
             let wake = tokio::select! {
                 biased;
-                ev = rx.recv() => Wake::Event(ev),
+                ev = rx.recv(), if legacy_open => Wake::Event(ev),
+                ev = stamped_rx.recv(), if stamped_open => Wake::Stamped(ev),
                 () = repaint.notified() => Wake::Repaint,
                 _ = who_timer.tick() => Wake::Tick,
                 () = tokio::time::sleep_until(next_frame) => Wake::Frame,
+            };
+            // Real adapters keep only one sender. A closed unused stream is not logout.
+            if matches!(wake, Wake::Event(None)) {
+                legacy_open = false;
+            }
+            if matches!(wake, Wake::Stamped(None)) {
+                stamped_open = false;
+            }
+            if !legacy_open && !stamped_open {
+                break;
+            }
+            if matches!(wake, Wake::Event(None) | Wake::Stamped(None)) {
+                continue;
+            }
+            let (wake, stamp) = match wake {
+                Wake::Stamped(Some(env)) => (
+                    Wake::Event(Some(Arc::new(env.event.clone()))),
+                    Some(env.seq),
+                ),
+                other => (other, None),
             };
             if matches!(wake, Wake::Frame) {
                 next_frame = std::cmp::max(next_frame + frame_wait, tokio::time::Instant::now());
@@ -2336,22 +2458,31 @@ fn spawn_output_pump(
                 let heal = {
                     let mut sh = shared.lock().expect("conn state poisoned");
                     if matches!(sh.mode, Mode::Tui) {
-                        Some(
+                        Some((
+                            sh.mode_generation,
                             sh.tui
                                 .as_mut()
                                 .map(|t| t.heal_queries())
                                 .unwrap_or_default(),
-                        )
+                        ))
                     } else {
                         None
                     }
                 };
-                if let Some(heal) = heal {
+                if let Some((generation, heal)) = heal {
                     hooks
-                        .query(conn_id, "who".to_owned(), serde_json::json!({}))
+                        .query(conn_id, 0, "who".to_owned(), serde_json::json!({}))
                         .await;
                     for (name, args) in heal {
-                        hooks.query(conn_id, name, args).await;
+                        submit_query(
+                            hooks.as_ref(),
+                            &shared,
+                            conn_id,
+                            name,
+                            args,
+                            Some(generation),
+                        )
+                        .await;
                     }
                 }
                 continue;
@@ -2364,7 +2495,7 @@ fn spawn_output_pump(
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
             // Doc 21 cut G.4: the pixel view's helm orders, sent as typed lines.
             let mut lines: Vec<String> = Vec::new();
-            let (bytes, invokes, now_viewing) = {
+            let (bytes, invokes, now_viewing, generation) = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 let bytes = match wake {
                     Wake::Repaint => {
@@ -2375,11 +2506,14 @@ fn spawn_output_pump(
                         }
                     }
                     // Sender dropped: the queue is closed, tear down.
-                    Wake::Event(None) => {
+                    Wake::Event(None) | Wake::Stamped(_) => {
                         done = true;
                         Vec::new()
                     }
                     Wake::Event(Some(ev)) => {
+                        if !accept_history_reply(&mut sh, &ev) {
+                            continue;
+                        }
                         if matches!(&*ev, OutputEvent::Disconnect { .. }) {
                             done = true;
                         }
@@ -2392,16 +2526,33 @@ fn spawn_output_pump(
                                 // Coalesce: apply this event and every other
                                 // ready one, then paint a single frame.
                                 if let Some(t) = sh.tui.as_mut() {
-                                    queries.extend(t.apply_event(&ev));
+                                    queries.extend(t.apply_stamped_event(&ev, stamp));
                                 }
-                                let Shared { manifest, tui, .. } = &mut *sh;
-                                if drain_into_tui(
-                                    manifest,
-                                    tui.as_deref_mut(),
-                                    || rx.try_recv().ok(),
-                                    &mut queries,
-                                ) {
-                                    done = true;
+                                while let Ok(next) = rx.try_recv() {
+                                    if !accept_history_reply(&mut sh, &next) {
+                                        continue;
+                                    }
+                                    if matches!(&*next, OutputEvent::Disconnect { .. }) {
+                                        done = true;
+                                    }
+                                    remember_the_room(&mut sh.manifest, &next);
+                                    if let Some(t) = sh.tui.as_mut() {
+                                        queries.extend(t.apply_event(&next));
+                                    }
+                                }
+                                while let Ok(next) = stamped_rx.try_recv() {
+                                    if !accept_history_reply(&mut sh, &next.event) {
+                                        continue;
+                                    }
+                                    if matches!(&next.event, OutputEvent::Disconnect { .. }) {
+                                        done = true;
+                                    }
+                                    remember_the_room(&mut sh.manifest, &next.event);
+                                    if let Some(t) = sh.tui.as_mut() {
+                                        queries.extend(
+                                            t.apply_stamped_event(&next.event, Some(next.seq)),
+                                        );
+                                    }
                                 }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
                             }
@@ -2449,7 +2600,7 @@ fn spawn_output_pump(
                     .unwrap_or_default();
                 let now_viewing = matches!(sh.mode, Mode::Tui)
                     && sh.tui.as_ref().is_some_and(|t| t.pixel_active());
-                (bytes, invokes, now_viewing)
+                (bytes, invokes, now_viewing, sh.mode_generation)
             };
             if now_viewing != viewing {
                 viewing = now_viewing;
@@ -2468,7 +2619,15 @@ fn spawn_output_pump(
                 hooks.invoke(conn_id, id, request).await;
             }
             for (name, args) in queries {
-                hooks.query(conn_id, name, args).await;
+                submit_query(
+                    hooks.as_ref(),
+                    &shared,
+                    conn_id,
+                    name,
+                    args,
+                    Some(generation),
+                )
+                .await;
             }
             for line in lines {
                 hooks.line(conn_id, line).await;
@@ -2505,6 +2664,7 @@ fn spawn_output_pump(
                     // peer): give up and close the transport below.
                     Err(_) => {
                         tracing::info!("output write timed out; closing slow connection");
+                        exit_status = 1;
                         break;
                     }
                 }
@@ -2528,16 +2688,19 @@ fn spawn_output_pump(
             .await;
         }
 
-        // Session closed (QUIT, @boot, linkdead sweep) or explicit
-        // Disconnect event: close the transport.
-        let _ = handle.close(channel).await;
-        let _ = handle
-            .disconnect(
-                Disconnect::ByApplication,
-                "session closed".into(),
-                "".into(),
-            )
-            .await;
+        // Close in channel order, after the last data. A connection-level
+        // disconnect can discard channel data still buffered by the SSH engine.
+        // This is the same drain sequence as the structured exec pump.
+        let _ = tokio::time::timeout(
+            WRITE_TIMEOUT,
+            handle.exit_status_request(channel, exit_status),
+        )
+        .await;
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.eof(channel)).await;
+        let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.close(channel)).await;
+        if connected.swap(false, Ordering::SeqCst) {
+            hooks.disconnected(conn_id).await;
+        }
     });
 }
 
@@ -2786,6 +2949,7 @@ mod tests {
     fn line_mode_shared() -> Shared {
         Shared {
             editor: LineEditor::new(),
+            base_echo: EchoMode::Normal,
             caps: caps::detect_caps(None, None, None, None, 0, 0),
             term: None,
             colorterm: None,
@@ -2798,8 +2962,74 @@ mod tests {
             manifest: TuiManifest::default(),
             repaint: Arc::new(Notify::new()),
             history: HistoryCursor::default(),
+            history_request: None,
+            next_history_request: 1 << 63,
+            mode_generation: 0,
             pixel_choice: EncoderChoice::Auto,
             sounds_on: true,
+        }
+    }
+
+    #[test]
+    fn late_history_reply_cannot_consume_newer_request() {
+        let mut sh = line_mode_shared();
+        let old = 1 << 63;
+        let new = old + 1;
+        sh.history_request = Some(new);
+        sh.history.pending = Some(Instant::now());
+        let page = |id| OutputEvent::Reply {
+            id,
+            event: Box::new(OutputEvent::Panel {
+                feed: "narrative".into(),
+                kind: PanelFrameKind::Delta,
+                data: serde_json::json!({"backlog":{"lines":[],"more":false,"evicted":false}}),
+            }),
+        };
+        assert!(!accept_history_reply(&mut sh, &page(old)));
+        assert_eq!(sh.history_request, Some(new));
+        assert!(sh.history.pending.is_some());
+        assert!(accept_history_reply(&mut sh, &page(new)));
+        assert_eq!(sh.history_request, None);
+        assert!(!accept_history_reply(&mut sh, &page(new)));
+        assert!(accept_history_reply(
+            &mut sh,
+            &OutputEvent::Reply {
+                id: 7,
+                event: Box::new(OutputEvent::Sys(RichText::plain("unrelated query"))),
+            }
+        ));
+    }
+
+    #[test]
+    fn pty_echo_preference_survives_prompts_and_async_redraws() {
+        assert_eq!(pty_echo_mode(&[]), EchoMode::Normal);
+        assert_eq!(pty_echo_mode(&[(russh::Pty::ECHO, 1)]), EchoMode::Normal);
+        let mut sh = line_mode_shared();
+        sh.base_echo = pty_echo_mode(&[(russh::Pty::ECHO, 0)]);
+        sh.editor.set_mode(sh.base_echo);
+        let theme = AnsiTheme::default();
+        let mut bytes = Vec::new();
+        let _ = sh.editor.feed(b"private draft", &mut bytes);
+        assert!(bytes.is_empty());
+        render_line_event(
+            &mut sh,
+            &OutputEvent::Sys(RichText::plain("Notice.")),
+            &theme,
+            &mut bytes,
+        );
+        assert!(!String::from_utf8_lossy(&bytes).contains("private draft"));
+        for (mode, expected) in [
+            (InputMode::Masked, EchoMode::Masked),
+            (InputMode::NoEcho, EchoMode::NoEcho),
+            (InputMode::Normal, EchoMode::NoEcho),
+        ] {
+            render_line_event(
+                &mut sh,
+                &OutputEvent::Prompt(mush_proto::PromptSpec { text: None, mode }),
+                &theme,
+                &mut bytes,
+            );
+            assert_eq!(sh.editor.mode(), expected);
         }
     }
 

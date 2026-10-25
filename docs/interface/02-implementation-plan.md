@@ -2545,17 +2545,19 @@ modal ruling (D-I-17, D-I-18) rather than by its default.**
   refresh heuristic can retire after I1. *Discharged: I4 retired the poll;
   I13 made the sheet live by push (2026-09-07).*
 
-**Known open (2026-09-07, from the look-back; each true, safe and recorded
-here once).** The proxy-driver HUD is contacts-only (§3.8); a destroyed unit's
-stationed viewers cannot be refreshed by the destroy hook (§3.8); the TUI
-priming race paints a line twice across the mode flip (§3.12 — the envelope
-seq at the Ansi sink closes it); the line-mode history latch can be stolen by
-a late page under a stalled pump (§3.12 — a per-connection correlation id);
-`cleared > 0 ⇒ !backlog_more` is held by construction, not asserted. I9's
-form was never joined to I10 and the bespoke `ActionsPanel`/`SheetPanel` were
-never retired — both non-goals now (LB-30). I13's `show_staff` staleness and
-the B→A delta upgrade are coupled: a field-diff delta must land the
-fingerprint fix in the same cut (LB-31). The pose counter (§8 q13) stays
+**Client synchronization closed (2026-10-24).** SSH now carries envelope sequence
+ids, correlates history requests across mode changes, and deduplicates the TUI's
+live/priming overlap. The clear/backlog implication is asserted. Sheet query
+keyframes invalidate the next pushed baseline through a shared helper; full-data
+deltas remain the protocol. Both clients discard omitted staff fields. See
+[performance/client gate 2](../design/24-performance-client-debt.md#gate-2-ssh-and-client-synchronization)
+for tests, live dev1 evidence and the sheet-provider acceptance limit.
+
+**Known open (updated 2026-10-24).** The proxy-driver HUD is contacts-only (§3.8);
+a destroyed unit's stationed viewers cannot be refreshed by the destroy hook
+(§3.8). I9's form was never joined to I10 and the bespoke `ActionsPanel`/`SheetPanel`
+were never retired — both non-goals (LB-30). I13's B→A field-diff delta upgrade
+remains deferred; it is not needed for the keyframe coordination repair. The pose counter (§8 q13) stays
 deferred (LB-33). The tactics `≤16` cut and the accumulator ladder wait on the
 pack's display metadata (LB-7's I half is blocked on it, not on I). A Paradox
 vital wants thresholds the rules have not declared (LB-22 — an owner's rules

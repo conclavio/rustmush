@@ -29,7 +29,7 @@
 //! client drops a late older frame; the watermark resets on every `hello`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mush_core::{
     Audience, Ctx, HookReadContext, ModError, ObjId, OwnerId, PanelFeedHandle, QueryHandler,
@@ -63,8 +63,39 @@ pub struct VitalsRevisions(pub HashMap<ObjId, u64>);
 /// the next republish to a fresh keyframe instead of a delta. A module state
 /// slot beside [`VitalsRevisions`], RAM only and reset at boot — 8 bytes per
 /// subject, never a data snapshot.
-#[derive(Clone, Debug, Default)]
-pub struct SheetSchemaFps(pub HashMap<ObjId, u64>);
+#[derive(Debug, Default)]
+pub struct SheetSchemaFps(Mutex<HashMap<ObjId, u64>>);
+
+impl Clone for SheetSchemaFps {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(
+            self.0.lock().map(|rows| rows.clone()).unwrap_or_default(),
+        ))
+    }
+}
+
+impl SheetSchemaFps {
+    fn get(&self, subject: ObjId) -> Option<u64> {
+        // This is only a compression hint. A poisoned slot safely falls back
+        // to keyframes rather than taking down the world or trusting a base.
+        self.0
+            .lock()
+            .ok()
+            .and_then(|rows| rows.get(&subject).copied())
+    }
+
+    fn insert(&self, subject: ObjId, fingerprint: u64) {
+        if let Ok(mut rows) = self.0.lock() {
+            rows.insert(subject, fingerprint);
+        }
+    }
+
+    fn forget(&self, subject: ObjId) {
+        if let Ok(mut rows) = self.0.lock() {
+            rows.remove(&subject);
+        }
+    }
+}
 
 /// The materialized `<ruleset>.sheet` payload a viewer sees — the shared input
 /// to both the on-subscribe keyframe and the republish delta (interface plan
@@ -112,7 +143,8 @@ impl SheetView {
         })
     }
 
-    /// The full keyframe (carries `schema` + `revision`).
+    /// The full push keyframe (carries `schema` + `revision`). Query handlers
+    /// use [`Self::query_keyframe`] so the next push shares their baseline.
     #[must_use]
     pub fn keyframe(&self, feed: &SmolStr, revision: u64) -> OutputEvent {
         let mut data = self.base(revision);
@@ -122,6 +154,18 @@ impl SheetView {
             kind: PanelFrameKind::Keyframe,
             data,
         }
+    }
+
+    /// A query/subscription keyframe can change a connection's schema or staff
+    /// projection without a mutation. Invalidate the shared republish baseline:
+    /// the next write establishes a keyframe for every connection of the subject.
+    /// This is transient presentation bookkeeping, never authoritative state.
+    #[must_use]
+    pub fn query_keyframe(&self, world: &World, feed: &SmolStr, revision: u64) -> OutputEvent {
+        if let Some(fingerprints) = world.module_state::<SheetSchemaFps>() {
+            fingerprints.forget(self.target);
+        }
+        self.keyframe(feed, revision)
     }
 
     /// The incremental delta (omits `schema`, carries `base_revision`).
@@ -526,9 +570,7 @@ impl VitalsRepublish {
         }
         if let Some(view) = self.source.sheet_view(ctx, subject) {
             let fp = view.fingerprint();
-            let prior = ctx
-                .state::<SheetSchemaFps>()
-                .and_then(|m| m.0.get(&subject).copied());
+            let prior = ctx.state::<SheetSchemaFps>().and_then(|m| m.get(subject));
             // Force a keyframe on a schema/staff-visibility change, on the first
             // write after boot (no prior fp), or at revision 0 (no revision
             // counter registered) — never emit a delta the client cannot base.
@@ -538,14 +580,14 @@ impl VitalsRepublish {
                 view.delta(&self.sheet_feed, revision)
             };
             if let Some(m) = ctx.state_mut::<SheetSchemaFps>() {
-                m.0.insert(subject, fp);
+                m.insert(subject, fp);
             }
             ctx.out.to_actor(subject, event);
         } else if let Some(m) = ctx.state_mut::<SheetSchemaFps>() {
             // No sheet to publish (wiped, or unreadable): forget its
             // fingerprint so a recreated sheet force-keyframes rather than
             // arriving as a delta the client cannot base.
-            m.0.remove(&subject);
+            m.forget(subject);
         }
     }
 }

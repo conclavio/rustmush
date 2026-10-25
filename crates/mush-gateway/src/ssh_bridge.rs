@@ -65,6 +65,8 @@ pub struct NewConn {
     pub caps: ClientCaps,
     /// The transport's output channel (the writer task holds the rx side).
     pub tx: mpsc::Sender<Arc<OutputEvent>>,
+    /// Optional SSH envelope stream; legacy adapters may keep using `tx`.
+    pub stamped_tx: Option<mpsc::Sender<Arc<mush_proto::Envelope>>>,
 }
 
 /// The production hooks implementation. Generic over [`AuthBackend`] so the
@@ -178,7 +180,16 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             return Err(ConnectErr::NotYourCharacter);
         };
         let caps_structured = conn.caps.structured;
-        let handle = ConnectionHandle::new(conn.id, conn.addr, conn.caps, conn.tx);
+        let handle = match conn.stamped_tx {
+            Some(tx) => ConnectionHandle::new_with_sink_at(
+                conn.id,
+                conn.addr,
+                conn.caps,
+                mush_session::Sink::AnsiStamped(tx),
+                std::time::Instant::now(),
+            ),
+            None => ConnectionHandle::new(conn.id, conn.addr, conn.caps, conn.tx),
+        };
         self.core
             .enter_game(handle, actor, account, &char_name, caps_structured)
             .await?;
@@ -342,6 +353,7 @@ mod net {
                 addr: conn.addr,
                 caps: conn.caps,
                 tx: conn.tx,
+                stamped_tx: conn.stamped_tx,
             };
             Box::pin(async move {
                 self.connect_character(conn, account, character)
@@ -367,9 +379,8 @@ mod net {
         /// ack, or "Unknown query", and never stamps idle for a query, so a
         /// dynamic name is safe; the shape check only keeps garbage off the
         /// world loop. The one legacy convenience is `mail.list` with no
-        /// args, which lists the inbox. The correlation id is unused by the
-        /// TUI — it routes replies by the inner event's type — so a fixed id
-        /// is fine.
+        /// args, which lists the inbox. Preserve the transport correlation id:
+        /// history uses it to reject late replies after a retry or mode change.
         fn invoke(
             &self,
             conn: u64,
@@ -379,7 +390,13 @@ mod net {
             Box::pin(async move { self.core.invoke(conn, id, request).await })
         }
 
-        fn query(&self, conn: u64, name: String, args: serde_json::Value) -> BoxFuture<'_, ()> {
+        fn query(
+            &self,
+            conn: u64,
+            id: u64,
+            name: String,
+            args: serde_json::Value,
+        ) -> BoxFuture<'_, ()> {
             Box::pin(async move {
                 let well_formed = !name.is_empty()
                     && name.len() <= 64
@@ -396,7 +413,7 @@ mod net {
                 } else {
                     args
                 };
-                self.core.query(conn, 0, SmolStr::new(name), args).await;
+                self.core.query(conn, id, SmolStr::new(name), args).await;
             })
         }
 

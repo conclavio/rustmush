@@ -890,3 +890,32 @@ fn a_second_owner_may_share_the_family_name_without_publishing() {
     assert!(tw.registry().query_handler("other.vitals").is_none());
     assert!(tw.registry().query_handler("toy.sheet").is_some());
 }
+
+#[test]
+fn a_real_sheet_query_reestablishes_the_next_push_keyframe() {
+    let mut tw = world();
+    let nick = tw.spawn_player("Nick");
+    seed_sheet(&mut tw, nick, |_| {});
+    let kind = |events: Vec<(Audience, OutputEvent)>| {
+        events
+            .into_iter()
+            .find_map(|(_, ev)| match ev {
+                OutputEvent::Panel { feed, kind, .. } if feed == "toy.sheet" => Some(kind),
+                _ => None,
+            })
+            .expect("sheet republished")
+    };
+    assert_eq!(
+        kind(tw.run(GOD, "@sheet/set Nick/strength=3")),
+        PanelFrameKind::Keyframe
+    );
+    assert_eq!(
+        kind(tw.run(GOD, "@sheet/set Nick/strength=4")),
+        PanelFrameKind::Delta
+    );
+    query_panel(&mut tw, nick, "toy.sheet");
+    assert_eq!(
+        kind(tw.run(GOD, "@sheet/set Nick/strength=5")),
+        PanelFrameKind::Keyframe
+    );
+}

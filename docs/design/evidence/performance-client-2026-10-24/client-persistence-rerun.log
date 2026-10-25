@@ -1,0 +1,47 @@
+   Compiling mush-ruleset v0.1.0 (/opt/rustmush/dev1/build/crates/mush-ruleset)
+   Compiling mush-net-ssh v0.1.0 (/opt/rustmush/dev1/build/crates/mush-net-ssh)
+   Compiling mush-npc v0.1.0 (/opt/rustmush/dev1/build/crates/mush-npc)
+   Compiling mush-tactics v0.1.0 (/opt/rustmush/dev1/build/crates/mush-tactics)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-testkit v0.1.0 (/opt/rustmush/dev1/build/crates/mush-testkit)
+   Compiling mush-gateway v0.1.0 (/opt/rustmush/dev1/build/crates/mush-gateway)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+   Compiling mushd v0.1.0 (/opt/rustmush/dev1/build/crates/mushd)
+    Finished `test` profile [unoptimized] target(s) in 55.62s
+     Running tests/persistence.rs (target/debug/deps/persistence-4e8c88fab0d2ed8b)
+
+running 32 tests
+test a_macro_survives_a_restart_through_the_store ... ok
+test account_creation_confirmation_waits_for_store_ack ... ok
+test an_unclean_world_exit_takes_no_shutdown_bgsave ... ok
+test boot_round_trip_redis_gated ... ok
+test boot_seed_persist_reload_round_trip_in_memory ... ok
+test closed_store_durable_ack_reports_failure ... ok
+test destroy_sweeps_and_deletes_from_store ... ok
+test dump_announces_and_acks ... ok
+test economy_journal_round_trip_in_memory ... ok
+test economy_journal_round_trip_redis_gated ... ok
+test inventory_pool_round_trip_in_memory ... ok
+test inventory_pool_round_trip_redis_gated ... ok
+test m5_module_persistence_round_trip_in_memory ... ok
+test m5_module_persistence_round_trip_redis_gated ... ok
+test npc_agent_persistence_round_trip_in_memory ... ok
+test npc_agent_persistence_round_trip_redis_gated ... ok
+test onboarding_persistence_round_trip_in_memory ... ok
+test onboarding_persistence_round_trip_redis_gated ... ok
+test ordinary_success_and_barrier_wait_for_exact_store_ack ... ok
+test persisted_bans_load_into_ipguard_at_boot ... ok
+test read_only_refuses_exit_aliases_and_creation ... ok
+test repeated_ban_reloads_leave_the_shared_guard_unchanged ... ok
+test scene_archive_reads_cold_chunks_in_memory ... ok
+test scene_archive_reads_cold_chunks_redis_gated ... ok
+test sheet_persistence_round_trip_in_memory ... ok
+test sheet_persistence_round_trip_redis_gated ... ok
+test siteban_persists_updates_ipguard_and_clears ... ok
+test siteban_set_then_immediate_clear_lands_cleared ... ok
+test store_failure_enters_read_only_and_recovery_exits ... ok
+test worldgen_persistence_round_trip_in_memory ... ok
+test worldgen_persistence_round_trip_redis_gated ... ok
+test wrong_receipt_serial_never_releases_success ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.48s

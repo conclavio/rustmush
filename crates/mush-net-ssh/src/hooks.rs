@@ -86,6 +86,8 @@ pub struct NewConn {
     pub caps: ClientCaps,
     /// Bounded output queue; the SSH output pump consumes the other end.
     pub tx: mpsc::Sender<Arc<OutputEvent>>,
+    /// Optional SSH envelope stream; legacy adapters may keep using `tx`.
+    pub stamped_tx: Option<mpsc::Sender<Arc<mush_proto::Envelope>>>,
 }
 
 /// The game-side callbacks the SSH ingress needs. Implemented by `mushd`;
@@ -166,7 +168,13 @@ pub trait SshHooks: Send + Sync {
     /// an [`OutputEvent`] (interface plan I1, D-I-3: any registered feed or
     /// query name, with arguments). The default is a no-op, so a binary
     /// without query support simply serves no widget data.
-    fn query(&self, _conn: u64, _name: String, _args: serde_json::Value) -> BoxFuture<'_, ()> {
+    fn query(
+        &self,
+        _conn: u64,
+        _id: u64,
+        _name: String,
+        _args: serde_json::Value,
+    ) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 
