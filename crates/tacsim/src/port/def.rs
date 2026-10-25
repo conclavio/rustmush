@@ -156,8 +156,10 @@ pub struct PortDef {
     /// its location has role [`crate::pack::SITE_ROLE`], it authors no orgs,
     /// rooms, programme, vendors, premium or emergency, and its sixteen blocks'
     /// tenure, prospectivity and worked share are here. Absent for a station.
+    /// Boxed since doc 20 cut SM.12b (its `yard` tipped a port entry over clippy's
+    /// `large_enum_variant` for every `PackEntry`, as `vehicles` and `licence` below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub site: Option<SiteDef>,
+    pub site: Option<Box<SiteDef>>,
     /// **Doc 20 cut SM.3a (§4.3, Q-20-6)** — a lessor's pool of terrain
     /// vehicles, laid up by the applier (part h): Occator's rigs at Ceres. At
     /// most one port of a lane authors it, and that port runs the programme
@@ -383,6 +385,120 @@ pub struct SiteDef {
     /// block's `paper`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub papers: BTreeMap<CanonicalId, PaperDef>,
+    /// **Doc 20 cut SM.12b (§12.3; the lead's rulings 1–2, 5)**: the house's yard at this site,
+    /// laid up by the applier (part i, `crate::port::yard::lay_up`). Absent everywhere but
+    /// Occator Rim. Boxed, so a site block does not grow every port entry; skipped when absent,
+    /// so a site from before the cut re-encodes byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yard: Option<Box<YardDef>>,
+}
+
+/// The longest a yard's re-arm interval may be, IC seconds: a week, the claims' and the fill
+/// plan's scale (doc 20 cut SM.12b).
+pub const MAX_YARD_REARM_IC_SECS: i64 = 7 * 86_400;
+
+/// **A house's yard at a site** (doc 20 cut SM.12b; doc 20 §12.3 "Occator's drones", §9.6, §4.3,
+/// D-20-11; the lead's rulings 1, 2 and 5): a hull of `unit` settled for good on the site's pad
+/// (named `name`, marked `registry_prefix` + `01`), its hold a vault of the house, its bay holding
+/// `rigs` rigs of the house's own pool (`pool`, marked `rig_prefix` + `01`…), and a `DARK`
+/// dispatcher in the site's host room that operates them for the house, filing SM.11 fill plans
+/// over `blocks` for `ore` and delivering the yard hold's ore in kind to the house's mill.
+///
+/// **The numbers and their basis** (O-8, O-9, O-14, ruled by the owner on 2026-10-24 as defaults
+/// kept provisionally — "keep the defaults … I'll tune later"; every figure the yard turns on is
+/// here or named from here): **rigs 2** is the Dray-P's bay (`dray_p.json`'s `rigs` bay,
+/// `maximum_items` 2); **the hold is the unit's**, 86 t / 103.2 m³ under `stow.ore`, and ice ore
+/// binds by mass, so one landed hold a plan is 86 t of ice — 34.4 t of water at the mill's 5 : 2,
+/// a little over two IC days of its 40 t; **re-arm 3,600 IC s** is one IC hour (SM.10's
+/// `CLAIM_ORDER_TTL_IC_SECS` scale; 150 real s at world rate 24), so at most one filing a rig an
+/// IC hour; **blocks F and G** are §9.6/§12.3's "two worked by its drones" (fair-or-better ice
+/// under the reference key `KEY_1`: F 271 t, G 256 t); **the delivery bound** is the house mill's
+/// own `MillDef::per_ic_day_t` (SM.12a's number, none of this cut's).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct YardDef {
+    /// The house: an org of some port of the pack (`occator`).
+    pub org: CanonicalId,
+    /// The hull's name, label-shaped ("Occator Yard").
+    pub name: String,
+    /// The hull's unit, with a bay and an ore hold (`tacsim.unit.dray_p`).
+    pub unit: CanonicalId,
+    /// The hull's mark prefix, separator included (`OWP-YD-`).
+    pub registry_prefix: String,
+    /// The pack's one rig pool, whose org is `org` (`occator.rig_lease`).
+    pub pool: CanonicalId,
+    /// The rigs' mark prefix (`OWP-YT-`).
+    pub rig_prefix: String,
+    /// How many rigs, `1..=`[`crate::definitions::logistics::MAX_BAY_ITEMS`], at most the unit's
+    /// bay (the apply's preflight).
+    pub rigs: u32,
+    /// The ore its plans mine and it delivers (`ice_ore`).
+    pub ore: CanonicalId,
+    /// The held blocks it works, 1 to 4 distinct letters (`F`, `G`).
+    pub blocks: Vec<char>,
+    /// The re-arm interval after a plan ends, IC seconds, `1..=`[`MAX_YARD_REARM_IC_SECS`].
+    pub rearm_ic_secs: i64,
+}
+
+/// Whether a registry prefix is 1 to [`MAX_REGISTRY_PREFIX_BYTES`] bytes of `A-Z`, `0-9` and `-`.
+fn prefix_ok(prefix: &str) -> bool {
+    !prefix.is_empty()
+        && prefix.len() <= MAX_REGISTRY_PREFIX_BYTES
+        && prefix
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+}
+
+impl YardDef {
+    /// **The yard's own bounds against its site** (doc 20 cut SM.12b): a label-shaped name; two
+    /// registry prefixes, each 1 to 16 bytes of `A-Z`, `0-9` and `-`, and not the same; `rigs`
+    /// 1 to 4; the re-arm interval in bounds; 1 to 4 distinct block letters, each held by the
+    /// yard's own org at `site`.
+    ///
+    /// # Errors
+    ///
+    /// The first rule broken, as its detail.
+    pub fn check(&self, site: &SiteDef) -> Result<(), String> {
+        let max_rigs = crate::definitions::logistics::MAX_BAY_ITEMS;
+        if !label_ok(&self.name) {
+            return Err("site: yard: the name is not a label".to_owned());
+        }
+        if !prefix_ok(&self.registry_prefix) || !prefix_ok(&self.rig_prefix) {
+            return Err(format!(
+                "site: yard: a registry prefix is 1 to {MAX_REGISTRY_PREFIX_BYTES} bytes of A-Z, \
+                 0-9 and -"
+            ));
+        }
+        if self.registry_prefix == self.rig_prefix {
+            return Err("site: yard: the hull and its rigs need two prefixes".to_owned());
+        }
+        if self.rigs == 0 || self.rigs > max_rigs {
+            return Err(format!("site: yard: rigs is 1 to {max_rigs}"));
+        }
+        if self.rearm_ic_secs < 1 || self.rearm_ic_secs > MAX_YARD_REARM_IC_SECS {
+            return Err(format!(
+                "site: yard: rearm_ic_secs is 1 to {MAX_YARD_REARM_IC_SECS}"
+            ));
+        }
+        let distinct: BTreeSet<char> = self.blocks.iter().copied().collect();
+        if self.blocks.is_empty()
+            || self.blocks.len() > 4
+            || distinct.len() != self.blocks.len()
+            || self.blocks.iter().any(|l| !BLOCK_LETTERS.contains(l))
+        {
+            return Err("site: yard: blocks names 1 to 4 distinct letters A to P".to_owned());
+        }
+        for letter in &self.blocks {
+            let terms = site.block(*letter);
+            if terms.tenure != Tenure::Held || terms.holder != Some(&self.org) {
+                return Err(format!(
+                    "site: yard: block {letter} is not held by {}",
+                    self.org
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One block as the site reads it: its tenure, holder, prospectivity, worked
@@ -435,7 +551,8 @@ impl SiteDef {
     /// **The site block's own bounds** (doc 20 §3.1; cut SM.2): a label-shaped
     /// name; every `blocks` key one letter `A`..=`P`; the default tenure
     /// `commons` or `open`; a row `held` exactly when it names a holder;
-    /// prospectivity `-3..=3`; worked share `0..=1000`.
+    /// prospectivity `-3..=3`; worked share `0..=1000`; (doc 20 cut SM.12b) a yard's own
+    /// bounds against the site ([`YardDef::check`]).
     ///
     /// # Errors
     ///
@@ -512,6 +629,11 @@ impl SiteDef {
                     paper.bond_major
                 ));
             }
+        }
+        // Doc 20 cut SM.12b (§12.3): the yard's own bounds; its pack-wide rules are
+        // `check_ports`', its unit facts the apply preflight's.
+        if let Some(yard) = &self.yard {
+            yard.check(self)?;
         }
         Ok(())
     }
@@ -1596,6 +1718,75 @@ impl PortDef {
     }
 }
 
+/// **The yards' pack-wide rules** (doc 20 cut SM.12b; [`check_ports`]' last site rule): for each
+/// site's yard, entry order — its org an org of the pack; its pool the pack's one `vehicles` block
+/// and that block's org the yard's (the rigs' unit and tools are read from the programme port's
+/// pool whatever pool a rig came from, and the one-lessor rule makes that pool the only one); its
+/// ore an ore good (`family_of_word`, `ore_good`); exactly one vendor of the house with a mill row
+/// of that ore (where the yard delivers); neither prefix any programme's, the pool's or another
+/// yard's; one yard an org.
+fn check_yards(
+    ports: &[(&CanonicalId, &PortDef)],
+    orgs: &BTreeMap<&CanonicalId, &CanonicalId>,
+) -> Result<(), (CanonicalId, String)> {
+    let pool_block = ports.iter().find_map(|(_, def)| def.vehicles.as_deref());
+    let mut seen: Vec<(&CanonicalId, &YardDef)> = Vec::new();
+    for (id, def) in ports {
+        let fail = |detail: String| Err(((*id).clone(), detail));
+        let Some(yard) = def.site.as_ref().and_then(|site| site.yard.as_deref()) else {
+            continue;
+        };
+        let org = &yard.org;
+        if !orgs.contains_key(org) {
+            return fail(format!("site: yard: {org} is not an org of this pack"));
+        }
+        if pool_block.is_none_or(|pool| pool.id != yard.pool || pool.org != *org) {
+            return fail(format!(
+                "site: yard: pool {} is not the pack's rig pool of {org}",
+                yard.pool
+            ));
+        }
+        let ore_good = crate::surface::geology::family_of_word(yard.ore.as_str())
+            .map(crate::surface::opening::ore_good);
+        if ore_good != Some(yard.ore.as_str()) {
+            return fail(format!("site: yard: {} is not an ore good", yard.ore));
+        }
+        let mills = ports
+            .iter()
+            .flat_map(|(_, port)| port.vendors.iter())
+            .filter(|vendor| {
+                vendor.org == *org && vendor.mill.iter().any(|mill| mill.ore == yard.ore)
+            })
+            .count();
+        if mills != 1 {
+            return fail(format!(
+                "site: yard: {org} mills no {}, so the yard has nowhere to deliver",
+                yard.ore
+            ));
+        }
+        let mut taken: Vec<&str> = ports
+            .iter()
+            .filter_map(|(_, port)| port.programme.as_ref())
+            .map(|programme| programme.registry_prefix.as_str())
+            .collect();
+        taken.extend(pool_block.map(|pool| pool.registry_prefix.as_str()));
+        for (_, other) in &seen {
+            taken.push(other.registry_prefix.as_str());
+            taken.push(other.rig_prefix.as_str());
+        }
+        for prefix in [&yard.registry_prefix, &yard.rig_prefix] {
+            if taken.contains(&prefix.as_str()) {
+                return fail(format!("site: yard: prefix {prefix} is another pool's"));
+            }
+        }
+        if let Some((other, _)) = seen.iter().find(|(_, other)| other.org == *org) {
+            return fail(format!("site: yard: {org} already keeps a yard at {other}"));
+        }
+        seen.push((id, yard));
+    }
+    Ok(())
+}
+
 /// **The rules that span every `port` entry of one pack** (doc 18 §4.7,
 /// D-18-47). The detail is returned beside the offending port entry's id; the
 /// caller wraps both into one refusal.
@@ -1617,7 +1808,10 @@ impl PortDef {
 ///   any port entry of the pack asks** (§7.4: a fixed reference only for a good
 ///   no port asks);
 /// - (doc 20 cut SM.5) at most one port entry authors a `licence` block, and
-///   when one does every site's `issuer` is its org (D-20-12, phase 1).
+///   when one does every site's `issuer` is its org (D-20-12, phase 1);
+/// - (doc 20 cut SM.12b) a site's yard names an org of the pack, the pack's one rig
+///   pool of that org, an ore good its house mills at exactly one vendor, and
+///   prefixes no programme, pool or other yard uses; one yard an org (`check_yards`).
 ///
 /// # Errors
 ///
@@ -1801,6 +1995,9 @@ pub fn check_ports(
             }
         }
     }
+    // Doc 20 cut SM.12b (§12.3; the lead's rulings 1–2, 5): a yard's house, its pool, its ore,
+    // its house's one mill of that ore, and prefixes no other pool, programme or yard uses.
+    check_yards(&ports, &orgs)?;
     for (id, def) in &ports {
         let fail = |detail: String| Err(((*id).clone(), detail));
         for (venue, list) in &def.routes {
@@ -2241,7 +2438,7 @@ mod tests {
             routes: BTreeMap::from([(cid("ceres"), vec![cid("ahuna_ceres")])]),
             premium: None,
             emergency: None,
-            site: Some(SiteDef {
+            site: Some(Box::new(SiteDef {
                 name: "Ahuna Flank".to_owned(),
                 issuer: cid("freeport_registry"),
                 zone: Zone::Core,
@@ -2250,7 +2447,8 @@ mod tests {
                 },
                 blocks: BTreeMap::new(),
                 papers: BTreeMap::new(),
-            }),
+                yard: None,
+            })),
             vehicles: None,
             licence: None,
         }
@@ -2371,7 +2569,7 @@ mod tests {
                 );
             }
         }
-        let shifts = def.site.as_ref().map(SiteDef::shifts).unwrap_or_default();
+        let shifts = def.site.as_deref().map(SiteDef::shifts).unwrap_or_default();
         let mut want = [0_i8; 16];
         want[12] = 1;
         want[15] = 2;
@@ -2900,5 +3098,255 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    /// The lane document's game entries (the atlas's own kinds, `region`, are not tacsim's).
+    fn sm12b_entries(doc: &serde_json::Value) -> BTreeMap<CanonicalId, PackEntry> {
+        doc["entries"]
+            .as_object()
+            .unwrap_or_else(|| panic!("the lane has entries"))
+            .iter()
+            .filter(|(_, entry)| entry["kind"] != "region")
+            .map(|(id, entry)| {
+                (
+                    cid(id),
+                    serde_json::from_value(entry.clone())
+                        .unwrap_or_else(|error| panic!("entry {id} decodes: {error}")),
+                )
+            })
+            .collect()
+    }
+
+    /// The shipped lane's entries after `edit`, refused as the loader formats a port refusal
+    /// (`port entry {id}: {detail}`): every port's own bounds first (`PortDef::check`, entry
+    /// order), then the pack-wide rules (`check_ports`) — `crate::pack`'s order.
+    fn sm12b_lane(edit: &dyn Fn(&mut serde_json::Value)) -> String {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(crate::definitions::content::LANE_JSON)
+                .unwrap_or_else(|error| panic!("the lane is JSON: {error}"));
+        edit(&mut doc);
+        let entries = sm12b_entries(&doc);
+        for (id, entry) in &entries {
+            if let PackEntry::Port(def) = entry
+                && let Err(detail) = def.check()
+            {
+                return format!("port entry {id}: {detail}");
+            }
+        }
+        match check_ports(&entries) {
+            Ok(()) => "accepted".to_owned(),
+            Err((id, detail)) => format!("port entry {id}: {detail}"),
+        }
+    }
+
+    /// An edit of the shipped yard's `key` to `value`.
+    fn sm12b_yard(key: &'static str, value: serde_json::Value) -> impl Fn(&mut serde_json::Value) {
+        move |doc: &mut serde_json::Value| {
+            doc["entries"]["occator_port"]["def"]["site"]["yard"][key] = value.clone();
+        }
+    }
+
+    /// **Doc 20 cut SM.12b (§12.3)**: each yard rule refuses at load with its sentence, whole, as
+    /// the loader formats it; the shipped yard is accepted.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one case a rule
+    fn sm12b_each_yard_rule_refuses_with_its_sentence() {
+        use serde_json::json;
+        let at = |detail: &str| format!("port entry occator_port: site: yard: {detail}");
+        assert_eq!(sm12b_lane(&|_| {}), "accepted");
+        // SiteDef::check's rules.
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("name", json!(" "))),
+            at("the name is not a label")
+        );
+        let prefix = at(&format!(
+            "a registry prefix is 1 to {MAX_REGISTRY_PREFIX_BYTES} bytes of A-Z, 0-9 and -"
+        ));
+        for (key, bad) in [
+            ("registry_prefix", "owp-yd-"),
+            ("registry_prefix", ""),
+            ("registry_prefix", "OWP-YD-0123456789"),
+            ("rig_prefix", "OWP YT"),
+        ] {
+            assert_eq!(
+                sm12b_lane(&sm12b_yard(key, json!(bad))),
+                prefix,
+                "{key} {bad}"
+            );
+        }
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("rig_prefix", json!("OWP-YD-"))),
+            at("the hull and its rigs need two prefixes")
+        );
+        for rigs in [0, MAX_BAY_ITEMS_FOR_TEST + 1] {
+            assert_eq!(
+                sm12b_lane(&sm12b_yard("rigs", json!(rigs))),
+                at(&format!("rigs is 1 to {MAX_BAY_ITEMS_FOR_TEST}")),
+                "{rigs}"
+            );
+        }
+        for rearm in [0, MAX_YARD_REARM_IC_SECS + 1] {
+            assert_eq!(
+                sm12b_lane(&sm12b_yard("rearm_ic_secs", json!(rearm))),
+                at("rearm_ic_secs is 1 to 604800"),
+                "{rearm}"
+            );
+        }
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("rearm_ic_secs", json!(MAX_YARD_REARM_IC_SECS))),
+            "accepted"
+        );
+        for blocks in [
+            json!([]),
+            json!(["F", "F"]),
+            json!(["F", "G", "J", "K", "F"]),
+            json!(["Q"]),
+        ] {
+            assert_eq!(
+                sm12b_lane(&sm12b_yard("blocks", blocks.clone())),
+                at("blocks names 1 to 4 distinct letters A to P"),
+                "{blocks}"
+            );
+        }
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("blocks", json!(["F", "G", "J", "K"]))),
+            "accepted"
+        );
+        // Open (papered) ground is not the house's.
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("blocks", json!(["F", "A"]))),
+            at("block A is not held by occator")
+        );
+        // A block held by another org (the Pallas Syndicate) is not held by the yard's org.
+        assert_eq!(
+            sm12b_lane(&|doc| {
+                doc["entries"]["occator_port"]["def"]["site"]["blocks"]["B"] =
+                    json!({ "tenure": "held", "holder": "pallas_syndicate" });
+                doc["entries"]["occator_port"]["def"]["site"]["yard"]["blocks"] = json!(["B"]);
+            }),
+            at("block B is not held by occator")
+        );
+        // check_ports' rules.
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("pool", json!("occator.other"))),
+            at("pool occator.other is not the pack's rig pool of occator")
+        );
+        assert_eq!(
+            sm12b_lane(&|doc| {
+                doc["entries"]["ceres_port"]["def"]["vehicles"]["org"] = json!("coop");
+            }),
+            at("pool occator.rig_lease is not the pack's rig pool of occator")
+        );
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("ore", json!("volatiles"))),
+            at("volatiles is not an ore good")
+        );
+        assert_eq!(
+            sm12b_lane(&sm12b_yard("ore", json!("metal_ore"))),
+            at("occator mills no metal_ore, so the yard has nowhere to deliver")
+        );
+        assert_eq!(
+            sm12b_lane(&|doc| {
+                if let Some(vendors) = doc["entries"]["ceres_port"]["def"]["vendors"].as_array_mut()
+                {
+                    for vendor in vendors.iter_mut() {
+                        if vendor["org"] == "occator"
+                            && let Some(vendor) = vendor.as_object_mut()
+                        {
+                            vendor.remove("mill");
+                        }
+                    }
+                }
+            }),
+            at("occator mills no ice_ore, so the yard has nowhere to deliver")
+        );
+        for (key, taken) in [
+            ("registry_prefix", "OWP-TV-"),
+            ("rig_prefix", "FPC-D-04"),
+            ("rig_prefix", "CF-H-"),
+        ] {
+            assert_eq!(
+                sm12b_lane(&sm12b_yard(key, json!(taken))),
+                at(&format!("prefix {taken} is another pool's")),
+                "{key} {taken}"
+            );
+        }
+        // A second yard for the same house, at Juling Shadow (entry order: it is the first).
+        let second = |hull: &'static str, rigs: &'static str| {
+            move |doc: &mut serde_json::Value| {
+                let site = &mut doc["entries"]["juling_port"]["def"]["site"];
+                site["blocks"] = json!({ "A": { "tenure": "held", "holder": "occator" } });
+                let mut yard = doc["entries"]["occator_port"]["def"]["site"]["yard"].clone();
+                yard["registry_prefix"] = json!(hull);
+                yard["rig_prefix"] = json!(rigs);
+                yard["blocks"] = json!(["A"]);
+                doc["entries"]["juling_port"]["def"]["site"]["yard"] = yard;
+            }
+        };
+        assert_eq!(
+            sm12b_lane(&second("OWP-YE-", "OWP-YU-")),
+            at("occator already keeps a yard at juling_port")
+        );
+        assert_eq!(
+            sm12b_lane(&second("OWP-YD-", "OWP-YU-")),
+            at("prefix OWP-YD- is another pool's")
+        );
+        // The org rule, unreachable through a whole pack (a held block's holder is an org of the
+        // pack by the SM.2 rule, checked first), pinned through `check_yards` itself.
+        let mut doc: serde_json::Value =
+            serde_json::from_str(crate::definitions::content::LANE_JSON)
+                .unwrap_or_else(|error| panic!("the lane is JSON: {error}"));
+        doc["entries"]["occator_port"]["def"]["site"]["yard"]["org"] = json!("nobody");
+        let entries = sm12b_entries(&doc);
+        let ports: Vec<(&CanonicalId, &PortDef)> = entries
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                PackEntry::Port(def) => Some((id, def)),
+                _ => None,
+            })
+            .collect();
+        let orgs: BTreeMap<&CanonicalId, &CanonicalId> = ports
+            .iter()
+            .flat_map(|(id, def)| def.orgs.iter().map(move |org| (&org.id, *id)))
+            .collect();
+        assert_eq!(
+            check_yards(&ports, &orgs)
+                .err()
+                .map(|(id, detail)| format!("port entry {id}: {detail}")),
+            Some(at("nobody is not an org of this pack"))
+        );
+    }
+
+    /// `crate::definitions::logistics::MAX_BAY_ITEMS`, as the rigs sentence spells it.
+    const MAX_BAY_ITEMS_FOR_TEST: u32 = crate::definitions::logistics::MAX_BAY_ITEMS;
+
+    /// **Doc 20 cut SM.12b**: a site with no yard re-encodes with no `yard` key, byte-identically
+    /// (a v14 site); a yard block round-trips and is strict.
+    #[test]
+    fn sm12b_a_site_without_a_yard_re_encodes_byte_identically() {
+        let def = site_port();
+        let site = def
+            .site
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| panic!("a site"));
+        let json = serde_json::to_value(&site).unwrap_or_default();
+        assert!(json.get("yard").is_none(), "{json}");
+        let text = serde_json::to_string(&site).unwrap_or_default();
+        let back: SiteDef = serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(back, site);
+        assert_eq!(serde_json::to_string(&back).unwrap_or_default(), text);
+        // The shipped Occator Rim decodes its yard, and re-encodes it.
+        let doc: serde_json::Value = serde_json::from_str(crate::definitions::content::LANE_JSON)
+            .unwrap_or_else(|error| panic!("the lane is JSON: {error}"));
+        let wire = doc["entries"]["occator_port"]["def"]["site"]["yard"].clone();
+        let yard: YardDef = serde_json::from_value(wire.clone())
+            .unwrap_or_else(|error| panic!("the yard decodes: {error}"));
+        assert_eq!(yard.blocks, vec!['F', 'G']);
+        assert_eq!((yard.rigs, yard.rearm_ic_secs), (2, 3_600));
+        assert_eq!(serde_json::to_value(&yard).unwrap_or_default(), wire);
+        let mut strict = wire;
+        strict["x"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<YardDef>(strict).is_err());
     }
 }

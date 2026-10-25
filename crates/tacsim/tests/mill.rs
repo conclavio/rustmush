@@ -1130,13 +1130,14 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 // 1. The lane
 // ---------------------------------------------------------------------------
 
-/// **`strip_mill` rebuilds the published v13** (F9): the shipped lane is v14 and carries
+/// **`strip_mill` rebuilds the published v13** (F9): the shipped lane is v15 and carries
 /// exactly two `mill` rows — the Exchange's and Occator's, with B2's figures — read from the
-/// shipped pack; the shipped lane stripped and re-signed at 13 is relay R9b's published v13,
-/// digest for digest; and `strip_mill` removes exactly those two rows, idempotently.
+/// shipped pack; the shipped lane stripped (yard and mills: doc 20 cut SM.12b's `strip_yard` runs
+/// first inside `strip_mill`) and re-signed at 13 is relay R9b's published v13, digest for
+/// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 14, "lane v14 since doc 20 cut SM.12a");
+    assert_eq!(LANE_VERSION, 15, "lane v15 since doc 20 cut SM.12b");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1195,6 +1196,12 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
     assert_eq!(vendors(&doc), vec![true, true, false]);
     strip_mill(&mut doc);
     assert_eq!(vendors(&doc), vec![false, false, false]);
+    // Doc 20 cut SM.12b: the yard goes with the mills (a yard names a mill row).
+    assert!(
+        doc["entries"]["occator_port"]["def"]["site"]
+            .get("yard")
+            .is_none()
+    );
     let once = doc.clone();
     strip_mill(&mut doc);
     assert_eq!(doc, once, "idempotent");

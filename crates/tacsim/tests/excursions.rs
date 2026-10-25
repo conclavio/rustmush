@@ -1106,9 +1106,43 @@ fn staff_place(rig: &mut Rig, tv: ObjId, x: i64, y: i64) {
     staff_place_on(rig, tv, domain, x, y);
 }
 
+/// **A staff write that keeps its writes for a reboot** (doc 20 cut SM.12b, `claims.rs`'s SM.11
+/// precedent): [`support::with_ctx`] drops its outbox, so a staff placement's recovery-ledger
+/// append never reached the store — harmless until a placement sealed a ledger chunk, which the
+/// house yard's lay-up and its drones' placements made happen here (a reboot then refused the
+/// unsealed chunk 0 and the gap after it). The world's own writes fold first, then these.
+fn keeping<T>(rig: &mut Rig, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+    let mut out = mush_core::Outbox::new();
+    let result = {
+        let engine = rig.tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        f(&mut ctx)
+    };
+    let staff: Vec<mush_core::ModuleOp> = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
+    result
+}
+
 /// Staff place `tv` `Direct` on `domain` at `(x, y)`, facing south.
 fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, y: i64) {
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
+    let placed = keeping(rig, |ctx| {
         let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
             .map_err(|e| e.to_string())?;
         mush_sim::place(
@@ -1131,7 +1165,7 @@ fn staff_place_on(rig: &mut Rig, tv: ObjId, domain: mush_sim::DomainId, x: i64, 
 fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
     let bay = ObjId(row.rooms[&cid("bay")]);
     let slot = mush_sim::SlotId::new("rigs").expect("a slot");
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
+    let placed = keeping(rig, |ctx| {
         mush_sim::place_interior(ctx, tv, bay, Some(slot))
     });
     placed.expect("staff place the rig in the bay");
@@ -2771,7 +2805,7 @@ fn sm3b_the_act_gates_refuse_at_the_command_and_at_the_prepare() {
         panic!("the pilot is aboard: {:?}", parent(&rig.tw, pilot));
     };
     let bay = ObjId(row.rooms[&cid("bay")]);
-    support::with_ctx(&mut rig.tw, |ctx| {
+    keeping(&mut rig, |ctx| {
         mush_sim::place_interior(ctx, pilot, bay, None)
     })
     .expect("staff move the pilot into the bay");
@@ -2785,7 +2819,7 @@ fn sm3b_the_act_gates_refuse_at_the_command_and_at_the_prepare() {
         "{refused}"
     );
     assert_eq!(record_of(&mut rig.tw, tv), None, "nothing written");
-    support::with_ctx(&mut rig.tw, |ctx| {
+    keeping(&mut rig, |ctx| {
         mush_sim::place_interior(ctx, pilot, airlock, airlock_slot)
     })
     .expect("staff put the pilot back aboard");

@@ -411,6 +411,19 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
+/// **The queue drained, the house's share landed** (doc 20 cut SM.12b): the Occator Yard's
+/// dispatcher works Occator Rim in every keyed world, its drones' plan steps and unloads queued by
+/// the ticks; they are landed here, quietly, and the rest — the players' and the clerks' — handed
+/// back, so what a typed line or a fire is counted to have queued is the players' world's.
+async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
+    let house = tacsim::port::yard::dispatchers(rig.tw.world());
+    let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
+        .into_iter()
+        .partition(|submit| house.contains(&submit.actor));
+    land_quietly(rig, &theirs).await;
+    rest
+}
+
 /// Land each; a refusal fails the test.
 async fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
@@ -444,7 +457,7 @@ async fn sweep(rig: &mut Rig, secs: i64) -> Vec<(Audience, OutputEvent)> {
 /// One port-tick fire (6 s on), its submissions drained, not landed.
 async fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let events = sweep(rig, 6).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     (events, queued)
 }
 
@@ -630,7 +643,7 @@ async fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = (ahead + rate - 1) / rate;
     let events = sweep(rig, real).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     land_quietly(rig, &queued).await;
     events
 }
@@ -702,7 +715,7 @@ async fn buy(rig: &mut Rig, pilot: ObjId, listing: ListingId, qty: u64) -> i64 {
     let quote = newest_quote(&rig.tw, pilot);
     let accepted = run(rig, pilot, &format!("+market/accept {quote}")).await;
     assert!(accepted.contains("Agreed."), "{accepted}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert_eq!(queued.len(), 1, "{accepted}");
     land_all(rig, &queued).await;
     price * i64::try_from(qty).expect("qty")
@@ -1212,7 +1225,7 @@ async fn top_up_to(rig: &mut Rig, who: ObjId, target: i64) {
 /// Land the burn the undock queued, then fire until she is under way and the launch is
 /// told; the burn's real second and the ticket.
 async fn launch(rig: &mut Rig, hull: ObjId) -> (i64, Ticket) {
-    let burn = drain(&mut rig.tw);
+    let burn = drain_players(rig).await;
     assert_eq!(burn.len(), 1, "the undock's burn");
     land_all(rig, &burn).await;
     let burned_at = rig.tw.world().now();
@@ -1495,7 +1508,7 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
         "{sold}\nwanted: {sale_line}"
     );
     assert!(!sold.contains("Co-op share"), "{sold}");
-    let leg = drain(&mut rig.tw);
+    let leg = drain_players(&mut rig).await;
     assert_eq!(leg.len(), 1, "{sold}");
     land_all(&mut rig, &leg).await;
     for _ in 0..12 {
@@ -1557,7 +1570,7 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
     let quote = newest_quote(&rig.tw, vex);
     let accepted = run(&mut rig, vex, &format!("+market/accept {quote}")).await;
     assert!(accepted.contains("Agreed."), "{accepted}");
-    let draw = drain(&mut rig.tw);
+    let draw = drain_players(&mut rig).await;
     assert_eq!(draw.len(), 1, "{accepted}");
     registry_from_chandlery(&mut rig, vex).await;
     let was = untouched(&rig.tw, vex);
@@ -1588,7 +1601,7 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
             break;
         }
         let _ = sweep(&mut rig, 61).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(&mut rig).await;
         land_quietly(&mut rig, &queued).await;
     }
     assert!(
@@ -1607,7 +1620,7 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
     // A filed clearance: aboard, after the undock and before the launch.
     let out = run(&mut rig, vex, "+ship/undock stickney").await;
     assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
-    let burn = drain(&mut rig.tw);
+    let burn = drain_players(&mut rig).await;
     assert_eq!(burn.len(), 1, "{out}");
     let was = untouched(&rig.tw, vex);
     let out = run(&mut rig, vex, "+coop/buyout").await;
@@ -2287,7 +2300,7 @@ async fn ic13_a_queued_order_waits_out_the_buyout_and_runs_on_the_title() {
         }
         let _ = fire_quietly(&mut rig).await;
         let _ = sweep(&mut rig, 31).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(&mut rig).await;
         land_quietly(&mut rig, &queued).await;
     }
     let doc = orders(&rig.tw, hull);
@@ -2560,7 +2573,7 @@ async fn ic14_a_failed_relet_retries_until_the_pilot_is_chartered() {
         }
         let _ = fire_quietly(&mut rig).await;
         let _ = sweep(&mut rig, 31).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(&mut rig).await;
         land_quietly(&mut rig, &queued).await;
     }
     let doc = orders(&rig.tw, hull);
@@ -2873,7 +2886,7 @@ async fn sm2_hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> i64 {
         tacsim::port::VoyageState::Absent | tacsim::port::VoyageState::Unreadable => None,
     }
     .expect("a filed passage");
-    let burn = drain(&mut rig.tw);
+    let burn = drain_players(rig).await;
     assert_eq!(burn.len(), 1, "the hop's burn");
     land_all(rig, &burn).await;
     let burned_at = rig.tw.world().now();

@@ -767,6 +767,9 @@ pub const fn gated(binding: Binding) -> bool {
         // Doc 20 cut SM.12a: a mill's ledger is reported, never gated; its fault closes the
         // desk only through the gated Listings line of the good it makes (D15).
         Binding::Mill => false,
+        // Doc 20 cut SM.12b: a yard's dispatcher is reported, never gated — the house's drones
+        // never close the trade-run desk (the SM.1–SM.12a rule; D11).
+        Binding::Dispatch => false,
     }
 }
 
@@ -2035,7 +2038,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 21] = [
+        const EVERY: [Binding; 22] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -2060,6 +2063,8 @@ mod tests {
             Binding::Licence,
             // Doc 20 cut SM.12a: reported, never gated.
             Binding::Mill,
+            // Doc 20 cut SM.12b: reported, never gated.
+            Binding::Dispatch,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2086,6 +2091,7 @@ mod tests {
                     | Binding::Vehicles
                     | Binding::Licence
                     | Binding::Mill
+                    | Binding::Dispatch
             );
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {

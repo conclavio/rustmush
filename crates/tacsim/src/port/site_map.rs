@@ -1565,8 +1565,10 @@ pub(crate) fn site_map_frame(
 ) -> Result<Value, MapRefused> {
     use crate::port::tv;
     let not_site = || MapRefused::line(tv::MAP_NOT_SITE);
-    let helm = crate::port::coop::helm_of(w, actor).ok_or_else(not_site)?;
-    let hull_view = crate::port::ship::hull_view(w, helm.hull).ok_or_else(not_site)?;
+    // Doc 20 cut SM.12b: the hull the viewer operates — the helm's, else a dispatcher's yard
+    // hull (`yard::operating_hull`), so staff possessing the dispatcher read its rigs' frame.
+    let helm_hull = crate::port::yard::operating_hull(w, actor).ok_or_else(not_site)?;
+    let hull_view = crate::port::ship::hull_view(w, helm_hull).ok_or_else(not_site)?;
     let berth = crate::surface::act::site_berth(w, &hull_view).map_err(|_| not_site())?;
     let entry = berth.entry.clone();
     let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
@@ -2044,7 +2046,7 @@ pub(crate) fn site_map_frame(
     let hold_room = crate::port::ship::hold_unreserved_kg(
         w,
         &hull_view,
-        &crate::port::tv::live_on_hull(w, helm.hull)
+        &crate::port::tv::live_on_hull(w, helm_hull)
             .iter()
             .map(|lease| lease.tv)
             .collect::<Vec<_>>(),

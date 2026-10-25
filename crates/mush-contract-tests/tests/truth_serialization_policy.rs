@@ -47,6 +47,12 @@ assert_not_impl_any!(PlanCore: Serialize, DeserializeOwned);
 // hold no truth: step words, addresses, a cursor, a tally of what landed, never a class or a reserve.
 assert_not_impl_any!(PlanMove: Serialize, DeserializeOwned);
 assert_not_impl_any!(PlanAct: Serialize, DeserializeOwned);
+// Doc 20 cut SM.12b (the brief's step 45): the house yard's port-map row (`YardRow`), its standing
+// licence pointer (`HouseLicence`) and the dispatch family's record (`DispatchLedger`) are durable
+// records and serialise; none holds truth — hull and rig numbers, a thing id, an account id and its
+// window, a count of loads and tonnes landed, never a pocket's class or a reserve. The dispatcher
+// files through the player's compiler, whose plan and move types stay above. Nothing new is
+// `!Serialize`.
 
 #[test]
 fn private_truth_wrappers_have_no_serde_contract() {

@@ -221,11 +221,73 @@ pub(crate) fn preflight(
     Ok(to_title.saturating_add(absent))
 }
 
-/// The rig row index of pool number `n`.
-fn rig_index(map: &PortMap, n: u32) -> Option<usize> {
-    map.vehicles
-        .as_ref()
-        .and_then(|row| row.rigs.iter().position(|rig| rig.n == n))
+/// **Which rig rows a lay-up writes** (doc 20 cut SM.12b): the lessor's pool
+/// (`map.vehicles.rigs`) or a site's yard (`map.site.yard.rigs`) — one set of steps, two row
+/// lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RigRows {
+    /// `map.vehicles.rigs`.
+    Pool,
+    /// `map.site.yard.rigs`.
+    Yard,
+}
+
+/// The rig rows `which` names (empty when absent).
+pub(crate) fn rig_rows(map: &PortMap, which: RigRows) -> &[RigRow] {
+    match which {
+        RigRows::Pool => map.vehicles.as_ref().map_or(&[], |row| row.rigs.as_slice()),
+        RigRows::Yard => map
+            .site
+            .as_ref()
+            .and_then(|site| site.yard.as_ref())
+            .map_or(&[], |yard| yard.rigs.as_slice()),
+    }
+}
+
+/// The rig rows `which` names, made when absent.
+pub(crate) fn rig_rows_mut(map: &mut PortMap, which: RigRows) -> &mut Vec<RigRow> {
+    match which {
+        RigRows::Pool => &mut map.vehicles.get_or_insert_with(VehiclesRow::default).rigs,
+        RigRows::Yard => {
+            &mut map
+                .site
+                .get_or_insert_with(crate::port::map::SiteRow::default)
+                .yard
+                .get_or_insert_with(crate::port::map::YardRow::default)
+                .rigs
+        }
+    }
+}
+
+/// The rig row index of pool number `n` among `which`'s rows.
+pub(crate) fn rig_index(map: &PortMap, which: RigRows, n: u32) -> Option<usize> {
+    rig_rows(map, which).iter().position(|rig| rig.n == n)
+}
+
+/// **Where a laid-up rig is placed** (doc 20 cut SM.12b): in the lessor's shed (unslotted), or
+/// in a yard hull's bay room in its rigs compartment (the lease's placement,
+/// `mush_sim::place_interior(ctx, tv, bay_room, Some(bay_slot))`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RigPlace {
+    /// The lessor's shed.
+    Shed(ObjId),
+    /// A yard hull's bay room and its rigs compartment.
+    Bay {
+        /// The bay room.
+        room: ObjId,
+        /// The bay's rigs compartment.
+        slot: mush_sim::SlotId,
+    },
+}
+
+impl RigPlace {
+    /// The room the rig Thing is created in.
+    fn room(&self) -> ObjId {
+        match self {
+            RigPlace::Shed(shed) => *shed,
+            RigPlace::Bay { room, .. } => *room,
+        }
+    }
 }
 
 /// **Part (h): lay up the lessor's rigs** (doc 20 cut SM.3a). The shed once,
@@ -280,76 +342,80 @@ pub(crate) fn lay_up(
             id,
             map,
             &RigPlan {
-                def,
+                mark: registry_mark(&def.registry_prefix, n),
+                rows: RigRows::Pool,
+                place: RigPlace::Shed(shed),
                 interior: &interior,
                 spec: &spec,
                 slot: &slot,
-                shed,
                 n,
             },
         )?;
-        let tv = rig_index(map, n)
+        let tv = rig_index(map, RigRows::Pool, n)
             .and_then(|i| map.vehicles.as_ref().and_then(|row| row.rigs.get(i)))
             .map(|rig| ObjId(rig.tv))
             .ok_or_else(|| format!("{id}: rig {n} has no map row"))?;
-        place_and_title(ctx, id, tv, shed, &issuer, &lessor)?;
+        place_and_title(ctx, id, tv, &RigPlace::Shed(shed), &issuer, &lessor)?;
     }
     Ok(())
 }
 
-/// What one rig is made from.
-struct RigPlan<'a> {
-    def: &'a VehiclesDef,
-    interior: &'a InteriorDef,
-    spec: &'a mush_tactics::UnitSpec,
-    slot: &'a mush_sim::SlotId,
-    shed: ObjId,
-    n: u32,
+/// What one rig is made from (doc 20 cut SM.12b: its mark, its row list and where it is placed
+/// named by the caller, so a yard's rigs are laid up by the same steps as the pool's).
+pub(crate) struct RigPlan<'a> {
+    /// Its registry mark, the Thing's name.
+    pub mark: String,
+    /// The row list it is recorded in.
+    pub rows: RigRows,
+    /// Where it is created and placed.
+    pub place: RigPlace,
+    /// The pool unit's interior template.
+    pub interior: &'a InteriorDef,
+    /// The pool unit binding's instantiation shape.
+    pub spec: &'a mush_tactics::UnitSpec,
+    /// The cab's berths compartment.
+    pub slot: &'a mush_sim::SlotId,
+    /// The pool index.
+    pub n: u32,
 }
 
 /// Steps 1–5 for rig `plan.n`: the Thing, the unit, the rooms (dressed), the
 /// spaces (hopper, then cab with its member and its berths) and the hopper
 /// vault.
-fn lay_up_rig(
+pub(crate) fn lay_up_rig(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
     map: &mut PortMap,
     plan: &RigPlan<'_>,
 ) -> Result<(), String> {
     let RigPlan {
-        def,
+        ref mark,
+        rows: which,
+        ref place,
         interior,
         spec,
         slot,
-        shed,
         n,
     } = *plan;
-    let mark = registry_mark(&def.registry_prefix, n);
-    // 1. The Thing, named by its mark, in the shed.
-    if rig_index(map, n).is_none() {
+    let mark = mark.clone();
+    // 1. The Thing, named by its mark, in the shed (doc 20 cut SM.12b: or a yard's bay room).
+    if rig_index(map, which, n).is_none() {
         let tv = ctx
             .w
-            .create(ObjKind::Thing, &mark, ctx.actor, Some(shed))
+            .create(ObjKind::Thing, &mark, ctx.actor, Some(place.room()))
             .map_err(|e| format!("{id}: rig {mark}: {e}"))?;
-        map.vehicles
-            .get_or_insert_with(VehiclesRow::default)
-            .rigs
-            .push(RigRow {
-                n,
-                mark: mark.clone(),
-                tv: tv.0,
-                rooms: BTreeMap::new(),
-                vault: None,
-            });
+        rig_rows_mut(map, which).push(RigRow {
+            n,
+            mark: mark.clone(),
+            tv: tv.0,
+            rooms: BTreeMap::new(),
+            vault: None,
+        });
         put_port_map(ctx, map);
     }
-    let index = rig_index(map, n).ok_or_else(|| format!("{id}: rig {mark} has no map row"))?;
-    let row = |map: &PortMap| -> Option<RigRow> {
-        map.vehicles
-            .as_ref()
-            .and_then(|row| row.rigs.get(index))
-            .cloned()
-    };
+    let index =
+        rig_index(map, which, n).ok_or_else(|| format!("{id}: rig {mark} has no map row"))?;
+    let row = |map: &PortMap| -> Option<RigRow> { rig_rows(map, which).get(index).cloned() };
     let tv = row(map)
         .map(|rig| ObjId(rig.tv))
         .ok_or_else(|| format!("{id}: rig {mark} has no map row"))?;
@@ -366,11 +432,7 @@ fn lay_up_rig(
                 .w
                 .create(ObjKind::Room, &room.name, ctx.actor, None)
                 .map_err(|e| format!("{id}: rig {mark} room {}: {e}", room.id))?;
-            if let Some(rig) = map
-                .vehicles
-                .as_mut()
-                .and_then(|row| row.rigs.get_mut(index))
-            {
+            if let Some(rig) = rig_rows_mut(map, which).get_mut(index) {
                 rig.rooms.insert(room.id.clone(), obj.0);
             }
             put_port_map(ctx, map);
@@ -458,11 +520,7 @@ fn lay_up_rig(
                 revision: 1,
             },
         );
-        if let Some(rig) = map
-            .vehicles
-            .as_mut()
-            .and_then(|row| row.rigs.get_mut(index))
-        {
+        if let Some(rig) = rig_rows_mut(map, which).get_mut(index) {
             rig.vault = Some(vault.0);
         }
         put_port_map(ctx, map);
@@ -472,12 +530,14 @@ fn lay_up_rig(
 
 /// Steps 6 and 7 for one rig: the placement in the shed (only for a TV with no
 /// placement record at all, held ones included: the hull step-7 rule) and the
-/// title to the lessor (only for a TV with no asset record).
-fn place_and_title(
+/// title to the lessor (only for a TV with no asset record). Doc 20 cut SM.12b: a yard rig is
+/// placed in its yard hull's bay, in the bay's rigs compartment (the lease's placement), and
+/// titled to the lessor row it is handed — the house's.
+pub(crate) fn place_and_title(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
     tv: ObjId,
-    shed: ObjId,
+    place: &RigPlace,
     issuer: &SystemPrincipalId,
     lessor: &crate::port::PortOrgRow,
 ) -> Result<(), String> {
@@ -486,8 +546,13 @@ fn place_and_title(
         .module_state::<SpatialState>()
         .is_some_and(|st| st.placements.contains_key(&tv) || st.held_placement(tv).is_some());
     if !placed {
-        mush_sim::place_interior(ctx, tv, shed, None)
-            .map_err(|e| format!("{id}: rig #{}: {e}", tv.0))?;
+        match place {
+            RigPlace::Shed(shed) => mush_sim::place_interior(ctx, tv, *shed, None),
+            RigPlace::Bay { room, slot } => {
+                mush_sim::place_interior(ctx, tv, *room, Some(slot.clone()))
+            }
+        }
+        .map_err(|e| format!("{id}: rig #{}: {e}", tv.0))?;
     }
     let titled = ctx
         .w
@@ -677,7 +742,6 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
     let Some(st) = w.module_state::<SpatialState>() else {
         return Vec::new();
     };
-    let store = w.module_state::<TacsimStore>();
     let mut out: Vec<RigInBay> = Vec::new();
     for room in bay_rooms(w, view) {
         for obj in st.children_of(room) {
@@ -687,7 +751,10 @@ pub fn rigs_in_bay(w: &World, view: &HullView<'_>) -> Vec<RigInBay> {
             if space != room {
                 continue;
             }
-            let record = store.and_then(|store| store.tv_lease_on(*obj));
+            // Doc 20 cut SM.12b: the one lessee reader — a yard rig reads its own slot and the
+            // house's lease word (`HOUSE_LEASE`), never "unlisted".
+            let record = crate::port::yard::rig_lease(w, *obj);
+            let record = record.as_ref();
             let mark = rig_row(w, *obj).map_or_else(
                 || crate::port::coop::name_of(w, *obj),
                 |(_, rig)| rig.mark.clone(),
@@ -711,10 +778,14 @@ pub fn hopper_of(w: &World, tv: ObjId) -> Option<VaultId> {
     rig_row(w, tv).and_then(|(_, rig)| rig.vault.map(VaultId))
 }
 
-/// **A rig's map row** (doc 20 cut SM.3a) and the port map that holds it.
+/// **A rig's map row** (doc 20 cut SM.3a) and the port map that holds it. **Doc 20 cut SM.12b**:
+/// a site map's yard rigs are searched after every pool's rows, so `hopper_of` and the tool
+/// reads find a yard rig (they read `coop::programme_port`'s pool, which the validator makes the
+/// yard's pool).
 #[must_use]
 pub fn rig_row(w: &World, tv: ObjId) -> Option<(&PortMap, &RigRow)> {
-    w.module_state::<TacsimStore>()?
+    let store = w.module_state::<TacsimStore>()?;
+    store
         .port_maps()
         .find_map(|map| {
             map.vehicles
@@ -723,6 +794,14 @@ pub fn rig_row(w: &World, tv: ObjId) -> Option<(&PortMap, &RigRow)> {
                 .iter()
                 .find(|rig| rig.tv == tv.0)
                 .map(|rig| (map, rig))
+        })
+        .or_else(|| {
+            store.port_maps().find_map(|map| {
+                rig_rows(map, RigRows::Yard)
+                    .iter()
+                    .find(|rig| rig.tv == tv.0)
+                    .map(|rig| (map, rig))
+            })
         })
 }
 

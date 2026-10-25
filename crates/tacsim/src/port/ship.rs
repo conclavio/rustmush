@@ -188,6 +188,11 @@ pub struct HullView<'a> {
     pub interior: &'a InteriorDef,
     /// Its logistics block.
     pub logistics: &'a LogisticsDef,
+    /// **Doc 20 cut SM.12b**: a house's yard hull (`crate::port::yard`), read through the
+    /// programme port whose `vehicles` pool is the yard's: its row is the site map's
+    /// `yard.hulls` row, its fallback unit the yard's (never refitted). `false` for every
+    /// programme hull.
+    pub yard: bool,
 }
 
 impl HullView<'_> {
@@ -248,17 +253,34 @@ impl HullView<'_> {
 /// The view for a programme port, a row: the hull's own unit (doc 20 cut SM.3a,
 /// D-20-7; reviewer F6) and that unit's template and logistics.
 fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Option<HullView<'a>> {
+    let unit = port.programme.unit.clone();
+    let refits = !port.programme.refits.is_empty();
+    view_with(w, port, row, &unit, refits, false)
+}
+
+/// **[`view_of`]'s body over a named fallback unit** (doc 20 cut SM.12b): `default_unit` is what
+/// a hull with no live unit record reads as, `refits` whether the held rule applies, `yard` the
+/// view's [`HullView::yard`]. The programme path passes its programme's unit and refits
+/// byte-identically; the yard path passes the yard's unit, no refits (a yard is never
+/// refitted) and `true` — the Ceres programme's unit is the Dray, never the yard's Dray-P.
+fn view_with<'a>(
+    w: &'a World,
+    port: ProgrammePort<'a>,
+    row: &'a HullRow,
+    default_unit: &CanonicalId,
+    refits: bool,
+    yard: bool,
+) -> Option<HullView<'a>> {
     use crate::port::hull::{HullUnit, live_unit_id, resolve_hull_unit, unit_record_claims};
     let store = w.module_state::<TacsimStore>()?;
     let hull = ObjId(row.hull);
     // The held rule is a v10 world's: a v9 programme authors no refits, so a held
     // record reads as the programme unit there, exactly as before.
-    let refits = !port.programme.refits.is_empty();
     let (unit, unit_held) =
         match resolve_hull_unit(live_unit_id(w, hull), unit_record_claims(w, hull)) {
             HullUnit::Live(id) => (id, false),
-            HullUnit::Default => (port.programme.unit.clone(), false),
-            HullUnit::Held => (port.programme.unit.clone(), refits),
+            HullUnit::Default => (default_unit.clone(), false),
+            HullUnit::Held => (default_unit.clone(), refits),
         };
     let (interior, logistics) = crate::port::hull::spec_for(store, &unit)?;
     Some(HullView {
@@ -268,38 +290,78 @@ fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Optio
         unit_held,
         interior,
         logistics,
+        yard,
     })
 }
 
-/// **The view of one programme hull** by its Thing.
-#[must_use]
-pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
-    let port = crate::port::coop::programme_ports(w)
-        .into_iter()
-        .find(|p| p.map.hulls.iter().any(|r| r.hull == hull.0))?;
-    let row = port.map.hulls.iter().find(|row| row.hull == hull.0)?;
-    view_of(w, port, row)
-}
-
-/// **The programme hull `room` belongs to**, and the room's template id (a
-/// scan of the programme port's hull rows).
-#[must_use]
-pub fn hull_of_room(w: &World, room: ObjId) -> Option<(HullView<'_>, CanonicalId)> {
+/// **A yard hull's view** (doc 20 cut SM.12b): the yard's row, through the programme port whose
+/// `vehicles` pool is the yard's (the one vehicles port), with the yard's unit as its fallback.
+fn yard_view<'a>(
+    w: &'a World,
+    yard: &crate::port::yard::YardView<'a>,
+    row: &'a HullRow,
+) -> Option<HullView<'a>> {
     let port = crate::port::coop::programme_ports(w)
         .into_iter()
         .find(|p| {
-            p.map
-                .hulls
-                .iter()
-                .any(|r| r.rooms.values().any(|id| *id == room.0))
+            p.def
+                .vehicles
+                .as_ref()
+                .is_some_and(|pool| pool.id == yard.def.pool)
         })?;
-    let (row, tid) = port.map.hulls.iter().find_map(|row| {
+    view_with(w, port, row, &yard.def.unit, false, true)
+}
+
+/// **The view of one programme hull** by its Thing. **Doc 20 cut SM.12b**: the yard rows are
+/// searched after every programme's hulls ([`HullView::yard`]).
+#[must_use]
+pub fn hull_view(w: &World, hull: ObjId) -> Option<HullView<'_>> {
+    if let Some(port) = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| p.map.hulls.iter().any(|r| r.hull == hull.0))
+    {
+        let row = port.map.hulls.iter().find(|row| row.hull == hull.0)?;
+        return view_of(w, port, row);
+    }
+    let yard = crate::port::yard::yard_of_hull(w, hull)?;
+    let row = yard.row.hulls.iter().find(|row| row.hull == hull.0)?;
+    yard_view(w, &yard, row)
+}
+
+/// **The programme hull `room` belongs to**, and the room's template id (a
+/// scan of the programme port's hull rows; doc 20 cut SM.12b: then the yard rows).
+#[must_use]
+pub fn hull_of_room(w: &World, room: ObjId) -> Option<(HullView<'_>, CanonicalId)> {
+    let found = |rows: &'_ [HullRow]| {
+        rows.iter().find_map(|row| {
+            row.rooms
+                .iter()
+                .find(|(_, obj)| **obj == room.0)
+                .map(|(tid, _)| (row.hull, tid.clone()))
+        })
+    };
+    if let Some(port) = crate::port::coop::programme_ports(w)
+        .into_iter()
+        .find(|p| found(&p.map.hulls).is_some())
+    {
+        let (row, tid) = port.map.hulls.iter().find_map(|row| {
+            row.rooms
+                .iter()
+                .find(|(_, obj)| **obj == room.0)
+                .map(|(tid, _)| (row, tid.clone()))
+        })?;
+        return Some((view_of(w, port, row)?, tid));
+    }
+    let yard = crate::port::yard::yards(w)
+        .into_iter()
+        .find(|yard| found(&yard.row.hulls).is_some())?;
+    let (row, tid) = yard.row.hulls.iter().find_map(|row| {
         row.rooms
             .iter()
             .find(|(_, obj)| **obj == room.0)
             .map(|(tid, _)| (row, tid.clone()))
     })?;
-    Some((view_of(w, port, row)?, tid))
+    Some((yard_view(w, &yard, row)?, tid))
 }
 
 /// **Where a hull is.**
@@ -609,8 +671,12 @@ fn narrative(text: RichText) -> OutputEvent {
 }
 
 /// The refusal for an actor with no live charter: ended, when their enrolment
-/// was revoked, else [`NO_CHARTER`].
+/// was revoked, else [`NO_CHARTER`]. **Doc 20 cut SM.12b** (D2): a yard's dispatcher reads
+/// `crate::port::yard::YARD_STAYS` first — the yard hull never lifts and never trades.
 pub(crate) fn no_charter(w: &World, actor: ObjId) -> CmdError {
+    if let Some(line) = crate::port::yard::yard_stays_line(w, actor) {
+        return CmdError::msg(line);
+    }
     let ended = w
         .module_state::<TacsimStore>()
         .and_then(|store| store.enrolment_of(actor))

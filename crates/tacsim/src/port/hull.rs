@@ -69,7 +69,7 @@ use mush_sim::data::{DomainId, SpaceAnchor, SpatialParent, SpatialState};
 
 use crate::definitions::{BayDef, InteriorDef, InteriorRoomDef, InteriorRoomKind, LogisticsDef};
 use crate::port::def::{PortDef, ProgrammeDef};
-use crate::port::map::{HullRow, PortMap};
+use crate::port::map::{HullRow, PortMap, SiteRow, YardRow};
 use crate::port::readiness::LineState;
 use crate::store::{TacsimStore, put_port_map};
 
@@ -285,25 +285,40 @@ pub(crate) fn bay_laid_up(w: &World, row: &HullRow, bay: &BayDef) -> bool {
 }
 
 /// The programme unit's interior template and its binding's instantiation
-/// shape, or the refusal naming what is missing.
+/// shape, or the refusal naming what is missing ([`template_of`] under the label
+/// `programme {id}`).
 pub(crate) fn template<'a>(
     store: &'a TacsimStore,
     programme: &ProgrammeDef,
 ) -> Result<(&'a InteriorDef, &'a mush_tactics::UnitSpec), String> {
-    let pid = &programme.id;
-    let unit = &programme.unit;
+    template_of(
+        store,
+        &format!("programme {}", programme.id),
+        &programme.unit,
+    )
+}
+
+/// **A hull unit's interior template and its binding's instantiation shape**, or the refusal
+/// naming what is missing, prefixed by `label` (doc 20 cut SM.12b: generalised from
+/// [`template`] so the yard hull — `yard {name}` — is laid up by the same steps; the programme's
+/// sentences are byte-identical).
+pub(crate) fn template_of<'a>(
+    store: &'a TacsimStore,
+    label: &str,
+    unit: &CanonicalId,
+) -> Result<(&'a InteriorDef, &'a mush_tactics::UnitSpec), String> {
     let interior = store
         .definitions()
         .specs
         .get(unit)
         .filter(|spec| spec.logistics.is_some())
         .and_then(|spec| spec.interior.as_ref())
-        .ok_or_else(|| format!("programme {pid}: unit {unit} carries no interior template"))?;
+        .ok_or_else(|| format!("{label}: unit {unit} carries no interior template"))?;
     let binding = store
         .definitions()
         .bindings
         .get(unit)
-        .ok_or_else(|| format!("programme {pid}: no unit schema {unit} is bound"))?;
+        .ok_or_else(|| format!("{label}: no unit schema {unit} is bound"))?;
     Ok((interior, &binding.spec))
 }
 
@@ -319,17 +334,30 @@ pub(crate) fn hull_spec<'a>(
 }
 
 /// The berths compartment's simulation slot id, converted once (a template id
-/// `SlotId::new` refuses is a preflight refusal, never an `expect`).
+/// `SlotId::new` refuses is a preflight refusal, never an `expect`): [`berths_slot_of`] under
+/// the label `programme {id}`.
 pub(crate) fn berths_slot(
     programme: &ProgrammeDef,
     interior: &InteriorDef,
 ) -> Result<mush_sim::SlotId, String> {
+    berths_slot_of(
+        &format!("programme {}", programme.id),
+        &programme.unit,
+        interior,
+    )
+}
+
+/// **The berths compartment's simulation slot id, under any label** (doc 20 cut SM.12b:
+/// generalised from [`berths_slot`] for the yard hull; the programme's sentence is
+/// byte-identical).
+pub(crate) fn berths_slot_of(
+    label: &str,
+    unit: &CanonicalId,
+    interior: &InteriorDef,
+) -> Result<mush_sim::SlotId, String> {
     let id = &interior.berths_slot.id;
     mush_sim::SlotId::new(id.as_str()).ok_or_else(|| {
-        format!(
-            "programme {}: unit {}'s berths compartment '{id}' is not a simulation slot id",
-            programme.id, programme.unit
-        )
+        format!("{label}: unit {unit}'s berths compartment '{id}' is not a simulation slot id")
     })
 }
 
@@ -479,9 +507,48 @@ pub(crate) fn preflight(
     Ok(to_title.saturating_add(absent))
 }
 
-/// The row index of pool number `n`.
-fn row_of(map: &PortMap, n: u32) -> Option<usize> {
-    map.hulls.iter().position(|row| row.n == n)
+/// **Which hull rows a lay-up writes** (doc 20 cut SM.12b): the programme's hulls
+/// (`map.hulls`) or a site's yard hull (`map.site.yard.hulls`) — one set of steps, two row lists,
+/// so a yard's bay room is recorded on the yard's row and never on a programme row at the same
+/// index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HullRows {
+    /// `map.hulls`.
+    Programme,
+    /// `map.site.yard.hulls`.
+    Yard,
+}
+
+/// The rows `which` names (empty when the yard row is absent).
+pub(crate) fn rows(map: &PortMap, which: HullRows) -> &[HullRow] {
+    match which {
+        HullRows::Programme => map.hulls.as_slice(),
+        HullRows::Yard => map
+            .site
+            .as_ref()
+            .and_then(|site| site.yard.as_ref())
+            .map_or(&[], |yard| yard.hulls.as_slice()),
+    }
+}
+
+/// The rows `which` names, the yard row made when absent.
+pub(crate) fn rows_mut(map: &mut PortMap, which: HullRows) -> &mut Vec<HullRow> {
+    match which {
+        HullRows::Programme => &mut map.hulls,
+        HullRows::Yard => {
+            &mut map
+                .site
+                .get_or_insert_with(SiteRow::default)
+                .yard
+                .get_or_insert_with(YardRow::default)
+                .hulls
+        }
+    }
+}
+
+/// The row index of pool number `n` among `which`'s rows.
+pub(crate) fn row_of(map: &PortMap, which: HullRows, n: u32) -> Option<usize> {
+    rows(map, which).iter().position(|row| row.n == n)
 }
 
 /// **Part (f): lay up the programme's hulls** (doc 18 §4.7; L8–L16). Per hull
@@ -529,7 +596,12 @@ pub(crate) fn lay_up(
             id,
             map,
             &HullPlan {
-                programme,
+                name: usize::try_from(n)
+                    .ok()
+                    .and_then(|i| programme.hull_names.get(i))
+                    .map(String::as_str),
+                mark: registry_mark(&programme.registry_prefix, n),
+                rows: HullRows::Programme,
                 interior: &interior,
                 spec: &spec,
                 slot: &slot,
@@ -538,30 +610,42 @@ pub(crate) fn lay_up(
             },
             gallery,
         )?;
-        let hull = row_of(map, n)
+        let hull = row_of(map, HullRows::Programme, n)
             .and_then(|i| map.hulls.get(i))
             .map(|row| ObjId(row.hull))
             .ok_or_else(|| format!("{id}: hull {n} has no map row"))?;
-        place_and_title(ctx, id, hull, n, domain, &issuer, &trust)?;
+        let y_cm = i64::from(n).saturating_mul(HULL_SPACING_CM);
+        place_and_title(ctx, id, hull, (0, y_cm), domain, &issuer, &trust)?;
     }
     Ok(())
 }
 
-/// What one hull is made from.
-struct HullPlan<'a> {
-    programme: &'a ProgrammeDef,
-    interior: &'a InteriorDef,
-    spec: &'a mush_tactics::UnitSpec,
-    slot: &'a mush_sim::SlotId,
-    /// Doc 20 cut SM.3a: the refit units' bays and their room templates.
-    bays: &'a [(BayDef, InteriorRoomDef)],
-    n: u32,
+/// What one hull is made from (doc 20 cut SM.12b: its name, mark and row list named by the
+/// caller, so a yard hull is laid up by the same steps as a programme hull).
+pub(crate) struct HullPlan<'a> {
+    /// The hull Thing's name (`hull_names[n]`, or the yard's name); `None` refuses step 1.
+    pub name: Option<&'a str>,
+    /// Its registry mark, the Thing's alias.
+    pub mark: String,
+    /// The row list it is recorded in.
+    pub rows: HullRows,
+    /// The unit's interior template.
+    pub interior: &'a InteriorDef,
+    /// The unit binding's instantiation shape.
+    pub spec: &'a mush_tactics::UnitSpec,
+    /// The berths compartment's slot.
+    pub slot: &'a mush_sim::SlotId,
+    /// Doc 20 cut SM.3a: the refit units' bays and their room templates (since doc 20 cut
+    /// SM.12b, a yard's own unit's bays).
+    pub bays: &'a [(BayDef, InteriorRoomDef)],
+    /// The pool index.
+    pub n: u32,
 }
 
 /// Steps 1–6 for hull `plan.n`: the Thing, the unit, the rooms (dressed), the
 /// exits, the store space and the airlock space with its members and berths;
 /// then step 6b, the bays (doc 20 cut SM.3a).
-fn lay_up_one(
+pub(crate) fn lay_up_one(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
     map: &mut PortMap,
@@ -569,20 +653,19 @@ fn lay_up_one(
     gallery: ObjId,
 ) -> Result<(), String> {
     let HullPlan {
-        programme,
+        name,
+        ref mark,
+        rows: which,
         interior,
         spec,
         slot,
         bays,
         n,
     } = *plan;
-    let mark = registry_mark(&programme.registry_prefix, n);
+    let mark = mark.clone();
     // 1. The Thing.
-    if row_of(map, n).is_none() {
-        let name = usize::try_from(n)
-            .ok()
-            .and_then(|i| programme.hull_names.get(i))
-            .ok_or_else(|| format!("{id}: hull {mark} has no name"))?;
+    if row_of(map, which, n).is_none() {
+        let name = name.ok_or_else(|| format!("{id}: hull {mark} has no name"))?;
         let hull = ctx
             .w
             .create(ObjKind::Thing, name, ctx.actor, Some(gallery))
@@ -590,7 +673,7 @@ fn lay_up_one(
         ctx.w
             .add_alias(hull, &mark)
             .map_err(|e| format!("{id}: hull {mark}: {e}"))?;
-        map.hulls.push(HullRow {
+        rows_mut(map, which).push(HullRow {
             n,
             mark: mark.clone(),
             hull: hull.0,
@@ -599,9 +682,8 @@ fn lay_up_one(
         });
         put_port_map(ctx, map);
     }
-    let index = row_of(map, n).ok_or_else(|| format!("{id}: hull {mark} has no map row"))?;
-    let hull = map
-        .hulls
+    let index = row_of(map, which, n).ok_or_else(|| format!("{id}: hull {mark} has no map row"))?;
+    let hull = rows(map, which)
         .get(index)
         .map(|row| ObjId(row.hull))
         .ok_or_else(|| format!("{id}: hull {mark} has no map row"))?;
@@ -616,8 +698,7 @@ fn lay_up_one(
     }
     // 3. The rooms, template order; then every pass, the dress.
     for room in &interior.rooms {
-        let made = map
-            .hulls
+        let made = rows(map, which)
             .get(index)
             .is_some_and(|row| row.rooms.contains_key(&room.id));
         if !made {
@@ -625,14 +706,13 @@ fn lay_up_one(
                 .w
                 .create(ObjKind::Room, &room.name, ctx.actor, None)
                 .map_err(|e| format!("{id}: hull {mark} room {}: {e}", room.id))?;
-            if let Some(row) = map.hulls.get_mut(index) {
+            if let Some(row) = rows_mut(map, which).get_mut(index) {
                 row.rooms.insert(room.id.clone(), obj.0);
             }
             put_port_map(ctx, map);
         }
     }
-    let rooms: BTreeMap<CanonicalId, ObjId> = map
-        .hulls
+    let rooms: BTreeMap<CanonicalId, ObjId> = rows(map, which)
         .get(index)
         .map(|row| {
             row.rooms
@@ -658,7 +738,7 @@ fn lay_up_one(
             .ok_or_else(|| format!("{id}: hull {mark} has no room {}", pair.to))?;
         for (side, (src, dest)) in [(from, to), (to, from)].into_iter().enumerate() {
             let at = i.saturating_mul(2).saturating_add(side);
-            let made = map.hulls.get(index).map_or(0, |row| row.exits.len());
+            let made = rows(map, which).get(index).map_or(0, |row| row.exits.len());
             let spec = pair
                 .names
                 .get(side)
@@ -669,8 +749,7 @@ fn lay_up_one(
             // is the one the map recorded at `at`, never re-made or re-linked, so a
             // template may change an exit's words but never reorder or drop a pair.
             if at < made {
-                let exit = map
-                    .hulls
+                let exit = rows(map, which)
                     .get(index)
                     .and_then(|row| row.exits.get(at))
                     .map(|obj| ObjId(*obj))
@@ -684,7 +763,7 @@ fn lay_up_one(
             }
             let exit = open_exit(ctx, src, spec, dest)
                 .map_err(|e| format!("{id}: hull {mark} exit {spec}: {e}"))?;
-            if let Some(row) = map.hulls.get_mut(index) {
+            if let Some(row) = rows_mut(map, which).get_mut(index) {
                 row.exits.push(exit.0);
             }
             put_port_map(ctx, map);
@@ -740,7 +819,7 @@ fn lay_up_one(
     }
     // 6b. The bays (doc 20 cut SM.3a; §4.3, D-20-7), every pass, idempotent.
     for (bay, template) in bays {
-        lay_up_bay(ctx, id, map, index, hull, bay, template)
+        lay_up_bay(ctx, id, map, (which, index), hull, bay, template)
             .map_err(|e| format!("{id}: hull {mark} bay {}: {e}", bay.room))?;
     }
     Ok(())
@@ -749,18 +828,19 @@ fn lay_up_one(
 /// **Step 6b for one bay** (doc 20 cut SM.3a): the room made when the row lacks
 /// it (the room loop's shape, the map written after), dressed, declared an
 /// interior space riding the hull, and its rigs compartment declared when it is
-/// not already declared at the bay's maximum (the berths shape).
+/// not already declared at the bay's maximum (the berths shape). Doc 20 cut SM.12b: the row is
+/// `index` among `which`'s rows ([`HullRows`]), so a yard's bay room is recorded on the yard's
+/// own row, never on a programme row at the same index.
 fn lay_up_bay(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
     map: &mut PortMap,
-    index: usize,
+    (which, index): (HullRows, usize),
     hull: ObjId,
     bay: &BayDef,
     template: &InteriorRoomDef,
 ) -> Result<(), String> {
-    let recorded = map
-        .hulls
+    let recorded = rows(map, which)
         .get(index)
         .and_then(|row| row.rooms.get(&bay.room))
         .map(|obj| ObjId(*obj));
@@ -771,7 +851,7 @@ fn lay_up_bay(
                 .w
                 .create(ObjKind::Room, &template.name, ctx.actor, None)
                 .map_err(|e| e.to_string())?;
-            if let Some(row) = map.hulls.get_mut(index) {
+            if let Some(row) = rows_mut(map, which).get_mut(index) {
                 row.rooms.insert(bay.room.clone(), room.0);
             }
             put_port_map(ctx, map);
@@ -802,12 +882,14 @@ fn lay_up_bay(
 /// record). A docked-elsewhere, under-way or quarantined hull is never
 /// re-placed; neither is one whose `placement:` document boot held as
 /// unreadable (it is a placement record; staff repair it, and `place` would
-/// refuse it mid-pass); a bought-out hull is never re-titled (L10).
-fn place_and_title(
+/// refuse it mid-pass); a bought-out hull is never re-titled (L10). Doc 20 cut SM.12b: the
+/// pose `(x_cm, y_cm)` is the caller's — a programme hull's `(0, n × HULL_SPACING_CM)`, the
+/// yard hull's `(0, 0)`, the pad's arrival pose (O-13).
+pub(crate) fn place_and_title(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
     hull: ObjId,
-    n: u32,
+    (x_cm, y_cm): (i64, i64),
     domain: DomainId,
     issuer: &SystemPrincipalId,
     trust: &crate::port::PortOrgRow,
@@ -818,8 +900,8 @@ fn place_and_title(
         .is_some_and(|st| st.placements.contains_key(&hull) || st.held_placement(hull).is_some());
     if !placed {
         let pose = mush_sim::data::Pose {
-            x_cm: 0,
-            y_cm: i64::from(n).saturating_mul(HULL_SPACING_CM),
+            x_cm,
+            y_cm,
             z_cm: 0,
             heading_mdeg: 0,
             posture: mush_sim::data::passive_rules_value(serde_json::json!({}))

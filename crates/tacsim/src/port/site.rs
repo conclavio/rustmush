@@ -488,8 +488,14 @@ pub(crate) fn block_vault(w: &World, map: &PortMap, letter: char) -> Option<Vaul
     (live(w, place) && sites_vault_is_ours(w, vault, true)).then_some(VaultId(vault))
 }
 
-/// One `DARK` Thing named `name` in `host`, owned by the applying actor.
-fn dark_thing(ctx: &mut Ctx<'_>, id: &CanonicalId, name: &str, host: ObjId) -> Result<u32, String> {
+/// One `DARK` Thing named `name` in `host`, owned by the applying actor (doc 20 cut SM.12b: the
+/// yard's dispatcher is made by it too).
+pub(crate) fn dark_thing(
+    ctx: &mut Ctx<'_>,
+    id: &CanonicalId,
+    name: &str,
+    host: ObjId,
+) -> Result<u32, String> {
     let thing = ctx
         .w
         .create(ObjKind::Thing, name, ctx.actor, Some(host))
@@ -775,7 +781,7 @@ pub(crate) fn clerk_site(w: &World, clerk: ObjId) -> Option<(PortMap, SiteDef)> 
     let site = ports
         .into_iter()
         .find(|(entry, _)| *entry == map.entry)
-        .and_then(|(_, def)| def.site.clone())?;
+        .and_then(|(_, def)| def.site.as_deref().cloned())?;
     Some((map.clone(), site))
 }
 
@@ -869,9 +875,33 @@ fn record(w: &mut World, entry: &CanonicalId, state: SiteOpening) {
 }
 
 /// Page `key` once a boot.
-fn page_once(w: &mut World, key: String) -> bool {
+pub(crate) fn page_once(w: &mut World, key: String) -> bool {
     w.module_state_mut::<crate::surface::opening::SiteOpenings>()
         .is_some_and(|slot| slot.paged.insert(key))
+}
+
+/// **A site act's unlanded submissions so far** (doc 20 cut SM.6's attempt rule, factored by doc
+/// 20 cut SM.12b so the house survey reuses it): `attempt_key`'s count in
+/// `SiteOpenings::attempts` (RAM), 0 when absent.
+pub(crate) fn attempt(w: &World, attempt_key: &str) -> u8 {
+    w.module_state::<crate::surface::opening::SiteOpenings>()
+        .and_then(|slot| slot.attempts.get(attempt_key).copied())
+        .unwrap_or(0)
+}
+
+/// **Count one more submission of a site act** (doc 20 cut SM.6's rule, factored by doc 20 cut
+/// SM.12b): incremented only while the key exists or the store is below its bound
+/// (`MAX_DEPOSITS_PER_SITE × 16`).
+pub(crate) fn count_attempt(w: &mut World, attempt_key: &str) {
+    if let Some(slot) = w.module_state_mut::<crate::surface::opening::SiteOpenings>()
+        && (slot.attempts.contains_key(attempt_key)
+            || slot.attempts.len()
+                < crate::surface::opening::MAX_DEPOSITS_PER_SITE.saturating_mul(16))
+    {
+        let attempts = slot.attempts.get(attempt_key).copied().unwrap_or(0);
+        slot.attempts
+            .insert(attempt_key.to_owned(), attempts.saturating_add(1));
+    }
 }
 
 /// What one plan row needs next.
@@ -1060,11 +1090,7 @@ pub(crate) fn site_step(
         RowNeeds::Done => return Step::Idle,
     };
     let attempt_key = format!("{kind}/{}", row.receipt);
-    let attempts = ctx
-        .w
-        .module_state::<crate::surface::opening::SiteOpenings>()
-        .and_then(|slot| slot.attempts.get(&attempt_key).copied())
-        .unwrap_or(0);
+    let attempts = attempt(ctx.w, &attempt_key);
     if attempts >= MAX_SITE_ATTEMPTS
         && !ctx.authoritative_pending(clerk)
         && page_once(ctx.w, attempt_key.clone())
@@ -1093,16 +1119,8 @@ pub(crate) fn site_step(
             key,
         );
     }));
-    if step == Step::Submitted
-        && let Some(slot) = ctx
-            .w
-            .module_state_mut::<crate::surface::opening::SiteOpenings>()
-        && (slot.attempts.contains_key(&attempt_key)
-            || slot.attempts.len()
-                < crate::surface::opening::MAX_DEPOSITS_PER_SITE.saturating_mul(16))
-    {
-        slot.attempts
-            .insert(attempt_key, attempts.saturating_add(1));
+    if step == Step::Submitted {
+        count_attempt(ctx.w, &attempt_key);
     }
     step
 }
@@ -1592,7 +1610,9 @@ fn fee_settled(w: &World, id: u64) -> bool {
 /// the lead's ruling on R1, OC16), else a due lapse (a player claim past its term, stamped at its end),
 /// else a seed (an authored held block's org claim, then a papered block's paper once its
 /// adjudication contract is in the claim log). `None` before the site is open, or with nothing
-/// due. **The applier and the boot pass submit nothing**: only the clerk's step does.
+/// due. **The applier and the boot pass submit nothing**: only the clerk's step does. Doc 20 cut
+/// SM.12b: the step runs the house's licence and survey (its items 8–9) between the held seeds
+/// and the papers; this offer is unchanged, a superset of what the step submits.
 #[allow(clippy::too_many_lines)]
 #[must_use]
 pub(crate) fn next_system_act(
@@ -1798,11 +1818,15 @@ fn submit_system_act(
 /// 6. **file the paper's adjudication contract** (§9.6, F11, D9): re-found by its issuer and name
 ///    before any offer, offered by the tick's own GOD under the paper org's root scope, never
 ///    accepted;
-/// 7. **seed one block** (lead ruling 10): an authored held block's org claim, then a papered
-///    block's paper — a block with no opened deposit too (the record alone, F4).
+/// 7. **seed one block** (lead ruling 10): **7a** an authored held block's org claim; then
+///    (doc 20 cut SM.12b, D16) **8** the house's standing licence and **9** one house survey a
+///    fire (`crate::port::yard::clerk_item`); then **7b** a papered block's paper — a block with no
+///    opened deposit too (the record alone, F4). **The papers never wait on the house** (D26):
+///    items 8–9 answer nothing whenever they cannot make progress (a refused licence, a survey
+///    past its attempts while a paper is due), so 7b lands its paper on the same fire.
 ///
 /// Items 2, 5 and 7 are the submissions [`next_system_act`] computes, so the offer and the step
-/// agree.
+/// agree; items 8–9 are the house's (`tacsim_dispatch`'s survey, the licence a normal-lane write).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn claims_step(
     ctx: &mut Ctx<'_>,
@@ -2218,18 +2242,29 @@ pub(crate) fn claims_step(
             }
         }
     }
-    // ---- 7. Seed one block ----
-    if matches!(act_kind.as_deref(), Some("seed_held" | "seed_paper"))
+    // ---- 7a. Seed one held block ----
+    if act_kind.as_deref() == Some("seed_held")
         && let Some(act) = &act
     {
+        let step = submit_system_act(ctx, fire, clerk, act);
+        return finish(ctx, &log, step);
+    }
+    // ---- 8–9. The house's licence and one survey (doc 20 cut SM.12b; D16, D26) ----
+    let papers_due = act_kind.as_deref() == Some("seed_paper");
+    if let Some(step) = crate::port::yard::clerk_item(ctx, fire, clerk, map, site, now, papers_due)
+    {
+        return finish(ctx, &log, step);
+    }
+    // ---- 7b. Seed one paper ----
+    if papers_due && let Some(act) = &act {
         let step = submit_system_act(ctx, fire, clerk, act);
         return finish(ctx, &log, step);
     }
     finish(ctx, &log, Step::Idle)
 }
 
-/// A lane org's port map row by its lane id.
-fn map_org(w: &World, org: &CanonicalId) -> Option<crate::port::map::PortOrgRow> {
+/// A lane org's port map row by its lane id (doc 20 cut SM.12b: the yard's house row too).
+pub(crate) fn map_org(w: &World, org: &CanonicalId) -> Option<crate::port::map::PortOrgRow> {
     w.module_state::<crate::store::TacsimStore>()?
         .port_maps()
         .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
@@ -2238,7 +2273,7 @@ fn map_org(w: &World, org: &CanonicalId) -> Option<crate::port::map::PortOrgRow>
 }
 
 /// A lane org's authored name.
-fn org_name_of(w: &World, org: &CanonicalId) -> String {
+pub(crate) fn org_name_of(w: &World, org: &CanonicalId) -> String {
     w.module_state::<crate::store::TacsimStore>()
         .and_then(|store| crate::port::readiness::report_ports(store, w).0)
         .map_or_else(|| org.to_string(), |pack| org_name(pack, org))
@@ -2301,6 +2336,7 @@ mod tests {
                 .map(|(l, b)| ((*l).to_owned(), b.clone()))
                 .collect(),
             papers: std::collections::BTreeMap::new(),
+            yard: None,
         }
     }
 

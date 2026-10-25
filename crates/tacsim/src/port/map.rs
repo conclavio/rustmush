@@ -174,6 +174,55 @@ pub struct SiteRow {
     /// empty, so a row from before the cut decodes unchanged.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vaults: BTreeMap<String, u64>,
+    /// **Doc 20 cut SM.12b (§12.3; the lead's ruling 1)**: the house's yard at this site, once
+    /// the applier lays it up (part i, `crate::port::yard::lay_up`). Skipped when absent, so a
+    /// row from before the cut encodes byte-identically and [`PORT_MAP_SCHEMA`] stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yard: Option<YardRow>,
+}
+
+/// **Doc 20 cut SM.12b: a house's yard at this site** (the lead's ruling 1): what part (i) made —
+/// the yard hull (one row, `n = 0`, in the programme hulls' shape), its rigs (pool order), the
+/// dispatcher Thing and the hold vault — and the house's standing licence the site clerk records
+/// (its item 8). Objects only: the hull's and the rigs' units, spaces, placements and titles are
+/// their owners' records. Every field is skipped when empty, so the row grows by acts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct YardRow {
+    /// The yard hull: exactly one row once laid up (`n = 0`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hulls: Vec<HullRow>,
+    /// The yard's rigs, pool order (`n = 0..rigs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rigs: Vec<RigRow>,
+    /// The dispatcher Thing, `ObjId.0` — its identity in this row is its whole authority (the
+    /// site clerk's precedent, doc 20 cut SM.6 D13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatcher: Option<u32>,
+    /// The yard hold's vault, `VaultId.0`, owned by `Organization(house)` at its root scope and
+    /// backed by the hull's stowage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<u64>,
+    /// The house's standing licence, recorded by the site clerk (doc 20 cut SM.12b, B9 item 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<HouseLicence>,
+}
+
+/// **The house's standing prospecting licence** (doc 20 cut SM.12b; O-12's default): the
+/// account the clerk opened (or adopted) in the licence instrument, `Active`, no fee, a century
+/// (`crate::surface::tenure::SEEDED_TERM_IC_SECS`, SM.10's seeded term). **The one licence record
+/// outside the licence store** — an org has no gateway account — so `+licence`, the readiness
+/// `Licence` line and the registry never list it; `crate::port::licence::licence_standing` reads
+/// it for the yard's dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HouseLicence {
+    /// The entitlement account, `AccountId.0`.
+    pub account: u64,
+    /// The IC instant it was recorded.
+    pub from_ic: i64,
+    /// The IC instant its term ends.
+    pub until_ic: i64,
 }
 
 /// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the

@@ -259,7 +259,7 @@ fn markers(
             entry: entry.clone(),
             venue: def.venue.clone(),
             location: def.location.clone(),
-            site: site.clone(),
+            site: crate::port::def::SiteDef::clone(site),
         });
     }
     (ports, marks)

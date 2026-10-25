@@ -532,11 +532,12 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
     (events, queued)
 }
 
-/// The surface finishes a fire queued.
-fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+/// The surface finishes a fire queued — the players' (the house's dropped: doc 20 cut SM.12b).
+fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_DONE_ACTION)
+        .filter(|submit| !support::drones::is_house(tw, submit))
         .collect()
 }
 
@@ -1137,7 +1138,11 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
         .expect("an act in flight");
     let (events, queued) = advance_to(rig, due);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish: {queued:?}"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -1153,7 +1158,7 @@ fn cycle(rig: &mut Rig, tv: ObjId, who: ObjId) -> (String, AuthoritativeSubmit) 
     let run = run_of(&mut rig.tw, tv).expect("a run in flight");
     let (events, queued) = advance_to(rig, run.due_ic);
     let mut heard = said(&rig.tw, &events, who);
-    let done = finishes(&queued);
+    let done = finishes(&rig.tw, &queued);
     assert_eq!(done.len(), 1, "one finish at the cycle's due: {queued:?}");
     let submit = done[0].clone();
     assert_eq!(
@@ -2035,7 +2040,7 @@ fn sm7_an_unread_pocket_cores_blind_and_never_tells_the_class() {
         Some(ore.addr.as_str())
     );
     assert_eq!(without_addr(a_view), without_addr(b_view));
-    let done = finishes(&queued);
+    let done = finishes(&rig.tw, &queued);
     assert_eq!(done.len(), 2, "both cores at one instant");
     land_all(&mut rig, &queued);
     let (events, queued) = fire(&mut rig);
@@ -2156,7 +2161,7 @@ fn sm7_stop_lets_the_running_cycle_yield() {
     for _ in 0..3 {
         let at = ic_now(&rig.tw) + 1_800;
         let (_, queued) = advance_to(&mut rig, at);
-        assert!(finishes(&queued).is_empty(), "no cycle 2");
+        assert!(finishes(&rig.tw, &queued).is_empty(), "no cycle 2");
     }
     let vault = hopper(&rig.tw, tv);
     assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 2);
@@ -2190,7 +2195,7 @@ fn sm7_a_replayed_cycle_is_a_hit() {
     let run = run_of(&mut rig.tw, tv).expect("the run");
     // S1, held.
     let (_, queued) = advance_to(&mut rig, run.due_ic);
-    let held = finishes(&queued);
+    let held = finishes(&rig.tw, &queued);
     assert_eq!(held.len(), 1, "one finish at the due: {queued:?}");
     let s1 = held[0].clone();
     assert_eq!(
@@ -2202,7 +2207,7 @@ fn sm7_a_replayed_cycle_is_a_hit() {
     let mut rig = reboot(rig, &[pilot]);
     to_cell(&mut rig, tv, fair.stand);
     let (_, queued) = fire(&mut rig);
-    let again = finishes(&queued);
+    let again = finishes(&rig.tw, &queued);
     assert_eq!(
         again.len(),
         1,
@@ -2436,7 +2441,11 @@ fn recovered(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
         .map(|act| act.due_ic)
         .expect("the recover in flight");
     let (_, queued) = advance_to(rig, due);
-    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish: {queued:?}"
+    );
     land_all(rig, &queued);
     let record = record_of(&mut rig.tw, tv).expect("the rig's record");
     assert_eq!(
@@ -3793,11 +3802,11 @@ fn sm7_a_cycle_that_cannot_happen_ends_the_run() {
     assert_eq!(row(&mut rig), Some((2, false)), "locked by the second run");
     let charge = value_of(&mut rig.tw, tv);
     let (_, queued) = advance_to(&mut rig, run.due_ic);
-    let dropped = finishes(&queued);
+    let dropped = finishes(&rig.tw, &queued);
     assert_eq!(dropped.len(), 1, "the first finish: {queued:?}");
     let dropped = dropped[0].clone();
     let (_, queued) = fire(&mut rig);
-    let again = finishes(&queued);
+    let again = finishes(&rig.tw, &queued);
     assert_eq!(again.len(), 1, "the retried finish: {queued:?}");
     assert_eq!(ledger_identity(again[0]), ledger_identity(&dropped));
     land_all(&mut rig, &queued);
@@ -3837,7 +3846,7 @@ fn sm7_a_cycle_that_cannot_happen_ends_the_run() {
     // Nothing more is submitted for the closed run.
     for _ in 0..3 {
         let (_, queued) = fire(&mut rig);
-        assert!(finishes(&queued).is_empty(), "the run is closed");
+        assert!(finishes(&rig.tw, &queued).is_empty(), "the run is closed");
     }
     no_refused_writes(&rig.tw);
 }
@@ -4096,7 +4105,7 @@ fn sm7_a_started_run_is_seen_at_once_and_holds_the_lift() {
     // (b) One fire, before the first cycle's due: the projection shows the run; nothing landed.
     let (_, queued) = fire(&mut rig);
     assert!(ic_now(&rig.tw) < run.due_ic, "before the first cycle's due");
-    assert!(finishes(&queued).is_empty(), "no cycle is due");
+    assert!(finishes(&rig.tw, &queued).is_empty(), "no cycle is due");
     land_all(&mut rig, &queued);
     let view = projection(&rig.tw, tv)
         .and_then(|rec| rec.run)

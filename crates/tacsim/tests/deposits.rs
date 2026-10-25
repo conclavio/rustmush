@@ -609,7 +609,7 @@ fn ground_of(
     };
     let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
         .expect("the body's table is installed");
-    let site = def.site.clone().expect("a site");
+    let site = def.site.as_deref().cloned().expect("a site");
     let spec = tacsim::port::site::geology_spec(&site, &location, &body).expect("a spec");
     let ground = site_ground_sync(tw.world_mut(), &site_window(def.location.as_str()), &spec)
         .expect("the site builds");
@@ -1815,6 +1815,13 @@ fn sm6_the_opening_writes_no_truth_anywhere_a_player_reads() {
                 // (Occator Rim's); the act's outcome names no deposit, count or reserve.
                 "industry_claim_tenure" => {
                     assert_eq!(keys, vec!["actor", "place", "receipt", "summary", "verb"]);
+                }
+                // Doc 20 cut SM.12b: Occator Rim's clerk surveys the house's held blocks; the
+                // outcome names no reserve, class or tonne.
+                "tacsim_dispatch" => {
+                    assert_eq!(keys, vec!["act", "actor", "receipt", "site", "t"]);
+                    assert_eq!(outcome["act"], "survey");
+                    assert_eq!(outcome["t"], 0);
                 }
                 other => panic!("a site clerk submitted {other}"),
             }

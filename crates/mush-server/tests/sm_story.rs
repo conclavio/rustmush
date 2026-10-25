@@ -469,6 +469,19 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
     kept
 }
 
+/// **The queue drained, the house's share landed** (doc 20 cut SM.12b): the Occator Yard's
+/// dispatcher works Occator Rim in every keyed world, its drones' plan steps and unloads queued by
+/// the ticks; they are landed here, quietly, and the rest — the players' and the clerks' — handed
+/// back, so what a typed line or a fire is counted to have queued is the players' world's.
+async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
+    let house = tacsim::port::yard::dispatchers(rig.tw.world());
+    let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
+        .into_iter()
+        .partition(|submit| house.contains(&submit.actor));
+    land_quietly(rig, &theirs).await;
+    rest
+}
+
 /// Land each; a refusal fails the test.
 async fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
     for submit in queued {
@@ -502,7 +515,7 @@ async fn sweep(rig: &mut Rig, secs: i64) -> Vec<(Audience, OutputEvent)> {
 /// One fire (6 s on), its submissions drained, not landed.
 async fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit>) {
     let events = sweep(rig, 6).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     (events, queued)
 }
 
@@ -696,7 +709,7 @@ async fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = ((ahead + rate - 1) / rate).max(1);
     let events = sweep(rig, real).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     land_all(rig, &queued).await;
     events
 }
@@ -767,7 +780,7 @@ async fn buy(rig: &mut Rig, pilot: ObjId, listing: ListingId, qty: u64) {
     let quote = newest_quote(&rig.tw, pilot);
     let accepted = run(rig, pilot, &format!("+market/accept {quote}")).await;
     assert!(accepted.contains("Agreed."), "{accepted}");
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert_eq!(queued.len(), 1, "{accepted}");
     land_all(rig, &queued).await;
 }
@@ -965,7 +978,7 @@ fn geology_line() -> String {
 async fn fly(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> String {
     let filed = run(rig, pilot, line).await;
     assert!(filed.contains("Clearance filed for "), "{line}: {filed}");
-    let burn = drain(&mut rig.tw);
+    let burn = drain_players(rig).await;
     assert_eq!(burn.len(), 1, "one burn: {filed}");
     let seq = match store(&rig.tw).voyage_state(hull) {
         tacsim::port::voyage::VoyageState::Present(voyage) => voyage
@@ -991,7 +1004,7 @@ async fn fly(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> String {
 /// what `pilot` heard over both.
 async fn act(rig: &mut Rig, pilot: ObjId, tv: ObjId, line: &str) -> String {
     let out = run(rig, pilot, line).await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     assert_eq!(queued.len(), 1, "{line}: one start: {out}");
     land_all(rig, &queued).await;
     finish(rig, pilot, tv).await
@@ -1150,7 +1163,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
     let preview = run(rig, pilot, "+licence/buy").await;
     assert!(!preview.is_empty(), "the licence's terms");
     let _ = run(rig, pilot, "+licence/buy go").await;
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     land_all(rig, &queued).await;
     let licence = run(rig, pilot, "+licence").await;
     assert!(licence.contains("in force"), "{licence}");
@@ -1272,7 +1285,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         let before = pool(&mut rig.tw, hopper, "metal_ore");
         let out = run(rig, pilot, "+tv/1 mine go").await;
         assert!(out.contains("Rig 1 starts drilling "), "{out}");
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(rig).await;
         land_all(rig, &queued).await;
         let heard = cycle(rig, pilot, tv).await;
         assert!(heard.contains("Rig 1, cycle 1 of "), "{heard}");
@@ -1413,7 +1426,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         )),
         "{sold}"
     );
-    let queued = drain(&mut rig.tw);
+    let queued = drain_players(rig).await;
     land_all(rig, &queued).await;
     let contract = market(&rig.tw)
         .quotes_of_seller(&PrincipalId::Object(pilot))
@@ -1431,7 +1444,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
             break;
         }
         let _ = sweep(rig, 31).await;
-        let queued = drain(&mut rig.tw);
+        let queued = drain_players(rig).await;
         land_quietly(rig, &queued).await;
     }
     let lines = settlement(&rig.tw, contract);

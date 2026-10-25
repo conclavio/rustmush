@@ -1025,6 +1025,10 @@ impl TvLease {
         if self.schema != TV_LEASE_SCHEMA {
             return Err(format!("schema {} is not {TV_LEASE_SCHEMA}", self.schema));
         }
+        // Doc 20 cut SM.12b: a house view ([`TvLease::house_view`]) is never stored.
+        if self.lease == Self::HOUSE_LEASE {
+            return Err("lease must be at least 1".to_owned());
+        }
         if self.mark.is_empty() || self.mark.len() > MAX_MARK_BYTES {
             return Err(format!("mark must be 1..={MAX_MARK_BYTES} bytes"));
         }
@@ -1050,6 +1054,45 @@ impl TvLease {
     #[must_use]
     pub fn live(&self) -> bool {
         self.status != TvLeaseStatus::Returned
+    }
+
+    /// The lease word a house view carries: no contract is ever numbered 0, and
+    /// [`TvLease::check`] refuses it, so a house view can never be stored or mistaken for one.
+    pub const HOUSE_LEASE: u64 = 0;
+
+    /// **The house's standing over its own rig, in the lease's shape** (doc 20 cut SM.12b; the
+    /// lead's ruling 2: "the lease machinery sees Occator as the rigs' own lessor-operator — no
+    /// lease"), so every operator gate SM.3b–SM.11 built (`RigAt.record`, `lease_gate`,
+    /// `FillPlan::live_for`) reads it unchanged: the dispatcher its pilot, the yard hull its
+    /// hull, its bay slot, `Active` for ever. No contract, fee, deposit or term; **never
+    /// stored** — `check` refuses `lease == HOUSE_LEASE`.
+    #[must_use]
+    pub fn house_view(tv: ObjId, mark: &str, dispatcher: ObjId, hull: ObjId, slot: u8) -> TvLease {
+        TvLease {
+            schema: TV_LEASE_SCHEMA,
+            lease: Self::HOUSE_LEASE,
+            tv,
+            mark: mark.to_owned(),
+            pilot: dispatcher,
+            hull,
+            slot,
+            hold: 0,
+            fee_minor: 0,
+            deposit_minor: 0,
+            term_secs: 0,
+            leased_at_ic: 0,
+            term_ends_ic: i64::MAX,
+            terms_paid: 0,
+            status: TvLeaseStatus::Active,
+            ended_at_ic: None,
+            repossessed: false,
+        }
+    }
+
+    /// **Whether this is a house view** ([`TvLease::house_view`]), never a stored lease.
+    #[must_use]
+    pub fn is_house(&self) -> bool {
+        self.lease == Self::HOUSE_LEASE
     }
 }
 
@@ -1326,9 +1369,15 @@ fn live_records(w: &World, actor: ObjId) -> Vec<TvLease> {
         })
 }
 
-/// The live records on `hull` (any lessee), lease order.
+/// The live records on `hull` (any lessee), lease order — **the hull's one rig census**. **Doc 20
+/// cut SM.12b**: for a yard hull (`crate::port::yard::yard_of_hull`), the stored records followed
+/// by the yard's rigs as house views in slot order (`crate::port::yard::house_rigs`), so the
+/// hold's room, a plan's compile and its `shared` slots, the mine act's bound, the unload's
+/// siblings, the end summary, the site map's hold room, `+tv`'s slots and `bay_slot_word` see
+/// both yard rigs at once.
 pub(crate) fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
-    w.module_state::<TacsimStore>()
+    let mut records = w
+        .module_state::<TacsimStore>()
         .map_or_else(Vec::new, |store| {
             store
                 .tv_leases
@@ -1339,8 +1388,15 @@ pub(crate) fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
                     }
                     TvLeaseState::Present(_) | TvLeaseState::Unreadable { .. } => None,
                 })
-                .collect()
-        })
+                .collect::<Vec<_>>()
+        });
+    if let Some(dispatcher) = crate::port::yard::yard_of_hull(w, hull)
+        .and_then(|yard| yard.row.dispatcher)
+        .map(ObjId)
+    {
+        records.extend(crate::port::yard::house_rigs(w, dispatcher));
+    }
+    records
 }
 
 /// Whether `record`'s economy lease is live: Occator's live lease on its TV is
@@ -1387,9 +1443,13 @@ pub(crate) fn counter_words(w: &World) -> (String, String) {
 }
 
 /// **Whether a live record's economy lease is live** (doc 20 cut SM.3b; SM.3a's operate
-/// gate R7): Occator's live lease on its TV is the record's own contract.
+/// gate R7): Occator's live lease on its TV is the record's own contract. **Doc 20 cut SM.12b**:
+/// a house view ([`TvLease::is_house`]) is the house's own rig — always live.
 #[must_use]
 pub(crate) fn rig_lease_live(w: &World, record: &TvLease) -> bool {
+    if record.is_house() {
+        return true;
+    }
     programme_port(w)
         .and_then(|port| lessor_of(w, &port))
         .is_some_and(|lessor| economy_lease_live(w, &lessor.principal, record))
@@ -2239,8 +2299,8 @@ fn select_among(
             .replace("{name}", &hull_name(w, hull))
     };
     if rigs.is_empty() {
-        let hull = crate::port::coop::helm_of(w, actor)
-            .map(|helm| helm.hull)
+        // Doc 20 cut SM.12b: the helm's hull, else a dispatcher's yard hull.
+        let hull = crate::port::yard::operating_hull(w, actor)
             .or_else(|| live_records(w, actor).first().map(|record| record.hull));
         return Err(match hull {
             Some(hull) => no_rig(named.unwrap_or(1), hull),
@@ -2297,11 +2357,16 @@ fn status_lines(
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let port = programme_port(w).ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
-    // 1. The hull: the live charter's, else the one the actor's live records name;
-    // with neither, an unreadable record of the actor's still darkens the whole reply
-    // (reviewer finding correctness/F3) before the charter's own refusal is said.
-    let hull = match crate::port::recall::chartered(ctx) {
-        Ok(e) => e.hull,
+    // 1. The hull: (doc 20 cut SM.12b) a dispatcher's yard hull first; else the live charter's,
+    // else the one the actor's live records name; with neither, an unreadable record of the
+    // actor's still darkens the whole reply (reviewer finding correctness/F3) before the
+    // charter's own refusal is said.
+    let yard_hull = crate::port::yard::yard_of_dispatcher(w, actor)
+        .and_then(|yard| yard.row.hulls.first().map(|row| ObjId(row.hull)));
+    let hull = match yard_hull
+        .map_or_else(|| crate::port::recall::chartered(ctx).map(|e| e.hull), Ok)
+    {
+        Ok(hull) => hull,
         Err(line) => match live_records(w, actor).first() {
             Some(record) => record.hull,
             None => {
@@ -2418,7 +2483,12 @@ fn status_lines(
                 return Err(dark());
             }
         };
-        let line = if !economy_lease_live(w, &lessor.principal, record) {
+        // Doc 20 cut SM.12b: a house rig reads its own slot line and the house's line, read
+        // before the economy lease (it has none).
+        let house = record.is_house();
+        let line = if house {
+            crate::port::yard::HOUSE_RIG_SLOT.to_owned()
+        } else if !economy_lease_live(w, &lessor.principal, record) {
             where_line(RIG_LEASE_ENDED, &lessor)
         } else {
             match record.status {
@@ -2440,6 +2510,9 @@ fn status_lines(
                 .replace("{charge}", &charge)
                 .replace("{hopper}", &hopper),
         );
+        if house {
+            lines.push(crate::port::yard::house_rig_line(w, record.pilot));
+        }
         lines.extend(acts);
         // Doc 20 cut SM.4a (§5, §10; lead ruling 8): where a rig on the ground stands.
         if let (Some(berth), Some(handles)) = (berth.as_ref(), handles)
@@ -2455,8 +2528,11 @@ fn status_lines(
             }else{RIG_UNLISTED.replace("{mark}", &rig.mark)});
         }
     }
-    // 4. On a site's pad, SM.2's stores line (the SM.2 note deferred it here).
-    if let Some(stores) = crate::port::voyage::settled_stores_line(ctx, &view) {
+    // 4. On a site's pad, SM.2's stores line (the SM.2 note deferred it here); never for a yard
+    // hull (doc 20 cut SM.12b: a yard is no landed passage).
+    if !view.yard
+        && let Some(stores) = crate::port::voyage::settled_stores_line(ctx, &view)
+    {
         lines.push(stores);
     }
     Ok(lines)
@@ -3861,6 +3937,11 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
 #[allow(clippy::too_many_lines)] // one check list, then one ordered write list per rig
 pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String> {
     let w: &World = ctx.w;
+    // Doc 20 cut SM.12b (D22): a yard hull is never chartered, so never repossessed; the gather
+    // below stays stored-only by design (a repossession ends stored leases).
+    if crate::port::yard::yard_of_hull(w, hull).is_some() {
+        return Err("the yard hull is never repossessed".to_owned());
+    }
     let view =
         hull_view(w, hull).ok_or_else(|| format!("hull #{} has no programme view", hull.0))?;
     let port = programme_port(w).ok_or_else(|| "no programme port".to_owned())?;
@@ -3880,8 +3961,9 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         })?;
         records.push(record);
     }
+    // Deduped by rig (doc 20 cut SM.12b: two house views would both carry `HOUSE_LEASE`).
     for record in live_on_hull(w, hull) {
-        if !records.iter().any(|seen| seen.lease == record.lease) {
+        if !records.iter().any(|seen| seen.tv == record.tv) {
             records.push(record);
         }
     }
@@ -4078,11 +4160,8 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
     // An act in flight outranks a run (a scan from a drilling rig names the scan); a run
     // outranks the open excursion it drills from (the SM.7 lead's pre-commit round, item 2); doc
     // 20 cut SM.11: a live plan of the rig's lessee is read between the two.
-    let lessee = ctx
-        .w
-        .module_state::<TacsimStore>()
-        .and_then(|store| store.tv_lease_on(tv))
-        .map(|lease| lease.pilot);
+    // Doc 20 cut SM.12b: the one lessee reader (a yard rig's is its dispatcher).
+    let lessee = crate::port::yard::rig_lease(ctx.w, tv).map(|lease| lease.pilot);
     let planning = lessee
         .and_then(|lessee| record.live_plan_for(lessee))
         .map(|plan| plan.no);
@@ -5189,5 +5268,39 @@ mod tests {
             !rig_parked(Some(&live), pilot, false, Some(TvState::Out)),
             "a live plan out"
         );
+    }
+
+    /// **Doc 20 cut SM.12b** (the lead's ruling 2, D4): a house view is the lease's shape and never
+    /// a stored lease — `check` refuses it and any record whose lease is 0; it is live, and its
+    /// economy lease reads live with no economy at all.
+    #[test]
+    fn sm12b_a_house_view_is_never_a_stored_lease() {
+        let view = TvLease::house_view(ObjId(900), "OWP-YT-01", ObjId(77), ObjId(500), 1);
+        assert!(view.is_house());
+        assert!(view.live());
+        assert_eq!(
+            (view.lease, view.pilot, view.hull, view.slot, view.status),
+            (
+                TvLease::HOUSE_LEASE,
+                ObjId(77),
+                ObjId(500),
+                1,
+                TvLeaseStatus::Active
+            )
+        );
+        assert_eq!(view.check(), Err("lease must be at least 1".to_owned()));
+        assert_eq!(
+            TvLease {
+                lease: 0,
+                ..sample()
+            }
+            .check(),
+            Err("lease must be at least 1".to_owned())
+        );
+        assert!(!sample().is_house());
+        assert_eq!(sample().check(), Ok(()));
+        let w = World::new_minimal();
+        assert!(rig_lease_live(&w, &view));
+        assert!(!rig_lease_live(&w, &sample()));
     }
 }

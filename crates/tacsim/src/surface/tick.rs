@@ -432,12 +432,14 @@ pub(crate) struct Candidate {
 /// **What the candidates read of a rig's plan** (doc 20 cut SM.11): the rig's live lessee and the
 /// projection's told plan and view.
 pub(crate) struct PlanReads<'a> {
-    /// The rig's live lessee (`TacsimStore::tv_lease_on`).
+    /// The rig's live lessee (`TacsimStore::tv_lease_on`; since doc 20 cut SM.12b through
+    /// `crate::port::yard::rig_lease`, a yard rig's dispatcher).
     pub lessee: &'a dyn Fn(ObjId) -> Option<ObjId>,
     /// The projection's `plan_told` and `plan`.
     pub shown: &'a dyn Fn(ObjId) -> (Option<PlanTold>, Option<PlanView>),
-    /// The hull whose helm a pilot holds (`crate::surface::plan::helm_hull`): an orphaned queue's
-    /// reading (the SM.11 fixer round's correctness/F3).
+    /// The hull whose helm a pilot holds (`crate::surface::plan::helm_hull`; since doc 20 cut
+    /// SM.12b the hull a pilot operates — a dispatcher's yard hull): an orphaned queue's reading
+    /// (the SM.11 fixer round's correctness/F3).
     pub helm: &'a dyn Fn(ObjId) -> Option<ObjId>,
 }
 
@@ -487,10 +489,9 @@ fn idle_attempt(record: &RigRecord) -> ActKey {
 /// record's plan only when the rig's live lessee filed it (`plan_view_for`), so the next lessee's
 /// projection never carries a previous lessee's plan.
 fn plan_view_of(w: &World, record: &RigRecord) -> Option<PlanView> {
-    let lessee = w
-        .module_state::<TacsimStore>()
-        .and_then(|store| store.tv_lease_on(record.tv))
-        .map(|lease| lease.pilot);
+    // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`) — a yard rig's is its
+    // dispatcher, else `plan_untold` would compare its view with an always-empty projection.
+    let lessee = crate::port::yard::rig_lease(w, record.tv).map(|lease| lease.pilot);
     crate::surface::plan::plan_view_for(record.plan.as_ref(), lessee)
 }
 
@@ -755,11 +756,8 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
         .collect();
     let (candidates, resting) = {
         let w: &World = ctx.w;
-        let lessee = |tv: ObjId| {
-            w.module_state::<TacsimStore>()
-                .and_then(|store| store.tv_lease_on(tv))
-                .map(|lease| lease.pilot)
-        };
+        // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`).
+        let lessee = |tv: ObjId| crate::port::yard::rig_lease(w, tv).map(|lease| lease.pilot);
         let shown_plan = |tv: ObjId| plan_shown_of(w, tv);
         let helm = |pilot: ObjId| crate::surface::plan::helm_hull(w, pilot);
         candidates(
@@ -1645,12 +1643,8 @@ fn plan_step(
     use crate::surface::plan::{PLAN_WAIT_IC_SECS, PlanMove, PlanWait};
     let tv = record.tv;
     let now = ctx.w.world_ic_now().at;
-    let Some(lease) = ctx
-        .w
-        .module_state::<TacsimStore>()
-        .and_then(|store| store.tv_lease_on(tv))
-        .cloned()
-    else {
+    // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`): a yard rig's house view.
+    let Some(lease) = crate::port::yard::rig_lease(ctx.w, tv) else {
         return Step::Worked;
     };
     let Some(plan) = record.live_plan_for(lease.pilot).cloned() else {
@@ -1835,11 +1829,10 @@ fn idle_step(
     let tv = record.tv;
     let now = ctx.w.world_ic_now().at;
     let retry = now.saturating_add(crate::surface::plan::IDLE_PARK_IC_SECS);
+    // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`), so a yard rig left idle on
+    // the ground comes home.
     let (Some(lease), Some(excursion)) = (
-        ctx.w
-            .module_state::<TacsimStore>()
-            .and_then(|store| store.tv_lease_on(tv))
-            .cloned(),
+        crate::port::yard::rig_lease(ctx.w, tv),
         record.excursion.clone(),
     ) else {
         return Step::Worked;
@@ -2210,11 +2203,8 @@ fn tell(
         .as_ref()
         .map(|excursion| excursion.hull)
         .or(rec.hull)
-        .or_else(|| {
-            w.module_state::<TacsimStore>()
-                .and_then(|store| store.tv_lease_on(record.tv))
-                .map(|lease| lease.hull)
-        });
+        // Doc 20 cut SM.12b: the one lessee reader (`yard::rig_lease`).
+        .or_else(|| crate::port::yard::rig_lease(w, record.tv).map(|lease| lease.hull));
     let line = match (&last.result, &last.span, last.arrived, &last.mined) {
         // Doc 20 cut SM.7 (§1 beat 8's line; the brief's 3.8): a mining cycle's line.
         (_, _, _, Some(mined)) => mine_line(ctx, handles, record.tv, last, mined),

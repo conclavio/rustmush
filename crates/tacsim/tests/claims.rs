@@ -515,6 +515,10 @@ fn stock(rig: &mut Rig) {
                     && !(line.contains(" site: ")
                         && (line.contains("; opening, ")
                             || line.contains("; opening: its ground is still being mapped")))
+                    // Doc 20 cut SM.12b: the house's Pending span at Occator Rim (its seeds,
+                    // licence and surveys) is the site's opening carried on — its length turns
+                    // on the deposit table, as the opening's does — and is never stock.
+                    && !(line.contains(" dispatch ") && line.ends_with("[pending]"))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -1118,7 +1122,9 @@ fn claim_go(rig: &mut Rig, who: ObjId, line: &str) -> String {
 }
 
 /// Port fires until the site clerk's queue is quiet for two fires (bounded at 40), every
-/// submission landed; what `who` heard over them.
+/// submission landed; what `who` heard over them. The house's own submissions (doc 20 cut SM.12b:
+/// its dispatcher's drones at Occator Rim, whose work turns on the deposit table) are landed and
+/// never break the quiet.
 fn settle(rig: &mut Rig, who: &[ObjId]) -> String {
     let mut heard = String::new();
     let mut quiet = 0;
@@ -1131,14 +1137,17 @@ fn settle(rig: &mut Rig, who: &[ObjId]) -> String {
                 heard.push('\n');
             }
         }
-        if queued.is_empty() {
+        let house = queued
+            .iter()
+            .all(|submit| support::drones::is_house(&rig.tw, submit));
+        land_all(rig, &queued);
+        if house {
             quiet += 1;
             if quiet >= 2 {
                 break;
             }
         } else {
             quiet = 0;
-            land_all(rig, &queued);
         }
     }
     heard

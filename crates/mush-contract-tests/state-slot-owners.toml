@@ -149,7 +149,9 @@ reason = """
 Doc 20 cut SM.5, for the `port/coop.rs` row's reason: `+licence/buy go` takes the
 pilot's entitlement account id from `economy`'s allocator before
 `mush_economy::open_account` writes it through the economy module's own path —
-the `port/apply.rs` precedent. The site refuses when the slot is absent.
+the `port/apply.rs` precedent. The site refuses when the slot is absent. Doc 20
+cut SM.12b: `open_house_licence` opens the house's standing licence account the
+same way (the site clerk's item 8; an `Active` account of the org, no fee).
 """
 
 [[site]]
@@ -450,6 +452,32 @@ case needs, and the pilots of the port hulls; the lapsed-licence case edits the
 stored licence document across a reboot. The oracle is boot-hydrated by the
 host from the store, which a `TestWorld` has none of, so the rig installs the
 fixed account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/drones.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.12b, for the plans.rs row's reason: the drones' tests charter and
+license pilots through `+coop/enrol` and `+licence/buy` per gateway account, fly
+them to Occator Rim's pad beside the house's yard and lease their rigs; both rules
+fail closed on an unmapped character. The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/drones.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 20 cut SM.12b: the house-standing case pre-opens an account of the house in
+the licence instrument, below the clerk's, as staff would — its id from
+`economy`'s allocator before `mush_economy::open_account` writes it through the
+economy module's own path (the `port/licence.rs` row's precedent).
 """
 
 [[site]]

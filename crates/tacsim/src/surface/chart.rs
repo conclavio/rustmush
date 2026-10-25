@@ -704,6 +704,25 @@ pub fn write_scan(
 ) {
     renew(row);
     row.scan_stand = Some(stand);
+    write_fields(row, fields, footing, at, via);
+}
+
+/// **A house survey's write** (doc 20 cut SM.12b; the lead's ruling 3, O-9's default): each of
+/// `fields` covered at [`Footing::Rock`] — what a hand scan from a rock stand reads, D-20-8's
+/// sharpest R1 — under the current rule, `first_local_at`/`last_at` as [`write_scan`] sets them,
+/// and one `Local { Scan, at, Plan }` pushed into each field's ring; **it never sets
+/// `scan_stand`**. No `Via::Seed` exists or is needed (12b-L1): a `Plan` stamp never moves
+/// `first_hand_at`, never counts as stake evidence (`crate::surface::tenure::evidence_at` reads
+/// `Hand` only), is the first evicted by the ring's trim, and since SM.11r is never read as a
+/// hand's by [`first_hand_of`]. R1 only: the dispatcher's first plan still sounds every field.
+pub fn write_seed(row: &mut ChartRecord, fields: &[u8], at: i64) {
+    renew(row);
+    write_fields(row, fields, Footing::Rock, at, Via::Plan);
+}
+
+/// [`write_scan`]'s and [`write_seed`]'s per-field body: each field covered at `footing`
+/// (footing only ever sharpens), then stamped once.
+fn write_fields(row: &mut ChartRecord, fields: &[u8], footing: Footing, at: i64, via: Via) {
     for index in fields {
         let entry = row.fields.entry(*index).or_insert_with(|| FieldRow {
             footing,
@@ -2648,5 +2667,72 @@ mod tests {
                 (50, Via::Hand)
             ]
         );
+    }
+
+    /// **A house survey reads its fields and counts for nothing** (doc 20 cut SM.12b; 12b-L1, O-9's
+    /// default): block F's four fields seeded read at R1 on rock, each with one `Local { Scan,
+    /// at, Plan }`; no scan stand; no first hand stamp; no stake evidence and nothing heard. A later
+    /// hand scan sets `first_hand_at` and qualifies; four hand stamps evict the seed's stamp before
+    /// any hand one.
+    #[test]
+    fn sm12b_a_seed_reads_its_fields_and_counts_for_nothing() {
+        let fields: Vec<(i64, i64)> = crate::surface::plan::block_fields('F');
+        let indexes: Vec<u8> = fields
+            .iter()
+            .filter_map(|(fx, fy)| field_index(*fx, *fy))
+            .collect();
+        assert_eq!(indexes.len(), 4);
+        let mut r = row();
+        write_seed(&mut r, &indexes, 1_000);
+        assert_eq!(r.check(), Ok(()));
+        for field in &fields {
+            assert_eq!(row_reads_field(Some(&r), *field), Some(Footing::Rock));
+        }
+        assert_eq!(r.scan_stand, None);
+        for index in &indexes {
+            let field = r
+                .fields
+                .get(index)
+                .unwrap_or_else(|| panic!("the field row"));
+            assert_eq!(
+                ring_of(&field.provenance),
+                vec![(Instrument::Scan, 1_000, Via::Plan)]
+            );
+            assert_eq!(field.first_hand_at, None);
+            assert_eq!(
+                first_hand_of(field.first_local_at, &field.provenance, field.first_hand_at),
+                None
+            );
+        }
+        assert_eq!(crate::surface::tenure::evidence_at(&r, 'F', Some(0)), None);
+        assert!(crate::surface::tenure::heard_before(&r, 'F', None, i64::MAX).is_empty());
+        // A later hand scan qualifies, and four hand stamps push the seed out first.
+        let first = indexes.first().copied().unwrap_or(0);
+        write_scan(&mut r, [10, 10], &[first], Footing::Rock, 2_000, Via::Hand);
+        assert_eq!(
+            r.fields.get(&first).and_then(|field| field.first_hand_at),
+            Some(2_000)
+        );
+        assert_eq!(
+            crate::surface::tenure::evidence_at(&r, 'F', Some(0)),
+            Some(2_000)
+        );
+        for at in [3_000, 4_000, 5_000] {
+            write_scan(&mut r, [10, 10], &[first], Footing::Rock, at, Via::Hand);
+        }
+        let field = r
+            .fields
+            .get(&first)
+            .unwrap_or_else(|| panic!("the field row"));
+        assert_eq!(
+            ring_of(&field.provenance),
+            vec![
+                (Instrument::Scan, 2_000, Via::Hand),
+                (Instrument::Scan, 3_000, Via::Hand),
+                (Instrument::Scan, 4_000, Via::Hand),
+                (Instrument::Scan, 5_000, Via::Hand),
+            ]
+        );
+        assert_eq!(r.check(), Ok(()));
     }
 }

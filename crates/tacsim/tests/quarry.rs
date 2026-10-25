@@ -503,11 +503,12 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
     (events, queued)
 }
 
-/// The surface finishes a fire queued.
-fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+/// The surface finishes a fire queued — the players' (the house's dropped: doc 20 cut SM.12b).
+fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_DONE_ACTION)
+        .filter(|submit| !support::drones::is_house(tw, submit))
         .collect()
 }
 
@@ -1013,7 +1014,11 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
         .expect("an act in flight");
     let (events, queued) = advance_to(rig, due);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish: {queued:?}"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -1022,26 +1027,16 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     heard
 }
 
-/// Staff place `tv` `Direct` on `entry`'s domain at site cell `(x, y)`'s centre, facing south.
-fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, (x, y): (i64, i64)) {
+/// Staff place `tv` `Direct` on `entry`'s domain at site cell `(x, y)`'s centre, facing south —
+/// and keep the placement's writes for a reboot (doc 20 cut SM.12b, `claims.rs`'s SM.11 precedent:
+/// `support::with_ctx` drops its outbox, so a staff placement's recovery-ledger append never
+/// reached the store; harmless until a placement sealed a ledger chunk, which the house yard's
+/// lay-up and its drones' placements made happen here).
+fn to_cell_on(rig: &mut Rig, entry: &str, tv: ObjId, cell: (i64, i64)) {
     let domain = mush_sim::DomainId(port_map(&rig.tw, entry).domain.expect("a domain"));
-    let placed = support::with_ctx(&mut rig.tw, |ctx| {
-        let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
-            .map_err(|e| e.to_string())?;
-        mush_sim::place(
-            ctx,
-            tv,
-            domain,
-            mush_sim::data::Pose {
-                x_cm: x * 1_000 + 500,
-                y_cm: y * 1_000 + 500,
-                z_cm: 0,
-                heading_mdeg: 180_000,
-                posture,
-            },
-        )
-    });
-    placed.expect("staff place the rig");
+    let staff = support::place_keeping(&mut rig.tw, domain, tv, cell);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
 }
 
 /// Staff move `tv` to Ahuna's site cell `(x, y)`.
@@ -2270,7 +2265,14 @@ fn sm9_a_rigs_log_is_its_current_operators() {
             })
             .collect()
     };
-    let pushed = statuses(&events);
+    // Doc 20 cut SM.12b: the house's drones push their own panels to their dispatcher (a dark
+    // Thing, never connected), whose work at Occator Rim shares these fires; every other push is
+    // B's.
+    let house = tacsim::port::yard::dispatchers(rig.tw.world());
+    let pushed: Vec<(Audience, Value)> = statuses(&events)
+        .into_iter()
+        .filter(|(audience, _)| !matches!(audience, Audience::Actor(who) if house.contains(who)))
+        .collect();
     assert!(!pushed.is_empty(), "B's work pushes");
     for (audience, data) in &pushed {
         assert_eq!(*audience, Audience::Actor(b), "never A");
@@ -2415,7 +2417,7 @@ fn sm9_a_rig_with_an_unload_queued_reads_queued_never_idle() {
         .map(|act| act.due_ic)
         .expect("the recover in flight");
     let (_, queued) = advance_to(&mut rig, due);
-    assert_eq!(finishes(&queued).len(), 1, "the recover's finish");
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1, "the recover's finish");
     land_all(&mut rig, &queued);
     let record = record_of(&mut rig.tw, tv).expect("the record");
     assert!(

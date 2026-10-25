@@ -176,6 +176,9 @@ pub mod vehicle;
 pub mod vendor;
 pub mod voyage;
 pub mod when;
+/// Doc 20 cut SM.12b: a house's yard at a site — its lay-up, its dispatcher, its seeds and its
+/// deliveries (doc 20 §12.3 "Occator's drones").
+pub mod yard;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use chart::{
@@ -194,10 +197,10 @@ pub use def::{
     AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, LicenceDef,
     MAX_CAPITAL_RAISES, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE, MAX_LICENCE_FEE_MAJOR,
     MAX_LICENCE_TERM_IC_DAYS, MAX_MILL_RATIO, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR,
-    MAX_VENDOR_MILLS, MillDef, MillRatio, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef,
-    PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef, SITE_BLOCK_COUNT, SiteDef,
-    SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone, capital_schedule,
-    check_ports, room_key, tranches,
+    MAX_VENDOR_MILLS, MAX_YARD_REARM_IC_SECS, MillDef, MillRatio, PORT_MINT_CAP_MAJOR,
+    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, RefreshDef,
+    SITE_BLOCK_COUNT, SiteDef, SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, YardDef,
+    Zone, capital_schedule, check_ports, room_key, tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -215,8 +218,8 @@ pub use licence::{
     standing_at,
 };
 pub use map::{
-    BidRow, ClerkRow, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, RigRow, SiteRow,
-    StockRow, TrancheRow, VehiclesRow, VendorRow, port_map_key,
+    BidRow, ClerkRow, HouseLicence, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow,
+    RigRow, SiteRow, StockRow, TrancheRow, VehiclesRow, VendorRow, YardRow, port_map_key,
 };
 pub use market::{
     HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,
@@ -261,3 +264,10 @@ pub use voyage::{
     voyage_key_owner,
 };
 pub use when::{MAX_AHEAD_SECS, MAX_WINDOW_SECS, NotBefore};
+pub use yard::{
+    DISPATCH_ACTION, DISPATCH_FAMILY, DISPATCH_KEY_PREFIX, DISPATCH_OUTCOME, DISPATCHER_NAME,
+    Delivery, DispatchKey, DispatchLedger, HOUSE_LICENCE_NAME, HOUSE_RIG_LINE, HOUSE_RIG_SLOT,
+    MAX_DISPATCH_ATTEMPTS, MAX_RECENT_DELIVERIES, YARD_STAYS, YardView, deliverable, dispatchers,
+    house_rigs, is_dispatcher_of, operates, operating_hull, operator_principal, rig_lease,
+    yard_of_dispatcher, yard_of_hull, yards,
+};

@@ -654,8 +654,9 @@ pub(crate) fn field_pockets((fx, fy): (i64, i64)) -> Vec<(i64, i64)> {
     out
 }
 
-/// A block's four fields, south-west first.
-fn block_fields(letter: char) -> Vec<(i64, i64)> {
+/// A block's four fields, south-west first (doc 20 cut SM.12b: the site clerk's house survey reads
+/// them too).
+pub(crate) fn block_fields(letter: char) -> Vec<(i64, i64)> {
     let Some((bx, by)) = address::block_of_letter(letter) else {
         return Vec::new();
     };
@@ -1377,17 +1378,78 @@ pub(crate) struct DecideCounters {
     pub legs: std::sync::atomic::AtomicU64,
     /// The offer's compiles.
     pub compiles: std::sync::atomic::AtomicU64,
+    /// **Doc 20 cut SM.12b** (the fixer round's tests/F5): the yards' dispatchers' compiles
+    /// (`crate::port::yard::dispatch_step`'s `plan_ask` calls), which [`count`] leaves out of the
+    /// players' three — so a test can prove a refused compile backs off.
+    pub house_compiles: std::sync::atomic::AtomicU64,
 }
 
 /// **The counters' RAM slot** (the tick registers it; test hooks only).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PlanCounters(pub std::sync::Arc<DecideCounters>);
 
-/// Bump a counter of the world's slot, if any.
-pub(crate) fn count(w: &World, which: fn(&DecideCounters) -> &std::sync::atomic::AtomicU64) {
+/// Bump a counter of the world's slot, if any, for `tv`'s plan — never a yard rig's (doc 20 cut
+/// SM.12b: the house's dispatcher plans in every keyed world, and a test counting a player's
+/// decides, legs or compiles reads the players' plans only).
+pub(crate) fn count(
+    w: &World,
+    tv: ObjId,
+    which: fn(&DecideCounters) -> &std::sync::atomic::AtomicU64,
+) {
+    if crate::port::yard::is_yard_rig(w, tv) {
+        return;
+    }
     if let Some(counters) = w.module_state::<PlanCounters>() {
         which(&counters.0).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Bump the dispatchers' compile counter (doc 20 cut SM.12b; [`DecideCounters::house_compiles`]).
+pub(crate) fn count_house_compile(w: &World) {
+    if let Some(counters) = w.module_state::<PlanCounters>() {
+        counters
+            .0
+            .house_compiles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// **Test hook** (doc 20 cut SM.12b; the fixer round's tests/F5): how many times a yard's
+/// dispatcher compiled a plan this boot ((`DecideCounters::house_compiles`)). Reads only.
+#[doc(hidden)]
+#[must_use]
+pub fn house_compiles_for_tests(w: &World) -> u64 {
+    w.module_state::<PlanCounters>().map_or(0, |counters| {
+        counters
+            .0
+            .house_compiles
+            .load(std::sync::atomic::Ordering::Relaxed)
+    })
+}
+
+/// **Test hook** (doc 20 cut SM.12b; the fixer round's correctness/F1): what the orphan rule's
+/// one seam (`helm_hull`) makes of `record`'s live plan, read exactly as `decide`'s walk reads
+/// it — `Some("helm")` when the plan would wait on its author's helm (the walk's step 2),
+/// `Some("orphan")` when its queued unload is orphaned (`queue_orphaned`: refused at every try,
+/// paged by the surface tick), `Some("markers")` when its queued unload was re-filed on a full
+/// marker ring (`queue_waits_on_markers`: the `Markers` wait, never a failure); `None` otherwise
+/// or with no live plan. Reads only.
+#[doc(hidden)]
+#[must_use]
+pub fn plan_seam_for_tests(w: &World, record: &RigRecord) -> Option<&'static str> {
+    let plan = record.plan.as_ref().filter(|plan| plan.live())?;
+    let helm = helm_hull(w, plan.author);
+    if record
+        .queued
+        .as_ref()
+        .is_some_and(|queued| queue_orphaned(queued, plan, helm))
+    {
+        return Some("orphan");
+    }
+    if helm != Some(plan.hull) {
+        return Some("helm");
+    }
+    queue_waits_on_markers(record).then_some("markers")
 }
 
 /// The author's R2 classes of a pocket, through the site's geology and the author's row (`None`
@@ -1446,9 +1508,12 @@ fn tools_of(w: &World, tv: ObjId, tools: &BTreeMap<CanonicalId, ToolDef>) -> Too
     }
 }
 
-/// The hull whose helm `who` holds, if any (`crate::port::coop::helm_of`).
+/// The hull whose helm `who` holds, if any (`crate::port::coop::helm_of`). **Doc 20 cut SM.12b**
+/// (the orphan rule's one seam): the hull `who` operates — the helm's, else a yard dispatcher's
+/// yard hull (`crate::port::yard::operating_hull`) — so a dispatcher's queued unloads are never
+/// read as orphaned and its plans never wait on a helm; players are byte-unchanged.
 pub(crate) fn helm_hull(w: &World, who: ObjId) -> Option<ObjId> {
-    crate::port::coop::helm_of(w, who).map(|helm| helm.hull)
+    crate::port::yard::operating_hull(w, who)
 }
 
 /// **Whether SM.8's queued unload is orphaned under `plan`** (pure; the SM.8 handoff, the SM.11
@@ -1578,7 +1643,8 @@ pub(crate) fn bay_hopper(last: Option<&crate::surface::excursion::Outcome>) -> B
 /// **The bound precedes every wait** (the lead's pre-commit round, item 3; the judge's
 /// correctness/F5): once `now_ic` reaches the plan's deadline, any [`PlanMove::Wait`] the walk
 /// would answer — the helm, ashore, dark, cold, the cap, a charge, a queued unload still standing
-/// — is instead `End { Bound }` where the rig stands (told once, by the end's note), so a plan
+/// — is instead `End { Bound }` where the rig stands (told once, by the end's note; doc 20 cut
+/// SM.12b: a plan already parking ends with its parking reason instead), so a plan
 /// whose author is ashore or whose rig is dark never waits past its 288 IC hours. Only an act or a
 /// run in flight holds it (`Busy`: the end needs an idle rig, and the step finishes by its own
 /// rules first). A plan past its bound with nothing barring it still parks as before: from the
@@ -1597,13 +1663,28 @@ pub(crate) fn decide(
     let moved = decide_walk(w, reads, rig, record, counts, tools, peeks, now_ic)?;
     let plan = record.live_plan_for(rig.record.pilot)?;
     let in_flight = record.act.is_some() || record.run.is_some();
-    Some(match moved {
+    Some(bound_over(plan, moved, in_flight, now_ic))
+}
+
+/// **The bound's precedence over a wait** ([`decide`]'s wrapper, pure): a `Wait` once `now_ic`
+/// reaches the plan's deadline, with nothing in flight, is the plan's end where the rig stands.
+/// **Doc 20 cut SM.12b** (SM.11's residual R3, doc 20a §4.3.9): a plan already parking keeps its
+/// parking reason — **whatever it is** — when the bound ends it: a right stays that right (a
+/// player's plan parking on a lapsed licence ends with the licence's word, not "out of time"),
+/// and so does every other parking reason (`HoldFull`, `WorkedOut`, `Claimed`, `ChartFull`, …: a
+/// plan heading home full whose author waits ashore past the bound ends `HoldFull`). Only a Live
+/// plan's bound end is unchanged (`Bound`, "out of time"). This reaches players' plans too.
+fn bound_over(plan: &FillPlan, moved: PlanMove, in_flight: bool, now_ic: i64) -> PlanMove {
+    match moved {
         PlanMove::Wait(_) if now_ic >= plan.deadline_ic && !in_flight => PlanMove::End {
-            why: PlanEnd::Bound,
+            why: match plan.state {
+                FillState::Parking { why } => why,
+                FillState::Live | FillState::Ended { .. } => PlanEnd::Bound,
+            },
             update: PlanUpdate::of(plan),
         },
         other => other,
-    })
+    }
 }
 
 /// **The walk** — [`decide`]'s body, before the bound's precedence. In this order: in flight
@@ -1628,7 +1709,7 @@ fn decide_walk(
     now_ic: i64,
 ) -> Option<PlanMove> {
     let plan = record.live_plan_for(rig.record.pilot)?;
-    count(w, |c| &c.decides);
+    count(w, rig.tv, |c| &c.decides);
     // 1. In flight — SM.8's queued unload too, unless it is orphaned (`queue_orphaned`: the
     // author's own queue, the author off the plan's hull's helm, so SM.8 refuses it at every
     // attempt until any start lands): such a queue is no step in flight, and the plan reads the
@@ -2119,7 +2200,7 @@ fn decide_walk(
                     }
                 },
             };
-            count(w, |c| &c.legs);
+            count(w, rig.tv, |c| &c.legs);
             match crate::surface::act::drive_plan(w, rig, &stand_of, &target, &rates, peeks) {
                 Ok(planned) => Some(planned),
                 Err(refusal) => match fate_of(&refusal) {
@@ -3379,5 +3460,48 @@ mod tests {
             Some(plan.hull)
         ));
         assert!(!queue_orphaned(&queued(ObjId(99)), &plan, None));
+    }
+
+    /// **A parking plan past its bound keeps its reason** (doc 20 cut SM.12b; SM.11's residual R3,
+    /// doc 20a §4.3.9): a plan parking on a lapsed licence whose author waits ashore past the
+    /// deadline ends `Licence`, not `Bound` — for a **player-authored** plan too, whose end line
+    /// then reads the licence's word, not "out of time" — and any other parking reason likewise
+    /// (a `HoldFull` park ends `HoldFull`); a Live plan past its deadline still ends `Bound`;
+    /// before the deadline, or with an act in flight, the wait stands.
+    #[test]
+    fn sm12b_a_parking_plan_past_its_bound_keeps_its_reason() {
+        let lapsed = PlanEnd::Licence {
+            why: crate::surface::excursion::LicenceEnd::Lapsed { at_ic: 5_000 },
+        };
+        let mut parking = sample();
+        parking.state = FillState::Parking { why: lapsed };
+        let past = parking.deadline_ic;
+        let ended = |plan: &FillPlan, in_flight: bool, now: i64| match bound_over(
+            plan,
+            PlanMove::Wait(PlanWait::Ashore),
+            in_flight,
+            now,
+        ) {
+            PlanMove::End { why, .. } => Some(why),
+            PlanMove::Wait(_) | PlanMove::Start { .. } => None,
+        };
+        // The author is a player (a plain `ObjId`, no yard).
+        assert_eq!(parking.author, ObjId(7));
+        assert_eq!(ended(&parking, false, past), Some(lapsed));
+        assert_eq!(lapsed.word(), "licence");
+        assert_ne!(lapsed.word(), PlanEnd::Bound.word());
+        // A Live plan past its bound still ends Bound ("out of time").
+        let live = sample();
+        assert_eq!(ended(&live, false, past), Some(PlanEnd::Bound));
+        assert_eq!(PlanEnd::Bound.word(), "out of time");
+        // Before the deadline, or with an act in flight, the wait stands.
+        assert_eq!(ended(&parking, false, past - 1), None);
+        assert_eq!(ended(&parking, true, past), None);
+        // A HoldFull park keeps its reason too.
+        let mut full = sample();
+        full.state = FillState::Parking {
+            why: PlanEnd::HoldFull,
+        };
+        assert_eq!(ended(&full, false, past), Some(PlanEnd::HoldFull));
     }
 }

@@ -101,6 +101,9 @@ pub enum Binding {
     /// Doc 20 cut SM.12a: one mill's ledger; reported, never gated
     /// (`crate::port::mill::mill_line`).
     Mill,
+    /// Doc 20 cut SM.12b: a yard's dispatcher; reported, never gated
+    /// (`crate::port::yard::dispatch_line`).
+    Dispatch,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -513,7 +516,8 @@ pub(crate) fn markers_line(held: Option<usize>, max: usize) -> ReadinessLine {
 /// IC14) the `Markers` headroom line right after that, and per port, after its last line (the hulls line when it
 /// has one), one `Pools` line per vendor, one `Listings` line per ask, one
 /// `Bids` line per bid and (doc 20 cut SM.12a) one `Mill` line per mill row, in
-/// authored order. Pools, receipts and mill ledgers are typed state,
+/// authored order; then (doc 20 cut SM.12b) per site with a yard, its one `Dispatch` line right
+/// after that port's last line. Pools, receipts, mill and dispatch ledgers are typed state,
 /// readable only through a module context, which is why this takes `ctx`;
 /// `@tacsim/port status` and `+coop/enrol`'s gate both call it.
 #[must_use]
@@ -584,6 +588,33 @@ pub fn readiness_in(ctx: &mush_core::Ctx<'_>) -> Readiness {
         for (offset, line) in lines.into_iter().enumerate() {
             report.lines.insert(at.saturating_add(offset), line);
         }
+    }
+    // ---- doc 20 cut SM.12b: per site with a yard, its Dispatch line after its last line ----
+    for (entry, def) in &ports {
+        let Some(site) = def.site.as_ref() else {
+            continue;
+        };
+        let Some(yard) = site.yard.as_deref() else {
+            continue;
+        };
+        let PortMapState::Present(map) = store.port_map(&lane, entry) else {
+            continue;
+        };
+        let (state, text) = crate::port::yard::dispatch_line(ctx, entry, site, yard, map);
+        let at = report
+            .lines
+            .iter()
+            .rposition(|line| line.port.as_ref() == Some(entry))
+            .map_or(report.lines.len(), |i| i.saturating_add(1));
+        report.lines.insert(
+            at,
+            ReadinessLine {
+                port: Some(entry.clone()),
+                binding: Binding::Dispatch,
+                state,
+                text,
+            },
+        );
     }
     report
 }

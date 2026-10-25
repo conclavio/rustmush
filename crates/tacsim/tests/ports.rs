@@ -1738,6 +1738,14 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 "  {entry} site: 16 block places, the site clerk, the spoil and 16 block vaults \
                  laid up; no deposits while the geology layer is dark. [ready]"
             ));
+            // Doc 20 cut SM.12b: a site with a yard reports its Dispatch line right after its
+            // Site line — ungated, and Ready while the site is not open.
+            if def.site.as_ref().is_some_and(|site| site.yard.is_some()) {
+                want.push(format!(
+                    "  {entry} dispatch occator: 2 rigs in the Occator Yard's bay; the site is \
+                     not open, so nothing is filed. [ready]"
+                ));
+            }
         }
         for org in &def.orgs {
             let row = map.orgs.get(&org.id).expect("a row");
@@ -2307,9 +2315,11 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
     // Doc 18 cut IC8 (lead ruling L23): the same reference in an entry that authors no
     // vendors loads — the rule is scoped to an entry with vendors, so the published v2
     // (references, no vendors) keeps loading. Doc 19 cut A.4b: an emergency block needs
-    // a vendor to post from, so the v2 shape has none.
+    // a vendor to post from, so the v2 shape has none. Doc 20 cut SM.12b: a yard delivers to a
+    // mill row, which lives on a vendor, so the v2 shape has no yard either (`strip_yard`).
     assert_eq!(
         refusal(|doc| {
+            support::drones::strip_yard(doc);
             if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
                 def.remove("vendors");
                 def.remove("emergency");

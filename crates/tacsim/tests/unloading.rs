@@ -512,19 +512,21 @@ fn fire(rig: &mut Rig) -> (Vec<(Audience, OutputEvent)>, Vec<AuthoritativeSubmit
     (events, queued)
 }
 
-/// The surface finishes a fire queued.
-fn finishes(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+/// The surface finishes a fire queued — the players' (the house's dropped: doc 20 cut SM.12b).
+fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_DONE_ACTION)
+        .filter(|submit| !support::drones::is_house(tw, submit))
         .collect()
 }
 
-/// The surface starts a fire queued.
-fn starts(queued: &[AuthoritativeSubmit]) -> Vec<&AuthoritativeSubmit> {
+/// The surface starts a fire queued — the players' (the house's dropped: doc 20 cut SM.12b).
+fn starts<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q AuthoritativeSubmit> {
     queued
         .iter()
         .filter(|submit| submit.action.key().id.as_str() == SURFACE_ACT_ACTION)
+        .filter(|submit| !support::drones::is_house(tw, submit))
         .collect()
 }
 
@@ -1069,7 +1071,11 @@ fn finish(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
         .expect("an act in flight");
     let (events, queued) = advance_to(rig, due);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish: {queued:?}"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -1083,7 +1089,11 @@ fn cycle(rig: &mut Rig, tv: ObjId, who: ObjId) -> String {
     let run = run_of(&mut rig.tw, tv).expect("a run in flight");
     let (events, queued) = advance_to(rig, run.due_ic);
     let mut heard = said(&rig.tw, &events, who);
-    assert_eq!(finishes(&queued).len(), 1, "one finish at the cycle's due");
+    assert_eq!(
+        finishes(&rig.tw, &queued).len(),
+        1,
+        "one finish at the cycle's due"
+    );
     land_all(rig, &queued);
     let (events, queued) = fire(rig);
     land_all(rig, &queued);
@@ -1258,7 +1268,7 @@ fn recover_landed(rig: &mut Rig, pilot: ObjId, slot: u8, tv: ObjId) -> (u32, i64
         .and_then(|record| record.act)
         .expect("the recover in flight");
     let (_, queued) = advance_to(rig, act.due_ic);
-    assert_eq!(finishes(&queued).len(), 1, "the recover's finish");
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1, "the recover's finish");
     land_all(rig, &queued);
     (act.ordinal, act.due_ic)
 }
@@ -1344,7 +1354,7 @@ fn sm8_recover_files_the_unload_and_the_hopper_empties() {
         ),
         0
     );
-    let filed = starts(&queued);
+    let filed = starts(&rig.tw, &queued);
     assert_eq!(filed.len(), 1, "one queued start: {queued:?}");
     assert_eq!(filed[0].actor, pilot);
     assert_eq!(
@@ -1378,7 +1388,7 @@ fn sm8_recover_files_the_unload_and_the_hopper_empties() {
     );
     // The finish at its due: every tonne, one marker.
     let (_, queued) = advance_to(&mut rig, act.due_ic);
-    assert_eq!(finishes(&queued).len(), 1);
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1);
     land_all(&mut rig, &queued);
     assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
     assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 10 + t);
@@ -1432,7 +1442,10 @@ fn sm8_a_recover_with_an_empty_hopper_queues_nothing() {
     for _ in 0..4 {
         let (events, queued) = fire(&mut rig);
         heard.push_str(&said(&rig.tw, &events, pilot));
-        assert!(starts(&queued).is_empty(), "no unload starts: {queued:?}");
+        assert!(
+            starts(&rig.tw, &queued).is_empty(),
+            "no unload starts: {queued:?}"
+        );
         land_all(&mut rig, &queued);
     }
     assert_eq!(
@@ -2168,7 +2181,7 @@ fn sm8_the_unload_finish_refuses_what_changed_under_it() {
     });
     let image = held(&mut rig, hop1);
     let (_, queued) = advance_to(&mut rig, act.due_ic);
-    let done = finishes(&queued);
+    let done = finishes(&rig.tw, &queued);
     assert_eq!(done.len(), 1);
     let refused = land(&mut rig, done[0]).expect_err("the marked transfer refuses");
     assert!(
@@ -2178,7 +2191,7 @@ fn sm8_the_unload_finish_refuses_what_changed_under_it() {
     assert_eq!(held(&mut rig, hop1), image, "nothing written");
     assert!(record_of(&mut rig.tw, tv1).is_some_and(|record| record.act.is_some()));
     let (_, queued) = fire(&mut rig);
-    assert_eq!(finishes(&queued).len(), 1, "the retry");
+    assert_eq!(finishes(&rig.tw, &queued).len(), 1, "the retry");
     land_all(&mut rig, &queued);
     assert_eq!(
         last_result(&mut rig.tw, tv1),
@@ -2321,7 +2334,11 @@ fn sm8_a_shrunk_hold_unloads_what_fits_and_says_what_stays() {
     );
     let _ = recover_landed(&mut rig, pilot, 1, tv);
     let (_, queued) = fire(&mut rig);
-    assert_eq!(starts(&queued).len(), 1, "the queued unload starts");
+    assert_eq!(
+        starts(&rig.tw, &queued).len(),
+        1,
+        "the queued unload starts"
+    );
     land_all(&mut rig, &queued);
     let heard = finish(&mut rig, tv, pilot);
     let told = format!(
@@ -2351,7 +2368,7 @@ fn sm8_a_shrunk_hold_unloads_what_fits_and_says_what_stays() {
     fill(&mut rig, tv, "metal_ore", 3, 8_833);
     let _ = recover_landed(&mut rig, pilot, 1, tv);
     let (_, queued) = fire(&mut rig);
-    assert_eq!(starts(&queued).len(), 1);
+    assert_eq!(starts(&rig.tw, &queued).len(), 1);
     land_all(&mut rig, &queued);
     let act = record_of(&mut rig.tw, tv)
         .and_then(|record| record.act)
@@ -2369,7 +2386,7 @@ fn sm8_a_shrunk_hold_unloads_what_fits_and_says_what_stays() {
     assert_eq!(count(&heard, &none), 1, "{heard}\nwanted: {none}");
     for _ in 0..3 {
         let (events, queued) = fire(&mut rig);
-        assert!(starts(&queued).is_empty() && finishes(&queued).is_empty());
+        assert!(starts(&rig.tw, &queued).is_empty() && finishes(&rig.tw, &queued).is_empty());
         assert!(!said(&rig.tw, &events, pilot).contains("hopper still holds"));
     }
     assert!(record_of(&mut rig.tw, tv).is_some_and(|r| r.queued.is_none() && r.act.is_none()));
@@ -2404,7 +2421,7 @@ fn sm8_a_replayed_unload_finish_is_a_hit() {
         .and_then(|record| record.act)
         .expect("the unload in flight");
     let (_, queued) = advance_to(&mut rig, act.due_ic);
-    let done = finishes(&queued);
+    let done = finishes(&rig.tw, &queued);
     assert_eq!(done.len(), 1);
     let submit = done[0].clone();
     land(&mut rig, &submit).expect("the finish lands");
@@ -2660,7 +2677,11 @@ fn sm8_rights_never_bar_the_way_home_or_the_unload() {
     let _ = recover_landed(&mut rig, p, 1, tv);
     let (events, queued) = fire(&mut rig);
     silent_on_rights(&said(&rig.tw, &events, p));
-    assert_eq!(starts(&queued).len(), 1, "the queued unload starts");
+    assert_eq!(
+        starts(&rig.tw, &queued).len(),
+        1,
+        "the queued unload starts"
+    );
     land_all(&mut rig, &queued);
     let heard = finish(&mut rig, tv, p);
     silent_on_rights(&heard);
@@ -2704,7 +2725,7 @@ fn sm8_any_start_supersedes_a_queued_unload() {
         "{out}"
     );
     let (_, queued) = fire(&mut rig);
-    let filed = starts(&queued);
+    let filed = starts(&rig.tw, &queued);
     assert_eq!(filed.len(), 1, "the dump's start alone: {queued:?}");
     assert_eq!(filed[0].parameters["act"], json!("dump"));
     land_all(&mut rig, &queued);
@@ -2716,7 +2737,7 @@ fn sm8_any_start_supersedes_a_queued_unload() {
     for _ in 0..3 {
         let (_, queued) = fire(&mut rig);
         assert!(
-            starts(&queued).is_empty(),
+            starts(&rig.tw, &queued).is_empty(),
             "nothing more starts: {queued:?}"
         );
         land_all(&mut rig, &queued);
@@ -2755,7 +2776,7 @@ fn sm8_any_start_supersedes_a_queued_unload() {
         format!("tacsim.surface/{}/{}/act", tv.0, recover + 1)
     );
     let (_, queued) = fire(&mut rig);
-    let tick = starts(&queued);
+    let tick = starts(&rig.tw, &queued);
     assert_eq!(tick.len(), 1, "the tick's queued start: {queued:?}");
     assert_eq!(
         tick[0].key.as_str(),
@@ -2837,7 +2858,7 @@ fn sm8_a_stale_hand_order_never_captures_a_queued_unload() {
     launched(&mut rig, pilot, 1, tv);
     let _ = recover_landed(&mut rig, pilot, 1, tv);
     let (_, queued) = fire(&mut rig);
-    let filed = starts(&queued);
+    let filed = starts(&rig.tw, &queued);
     assert_eq!(filed.len(), 1);
     land(&mut rig, filed[0]).expect("the queued start lands on its first attempt");
     let act = record_of(&mut rig.tw, tv)
@@ -3204,7 +3225,7 @@ fn counted_unload(rig: &mut Rig, pilot: ObjId, slot: u8, tv: ObjId) -> usize {
         .map(|act| act.due_ic)
         .expect("the unload in flight");
     let (_, queued) = advance_to(rig, due);
-    let done = finishes(&queued);
+    let done = finishes(&rig.tw, &queued);
     assert_eq!(done.len(), 1);
     let submit = done[0].clone();
     let count = land_counting(rig, &submit);

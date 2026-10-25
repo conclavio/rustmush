@@ -47,6 +47,8 @@ pub mod yard;
 /// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
 /// fixed gateway-account oracle and the deposit-count rig's three geology tables.
 pub mod claims;
+/// **Doc 20 cut SM.12b**: Occator's yard stripped away for the v14-shaped lane variants.
+pub mod drones;
 /// **16b cut AE.1**: the proving ground's generator, moved here from
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).

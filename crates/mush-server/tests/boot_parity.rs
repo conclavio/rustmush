@@ -893,7 +893,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
     }
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(3));
+    // Doc 20 cut SM.12b: relay v4 requires lane v15.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(4));
     assert_eq!(
         after.len(),
         35,
