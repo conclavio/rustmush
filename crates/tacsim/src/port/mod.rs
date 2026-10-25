@@ -171,6 +171,7 @@ pub mod site;
 /// Doc 20 cut SM.4b: the `site.map` feed and `+tv/map` (doc 20 §10).
 pub mod site_map;
 pub mod stock;
+mod traffic;
 pub mod tv;
 pub mod vehicle;
 pub mod vendor;

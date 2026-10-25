@@ -1,0 +1,30 @@
+   Compiling mush-market v0.1.0 (/opt/rustmush/dev1/build/crates/mush-market)
+   Compiling tacsim v0.1.0 (/opt/rustmush/dev1/build/crates/tacsim)
+   Compiling mush-server v0.1.0 (/opt/rustmush/dev1/build/crates/mush-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 23s
+     Running tests/ic_slice_loop.rs (target/debug/deps/ic_slice_loop-f331c6e97f0d3405)
+
+running 12 tests
+test ic12_a_rate_change_mid_passage_relabels_the_arrival ... ok
+test ic12_negative_checks_refuse_in_fiction_and_move_nothing has been running for over 60 seconds
+test ic12_negative_checks_refuse_in_fiction_and_move_nothing ... ok
+test ic12_part_one_a_leg_by_hand has been running for over 60 seconds
+test ic12_part_two_the_queue_runs_the_return has been running for over 60 seconds
+test ic12_part_one_a_leg_by_hand ... ok
+test ic12_part_two_the_queue_runs_the_return ... ok
+test ic12_the_sailing_plan_skips_and_holds has been running for over 60 seconds
+test ic14_a_counter_refusal_is_retried_on_the_shipped_packs has been running for over 60 seconds
+test ic14_a_counter_refusal_is_retried_on_the_shipped_packs ... ok
+test ic12_the_sailing_plan_skips_and_holds ... ok
+test r5_real_dray_radio_freezes_forwards_and_recovers has been running for over 60 seconds
+test r5_real_dray_radio_freezes_forwards_and_recovers ... ok
+test r9b_fleet_assignment_expiry_uses_the_economy_wall_timestamp ... ok
+test r9a_paid_manufacture_survives_restart_and_installs_once has been running for over 60 seconds
+test r9b_fleet_front_real_refit_passage_and_carrier_loss has been running for over 60 seconds
+test r9a_paid_manufacture_survives_restart_and_installs_once ... ok
+test r9b_fleet_front_real_refit_passage_and_carrier_loss ... ok
+test trade_linkdead_watch_log_drains_once_on_revival ... ok
+test trade_public_boards_project_only_live_local_traffic ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 462.25s
+

@@ -1111,6 +1111,13 @@ async fn assert_help(rig: &mut Rig, who: ObjId) {
     }
 }
 
+/// Read the real room hook as a bystander, without moving the pilot or hull.
+async fn traffic_look(rig: &mut Rig, viewer: ObjId, port: &str, room: &str) -> String {
+    let room = station_room(&rig.tw, port, room);
+    run(rig, GOD, &format!("@teleport {viewer}={room}")).await;
+    run(rig, viewer, "look").await
+}
+
 // ---------------------------------------------------------------------------
 // Part 1: one leg by hand
 // ---------------------------------------------------------------------------
@@ -1306,6 +1313,14 @@ async fn ic12_part_one_a_leg_by_hand() {
     walk(&mut rig, pilot, "arrivals", c03).await;
     walk(&mut rig, pilot, "lobby", c02).await;
     walk(&mut rig, pilot, "gallery", c01).await;
+    let board = run(&mut rig, pilot, "look").await;
+    assert!(board.contains("Berth board:"), "{board}");
+    assert!(
+        board.contains(
+            "Salt Moth / FPC-D-0401 / Visiting Berth Gallery / private registry / Vex / IDLE"
+        ),
+        "{board}"
+    );
     let boarded = run(&mut rig, pilot, "+ship/board").await;
     assert!(
         boarded.contains("You cycle the lock into the Salt Moth."),
@@ -1357,6 +1372,19 @@ async fn ic12_part_one_a_leg_by_hand() {
     assert!(
         filed.contains("Clearance filed for Stickney Yards"),
         "{filed}"
+    );
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    let line = board
+        .lines()
+        .find(|line| line.contains("Salt Moth / FPC-D-0401"))
+        .expect("filed hull on public board");
+    assert!(
+        line.contains("Stickney Yards / CLEARED ") && line.contains("UTC"),
+        "{board}"
+    );
+    assert!(
+        !board.contains("crew-days") && !board.contains("min="),
+        "{board}"
     );
     let events = sweep(&mut rig, 6).await;
     let stats = tacsim::port_tick::last_fire(rig.tw.world()).expect("the port tick fired");
@@ -1413,6 +1441,14 @@ async fn ic12_part_one_a_leg_by_hand() {
     // (`launch_verify`).
     let events = fire_quietly(&mut rig).await;
     assert!(under_way(&rig.tw, hull), "the next fire launches");
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    assert!(
+        board.contains("Salt Moth / FPC-D-0401 / under way / Stickney Yards / UNDER WAY"),
+        "{board}"
+    );
+    let gallery = traffic_look(&mut rig, GOD, "ceres_port", "room.c01_berth_gallery").await;
+    assert!(!gallery.contains("Salt Moth / FPC-D-0401"), "{gallery}");
+
     let mut granted = said(&rig.tw, &events, pilot);
     let events = fire_quietly(&mut rig).await;
     granted.push_str(&said(&rig.tw, &events, pilot));
@@ -1464,6 +1500,14 @@ async fn ic12_part_one_a_leg_by_hand() {
         "docked at the ticket's arrival (IC {}, due {arrival}): {at_arrival}",
         ic_now(&rig.tw)
     );
+
+    let board = traffic_look(&mut rig, GOD, "stickney_port", "room.p01_berth_gallery").await;
+    assert!(
+        board.contains("Salt Moth / FPC-D-0401 / Visiting Berth Gallery"),
+        "{board}"
+    );
+    let board = traffic_look(&mut rig, GOD, "ceres_port", "room.c14_dockmaster").await;
+    assert!(!board.contains("Salt Moth / FPC-D-0401"), "{board}");
 
     // Steps 12–13 by hand: ashore, the walk to Kasei's Receiving Bay.
     let p01 = station_room(&rig.tw, "stickney_port", "room.p01_berth_gallery");
@@ -5721,4 +5765,161 @@ async fn r9b_fleet_assignment_expiry_uses_the_economy_wall_timestamp() {
     );
     sweep(&mut rig, 31).await;
     assert_eq!(tacsim::relay_mobile::commander(rig.tw.world(), hull), None);
+}
+
+/// Public scheduling is the active head only; commerce, stopped plans and
+/// future legs are private. Plain boot preserves the projection without writes.
+#[tokio::test]
+async fn trade_public_boards_project_only_live_local_traffic() {
+    let mut rig = boot("traffic").await;
+    stock(&mut rig).await;
+    let captain = pilot(&mut rig, "Captain", "trafficcaptain").await;
+    let observer = pilot(&mut rig, "Observer", "trafficobserver").await;
+    enrol(&mut rig, captain, "Public Hull").await;
+    let board = traffic_look(&mut rig, observer, "ceres_port", "room.c01_berth_gallery").await;
+    assert!(board.contains("Public Hull / FPC-D-0401"), "{board}");
+    assert!(
+        board.contains("private registry / Captain / IDLE"),
+        "{board}"
+    );
+    let gallery = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    run(&mut rig, GOD, &format!("@teleport {captain}={gallery}")).await;
+    run(&mut rig, captain, "+ship/board").await;
+    let filed = run(&mut rig, captain, "+ship/order depart stickney at=+72h").await;
+    assert!(filed.contains("Order 1 filed"), "{filed}");
+    run(&mut rig, captain, "+ship/order sell metals all min=12345").await;
+    run(&mut rig, captain, "+ship/order depart ceres at=+96h").await;
+    let before = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    assert!(before.contains("Stickney Yards / FILED "), "{before}");
+    assert!(
+        !before.contains("12345") && !before.contains("metal concentrate"),
+        "{before}"
+    );
+    assert!(!before.contains(" / Ceres Freeport / FILED"), "{before}");
+    restart(&mut rig, |_| true).await;
+    let after = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    let row = |text: &str| {
+        text.lines()
+            .find(|l| l.contains("Public Hull / FPC-D-0401"))
+            .map(str::to_owned)
+    };
+    assert_eq!(row(&before), row(&after));
+    run(&mut rig, captain, "+ship/order pause").await;
+    let paused = traffic_look(&mut rig, observer, "ceres_port", "room.c14_dockmaster").await;
+    assert!(
+        row(&paused).expect("local hull").contains(" / IDLE / "),
+        "{paused}"
+    );
+    let distant = traffic_look(
+        &mut rig,
+        observer,
+        "stickney_port",
+        "room.p05_harbourmaster",
+    )
+    .await;
+    assert!(
+        distant.contains("No hulls posted.") && !distant.contains("Public Hull"),
+        "{distant}"
+    );
+    let elsewhere = traffic_look(&mut rig, observer, "ceres_port", "room.c05_registry").await;
+    assert!(
+        !elsewhere.contains("Berth board:") && !elsewhere.contains("Departures board:"),
+        "{elsewhere}"
+    );
+}
+
+/// A lost browser is still connected during grace, but cannot receive output.
+/// Launch notices must survive that gap and drain once on revival, not vanish.
+#[tokio::test]
+async fn trade_linkdead_watch_log_drains_once_on_revival() {
+    let mut rig = boot("trade-linkdead").await;
+    stock(&mut rig).await;
+    let captain = pilot(&mut rig, "Watcher", "tradewatcher").await;
+    let row = enrol(&mut rig, captain, "Watch Keeper").await;
+    outfit(&mut rig, captain).await;
+    board_from_chandlery(&mut rig, captain, "Watch Keeper").await;
+    run(&mut rig, captain, "+ship/order depart stickney at=now").await;
+    let conns: Vec<_> = (1..=64)
+        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(captain))
+        .collect();
+    assert!(!conns.is_empty());
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    for conn in conns {
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: captain,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+    assert!(rig.tw.world().is_connected(captain));
+    assert!(!rig.tw.world().has_live_conns(captain));
+    for _ in 0..40 {
+        fire_quietly(&mut rig).await;
+        if tacsim::port_tick::pending_notices(rig.tw.world(), captain)
+            .iter()
+            .any(|line| line.contains("Clearance granted."))
+        {
+            break;
+        }
+    }
+    assert!(under_way(&rig.tw, ObjId(row.hull)));
+    let notices = tacsim::port_tick::pending_notices(rig.tw.world(), captain);
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|line| line.contains("Clearance granted."))
+            .count(),
+        1,
+        "{notices:?}"
+    );
+    let mut out = mush_core::Outbox::new();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnUp {
+            conn: 90,
+            actor: captain,
+            caps_structured: false,
+            from_linkdead: true,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let heard = said(&rig.tw, &out.take(), captain);
+    assert_eq!(
+        heard.matches(tacsim::port_tick::NOTICE_HEADING).count(),
+        1,
+        "{heard}"
+    );
+    assert_eq!(heard.matches("Clearance granted.").count(), 1, "{heard}");
+    assert!(tacsim::port_tick::pending_notices(rig.tw.world(), captain).is_empty());
+    // Losing/reviving again, with no new trip event, must not replay it.
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnDown {
+            conn: 90,
+            actor: captain,
+            reason: mush_core::DisconnectKind::Lost,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let _ = out.take();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::ConnUp {
+            conn: 91,
+            actor: captain,
+            caps_structured: false,
+            from_linkdead: true,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let again = said(&rig.tw, &out.take(), captain);
+    assert!(
+        !again.contains(tacsim::port_tick::NOTICE_HEADING),
+        "{again}"
+    );
 }

@@ -1,5 +1,7 @@
 # 18a — The trade run's places: five stations and the Dray's interior
 
+> Current trade acceptance and public-board follow-up: [doc 25](25-trade-acceptance.md). The real Redis/rate-24 acceptance passed on 2026-10-25; public berth/departure projections and the linkdead watch-log repair are implemented.
+
 **Revised with doc 18 Draft 0.4 (2026-10-17), as built through IC12.** The packs this brief describes have
 shipped: `region.ceres_freeport` and `region.stickney_yards` at v1, `neighborhood.ceres_freeport` at **v2**
 and `neighborhood.stickney_yards` at **v3** (IC1, with Stickney's v2 in IC8 and both re-publications in
@@ -7,6 +9,12 @@ IC12), and the Dray's interior in `tacsim.pack.dray` **v2** (IC8). The brief's p
 where a shipped pack differs, an **"As built (IC*n*):"** note beside the text says how and where, in doc
 18's style ([18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md); the per-cut record is
 [18-cut-notes.md](18-cut-notes.md)).
+
+**As built (trade boards, 2026-10-25):** berth galleries and authored station
+dockmaster/harbourmaster rooms now render current public traffic on `look`.
+Private cargo, order details and hidden title holders stay private. The berth
+field uses the actual gallery, since numbered cradles have no authoritative
+allocation model. [Doc 25](25-trade-acceptance.md) records the live evidence.
 
 **Extended with doc 19 cut A.8 (2026-10-19).** Three stations join the two: Aitken Highport on Luna
 (§5), Voltaire Anchorage on Deimos (§6) and Ligeia Terminal on Titan (§7), each a region pack and a

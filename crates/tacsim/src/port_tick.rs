@@ -2161,9 +2161,9 @@ fn clamp(mut text: String) -> String {
     text
 }
 
-/// Tell `who` now if connected (one `sys_to_actor(who, "tacsim", text)`), else queue it.
+/// Tell `who` over a live transport, else queue it (including linkdead grace).
 pub fn notify(ctx: &mut Ctx<'_>, who: ObjId, text: &str) {
-    if ctx.w.is_connected(who) {
+    if ctx.w.is_connected(who) && ctx.w.has_live_conns(who) {
         ctx.out.sys_to_actor(who, "tacsim", text);
     } else {
         queue_notice(ctx, who, text);
@@ -2187,7 +2187,7 @@ pub enum NoticeLevel {
 /// an unload, a plan's parking or end, an idle return, a stranded rig, a refused act — never a
 /// cycle, a reading, a drive, a launch or a recover. The ring's cap ([`MAX_NOTICE_LINES`]) stands.
 pub fn notify_budget(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
-    match delivery(ctx.w.is_connected(who), level) {
+    match delivery(ctx.w.is_connected(who) && ctx.w.has_live_conns(who), level) {
         Delivery::Say => ctx.out.sys_to_actor(who, "tacsim", text),
         Delivery::Queue => queue_notice(ctx, who, text),
         Delivery::Drop => {}
@@ -2277,6 +2277,12 @@ pub fn pending_notices(w: &World, who: ObjId) -> Vec<String> {
 pub struct ReconnectNotices;
 
 impl EventHook for ReconnectNotices {
+    // A linkdead session has no output recipient. Its trip notices are queued
+    // just like a fully disconnected pilot's and consumed on the first revival.
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        self.connected(ctx, actor);
+    }
+
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         let queue = {
             let Some(store) = ctx.w.module_state_mut::<TacsimStore>() else {

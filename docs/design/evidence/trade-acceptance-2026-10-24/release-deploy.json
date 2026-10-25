@@ -1,0 +1,19 @@
+{
+  "at": "2026-10-25T02:42:14Z",
+  "before": "1509180",
+  "after": "1515397",
+  "server_sha256": "f0987369700226d00ac5e841b367d0a8dd1cb7e15cb9dc020e9022716682a91c",
+  "health": {
+    "connections": 1,
+    "integrity_ok": true,
+    "loop_lag_ms": 0,
+    "ok": true,
+    "store_ok": true,
+    "supervision_ok": true,
+    "uptime_s": 641,
+    "version": "0.1.0",
+    "world_loop_unixtime": 1792896133,
+    "world_max_age_s": 5,
+    "world_ok": true
+  }
+}

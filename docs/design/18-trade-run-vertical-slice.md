@@ -1,5 +1,7 @@
 # 18 — The trade run: the first IC vertical slice
 
+> Current trade acceptance and public-board follow-up: [doc 25](25-trade-acceptance.md). The real Redis/rate-24 acceptance passed on 2026-10-25; public berth/departure projections and the linkdead watch-log repair are implemented.
+
 **Draft 0.4 — 2026-10-17, "as built" through IC12.** The slice's cuts have landed on `main`: IC0
 `c87d78f7`, IC1 `07232d09`, IC2 `484647bc`, IC3 `ea52634d`, IC4 `3c9cded5`, IC5 `10b89d58`, IC6
 `3bf2bc90`, IC7 `d8427081`, IC8 `ee1d831f`, IC9 `1137c373`, IC10 `7435f954`, IC11 `26e3b1fa`, and IC12
@@ -2883,6 +2885,14 @@ and T10 `crates/mush-atlas/tests/anchored_exits.rs::ic12_t10_a_one_way_exit_out_
 checked 2026-10-17), so the story test's rate-24 set-up half (enrolment, loading and queueing at the play
 rate) stands in for the smoke's set-up half and is not called a smoke; the real smoke — two sessions at
 rate 24 on local `mushd`, or a dev1 session after an owner-approved redeploy — is owed to the owner.
+
+**As built (trade acceptance, 2026-10-25):** the owed real-server acceptance
+passed on dev1 with persistent Redis, unchanged world rate 24 and constant sky.
+The outbound flight took 18h30 real; the second visit verified eleven offline
+notices once, settled sales and purchases, both public boards, a Yard walk and
+a refiled home departure. The driver required one read-only assertion recovery
+within the second visit. See [doc 25](25-trade-acceptance.md) for the exact
+procedure, conservation, restart evidence and scope of the accepted run.
 
 **Assertions.** Conservation from journals and lineage: Σ money over pilot, Trust and the orgs is
 unchanged except the boot capitalizations; pilot + Trust = Kasei's payment on every sale; every tonne in

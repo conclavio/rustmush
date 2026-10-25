@@ -1,0 +1,118 @@
+{
+  "at": "2026-10-25T22:02:52.152948+00:00",
+  "passed": true,
+  "database": 1,
+  "hull": 393,
+  "vault": 127,
+  "rate": 24,
+  "clock_generations": 1,
+  "credit_accounts": 26,
+  "credit_total_minor": 0,
+  "issued_credit_minor": 1495000000,
+  "hold": {
+    "metals": 0,
+    "provisions": 19,
+    "propellant": 50,
+    "volatiles": 0,
+    "structural_alloys": 17,
+    "industrial_parts": 49
+  },
+  "compartments": {
+    "cargo": {
+      "load": {
+        "si.mass_kg": 66000,
+        "si.volume_l": 117800
+      },
+      "limits": {
+        "si.mass_kg": 100000,
+        "si.volume_l": 120000
+      }
+    },
+    "propellant": {
+      "load": {
+        "si.mass_kg": 50000
+      },
+      "limits": {
+        "si.mass_kg": 80000
+      }
+    },
+    "provisions": {
+      "load": {
+        "si.mass_kg": 76,
+        "si.volume_l": 190
+      },
+      "limits": {
+        "si.mass_kg": 480,
+        "si.volume_l": 1200
+      }
+    }
+  },
+  "lineage": {
+    "provisions": {
+      "quantity": 19,
+      "seeded": true
+    },
+    "propellant": {
+      "quantity": 50,
+      "seeded": true
+    },
+    "structural_alloys": {
+      "quantity": 17,
+      "seeded": true
+    },
+    "industrial_parts": {
+      "quantity": 49,
+      "seeded": true
+    }
+  },
+  "goods_conservation": {
+    "provisions": {
+      "seeded": 13000,
+      "held": 12981,
+      "burned": 19
+    },
+    "propellant": {
+      "seeded": 25000,
+      "held": 24948,
+      "burned": 52
+    },
+    "instrument_boards": {
+      "seeded": 2080,
+      "held": 2080,
+      "burned": 0
+    },
+    "structural_alloys": {
+      "seeded": 10120,
+      "held": 10120,
+      "burned": 0
+    },
+    "volatiles": {
+      "seeded": 11400,
+      "held": 11400,
+      "burned": 0
+    },
+    "industrial_parts": {
+      "seeded": 5400,
+      "held": 5400,
+      "burned": 0
+    },
+    "carbon_feedstock": {
+      "seeded": 600,
+      "held": 600,
+      "burned": 0
+    },
+    "metals": {
+      "seeded": 4000,
+      "held": 4000,
+      "burned": 0
+    }
+  },
+  "escalations": 0,
+  "ticket_count": 1,
+  "orders_cursor": 9,
+  "contract_states": {
+    "Active": 1,
+    "Offered": 1,
+    "Settled": 12
+  }
+}

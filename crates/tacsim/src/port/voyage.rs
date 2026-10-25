@@ -866,7 +866,7 @@ pub(crate) fn tell_absent_tenant(ctx: &mut Ctx<'_>, hull: ObjId, line: &str) {
     let Some(tenant) = crate::port::coop::helm_holder(ctx.w, hull) else {
         return;
     };
-    if !ctx.w.is_connected(tenant) {
+    if !ctx.w.is_connected(tenant) || !ctx.w.has_live_conns(tenant) {
         queue_notice(ctx, tenant, line);
     }
 }
