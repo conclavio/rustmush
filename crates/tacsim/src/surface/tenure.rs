@@ -14,7 +14,7 @@
 
 use mush_core::ObjId;
 
-use crate::surface::chart::{ChartProvenance, ChartRecord, Instrument, Via};
+use crate::surface::chart::{ChartProvenance, ChartRecord, Instrument, Via, first_hand_of};
 
 /// A claim's term, IC seconds: the dormancy week (§9.2 "term 168 IC days"; §11's Claims row —
 /// seven real days at rate 24, the charter's dormancy week, `lane:2171`).
@@ -99,10 +99,15 @@ fn hand_made(entry: &ChartProvenance) -> bool {
 /// hand-made stamp ever written to the row, which survives the ring's four-entry eviction
 /// (reviewer F14). **Doc 20 cut SM.11** (lead ruling 4; the SM.10 handoff) revisited SM.10's
 /// second clause, which trusted `first_local_at` while its ring held no `Plan` entry: a plan's
-/// stamp never sets `first_hand_at`, so a plan-made discovery never qualifies a stake; and the
+/// stamp never sets `first_hand_at` to the plan's own instant, so a plan-made discovery never
+/// qualifies a stake; and the
 /// ring's trim evicts a plan's stamp before any hand stamp (`chart`'s `stamp`), so a plan's cores
 /// never push an in-epoch hand stamp out (the reviewer's F7). A `via: Plan` entry never counts,
-/// and another block's rows are never read.
+/// and another block's rows are never read. **Doc 20 cut SM.11r** (the owner's external review
+/// of 2026-10-23, item 1): a row's first hand stamp is read through `chart`'s `first_hand_of`, so
+/// a row written before SM.11 — no `first_hand_at`, a ring of hand stamps only — still counts its
+/// first stamp, its discovery, after its ring has pushed it out; its next stamp backfills
+/// `first_hand_at` (`chart`'s `stamp`).
 #[must_use]
 pub fn evidence_at(row: &ChartRecord, letter: char, since: Option<i64>) -> Option<i64> {
     let inside = |at: i64| since.is_none_or(|since| at >= since);
@@ -115,12 +120,18 @@ pub fn evidence_at(row: &ChartRecord, letter: char, since: Option<i64>) -> Optio
     let rings = block_field_indexes(letter)
         .into_iter()
         .filter_map(|index| row.fields.get(&index))
-        .map(|field| (field.first_hand_at, field.provenance.as_slice()))
-        .chain(
-            row.blocks
-                .get(letter.to_string().as_str())
-                .map(|block| (block.first_hand_at, block.provenance.as_slice())),
-        );
+        .map(|field| {
+            (
+                first_hand_of(field.first_local_at, &field.provenance, field.first_hand_at),
+                field.provenance.as_slice(),
+            )
+        })
+        .chain(row.blocks.get(letter.to_string().as_str()).map(|block| {
+            (
+                first_hand_of(block.first_local_at, &block.provenance, block.first_hand_at),
+                block.provenance.as_slice(),
+            )
+        }));
     for (first_hand, ring) in rings {
         for entry in ring.iter().filter(|entry| hand_made(entry)) {
             consider(entry.at());
@@ -397,6 +408,62 @@ mod tests {
             None,
             "only plan stamps after"
         );
+    }
+
+    /// **A row written before SM.11 stakes at its true discovery** (doc 20 cut SM.11r; doc 20a
+    /// §10 "Defects at HEAD", SM.11r-1, the owner's external review of 2026-10-23, item 1, whose
+    /// probe read 200 where the discovery was 100 and let a rival's sounding at 150 win): a legacy
+    /// field row and a legacy pocket block — no `first_hand_at`, the first stamp at 100 pushed out
+    /// of a ring of four later hand stamps — read 100, inside the epoch only; a row that has had
+    /// only a plan's stamps, with no `first_hand_at`, still yields nothing.
+    #[test]
+    fn sm11r_a_row_written_before_sm11_stakes_at_its_discovery() {
+        let ring = |instrument: Instrument| -> Vec<ChartProvenance> {
+            (2..=5)
+                .map(|n| local(instrument, n * 100, Via::Hand))
+                .collect()
+        };
+        let mut legacy = row(1);
+        legacy.fields.insert(
+            c_field(),
+            FieldRow {
+                footing: crate::surface::reading::Footing::Regolith,
+                first_local_at: 100,
+                last_at: 500,
+                provenance: ring(Instrument::Scan),
+                first_hand_at: None,
+            },
+        );
+        assert_eq!(evidence_at(&legacy, 'C', None), Some(100));
+        assert_eq!(evidence_at(&legacy, 'C', Some(150)), Some(200));
+        let mut legacy_block = row(1);
+        legacy_block.blocks.insert(
+            "C".to_owned(),
+            PocketBlock {
+                cells: "0".repeat(512),
+                first_local_at: 100,
+                last_at: 500,
+                provenance: ring(Instrument::Sound),
+                first_hand_at: None,
+            },
+        );
+        assert_eq!(evidence_at(&legacy_block, 'C', None), Some(100));
+        // A plan-first row: its ring keeps a `Plan` entry, so its first stamp is never a hand's.
+        let mut plan_first = row(1);
+        plan_first.blocks.insert(
+            "C".to_owned(),
+            PocketBlock {
+                cells: "0".repeat(512),
+                first_local_at: 100,
+                last_at: 400,
+                provenance: vec![
+                    local(Instrument::Sound, 100, Via::Plan),
+                    local(Instrument::Core, 400, Via::Plan),
+                ],
+                first_hand_at: None,
+            },
+        );
+        assert_eq!(evidence_at(&plan_first, 'C', None), None);
     }
 
     /// Only a loud hand sounding is heard; the window is `from ≤ at < before`.

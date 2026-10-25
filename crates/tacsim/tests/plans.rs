@@ -2823,6 +2823,87 @@ fn sm11_a_plan_never_rearms() {
 // P6 — the compiler's gates through the verb
 // ---------------------------------------------------------------------------
 
+/// **SM.11r-2 — a plan is compiled on the hold's room in every measure** (doc 20 cut SM.11r; doc
+/// 20a §10 "Defects at HEAD", the owner's external review of 2026-10-23, item 2): the Dray-P's
+/// cargo compartment takes 86,000 kg and 103,200 L; 44 t of industrial parts (2,300 L a tonne)
+/// leave 42,000 kg but only 2,000 L — room for 4 t of metal ore (500 L a tonne) and 2 t of ice
+/// ore (1,000 L), where the mass alone reads 42 t of either. So the metals plan on A, its family
+/// inferred from the pilot's reading, previews "(4 t unreserved"; an ice plan on an ice-bearing
+/// pocket the same soundings read is refused `PLAN_HOLD_FULL` (2 t is under a blind core's 3 t),
+/// so the compile asks the plan's own family; and 3 t of metals more (400 L a tonne) leave 800 L,
+/// 1 t of metal ore, under a fair cycle's 2 t as well, and the metals plan is refused too — each
+/// refusal at the preview and at `go`, writing nothing, where the mass alone (42 t, then 39 t)
+/// filed every one. The ice pocket stands in for doc 20a's carbon-ore case (review of SM.11r).
+#[test]
+fn sm11r_a_plan_reads_the_holds_room_in_every_measure() {
+    let mut rig = stocked();
+    let (pilot, row, tv, a, _) = read_two(&mut rig);
+    let chart = chart_of(&mut rig.tw, pilot).expect("the chart");
+    let all = picks(&mut rig.tw);
+    let ice = pick(&all, "ICE_READ", |p| {
+        p.classes[1] != Word::Barren
+            && !tacsim::surface::chart::sound_adds(Some(&chart), &[p.pocket])
+    });
+    let hold = hold_vault(&rig.tw, &row);
+    let before = record_of(&mut rig.tw, tv);
+    let refuses = |rig: &mut Rig, line: &str| {
+        for plan_line in [line.to_owned(), format!("{line} go")] {
+            let (out, queued) = command(rig, pilot, &plan_line);
+            assert_eq!(
+                out.trim(),
+                PLAN_HOLD_FULL.replace("{name}", HULL),
+                "{plan_line}"
+            );
+            assert!(queued.is_empty(), "{plan_line}");
+        }
+    };
+    seed_pool(&mut rig, hold, "industrial_parts", 44, LotId(9_981));
+    let metals = format!("+tv/1 plan {}", a.addr);
+    let (out, queued) = command(&mut rig, pilot, &metals);
+    assert!(queued.is_empty(), "a preview submits nothing");
+    assert!(out.contains("(4 t unreserved"), "{out}");
+    refuses(&mut rig, &format!("+tv/1 plan {} family=ice_ore", ice.addr));
+    seed_pool(&mut rig, hold, "metals", 3, LotId(9_982));
+    refuses(&mut rig, &metals);
+    assert_eq!(record_of(&mut rig.tw, tv), before, "nothing written");
+    no_refused_writes(&rig.tw);
+}
+
+/// **SM.11r-2 — a plan's end names the hold's room in every measure** (doc 20 cut SM.11r; review
+/// of SM.11r, the tests lens's S4 and the correctness lens's S2): with 44 t of industrial parts
+/// aboard (room for 4 t of metal ore by volume, 42 t by mass), a metals plan on A mines two fair
+/// cycles, 4 t, recovers, unloads and ends `HoldFull`; its end line reads "holds 48 t, 0 t of it
+/// unreserved." — the tonnes aboard by mass, the room in the plan's own ore in every measure —
+/// where the mass alone read "38 t of it unreserved".
+#[test]
+fn sm11r_a_plan_ends_naming_the_holds_room_in_every_measure() {
+    let mut rig = stocked();
+    let (pilot, row, tv, a, _) = read_two(&mut rig);
+    let hold = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, hold, "industrial_parts", 44, LotId(9_983));
+    file_plan(&mut rig, pilot, tv, &format!("+tv/1 plan {}", a.addr));
+    let (_, heard) = work_heard(&mut rig, &[tv], 60, Some(pilot), &mut |_| {});
+    let plan = plan_of(&mut rig.tw, tv).expect("the plan");
+    assert!(
+        matches!(
+            plan.state,
+            FillState::Ended {
+                why: PlanEnd::HoldFull,
+                ..
+            }
+        ),
+        "{:?}",
+        plan.state
+    );
+    assert_eq!(plan.tally.tonnes, 4, "two fair cycles fill the room");
+    assert!(
+        heard.contains(&format!(
+            "the {HULL}'s hold holds 48 t, 0 t of it unreserved."
+        )),
+        "{heard}"
+    );
+}
+
 /// **P6 — the compiler names only your own knowledge and rights**: a pocket never read answers
 /// `"{addr}: You have no reading there."`; a pocket in another's claimed block `"{addr}: That block
 /// is under claim."`; no licence → the mining act's own line (`MINE_NO_LICENCE`); a field name → `PLAN_USAGE`; seventeen

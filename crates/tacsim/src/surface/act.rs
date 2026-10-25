@@ -5092,7 +5092,8 @@ pub(crate) struct PlanFacts {
     pub site: CanonicalId,
     /// The site's name.
     pub site_name: String,
-    /// The hold's unreserved room, whole tonnes.
+    /// The hold's unreserved room in whole tonnes of the compiled plan's ore, in every measure
+    /// (doc 20 cut SM.11r; 0 when the compile refused, which no text reads).
     pub room_t: u64,
     /// The slots of the hull's other rigs working a plan live for their lessee.
     pub shared: Vec<u8>,
@@ -5178,9 +5179,24 @@ pub(crate) fn plan_ask(
         .collect();
     let read_pool = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
     let read_rig = |tv: ObjId| reads.rig(tv);
-    let room_kg =
-        crate::port::ship::hold_unreserved_kg(w, &view, &hull_rigs, &read_pool, &read_rig)
+    // Doc 20 cut SM.11r (doc 20a §10, SM.11r-2): the hold's room in every measure, read once and
+    // turned into tonnes of each family's ore by the interpreter's own rule, so the compile and the
+    // preview never read the mass entry alone (`hold_unreserved_kg`) while the packed volume binds.
+    let goods = w
+        .module_state::<crate::TacsimStore>()
+        .and_then(crate::TacsimStore::goods)
+        .ok_or_else(dark)?;
+    let room =
+        crate::port::ship::hold_unreserved_with(goods, w, &view, &hull_rigs, &read_pool, &read_rig)
             .ok_or_else(dark)?;
+    let rooms: BTreeMap<OreFamily, u64> = OreFamily::ALL
+        .iter()
+        .map(|family| {
+            crate::surface::plan::room_in_tonnes_of(goods, &room, *family).map(|t| (*family, t))
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(dark)?;
+    let room_of = |family: OreFamily| rooms.get(&family).copied().unwrap_or(0);
     let pool_unit = tv::pool_unit(w);
     let (_, hopper_cap_kg) =
         tv::hopper_load_with(w, rig.tv, pool_unit.as_ref(), &read_pool).map_err(|_| dark())?;
@@ -5219,7 +5235,7 @@ pub(crate) fn plan_ask(
         battery: &battery,
         scanner: &scanner,
         drill: &drill,
-        hold_room_t: room_kg / 1_000,
+        hold_room_t: &room_of,
         hopper_t: hopper_cap_kg / 1_000,
     });
     let mut shared: Vec<u8> = Vec::new();
@@ -5237,6 +5253,10 @@ pub(crate) fn plan_ask(
         }
     }
     shared.sort_unstable();
+    // The preview prints it only over a compiled plan: the frozen family's room.
+    let room_t = compiled
+        .as_ref()
+        .map_or(0, |compiled| room_of(compiled.family));
     Ok((
         compiled,
         PlanFacts {
@@ -5244,7 +5264,7 @@ pub(crate) fn plan_ask(
             name,
             site: berth.entry.clone(),
             site_name: berth.name.clone(),
-            room_t: room_kg / 1_000,
+            room_t,
             shared,
         },
     ))

@@ -1980,9 +1980,16 @@ fn parked_where_it_stands(
     }
 }
 
-/// **The hold's figures a plan's end names** (doc 20 cut SM.11; the brief's 3.8): the ore the hold
-/// holds and its unreserved room, whole tonnes, read at the tell (`None` when either will not read).
-fn hold_figures(ctx: &Ctx<'_>, hull: ObjId) -> Option<(u64, u64)> {
+/// **The hold's figures a plan's end names** (doc 20 cut SM.11; the brief's 3.8): what the hold
+/// holds, whole tonnes by mass, and its unreserved room in whole tonnes of the plan's `family` of
+/// ore in every measure — `crate::surface::plan::room_in_tonnes_of`, the compile's and the
+/// interpreter's one rule (doc 20 cut SM.11r; it was the mass entry alone) — read at the tell
+/// (`None` when either will not read).
+fn hold_figures(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    family: crate::surface::geology::OreFamily,
+) -> Option<(u64, u64)> {
     let w: &World = ctx.w;
     let view = crate::port::ship::hull_view(w, hull)?;
     let goods = w.module_state::<TacsimStore>()?.goods()?;
@@ -2003,8 +2010,9 @@ fn hold_figures(ctx: &Ctx<'_>, hull: ObjId) -> Option<(u64, u64)> {
         .iter()
         .map(|lease| lease.tv)
         .collect();
-    let room = crate::port::ship::hold_unreserved_kg(w, &view, &rigs, &read, &read_rig)?;
-    Some((limit.saturating_sub(free) / 1_000, room / 1_000))
+    let room = crate::port::ship::hold_unreserved_with(goods, w, &view, &rigs, &read, &read_rig)?;
+    let room_t = crate::surface::plan::room_in_tonnes_of(goods, &room, family)?;
+    Some((limit.saturating_sub(free) / 1_000, room_t))
 }
 
 /// **A plan's note in words** (doc 20 cut SM.11; the brief's 3.8): a pass (`PLAN_PASSED`, live), a
@@ -2042,7 +2050,7 @@ fn plan_note_line(
             NoticeLevel::Trip,
         ),
         PlanNoteKind::Ended { why } => {
-            let (held, room) = hold_figures(ctx, plan.hull).unwrap_or((0, 0));
+            let (held, room) = hold_figures(ctx, plan.hull, plan.family).unwrap_or((0, 0));
             (
                 tv::PLAN_ENDED
                     .replace("{n}", &words.n)

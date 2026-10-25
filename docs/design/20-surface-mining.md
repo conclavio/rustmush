@@ -1027,6 +1027,15 @@ so a plan-made reading never qualifies a stake and never pushes a hand stamp out
 reads the rings' hand entries plus `first_hand_at` only. `heard_before` reads hand soundings only,
 so a plan's loud sounding is heard on the site but is never contest evidence.
 
+**As built (SM.11r):** a row written before SM.11 carries no `first_hand_at`, and every stamp written
+before SM.11 was a hand's, so its first stamp, `first_local_at`, is its discovery. `evidence_at`
+reads a row's first hand stamp through `chart::first_hand_of` — `first_hand_at`, or `first_local_at`
+for a row whose ring is not empty and holds hand entries only (a plan-first row always keeps a
+`Plan` entry, so this never reads a plan's stamp) — and the chart's next stamp of such a row
+backfills `first_hand_at` from it before anything else, so neither a later hand stamp nor a plan
+stamp can lose the discovery (doc 20a §10, SM.11r-1; the owner's external review of 2026-10-23). No
+world holds such a row today; the rule closes the gap for any that does.
+
 **Fog, by construction.** Every ore glyph on every surface is the viewer's own row. "You have no
 reading there." is byte-identical for unknown, uncovered and barren-but-unsounded (the posture of
 `commands.rs:52-56`). Nothing lists "nearest ore". Public facts are said plainly — "That block is
@@ -1598,6 +1607,14 @@ gone (D13). The ring is still `tacsim:notice`'s, 32 lines. The idle return is a 
 flight and no live plan, as its operator with `by: idle`, and tells `IDLE_HOME`; a way home its
 charge cannot pay parks it where it stands (above). `await tv` per rig, D8's departure and D13 are
 owner-critical defaults the lead accepted, standing until the owner rules (§15).
+
+**As built (SM.11r):** "one landed hold" holds **in every measure**. The compile's hold rule, the
+preview's room and the plan's end summary read the hold's unreserved room in tonnes of the plan's own
+ore by mining's fit rule over every measure (`plan::room_in_tonnes_of`), as the interpreter's step
+gate already did, never the mass entry alone: with bulky cargo aboard (44 t of industrial parts in a
+Dray-P leave 42 t by mass but 2,000 L) a metals plan previews 4 t of room, an ice plan 2 t and is
+refused, and the end line names the room left in the plan's ore. The `site.map` frame's hold line
+stays the mass entry (doc 20a §10, SM.11r-2; the owner's external review of 2026-10-23).
 
 **The seal.** A fitted mind is sealed at launch and never by itself (doc 17 §12, D-UM-45); in phase
 1 no mind drives a TV, and the excursion carries the sortie identity so the drone phase plugs in
