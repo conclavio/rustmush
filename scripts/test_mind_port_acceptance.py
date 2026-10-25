@@ -71,7 +71,7 @@ class ComparisonTests(unittest.TestCase):
                               for index, row in enumerate(self.opening_rows)]
         self.frozen = {"format":2, "context":context, "games":[{
             "seed":index // 2, "swapped":index % 2 == 1,
-            "format":1, "match_id":index + 1, "limit":16 * 1024 * 1024,
+            "format":2, "match_id":index + 1, "limit":16 * 1024 * 1024,
             "engine":{}, "opening":{"state":json.dumps({"units":self.opening_units})},
             "clock":{}, "sources":[],
             "seals":[copy.deepcopy(seal), copy.deepcopy(opponent)]} for index in range(30)]}
@@ -352,7 +352,7 @@ class ComparisonTests(unittest.TestCase):
 
 class FrozenGameTests(unittest.TestCase):
     def setUp(self):
-        self.body = {"seed":2**64 - 1, "swapped":True, "format":1, "match_id":17,
+        self.body = {"seed":2**64 - 1, "swapped":True, "format":2, "match_id":17,
                      "limit":16 * 1024 * 1024, "engine":{}, "clock":{}, "sources":[],
                      "opening":{"state":'{"z":1,"a":"exact \\r\\n bytes"}'},
                      "seals":[{"unit":100}, {"unit":200}]}
@@ -406,7 +406,7 @@ class FrozenGameTests(unittest.TestCase):
             acceptance.frozen_game({**self.row, "extra":True})
 
     def test_rejects_changed_body_summary_even_with_correct_hash(self):
-        for key, value in [("format", 2), ("seed", True), ("swapped", 1), ("match_id", True)]:
+        for key, value in [("format", 1), ("seed", True), ("swapped", 1), ("match_id", True)]:
             with self.subTest(key=key):
                 altered = compressed_game({**self.body, key:value})
                 for summary in ["seed", "swapped", "match_id"]:

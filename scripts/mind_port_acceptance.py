@@ -116,7 +116,9 @@ def frozen_game(row):
     require(type(game["seed"]) is int and game["seed"] == row["seed"]
             and type(game["swapped"]) is bool and game["swapped"] is row["swapped"]
             and type(game["match_id"]) is int and game["match_id"] == row["match_id"]
-            and type(game["format"]) is int and game["format"] == 1
+            # The tape header's format: 2 since M7 (31d19f25), whose opening
+            # snapshots and seals carry the mandatory filed certificates.
+            and type(game["format"]) is int and game["format"] == 2
             and type(game["seals"]) is list and len(game["seals"]) == row["unit_count"],
             "frozen game body differs from summary")
     return game
