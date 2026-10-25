@@ -160,6 +160,17 @@ async fn certify(r: &mut Rig, name: &str, ordinal: u8) -> Result<(mush_roll::Rev
         tokio::time::sleep(Duration::from_millis(2)).await;
     };
     let reference = revision.reference();
+    // The previous rating's receipt can be read a pulse before the service
+    // releases its finished job, and a second `@registry/rate` for GOD is
+    // refused until it does; wait for the release rather than race it.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while crate::minds::bulk::registry_service::holds(r.world().world(), GOD) {
+        if Instant::now() >= deadline {
+            return Err("the previous Registry job was never released".into());
+        }
+        pulse(r)?;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
     let mut pacing = pacing::Progress::new(ordinal);
     command(
         r.world_mut(),

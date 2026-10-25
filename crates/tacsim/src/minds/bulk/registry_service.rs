@@ -297,6 +297,23 @@ fn consume_attempt(
     Ok(false)
 }
 
+/// Whether the Registry service still holds a job for `actor`. A rating's
+/// receipt can be read a pulse before its finished job is released, and
+/// `@registry/rate` refuses a second job for the same character until then.
+#[cfg(test)]
+pub(crate) fn holds(w: &mush_core::World, actor: ObjId) -> bool {
+    super::world::service(w)
+        .ok()
+        .and_then(|service| {
+            service
+                .0
+                .lock()
+                .ok()
+                .map(|runtime| runtime.registry.entries.contains_key(&actor))
+        })
+        .unwrap_or(false)
+}
+
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let result = if ctx.switches.has("reconform") {
         reconformance::continue_scan(ctx)
