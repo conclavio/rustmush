@@ -241,6 +241,7 @@ enum Fault {
     MissingProvider,
     DuplicateSlot,
 }
+#[allow(clippy::type_complexity)]
 fn modules(
     economy_first: bool,
     fault: Fault,

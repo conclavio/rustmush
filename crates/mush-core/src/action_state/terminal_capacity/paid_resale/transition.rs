@@ -466,10 +466,9 @@ pub(in crate::action_state::terminal_capacity) fn audit_boot(
     }
     for (licence, rows) in chains {
         let mut prior: Option<&Pair> = None;
-        let mut seq = 1;
         let mut holder = None;
         let mut latest_term = 0;
-        for (sequence, p) in &rows {
+        for (seq, (sequence, p)) in (1..).zip(&rows) {
             let binding = field(&p.row, "binding")?;
             if *sequence != seq {
                 return Err(refused("resale sequence gap"));
@@ -502,7 +501,6 @@ pub(in crate::action_state::terminal_capacity) fn audit_boot(
                 field(binding, "ownership")?.clone()
             });
             prior = Some(p);
-            seq += 1;
         }
         let last = prior.ok_or_else(|| refused("resale empty history"))?;
         head_matches(view, last)?;

@@ -11,6 +11,7 @@ struct Restricted {
     true_now: AtomicBool,
     disable_on_post: AtomicBool,
     exact_attachment: Mutex<Option<ContractId>>,
+    #[allow(clippy::type_complexity)]
     seen: Mutex<Vec<(FactPurpose, ObjId, ContractId, [u8; 32])>>,
 }
 impl Restricted {
@@ -220,6 +221,7 @@ fn scoped_facts_sweep_uses_exact_consent_and_rechecks_authority_before_real_sett
 #[derive(Clone, Default)]
 struct Probe {
     request: Arc<Mutex<Option<ProbeRequest>>>,
+    #[allow(clippy::type_complexity)]
     answer: Arc<Mutex<Option<Result<Option<ContractId>, ()>>>>,
 }
 enum ProbeRequest {

@@ -84,7 +84,7 @@ fn real_tacsim_boot_waits_for_final_audits_and_recovers_queued_or_paid_only_afte
         let mut f = Fixture::new()?;
         let (binding, ready) = f.admitted()?;
         if paid {
-            drop(f.grant(binding, &ready, 4)?);
+            let _ = f.grant(binding, &ready, 4)?;
         }
         drop(ready); // The old test process owns/stops every actual continuation.
         let before = f.run(binding)?;
@@ -201,7 +201,7 @@ fn real_tacsim_boot_waits_for_final_audits_and_recovers_queued_or_paid_only_afte
 fn missing_account_keeps_recovery_custody_after_complete_owner_audit() -> TestResult {
     let mut f = Fixture::new()?;
     let (binding, ready) = f.admitted()?;
-    drop(f.grant(binding, &ready, 4)?);
+    let _ = f.grant(binding, &ready, 4)?;
     drop(ready);
     f.accounts.values.lock().map_err(module_error)?.remove(&GOD);
     let mut reboot = real_engine(&f)?;

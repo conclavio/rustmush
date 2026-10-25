@@ -3,6 +3,10 @@ use mush_core::mechanics::canonical_json_bytes_with_limit;
 use mush_core::{CanonicalId, DefinitionRef, ModError};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
+/// An owner preparation's result: its output, its patch and the replay
+/// writes the composed commit carries.
+pub(crate) type Prepared<O, P> =
+    Result<(Box<O>, Box<P>, Vec<mush_core::ReplayWrite>), mush_core::participant::ParticipantError>;
 mod audit;
 mod authority;
 mod config;

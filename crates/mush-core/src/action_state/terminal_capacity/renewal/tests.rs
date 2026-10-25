@@ -5,6 +5,13 @@ use crate::action::*;
 use crate::{DefinitionDescriptor, DefinitionId, DefinitionKind, ObjId};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Handle = StateFamilyHandle<String, Value>;
+/// A birth seed: the action store, its family handles by name, and the
+/// disk image a reboot reads.
+type Seed = (
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+);
 type Disk = BTreeMap<(SmolStr, SmolStr), Value>;
 struct Provider;
 impl ActionProvider for Provider {
@@ -55,11 +62,7 @@ fn fixture_from_seed(
     manifest_generation: u64,
     service_provider: bool,
     service_protocol: bool,
-    (birth, mut handles, disk): (
-        ActionStateStore,
-        BTreeMap<String, Handle>,
-        BTreeMap<(SmolStr, SmolStr), Value>,
-    ),
+    (birth, mut handles, disk): Seed,
 ) -> TestResult<Fixture> {
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
@@ -742,11 +745,7 @@ pub(in crate::action_state::terminal_capacity) fn coexistence_registry_seed()
 // fixture data and do not stand in for real Economy payment authority.
 pub(in crate::action_state::terminal_capacity) fn resale_term_seed(
     grant: bool,
-) -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+) -> TestResult<Seed> {
     let mut f = fixture()?;
     let operation = CommitToken::from_bytes([31; 16]);
     let p = draft(&mut f, 31, None)?;
@@ -762,11 +761,7 @@ pub(in crate::action_state::terminal_capacity) fn resale_term_seed(
 
 pub(in crate::action_state::terminal_capacity) fn closed_holder_seed(
     funded: bool,
-) -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+) -> TestResult<Seed> {
     let mut f = fixture()?;
     let operation = CommitToken::from_bytes([31; 16]);
     let p = draft(&mut f, 31, None)?;
@@ -781,19 +776,11 @@ pub(in crate::action_state::terminal_capacity) fn closed_holder_seed(
     Ok((f.store, f.handles, f.disk))
 }
 pub(in crate::action_state::terminal_capacity) fn continue_holder_seed(
-    seed: (
-        ActionStateStore,
-        BTreeMap<String, Handle>,
-        BTreeMap<(SmolStr, SmolStr), Value>,
-    ),
+    seed: Seed,
     byte: u8,
     previous: Option<CommitToken>,
     terminal: usize,
-) -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+) -> TestResult<Seed> {
     let mut f = fixture_from_seed(1, false, false, seed)?;
     let before = required(&view(&f), &licence_key(LICENCE, 1)?)?;
     let op = CommitToken::from_bytes([byte; 16]);
@@ -930,13 +917,7 @@ pub(in crate::action_state::terminal_capacity) fn continue_holder_seed(
     Ok((f.store, f.handles, f.disk))
 }
 
-pub(in crate::action_state::terminal_capacity) fn refuse_holder_seed(
-    seed: (
-        ActionStateStore,
-        BTreeMap<String, Handle>,
-        BTreeMap<(SmolStr, SmolStr), Value>,
-    ),
-) -> TestResult {
+pub(in crate::action_state::terminal_capacity) fn refuse_holder_seed(seed: Seed) -> TestResult {
     let mut f = fixture_from_seed(1, false, false, seed)?;
     let before = f.disk.clone();
     assert!(draft(&mut f, 100, None).is_err());

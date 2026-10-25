@@ -53,8 +53,7 @@ mod tests {
     use super::*;
     use std::{
         cell::Cell,
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
 
     struct Oversized {
@@ -65,10 +64,6 @@ mod tests {
         fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
             Poll::Ready(())
         }
-    }
-    struct NoWake;
-    impl Wake for NoWake {
-        fn wake(self: Arc<Self>) {}
     }
     struct OnDrop<'a>(&'a Cell<usize>);
     impl Drop for OnDrop<'_> {
@@ -99,8 +94,7 @@ mod tests {
             Err::<(), _>("original phase refusal")
         })?;
         check_eq!(polls.get(), 0, "construction does not poll the phase");
-        let waker = Waker::from(Arc::new(NoWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         check_eq!(
             future.as_mut().poll(&mut context),
             Poll::Ready(Err("original phase refusal"))

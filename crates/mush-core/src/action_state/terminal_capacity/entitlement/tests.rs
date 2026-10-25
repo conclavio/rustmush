@@ -6,6 +6,13 @@ use crate::{DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegist
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Handle = StateFamilyHandle<String, Value>;
+/// A birth seed: the action store, its family handles by name, and the
+/// disk image a reboot reads.
+type Seed = (
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+);
 const QUOTE: &str = "market_mind_entitlement_quote";
 const DEPLOYMENT: &str = "roll_mind_commerce";
 const OLD_PURCHASE: &str = "market_mind_purchase";
@@ -597,11 +604,7 @@ fn reboot(f: &Fixture) -> TestResult<ActionStateStore> {
 
 /// Share one actual coordinator-installed first generation with the renewal
 /// tests. Business rows remain inert fixtures; this is not an E4 money proof.
-pub(in crate::action_state::terminal_capacity) fn renewal_birth_seed() -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+pub(in crate::action_state::terminal_capacity) fn renewal_birth_seed() -> TestResult<Seed> {
     let mut f = fixture(1, 1)?;
     let prepared = fund(&mut f, Mode::Original, FundFault::default())?;
     install(&mut f, prepared)?;
@@ -1174,11 +1177,7 @@ fn paid_follow_personal_cannot_cross_line_format_or_old_pin_policy() -> TestResu
     Ok(())
 }
 
-pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<Seed> {
     let mut f = fixture_with_follow(1, 1, true)?;
     let p = fund(&mut f, Mode::OriginalFollow, FundFault::default())?;
     install(&mut f, p)?;

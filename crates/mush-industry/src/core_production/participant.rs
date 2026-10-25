@@ -89,7 +89,7 @@ impl OriginParticipant {
         state: &CoreProductionState,
         ctx: &OwnerPrepareContext<'_>,
         request: Request,
-    ) -> Result<(Box<OriginIndex>, Box<OriginPatch>, Vec<ReplayWrite>), ParticipantError> {
+    ) -> super::Prepared<OriginIndex, OriginPatch> {
         identity(ctx)?;
         if !state.ready {
             return Err(refused());

@@ -253,7 +253,7 @@ fn rows(revision: &Revision) -> (FiledRecord, OwnerTerm, InitialFilingOperation)
         content,
         definition: digest(4),
         duplicate: canonical_duplicate_digest(revision).unwrap(),
-        rating: rating,
+        rating,
         operation: token(2),
     };
     let term_row = OwnerTerm {

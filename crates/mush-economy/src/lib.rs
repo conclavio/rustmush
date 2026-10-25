@@ -88,6 +88,10 @@
 #[macro_use]
 mod test_checks;
 
+/// One account's fold before-image: its id, running balance, last touching
+/// transaction and touch count, as the managed install paths restore them.
+pub(crate) type AccountBeforeImage = (AccountId, Option<i128>, Option<u64>, Option<u64>);
+
 // E2a — the pure library.
 mod amount;
 pub mod core_integration;

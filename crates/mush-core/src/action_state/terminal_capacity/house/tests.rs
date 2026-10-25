@@ -6,6 +6,13 @@ use crate::{DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegist
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Handle = StateFamilyHandle<String, Value>;
+/// A birth seed: the action store, its family handles by name, and the
+/// disk image a reboot reads.
+type Seed = (
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+);
 
 #[test]
 fn two_seat_pin_uses_same_six_targets_and_exact_versioned_economics() -> TestResult {
@@ -771,11 +778,7 @@ fn reboot(f: &Fixture) -> TestResult<ActionStateStore> {
 
 // Acknowledged actual coordinator birth for the separate House renewal tests.
 // Business rows are inert fixture data, not native E4 receipts or paid authority.
-pub(in crate::action_state::terminal_capacity) fn renewal_birth_seed() -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+pub(in crate::action_state::terminal_capacity) fn renewal_birth_seed() -> TestResult<Seed> {
     let mut f = fixture(1, 1)?;
     let p = fund(&mut f, Mode::House, FundFault::default())?;
     install(&mut f, p)?;
@@ -1272,11 +1275,7 @@ fn paid_follow_house_cannot_reinterpret_pin_or_change_acquisition_line() -> Test
     Ok(())
 }
 
-pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<(
-    ActionStateStore,
-    BTreeMap<String, Handle>,
-    BTreeMap<(SmolStr, SmolStr), Value>,
-)> {
+pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<Seed> {
     let mut f = fixture_with_follow(1, 1, true, true)?;
     let p = fund(&mut f, Mode::TwoSeatFollow, FundFault::default())?;
     install(&mut f, p)?;

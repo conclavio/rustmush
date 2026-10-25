@@ -23,6 +23,9 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, RwLock, atomic::AtomicUsize};
 
+/// Every resolution the fixture's oracle answered, in order.
+type Answers = Arc<Mutex<Vec<Result<(ObjId, ObjId), ParticipantError>>>>;
+
 #[derive(Default)]
 struct Backend {
     map: RwLock<BTreeMap<ObjId, AccountId>>,
@@ -128,7 +131,7 @@ struct Module {
     other: ObjId,
     backend: Arc<Backend>,
     mode: Arc<AtomicUsize>,
-    answers: Arc<Mutex<Vec<Result<(ObjId, ObjId), ParticipantError>>>>,
+    answers: Answers,
     handles: Arc<Mutex<Option<Handles>>>,
 }
 fn definition(reg: &mut Registrar<'_>, kind: &str, id: &str) -> Result<DefinitionRef, ModError> {
@@ -280,7 +283,7 @@ struct Provider {
     personal: bool,
     other: ObjId,
     mode: Arc<AtomicUsize>,
-    answers: Arc<Mutex<Vec<Result<(ObjId, ObjId), ParticipantError>>>>,
+    answers: Answers,
     outcome: DefinitionRef,
     family: Family,
     effect: ParticipantHandle<Effect>,
@@ -354,7 +357,7 @@ struct Rig {
     other: ObjId,
     backend: Arc<Backend>,
     mode: Arc<AtomicUsize>,
-    answers: Arc<Mutex<Vec<Result<(ObjId, ObjId), ParticipantError>>>>,
+    answers: Answers,
     handles: Handles,
     invocation: ActionInvocation,
 }

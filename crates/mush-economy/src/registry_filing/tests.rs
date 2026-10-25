@@ -12,6 +12,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod managed_title;
 
 #[inline(never)]
+#[allow(clippy::type_complexity)]
 fn fixture(
     fee: Amount,
 ) -> Result<
@@ -29,8 +30,10 @@ fn fixture(
     let shell = world.create(ObjKind::Thing, "Reserved mind charter", GOD, None)?;
     let issuer = SystemPrincipalId::new("roll.registry").ok_or("fixture issuer")?;
     let instrument = crate::InstrumentId::new("cr").ok_or("fixture instrument")?;
-    let mut state = EconomyStore::default();
-    state.title_issuers = Arc::new(std::collections::BTreeSet::from([issuer.clone()]));
+    let mut state = EconomyStore {
+        title_issuers: Arc::new(std::collections::BTreeSet::from([issuer.clone()])),
+        ..EconomyStore::default()
+    };
     state.snapshot.put_instrument(InstrumentDef {
         id: instrument.clone(),
         ruleset: "roll".into(),

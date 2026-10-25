@@ -4,7 +4,7 @@ use super::*;
 struct TransferFold {
     before_covered: Option<u64>,
     before_max_txid: u64,
-    before_accounts: Vec<(AccountId, Option<i128>, Option<u64>, Option<u64>)>,
+    before_accounts: Vec<crate::AccountBeforeImage>,
     after_accounts: Vec<(AccountId, i128, u64, u64)>,
     covered: Option<u64>,
     max_txid: u64,

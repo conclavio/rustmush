@@ -1952,6 +1952,7 @@ impl ModuleStateMap {
         Ok((left.value.as_mut(), right.value.as_mut()))
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn get_erased_captured_four_mut(
         &mut self,
         a: &ErasedSlotCapture,

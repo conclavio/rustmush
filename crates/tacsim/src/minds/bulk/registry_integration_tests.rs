@@ -917,7 +917,6 @@ fn registered_paid_flight_recovers_only_exact_stopped_ticket_without_refund() ->
     let paid = f.run(binding)?;
     let allowance = lease.maximum_sim_ms() * lease.units();
     check_eq!(paid.charged_unit_ms, allowance);
-    drop(lease);
     drop(ready); // This fixture owns and stops every possible worker/continuation.
     let ticket = registry_boot_tests::cold_restart(&mut f, binding)?;
     let captured = f.artifacts()?.registry.get(ticket)?;

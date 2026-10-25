@@ -49,7 +49,7 @@ fn final_audit_refuses_missing_all_quota_quarantine_and_crossed_readable_observa
 {
     let mut f = Fixture::new()?;
     let (binding, ready) = f.admitted()?;
-    drop(f.grant(binding, &ready, 4)?);
+    let _ = f.grant(binding, &ready, 4)?;
     drop(ready);
     let key = account_key(binding);
     let original = f.disk.get(&key).ok_or("actual quota")?.clone();

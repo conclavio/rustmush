@@ -1,8 +1,9 @@
 # Workspace clippy configuration (WS01-S11A).
 #
-# This file enables no lint. It configures memory-size checks and preserves
-# the existing test allowances for panic-shaped restriction lints. Those
-# allowances apply only to the named panic-shaped lints, not memory checks.
+# This file enables no lint. It only tells clippy which regions of the tree the
+# panic-shaped restriction lints (`clippy::unwrap_used`, `clippy::expect_used`,
+# `clippy::panic`, `clippy::indexing_slicing`) must not police, so that when a
+# lint is enabled per crate its count is the count of production code.
 #
 # It has to exist before any of those lints is turned on. `.github/workflows/
 # ci.yml` runs `cargo clippy --workspace --all-targets -- -D warnings`, and
@@ -48,11 +49,3 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
-
-# M7 memory checks cover production and fixtures, including exported APIs.
-# Lint selection is scoped to the six M7 crates by the Clippy invocation.
-# Keep the enum-variant and by-value thresholds at the pinned toolchain defaults.
-stack-size-threshold = 65536
-future-size-threshold = 16384
-allow-large-stack-frames-in-tests = false
-avoid-breaking-exported-api = false

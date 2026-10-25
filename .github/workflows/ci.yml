@@ -246,6 +246,11 @@ jobs:
       # Keep memory-size enforcement scoped to the M7 owners, including
       # standalone integration-test targets as well as library fixtures.
       - name: M7 memory-size limits
+        # Its own clippy config (the root's plus the M7 thresholds and
+        # avoid-breaking-exported-api = false), so exported-API naming lints
+        # are not switched on for every crate the step above lints.
+        env:
+          CLIPPY_CONF_DIR: ${{ github.workspace }}/.github/clippy-m7
         run: >-
           cargo clippy -p mush-roll -p mush-economy -p mush-market
           -p mush-industry -p mush-core -p tacsim --all-targets --no-deps --

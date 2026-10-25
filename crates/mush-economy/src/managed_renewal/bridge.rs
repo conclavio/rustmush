@@ -192,10 +192,8 @@ pub(crate) fn recover(
     }
     // Include every actual hold touching this inventory, including crossed
     // namespace claims. Unrelated legacy holds need no duplicate allocation.
-    let mut retained_holds = 0usize;
-    for hold in holds.values().filter(|h| is_renewal_hold(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))) {
+    for (retained_holds, hold) in holds.values().filter(|h| is_renewal_hold(h) || matches!(h.purpose, crate::record::HoldPurpose::Escrow { contract } if contract_ids.contains(&contract))).enumerate() {
         if retained_holds == history::MAX_RECORDS { return Err(failed()); }
-        retained_holds += 1;
         exact.put_hold(hold.clone());
     }
     let mut hold_ids = BTreeSet::new();

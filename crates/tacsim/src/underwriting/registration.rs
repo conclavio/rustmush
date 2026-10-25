@@ -199,6 +199,9 @@ impl Registration {
             },
         )?;
         let reader = CoverageOpenReader::request(reg, &protocol.manifest)?;
+        // `index` is each action's protocol position (the economy owner joins
+        // from 2); indexing keeps a short table a panic, not a silent skip.
+        #[allow(clippy::needless_range_loop)]
         for index in 1..5 {
             let writer = self.config.writer.for_action(
                 reg,

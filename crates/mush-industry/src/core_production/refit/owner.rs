@@ -161,6 +161,8 @@ impl OwnerPhase<'_, '_> {
     }
 
     #[inline(never)]
+    // Boxed on purpose: M7's memory-size step denies large by-value parameters (clippy::large_types_passed_by_value).
+    #[allow(clippy::boxed_local)]
     fn prepare_accept(
         self,
         order: Box<RefitOrder>,
@@ -274,6 +276,8 @@ impl OwnerPhase<'_, '_> {
     }
 
     #[inline(never)]
+    // Boxed on purpose: M7's memory-size step denies large by-value parameters (clippy::large_types_passed_by_value).
+    #[allow(clippy::boxed_local)]
     fn prepare_cancel(
         self,
         before: Box<RefitOrder>,
@@ -322,7 +326,7 @@ fn finish_preparation(
     after: Projection,
     order_out: Option<RefitOrder>,
     fence: Fence,
-) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
+) -> crate::core_production::Prepared<Output, Patch> {
     let index = after.index.clone().ok_or_else(refused)?;
     let writes = vec![ReplayWrite::ModuleJsonSet {
         namespace: mush_core::OwnerId::new(crate::NS).map_err(|_| refused())?,
@@ -351,7 +355,7 @@ pub(crate) fn prepare(
     ctx: &OwnerPrepareContext<'_>,
     c: &CoreRefitFactoryConfig,
     request: Request,
-) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
+) -> crate::core_production::Prepared<Output, Patch> {
     identity(
         ctx,
         match &request {

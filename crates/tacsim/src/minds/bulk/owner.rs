@@ -1160,8 +1160,7 @@ mod tests {
         publish(&mut owner, pinned);
         let active = admit(&mut owner, account, ObjId(1), 2, 2);
         let grant = owner.prepare_grant(account, active, 3, 250).expect("grant");
-        let lease = publish(&mut owner, grant).expect("paid flight");
-        drop(lease);
+        let _ = publish(&mut owner, grant).expect("paid flight");
         let before = owner.account(account).expect("account").clone();
         let old = owner
             .prepare_recover(account, 10)

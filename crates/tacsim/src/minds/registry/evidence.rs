@@ -50,20 +50,17 @@ impl Evidence {
         }
         let wanted = match expected.key.kind() {
             CaseKind::Kernel { .. } => Applicability::EngineBoundary,
-            CaseKind::Probe { name, .. }
-                if matches!(
-                    name,
+            CaseKind::Probe {
+                name:
                     ProbeName::EmptyUnarmed
-                        | ProbeName::Hostile450Unarmed
-                        | ProbeName::HurtTwoUnarmed
-                        | ProbeName::OrderLossUnarmed
-                        | ProbeName::DensityUnarmed
-                        | ProbeName::FordMobile
-                        | ProbeName::FordDisabled
-                ) =>
-            {
-                Applicability::Unarmed
-            }
+                    | ProbeName::Hostile450Unarmed
+                    | ProbeName::HurtTwoUnarmed
+                    | ProbeName::OrderLossUnarmed
+                    | ProbeName::DensityUnarmed
+                    | ProbeName::FordMobile
+                    | ProbeName::FordDisabled,
+                ..
+            } => Applicability::Unarmed,
             _ => Applicability::Armed,
         };
         if row.coverage().applicability() != wanted

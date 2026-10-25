@@ -22,7 +22,7 @@ pub(super) struct PendingFold {
     covered: Option<u64>,
 }
 struct FoldBefore {
-    accounts: Vec<(AccountId, Option<i128>, Option<u64>, Option<u64>)>,
+    accounts: Vec<crate::AccountBeforeImage>,
     held: Option<i128>,
     last_hold_touch: Option<u64>,
     hold: Option<Hold>,

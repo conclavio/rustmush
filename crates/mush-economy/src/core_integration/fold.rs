@@ -23,7 +23,7 @@ pub(super) struct CoreMoneyFold {
 struct FoldBefore {
     asset: Option<EconomicAsset>,
     created_count: Option<u64>,
-    accounts: Vec<(AccountId, Option<i128>, Option<u64>, Option<u64>)>,
+    accounts: Vec<crate::AccountBeforeImage>,
     held: Option<i128>,
     last_hold_touch: Option<u64>,
     hold: Option<Hold>,

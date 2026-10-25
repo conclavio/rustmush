@@ -2279,9 +2279,11 @@ mod tests {
     }
     #[test]
     fn attributed_removal_selects_library_metadata_and_waits_for_actual_refresh() {
-        let mut state = MindWorkshop::default();
-        state.open = true;
-        state.names = vec!["marked".into()];
+        let mut state = MindWorkshop {
+            open: true,
+            names: vec!["marked".into()],
+            ..MindWorkshop::default()
+        };
         state.key(Key::Char('X'));
         state.key(Key::Enter);
         let (id, request) = state.take_invokes().pop().expect("name-only request");
@@ -2340,9 +2342,11 @@ mod tests {
         assert_eq!(state.next_id, next_id);
         assert!(state.message.contains("already requested"));
         assert_eq!(state.loaded.as_ref().expect("retained").base, before);
-        let mut state = MindWorkshop::default();
-        state.open = true;
-        state.names = vec!["marked".into()];
+        let mut state = MindWorkshop {
+            open: true,
+            names: vec!["marked".into()],
+            ..MindWorkshop::default()
+        };
         state.key(Key::Char('X'));
         state.key(Key::Enter);
         let (id, _) = state.take_invokes().pop().expect("request");

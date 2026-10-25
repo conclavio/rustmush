@@ -289,6 +289,8 @@ impl OwnerPhase<'_, '_> {
     }
 
     #[inline(never)]
+    // Boxed on purpose: M7's memory-size step denies large by-value parameters (clippy::large_types_passed_by_value).
+    #[allow(clippy::boxed_local)]
     fn prepare_accept(
         self,
         order: Box<CoreIntegrationOrder>,
@@ -432,6 +434,8 @@ impl OwnerPhase<'_, '_> {
     }
 
     #[inline(never)]
+    // Boxed on purpose: M7's memory-size step denies large by-value parameters (clippy::large_types_passed_by_value).
+    #[allow(clippy::boxed_local)]
     fn prepare_terminal(
         self,
         before: Box<CoreIntegrationOrder>,
@@ -521,7 +525,7 @@ pub(crate) fn prepare(
     content: &mush_core::DefinitionRef,
     inputs: &RegisteredCoreInputs,
     request: Request,
-) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
+) -> crate::core_production::Prepared<Output, Patch> {
     identity(
         ctx,
         match &request {

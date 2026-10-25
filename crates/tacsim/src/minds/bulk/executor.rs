@@ -238,6 +238,8 @@ impl FairQueue {
             ready: BTreeMap::new(),
         })
     }
+    // A refusal hands the caller's own `Ready` back, unboxed, for its retry.
+    #[allow(clippy::result_large_err)]
     pub fn push(&mut self, ready: Ready) -> Result<(), (BulkError, Ready)> {
         if self.ready.contains_key(&ready.account) {
             return Err((BulkError::Busy, ready));

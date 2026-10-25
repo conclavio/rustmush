@@ -813,6 +813,8 @@ pub(super) fn take_bench_completions(w: &World) -> Vec<BenchComplete> {
         })
         .unwrap_or_default()
 }
+// A refusal hands the caller's own `Ready` back, unboxed, for its retry.
+#[allow(clippy::result_large_err)]
 pub(super) fn admit_bench(
     ctx: &mut Ctx<'_>,
     account: AccountId,

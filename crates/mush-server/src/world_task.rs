@@ -7216,6 +7216,9 @@ fn broadcast_wizards(world: &World, gateway: &Gateway, text: &str) {
 /// [`WriterGone`](FlushOutcome::WriterGone) matters to ack-gated callers: a
 /// clean flush has nothing to persist, while a gone writer means a real
 /// batch was **dropped** and must never be confirmed as durable.
+// One per flush, moved straight into a match; boxing the queued variant
+// would allocate on every flush to shrink a short-lived local.
+#[allow(clippy::large_enum_variant)]
 enum FlushOutcome {
     /// Nothing was dirty; no batch was produced.
     Clean,

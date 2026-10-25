@@ -187,6 +187,8 @@ impl Lane {
     pub(super) fn has_pending_turn(&self) -> bool {
         self.pending_turn.is_some()
     }
+    // A refusal hands the caller's own `Ready` back, unboxed, for its retry.
+    #[allow(clippy::result_large_err)]
     fn take_fair_turn(&mut self, ready: Ready) -> Result<(), Ready> {
         if self.pending_turn.is_some() {
             return Err(ready);

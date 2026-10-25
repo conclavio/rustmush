@@ -188,14 +188,17 @@ struct Head {
     at: i64,
 }
 
+/// Each line's eligible revisions, keyed by definition and rating.
+type EligibleByLine =
+    BTreeMap<(LineId, DefinitionDigest, RatingClass), BTreeMap<(i64, u64), FiledRevisionId>>;
+
 /// At most MAX_RECORDS filed rows and MAX_RECORDS additional current-plan
 /// heads, matching the existing independently bounded durable families.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Index {
     entries: BTreeMap<FiledRevisionId, Entry>,
     heads: BTreeMap<LineId, Head>,
-    eligible:
-        BTreeMap<(LineId, DefinitionDigest, RatingClass), BTreeMap<(i64, u64), FiledRevisionId>>,
+    eligible: EligibleByLine,
     certificate_count: usize,
 }
 

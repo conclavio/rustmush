@@ -161,6 +161,7 @@ fn install_money(
     patch.bind(&mut r.state)?.apply();
     Ok((output, writes))
 }
+#[allow(clippy::type_complexity)]
 fn funded(six: bool) -> TestResult<(Box<Rig>, RenewalMoneyRequest, Vec<(String, Vec<u8>)>)> {
     let mut r = Rig::new()?;
     if six {

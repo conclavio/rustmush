@@ -28,6 +28,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 fn fixture_with_manifest(payload: Value) -> Result<Fixture, Box<dyn std::error::Error>> {
     fixture_with_profile(payload, false)
 }
+#[allow(clippy::result_large_err)]
 fn fixture_with_profile(
     payload: Value,
     service: bool,
