@@ -209,6 +209,14 @@ pub struct VendorRow {
     pub stock: Vec<StockRow>,
     /// Good → the standing bid posted for it.
     pub bids: BTreeMap<CanonicalId, BidRow>,
+    /// **Doc 20 cut SM.12a**: a mill's ore → that mill's milled product units the vendor's
+    /// standing ask already carries (raised by each restock, set by a fresh listing when it
+    /// differs); the mill's ledger total less this is what the clerk restocks next. Per
+    /// mill, not per product good, so a removed mill row drops out with its counter.
+    /// Skipped when empty, so a row from before the cut encodes byte-identically and
+    /// [`PORT_MAP_SCHEMA`] stays 1.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mill_listed: BTreeMap<CanonicalId, u64>,
 }
 
 /// **One stock plan row** (doc 18 §4.3 "Finite seeded stock"; cut IC8): the

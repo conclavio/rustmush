@@ -179,7 +179,9 @@ fn preflight(
         if bindings(ctx, r, &def).is_ok() {
             return Ok((def, false));
         }
-        if pack.manifest().version() != 2 {
+        // Every version from 2 carries v2's network (doc 20 cut SM.12a: v3 only
+        // re-signs it for lane v14), so the historical v1 slice migrates the same way.
+        if pack.manifest().version() < 2 {
             return Err("relay: authored topology drift; repair required".into());
         }
         let old = mush_content::load_pack(HISTORICAL_JSON).map_err(|e| e.to_string())?;

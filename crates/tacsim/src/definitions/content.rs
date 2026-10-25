@@ -805,10 +805,31 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// Registry's prospecting `licence` block; **v12 since doc 20 cut SM.10**: the claim fees
 /// beside the licence's (`claim_stake_major`, `claim_term_major`), the Pallas Syndicate
 /// (`pallas_syndicate`, a Ceres org), Occator Rim's paper (`papers.occator_outer` and the
-/// twelve outer blocks' `paper`). The port readiness report
+/// twelve outer blocks' `paper`); **v13 since relay cut R9b** (doc 15a): the Concord
+/// Fleet Relief Command org at Luna and its `concord.relief` programme; **v14 since doc
+/// 20 cut SM.12a**: the Exchange's and Occator's mills (`mill` rows: metal ore into
+/// metal concentrate and ice ore into water ice, five to two, 20 t of ore a batch, at
+/// most 40 t of ore an IC day). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 13;
+///
+/// **The relay seed moves with it** (doc 20 cut SM.12a). The relay pack
+/// `tacsim.relay.luna_ceres` requires this lane at an exact version
+/// (`mush_content::PackRequirement` is never a range), so a shipped relay seed that
+/// requires the old lane refuses every fresh boot of a new one. Every lane version
+/// therefore re-signs `crates/tacsim/content/relays/luna_ceres.json` at its next
+/// version, requiring the new lane, entries unchanged: lane v13 ↔ relay v2 (relay cut
+/// R10), lane v14 ↔ relay v3. The relay code reads any version from 2 as the full star
+/// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
+/// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
+/// do." when no entry differs — keeps its star. The pins that move with it are the
+/// relay digest in `mush-server/tests/relay_registry.rs`, the relay version in
+/// `tests/stations.rs` and `mush-server/tests/boot_parity.rs`, the lane requirement in
+/// `tests/stations.rs`, and the kept-world upgrade test in `relay_registry.rs`
+/// (`sm12a_a_kept_v13_star_takes_lane_v14_and_relay_v3`), whose `lane_v13` rebuilds the
+/// published v13 by stripping every row added since: the next lane cut strips its own
+/// rows there too and extends the test to its versions.
+pub const LANE_VERSION: u32 = 14;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

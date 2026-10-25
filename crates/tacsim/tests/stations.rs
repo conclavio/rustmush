@@ -512,7 +512,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     ("neighborhood.mercury_relay".into(), 1),
                     (STICKNEY_PACK.into(), 4),
                     (VOLTAIRE_PACK.into(), 1),
-                    (LANE_PACK.into(), 13)
+                    // Doc 20 cut SM.12a: relay v3 requires lane v14 (v2 required v13).
+                    (LANE_PACK.into(), 14)
                 ]
             ),
             "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
@@ -1275,7 +1276,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         35,
         "five, ten stations, the twelve site packs (doc 20 cut SM.2), the lane and seven R10 relay/geography packs"
     );
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(2));
+    // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(3));
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1980,7 +1982,8 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     let mut tw = tw
         .reboot_into(production_roster_with_starter(config()), store.clone())
         .expect("the relay seed installs after the station upgrade");
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(2));
+    // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(3));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()

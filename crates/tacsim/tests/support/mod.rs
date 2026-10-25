@@ -58,6 +58,8 @@ pub mod holdings;
 /// **Doc 20 cut SM.5**: a prospecting licence bought through `+licence/buy go`, for every
 /// suite whose pilots lease a rig.
 pub mod licence;
+/// **Doc 20 cut SM.12a**: the mills stripped away for the v13-shaped lane variants.
+pub mod mill;
 /// **Doc 19 cut A.8**: the moon ports stripped away for the v7-shaped lane variants.
 pub mod moon;
 /// **Doc 20 cut SM.5**: the ore bids, the fixed references, the licence block and

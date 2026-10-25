@@ -95,6 +95,11 @@ ore by 2 t to 12 t, never past what the house can pay for. Each time an intake
 refreshes its bid is posted afresh under a new listing number, so read the
 current one off `+market`'s list.
 
+The Exchange mills the metal ore it buys into metal concentrate, five tonnes to
+two, and Occator mills its ice ore into water ice the same way, 20 t of ore at a
+time and at most 40 t an IC day, so what miners sell them comes back onto their
+asks as concentrate and water.
+
 `+market/sell <listing>` says what a bid still wants, what you hold in the hold
 the sale would come from, and what selling all of it would take and pay; it sells
 nothing. `+market/sell <listing>=all` sells what the bid takes and leaves the

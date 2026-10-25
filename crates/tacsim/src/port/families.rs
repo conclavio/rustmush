@@ -1,7 +1,7 @@
 //! **The port's typed families** (doc 18 cut IC5; §4.2 "the ticket", §4.3
 //! "Finite seeded stock", §4.8 "the seams", D-18-11, D-18-33, D-18-46).
 //!
-//! Four production families, all registered unconditionally (a family is a fact
+//! Eight production families, all registered unconditionally (a family is a fact
 //! about the composition, and hydrating a later cut's records must never depend
 //! on a flag):
 //!
@@ -26,6 +26,20 @@
 //!   reading. Written in the finish's bundle of a scan or a sounding
 //!   (`tacsim_surface_done`) and by `+tv/forget`'s own action (`tacsim_chart_forget`), its
 //!   record cap tightened to 64 KiB.
+//! - **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5) — one
+//!   [`crate::surface::cursor::PocketCursor`] per surface deposit, keyed by the deposit's
+//!   id: what the surface provider drew, and the lock's one home.
+//! - **`tacsim.claims`** (doc 20 cut SM.10; §9) — one
+//!   [`crate::surface::claims::BlockTenure`] per (site, block), keyed by
+//!   [`crate::surface::claims::BlockKey`], staged inside industry's own tenure bundle.
+//! - **`tacsim.relay_fabrications`** (relay cut R9a; doc 15a) — one bounded book of
+//!   fabrication receipts per relay foundry, keyed by the foundry's object.
+//! - **`tacsim.port_mill`** (doc 20 cut SM.12a; §7.3 "The mill") — one
+//!   [`crate::port::mill::MillLedger`] per mill, keyed by its
+//!   [`crate::port::mill::MillId`]: the mill's totals, its IC day's tally and its last
+//!   sixteen batches. Written in the batch's own bundle by `tacsim_port_mill`
+//!   (`crate::port::mill`), and read by the restock, the stock arm's list step and the
+//!   readiness report.
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -476,7 +490,7 @@ impl StockReceipt {
 
 // ---- the families and the handles ------------------------------------------
 
-/// The port's four production family handles.
+/// The port's eight production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
     /// Conserved private relay production receipts, one bounded book per foundry.
@@ -501,6 +515,9 @@ pub struct PortFamilies {
     /// bundle by the composed `SurfaceTenure`.
     pub claims:
         StateFamilyHandle<crate::surface::claims::BlockKey, crate::surface::claims::BlockTenure>,
+    /// **`tacsim.port_mill`** (doc 20 cut SM.12a; §7.3 "The mill"): one ledger per mill,
+    /// keyed by its [`crate::port::mill::MillId`] — the batch's receipt and replay guard.
+    pub mills: StateFamilyHandle<crate::port::mill::MillId, crate::port::mill::MillLedger>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -569,9 +586,10 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the six production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// Register the eight production families (doc 18 cut IC5; doc 20 cut SM.3b's
 /// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
-/// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`), unconditionally.
+/// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`; relay cut R9a's
+/// `tacsim.relay_fabrications`; doc 20 cut SM.12a's `tacsim.port_mill`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -696,6 +714,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
                 serde_json::to_value(value).map_err(|e| e.to_string())
             },
         )?;
+    // Doc 20 cut SM.12a (§7.3 "The mill"): one ledger per mill, keyed by its `MillId`.
+    let mills = reg
+        .state_family::<crate::port::mill::MillId, crate::port::mill::MillLedger, _, _, _, _>(
+            family_descriptor(
+                crate::port::mill::MILL_FAMILY,
+                "tacsim.mill_id.v1",
+                "tacsim.port_mill",
+            )?,
+            |key: &crate::port::mill::MillId| Ok(key.key_text()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::port::mill::MillLedger| value.check(),
+            |value: &crate::port::mill::MillLedger| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -704,6 +737,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         charts,
         pockets,
         claims,
+        mills,
     })
 }
 

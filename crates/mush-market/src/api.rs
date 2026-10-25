@@ -1077,6 +1077,156 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
     Ok(())
 }
 
+// ---- doc 20 cut SM.12a: the mill's restock ----------------------------------
+
+/// **Whether a listing's own deadline has passed** — the projection's rule (`RealUtc`
+/// and `now >= at`; a listing on any other clock is left to the sweep that owns it),
+/// the one `trade::is_current` applies. Doc 20 cut SM.12a: `restock_ask` and tacsim's
+/// mill step read it, so the rule has one copy.
+#[must_use]
+pub fn listing_lapsed(listing: &Listing, now: i64) -> bool {
+    crate::projection::lapsed(listing.expires.at, listing.expires.clock, now)
+}
+
+/// One restock of a drawn ask (doc 20 cut SM.12a; doc 18 §5's P5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestockSpec {
+    /// The standing drawn ask to raise.
+    pub listing: ListingId,
+    /// The good it sells, which the caller restocks (checked against the listing).
+    pub good: mush_core::CanonicalId,
+    /// How many units to add, `>= 1`.
+    pub units: u64,
+}
+
+/// **Raise a standing drawn ask by units its storefront already holds** (doc 20 cut
+/// SM.12a; doc 18 §5's P5). The market never mints: this reads the pool and writes one
+/// listing; the matter was put in the pool by its owner (a mill's own bundle) before
+/// this call. Besides a refund's `restore_quantity` and a fresh listing of the whole
+/// pool, this is the only raise of a drawn ask's quantity (12a-N5). It bumps the
+/// listing's revision, as every listing write does, so an open quote on the ask goes
+/// stale (D16) — deliberately: a quote binds to the revision it saw, and a restock
+/// gets no exception.
+///
+/// The checks, in order, nothing written on any refusal:
+///
+/// 1. the listing is live — present and not [`listing_lapsed`] — else "No such
+///    listing.";
+/// 2. it sells out of a storefront (`Supply::Stock`) the actor may take from
+///    (`mush_inventory::may_take`), else "No such listing." — existence before kind,
+///    so another house's ask, a non-stock listing and a lapsed one read the same;
+/// 3. its vendor is present, trading, of an organization that may trade, and its vault
+///    is the listing's storefront (`list_goods`' two sentences; "No such vendor." and
+///    "No such listing." otherwise);
+/// 4. the listing sells by Draw (`MarketStore::lot_matter`, the one accessor);
+/// 5. it sells `spec.good`;
+/// 6. `spec.units` is at least 1 and the raised quantity at most `MAX_QUANTITY`;
+/// 7. the storefront's **available** stock (balance less holds) covers the listing,
+///    the Draw quotes not yet drawn (`MarketStore::draw_reading`) and the units — a
+///    hold refuses a restock rather than paging drift.
+///
+/// `restock_ask` is a normal-lane write: it submits nothing, and writes no inventory,
+/// allocation or meta record.
+///
+/// # Errors
+///
+/// [`MarketError`], in the order above; render it with [`refuse_market`]. Returns the
+/// listing's new quantity.
+pub fn restock_ask(ctx: &mut Ctx<'_>, spec: RestockSpec) -> Result<u64, MarketError> {
+    let now = ctx.w.now();
+    let Some(listing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(spec.listing).cloned())
+        .filter(|listing| !listing_lapsed(listing, now))
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    // Authority over the storefront before anything that reveals the listing's kind
+    // (doc 20 cut SM.12a, D14; `draw_listing_precheck`'s `may_take` precedent).
+    let vault = match &listing.source {
+        Supply::Stock { vault }
+            if mush_inventory::may_take(ctx.w, ctx.actor, mush_inventory::EndpointRef(*vault)) =>
+        {
+            *vault
+        }
+        _ => return Err(MarketError::NoStanding(NO_SUCH_LISTING)),
+    };
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(listing.vendor).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_VENDOR));
+    };
+    if !vendor.is_trading() {
+        return Err(MarketError::bad(
+            "That vendor has retired and is not trading.",
+        ));
+    }
+    if !org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(
+            "That vendor's organization is not trading.",
+        ));
+    }
+    if vault != vendor.vault {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    let Some(crate::record::LotMatter::Draw { source, commodity }) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.lot_matter(&listing))
+    else {
+        return Err(MarketError::bad("Only a drawn ask is restocked."));
+    };
+    if commodity != spec.good {
+        return Err(MarketError::bad("That ask does not sell that good."));
+    }
+    if spec.units == 0 {
+        return Err(MarketError::bad(
+            "A restock raises an ask by at least one unit.",
+        ));
+    }
+    let Some(quantity) = listing
+        .quantity
+        .checked_add(spec.units)
+        .filter(|quantity| *quantity <= crate::record::MAX_QUANTITY)
+    else {
+        return Err(MarketError::bad(
+            "That is not a quantity this market sells.",
+        ));
+    };
+    let (undrawn, _) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map_or((0, false), |s| s.draw_reading(source, &commodity));
+    match crate::lot::pool_available(ctx, source, &commodity) {
+        Ok(available)
+            if quantity
+                .checked_add(undrawn)
+                .is_some_and(|need| available >= need) => {}
+        Ok(_) => {
+            return Err(MarketError::bad(
+                "That storefront holds less than that, so nothing was restocked.",
+            ));
+        }
+        Err(()) => {
+            return Err(MarketError::bad(
+                "That storefront's stock cannot be read right now, so nothing was restocked.",
+            ));
+        }
+    }
+    put_listing(
+        ctx,
+        Listing {
+            quantity,
+            revision: listing.revision.saturating_add(1),
+            ..listing
+        },
+    );
+    Ok(quantity)
+}
+
 // ---- doc 18 cut IC8: standing bids -----------------------------------------
 
 /// What [`post_wanted`] is asked to post (doc 18 cut IC8; §4.3 "Bids that take real

@@ -2409,3 +2409,412 @@ fn ic14_a_gate_without_a_signatory_leaves_the_accept_line_unchanged() {
     assert!(agreed.lines().any(|l| l == line), "{agreed}");
     assert!(!agreed.contains("signs for"), "{agreed}");
 }
+
+// ---- doc 20 cut SM.12a: the mill's restock -------------------------------------------
+
+/// `mush_market::restock_ask` as `actor` through the quantity-delegate probe, its refusal
+/// rendered as its sentence.
+fn restock(
+    tw: &mut TestWorld,
+    actor: ObjId,
+    listing: ListingId,
+    good: &str,
+    units: u64,
+) -> Result<u64, String> {
+    let good = commodity(good);
+    with_probe(tw, actor, move |ctx| {
+        mush_market::restock_ask(
+            ctx,
+            mush_market::RestockSpec {
+                listing,
+                good,
+                units,
+            },
+        )
+        .map_err(|error| match error {
+            mush_market::MarketError::NoStanding(text) => text.to_owned(),
+            mush_market::MarketError::Bad(text) => text,
+            other => format!("{other:?}"),
+        })
+    })
+}
+
+/// The listing JSON documents the last command wrote (none, for a refusal).
+fn listing_writes(tw: &mut TestWorld) -> Vec<String> {
+    tw.take_module_ops()
+        .into_iter()
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key, .. } | mush_core::ModuleWrite::Del { key }
+                if key.starts_with("market:listing:") || key.as_str() == "market:meta" =>
+            {
+                Some(key.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Doc 20 cut SM.12a (doc 18 §5's P5): a restock raises a drawn ask by what its pool
+/// backs.** Ten more tonnes seeded into the shop's pool; a restock of 10 as GOD raises
+/// the listing by 10 with its revision bumped, moves no matter and writes nothing but
+/// the listing; with a quote accepted and not yet drawn, the spare is computed net of it
+/// (`MarketStore::draw_reading`).
+#[test]
+fn sm12a_restock_ask_raises_a_drawn_ask_by_what_its_pool_backs() {
+    let mut r = rig_with(Opts {
+        probe_delegate: true,
+        ..Opts::default()
+    });
+    let listing = r.listing.expect("listed");
+    seed_rooted_pool(&mut r.tw, &r.families, r.shop, 10, LotId(0xc1));
+    let before = market_of(&r.tw).listing(listing).cloned().expect("listed");
+    let pool_before = pool(&mut r.tw, &r.families, r.shop);
+    assert_eq!(pool_before, (110, 110));
+    let _ = r.tw.take_module_ops();
+    assert_eq!(restock(&mut r.tw, GOD, listing, "iron", 10), Ok(110));
+    let writes = listing_writes(&mut r.tw);
+    assert_eq!(
+        writes,
+        vec![format!("market:listing:{}", listing.0)],
+        "the restock writes one listing and nothing else of the market's"
+    );
+    assert!(
+        r.tw.engine_mut().take_authoritative_submit().is_none(),
+        "nothing staged"
+    );
+    let after = market_of(&r.tw).listing(listing).cloned().expect("listed");
+    assert_eq!(after.quantity, 110);
+    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(after.price, before.price);
+    assert_eq!(after.expires, before.expires);
+    assert_eq!(after.draw, Some(true));
+    assert_eq!(
+        pool(&mut r.tw, &r.families, r.shop),
+        pool_before,
+        "the pool unchanged by the call"
+    );
+
+    // A quote accepted and not yet drawn: the listing reads 100, 10 are undrawn, the pool
+    // holds 110 — nothing is spare until 5 more are seeded, and then exactly 5.
+    let q = quote(&mut r.tw, r.pat, listing, 10);
+    ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", q.0, r.pat_hold.vault().0),
+    );
+    let _undrawn = take(&mut r.tw);
+    assert_eq!(listing_qty(&r.tw, listing), Some(100));
+    assert_eq!(
+        market_of(&r.tw).draw_reading(r.shop, &commodity("iron")),
+        (10, true)
+    );
+    assert_eq!(
+        restock(&mut r.tw, GOD, listing, "iron", 1),
+        Err("That storefront holds less than that, so nothing was restocked.".to_owned())
+    );
+    seed_rooted_pool(&mut r.tw, &r.families, r.shop, 5, LotId(0xc2));
+    assert_eq!(
+        restock(&mut r.tw, GOD, listing, "iron", 6),
+        Err("That storefront holds less than that, so nothing was restocked.".to_owned())
+    );
+    assert_eq!(restock(&mut r.tw, GOD, listing, "iron", 5), Ok(105));
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 20 cut SM.12a (D14, F8, 12a-T15): `restock_ask` refuses, in its order, and
+/// writes nothing.** Each refusal leaves the listing byte-identical, writes no listing
+/// and stages nothing.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm12a_restock_ask_refuses_and_writes_nothing() {
+    let mut r = rig_with(Opts {
+        probe_delegate: true,
+        ..Opts::default()
+    });
+    let listing = r.listing.expect("listed");
+    let unchanged = |r: &mut Rig, said: Result<u64, String>, want: &str| {
+        assert_eq!(said, Err(want.to_owned()));
+        assert!(
+            listing_writes(&mut r.tw).is_empty(),
+            "{want}: nothing written"
+        );
+        assert!(
+            r.tw.engine_mut().take_authoritative_submit().is_none(),
+            "{want}: nothing staged"
+        );
+    };
+    let _ = r.tw.take_module_ops();
+    let pristine = market_of(&r.tw).listing(listing).cloned().expect("listed");
+
+    // 1. No such listing.
+    let said = restock(&mut r.tw, GOD, ListingId(9_999), "iron", 1);
+    unchanged(&mut r, said, "No such listing.");
+
+    // 2. A non-stock listing (a standing bid), for every actor: existence before kind.
+    let vendor = r.vendor;
+    let shop = r.shop.vault();
+    let wanted = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::post_wanted(
+            ctx,
+            mush_market::WantedSpec {
+                vendor,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "ic7".into(),
+                    code: "iron".into(),
+                },
+                price: mush_economy::Amount::from_minor(300),
+                remaining: 5,
+                vault: shop,
+                min_grade: 0,
+                ttl_secs: 86_400,
+            },
+        )
+    })
+    .expect("a standing bid posts");
+    let _ = r.tw.take_module_ops();
+    for actor in [GOD, r.pat] {
+        let said = restock(&mut r.tw, actor, wanted, "iron", 1);
+        unchanged(&mut r, said, "No such listing.");
+    }
+
+    // 3. A buyer on the drawn ask: she may not take from the storefront, so the listing is
+    // hidden — never "Only a drawn ask is restocked."
+    let said = restock(&mut r.tw, r.pat, listing, "iron", 1);
+    unchanged(&mut r, said, "No such listing.");
+
+    // 4. The vault mismatch (12a-T15): a counter (non-lot) stock listing on a vault that is
+    // not the vendor's storefront but one GOD may take from — `list_goods` checks no vault
+    // for a non-lot stock listing — reads "No such listing." at the vendor step, before
+    // the kind check.
+    IRON_REPRESENTATION.with(|rep| rep.set("instrument"));
+    ok(&mut r.tw, GOD, &format!("@market/catalog load {PACK}"));
+    let pat_hold = r.pat_hold.vault();
+    let elsewhere = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(
+            ctx,
+            mush_market::ListingSpec {
+                vendor,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "ic7".into(),
+                    code: "iron".into(),
+                },
+                price: mush_economy::Amount::from_minor(700),
+                quantity: 5,
+                source: mush_market::Supply::Stock { vault: pat_hold },
+                object: None,
+                visibility: mush_market::MarketVisibility::Public,
+                ttl_secs: 86_400,
+            },
+        )
+    })
+    .expect("a counter listing on another vault publishes");
+    // 5. A stock listing that is not drawn, on the vendor's own storefront, as an actor who
+    // may take from it.
+    let counter = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(
+            ctx,
+            mush_market::ListingSpec {
+                vendor,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "ic7".into(),
+                    code: "iron".into(),
+                },
+                price: mush_economy::Amount::from_minor(700),
+                quantity: 5,
+                source: mush_market::Supply::Stock { vault: shop },
+                object: None,
+                visibility: mush_market::MarketVisibility::Public,
+                ttl_secs: 86_400,
+            },
+        )
+    })
+    .expect("a counter listing on the storefront publishes");
+    IRON_REPRESENTATION.with(|rep| rep.set("lot"));
+    ok(&mut r.tw, GOD, &format!("@market/catalog load {PACK}"));
+    let _ = r.tw.take_module_ops();
+    let said = restock(&mut r.tw, GOD, elsewhere, "iron", 1);
+    unchanged(&mut r, said, "No such listing.");
+    let said = restock(&mut r.tw, GOD, counter, "iron", 1);
+    unchanged(&mut r, said, "Only a drawn ask is restocked.");
+
+    // 6. The wrong good; zero; past the market's bound; one unit more than the pool backs.
+    let said = restock(&mut r.tw, GOD, listing, "copper", 1);
+    unchanged(&mut r, said, "That ask does not sell that good.");
+    let said = restock(&mut r.tw, GOD, listing, "iron", 0);
+    unchanged(
+        &mut r,
+        said,
+        "A restock raises an ask by at least one unit.",
+    );
+    let said = restock(&mut r.tw, GOD, listing, "iron", mush_market::MAX_QUANTITY);
+    unchanged(&mut r, said, "That is not a quantity this market sells.");
+    let said = restock(&mut r.tw, GOD, listing, "iron", 1);
+    unchanged(
+        &mut r,
+        said,
+        "That storefront holds less than that, so nothing was restocked.",
+    );
+    assert_eq!(
+        market_of(&r.tw).listing(listing),
+        Some(&pristine),
+        "the drawn ask is byte-identical"
+    );
+
+    // 7. The listing lapsed but not swept (the clock moved with `set_now`, never `at`).
+    let expires = pristine.expires.at;
+    r.tw.set_now(expires);
+    let said = restock(&mut r.tw, GOD, listing, "iron", 1);
+    unchanged(&mut r, said, "No such listing.");
+    assert_eq!(market_of(&r.tw).listing(listing), Some(&pristine));
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 20 cut SM.12a (12a-T15): a retired vendor, a not-trading organization and a
+/// gone vendor refuse in `list_goods`' words** — each on its own rig, the vendor's
+/// document changed in the folded store and the world reloaded (no new state reach);
+/// the organization suspended with the staff verb.
+#[test]
+fn sm12a_restock_ask_refuses_a_vendor_that_cannot_trade() {
+    // The organization suspended.
+    let mut r = rig_with(Opts {
+        probe_delegate: true,
+        ..Opts::default()
+    });
+    let listing = r.listing.expect("listed");
+    seed_rooted_pool(&mut r.tw, &r.families, r.shop, 10, LotId(0xc1));
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@org/status #{}=suspended", VENDOR_ORG.0),
+    );
+    let before = market_of(&r.tw).listing(listing).cloned();
+    let _ = r.tw.take_module_ops();
+    assert_eq!(
+        restock(&mut r.tw, GOD, listing, "iron", 1),
+        Err("That vendor's organization is not trading.".to_owned())
+    );
+    assert_eq!(market_of(&r.tw).listing(listing).cloned(), before);
+    // T8: nothing written, nothing staged.
+    assert!(
+        listing_writes(&mut r.tw).is_empty(),
+        "suspended: nothing written"
+    );
+    assert!(
+        r.tw.engine_mut().take_authoritative_submit().is_none(),
+        "suspended: nothing staged"
+    );
+
+    // The vendor retired, and gone, by a reload of the folded store.
+    for (edit, want) in [
+        ("retired", "That vendor has retired and is not trading."),
+        ("gone", "No such vendor."),
+    ] {
+        let mut r = rig_with(Opts {
+            probe_delegate: true,
+            ..Opts::default()
+        });
+        let listing = r.listing.expect("listed");
+        seed_rooted_pool(&mut r.tw, &r.families, r.shop, 10, LotId(0xc1));
+        let key = format!("market:vendor:{}", r.vendor.0);
+        let mut boot = mush_testkit::fold_module_ops(r.tw.take_module_ops());
+        {
+            let docs = boot.get_mut(mush_market::NS).expect("market documents");
+            let found = docs.kv.iter().any(|(k, _)| k.as_str() == key);
+            assert!(found, "the vendor document was folded");
+            if edit == "gone" {
+                docs.kv.retain(|(k, _)| k.as_str() != key);
+            } else {
+                for (k, value) in &mut docs.kv {
+                    if k.as_str() == key {
+                        value["status"] = json!("retired");
+                    }
+                }
+            }
+        }
+        r.tw.modules_loaded(boot);
+        let Some(before) = market_of(&r.tw).listing(listing).cloned() else {
+            panic!("{edit}: the listing must still load for the pin to mean anything");
+        };
+        let _ = r.tw.take_module_ops();
+        assert_eq!(
+            restock(&mut r.tw, GOD, listing, "iron", 1),
+            Err(want.to_owned()),
+            "{edit}"
+        );
+        assert_eq!(market_of(&r.tw).listing(listing), Some(&before), "{edit}");
+        // T8: nothing written, nothing staged.
+        assert!(
+            listing_writes(&mut r.tw).is_empty(),
+            "{edit}: nothing written"
+        );
+        assert!(
+            r.tw.engine_mut().take_authoritative_submit().is_none(),
+            "{edit}: nothing staged"
+        );
+    }
+}
+
+/// **Doc 20 cut SM.12a (F6): a second restock of the same units is refused** by the
+/// backing check — the market's own guard against a double restock.
+#[test]
+fn sm12a_a_second_restock_of_the_same_units_is_refused() {
+    let mut r = rig_with(Opts {
+        probe_delegate: true,
+        ..Opts::default()
+    });
+    let listing = r.listing.expect("listed");
+    seed_rooted_pool(&mut r.tw, &r.families, r.shop, 10, LotId(0xc1));
+    assert_eq!(restock(&mut r.tw, GOD, listing, "iron", 10), Ok(110));
+    let first = market_of(&r.tw).listing(listing).cloned();
+    let _ = r.tw.take_module_ops();
+    assert_eq!(
+        restock(&mut r.tw, GOD, listing, "iron", 10),
+        Err("That storefront holds less than that, so nothing was restocked.".to_owned())
+    );
+    assert!(listing_writes(&mut r.tw).is_empty());
+    assert_eq!(market_of(&r.tw).listing(listing).cloned(), first);
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 20 cut SM.12a (F4, D16, O-4's default): a restock makes an open quote stale.**
+/// The restock bumps the listing's revision, so the buyer's accept of the quote she took
+/// before it is refused with exactly `STALE_QUOTE` and nothing is charged; a new quote then
+/// accepts.
+#[test]
+fn sm12a_a_restock_makes_an_open_quote_stale() {
+    let mut r = rig_with(Opts {
+        probe_delegate: true,
+        ..Opts::default()
+    });
+    let listing = r.listing.expect("listed");
+    let q = quote(&mut r.tw, r.pat, listing, 10);
+    seed_rooted_pool(&mut r.tw, &r.families, r.shop, 10, LotId(0xc1));
+    assert_eq!(restock(&mut r.tw, GOD, listing, "iron", 10), Ok(110));
+    let refused = err(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", q.0, r.pat_hold.vault().0),
+    );
+    assert!(refused.contains(STALE_QUOTE), "{refused}");
+    assert!(
+        market_of(&r.tw)
+            .quote(q)
+            .is_some_and(|q| q.contract.is_none())
+    );
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    assert_eq!(posted(&r.tw, r.pat_account), FUNDS, "nothing charged");
+    assert_eq!(held(&r.tw, r.pat_account), 0);
+    assert_eq!(listing_qty(&r.tw, listing), Some(110));
+    let fresh = quote(&mut r.tw, r.pat, listing, 10);
+    let agreed = ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", fresh.0, r.pat_hold.vault().0),
+    );
+    assert!(agreed.contains("Contract #"), "{agreed}");
+    assert_eq!(listing_qty(&r.tw, listing), Some(100));
+    let contract = contract_of(&r.tw, fresh);
+    land(&mut r.tw, 0xd1).expect("the draw lands");
+    settle(&mut r.tw, contract);
+    no_settlement_pages(&r.tw);
+}

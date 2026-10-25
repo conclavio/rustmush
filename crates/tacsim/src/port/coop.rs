@@ -764,6 +764,9 @@ pub const fn gated(binding: Binding) -> bool {
         // Doc 20 cut SM.5: the prospecting licence is reported, never gated — mining
         // content never closes the trade-run desk (the SM.1–SM.3a rule).
         Binding::Licence => false,
+        // Doc 20 cut SM.12a: a mill's ledger is reported, never gated; its fault closes the
+        // desk only through the gated Listings line of the good it makes (D15).
+        Binding::Mill => false,
     }
 }
 
@@ -800,9 +803,12 @@ pub fn shuts(line: &ReadinessLine) -> bool {
 /// hand-withdrawn or apply-waiting bid, closes enrolment; a lapsed bid the clerk
 /// re-posts, or a bid whose house cannot fund a tonne, reads Pending and (since cut
 /// P-B) leaves the desk open, unlike a Pending Listings line (seeded stock the arm
-/// has not listed yet), which closes it; an exhausted bid (quantity 0, "not
-/// buying") reads Ready. The draw mirror's lag is inside Ready (`q ≤ p ≤ q +
-/// undrawn`). [`Readiness::summary`] still reports every line, so a flagged sky or a
+/// has not listed yet), which closes it; an exhausted bid (quantity 0, "not buying")
+/// reads Ready. The Listings line compares the listing's quantity `q` with the net pool,
+/// the storefront's pool `p` less the units its mills made and the clerk has not listed
+/// yet (`u`, doc 20 cut SM.12a), and the draw mirror's lag is inside Ready (`q ≤ p − u ≤
+/// q + undrawn`): milled stock not yet listed reads Ready with its clause and never
+/// closes the desk. [`Readiness::summary`] still reports every line, so a flagged sky or a
 /// pending bid reads "Not ready" on `@tacsim/port status` while enrolment is open.
 /// A player never sees the failing line: `+coop/enrol` logs it and answers
 /// [`NOT_OPEN`].
@@ -2029,7 +2035,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 20] = [
+        const EVERY: [Binding; 21] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -2052,6 +2058,8 @@ mod tests {
             Binding::Vehicles,
             // Doc 20 cut SM.5: reported, never gated.
             Binding::Licence,
+            // Doc 20 cut SM.12a: reported, never gated.
+            Binding::Mill,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2077,6 +2085,7 @@ mod tests {
                     | Binding::Site
                     | Binding::Vehicles
                     | Binding::Licence
+                    | Binding::Mill
             );
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
