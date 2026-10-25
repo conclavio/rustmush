@@ -1142,7 +1142,13 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(!seen.contains("Locked on"), "{seen}");
 
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
-    let locked = poll_whole(&mut ada, "WEAPONSTATUS", "Locked on").await;
+    // The lock's own notice (`Locked on BA, 69% to hit.`) can land inside a
+    // `WEAPONSTATUS` answer that still renders the frame before the lock, so
+    // `Locked on` alone can be the notice. A weapon row carries its range band
+    // only in a frame that holds the lock ("no lock, no band"), and the notice
+    // never does.
+    let locked = poll_whole(&mut ada, "WEAPONSTATUS", "round(s)  band ").await;
+    assert!(locked.contains("Locked on"), "{locked}");
     assert!(locked.contains(&named), "the lock is the contact: {locked}");
     assert!(
         locked.contains("% to hit"),

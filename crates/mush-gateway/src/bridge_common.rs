@@ -61,6 +61,26 @@ const DELIVERY_BARRIER_ATTEMPTS: usize = 3;
 const DELIVERY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const DELIVERY_BARRIER_RETRY_DELAY: Duration = Duration::from_millis(25);
 
+/// How long a failed command-reply barrier waits for the supervisor to raise a
+/// restart gap before the producer is treated as live but unresponsive. A world
+/// that died answers `Unavailable` from a server process that is itself about to
+/// exit, a little before the supervisor sees the exit and raises the gap.
+const REPLY_RESTART_GRACE_POLLS: u32 = 80;
+const REPLY_RESTART_POLL: Duration = Duration::from_millis(25);
+
+/// How one ordered delivery barrier ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarrierEnd {
+    /// The exact `Barrier` came back.
+    Completed,
+    /// The boundary went down under the request: the producer that owed the
+    /// reply is gone with it, so none of its output can arrive late.
+    LinkLost,
+    /// Busy, unavailable, timed out or answered with the wrong response: the
+    /// producer may still be live and emitting.
+    Failed,
+}
+
 /// Hard cap on one narrative-backlog reply (interface plan I12), mirroring the
 /// comsys `MAX_BACKLOG_LIMIT`. The ring itself is only `resume_ring` deep, so a
 /// single pull can never exceed it.
@@ -291,6 +311,19 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     pub(crate) async fn delivery_barrier(&self, conn: ConnId, operation: &'static str) -> bool {
         self.ordered_barrier(conn, operation, ServiceReq::Barrier)
             .await
+            == BarrierEnd::Completed
+    }
+
+    /// Whether a restart gap is raised within [`REPLY_RESTART_GRACE_POLLS`]
+    /// polls: the reply's producer died and the supervisor is relaunching it.
+    async fn restart_follows(&self) -> bool {
+        for _ in 0..REPLY_RESTART_GRACE_POLLS {
+            if self.link.is_restarting() {
+                return true;
+            }
+            tokio::time::sleep(REPLY_RESTART_POLL).await;
+        }
+        self.link.is_restarting()
     }
 
     async fn ordered_barrier(
@@ -298,7 +331,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         conn: ConnId,
         operation: &'static str,
         request: ServiceReq,
-    ) -> bool {
+    ) -> BarrierEnd {
         let deadline = Instant::now() + DELIVERY_BARRIER_TIMEOUT;
         for attempt in 1..=DELIVERY_BARRIER_ATTEMPTS {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -310,11 +343,11 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     Ok(response) => response,
                     Err(_) => {
                         tracing::warn!(conn = conn.0, operation, "delivery barrier timed out");
-                        return false;
+                        return BarrierEnd::Failed;
                     }
                 };
             match response {
-                Some(ServiceResp::Barrier) => return true,
+                Some(ServiceResp::Barrier) => return BarrierEnd::Completed,
                 Some(ServiceResp::Busy) if attempt < DELIVERY_BARRIER_ATTEMPTS => {
                     tracing::warn!(
                         conn = conn.0,
@@ -332,15 +365,23 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         attempts = DELIVERY_BARRIER_ATTEMPTS,
                         "delivery barrier remained busy; degrading to bounded teardown"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
                 }
-                Some(ServiceResp::Unavailable) | None => {
+                Some(ServiceResp::Unavailable) => {
                     tracing::warn!(
                         conn = conn.0,
                         operation,
                         "delivery barrier unavailable; degrading to bounded teardown"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
+                }
+                None => {
+                    tracing::warn!(
+                        conn = conn.0,
+                        operation,
+                        "delivery barrier lost its boundary; degrading to bounded teardown"
+                    );
+                    return BarrierEnd::LinkLost;
                 }
                 Some(other) => {
                     tracing::error!(
@@ -349,7 +390,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         ?other,
                         "delivery barrier returned the wrong response type"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
                 }
             }
         }
@@ -358,7 +399,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             operation,
             "delivery barrier deadline elapsed; degrading to bounded teardown"
         );
-        false
+        BarrierEnd::Failed
     }
 
     /// The actor a connection is playing, if attached.
@@ -1029,14 +1070,17 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         if outcome == LineOutcome::Close {
             return outcome;
         }
-        let completed = !forwarded
-            || self
-                .ordered_barrier(
-                    conn,
-                    "command reply",
-                    ServiceReq::ReplyBarrier { conn: conn.0 },
-                )
-                .await;
+        let barrier = if forwarded {
+            self.ordered_barrier(
+                conn,
+                "command reply",
+                ServiceReq::ReplyBarrier { conn: conn.0 },
+            )
+            .await
+        } else {
+            BarrierEnd::Completed
+        };
+        let completed = barrier == BarrierEnd::Completed;
         if !completed {
             send_event_to_conn(
                 &self.sessions,
@@ -1054,7 +1098,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 OutputEvent::Sys(RichText::tag(mush_core::OUTPUT_SUFFIX_TAG, suffix)),
             );
         }
-        if !completed && !self.link.is_restarting() {
+        // A boundary that went down under the barrier left no producer to emit
+        // late output; the supervisor's restart notice follows, and the session
+        // rides the restart exactly as it does once the gap is already raised.
+        if !completed && barrier != BarrierEnd::LinkLost && !self.restart_follows().await {
             // A live but unresponsive producer could still emit late output. End
             // this physical connection rather than place it inside the next reply.
             send_event_to_conn(
