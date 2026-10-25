@@ -158,7 +158,7 @@ pub const DISPATCH_STOPPED: &str = "{entry} dispatch {org}: rig {n} ({mark}) sto
 pub const DISPATCH_HELD: &str =
     "{entry} dispatch {org}: rig {n} ({mark}) is held by staff; strike its plan to start it again.";
 /// Order 5d (Flagged): `{n}`, `{mark}`.
-pub const DISPATCH_STALLED: &str = "{entry} dispatch {org}: rig {n} ({mark}) holds ore its last unload left in the hopper. Staff unload it as the dispatcher (+tv/{n} unload) to start it again.";
+pub const DISPATCH_STALLED: &str = "{entry} dispatch {org}: rig {n} ({mark}) holds ore its last unload left in the hopper. Staff unload it as the dispatcher (+tv/{n} unload go) to start it again.";
 /// Order 6 (Ready): `{rigs}`, `{hull}`.
 pub const DISPATCH_NOT_OPEN: &str = "{entry} dispatch {org}: {rigs} in the {hull}'s bay; the site is not open, so nothing is filed.";
 /// Order 7 (Pending).
@@ -3277,7 +3277,7 @@ mod tests {
                 LineState::Flagged,
                 format!(
                     "{head}rig 1 (OWP-YT-01) holds ore its last unload left in the hopper. Staff \
-                     unload it as the dispatcher (+tv/1 unload) to start it again."
+                     unload it as the dispatcher (+tv/1 unload go) to start it again."
                 )
             )
         );

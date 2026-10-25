@@ -1396,12 +1396,14 @@ pub(crate) fn count(
     tv: ObjId,
     which: fn(&DecideCounters) -> &std::sync::atomic::AtomicU64,
 ) {
+    // The slot first: production registers none, so it never pays the yard scan.
+    let Some(counters) = w.module_state::<PlanCounters>() else {
+        return;
+    };
     if crate::port::yard::is_yard_rig(w, tv) {
         return;
     }
-    if let Some(counters) = w.module_state::<PlanCounters>() {
-        which(&counters.0).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
+    which(&counters.0).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Bump the dispatchers' compile counter (doc 20 cut SM.12b; [`DecideCounters::house_compiles`]).

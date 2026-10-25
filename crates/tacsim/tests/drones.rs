@@ -130,6 +130,13 @@ struct Rig {
     held: Vec<ObjId>,
 }
 
+/// Whether a heard line names a rig: the word itself, never the "rig" inside `HEARD_HERE`'s
+/// "right under you".
+fn names_a_rig(line: &str) -> bool {
+    line.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|word| word.eq_ignore_ascii_case("rig"))
+}
+
 fn no_refused_writes(tw: &TestWorld) {
     let refused = tw.world().refused_namespace_writes();
     assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
@@ -2151,7 +2158,8 @@ fn sm12b_the_drones_mine_deliver_and_never_sell() {
             if line.starts_with("A sounding thumps through the ground") {
                 heard_total += 1;
                 *heard_hours.entry(ic_now(&rig.tw) / 3_600).or_insert(0) += 1;
-                for forbidden in ["OWP", "Occator", "ice", "rig", "#", "F1", "G1"] {
+                assert!(!names_a_rig(line), "a heard line names no rig: {line}");
+                for forbidden in ["OWP", "Occator", "ice", "#", "F1", "G1"] {
                     assert!(
                         !line.contains(forbidden),
                         "a heard line names nothing: {line}"
@@ -2704,8 +2712,8 @@ fn sm12b_a_stalled_rig_is_named_and_resumes_after_a_hand_unload() {
     );
     until_surveyed(&mut rig);
     let stalled = "occator_port dispatch occator: rig 1 (OWP-YT-01) holds ore its last unload left \
-                   in the hopper. Staff unload it as the dispatcher (+tv/1 unload) to start it \
-                   again. [flagged]";
+                   in the hopper. Staff unload it as the dispatcher (+tv/1 unload go) to start \
+                   it again. [flagged]";
     assert_eq!(dispatch_line(&mut rig.tw), stalled);
     // Three re-arm intervals (25 fires each at rate 24): rig 1 never filed, rig 2 files.
     let mut rig_two_filed = false;
@@ -3328,7 +3336,8 @@ fn sm12b_players_see_the_drones_as_other_rigs() {
             }),
         "SM.4a's bearing-and-band line: {heard}"
     );
-    for forbidden in ["OWP", "Occator", "ice", "rig", "#", "dispatcher"] {
+    assert!(!names_a_rig(&heard), "a heard line names no rig: {heard}");
+    for forbidden in ["OWP", "Occator", "ice", "#", "dispatcher"] {
         assert!(
             !heard.contains(forbidden),
             "a heard line names nothing: {heard}"

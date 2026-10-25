@@ -4879,3 +4879,14 @@ The builder measured `stock()` reading Ready at 98 fires in sm_story and 96–99
 - The 5d remedy text should read `+tv/{n} unload go`, for the owner under O-18.
 
 **Doc 15b.** The relay seed is v4 for lane 15. The relay live scripts are stale.
+
+### The lead's follow-up (after the commit)
+
+Four of the judge's residuals, fixed by hand on `1b5dd371` and committed on their own:
+
+1. **Order 5d's remedy works as written.** `yard::DISPATCH_STALLED` now names `+tv/{n} unload go`; the bare `+tv/{n} unload` it named is a preview that commits nothing, so staff typing it literally left the rig stalled. The unit pin in `yard.rs` and T6b's whole-line pin move with it. This settles the O-18 text item above: a remedy that does not work is a defect, not house voice.
+2. **`TvLease::HOUSE_LEASE`'s doc** no longer claims no contract is numbered 0 (mush-economy numbers contracts from 0); it says why no stored rig lease can be: a rig is leased into a chartered hull's bay, whose charter contract is always opened first.
+3. **`plan::count` reads its test-only slot before the yard scan**, so production (which registers no `PlanCounters`) never pays `yard::is_yard_rig`'s scan on a decide, a leg or a compile.
+4. **T5's and T15's heard-line checks** match "rig" as a whole word (`names_a_rig`), so `HEARD_HERE`'s "right under you" no longer fails them falsely.
+
+Verified: `rustfmt --check --edition 2024` on the four files; `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` clean; `cargo test -j 8 -p tacsim --lib` 1,505 passed, 1 ignored; `cargo test -j 8 -p tacsim --test drones` 22 passed in 187.33 s.

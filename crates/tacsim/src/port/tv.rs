@@ -1056,8 +1056,10 @@ impl TvLease {
         self.status != TvLeaseStatus::Returned
     }
 
-    /// The lease word a house view carries: no contract is ever numbered 0, and
-    /// [`TvLease::check`] refuses it, so a house view can never be stored or mistaken for one.
+    /// The lease word a house view carries. [`TvLease::check`] refuses it, so a house view can
+    /// never be stored or mistaken for one. mush-economy numbers contracts from 0, so a stored
+    /// rig lease on contract 0 would read unreadable; none can exist, because a rig is leased
+    /// into a chartered hull's bay and that hull's charter contract is always opened first.
     pub const HOUSE_LEASE: u64 = 0;
 
     /// **The house's standing over its own rig, in the lease's shape** (doc 20 cut SM.12b; the
