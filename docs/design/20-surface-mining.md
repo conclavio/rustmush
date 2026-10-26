@@ -1686,6 +1686,17 @@ Dray-P leave 42 t by mass but 2,000 L) a metals plan previews 4 t of room, an ic
 refused, and the end line names the room left in the plan's ore. The `site.map` frame's hold line
 stays the mass entry (doc 20a §10, SM.11r-2; the owner's external review of 2026-10-23).
 
+**As built (the SM.12c-lane follow-up, 2026-10-26): a list with nothing left to mine is refused.**
+The compile refuses, after it builds the steps, a list that sounds nothing new and whose every
+pocket the walk could take is worked out — a named pocket, or a block's pocket the author reads fair
+or better in the family — on the public worked-out pits ("Every map shows this pit worked out"), the
+walk's own test (`PlanRefusal::NothingLeft`): "That list has nothing left to mine in {family}: no
+pocket you read there is fair or better and unworked, and nothing is left to sound; a plan would end
+at once." (the owner's wording). Such a plan used to file, preview about 0 IC h and end "its list is
+worked out" at once; a list with a field still to sound still files, since a sounding may read ore
+the author has not. The 30-TV month's metal plan pilots filed exactly such plans over worked-out
+metal blocks and came home with nothing (§16).
+
 **As built (SM.12b): the house re-arms, players never.** "It never re-arms" holds for every player's
 plan; the NPC house's plans are re-armed (O-14, the owner's provisional ruling of 2026-10-24).
 Occator's dispatcher files its rigs' fill plans through the player's own compiler, and
@@ -2592,8 +2603,10 @@ lane's. The planner took no lead rulings and named no owner-critical item of its
 the owner: O-19c, the economy's per-party live-contract cap at cohort scale.**
 `mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY` (32) refuses every Draw and stake once Occator holds 64
 leases and the Co-op Trust and the Registry 32 each, so a 64-TV world STOPs at its kit-up; even at
-30 TVs, the largest cohort the cap admits, 170 bunker Draws hit the cap transiently. The lead's
-default, standing until the owner rules: the cohort runs at 30 TVs (`scripts/cost-lane.sh`'s
+30 TVs, the largest cohort the cap admits, 170 bunker Draws hit the cap transiently, and in play a
+third ice sale to Occator settling at once (its 30 rig leases live) is refused "contract exceeds a
+cap" and holds its sailing plan until resumed (three in the month after the 2026-10-26 follow-up,
+§16). The lead's default, standing until the owner rules: the cohort runs at 30 TVs (`scripts/cost-lane.sh`'s
 default) and the cap is not raised by the cost lane; raising it is a mush-economy change, the
 owner's to make before any 64-TV month.
 
@@ -2786,13 +2799,28 @@ applied mirror** (O-27): the pre-(c) smoke projected a mirror of about 4,060 aga
 STOP, so decision (c) was built, and with the unload's hopper markers kept one real hour the
 month's mirror peaked at 1,117, the rings' least headroom 121, with no `PlanWait::Markers`,
 `unload_markers`, `MarkersFull` or back-pressure; the SM.8 note's 128 markers younger than a real
-day still holds for every other endpoint. Two findings from the month for the owner. **The 30-TV
-month's load decays** as the even-index plan pilots exhaust metal ore and park: seven of the fifteen
-pilots parked between IC days 11.9 and 24.5, all even-index metal-family plan pilots, "dry" being
-per pilot and per family (metal exhaustion, not site exhaustion; reported, not asserted) — a plan
-filed over worked-out metal blocks mines nothing, a possible SM.11 product item. **The Ceres clerk
-sat idle in 177 port fires while a mill batch was due**: either the one-act slot binds or the
-batch-due predicate is stricter than `mill_step` (report-only; unread). A lead item, not fixed:
+day still holds for every other endpoint. **The month's two findings, investigated (the
+follow-up of 2026-10-26).** *The Ceres clerk never starved the mill*: the 177 "idle while a batch
+was due" fires were judged after the step that held the port fire, when the step's landings (the
+dispatcher's deliveries) and the pilots' sales had already put the ore in the storefront; at the
+clerk's own decision no batch was due in any of them, and every one milled at the next port fire
+(5 real s). The month now judges a step due as the fire begins, and reads 0. *The load's decay was
+the month script, then real depletion*: 33 of the 38 dry loops were metal plans over blocks whose
+every fair metal pocket was worked out while 17–33 fair ice pockets a block remained, and the script
+switched family only on a refused filing — which a plan over worked-out blocks never was (the new
+`NothingLeft` refusal, §8, closes that); it also counted a plan a claim ended as dry. With the
+compile refusal, a dry loop marking only its family dry at the site, and only the ground's verdict
+(`WorkedOut`) counting, the 30-TV month's loops a pilot rose from 17–40 to 34–54 and three pilots
+parked, all after IC day 26, once their loops had found both families worked out at every Ceres
+site — at 30 TVs the open ground the plans can file over runs out within the month, metal first
+(the month's "sites first dry" figures also carry the hand pilots' own dry calls, so they are no
+measure of the ground). *The per-party contract cap binds in play* (O-19c): with 30 rig leases
+live, Occator has room for two sale contracts settling at once, and a third ice sale is refused
+"contract exceeds a cap: a party is already on the most live contracts allowed" and its sailing plan
+holds until resumed (three holds in the month; the script resumes them as a player would). The
+month's "stuck" reads progress now (a phase change, or a queued plan's cursor, cycles, trips or
+sailing plan moving), not phase age: a plan still mining a day on leaner, contended ground is not
+stuck. A lead item, not fixed:
 `crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance
 included, to "That purchase needs an approval your account rule has not granted yet." Still open:
 the per-party contract cap (O-19c, §15); the double A* (measured, not built, §8); the staff

@@ -5634,3 +5634,31 @@ Written against Draft 0.13 (`20e207a4`), which landed during the run:
 8. **Doc 18 IC14 owner item O7 and E7c2 D1**: the surface unload's hopper markers keep one real hour (`UNLOAD_MARKER_KEEP_S`, O-22); every other marker keeps the day.
 9. **Doc 20a**: its CI anchors (`ci.yml:326` etc.), its "weekly 17 4 * * 1" cron (now daily), its 12.9 ms / 408 µs peek figures and its `DecideCounters.legs` source of searches are stale (the brief's §10 D-1, D-2, D-4).
 10. **`docs/ops.md`**: the cost-lane run. Run `scripts/cost-lane.sh` by hand after `harness-weekly.sh`, never beside it and never on a serving host. It runs `TACSIM_COHORT_TVS=30` by default and writes `cost-lane.json` at the root. Note that a rollback past this cut cannot decode a hopper ring that carries `keep_s`.
+
+### The lead's follow-up (2026-10-26): the month's two findings, and the fixes
+
+The owner asked for the causes of the two findings this cut left unread, then for the fixes. A temporary diagnostic month (never committed; the 30-TV month is deterministic, every park on the same fire as the fixer's run) found:
+
+1. **The Ceres clerk never starved the mill.** Every one of the 177 "idle while a batch was due" fires was judged after the step holding the port fire, when the step's landings (the Occator dispatcher's deliveries) and the pilots' ore sales had already put the ore in the storefront. At the clerk's decision no batch was due in any of them, and each milled at the next port fire, 5 real s later.
+2. **The parked pilots were the month script, then real depletion.** 33 of the 38 dry loops were metal plans over blocks whose every fair metal pocket was worked out, with 17–33 fair ice pockets a block left. The script switched family only on a refused filing, and the compile never refused a list with nothing left: such a plan filed, previewed about 0 IC h and ended "its list is worked out" at once. One more loop ended `Claimed` (another pilot's stake) with 65 fair metal pockets unreached and was counted dry. From about IC day 16 some loops found nothing fair in either family.
+
+The fixes, in one commit:
+
+- **Product: `PlanRefusal::NothingLeft`** (`crates/tacsim/src/surface/plan.rs`, rule 7b; `CompileInput.pit_out`, the walk's own `site_map::pit_exhausted` over the warm ground, wired in `act::plan_ask`): a list that sounds nothing new and whose every pocket the walk could take is worked out is refused with `tv::PLAN_NOTHING_LEFT`, the owner's approved wording: "That list has nothing left to mine in {family}: no pocket you read there is fair or better and unworked, and nothing is left to sound; a plan would end at once." A list with a field still to sound still files. The house's dispatcher already backs off a re-arm interval on any compile refusal, and the start offer's re-compile answers a changed compile `plan_changed`. Unit test `sm12c_a_list_with_nothing_left_to_mine_is_refused`; the text joins `tv.rs`'s inventory.
+- **The month script** (`crates/tacsim/tests/cost_lane.rs`): the clerk's due steps are read as the fire begins (`due_at_decision`); a plan pilot's dry loop marks only the family it filed in dry at the site (`Pilot::dry_families`), the site dry only once both are; a loop is dry only if every plan ended `WorkedOut` (the ground's verdict, never a right's); a stopped sailing-plan hold is resumed a minute later as a player would (`queue_held`, counted `queue.held.<reason>`); and "stuck" reads progress (`Pilot::progress_ic`: a phase change, or a queued plan's cursor, cycles, trips or sailing-plan revision moving, read every 60 fires), not phase age.
+
+The fixes surfaced one more real effect: **the per-party contract cap binds in play** (O-19c). With 30 rig leases live, Occator has room for two sale contracts settling at once; a third ice sale is refused "contract exceeds a cap: a party is already on the most live contracts allowed" and its sailing plan holds until resumed. Three such holds in the month, each resumed.
+
+**The month after the fixes** (`TACSIM_COHORT_TVS=30`, release, 506 s wall): no breach.
+
+| Figure | Before | After |
+|---|---|---|
+| Loops a pilot (min / median / max) | 17 / 30 / 40 | 34 / 47 / 54 |
+| Pilots parked | 7, from IC day 11.9 | 3, IC days 26–28 |
+| Clerk idle with a step due | 177 (batch) | 0 |
+| Plans refused `NothingLeft` | — | 178 |
+| Sailing-plan holds resumed (contract cap) | — | 3 |
+| Surface fire p99 | 2,077 µs | 1,610 µs |
+| Ore mined | 25,739 t | 32,302 t |
+
+**Verified:** `rustfmt --check --edition 2024` on the four changed files; `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` clean; `cargo test -j 8 -p tacsim --lib` 1,761 passed; `--test plans` 28, `--test drones` 22, `--test claims` 35, `--test cost_lane` 12 (the month ignored), `--test orders` 34, `--test sale` 18; `cargo test -j 8 -p mush-server --test ic_slice_loop --test sm_story` 12 and 2; `cargo test -j 8 -p mush-contract-tests` 33 runs ok; the month by hand as above. Doc 20 §8, §15 (O-19c) and §16 carry the as-built notes.

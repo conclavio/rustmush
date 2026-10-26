@@ -4555,7 +4555,26 @@ struct Pilot {
     dry: bool,
     /// The Ceres sites this pilot's own loops came home dry from (it looks elsewhere).
     dry_sites: BTreeSet<&'static str>,
+    /// **The families a plan pilot's loops came home dry of, per site** (the owner's ask of
+    /// 2026-10-26, after the investigation of the month's parked pilots): a site is dry for the
+    /// pilot only once both ore families are, so a metal pilot whose metal is worked out mines the
+    /// ice still there rather than leaving the site.
+    dry_families: BTreeSet<(&'static str, &'static str)>,
+    /// The family the pilot's plans were filed in on this loop (`None` before a filing).
+    filed_family: Option<&'static str>,
+    /// **The IC instant the pilot last made progress** (the brief's "stuck": a step or a queue
+    /// that has not advanced for an IC day, waits included): a phase change, or in the plan's
+    /// queue its rigs' plan cursors, cycles or trips or its hull's sailing-plan revision moving
+    /// (read every [`PROGRESS_EVERY`] fires). Phase age alone flagged a plan still mining a day
+    /// on contended, leaner ground (the 2026-10-26 month, after the dry-rule fix).
+    progress_ic: i64,
+    /// What the progress clock last read: the rigs' cursors, cycles and trips summed, and the
+    /// sailing plan's revision.
+    progress_sig: (u64, u64),
 }
+
+/// How often, in fires, the month reads a queued pilot's progress.
+const PROGRESS_EVERY: u64 = 60;
 
 /// What the cohort counted.
 #[derive(Clone, Debug, Default)]
@@ -4661,6 +4680,24 @@ fn hold_ore(tw: &mut TestWorld, hold: VaultId) -> u64 {
 }
 
 /// Whether the hull's captain's queue has run out (every order done or skipped), or there is none.
+/// **The reason a hull's sailing plan stands stopped** (`PlanState::Held` with a stopped hold,
+/// `retry: false`): it waits for `+ship/order resume`, as a player's would. A waiting hold
+/// (`retry: true`) clears by itself and is not one.
+fn queue_held(tw: &TestWorld, hull: ObjId) -> Option<String> {
+    match store(tw).orders_state(hull) {
+        tacsim::port::orders::OrdersState::Present(orders)
+            if orders.state == tacsim::port::orders::PlanState::Held =>
+        {
+            orders
+                .hold
+                .as_ref()
+                .filter(|hold| !hold.retry)
+                .map(|hold| hold.reason.clone())
+        }
+        _ => None,
+    }
+}
+
 fn queue_done(tw: &TestWorld, hull: ObjId) -> bool {
     match store(tw).orders_state(hull) {
         tacsim::port::orders::OrdersState::Present(orders) => orders.orders.iter().all(|o| {
@@ -4855,19 +4892,31 @@ fn leave_ship(rig: &mut Rig, who: ObjId) {
 
 /// **Whether a plan pilot's loop came home dry**: its filing found the site yields it nothing
 /// (`Pilot::dry`: no open block read, or every plan refused for the ground), or its rigs' plans
-/// (this loop's, `Pilot::filed`) moved no tonne into a hopper (`PlanTally::tonnes`). A loop
-/// that filed nothing because of its hold is not the site's.
+/// (this loop's, `Pilot::filed`) moved no tonne into a hopper (`PlanTally::tonnes`) **and every
+/// one of them ended worked out** — the ground's own verdict. A loop that filed nothing because of
+/// its hold is not the site's, and neither is a plan a right or the world ended (`Claimed`,
+/// `Licence`, `Lease`, `Dark`, `Stranded`, …: the investigation of 2026-10-26 found a plan ended
+/// `Claimed` by another pilot's stake counted dry with 65 fair metal pockets still unreached).
 fn plan_loop_dry(rig: &mut Rig, p: &Pilot) -> bool {
     if !p.filed {
         return p.dry;
     }
-    let tonnes: u64 = p
+    let plans: Vec<tacsim::surface::plan::FillPlan> = p
         .rigs
         .iter()
         .filter_map(|tv| record_of(&mut rig.tw, *tv).and_then(|record| record.plan))
-        .map(|plan| u64::from(plan.tally.tonnes))
-        .sum();
+        .collect();
+    let tonnes: u64 = plans.iter().map(|plan| u64::from(plan.tally.tonnes)).sum();
     tonnes == 0
+        && plans.iter().all(|plan| {
+            matches!(
+                plan.state,
+                tacsim::surface::plan::FillState::Ended {
+                    why: tacsim::surface::plan::PlanEnd::WorkedOut,
+                    ..
+                }
+            )
+        })
 }
 
 impl Cohort {
@@ -4875,6 +4924,7 @@ impl Cohort {
     fn enter(pilot: &mut Pilot, phase: Phase, now_ic: i64) {
         pilot.phase = phase;
         pilot.since_ic = now_ic;
+        pilot.progress_ic = now_ic;
         pilot.heard.clear();
     }
 
@@ -4885,8 +4935,39 @@ impl Cohort {
     /// site that yields it nothing; with none left it parks. Otherwise, or after the move, the
     /// pilot bunkers for its (new) site.
     fn after_loop(&mut self, p: &mut Pilot, dry: bool, now_ic: i64) {
+        let filed_family = p.filed_family.take();
         p.filed = false;
         p.dry = false;
+        // A plan pilot's dry loop marks the family it filed in dry at the site (or both, when
+        // nothing filed); the site is dry only once both families are (the owner's ask of
+        // 2026-10-26): the pilot stays and tries the other family next loop.
+        let dry = if dry && p.mode == Mode::Plan {
+            match filed_family {
+                Some(family) => {
+                    let _ = p.dry_families.insert((p.site, family));
+                }
+                None => {
+                    let _ = p.dry_families.insert((p.site, "metal_ore"));
+                    let _ = p.dry_families.insert((p.site, "ice_ore"));
+                }
+            }
+            let both = ["metal_ore", "ice_ore"]
+                .iter()
+                .all(|family| p.dry_families.contains(&(p.site, *family)));
+            if !both {
+                println!(
+                    "cost_lane: pilot {} came home dry of {} at {}; it tries the other family \
+                     there (fire {})",
+                    p.index,
+                    filed_family.unwrap_or("?"),
+                    p.site,
+                    self.fire
+                );
+            }
+            both
+        } else {
+            dry
+        };
         if dry && let Some(at) = CERES_SITES.iter().position(|(site, _)| *site == p.site) {
             let _ = self.worked_out.entry(p.site).or_insert(self.fire);
             let _ = p.dry_sites.insert(p.site);
@@ -4924,6 +5005,32 @@ impl Cohort {
         self.fire = self.fire.saturating_add(1);
         let now = rig.tw.world().now();
         let now_ic = ic_now(&rig.tw);
+        // The progress clock of every queued plan pilot (`Pilot::progress_ic`).
+        if self.fire.is_multiple_of(PROGRESS_EVERY) {
+            for p in self
+                .pilots
+                .iter_mut()
+                .filter(|p| p.phase == Phase::PlanQueue)
+            {
+                let mut moved = 0_u64;
+                for tv in &p.rigs {
+                    if let Some(plan) = record_of(&mut rig.tw, *tv).and_then(|record| record.plan) {
+                        moved = moved
+                            .saturating_add(u64::from(plan.cursor))
+                            .saturating_add(u64::from(plan.tally.cycles))
+                            .saturating_add(u64::from(plan.tally.trips));
+                    }
+                }
+                let rev = match store(&rig.tw).orders_state(ObjId(p.row.hull)) {
+                    tacsim::port::orders::OrdersState::Present(orders) => orders.rev,
+                    _ => 0,
+                };
+                if (moved, rev) != p.progress_sig {
+                    p.progress_sig = (moved, rev);
+                    p.progress_ic = now_ic;
+                }
+            }
+        }
         for n in 0..self.pilots.len() {
             let who = self.pilots[n].who;
             let text = said(&rig.tw, &fired.events, who);
@@ -5106,8 +5213,12 @@ impl Cohort {
                 };
                 let mut filed = 0;
                 let mut hold_bound = false;
+                let families: Vec<&'static str> = [p.family, other]
+                    .into_iter()
+                    .filter(|family| !p.dry_families.contains(&(p.site, *family)))
+                    .collect();
                 for (slot, _) in p.rigs.iter().enumerate() {
-                    for family in [p.family, other] {
+                    for family in families.iter().copied() {
                         let line = format!(
                             "+tv/{} plan {} family={family} go",
                             slot + 1,
@@ -5116,6 +5227,7 @@ impl Cohort {
                         let (out, n) = timed_command(rig, tally, (p.who, "tv/plan"), &line);
                         if n > 0 {
                             filed += 1;
+                            p.filed_family.get_or_insert(family);
                             break;
                         }
                         hold_bound |= out.contains("hold");
@@ -5145,6 +5257,20 @@ impl Cohort {
                 Self::enter(p, Phase::PlanQueue, now_ic);
             }
             Phase::PlanQueue => {
+                // A stopped hold (a sale the counter refused, a departure that failed): the pilot
+                // resumes it a minute later, as a player would, and the month counts it by its
+                // reason (`queue.held.<words>`). Found 2026-10-26: at 30 TVs Occator holds 30 live
+                // rig leases against the economy's 32-contract cap per party (O-19c), so a third
+                // ice sale settling at once is refused "contract exceeds a cap" and the plan holds.
+                if let Some(reason) = queue_held(&rig.tw, hull) {
+                    *tally
+                        .skips
+                        .entry(format!("queue.held.{}", refusal_word(&reason)))
+                        .or_insert(0) += 1;
+                    let _ = timed_command(rig, tally, (p.who, "ship/order"), "+ship/order resume");
+                    p.retry_at = self.fire + 60;
+                    return;
+                }
                 if docked_at(&rig.tw, hull).as_deref() == Some("ceres_port")
                     && queue_done(&rig.tw, hull)
                 {
@@ -5620,6 +5746,10 @@ fn c2_world() -> (Rig, Cohort) {
             filed: false,
             dry: false,
             dry_sites: BTreeSet::new(),
+            dry_families: BTreeSet::new(),
+            filed_family: None,
+            progress_ic: ic_now(&rig.tw),
+            progress_sig: (0, 0),
         });
     }
     for _ in 0..12 {
@@ -6836,6 +6966,10 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
             filed: false,
             dry: false,
             dry_sites: BTreeSet::new(),
+            dry_families: BTreeSet::new(),
+            filed_family: None,
+            progress_ic: ic_now(&rig.tw),
+            progress_sig: (0, 0),
         });
     }
     assert!(kit_errors.is_empty(), "the cohort kits up: {kit_errors:?}");
@@ -7015,6 +7149,11 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
                 .queued_authoritative_actors()
                 .any(|actor| actor == clerk)
         });
+        // The Ceres clerk's steps due as the fire begins — the state its port fire decides on (the
+        // investigation of 2026-10-26: judged after the step, every one of the 177 "idle while a
+        // batch was due" fires of the 30-TV month was ore that landed after the clerk had decided,
+        // the step's own landings and the pilots' sales, and milled at the next port fire).
+        let due_at_decision = clerk_due(&mut rig, (levers.mill_batch, levers.mill_per_day));
         let fired = second(&mut rig);
         span.record(&fired);
         day_span.record(&fired);
@@ -7107,8 +7246,8 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
                         .or_insert(0) += 1;
                 }
                 None => {
-                    for step in clerk_due(&mut rig, (levers.mill_batch, levers.mill_per_day)) {
-                        *clerk_idle_due.entry(step).or_insert(0) += 1;
+                    for step in &due_at_decision {
+                        *clerk_idle_due.entry(*step).or_insert(0) += 1;
                     }
                 }
             }
@@ -7205,7 +7344,7 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
                 .iter()
                 .filter(|p| {
                     !matches!(p.phase, Phase::Refused | Phase::Parked)
-                        && ic_now(&rig.tw) - p.since_ic >= DAY
+                        && ic_now(&rig.tw) - p.progress_ic >= DAY
                 })
                 .map(|p| format!("pilot {} {:?}", p.index, p.phase))
                 .collect();
@@ -7266,9 +7405,10 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
                 "idle_while_due_by_step": clerk_idle_due,
                 "own_submission_unlanded_fires": clerk_unlanded,
                 "stock_arm_five_clerks_deferred_max": span.stock_max[2],
-                "note": "a fire in which the Ceres clerk acted on nothing while a step was due, \
-                         counted once for each step due (batch, restock, list, drip; re-pinned \
-                         from stock::stock_step's order)",
+                "note": "a port fire in which the Ceres clerk acted on nothing while a step was \
+                         due as the fire began (the state it decided on), counted once for each \
+                         step due (batch, restock, list, drip; re-pinned from stock::stock_step's \
+                         order)",
             });
             report.frames = json!(
                 frames
@@ -7518,14 +7658,15 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
             }
         }
     }
-    // Stuck: a Ceres-site pilot whose step has not advanced for an IC day, waits included. A
-    // parked pilot is not waiting on the world: every Ceres site came home dry for it, which is
-    // the figure reported beside (`activity.parked`, `activity.worked_out`).
+    // Stuck: a Ceres-site pilot whose step has not advanced for an IC day, waits included
+    // (`Pilot::progress_ic`: a phase change, or a queued plan's cursor, cycles, trips or sailing
+    // plan moving). A parked pilot is not waiting on the world: every Ceres site came home dry for
+    // it, which is the figure reported beside (`activity.parked`, `activity.worked_out`).
     let stuck: Vec<String> = cohort
         .pilots
         .iter()
         .filter(|p| {
-            p.site != VESTA.0 && p.phase != Phase::Parked && ic_now(&rig.tw) - p.since_ic >= DAY
+            p.site != VESTA.0 && p.phase != Phase::Parked && ic_now(&rig.tw) - p.progress_ic >= DAY
         })
         .map(|p| format!("pilot {} {:?}", p.index, p.phase))
         .collect();

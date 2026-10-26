@@ -740,6 +740,9 @@ pub const PLAN_TOO_MANY_STEPS: &str = "That list makes more than {max} steps; na
 /// A full hold: `{name}`.
 pub const PLAN_HOLD_FULL: &str =
     "The {name}'s hold has no unreserved room for another cycle; a plan would only park.";
+/// Nothing left to mine (doc 20 cut SM.12c-lane follow-up): `{family}`. Every pocket the walk could
+/// take is worked out and no sounding is left to make, so a plan would end at once.
+pub const PLAN_NOTHING_LEFT: &str = "That list has nothing left to mine in {family}: no pocket you read there is fair or better and unworked, and nothing is left to sound; a plan would end at once.";
 /// Too long: `{hours}`.
 pub const PLAN_TOO_LONG: &str = "That list needs at least {hours} IC h; a plan works at most 288.";
 /// A plan is live already: `{n}`, `{no}`.
@@ -5063,6 +5066,7 @@ mod tests {
             PLAN_TWICE,
             PLAN_TOO_MANY_STEPS,
             PLAN_HOLD_FULL,
+            PLAN_NOTHING_LEFT,
             PLAN_TOO_LONG,
             PLAN_ALREADY,
             PLAN_NONE,

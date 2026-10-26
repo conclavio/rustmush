@@ -5185,11 +5185,11 @@ pub(crate) fn plan_ask(
         site: berth.name.clone(),
         entry: berth.entry.clone(),
     };
-    match chart::peek_site(w, &berth.entry, peeks) {
-        SitePeek::Warm(_) => {}
+    let ground = match chart::peek_site(w, &berth.entry, peeks) {
+        SitePeek::Warm(ground) => ground,
         SitePeek::Cold => return Err(cold()),
         SitePeek::Dark => return Err(Refusal::InstrumentsDark),
-    }
+    };
     let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
     let field = match crate::surface::peek_home(w, &berth.entry, ramp_cell, peeks) {
         HomePeek::Warm(field) => field,
@@ -5254,6 +5254,11 @@ pub(crate) fn plan_ask(
     };
     let fields = |field: (i64, i64)| crate::surface::plan::read_field(&site, row.as_ref(), field);
     let home = |stand: (i64, i64)| drive::home_cu_to(&field, stand, &rates);
+    // Doc 20 cut SM.12c-lane follow-up: the walk's own `pit_out`, so the compile refuses a list
+    // with nothing left to mine (`PlanRefusal::NothingLeft`) on the public worked-out pits.
+    let pit_out = |pocket: (i64, i64), family: OreFamily| {
+        crate::port::site_map::pit_exhausted(reads, &berth.entry, &ground, pocket, family)
+    };
     let compiled = crate::surface::plan::compile(&crate::surface::plan::CompileInput {
         row: row.as_ref(),
         list,
@@ -5270,6 +5275,7 @@ pub(crate) fn plan_ask(
         drill: &drill,
         hold_room_t: &room_of,
         hopper_t: hopper_cap_kg / 1_000,
+        pit_out: &pit_out,
     });
     let mut shared: Vec<u8> = Vec::new();
     for lease in tv::live_on_hull(w, rig.hull) {
@@ -5338,6 +5344,9 @@ fn plan_refusal_line(
             tv::PLAN_TOO_MANY_STEPS.replace("{max}", &MAX_PLAN_STEPS.to_string())
         }
         PlanRefusal::HoldFull => tv::PLAN_HOLD_FULL.replace("{name}", name),
+        PlanRefusal::NothingLeft { family } => {
+            tv::PLAN_NOTHING_LEFT.replace("{family}", family.label())
+        }
     }
 }
 

@@ -554,6 +554,10 @@ pub(crate) struct CompileInput<'a> {
     pub hold_room_t: &'a dyn Fn(OreFamily) -> u64,
     /// The hopper's mass limit, whole tonnes (a trip's tonnes for the estimate).
     pub hopper_t: u64,
+    /// **Whether a pit is worked out in a family** (doc 20 cut SM.12c-lane follow-up):
+    /// `site_map::pit_exhausted` over the site's warm ground, the walk's own `pit_out` — public
+    /// knowledge ("Every map shows this pit worked out"), never the author's private reading.
+    pub pit_out: &'a dyn Fn((i64, i64), OreFamily) -> bool,
 }
 
 /// **A compiled plan** — what the preview prints and `go` files.
@@ -633,6 +637,14 @@ pub(crate) enum PlanRefusal {
     TooManySteps,
     /// The hold has no room for one cycle.
     HoldFull,
+    /// **Nothing on the list is left to mine** (doc 20 cut SM.12c-lane follow-up, the owner's ask
+    /// of 2026-10-26): no step sounds anything new, and every pocket the walk could take — a named
+    /// pocket, or a block's pocket the author reads fair or better in the family — is worked out,
+    /// so a filed plan would end "its list is worked out" without mining a tonne.
+    NothingLeft {
+        /// The family.
+        family: OreFamily,
+    },
 }
 
 /// One parsed address.
@@ -725,7 +737,8 @@ fn field_ranks(readings: [FieldReading; 4]) -> [Option<(u8, u8)>; 4] {
 /// **Compile a list** (lead ruling 2; the brief's 3.3), in this order, each refusal naming the
 /// first address that fails in list order: parse; the rights; the knowledge; the family (fixed
 /// before any per-family check, the reviewer's F13); a sounded-barren pocket; the tenure; the
-/// steps; the charge leg by leg from a full battery; one landed hold; the bound.
+/// steps; something left to mine (doc 20 cut SM.12c-lane follow-up); the charge leg by leg from a
+/// full battery; one landed hold; the bound.
 ///
 /// # Errors
 ///
@@ -939,6 +952,31 @@ pub(crate) fn compile(input: &CompileInput<'_>) -> Result<Compiled, PlanRefusal>
         }
         if steps.len() > MAX_PLAN_STEPS {
             return Err(PlanRefusal::TooManySteps);
+        }
+    }
+    // 7b. Something left to mine (doc 20 cut SM.12c-lane follow-up; the owner's ask of
+    // 2026-10-26): a plan that sounds nothing new and whose every pocket is worked out could only
+    // end at once — the walk's own targets (`decide_walk`: a named pocket not worked out; a block's
+    // pocket read fair or better and not worked out), refused here as rule 9 refuses a plan that
+    // could only park. A sounding still to make keeps the plan: it may read ore the author has not.
+    if !steps
+        .iter()
+        .any(|step| matches!(step, PlanStep::Sound { .. }))
+    {
+        let left = steps.iter().any(|step| match step {
+            PlanStep::Sound { .. } => true,
+            PlanStep::Mine { pocket } => !(input.pit_out)((pocket[0], pocket[1]), family),
+            PlanStep::Block { letter } => (0..usize::try_from(address::POCKETS_IN_BLOCK)
+                .unwrap_or(256))
+                .filter_map(|index| address::pocket_of_block_index(*letter, index))
+                .any(|pocket| {
+                    (input.classes)(pocket)
+                        .is_some_and(|classes| by_family(classes, family) >= Word::Fair)
+                        && !(input.pit_out)(pocket, family)
+                }),
+        });
+        if !left {
+            return Err(PlanRefusal::NothingLeft { family });
         }
     }
     // 8. The charge, leg by leg, from a full battery (the reviewer's F8 and F14): the drive out is
@@ -2617,6 +2655,8 @@ mod tests {
         licence: Result<i64, LicenceEnd>,
         lease: Result<(), LeaseBar>,
         claimed: Option<char>,
+        /// The pits every map shows worked out, by family (doc 20 cut SM.12c-lane follow-up).
+        worked: BTreeSet<((i64, i64), OreFamily)>,
     }
 
     impl Fixture {
@@ -2632,6 +2672,7 @@ mod tests {
                 licence: Ok(9_999_999),
                 lease: Ok(()),
                 claimed: None,
+                worked: BTreeSet::new(),
             }
         }
 
@@ -2668,6 +2709,8 @@ mod tests {
             let home_of = move |stand: (i64, i64)| Some(far.get(&stand).copied().unwrap_or(home));
             let hold_room =
                 |family: OreFamily| self.hold_of.get(&family).copied().unwrap_or(self.hold);
+            let pit_out =
+                |pocket: (i64, i64), family: OreFamily| self.worked.contains(&(pocket, family));
             compile(&CompileInput {
                 row,
                 list,
@@ -2684,6 +2727,7 @@ mod tests {
                 drill: &drill,
                 hold_room_t: &hold_room,
                 hopper_t: 12,
+                pit_out: &pit_out,
             })
         }
     }
@@ -2960,6 +3004,88 @@ mod tests {
         assert_eq!(
             fixture.compile("C117", Some(OreFamily::Volatiles)),
             Err(PlanRefusal::HoldFull)
+        );
+    }
+
+    /// **A list with nothing left to mine is refused** (doc 20 cut SM.12c-lane follow-up; the
+    /// owner's ask of 2026-10-26, after the 30-TV month's metal plan pilots filed plans over
+    /// worked-out blocks and came home with nothing): block C sounded whole, three of its pockets
+    /// fair in metals and rich in volatiles, every other pocket barren.
+    /// - every fair metal pit worked out → the metals plan is refused `NothingLeft`, while the
+    ///   volatiles plan over the same block compiles (its pits unworked);
+    /// - one fair metal pit unworked → the metals plan compiles;
+    /// - a field of the block still to sound → the metals plan compiles even with every known fair
+    ///   pit worked out (a sounding may read ore the author has not);
+    /// - a named pocket worked out → refused; named beside an unworked one → compiles;
+    /// - a lean pocket the author reads is no block target, and a block of nothing but worked fair
+    ///   pits and lean pockets is refused all the same.
+    #[test]
+    fn sm12c_a_list_with_nothing_left_to_mine_is_refused() {
+        let block: Vec<(i64, i64)> = (0..256)
+            .filter_map(|index| address::pocket_of_block_index('C', index))
+            .collect();
+        assert_eq!(block.len(), 256);
+        let fair: Vec<(i64, i64)> = block.iter().copied().take(3).collect();
+        let lean = block[3];
+        let mut whole = Fixture::new(row(&[], &block));
+        for pocket in &fair {
+            whole.classes.insert(
+                *pocket,
+                [Word::Fair, Word::Rich, Word::Barren, Word::Barren],
+            );
+            whole.worked.insert((*pocket, OreFamily::Metals));
+        }
+        whole
+            .classes
+            .insert(lean, [Word::Lean, Word::Barren, Word::Barren, Word::Barren]);
+        let nothing = Err(PlanRefusal::NothingLeft {
+            family: OreFamily::Metals,
+        });
+        assert_eq!(whole.compile("C", Some(OreFamily::Metals)), nothing);
+        let ice = whole
+            .compile("C", Some(OreFamily::Volatiles))
+            .unwrap_or_else(|e| panic!("the volatiles plan: {e:?}"));
+        assert_eq!(ice.steps, vec![PlanStep::Block { letter: 'C' }]);
+        // One fair metal pit left.
+        whole.worked.remove(&(fair[2], OreFamily::Metals));
+        assert!(whole.compile("C", Some(OreFamily::Metals)).is_ok());
+        whole.worked.insert((fair[2], OreFamily::Metals));
+        // A field of the block still to sound keeps the plan.
+        let mut partly = Fixture::new(row(&[], &block[..200]));
+        for pocket in &fair {
+            partly.classes.insert(*pocket, fair_metals());
+            partly.worked.insert((*pocket, OreFamily::Metals));
+        }
+        let sounds = partly
+            .compile("C", Some(OreFamily::Metals))
+            .unwrap_or_else(|e| panic!("a sounding left: {e:?}"));
+        assert!(
+            sounds
+                .steps
+                .iter()
+                .any(|step| matches!(step, PlanStep::Sound { .. })),
+            "{:?}",
+            sounds.steps
+        );
+        // Named pockets.
+        let name = |pocket: (i64, i64)| {
+            address::pocket_address(pocket.0, pocket.1).unwrap_or_else(|| panic!("{pocket:?}"))
+        };
+        assert_eq!(
+            whole.compile(&name(fair[0]), Some(OreFamily::Metals)),
+            nothing
+        );
+        let mut one_named = Fixture::new(row(&[], &block));
+        one_named.classes.insert(fair[0], fair_metals());
+        one_named.classes.insert(fair[1], fair_metals());
+        one_named.worked.insert((fair[0], OreFamily::Metals));
+        assert!(
+            one_named
+                .compile(
+                    &format!("{},{}", name(fair[0]), name(fair[1])),
+                    Some(OreFamily::Metals)
+                )
+                .is_ok()
         );
     }
 
