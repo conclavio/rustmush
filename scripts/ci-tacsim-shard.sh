@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Run one shard of tacsim's integration test targets: line N of
 # .github/tacsim-integration-shards.txt, `N: target target ...`, as one
-# `cargo test -p tacsim --test <target>...` (CI's `tacsim-integration-N`).
+# `cargo nextest run -P ci -p tacsim --test <target>...` (CI's
+# `tacsim-integration-N`; nextest since test-strategy cut T.1, 2026-10-26:
+# the shard's binaries' tests run in one pool of four, each in its own
+# process, under .config/nextest.toml's `ci` profile — no fail-fast, a hung
+# test terminated at 20 min, the JUnit report at target/nextest/ci/junit.xml).
+# `--build-jobs 2` is the link cap the old `-j 2` was. tacsim's doc-tests are
+# the tacsim-lib shard's.
 set -euo pipefail
 shard="${1:?usage: scripts/ci-tacsim-shard.sh <shard number>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,4 +21,4 @@ for target in ${line#*:}; do
   args+=(--test "$target")
 done
 echo "tacsim integration shard ${shard}: $(( ${#args[@]} / 2 )) targets"
-cargo test -p tacsim "${args[@]}" --no-fail-fast -j 2
+cargo nextest run -P ci -p tacsim "${args[@]}" --build-jobs 2
