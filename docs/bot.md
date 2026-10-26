@@ -1479,6 +1479,79 @@ US cents a match, about 410 ms a call). On default routing the median answer
 room to spare, and five late answers in a row switch the commander off for the
 match.
 
+## Mining pilot
+
+The bot can play the surface-mining loop (`help mining`) at one site over the
+same line-mode SSH session a person would use, with no model at all:
+`--mine <site>`, where the site is a route word — `ahuna`, `commons`,
+`juling`, `kerwan`, `occator` or `rheasilvia`. It is headless and model-free:
+`--headless --mine ahuna` is a complete run, with no `[model]` and no goal,
+and `--mine` without `--headless` is refused (no REPL control or `/arena`
+can reach a run while it plays).
+
+What it plays, beat by beat: from Limbo it walks to the Registry & Co-op Desk,
+enrols a Dray named after its character ("Ardent Lode" for `minera+Ardent`;
+retried while the Co-op is not enrolling yet), refits her as a Dray-P, buys a
+prospecting licence, walks to the Exchange Hall and leases a rig, reads `+tv`,
+`+chart` and the board; at the Co-op Chandlery it bunkers reaction mass and
+provisions to `+ship/plan`'s own figures for the passage out and the leg home
+(plus 1 t and 2 crew-days); it boards in the gallery and lifts for the site;
+on the pad it prints `+tv/map site` with its rig still in the bay (a witness of
+what it can see before it has read anything), launches, scans, sounds, drives
+to the best pocket of its own sounding, stakes that block (a block someone
+holds sends it to the best pocket of another block; three refused stakes and
+it mines open ground unstaked), mines, **sounds a second time** an IC hour
+after the first, mines on inside its claim while the hopper has room, recovers
+and unloads, flies home and sells the hold at the Exchange Hall's ore bid. It
+types only that closed vocabulary, at most two lines a second, never a staff
+`@` verb, and never acts on another player's text: a heard sounding is
+recorded and nothing more.
+
+**Refusals.** `--mine` with an unknown word answers "--mine takes one of
+ahuna, commons, juling, kerwan, occator, rheasilvia"; with `--arena`, "--mine
+and --arena are two lanes; choose one"; with `--goal`, "--mine plays now and
+--goal lets the model decide; choose one"; with `--script`, `--paused`,
+`--managed-floor`, `--replay`, `--studio`, `--harness` or a campaign session,
+"--mine cannot be combined with --script, --paused, --managed-floor, --replay,
+--studio, --harness or a campaign session"; without `--headless`, "the
+mining pilot plays headless; add --headless"; under a mission contract, "the
+mining pilot does not run under a mission contract; use a memory namespace
+without one". The ship's name is made from the character part of the SSH
+username (the whole username when it has no `+`): its letters, digits and
+spaces are kept and every other character is dropped (`pilot+Mary-Jo` signs
+"MaryJo Lode"), then " Lode" is added; the result must be 1 to 32 characters
+starting with a letter, the Registry's rule, or the run is refused with that
+rule.
+
+**Time.** One loop at world rate 24 takes about 15 to 25 real minutes from
+its first line to the sale (the cohort measured 14.8 to 25.0; the hop out
+about 3.7, home about 4.8, a fair drill cycle 75 seconds), plus the wait for
+the site's pad to open on a freshly booted server (about 3 minutes in the
+canary). Give it `[agent] max_seconds = 2700` for the margin.
+
+**Records.** Every line it types is a `mine-send` record (`line`, `beat`,
+`lane_ms`); each beat's start and end a `mine-beat` (`beat`, `edge`,
+`lane_ms`, `at_unix_ms`); each milestone (`arrived_site`, `launched`,
+`scanned`, `sounded`, `staked`, `first_run_done`, `second_sounded`,
+`recovered`, `unloaded`, `docked_home`, `sold`) a `mine-milestone` (`name`,
+`lane_ms`, `at_unix_ms`); each heard sounding a `mine-heard` (`sentence`,
+`lane_ms`, `at_unix_ms`); its sentences `mine` events. The report gains a
+`mine` block: the site, the hull, every beat and milestone stamped, both
+soundings, the heard lines, the witness rows, the family mined (and whether it
+switched), the stakes refused, every `+market/list` row read, the last bunker
+plan's figures, the receipts (the stake's record, the unload, the sale), the
+tonnes mined and sold, and `success` exactly when the sale's line arrived.
+
+```powershell
+$env:MUSH_BOT_PASSWORD = "your-game-password"
+cargo run -p mush-bot -- --config mush-bot.local.toml --mine ahuna --headless --report mine.json
+```
+
+The test `crates/mush-bot/tests/mining_cohort.rs` holds the pilot to the live
+game: its canary (every build) plays through the first scan in-process, and
+its cohort (run by hand) launches four bots, two at Ahuna Flank and two at
+Kerwan Floor, through the whole loop.
+
 ## Character, personality and voice
 
 The [character and cast studio](bot-studio.md) develops JSON sheets from a concept:

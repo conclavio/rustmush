@@ -319,19 +319,35 @@ pub async fn boot(cfg: tacsim::TacsimConfig, pilots: &[(&str, &str)]) -> Rig {
     )
     .await
     .expect("ssh listener");
-    let key = russh::keys::load_secret_key(dir.join("ssh_host_ed25519"), None)
-        .expect("the listener's host key");
-    let pin = key
-        .public_key()
-        .fingerprint(russh::keys::HashAlg::Sha256)
-        .to_string();
-    Rig {
-        addr: listener.addr(),
-        pin,
-        dir,
-        store,
-        _listener: listener,
-        _handles: handles,
+    Rig::serving(listener, handles, dir, store)
+}
+
+impl Rig {
+    /// **A rig serving through `listener`** (doc 20 cut SM.12c-bot): the
+    /// listener's host key read from `dir`'s `ssh_host_ed25519` and pinned by
+    /// its SHA-256 fingerprint, exactly as [`boot`] always did, so another
+    /// boot (`support/mine.rs`'s, over the production root) reuses this
+    /// rig's [`Client`], [`launch`] and [`try_land`] instead of copying them.
+    pub fn serving(
+        listener: SshListener,
+        handles: PersistHandles,
+        dir: PathBuf,
+        store: Arc<dyn ObjectStore>,
+    ) -> Rig {
+        let key = russh::keys::load_secret_key(dir.join("ssh_host_ed25519"), None)
+            .expect("the listener's host key");
+        let pin = key
+            .public_key()
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string();
+        Rig {
+            addr: listener.addr(),
+            pin,
+            dir,
+            store,
+            _listener: listener,
+            _handles: handles,
+        }
     }
 }
 
@@ -705,8 +721,34 @@ pub fn bot_config_agent(
     observation_ms: u64,
     extra: &str,
 ) -> PathBuf {
-    let home = rig.dir.join("bot");
-    std::fs::create_dir_all(&home).expect("the bot's working directory");
+    bot_config_agent_at(
+        rig,
+        &rig.dir.join("bot").join("arena.toml"),
+        username,
+        max_seconds,
+        settle_ms,
+        observation_ms,
+        extra,
+    )
+}
+
+/// [`bot_config_agent`] written to `path` (doc 20 cut SM.12c-bot: a config
+/// file of the caller's, so several bots launched from one rig never share
+/// one — the arena's one `bot/arena.toml` is overwritten by the next call,
+/// perhaps before the first child has read it). `path`'s parent is made; the
+/// TOML is the same byte for byte; `path` is returned.
+pub fn bot_config_agent_at(
+    rig: &Rig,
+    path: &Path,
+    username: &str,
+    max_seconds: u64,
+    settle_ms: u64,
+    observation_ms: u64,
+    extra: &str,
+) -> PathBuf {
+    if let Some(home) = path.parent() {
+        std::fs::create_dir_all(home).expect("the bot's working directory");
+    }
     let config = format!(
         r#"[ssh]
 host = "127.0.0.1"
@@ -730,9 +772,8 @@ persistent = false
         rig.addr.port(),
         rig.pin
     );
-    let path = home.join("arena.toml");
-    std::fs::write(&path, config).expect("the bot's config");
-    path
+    std::fs::write(path, config).expect("the bot's config");
+    path.to_path_buf()
 }
 
 /// **The bot binary as a child of this rig** (for AJ.2 and AJ.4): `--config

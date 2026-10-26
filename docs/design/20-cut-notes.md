@@ -4890,3 +4890,404 @@ Four of the judge's residuals, fixed by hand on `1b5dd371` and committed on thei
 4. **T5's and T15's heard-line checks** match "rig" as a whole word (`names_a_rig`), so `HEARD_HERE`'s "right under you" no longer fails them falsely.
 
 Verified: `rustfmt --check --edition 2024` on the four files; `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` clean; `cargo test -j 8 -p tacsim --lib` 1,505 passed, 1 ignored; `cargo test -j 8 -p tacsim --test drones` 22 passed in 187.33 s.
+
+## SM.12c-bot
+
+**The mining pilot and the four-bot cohort** (doc 20 §13's SM.12 row, the bot clause, as the lead split it; doc 20a §2's carve and §5.3 items 11–13, the plan of record), built 2026-10-25 in a worktree on `claude/sm12-train` at base `f171b36c` (SM.12b's follow-up). Judged **ship-with-notes**. One commit, pushed to origin/main. The bot gains a headless, model-free mining lane, `mush-bot --mine <site>`, that plays the SM.8 story's loop in a closed vocabulary from its own line session's text alone, with one added loud sounding. The four-bot SSH cohort in line mode over the production root is `#[ignore]`d, run by hand and named in a `ci.yml` comment (O-28 default (i)); its canary runs in every build. The cut takes no lane version and touches no tacsim, mush-server, mushd or mush-config file.
+
+### What landed
+
+1. **The mining pilot's module and its types** (`crates/mush-bot/src/mine/mod.rs`, new; `crates/mush-bot/src/lib.rs` gains `pub mod mine;` between `memory` and `mission`).
+   - The module doc covers four things:
+     - **Independence:** the `#[cfg(test)]` contract check reads tacsim's `pub` constants through the existing dev-dependency, and no game crate enters the runtime graph.
+     - **No I/O and no clock.**
+     - **What it plays.**
+     - **The tempo:** rate 24, an IC hour is 150 real s, the hop out 3.7 min and home 4.8.
+   - Types:
+     - `Site { Ahuna, Commons, Juling, Kerwan, Occator, Rheasilvia }`, serde lowercase, with `ALL`, `parse` (any case, trimmed, else `MINE_SITE_USAGE`), `word` and `name`.
+     - `Family { Metals, Volatiles }` with `word`, `ore_label` and `other`.
+     - `Settings { hull, epoch_unix_ms }`.
+   - `hull_name(username)` takes the character part of `account+Character`, keeps its ASCII letters, digits and spaces, and appends " Lode". The result must be 1–32 characters starting with a letter, else `Err(HULL_NAME_RULE)`; `HULL_NAME_RULE` is pinned equal to `coop::BAD_NAME`.
+   - Test `mine_lane_refuses_an_unknown_site`.
+
+2. **The parsers and needles** (`crates/mush-bot/src/mine/lines.rs`, new).
+   - **The window rule:** `normalise` and `has` match a needle against the joined, whitespace-collapsed lines, never one physical line.
+   - Every needle is a `pub const` doc'd with the game sentence it mirrors, by path and line, as plain text. Added beyond the brief: `SITE_CLOSED`, `QUOTE_STALE`, `DRIVE_HERE`, `SOUND_STARTED`, and `TRANSIENT_TAILS` with `is_transient`.
+   - `settles(hull)` and `docks(hull)` carry the hull's own name.
+   - The sounding: `sounding_pockets` is a token scan across wrapped lines; `ranked` orders rich, fair, lean, then metals before volatiles.
+   - The plan and the market:
+     - `plan_figures` reads line heads, `sm_story`'s way, with the leg home.
+     - `listings`, `ask_for`, `bid_for`/`bid_row` and `quote_number`.
+   - The run: `last_cycle` with every run end clause and the failed cycle.
+   - The heard sounding:
+     - `heard_sentence`;
+     - `heard_sentences`, the 25 strings;
+     - `heard_line_is_bare`: nothing alphanumeric before the head, nothing after the full stop.
+   - The site map: `grid_rows` reads by position, the `SITE_VIEW_CELLS` lines after the one- or two-line legend. Each row, as trimmed, is at most `GRID_COLUMNS` 64 chars of `GRID_GLYPHS` = `"@Ho,^=O123+.vV#_ ABCDEFGHIJKLMNOP"`. `ORE_GLYPHS` are the reading glyphs.
+   - The sale: `sale_receipt`.
+   - Test `mine_lines_read_the_games_own_sentences`. Every needle is a substring of the filled tacsim constant it mirrors (tv, claims, voyage, proceeds, coop, licence, refit, site_map), and the cases are:
+     - a three-family sounding wrapped at 120 columns;
+     - the map print fed through `arena::Assembler`, including a `_` row, a short trailing-space row, an empty all-impassable row and block letters;
+     - the 25 heard sentences built from `tv::HEARD`, `HEARD_HERE`, `BAND_*` and every `Octant::word`, bare and not bare;
+     - the transient tails against `claims::CLAIM_PENDING` and a channel line.
+
+3. **The lane** (`crates/mush-bot/src/mine/lane.rs`, new).
+   - The shapes: `Beat`, `Edge`, `Milestone`, `Send { line, beat, lane_ms }`, `Fed`, `LaneEvent::{Said, Beat, Milestone, Heard}`, `LaneResult { status, outcome }`, and `Lane::{new, feed, tick, result, events, report, beat, reached, me, settings, step_line}`.
+   - **The machine:**
+     - one outstanding line, in one ordered buffer;
+     - a sending step's window opens after its send; a follow-on's opens after the line that decided the step before (D21);
+     - the echo of typed lines and heard lines are kept out of every window;
+     - the verdict order is transient, then fail, skip, retry, done;
+     - deadlines fail quoting the window's last 600 bytes.
+   - **The beats:** the SM.8 story's `play` order: KitUp, Bunkers (the planner's figures plus 1 t and 2 crew-days), BoardAndLift, Witness (`+tv/map site` with the rig in the bay), OnPad, DriveStakeMine, SecondSounding, Home, Sell.
+   - The stake is added from SM.10. `next_target` handles the refused set, mining past the claim, the one family switch, and "no unclaimed pocket of my readings at {name}"; three refused stakes mean open ground.
+   - One loud sounding is added after the first run, at least 150 s after the first. `LEARN_NOTHING`, an immediate non-filed answer, or `ACT_MS` is a closed skip.
+   - Retries:
+     - the closed pad (`SITE_TRIES` 60 at 10 s) on the bunker plan, the plan aboard and the lift;
+     - a stale quote is quoted afresh after 2 s, at most `QUOTE_TRIES` 6, and a stale sale is retried the same way;
+     - a world transient is resent after 1 s, at most `TRANSIENT_TRIES` 40, never against the step's own tries.
+   - `in_vocabulary` is the closed list (32 fixed lines plus the parametrised verbs).
+   - Tests:
+     - `mine_lane_types_only_its_vocabulary`: the scripted full loop, with three filed/done pairs in one feed. It covers:
+       - the closed pad retried;
+       - a stale quote and a stale sale;
+       - two transients;
+       - a late `ARRIVED` before the stake;
+       - a late and a refused second sounding.
+     - `mine_lane_drives_to_the_next_block_when_one_is_claimed`: a refused stake, open ground, no-evidence, the D20 cases (a), (b) and (c) with the exact lines from the run to the recover, and the `MAX_RUNS` path.
+     - `the_vocabulary_is_closed`.
+
+4. **The report** (`crates/mush-bot/src/mine/report.rs`, new).
+   - `Report` holds:
+     - site, hull, me and the epoch;
+     - beats and milestones, each stamped in lane ms and unix ms;
+     - the soundings (ordinal 1 and 2) and the heard lines;
+     - the witness rows;
+     - `family` and `family_switched`;
+     - stakes refused and open ground;
+     - `listings` (raw rows, duplicates dropped) and `plan` (the last bunker round's figures);
+     - receipts: stake, unloaded, sale;
+     - tonnes mined and sold, lines and bytes, `success` and `failure`.
+   - `BeatSpan`, `MilestoneAt`, `SoundingSpan`, `HeardAt`, `Receipts`, with `milestone`, `sounding` and `beat` helpers.
+
+5. **The wiring** (`crates/mush-bot/src/main.rs`, `crates/mush-bot/src/runner.rs`).
+   - main.rs: a `[--mine <site>]` usage line and the `--mine` arm. The refusals:
+     - with `--arena`;
+     - with `--goal`;
+     - with the session sentence (a literal, byte-identical to `MINE_SESSION`).
+   - runner.rs:
+     - `Options.mine` and `Report.mine`, skipped when `None`;
+     - `MINE_MISSION`, `MINE_SESSION`, and `MINE_HEADLESS` ("the mining pilot plays headless; add --headless");
+     - the headless sentence gains ", --mine";
+     - `active_at_start` and `mine_due_for` are factored out as free functions;
+     - an empty bootstrap;
+     - `App.mine` and `mine_reported`;
+     - `mine_start` (hull from the username, epoch = unix now less elapsed), `mine_due`, `mine_tick` and `mine_events`, writing the `mine-send`, `mine-beat`, `mine-milestone`, `mine-heard` and `mine` records;
+     - the data arm feeds the lane, and `tick` gains two call sites.
+   - Test `a_mining_run_starts_running_and_its_lane_is_due`.
+
+6. **Two additive items on the arena rig** (`crates/mush-bot/tests/support/arena.rs`).
+   - `Rig::serving(listener, handles, dir, store)` is factored from `boot`'s tail.
+   - `bot_config_agent_at(rig, path, …)`; `bot_config_agent` delegates to it with `bot/arena.toml`. Behaviour is unchanged.
+
+7. **The mining rig** (`crates/mush-bot/tests/support/mine.rs`, new, `#![allow(dead_code)]`).
+   - `boot` composes:
+     - the production root, `mushd::boot::boot_all_in_one` (inside the bot's own test binary, under `arbitrary_precision`);
+     - `sm_story`'s config shape;
+     - a local `write_fixed_key` (0o600 files, 0o700 directory on unix);
+     - the accounts made after the boot and linked through `Engine::link_account_character`;
+     - one shared `IpGuard`, `ServerDeps::production` and `spawn_persist_with_decision_workers`;
+     - the SSH listener, served through `Rig::serving`.
+   - Also `KEY_1`, `READY`, `NOT_READY`, `RATE_READY`, `config`, `geology_line`, `rate_and_geology_ready`, and `await_ready`.
+   - `miner_config` writes `bot/{account}.toml`.
+   - `milestone_at`, `unix_now_ms`, and `drive_lane`, which returns the elapsed seconds and every line sent.
+   - No state slot.
+
+8. **The canary, the cohort and the command line** (`crates/mush-bot/tests/mining_cohort.rs`, new target).
+   - **`the_mining_root_runs_under_the_bots_serde`** (every build, 20-minute bound) drives the lane in-process from Limbo through the first scan. It requires:
+     - `ArrivedSite`, `Launched` and `Scanned`;
+     - 32 witness rows of grid glyphs;
+     - both asks and both buying bids re-parsed from `listings`;
+     - at least one quote and one accept in Bunkers, with "Agreed. Contract #";
+     - the plan's figures;
+     - hull "Canary Lode".
+   - **`four_bots_mine_and_sell_over_ssh_in_line_mode`** (`#[ignore]`, 75-minute bound) launches four real binaries: minera and minerc at Ahuna, minerb and minerd at Kerwan, each site's second after the first's scan. It asserts:
+     - per bot: identity, receipts, vocabulary, the observer rule on the witness, and bare heard lines;
+     - the launch ordering;
+     - the per-site heard verdict (heard₁ or heard₂, else the named "no overlap" or "open but silent" failure);
+     - no heard line before the second bot's own arrival.
+   - **`the_mine_flag_refuses_what_it_cannot_play`** covers every refusal, the admission case reaching `[bot/connect]`, and the usage line.
+
+9. **CI** (`.github/workflows/ci.yml`). One comment block, after `bot-muster-rate` and before the `# 16b cut H` comment, naming the cohort and its by-hand command (O-28 default (i)). No job.
+
+10. **The user guide** (`docs/bot.md`). A `## Mining pilot` section covering the beats, headless and model-free play, every refusal verbatim, the name rule as `hull_name` applies it, the measured time and `max_seconds = 2700`, the records and the report's `mine` block, and an example.
+
+11. **The one changed assertion** (`crates/mush-bot/tests/arena_e2e.rs`): `the_command_line_refuses_what_the_pilot_cannot_fly`'s headless sentence becomes "headless play requires a goal and [model], --arena, --mine, or --script".
+
+12. **The cohort's figures** (run 2):
+    - Readiness took 491 s, first launch to last sale 29.3 min, total 37.6 min. The canary's wall was 500–529 s.
+
+    | bot | site | order | launched unix ms | loop min | lines | bytes | family | mined/sold t | net | stake | refused | heard | witness rows |
+    |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+    | minera | ahuna | 1 | 1792964741292 | 14.8 | 56 | 40377 | metals | 12/12 | 735.00cr | F | 0 | 1 | 32 |
+    | minerb | kerwan | 2 | 1792964743070 | 14.8 | 54 | 39103 | metals | 12/12 | 735.00cr | K | 0 | 1 | 32 |
+    | minerd | kerwan | 3 | 1792965000360 | 25.0 | 59 | 39887 | metals | 12/12 | 735.00cr | J | 1 | 1 | 32 |
+    | minerc | ahuna | 4 | 1792965002458 | 19.3 | 55 | 39164 | metals | 12/12 | 735.00cr | K | 1 | 1 | 32 |
+
+    - No family switched and no bot mined open ground.
+    - Both sites: heard₁, heard₂, overlap₁ and overlap₂ all true, verdict pass.
+
+### Deferred, and why
+
+- **SM.12c-lane** is the next cut. It owns:
+  - the fire's clock, `tests/cost_lane.rs`, C1–C7 and the 64-TV month;
+  - `scripts/cost-lane.sh` and the `/cost-lane*.json` `.gitignore` line;
+  - decisions (a), (b) and (c), and the owner's table.
+
+  This cut takes no lane version and touches no tacsim, mush-server, mushd or mush-config file.
+- **O-23, bot funding (owner-critical, default kept provisionally).** No pilot is funded. At v15 prices each bot paid for its licence, lease, deposit, bunkers and stake out of the 25,000 cr programme stake and netted 735.00cr on 12 t of metal ore. No staff credit route was used or built.
+- **O-28, the CI placement (owner-critical, default (i) kept provisionally).**
+  - The cohort is named in a `ci.yml` comment and run by hand. No machine refreshes its figures.
+  - The canary runs in every build and adds about 9 minutes to the rest shard's `cargo test -p mush-bot` step.
+  - The `schedule`-only `bot-mining-cohort` stanza (90 minutes) and a Windows weekly Task Scheduler entry exist in the builder's report as text only.
+
+**The lead's rulings the planner took**
+
+- Four bots get distinct configs through `bot_config_agent_at` and `bot/{account}.toml` (F1).
+- The grid is read by position, with `_` and space among the glyphs (F2).
+- The family switches once while nothing is mined. If neither family has a pocket, the run fails by name. Once ore is mined, an empty pool goes Home (F4).
+- The D21 window start (F5).
+- `Report.listings` (raw rows) and `plan` (F3).
+- The canary drives the lane in-process through the first scan, waits for enrolment rather than full Ready, and is not ignored.
+- The rig is `boot_all_in_one`, with players linked before the spawn and one `IpGuard`.
+- A heard line is bare when nothing alphanumeric precedes the head and nothing follows the sentence.
+- Bunker margins are +1 t and +2 crew-days. The sites are Ahuna and Kerwan, with Juling as the fallback. The second sounding comes right after the first run, at least 150 s after the first.
+
+**Builder departures for the lead to ratify** (each a correction of the brief's model of the game, none an engine workaround)
+
+- **`SITE_CLOSED` retry.** D4's premise was wrong. `+ship/plan` and `+ship/lift` refuse a site until its clerk opens the pad, about 180 s after the first plan in the canary. The lane retries for up to 10 minutes.
+- **Block letters in `GRID_GLYPHS`.** The site view prints the block letters A–P at each block's north-west corner, and the legend does not name them.
+- **The stale-quote rule.** Cohort run 1 failed when two bots bunkered from listing #27 at once. A stale accept is now a closed skip, quoted afresh up to 6 times, and a stale sale is retried.
+- **`DRIVE_HERE` counts as an arrived drive.**
+- **`active` includes `--mine`.**
+- **A fifth unit test,** `the_vocabulary_is_closed`.
+- **The strict pre-arrival heard check.** No slack, stricter than the brief's ±5 s.
+
+**The fixer's round** fixed all eight should-fix findings: R1, F2 and T1–T6. It added:
+
+- `MINE_HEADLESS`;
+- the transient arm;
+- the `SOUND_STARTED` const;
+- deferred tells in the scripted server;
+- the canary's Draw assertion;
+- the CLI admission case;
+- the runner unit test.
+
+**The four-bot cohort was not re-run after this round.** Its passing run 2 predates it.
+
+**Note-grade findings left as residuals**
+
+- R2: the docs overclaim "never acts on another player's text".
+- R3: the hull name is checked after login.
+- R4: the canary's comment names `QtyWire`, though no orders wire is on its path.
+- R5: an empty window skips the second sounding at 20 s.
+- R6: `DriveStakeMine` recurs in `beats`, and `Report::beat` returns the first span.
+- F3: the receipts hold the deciding window, while report.rs documents a line.
+- F4: four added failure outcomes are missing from the builder's surface record: "beat bunkers: no quote number in …", "beat bunkers: the plan's figures did not read", "beat sell: the sale's line did not read", and "beat {beat}: no walk follows `{word}`". The outcomes are also emitted as `Said` events.
+- F5: mod.rs's Independence paragraph names only `lines`' tests, but `lane`'s tests import tacsim too.
+- F6/T9: the cohort's vocabulary check has no non-vacuity guard.
+- F7/T11: `bid_for` returns the first wanted row, buying or not.
+- T7: the canary's inner and outer bounds.
+- T8: God's session is left undrained in the canary.
+
+**Not built, as the brief excludes**
+
+- a `/mine` REPL control or `[mine]` config table;
+- a fill plan in the bot's vocabulary;
+- a second rig;
+- bots renewing or contesting stakes;
+- a separately spawned `mushd`;
+- observing the sale's settlement (D14);
+- an `@geology` pre-check for Kerwan (the Juling fallback was not needed).
+
+### Pins re-blessed
+
+- **`crates/mush-bot/tests/arena_e2e.rs` `the_command_line_refuses_what_the_pilot_cannot_fly`** is re-blessed. Its headless sentence was "headless play requires a goal and [model], --arena, or --script" and is now "headless play requires a goal and [model], --arena, --mine, or --script". `--mine` is a fourth way to play headless, and the refusal names every way. This is the only existing assertion that moved. The `ARENA_SESSION` sentence and the `[--arena <red|blue> [--matches <n>]]` usage pin did not move.
+- **The CI gated-test inventory** (`ci_gated_test_inventory`) has no pin moved. It passes because ci.yml's new comment names the ignored `four_bots_mine_and_sell_over_ssh_in_line_mode`.
+- **The harness parity test** (`the_weekly_script_runs_the_ci_jobs_two_lines_verbatim`) is unmoved. The comment sits before the `# 16b cut H` comment, outside the `tacsim-harness` block, and never writes `tacsim-harness:` or `TACSIM_ASSERT`.
+- **`state-slot-owners.toml`** is unmoved: the mining rig installs no module-state slot.
+- **The runtime graph:** `cargo tree -p mush-bot --edges normal,build --target all` lists no RustMUSH package but mush-bot. The tacsim imports under `src/mine` are `#[cfg(test)]` through the existing dev-dependency.
+- **Not moving, untouched:**
+  - `LANE_VERSION` 15 and every content digest;
+  - the legacy-handler baseline, module-namespace owners, the composition-edge pin and the boot-parity manifest;
+  - the panic budget and the restriction-lints census (both exclude mush-bot);
+  - the visibility of `surface::tick::heard_line`.
+
+### How it was verified
+
+**The gate (round 1, worktree `festive-davinci-45dba9` at HEAD `f171b36c`, cut uncommitted).** All 12 steps passed on the first run; nothing was rerun.
+
+**fmt.**
+- `cargo fmt --all -- --check` failed with os error 206, the box limitation, and checked nothing.
+- Fallback: `cargo fmt -p <pkg> -- --check` passed for 48 of 48 packages.
+- `rustfmt --check --edition 2024` on the 11 changed or new .rs files returned rc=0.
+
+**Lints and docs.**
+- `cargo clippy --workspace --all-targets -j 8 -- -D warnings`: "Finished `dev` profile … in 33.14s", exit 0.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8`: "Finished … in 1m 00s", exit 0.
+
+**Tests.**
+- `cargo test -j 8 -p mush-bot --lib mine`: "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 470 filtered out; finished in 0.06s".
+- The canary, `cargo test -j 8 -p mush-bot --test mining_cohort the_mining_root_runs_under_the_bots_serde -- --nocapture`: "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 500.56s".
+- `cargo test -j 8 -p mush-bot`, run twice (steps 6 and 12): all 27 result lines ok, 726 passed, 0 failed, 8 ignored.
+  - lib: 475 passed.
+  - arena_e2e: 10 passed (234.47 s and 205.02 s).
+  - mining_cohort: "3 passed; 0 failed; 1 ignored" (527.75 s and 529.48 s).
+- `ci_gated_test_inventory`: "test result: ok. 6 passed; 0 failed".
+- `state_slot_owners`: "test result: ok. 5 passed; 0 failed".
+- `tacsim --test harness the_weekly_script_runs_the_ci_jobs_two_lines_verbatim`: "test result: ok. 1 passed; 0 failed".
+- `cargo test -p mush-contract-tests -j 8`: 32 result lines, all ok.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8`: 442 "test result: ok" lines, 0 FAILED; 9044 passed, 0 failed, 93 ignored.
+
+**Peers and flakes.** The known peer tests all passed in the sweep:
+- `no_crate_exceeds_its_production_panic_budget`;
+- `the_org_capability_vocabulary_covers_every_economy_capability`;
+- `server_panic_relaunch::a_faulted_world_is_relaunched_and_the_session_keeps_playing`.
+
+No peer failure and no load flake appeared.
+
+**The fixer's runs on the final code.**
+- The canary: "canary: bunkers 2 quotes, 2 acceptances", "canary: wall 528 s, enrolment open after 66 s, arrived after 481 s, lines 62, bytes 31304".
+- `cargo test -j 8 -p mush-bot --lib -- mine a_mining_run`: 6 passed.
+- `the_mine_flag_refuses_what_it_cannot_play`: 1 passed.
+- Four mutation checks, each reverted, each failing the test it should:
+  - Drive done on `DRIVE_FILED`: "staked at 43100 before the arrival at 45600".
+  - `SOUND_STARTED` changed: tests 1 and 2 fail.
+  - `continue_runs` going home on `mined_t > 0`: case (c) fails.
+  - The transient arm disabled: tests 2 and 3 fail.
+
+**The cohort, by hand, not a gate command.** `timeout 4800 cargo test -j 8 -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture`:
+- Run 1 failed: "bot minerb ended before its scan" (a stale quote; a lane defect, fixed), exit 101, 605 s.
+- Run 2: "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 2256.81s".
+  - Readiness took 491 s, first launch to last sale 29.3 min.
+  - Both sites passed heard₁ and heard₂.
+- Run 2 predates the fixer's round (cohort2.log written 15:15; lane.rs last edited 16:27). The cohort was not run on the final code.
+
+**The canary's earlier failures, while it was built.**
+- Run 1: `SITE_CLOSED` at the first plan.
+- Run 2: the block letters at the witness.
+
+Both were corrected in the lane's reading. No engine change was made.
+
+**The lenses.**
+- Correctness: 1 should-fix (R1, fixed) and 5 notes.
+- Conformance: 1 should-fix (F2, fixed) and 6 notes.
+- Tests: 6 should-fix (T1–T6, all fixed) and 5 notes.
+- No must-fix finding in any lens.
+
+The judge read the whole diff and every new file and verified each fix in the code.
+
+### Surface for the next cuts
+
+**For SM.12c-lane (C5 pins and the CI comment)**
+- Two test names in `crates/mush-bot/tests/mining_cohort.rs`:
+  - `the_mining_root_runs_under_the_bots_serde`: not ignored, runs in the test job's `cargo test -p mush-bot` step;
+  - `four_bots_mine_and_sell_over_ssh_in_line_mode`: `#[ignore]`d.
+- The `ci.yml` comment block "# Doc 20 cut SM.12c-bot (doc 20a §5.3.12-13; the owner's O-28 default (i)):".
+  - It sits after the `bot-muster-rate` job and before the `# 16b cut H (§5, H3)` comment, with a blank line on each side, outside the `tacsim-harness` block.
+  - Its by-hand line is `cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture`.
+  - SM.12c-lane's own comment or stanza must keep the parity cut (the first `"\n\n  "` after `"\n  tacsim-harness:"`) intact.
+
+**`mush_bot::mine` (public)**
+- Top level:
+  - `MINE_SITE_USAGE`, `HULL_NAME_RULE`;
+  - `Site { Ahuna, Commons, Juling, Kerwan, Occator, Rheasilvia }` with `ALL`, `parse`, `word` and `name`;
+  - `Family { Metals, Volatiles }` with `word`, `ore_label` and `other`;
+  - `Settings { hull, epoch_unix_ms }`;
+  - `hull_name(&str) -> Result<String, String>`;
+  - re-exports `Beat`, `Edge`, `Fed`, `Lane`, `LaneEvent`, `LaneResult`, `Milestone`, `Send`, `in_vocabulary` and `Report`.
+- `mine::lane`:
+  - `Lane::{new(Site, Settings, String), feed(now_ms, &str) -> Fed, tick(now_ms) -> Vec<Send>, result() -> Option<&LaneResult>, events() -> Vec<LaneEvent>, report() -> Report, beat(), reached(Milestone), me(), settings(), step_line()}`;
+  - `Send { line, beat, lane_ms }`;
+  - `LaneEvent::{Said(String), Beat{beat, edge, lane_ms}, Milestone{name, lane_ms}, Heard{sentence, lane_ms}}`;
+  - `LaneResult { status: "done"|"blocked", outcome }`;
+  - the constants `LINE_GAP_MS` 500, `ANSWER_MS` 20000, `RETRY_MS` 10000, `SITE_TRIES` 60, `COLD_TRIES` 20, `ENROL_TRIES` 60, `LICENCE_TRIES` 24, `LEASE_TRIES` 12, `QUOTE_TRIES` 6, `STALE_RETRY_MS` 2000, `GOODS_TRIES` 6, `TRANSIENT_TRIES` 40, `TRANSIENT_RETRY_MS` 1000, `HOP_MS`, `ACT_MS`, `RUN_MS`, `STAKE_RECORD_MS`, `MAX_RUNS` 4, `MAX_BUNKER_ROUNDS` 6, `MAX_REFUSED_STAKES` 3, `EXTRA_BURN_T` 1, `EXTRA_CREW_DAYS` 2 and `SECOND_SOUNDING_AFTER_MS` 150000.
+- `mine::lines`:
+  - `normalise`, `has`, `has_addr`, `is_addr` and `is_transient`/`TRANSIENT_TAILS`;
+  - `sounding_pockets`/`ranked`/`Pocket`/`Class` and `plan_figures`/`PlanFigures`;
+  - `listings`/`Listing`/`ask_for`/`bid_for`/`bid_row` and `quote_number`;
+  - `last_cycle`/`CycleRead`;
+  - `heard_sentence`/`heard_sentences`/`heard_line_is_bare`;
+  - `grid_rows`, with `SITE_VIEW_CELLS` 32, `GRID_COLUMNS` 64, `SITE_LEGEND`, `GRID_GLYPHS` and `ORE_GLYPHS`;
+  - `sale_receipt`/`SaleRead`, and `settles(hull)`/`docks(hull)`;
+  - every needle constant, including `SITE_CLOSED`, `QUOTE_STALE`, `SOUND_STARTED` and `DRIVE_HERE`.
+- `mine::report::{Report, BeatSpan, MilestoneAt, SoundingSpan, HeardAt, Receipts}`, with `Report::{milestone, sounding, beat}` (`beat` returns the first span; the beat may recur).
+
+**Runner and command line**
+- The flag `--mine <site>`, which requires `--headless`.
+- `runner::Options.mine: Option<Site>` and `runner::Report.mine: Option<mine::report::Report>`, the latter skipped when `None`.
+- The transcript records:
+  - `mine-send {line, beat, lane_ms}`;
+  - `mine-beat {beat, edge, lane_ms, at_unix_ms}`;
+  - `mine-milestone {name, lane_ms, at_unix_ms}`;
+  - `mine-heard {sentence, lane_ms, at_unix_ms}`;
+  - `mine` events.
+
+**Test support**
+- `tests/support/mine.rs`:
+  - `KEY_1`, `READY`, `NOT_READY`, `RATE_READY` and `Miner {account, character, site}`;
+  - `write_fixed_key`, `config`, `geology_line` and `boot(&[Miner]) -> arena::Rig`;
+  - `rate_and_geology_ready` and `await_ready(god, bound) -> u64`;
+  - `miner_config(rig, miner, max_seconds) -> PathBuf` (writes `bot/{account}.toml`);
+  - `milestone_at(flight, name)`, `unix_now_ms`, and `drive_lane(client, lane, until, bound) -> (u64, Vec<Send>)`.
+- `tests/support/arena.rs`:
+  - `Rig::serving(listener, handles, dir, store) -> Rig`;
+  - `bot_config_agent_at(rig, path, username, max_seconds, settle_ms, observation_ms, extra) -> PathBuf`.
+
+### Doc 20 amendments owed
+
+**Doc 20 §13, the SM.12 row's acceptance clause** "the bot cohort completes the loop in line mode (doc 14 P10)" needs "As built (SM.12c-bot)":
+- It was met by `crates/mush-bot/tests/mining_cohort.rs`'s `four_bots_mine_and_sell_over_ssh_in_line_mode`, which is `#[ignore]`d, run by hand, and named in a `ci.yml` comment under O-28 (i).
+- Four real `mush-bot --mine` binaries ran over SSH in line mode against `boot_all_in_one` at rate 24, two at Ahuna Flank and two at Kerwan Floor:
+  - each mined 12 t of metal ore and sold it for a 735.00cr net;
+  - the stakes were F, K, J and K, with the second bot at each site refused once;
+  - the per-bot loops took 14.8–25.0 min, first launch to last sale 29.3 min;
+  - the heard path passed at both sites.
+- The canary `the_mining_root_runs_under_the_bots_serde` runs in every build, about 500–530 s.
+- The bot half landed as SM.12c-bot.
+
+**Doc 14 §1, P10 ("Text is sufficient")** is met by the SM.12c-bot cohort.
+
+**Doc 20a §2**, the "What is not forced: SM.12c's bot half" paragraph, lists "the `.gitignore` line" among the bot half's files. As built, the bot half adds none: the cohort writes nothing at the repository root, and `/cost-lane*.json` is SM.12c-lane's.
+
+**Doc 20a §5.3.11 needs as-built notes:**
+- **The window rule:** needles are matched against joined, normalised windows. A sending step's window opens after its send; a follow-on's opens after the line that decided the step before. The typed line's echo and heard lines are kept out of the windows.
+- **Where the brief was wrong:** "the witness map retried like the scan" is as built a retry on `GROUND_COLD` only. The site view prints the block letters A–P at each block's north-west corner besides `_` and space, so `GRID_GLYPHS` carries them.
+- **What the brief did not cover, landed:**
+  - The lane retries a closed site's `+ship/plan` and `+ship/lift` (`voyage::SITE_CLOSED`) for up to 10 minutes.
+  - A stale market quote (`mush_market::trade::STALE_QUOTE`) is quoted afresh, at most 6 times, and a stale sale is retried. Two bots buying from one listing at once made this necessary.
+  - The world's transient refusals are resent, at most 40 per step.
+  - `DRIVE_HERE` counts as an arrived drive.
+  - `--mine` requires `--headless`.
+- The four unit tests are five, adding `the_vocabulary_is_closed`.
+
+**Doc 20a §5.3.12 needs these as-built notes:**
+- **The canary:**
+  - It drives the lane in-process over its own SSH session through the first scan, and it waits for enrolment, not the full Ready.
+  - The lane itself then waits for the site's pad, about 3 min after enrolment at a fresh boot. This corrects the brief's D4 premise.
+  - Its every-build cost is about 9 min.
+  - It asserts that a Draw happened.
+- **The rig and the arena support:**
+  - The rig adds `arena::Rig::serving` and `arena::bot_config_agent_at`, writing one config file per bot.
+  - Players are made after `boot_all_in_one` and linked through `Engine::link_account_character`.
+- **The cohort:**
+  - The heard assertion has two named failures ("no overlap" and "open but silent").
+  - "The second bot received no heard line before its own arrival" is built strict, with no slack.
+  - SM.10's staff funding route was not needed: O-23 held, and each bot netted 735.00cr.
+  - "About 25–35 minutes" is measured as per-bot loops of 14.8–25.0 min, first launch to last sale 29.3 min, and a total of 37.6 min with the 491 s readiness wait.
+
+**Doc 20a §5.3.13 / §8 O-28:** default (i) is built as a comment block between `bot-muster-rate` and the `# 16b cut H` comment. The bot-mining-cohort `schedule` stanza and the Windows weekly stanza are proposed as text only. The canary adds about 9 min to the rest shard's mush-bot step, against the plan's "7–10".
+
+**Doc 20a §6's numbers table**, the "bot cohort … (~25–35 min)" row, should carry the measured figures above.
+
+**Doc 20a §5.6** says "`mush-bot --lib mine` (four)". As built it is five, plus the runner's `a_mining_run_starts_running_and_its_lane_is_due`.

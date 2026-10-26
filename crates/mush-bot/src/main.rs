@@ -25,6 +25,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--login <account+character>] [--model-tape <file.json>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
                 [--arena <red|blue> [--matches <n>]]\n\
+                [--mine <site>]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
        mush-bot --config <file> --studio <concept.json> --output <new-directory> [--tui | --headless]\n\
        mush-bot --config <file> --studio-session <session.json> --output <new-directory> [--tui]\n\
@@ -406,6 +407,11 @@ fn launch() -> Result<u8> {
                 options.arena =
                     Some(mush_bot::arena::Side::parse(&word).ok_or("--arena takes red or blue")?);
             }
+            // Doc 20 cut SM.12c-bot: play the mining loop at a site.
+            "--mine" => {
+                let word = args.next().ok_or(mush_bot::mine::MINE_SITE_USAGE)?;
+                options.mine = Some(mush_bot::mine::Site::parse(&word)?);
+            }
             "--matches" => {
                 options.matches = Some(
                     args.next()
@@ -451,6 +457,34 @@ fn launch() -> Result<u8> {
         {
             return Err(
                 "--arena cannot be combined with --script, --paused, --managed-floor, \
+                        --replay, --studio, --harness or a campaign session"
+                    .into(),
+            );
+        }
+    }
+    // Doc 20 cut SM.12c-bot: the mining lane's refusals. The session sentence
+    // repeats `runner.rs`'s `MINE_SESSION` byte for byte, as the arena's
+    // block repeats `ARENA_SESSION` (this is the binary crate).
+    if options.mine.is_some() {
+        if options.arena.is_some() {
+            return Err("--mine and --arena are two lanes; choose one".into());
+        }
+        if goal.is_some() {
+            return Err("--mine plays now and --goal lets the model decide; choose one".into());
+        }
+        if options.scenario.is_some()
+            || options.paused
+            || options.managed_floor
+            || replay.is_some()
+            || studio.is_some()
+            || studio_session.is_some()
+            || harness.is_some()
+            || options.campaign_epoch.is_some()
+            || options.restore_bot.is_some()
+            || options.campaign_quota.is_some()
+        {
+            return Err(
+                "--mine cannot be combined with --script, --paused, --managed-floor, \
                         --replay, --studio, --harness or a campaign session"
                     .into(),
             );

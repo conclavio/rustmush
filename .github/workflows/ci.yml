@@ -842,6 +842,18 @@ jobs:
       - name: Bot win rate from the muster
         run: cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
 
+  # Doc 20 cut SM.12c-bot (doc 20a §5.3.12-13; the owner's O-28 default (i)):
+  # the mining bot cohort — four real mush-bot binaries playing doc 20's whole
+  # loop over SSH in line mode against the production root at world rate 24,
+  # two at Ahuna Flank and two at Kerwan Floor (crates/mush-bot/tests/
+  # mining_cohort.rs). About 8 minutes of world readiness and 25-35 of play, so
+  # it is run by hand and no job runs it: not on push, not on a dispatch, not on
+  # the weekly schedule. Naming it here is what the gated-test inventory asks of
+  # an ignored test. Its canary, the_mining_root_runs_under_the_bots_serde, is
+  # not ignored and runs in the test job's `cargo test -p mush-bot` step above.
+  # By hand:
+  # cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture
+
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack

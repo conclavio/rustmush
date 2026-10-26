@@ -1715,7 +1715,7 @@ fn the_command_line_refuses_what_the_pilot_cannot_fly() {
         (&["--arena", "blue", "--managed-floor"][..], session),
         (
             &["--headless"][..],
-            "headless play requires a goal and [model], --arena, or --script",
+            "headless play requires a goal and [model], --arena, --mine, or --script",
         ),
     ] {
         let (code, _, stderr) = cli(args);

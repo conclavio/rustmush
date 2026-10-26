@@ -96,6 +96,9 @@ pub struct Options {
     /// `--matches <n>`: how many matches `--arena` plays (1..=100); else
     /// `[arena].matches`.
     pub matches: Option<u32>,
+    /// `--mine <site>`: play the mining loop at that site (doc 20 cut
+    /// SM.12c-bot).
+    pub mine: Option<crate::mine::Site>,
 }
 
 pub enum Control {
@@ -159,6 +162,9 @@ pub struct Report {
     /// The simulator pilot's matches (cut AJ.2), when it flew.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arena: Option<crate::arena::report::Report>,
+    /// The mining pilot's loop (doc 20 cut SM.12c-bot), when it played.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mine: Option<crate::mine::report::Report>,
 }
 
 struct Log {
@@ -326,6 +332,11 @@ struct App {
     /// The session's budget has blocked a commander call: it holds for the
     /// rest of the session, so every later lane starts with its commander off.
     commander_budget_off: bool,
+    /// The mining pilot's lane (doc 20 cut SM.12c-bot): while it plays, every
+    /// tick is its.
+    mine: Option<crate::mine::Lane>,
+    /// The mining lane's result has been written into the state.
+    mine_reported: bool,
 }
 
 /// The pilot's name for itself (cut AJ.2): the character part of an
@@ -347,6 +358,42 @@ const ARENA_SESSION: &str = "--arena cannot be combined with --script, --paused,
 /// The refusal for a second arena pilot while one flies (`/arena`, and the goal
 /// loop's `arena` action, which declines with it).
 const ARENA_FLYING: &str = "the arena pilot is already flying; /arena stop first";
+/// The refusal for a mining pilot under a mission contract (doc 20 cut
+/// SM.12c-bot).
+const MINE_MISSION: &str =
+    "the mining pilot does not run under a mission contract; use a memory namespace without one";
+/// The refusal for a mining pilot in a session that sends its own lines
+/// (`main.rs` repeats it byte for byte).
+const MINE_SESSION: &str = "--mine cannot be combined with --script, --paused, --managed-floor, \
+                            --replay, --studio, --harness or a campaign session";
+/// The refusal for a mining pilot with a control input (doc 20 cut
+/// SM.12c-bot): the lane is a headless command-line lane (no `/mine`, no
+/// pause), so no REPL line or frontend control can start another lane, pause
+/// the run or take its ticks while it plays.
+const MINE_HEADLESS: &str = "the mining pilot plays headless; add --headless";
+
+/// **Whether a run starts `running`**: not paused, and something plays at
+/// once — a goal, a script, the arena pilot or the mining pilot.
+fn active_at_start(paused: bool, goal: bool, scripted: bool, arena: bool, mine: bool) -> bool {
+    !paused && (goal || scripted || arena || mine)
+}
+
+/// **Whether this tick is the mining lane's** (doc 20 cut SM.12c-bot), given
+/// a lane: the run is running and the lane has no result yet, or its result is
+/// not yet written into the state.
+fn mine_due_for(running: bool, result: bool, reported: bool) -> bool {
+    if result { !reported } else { running }
+}
+
+/// Unix milliseconds now (the runner may read the clock; the mining lane may
+/// not, so its epoch arrives as data).
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 /// What the arena lane's pause does this tick (cut AM.2).
 #[derive(Debug, PartialEq, Eq)]
@@ -515,9 +562,24 @@ pub async fn run_controlled(
     if options.headless
         && scenario.is_none()
         && options.arena.is_none()
+        && options.mine.is_none()
         && (config.agent.goal.is_empty() || selected_model.is_none())
     {
-        return Err("headless play requires a goal and [model], --arena, or --script".into());
+        return Err(
+            "headless play requires a goal and [model], --arena, --mine, or --script".into(),
+        );
+    }
+    if options.mine.is_some()
+        && (scenario.is_some()
+            || options.paused
+            || options.managed_floor
+            || options.campaign_epoch.is_some()
+            || restore.is_some())
+    {
+        return Err(MINE_SESSION.into());
+    }
+    if options.mine.is_some() && !options.headless {
+        return Err(MINE_HEADLESS.into());
     }
     if options.arena.is_some()
         && (scenario.is_some()
@@ -617,6 +679,9 @@ pub async fn run_controlled(
         if options.arena.is_some() {
             return Err(ARENA_MISSION.into());
         }
+        if options.mine.is_some() {
+            return Err(MINE_MISSION.into());
+        }
     }
     let mut activity = memories.activity()?;
     if restore.is_none() {
@@ -701,8 +766,13 @@ pub async fn run_controlled(
     memories.expect_arrival();
     let now = Instant::now();
     let started = log.started;
-    let active = !options.paused
-        && (!config.agent.goal.is_empty() || scenario.is_some() || options.arena.is_some());
+    let active = active_at_start(
+        options.paused,
+        !config.agent.goal.is_empty(),
+        scenario.is_some(),
+        options.arena.is_some(),
+        options.mine.is_some(),
+    );
     let state = State {
         status: if active {
             "running"
@@ -738,8 +808,8 @@ pub async fn run_controlled(
         resume_status: None,
         // A replay sends exactly the commands in its source record. Login output
         // is still collected, but agent bootstrap belongs to autonomous play.
-        // The arena pilot types its own `look`.
-        bootstrap: if script.is_some() || options.arena.is_some() {
+        // The arena pilot types its own `look`; the mining pilot its own walk.
+        bootstrap: if script.is_some() || options.arena.is_some() || options.mine.is_some() {
             VecDeque::new()
         } else {
             config.agent.bootstrap.clone().into()
@@ -816,12 +886,17 @@ pub async fn run_controlled(
         commander_task: None,
         commander_request: None,
         commander_budget_off: false,
+        mine: None,
+        mine_reported: false,
     };
     if let Some(snapshot) = restore {
         app.restore(snapshot)?;
     }
     if let Some(side) = app.options.arena {
         app.arena_start(side, arena_matches)?;
+    }
+    if let Some(site) = app.options.mine {
+        app.mine_start(site)?;
     }
     let result = app.drive().await;
     // The one `SIM LEAVE`, when it is due, before the session closes.
@@ -867,6 +942,7 @@ pub async fn run_controlled(
         probe_results_omitted: app.probe_results_omitted,
         inherited_probe_results: app.inherited_probe_results,
         arena: app.arena.as_ref().map(crate::arena::Lane::report),
+        mine: app.mine.as_ref().map(crate::mine::Lane::report),
     };
     app.log.record("result", serde_json::to_value(&report)?)?;
     if let Some(file) = report_file {
@@ -1527,12 +1603,17 @@ impl App {
                                 // The arena pilot's polls and acks stay out of memory, attention
                                 // and the recent window; the transcript keeps the raw text whole.
                                 let now = self.elapsed_ms();
-                                let seen = match self.arena.as_mut() {
-                                    Some(lane) => {
+                                let seen = match (self.arena.as_mut(), self.mine.as_mut()) {
+                                    (Some(lane), _) => {
                                         let journal = lane.feed(now, &text).journal;
                                         if journal.is_empty() { journal } else { journal + "\n" }
                                     }
-                                    None => text.clone(),
+                                    // Doc 20 cut SM.12c-bot: the mining lane reads it the same way.
+                                    (None, Some(lane)) => {
+                                        let journal = lane.feed(now, &text).journal;
+                                        if journal.is_empty() { journal } else { journal + "\n" }
+                                    }
+                                    (None, None) => text.clone(),
                                 };
                                 let watch = if seen.is_empty() { None } else { self.debug.observation_match(&self.state.recent, &seen).map(str::to_owned) };
                                 self.log.record("observation", json!(text))?;
@@ -1860,6 +1941,105 @@ impl App {
             }
             _ => Err("use /arena, /arena red|blue [n] or /arena stop".into()),
         }
+    }
+
+    // -- the mining pilot (doc 20 cut SM.12c-bot) --------------------------------
+
+    /// Start the mining lane for `site` (`--mine`): the hull's name from the
+    /// SSH username, the epoch of the lane's clock in unix milliseconds, and
+    /// the character's name as [`arena_me`] reads it.
+    fn mine_start(&mut self, site: crate::mine::Site) -> Result<()> {
+        let hull = crate::mine::hull_name(&self.config.ssh.username)?;
+        let epoch_unix_ms = unix_now_ms().saturating_sub(self.elapsed_ms());
+        let me = arena_me(&self.config.ssh.username, &self.character);
+        let mut lane = crate::mine::Lane::new(
+            site,
+            crate::mine::Settings {
+                hull,
+                epoch_unix_ms,
+            },
+            me,
+        );
+        let events = lane.events();
+        self.mine = Some(lane);
+        self.mine_reported = false;
+        self.mine_events(events)
+    }
+
+    /// Whether this tick is the mining lane's: it plays and the run is
+    /// running with no result yet, or its result is not yet written.
+    fn mine_due(&self) -> bool {
+        self.mine.as_ref().is_some_and(|lane| {
+            mine_due_for(
+                self.state.status == "running",
+                lane.result().is_some(),
+                self.mine_reported,
+            )
+        })
+    }
+
+    /// The mining lane's tick: its lines, its events and its result.
+    async fn mine_tick(&mut self) -> Result<()> {
+        let now = self.elapsed_ms();
+        let Some(lane) = self.mine.as_mut() else {
+            return Ok(());
+        };
+        let sends = lane.tick(now);
+        let events = lane.events();
+        let result = (!self.mine_reported)
+            .then(|| lane.result().cloned())
+            .flatten();
+        for send in sends {
+            self.session.send(&send.line).await?;
+            self.state.commands_sent += 1;
+            self.log.record(
+                "mine-send",
+                json!({"line": send.line, "beat": send.beat, "lane_ms": send.lane_ms}),
+            )?;
+            self.log.event("send", &send.line)?;
+        }
+        self.mine_events(events)?;
+        if let Some(result) = result {
+            self.mine_reported = true;
+            self.state.status = result.status.clone();
+            self.state.outcome = result.outcome.clone();
+            self.log.event(&result.status, &result.outcome)?;
+        }
+        Ok(())
+    }
+
+    /// The mining lane's events as transcript records: `mine` sentences,
+    /// `mine-beat`, `mine-milestone` and `mine-heard`.
+    fn mine_events(&mut self, events: Vec<crate::mine::LaneEvent>) -> Result<()> {
+        let epoch = self
+            .mine
+            .as_ref()
+            .map_or(0, |lane| lane.settings().epoch_unix_ms);
+        for event in events {
+            match event {
+                crate::mine::LaneEvent::Said(text) => self.log.event("mine", &text)?,
+                crate::mine::LaneEvent::Beat {
+                    beat,
+                    edge,
+                    lane_ms,
+                } => self.log.record(
+                    "mine-beat",
+                    json!({"beat": beat, "edge": edge, "lane_ms": lane_ms,
+                        "at_unix_ms": epoch.saturating_add(lane_ms)}),
+                )?,
+                crate::mine::LaneEvent::Milestone { name, lane_ms } => self.log.record(
+                    "mine-milestone",
+                    json!({"name": name, "lane_ms": lane_ms,
+                        "at_unix_ms": epoch.saturating_add(lane_ms)}),
+                )?,
+                crate::mine::LaneEvent::Heard { sentence, lane_ms } => self.log.record(
+                    "mine-heard",
+                    json!({"sentence": sentence, "lane_ms": lane_ms,
+                        "at_unix_ms": epoch.saturating_add(lane_ms)}),
+                )?,
+            }
+        }
+        Ok(())
     }
 
     /// Start a lane for `side` and `matches` (`--arena`, `/arena`, the goal
@@ -2209,6 +2389,10 @@ impl App {
                 if self.arena_due() {
                     return self.arena_tick().await;
                 }
+                // Doc 20 cut SM.12c-bot: nor the mining pilot.
+                if self.mine_due() {
+                    return self.mine_tick().await;
+                }
                 return Ok(());
             }
             let pending = self.pending.take().unwrap();
@@ -2264,6 +2448,11 @@ impl App {
             if ends {
                 return Ok(());
             }
+        }
+        // Doc 20 cut SM.12c-bot: a playing mining lane's tick is the whole tick.
+        if self.mine_due() {
+            self.mine_tick().await?;
+            return Ok(());
         }
         if self.speech.is_some() {
             self.dispatch_speech().await?;
@@ -3417,6 +3606,40 @@ mod tests {
         // Neither running nor paused: not due.
         assert!(!arena_due_for(true, false, false, false, false, false));
         assert!(!arena_due_for(false, false, false, false, false, false));
+    }
+
+    /// **A mining run starts running and its lane takes the ticks** (doc 20
+    /// cut SM.12c-bot): `--mine` alone makes a run active (no goal, no
+    /// script, no arena), a paused run never is; the lane is due while the run
+    /// runs and it has no result, and once more to write its result — then
+    /// never again, whatever the status.
+    #[test]
+    fn a_mining_run_starts_running_and_its_lane_is_due() {
+        assert!(
+            active_at_start(false, false, false, false, true),
+            "--mine alone"
+        );
+        assert!(!active_at_start(true, false, false, false, true), "paused");
+        assert!(
+            !active_at_start(false, false, false, false, false),
+            "nothing plays"
+        );
+        for (goal, scripted, arena) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(active_at_start(false, goal, scripted, arena, false));
+        }
+        assert!(mine_due_for(true, false, false), "running, no result");
+        assert!(!mine_due_for(false, false, false), "not running, no result");
+        assert!(mine_due_for(true, true, false), "a result to write");
+        assert!(
+            mine_due_for(false, true, false),
+            "a result to write, whatever the status"
+        );
+        assert!(!mine_due_for(true, true, true), "written");
+        assert!(!mine_due_for(false, true, true), "written");
     }
 
     /// **A paused lane's tick never ends the runner's** (cut AO.2): the

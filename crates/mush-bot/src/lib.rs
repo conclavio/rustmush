@@ -30,6 +30,7 @@ pub mod knowledge;
 pub mod lab_cli;
 pub mod learning;
 pub mod memory;
+pub mod mine;
 pub mod mission;
 pub mod model;
 pub mod models;
