@@ -1,0 +1,16 @@
+# tacsim's integration test targets (one per crates/tacsim/tests/*.rs), split
+# across the `test` job's `tacsim-integration-N` shards in .github/workflows/ci.yml.
+# `scripts/ci-tacsim-shard.sh N` runs line N as `cargo test -p tacsim --test ...`.
+#
+# Balanced longest-first by each binary's measured wall time in main's green
+# run 40183969093 (9df93246): about 17 min of test run per shard, against 51 min
+# as one shard. The named #[ignore]d mind-hash steps follow their targets
+# (minds_rhai and twin in shard 2, minds_pool in shard 1).
+#
+# Every target must appear on exactly one line:
+# crates/mush-contract-tests/tests/ci_tacsim_shards.rs fails on a missing,
+# doubled or unknown target, so a new test file cannot silently go unrun.
+# Rebalance from a fresh run's timings when a shard drifts far from the others.
+1: arena claims commerce composition_edges conditions deliberation e7r2 geology hulls lane minds_pool mining perception ports price resolution s9_corridor sheet unloading vehicles voyage weapons
+2: arena_task content coop definitions driving e7r1 ephemeris extensions knowing minds_rhai motor orders plans quarry replay reset sight sites twin
+3: capacity chart cockpit deposits drones e7c1 economy excursions harness landing match_lifecycle mill minds moon_ports passage plumbing port_tick reflex report sale shipped_scale sky stations

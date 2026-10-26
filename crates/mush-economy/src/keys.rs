@@ -170,6 +170,15 @@ pub(crate) fn request_key_read(ctx: &mut Ctx<'_>, key: &IdempotencyKey) {
                     },
                 );
             }
+            // The read and the RAM that waits on it go together. On the command
+            // surface the refusal that asked for this read is an `Err`, and
+            // dispatch discards a failed handler's deferred work but keeps RAM:
+            // unpinned, the read was dropped while `pending_key_reads` held it
+            // in flight, so every retry found it pending, asked nothing and was
+            // refused again — a key the filter is wrong about never decided,
+            // and an `@econ/*` command under it never posted. The pin is the
+            // move a landed post makes for the same reason (`api::post`).
+            ctx.out.pin_deferred();
         }
         Err(error) => {
             tracing::warn!(%error, "economy: the key document read could not be requested");

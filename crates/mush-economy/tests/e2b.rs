@@ -1483,6 +1483,45 @@ fn w1_the_gate_takes_the_transient_path_for_a_positive_outside_the_window() {
     assert!(store(&tw).cold_key(&tkey("alpha")).is_none(), "aged out");
 }
 
+/// Doc 13 W-D1 on the real command surface: an `@econ/*` refusal is the
+/// handler's `Err`, and dispatch discards a failed handler's deferred work —
+/// so the key read the transient asks for must survive that, or the key stays
+/// "pending" with no read in flight and every retry is refused the same way.
+/// (`@testpost` above renders its refusals and returns `Ok`, which is why the
+/// W1 test could not see it.) The H3 scale harness met it at mint 59 233,
+/// whose `cmd:` key the filter is wrong about.
+#[test]
+fn w1_a_command_refused_for_its_key_keeps_the_read_and_posts_on_the_retry() {
+    let mut tw = boot_j3(20_000, 4);
+    setup_mint(&mut tw, 1);
+    let kv = fold_into(Vec::new(), &mut tw);
+    // `@econ/mint` posts under `cmd:{the next transaction id}`; make the filter
+    // wrong about it.
+    let next = {
+        let s = store_mut(&mut tw);
+        s.set_key_mode_for_tests(KeyMode::Windowed);
+        let next = IdempotencyKey::new("cmd", s.peek_next_transaction().to_string());
+        s.key_filter_mut_for_tests().insert(&next);
+        next
+    };
+    let (ev, effects) = tw.run_with_effects(GOD, "@econ/mint 0=1 1");
+    assert!(
+        has_error(&ev) && texts(&ev).contains("try again shortly"),
+        "{}",
+        texts(&ev)
+    );
+    let (correlation, keys) = one_read(&effects);
+    assert_eq!(
+        keys,
+        vec![idem_key(&next)],
+        "the refused command's read survives"
+    );
+    complete(&mut tw, correlation, serve(&kv, keys)); // never posted: absent
+    let ev = tw.run(GOD, "@econ/mint 0=1 1");
+    assert!(!has_error(&ev), "the retry posts: {}", texts(&ev));
+    assert_eq!(bal(&tw, 1), 2);
+}
+
 /// Doc 13 W1 (W-D5, lens S): a journal older than the cut has no key
 /// documents; the sweep backfills them from the RAM index at its pace and
 /// records that it is done; a world booted from the result needs nothing.
