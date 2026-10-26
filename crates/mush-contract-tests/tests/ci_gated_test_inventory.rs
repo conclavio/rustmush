@@ -35,6 +35,13 @@
 //!   its filterset (`-E 'test(=name)'`, `--filterset`) is a filter, and its
 //!   own value-taking options (`--build-jobs 2`, `--run-ignored only`,
 //!   `-P ci`) are not.
+//! - since test-strategy cut T.3 a crate's integration tests may be modules
+//!   of a **group binary** (`tests/<group>.rs` declaring `tests/<group>/<m>.rs`,
+//!   its tests named `<m>::<fn>`): such a test is covered when a line names
+//!   `-p <pkg> --test <group>` and runs the whole binary, or the whole module
+//!   (`<m>::`, cargo's substring filter; nextest's `-E 'test(/^<m>::/)'`), or
+//!   the test itself (`<m>::<fn>` with `--exact`; `-E 'test(=<m>::<fn>)'`)
+//!   (`invokes_module`).
 //!
 //! Tests whose names merely end in `_gated` in the English sense
 //! (`chown_is_power_gated`, `harm_is_staff_gated`) are not backend-gated: they
@@ -83,15 +90,32 @@ impl DiscoveredTest {
         self.ignored || self.reads_live_backend || !self.opt_in_flags.is_empty()
     }
 
-    /// `Some((package, target))` for `crates/<pkg>/tests/<target>.rs`.
-    fn integration_target(&self) -> Option<(&str, &str)> {
+    /// `Some((package, target, module))`: `crates/<pkg>/tests/<target>.rs` is
+    /// its own cargo target (`module` is `None`), and since test-strategy cut
+    /// T.3 `crates/<pkg>/tests/<target>/<m>.rs` (or deeper) is a module of the
+    /// group binary `tests/<target>.rs` when that root exists, its tests named
+    /// `<m>::<fn>` (`<m>::<child>::<fn>` a level down). Anything else under
+    /// `tests/` (`support/`, `common/mod.rs`) is no target of its own: its
+    /// tests are covered by name only.
+    fn integration_target(&self, root: &Path) -> Option<(&str, &str, Option<String>)> {
         let (package, rest) = self.relative.split_once('/')?;
-        let target = rest.strip_prefix("tests/")?.strip_suffix(".rs")?;
-        // Only a top-level `tests/<target>.rs` is its own cargo target.
-        if target.contains('/') {
+        let inside = rest.strip_prefix("tests/")?.strip_suffix(".rs")?;
+        let Some((target, below)) = inside.split_once('/') else {
+            return Some((package, inside, None));
+        };
+        let group_root = root
+            .join("crates")
+            .join(package)
+            .join("tests")
+            .join(format!("{target}.rs"));
+        if !group_root.is_file() {
             return None;
         }
-        Some((package, target))
+        let module = below
+            .strip_suffix("/mod")
+            .unwrap_or(below)
+            .replace('/', "::");
+        Some((package, target, Some(module)))
     }
 }
 
@@ -396,6 +420,140 @@ fn a_gated_test_is_covered_only_by_an_unfiltered_invocation_of_its_target() {
     }
 }
 
+/// **Whether `workflow` runs the test `test_id` (`<module>::<fn>`) of the
+/// group binary `<target>` of `<package>`** (test-strategy cut T.3): some
+/// line holds `-p <package> --test <target>`, the target's name ending
+/// there, and the test is within what that line runs — the whole binary (no
+/// filter at all), or a filter it satisfies. A positional word before `--`
+/// is cargo's substring filter on the full test name (`<module>::` is the
+/// whole-module spelling; after `-- --exact` it must equal the id); a
+/// nextest filterset covers it as `test(/^<module>::/)` or `test(=<id>)`,
+/// the two spellings the tree uses (an expression with spaces inside its
+/// quotes is read as its first word, and covers nothing).
+fn invokes_module(workflow: &str, package: &str, target: &str, test_id: &str) -> bool {
+    let needle = format!("-p {package} --test {target}");
+    let module = test_id.split("::").next().unwrap_or(test_id);
+    let module_filterset = format!("test(/^{module}::/)");
+    let exact_filterset = format!("test(={test_id})");
+    workflow.lines().any(|line| {
+        line.match_indices(&needle).any(|(at, _)| {
+            let rest = line.get(at + needle.len()..).unwrap_or_default();
+            if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+                return false;
+            }
+            let exact = rest
+                .split_whitespace()
+                .skip_while(|word| *word != "--")
+                .any(|word| word == "--exact");
+            let mut filters: Vec<&str> = Vec::new();
+            let mut filtersets: Vec<&str> = Vec::new();
+            let mut words = rest.split_whitespace();
+            while let Some(word) = words.next() {
+                if word == "--" {
+                    break;
+                }
+                if word.starts_with('-') {
+                    if let Some(option) = FILTERSET_OPTIONS
+                        .iter()
+                        .find(|option| word.starts_with(*option))
+                    {
+                        let attached = word[option.len()..].trim_start_matches('=');
+                        let expression = if attached.is_empty() {
+                            words.next().unwrap_or_default()
+                        } else {
+                            attached
+                        };
+                        filtersets.push(expression.trim_matches(|c| c == '\'' || c == '"'));
+                        continue;
+                    }
+                    if VALUE_OPTIONS.contains(&word) {
+                        let _ = words.next();
+                    }
+                    continue;
+                }
+                filters.push(word);
+            }
+            let by_filter = if filters.is_empty() {
+                true
+            } else if exact {
+                filters.contains(&test_id)
+            } else {
+                filters.iter().any(|filter| test_id.contains(filter))
+            };
+            let by_filterset = filtersets.is_empty()
+                || filtersets.iter().any(|expression| {
+                    *expression == module_filterset || *expression == exact_filterset
+                });
+            by_filter && by_filterset
+        })
+    })
+}
+
+#[test]
+fn a_module_of_a_group_binary_is_covered_by_the_binary_the_module_or_the_test() {
+    let id = "persistence::kill9_mid_play_world_survives_redis_gated";
+    let other = "m10c_e2e::m10c_persistence_twin_redis_gated";
+    // The whole binary, and the whole module (cargo's substring filter).
+    assert!(invokes_module(
+        "run: cargo test -p mushd --test durable_process -- --test-threads=1",
+        "mushd",
+        "durable_process",
+        id
+    ));
+    let module =
+        "run: cargo test -p mushd --test durable_process persistence:: -- --test-threads=1";
+    assert!(invokes_module(module, "mushd", "durable_process", id));
+    assert!(!invokes_module(module, "mushd", "durable_process", other));
+    // A substring is a substring: `lane::` selects `cost_lane::…` too, as
+    // cargo would (which is why a group refuses such a pair of modules).
+    assert!(invokes_module(
+        "cargo test -p tacsim --test shard_4 lane::",
+        "tacsim",
+        "shard_4",
+        "cost_lane::x"
+    ));
+    // `--exact` wants the full id; the module spelling alone then runs nothing.
+    let exact = format!("run: cargo test -p mushd --test durable_process {id} -- --exact");
+    assert!(invokes_module(&exact, "mushd", "durable_process", id));
+    assert!(!invokes_module(
+        &exact,
+        "mushd",
+        "durable_process",
+        "persistence::clean_shutdown_drains_and_snapshots"
+    ));
+    assert!(!invokes_module(
+        "run: cargo test -p mushd --test durable_process persistence:: -- --exact",
+        "mushd",
+        "durable_process",
+        id
+    ));
+    // nextest's spellings, and a longer target's name is not this one's.
+    assert!(invokes_module(
+        "cargo nextest run -P ci -p mushd --test durable_process -E 'test(/^persistence::/)' --build-jobs 2",
+        "mushd",
+        "durable_process",
+        id
+    ));
+    assert!(invokes_module(
+        &format!("cargo nextest run -p mushd --test durable_process -E'test(={id})'"),
+        "mushd",
+        "durable_process",
+        id
+    ));
+    assert!(!invokes_module(
+        "cargo nextest run -p mushd --test durable_process -E 'test(/^m10c_e2e::/)'",
+        "mushd",
+        "durable_process",
+        id
+    ));
+    assert!(!invokes_module(
+        "cargo test -p mushd --test durable_process_x",
+        "mushd",
+        "durable_process",
+        id
+    ));
+}
+
 #[test]
 fn every_backend_gated_proof_is_named_by_a_ci_job() {
     let root = repo_root();
@@ -440,11 +598,24 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
             continue;
         }
         // The whole target, filter-free, for every gated test: a filtered
-        // step covers only the test it names, by its name (checked above).
-        if let Some((package, target)) = test.integration_target()
-            && invokes_target(&workflow, package, target, true)
-        {
-            continue;
+        // step covers only the test it names, by its name (checked above). A
+        // module of a group binary: the whole binary, the whole module, or
+        // the test itself (`invokes_module`).
+        match test.integration_target(&root) {
+            Some((package, target, None)) if invokes_target(&workflow, package, target, true) => {
+                continue;
+            }
+            Some((package, target, Some(module)))
+                if invokes_module(
+                    &workflow,
+                    package,
+                    target,
+                    &format!("{module}::{}", test.name),
+                ) =>
+            {
+                continue;
+            }
+            _ => {}
         }
         unowned.insert(format!("{} ({})", test.name, test.relative));
     }
@@ -452,8 +623,8 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
     assert!(
         unowned.is_empty(),
         "these proofs skip themselves without a live backend and no CI job runs them — \
-         name each one (or its `-p <pkg> --test <target>`, with no test-name filter) \
-         in .github/workflows/ci.yml:\n  {}",
+         name each one (or its `-p <pkg> --test <target>`, with no test-name filter; for a \
+         module of a group binary, `--test <group> <module>::`) in .github/workflows/ci.yml:\n  {}",
         unowned.into_iter().collect::<Vec<_>>().join("\n  ")
     );
 }

@@ -2218,7 +2218,7 @@ async fn mind_exec_close_before_eof_discards_partial_source_without_invocation()
 // ---- doc 20 cut SM.4b: the arrival line and the second principal's map over SSH ----------
 
 /// The events `tacsim`'s `tests/driving.rs` blessed from the world (`TACSIM_BLESS=1 cargo test
-/// -p tacsim --test driving sm4b_the_site_map_fixtures_are_blessed`): the operator's real
+/// -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_blessed`): the operator's real
 /// `ARRIVED` event and a second principal's real `+tv/map site` events, serialised as the world
 /// produced them.
 const SITE_EVENTS: &str = include_str!("../../../web/src/lib/fixtures/site/site_events.json");

@@ -1920,6 +1920,42 @@ shows the runner and whether it is online; `systemctl status
 actions.runner.conclavio-rustmush.conclav-vps` on the box says the same. The
 script's header says how to retire it.
 
+## Test targets since T.3: the group binaries
+
+Since test-strategy cut T.3 (2026-10-26) a crate's integration tests are a few
+**group binaries** rather than one cargo target per file: `tests/<group>.rs` is
+a crate root whose body is one `mod <name>;` line per former `tests/<name>.rs`,
+which now lives at `tests/<group>/<name>.rs`, unchanged but for its paths. The
+reason is disk and link time, not test time: every integration binary links the
+whole engine (300–730 MB each), and the 373 targets were 110 GB of the VPS
+runner's target dir against 11 GB of compiled dependencies, and some thirty
+CPU-minutes of relinking after a change to a core crate. The crates merged so
+far: tacsim (T.3a; its 64 files are `shard_1`..`shard_4`, one per line of
+`.github/tacsim-integration-shards.txt`, while `harness` and `cost_lane` stay
+targets of their own — a crate-root-only `#![recursion_limit]`; an exclusive
+timing lock and a script-parity test). A test's name is `<module>::<fn>`, and
+every run line translates as `--test <name>` → `--test <group> <name>::`:
+
+```sh
+cargo nextest run -p tacsim --test shard_4 -E 'test(/^cockpit::/)'   # one module
+cargo test -p tacsim --test shard_4 cockpit::                         # the same, cargo's substring filter
+cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_blessed -- --exact
+```
+
+Two things to know. `cargo test`'s positional filter is a substring match on
+the full name, so `lane::` would also select `cost_lane::…` if both were modules
+of one group: the merge refused a group where a module's name is a suffix of
+another's, and a new module keeps that rule. And under plain multi-threaded
+`cargo test` a group's modules share one process and its statics (locks, global
+tracing subscribers); sweeps run under nextest, one process per test, as CI and
+the VPS gate do, and `cargo test` is for one test (`--exact`) or one module
+with `--test-threads=1`. A new test file is a `mod` line in the group that fits
+(for tacsim, the shard with the most room). The gated-test inventory
+(`crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`) reads a group's
+modules and ci.yml's `--test <group> <module>::` lines the way it read whole
+targets. Run lines in design notes written before T.3 name the old targets;
+translate them as above.
+
 ## Discord bot (D1–D5): `[discord]`
 
 The Discord transport (`mush-net-discord`, plan `docs/interface/04-discord-implementation-plan.md`)

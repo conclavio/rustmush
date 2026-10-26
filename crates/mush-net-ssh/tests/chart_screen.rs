@@ -8,7 +8,7 @@ use mush_net_ssh::tui::screen::{CHART_SCREEN, COCKPIT_SCREEN, builtin_screens, v
 use mush_net_ssh::tui::{TuiApp, TuiManifest, frame_text};
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent, PanelFrameKind};
 
-/// The frame `tests/chart.rs` blessed (`TACSIM_BLESS=1 cargo test -p tacsim --test chart`).
+/// The frame `tests/chart.rs` blessed (`TACSIM_BLESS=1 cargo test -p tacsim --test shard_4 chart::`).
 const SKY_CHART_JSON: &str = include_str!("../../../web/src/lib/fixtures/chart/sky_chart.json");
 
 fn caps() -> ClientCaps {

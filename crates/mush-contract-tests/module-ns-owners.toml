@@ -298,7 +298,7 @@ reason = """
 Doc 18 cut IC14 row 48 (lead ruling L28): tacsim::seed::apply drives \
 mush_content::apply_pack for `@tacsim/seed <pack> commit` under the tacsim \
 module's identity, so the content latch row it commits carries tacsim on the \
-content namespace. The reproduction (tacsim/tests/lane.rs \
+content namespace. The reproduction (tacsim/tests/shard_4/lane.rs \
 ic14_a_staff_seed_survives_a_fold_and_reboot) showed the pair refused.
 """
 
