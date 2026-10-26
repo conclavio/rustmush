@@ -122,8 +122,15 @@ gh run download "$id" --repo "$repo" -D "$out" 2>/dev/null || true
 # <testsuites>; totals over all of them, then each failed and flaky test.
 junits="$(find "$out" -name 'gate-junit-*.xml' | sort || true)"
 if [ -n "$junits" ]; then
-  py=python3
-  command -v python3 > /dev/null 2>&1 || py=python
+  # The first python that RUNS: on the owner's Windows box `python3` is the
+  # Store's stub (it exits 49 and installs nothing) and `python` is the one.
+  py=""
+  for cand in python3 python; do
+    if "$cand" -c pass > /dev/null 2>&1; then py="$cand"; break; fi
+  done
+  if [ -z "$py" ]; then
+    echo "no python on PATH: the reports are under $out/, unparsed" >&2
+  else
   # shellcheck disable=SC2086
   "$py" -X utf8 - $junits <<'EOF'
 import sys
@@ -143,6 +150,7 @@ for s in suites:
         elif case.find("flakyFailure") is not None:
             print(f"  FLAKY {case.get('classname')} {case.get('name')}  {case.get('time')}s")
 EOF
+  fi
 fi
 echo "gate run $id: $conclusion (reports under $out/)"
 if [ "$conclusion" != success ]; then
