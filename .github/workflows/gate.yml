@@ -79,12 +79,6 @@ jobs:
       # Six of the eight cores for the compile; the service's Nice=10 yields
       # the rest to the game servers under contention.
       CARGO_BUILD_JOBS: "6"
-      # Every job's own temporary directory, wiped between jobs: /tmp on the
-      # box holds root-owned leftovers of by-hand harness runs
-      # (tacsim-lance-smoke, tacsim-minds-smoke), which the runner's user
-      # cannot write (the first by-hand sweep, 2026-10-26: two harness tests
-      # failed on exactly that).
-      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
@@ -92,6 +86,14 @@ jobs:
           rustup toolchain install
           rustc --version
           cargo nextest --version
+      # Every job's own temporary directory, wiped between jobs: /tmp on the
+      # box holds root-owned leftovers of by-hand harness runs
+      # (tacsim-lance-smoke, tacsim-minds-smoke), which the runner's user
+      # cannot write (the first by-hand sweep, 2026-10-26: two harness tests
+      # failed on exactly that). A step, through GITHUB_ENV: the `runner`
+      # context is not allowed in a job-level env (GitHub rejected the file).
+      - name: The job's own temporary directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: The box before the run
         run: |
           nproc; free -m; df -h /; cat /proc/loadavg
