@@ -6681,6 +6681,25 @@ pub(crate) fn offer_draft(
     parameters: Vec<ProjectedParameter>,
     presentation: (&str, &str, &str),
 ) -> Result<ProviderOfferDraft, ActionError> {
+    offer_draft_with_revisions(
+        action,
+        engine,
+        fixed,
+        parameters,
+        presentation,
+        RevisionSet::default(),
+    )
+}
+
+/// The same provider presentation with exact owner-supplied world observations.
+pub(crate) fn offer_draft_with_revisions(
+    action: &DefinitionRef,
+    engine: &mush_core::Engine,
+    fixed: Value,
+    parameters: Vec<ProjectedParameter>,
+    presentation: (&str, &str, &str),
+    revisions: RevisionSet,
+) -> Result<ProviderOfferDraft, ActionError> {
     let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
     let definitions = engine
         .registry
@@ -6688,7 +6707,7 @@ pub(crate) fn offer_draft(
         .ok_or_else(|| integrity("the surface act's definition registry is unavailable"))?;
     let mut guards = engine
         .registry
-        .server_guard_set_builder(RevisionSet::default())
+        .server_guard_set_builder(revisions)
         .map_err(|_| integrity("the surface act's guard registry is unavailable"))?;
     guards
         .add_definition(action.clone(), definitions)
@@ -8872,6 +8891,7 @@ pub(crate) struct SurfaceDoneProvider {
     pub outcome: DefinitionRef,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
     pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
+    pub surveys: StateFamilyHandle<super::survey::SurveyKey, super::survey::SurveyRecord>,
     /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
@@ -9153,10 +9173,13 @@ impl ActionProvider for SurfaceDoneProvider {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         // Doc 20 cut SM.8: the IC clock stamp and the real second beside `now` (the market lot
         // offer's precedent) — an unload's marked transfer stamps its markers with them.
+        let (survey_offer, survey_revisions) =
+            super::survey::reading_offer(engine, &self.surveys, actor)?;
         let fixed = json!({
             "now": w.world_ic_now().at,
             "clock": w.world_ic_now(),
             "wall": w.now(),
+            "surveys": survey_offer,
             "rigs": serde_json::to_value(&rigs)
                 .map_err(|_| integrity("the rigs' facts do not encode"))?,
         });
@@ -9189,7 +9212,7 @@ impl ActionProvider for SurfaceDoneProvider {
                 },
             )?,
         ];
-        offer_draft(
+        offer_draft_with_revisions(
             action,
             engine,
             fixed,
@@ -9199,6 +9222,7 @@ impl ActionProvider for SurfaceDoneProvider {
                 "Finish a rig's act",
                 "Record how a rig's act came out, at its own due instant.",
             ),
+            survey_revisions,
         )
         .map(Some)
     }
@@ -9563,6 +9587,16 @@ impl ActionProvider for SurfaceDoneProvider {
                         settle(&record.charge, false)?
                     };
                     span = Some(write_reading(txn, &self.charts, &act)?);
+                    let survey_offer: super::survey::ReadingOffer = parameters
+                        .get("surveys")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .ok_or_else(|| invalid("a reading's offer fixes its survey commissions"))?;
+                    let wall = parameters
+                        .get("wall")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| invalid("a reading's offer fixes its wall instant"))?;
+                    super::survey::log_reading(txn, &self.surveys, &survey_offer, &act, tv, wall)?;
                     ActResult::Done
                 } else if from_bay && matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull)
                 {
