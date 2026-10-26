@@ -5291,3 +5291,16 @@ The judge read the whole diff and every new file and verified each fix in the co
 **Doc 20a §6's numbers table**, the "bot cohort … (~25–35 min)" row, should carry the measured figures above.
 
 **Doc 20a §5.6** says "`mush-bot --lib mine` (four)". As built it is five, plus the runner's `a_mining_run_starts_running_and_its_lane_is_due`.
+
+### The lead's cohort run on the landed code
+
+The judge's first residual was that the cohort had passed only on the code before the fixer's round. The lead ran it once by hand on the landed commit `d2f4ee7c` (SM.12c-bot rebased over the owner's four merged pull requests, the M7 remerge among them): `cargo test -j 8 -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture` → `test result: ok. 1 passed` in 2,258 s (the world ready after 491 s; first launch to last sale 29.4 min; 37.6 min in all).
+
+| Bot | Site | Order | Loop | Lines | Stake | Refused | Mined | Sold | Net | Heard |
+|---|---|---|---|---|---|---|---|---|---|---|
+| minera | Ahuna | 1 | 14.7 min | 54 | F | 0 | 12 t metals | 12 t | 735.00cr | 1 |
+| minerb | Kerwan | 2 | 14.8 min | 56 | K | 0 | 12 t metals | 12 t | 735.00cr | 1 |
+| minerc | Ahuna | 3 | 19.9 min | 56 | K | 1 | 12 t metals | 12 t | 735.00cr | 1 |
+| minerd | Kerwan | 4 | 25.0 min | 59 | J | 1 | 12 t metals | 12 t | 735.00cr | 1 |
+
+Both sites' heard paths passed with the overlap proven by the stamps (heard1, heard2, overlap1, overlap2 all true). CI on the merge under it (`a8a1761b`) passed in full; on `d2f4ee7c` every job but `rest-servers`, then still running, was green, the bot shard with the canary included.
