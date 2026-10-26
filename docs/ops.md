@@ -1059,8 +1059,10 @@ version, the sky, the world rate, the treasury, the market and inventory fact
 providers, the applied-marker headroom (below), and per port its map, rooms, domain, institutions (each with its
 account and capital), programme, hulls, storefront pools, listings and bids, each
 line `[ready]`, `[pending]`, `[missing]` or `[flagged]`. `+coop/enrol` is gated on
-**every line but the sky and the marker headroom** (doc 18 D-18-50: the sky is
-reported, never gated; cut IC14 treats the `Markers` line the same way), and
+**every line but the sky, the marker headroom and the surface-mining lines**
+(doc 18 D-18-50: the sky is reported, never gated; cut IC14 treats the `Markers`
+line the same way, and doc 20 the geology, site, vehicles, licence, mill and
+dispatch lines, the last two below), and
 **a bids line closes it only when it reads `[missing]`** (doc 18 Q-18-60, cut
 P-B: a bid withdrawn by hand or waiting for the next apply): a player only ever
 hears "The Co-op is not enrolling yet: the programme is still being set up.";
@@ -1084,6 +1086,75 @@ shipped rate 0. If `[tacsim.time.ephemeris].rate` is set non-zero while a lane
 body has no `epoch_ic`, the line is flagged and the port tick pages once per boot
 ("the sky moves but a lane body has no epoch_ic"; runbook: give every lane body
 an `epoch_ic` or set the sky rate to 0).
+
+### The Mill and Dispatch lines (surface mining, doc 20 cuts SM.12a, SM.12b)
+
+Doc 20 cuts SM.12a and SM.12b add two kinds of line to `@tacsim/port status`.
+Both are reported and **never gated**: neither closes `+coop/enrol`. The
+Listings line a mill touches is gated as before.
+
+**The Mill lines** (SM.12a). One per mill row, after the Bids lines, headed
+`<port> mill <org> <ore>:` — lane v14 authors two, `ceres_port mill
+freeport_exchange metal_ore` (into `metals`) and `ceres_port mill occator
+ice_ore` (into `volatiles`):
+
+- `[ready]` "nothing milled yet; {n} t of ore waits; 5 to 2, 20 t a batch, at
+  most 40 t an IC day." or "{k} batches have milled {o} t of ore into {p} t of
+  {into}, the last at {stamp}; {n} t of ore waits; …" — ordinary play.
+- `[pending]` "not seeded yet." — the clerk has not made the house's row yet.
+- `[flagged]` "its ledger cannot be read." (store fault), "its ratio no longer
+  matches its ledger." or "its product no longer matches its ledger." (a
+  mill's ratio and product are fixed for its ledger's life: author them back),
+  "its storefront cannot be read."
+
+The Listings line of a milled good nets the units milled and not yet listed
+(", {u} t milled and not yet listed"), and reads `[flagged]` "its mill ledger
+cannot be read." when the ledger or its counter does not add up; that line is
+gated, so it shuts the desk. A restock waits while a buyer's Draw on the pool is
+in flight: the line stays `[ready]` with its "in hand-over" and "milled and not
+yet listed" clauses and nothing pages — a delay, never a loss.
+
+- **A split restock** (the listing and its mill counter apart; a store fault,
+  never a code path): the restock is refused each day, the drift check pages
+  and the Listings line reads `[flagged]`. Run `@market/vendor withdraw
+  <listing>` on that ask; the stock arm's list step then re-lists the whole pool
+  and sets every counter of that good's mills to its ledger total. The once-a-boot
+  warnings name the same remedy ("… @market/vendor withdraw <listing> re-lists
+  the whole pool").
+- **A removed mill row**: the units it milled and the clerk had not listed make
+  the drift check page and the Listings line read `[flagged]` until staff run
+  `@market/vendor withdraw <listing>` on that ask; a sell-out of the ask to 0, or
+  a lapse the sweep deletes, clears it the same way.
+- **Re-adding a removed row** (O-7's rule): re-add it only together with a
+  withdraw of its good's ask, or when that ask has not been listed afresh since
+  the removal. Otherwise the same ore names the same ledger again, its owed units
+  are units already listed, and the drift check pages with the Listings line
+  `[flagged]` until a second withdraw.
+
+**The Dispatch line** (SM.12b). One for Occator Rim's yard, after the site port's
+last line, headed `occator_port dispatch occator:`. It reads `[ready]` "2 rigs in
+the Occator Yard's bay; the site is not open, so nothing is filed.", "…; nothing
+filed yet.", "{out} of {rigs} out, {working} working a plan, {filed} filed in
+all; {day} t of ice ore delivered to its storefront today, {total} t in all." or
+"its blocks read worked out in {ore}; … parked in the … bay, {total} t delivered
+in all."; `[pending]` "waiting on the Registry's seeds, licence and survey."; and
+`[missing]` "the yard is not laid up.". `[flagged]` is "{what} cannot be read."
+(a rig's record or hopper, the delivery ledger, the yard hold, the storefront),
+"its licence account is not active.", or one of four rig orders, each naming its
+remedy. No staff close or bring-in verb exists yet (O-17):
+
+- "rig {n} ({mark}) is stranded on the ground. Staff bring it in by placing it on
+  the pad, then recover it as the dispatcher." — place the rig on the pad, then
+  `+tv/{n} recover go` as the dispatcher.
+- "rig {n} ({mark}) stopped: {why}. Staff clear its plan to start it again." — a
+  plan ended on a right, the dark registry or a full chart, or a stranded rig
+  staff have since brought back into the bay ("stranded").
+- "rig {n} ({mark}) is held by staff; strike its plan to start it again." — a
+  plan staff cleared. `+tv/{n} plan clear` on an ended plan strikes it from the
+  record, and the dispatcher files afresh.
+- "rig {n} ({mark}) holds ore its last unload left in the hopper. Staff unload it
+  as the dispatcher (+tv/{n} unload go) to start it again." — a stalled rig; the
+  bare `+tv/{n} unload` only previews (the text names `go` since `f171b36c`).
 
 ### Held launches: `@tacsim/port clear #<hull>`
 

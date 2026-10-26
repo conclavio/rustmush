@@ -2650,7 +2650,9 @@ path at offer projection, for the day a player holds a second endpoint (S–M); 
 spec, `+ship/helm`, `request_seat_activation` and the `movement` channel for a second crew member (M);
 **P3** provider identity fix, `ledger`/`ship`/`port` providers (M); **P4** Kirkwood as a checkpoint, a
 hold of a sim hull, the Customs Assertion front (M); **P5** production restock with conservation (Kasei
-refinery work orders, Ceres deposits, a construction sink) before a second cohort (L); **P6** the
+refinery work orders, Ceres deposits, a construction sink) before a second cohort (L; **its supply
+half landed with doc 20 cut SM.12a, `9df93246`, 2026-10-25**: the Exchange's and Occator's mills on
+lane v14 restock their asks from mined ore, never minting, doc 20 §7.3); **P6** the
 `LotCensus` quantity index only (S; its volume half is in the slice under R7 and is withdrawn here);
 **P7** Pallas as a port (data; the moon ports — Aitken Highport, Voltaire Anchorage, Ligeia Terminal —
 landed as doc 19 cut A.8 beside P7 on 2026-10-19, and Pallas remains the named next Belt port);
@@ -3051,6 +3053,11 @@ New decisions:
   derived reservation id, never by the GOD lapse sweep. (Rests on Q-18-19, Q-18-31.)
   **As built (IC8):** Q-18-19 taken **stricter**: a port update refuses any change of issue, quantity or
   grade on a recorded stock row, and any removal, as drift, receipted or not (IC8 (2)).
+  **As built (doc 20 cut SM.12a, 2026-10-25; O-7b):** amended for milled and opened matter. "Every
+  unit of matter is minted once" holds for seeded stock; matter converted in kind by a mill or opened
+  as a reserve enters by `credit` under its own receipt (the mill's `MillLedger`; doc 20 SM.6's opened
+  deposits), with no tranche and no lot lineage, and moves by Draw and Deliver (doc 20 §7.3). O-7b is
+  the owner's provisional ruling of 2026-10-24 (doc 20a §8), the expensive one to reverse.
 - **D-18-27 Stock and capital sizing.** Resized under R7 as a sizing basis of about 120 legs each way
   for one cohort of 8–10 pilots over about three weeks: Ceres volatiles 9,600 t, metals 4,000 t; Stickney
   alloys 7,000 t, fittings 5,400 t; propellant 5,000 t and provisions 2,600 per port; Kasei intake
@@ -3077,6 +3084,11 @@ New decisions:
   stock = intakes, and that is the owner's call (D-19-25). The Reserve's ice bid at Voltaire (190) is
   an authored floor: Titan's Deimos-side ice sells at Kasei by the hop, up to 900 t, inside the slack
   Luna's draw on Occator leaves Kasei's intake. The moon capital is §4.7's as-built note.
+  **As built (doc 20 cut SM.12a, 2026-10-25):** "no restock in the slice (P5)" — P5's supply half
+  landed: the Exchange's concentrate ask and Occator's water ask are restocked by their mills (lane
+  v14: `metal_ore` into `metals`, `ice_ore` into `volatiles`, 5 : 2, 20 t a batch, 40 t of ore an IC
+  day), and only so, besides a refund and a fresh listing of the whole pool; a recorded stock row
+  still never changes, so there is still no top-up (doc 20 §7.3).
 - **D-18-28 Units and capacity.** **Replaced by R7.** Ledger units stay tonnes for bulk goods and
   reaction mass and crew-days for provisions, in a tacsim-owned `goods.json` with its own digest pin
   deriving the market catalog; every good carries integer measures `si.mass_kg` and `si.volume_l` per
@@ -3303,6 +3315,11 @@ only flies. **Q-18-25** the six rooms plus the store, plain names. **Q-18-26** n
 **Q-18-27** the 1-minor Manual-clock rent plus the stale-page exemption. **Q-18-28** the queue editable
 aboard or in the port area. **Q-18-29** plain treasury capitalization for Kasei. **Q-18-30** the Trust a
 separate org. **Q-18-31** the port tick releases a lapsed player listing's hold as the holder.
+
+**As built (doc 20 cut SM.12a, 2026-10-25), Q-18-19:** "restock only by P5; no top-ups" holds. The
+Exchange's and Occator's asks are restocked only by their mills (lane v14), which turn the ore the
+two houses buy from miners into the concentrate and water they ask, besides a refund and a fresh
+listing of the whole pool; no stock row is topped up (doc 20 §7.3, D-18-27's note).
 
 **Q-18-21 Volume capacity — REVERSED by R7 (owner, 2026-10-15):** *"both volume and mass are critical
 components of capacity .. that's part of the trick is balancing the payload from station to station to

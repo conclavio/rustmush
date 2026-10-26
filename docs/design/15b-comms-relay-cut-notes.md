@@ -1690,3 +1690,23 @@ The preceding availability/privacy CI also exposed a stale capability-vocabulary
 count; this gate explicitly asserts discover/use/speak and passes the full 302-test
 server library suite. No production permission check was weakened.
 Normal CI for the new push is a separate result. Pause after publication.
+
+## Surface-mining train — the relay seed follows the lane (2026-10-25)
+
+Not a relay cut: a record, for this track, of what the surface-mining train's
+lane cuts (doc 20, its cut notes `20-cut-notes.md`) did to R10's seed. Relay R10
+(`57c5747d`) made `tacsim.relay.luna_ceres` require `tacsim.lane.ceres_phobos` at
+an exact version, and `mush_content::PackRequirement` takes no ranges, so lane
+v14 could not boot. Since doc 20 cut SM.12a every lane version re-signs the seed
+at its next version with its entries unchanged: **v3 for lane 14** at SM.12a
+(`9df93246`, digest `a9bf71ef…`) and **v4 for lane 15** at SM.12b (`1b5dd371`,
+digest `2ef60c51…`). The relay code reads any version from 2 as the full star:
+`relay_world`'s `full_star` is `>= 2` (was `== 2`) and `relay_content`'s upgrade
+preflight refuses `< 2` (was `!= 2`), pinned by mush-server's kept-world test
+(`sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v4`). A kept world's relay latch
+stays at its old version (v2 on a world kept from this track, dev1's): staff
+`@atlas/pack plan` reads "Nothing to do." for an entry-identical pack, and
+`apply` refuses a no-op plan, which nothing reads amiss today. The live-gate scripts
+`scripts/relay-policy-live.mjs`, `relay-r10-live.mjs` and `relay-r9b-live.mjs`
+still expect lane @13 and relay @2; whoever next runs a live relay gate updates
+them.
