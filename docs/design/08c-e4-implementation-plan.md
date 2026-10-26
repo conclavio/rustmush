@@ -934,7 +934,8 @@ contract's scope — new vocabulary entries `contract.draft`, `contract.accept`,
 @contract/show <id>   @contract/list
 ```
 
-Caps: `MAX_OPEN_CONTRACTS_PER_ISSUER` (16 non-terminal), `MAX_LIVE_CONTRACTS_PER_PARTY` (32),
+Caps: `MAX_OPEN_CONTRACTS_PER_ISSUER` (16 non-terminal), `MAX_LIVE_CONTRACTS_PER_PARTY` (32; 100
+since the owner's ruling of 2026-10-26, doc 20b OD-1),
 `@contract/list` capped at 20, `Draft` GC after `DRAFT_TTL` (7 days).
 
 `Encumbrance::Lease { lessor, contract }` / `Collateral { contract }`: placed at activation for
@@ -1747,7 +1748,7 @@ owner says so. `cargo fmt` stayed off until the reformat landed (`91208ab`); the
 `MAX_AUDIENCE` 32 (E4b2) · `MAX_CONTRACT_NAME_BYTES` 64 (E4b2) ·
 `MAX_CONTRACTS_PER_SWEEP` 64 (E4b2) ·
 `MAX_DELIVERABLES` 16 · `MAX_SHARES` 32 · `MAX_OPEN_CONTRACTS_PER_ISSUER` 16 ·
-`MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
+`MAX_LIVE_CONTRACTS_PER_PARTY` 32 (100 since 2026-10-26) · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
 `MAX_OBSERVER_DEPTH` 4 (E4c) · `MAX_OBSERVER_SETTLEMENTS_PER_EVENT` 8 (E4c fold) ·
 `MAX_REPUBLISH_PER_SWEEP` 8 (E4c fold) · `CANON_TAIL` 64 (E4c fold) ·
 `STALE_CONTRACT_AGE_SECS` 7 d (E4c fold) · `HISTORY_CAP` 20 (E4c, and `n` is validated to 1..=20) ·

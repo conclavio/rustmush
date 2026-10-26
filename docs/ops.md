@@ -1182,11 +1182,12 @@ cores, and its timing figures are the box's own. It runs two release tests in
 order — the surface tick's gate at ten TVs, then the `#[ignore]`d IC month — with
 `TACSIM_ASSERT=1`, and writes **`cost-lane.json` at the repository root**
 (ignored by `.gitignore`'s `/cost-lane*.json`). `TACSIM_COHORT_TVS` is **30 by
-default** (the script sets it when unset): the test's own default, 64, STOPs at
-the kit-up, because the economy's per-party cap of 32 live contracts
-(`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY`) binds Occator, the Co-op and the
-Registry past 30 TVs — an engine cap, the owner's (O-19c), never raised by the
-lane. `TACSIM_COHORT_IC_DAYS` (1 to 30, default 30) shortens the month; 5 is the
+default** (the script sets it when unset), the cohort the recorded month was
+taken at. The test's own default, 64, kits up since the owner raised the
+economy's per-party cap of live contracts
+(`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY`) from 32 to 100 on 2026-10-26
+(O-19c): a one-IC-day smoke at 64 TVs ran green that day, and no whole 64-TV
+month is on record yet. `TACSIM_COHORT_IC_DAYS` (1 to 30, default 30) shortens the month; 5 is the
 smoke. The month at 30 TVs took about 7.5 minutes on the build box.
 
 **Rollback.** The cut's decision (c) keeps the surface unload's hopper markers one

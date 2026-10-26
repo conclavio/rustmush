@@ -5259,9 +5259,10 @@ impl Cohort {
             Phase::PlanQueue => {
                 // A stopped hold (a sale the counter refused, a departure that failed): the pilot
                 // resumes it a minute later, as a player would, and the month counts it by its
-                // reason (`queue.held.<words>`). Found 2026-10-26: at 30 TVs Occator holds 30 live
-                // rig leases against the economy's 32-contract cap per party (O-19c), so a third
-                // ice sale settling at once is refused "contract exceeds a cap" and the plan holds.
+                // reason (`queue.held.<words>`). Found 2026-10-26: at 30 TVs Occator held 30 live
+                // rig leases against the economy's per-party cap, then 32 (O-19c), so a third ice
+                // sale settling at once was refused "contract exceeds a cap" and the plan held. The
+                // owner raised the cap to 100 the same day.
                 if let Some(reason) = queue_held(&rig.tw, hull) {
                     *tally
                         .skips
@@ -7018,8 +7019,11 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
         .collect();
     if !capped.is_empty() {
         report.stopped = json!({
-            "reason": "an engine cap: the economy's MAX_LIVE_CONTRACTS_PER_PARTY (32) — a \
-                       vendor already on that many live contracts refuses every Draw",
+            "reason": format!(
+                "an engine cap: the economy's MAX_LIVE_CONTRACTS_PER_PARTY ({}) — a vendor \
+                 already on that many live contracts refuses every Draw",
+                mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY
+            ),
             "ic_day": 0,
             "parties": capped,
             "tvs": tvs,
@@ -7028,8 +7032,8 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
         panic!(
             "cost_lane: month STOPPED at the kit-up: {capped:?} reach the economy's per-party cap \
              of {} live contracts (mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY), so no pilot can \
-             bunker; the largest cohort it admits is TACSIM_COHORT_TVS=30 (an engine cap, the \
-             owner's: never raised here)",
+             bunker; a smaller TACSIM_COHORT_TVS fits it (an engine cap, the owner's: never \
+             raised here)",
             mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY
         );
     }

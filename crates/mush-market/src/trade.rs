@@ -2300,8 +2300,8 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     //
     // Doc 18 cut IC14 row 66 (documented, no behaviour change): the house is a party
     // to every sale into its bid, and the economy's `MAX_LIVE_CONTRACTS_PER_PARTY`
-    // (32) counts a sale as one of its live contracts while it is `Active` or
-    // `ReadyToSettle`, so 32 bounds a house's concurrent sales. The cap is checked
+    // counts a sale as one of its live contracts while it is `Active` or
+    // `ReadyToSettle`, so the cap bounds a house's concurrent sales. The cap is checked
     // when the contract is offered (step 16's `offer_contract`), not here: past it
     // the seller hears the economy's own cap refusal and nothing is drafted (doc 20b
     // RK-1 corrected this note, which said the accept below refused).

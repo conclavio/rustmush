@@ -2011,7 +2011,7 @@ fn ic8_reconcile_draws_mirrors_more_than_64_undrawn_draws() {
             .map(|v| v.id)
             .expect("the crate vault");
         // Spread across the three Ceres vendors: an org stands on at most
-        // `MAX_LIVE_CONTRACTS_PER_PARTY` (32) live contracts at once.
+        // `MAX_LIVE_CONTRACTS_PER_PARTY` live contracts at once.
         for listing in [
             metals, metals, metals, ice, ice, ice, provisions, provisions,
         ] {

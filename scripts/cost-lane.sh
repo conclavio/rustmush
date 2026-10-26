@@ -31,10 +31,10 @@
 #     within 3,900 of 4,096 (O-27); the 3,072 crossing is a figure, never a halt.
 #
 # The knobs, passed through when set:
-#   * TACSIM_COHORT_TVS — the cohort's TVs, even, 2..=64; this script sets 30 when unset: the
-#     test's own default, 64, STOPs at the kit-up, the economy's per-party cap of 32 live
-#     contracts (mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY) binding Occator, the Co-op and the
-#     Registry past 30 TVs (an engine cap, the owner's; never raised by this lane);
+#   * TACSIM_COHORT_TVS — the cohort's TVs, even, 2..=64; this script sets 30 when unset, the
+#     cohort the recorded month was taken at. The test's own default, 64, kits up since the owner
+#     raised the economy's per-party cap of live contracts (mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY)
+#     from 32 to 100 on 2026-10-26 (O-19c); a one-IC-day smoke at 64 ran green that day;
 #   * TACSIM_COHORT_IC_DAYS — the IC days, 1..=30 (default 30; 5 is the smoke the month's order
 #     runs first, doc 20a §5.3.9).
 #

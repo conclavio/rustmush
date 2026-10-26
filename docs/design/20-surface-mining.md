@@ -2624,6 +2624,11 @@ cap" and holds its sailing plan until resumed (three in the month after the 2026
 §16). The lead's default, standing until the owner rules: the cohort runs at 30 TVs (`scripts/cost-lane.sh`'s
 default) and the cap is not raised by the cost lane; raising it is a mush-economy change, the
 owner's to make before any 64-TV month.
+**Owner's ruling (2026-10-26):** raised to 100 (`crates/mush-economy/src/contract.rs`), one cap for
+players and houses alike, as before. At 64 TVs Occator's 64 leases leave it room for 36 sales and
+Draws in flight, and the Co-op Trust and the Registry stand on one contract a pilot each; at 30 TVs
+the cap no longer binds in play. Nothing is sized by the cap: each offer counts the parties' live
+contracts afresh, and that scan's cost is the store's contracts, not the cap.
 
 - **Q-20-1 What the drill produces.** Default: raw ore goods milled at Ceres (§7.3). Alternative: the
   existing concentrate and water, grade folded into tonnes — simpler, but it makes mine-then-haul the
@@ -2842,12 +2847,13 @@ live, Occator has room for two sale contracts settling at once, and a third ice 
 holds until resumed (three holds in the month; the script resumes them as a player would). The
 month's "stuck" reads progress now (a phase change, or a queued plan's cursor, cycles, trips or
 sailing plan moving), not phase age: a plan still mining a day on leaner, contended ground is not
-stuck. A lead item, not fixed here:
+stuck. (The cap was 32 then; the owner raised it to 100 the same day, §15's O-19c, so these holds
+are gone at 30 TVs.) A lead item, not fixed here:
 `crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance
 included, to "That purchase needs an approval your account rule has not granted yet." (**Fixed by
 RK-1:** an escrow the account cannot fund reads `CANNOT_COVER`, any other own-accept error
 `BUY_NOT_AGREED` or `SELL_NOT_AGREED`, and only a real approval the approval line.) Still open:
-the per-party contract cap (O-19c, §15); the double A* (measured, not built, §8); the staff
+the double A* (measured, not built, §8); the staff
 ring-clear verb (O-22); a committed cost-lane baseline and delta step (D-H-8); and CI's cost —
 `cost_lane` joined shard 2, its debug wall 105–162 s at default threads and 175 s at two against the
 brief's soft 90 s, which only a second binary or shared setup would meet. A build from before

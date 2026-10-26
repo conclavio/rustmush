@@ -90,8 +90,12 @@ pub const MAX_AMENDMENTS: u32 = 32;
 pub const MAX_DEPOSITS: usize = 1;
 /// Maximum non-terminal contracts one issuer may hold open (§9; E4b2 enforces).
 pub const MAX_OPEN_CONTRACTS_PER_ISSUER: usize = 16;
-/// Maximum live contracts one party may be named on (§9; E4b2 enforces).
-pub const MAX_LIVE_CONTRACTS_PER_PARTY: usize = 32;
+/// Maximum live contracts one party may be named on (§9; E4b2 enforces). 100 since the owner's
+/// ruling of 2026-10-26 (doc 20b OD-1, doc 20's O-19c), 32 before: a 64-TV surface cohort's
+/// kit-up puts Occator on 64 rig leases, and the Co-op Trust and the Registry on one contract a
+/// pilot each, with room left for the sales and Draws in flight. Nothing is sized by it; each
+/// offer counts the parties' live contracts afresh.
+pub const MAX_LIVE_CONTRACTS_PER_PARTY: usize = 100;
 /// How many settlement attempts a `ReadyToSettle` contract gets before it is
 /// `Disputed` and escalated (§9).
 pub const MAX_SETTLE_ATTEMPTS: u8 = 8;

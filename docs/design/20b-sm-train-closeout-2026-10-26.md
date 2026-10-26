@@ -54,11 +54,10 @@ The loop runs end to end on the production root: four `mush-bot` miners over SSH
 
 ## 4. Owner decisions still open
 
-**OD-1 — the per-party contract cap (O-19c), the one fork the record carries as open.**
-`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY` (32) stops a 64-TV world at its kit-up and binds in play at 30 TVs:
-with 30 rig leases live, Occator settles two sales at once and a third holds its sailing plan until resumed. The
-lead's default: the cohort runs at 30 and the cap is not raised. Raising it is a mush-economy change, owed before
-any 64-TV month (doc 20 §15, `20-surface-mining.md:2602-2614`).
+**OD-1 — the per-party contract cap (O-19c). Ruled 2026-10-26: raised from 32 to 100.**
+At 32, `mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY` stopped a 64-TV world at its kit-up and bound in play at 30 TVs:
+with 30 rig leases live, Occator settled two sales at once and a third held its sailing plan until resumed. At 100
+a 64-TV world kits up and the 30-TV month's holds are gone (doc 20 §15's O-19c).
 
 **OD-2 — questions put to the owner with no ruling yet:**
 - SM.10's (a) a contest fee withdrawn after the transfer: should the loser's claim be restored? (b) an
@@ -203,8 +202,8 @@ by design: its O-9 blanks and its 2026-10-24 snapshot stand, and the later rulin
 
 ## 9. Suggested order, if the owner wants a tail
 
-1. **Rule**: OD-1 (the contract cap), SM.10's (b), the passage line; then accept or amend the lead defaults of
-   OD-4 as a body. (The geology-key backups were ruled on 2026-10-26 and became 16c's `T-112`.)
+1. **Rule**: SM.10's (b), the passage line; then accept or amend the lead defaults of OD-4 as a body. (The
+   contract cap and the geology-key backups were ruled on 2026-10-26: the cap is 100, the backups 16c's `T-112`.)
 2. **A small fix cut**: the staff close/home verb with a hopper empty at a port (DF-1). (RK-1's six landed on
    2026-10-26.)
 3. **A deploy and a rate-24 smoke** on a dev box, with the owner, including the real lane v13 → shipped upgrade.
