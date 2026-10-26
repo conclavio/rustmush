@@ -6,7 +6,13 @@ pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
     let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
-    let mut w = boot_resale_options(registry, snapshot, true, true)?;
+    // 17g C1a: the paid resale writer repeats the House buyer admission. The
+    // probe (`resale_routes::AdmissionProbe`) stands in for the launch's
+    // Coprates admission: it refuses only the pair the route arms, and records
+    // every pair the fence asks about.
+    let probe = Arc::new(resale_routes::AdmissionProbe::default());
+    let admission = || -> Admission { Some(probe.clone()) };
+    let mut w = boot_resale_options(registry, snapshot, true, true, admission())?;
     command(&mut w, &format!("@account/open #{}=cr", BUYER.0))?;
     let payer = wallet(&w, EconomicOwner::Object(BUYER), None)?;
     let faucet = wallet(
@@ -62,6 +68,7 @@ pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
         true,
         "faucet",
         START + 100,
-        |saved| boot_resale_options(registry, saved, true, true),
+        Some((probe.as_ref(), a.issuer())),
+        |saved| boot_resale_options(registry, saved, true, true, admission()),
     )
 }

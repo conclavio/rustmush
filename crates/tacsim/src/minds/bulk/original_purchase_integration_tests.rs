@@ -282,15 +282,24 @@ struct PurchaseConfiguration {
     renewals: Option<mush_market::mind_renewal::RenewalConfig>,
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
 }
+/// 17g C1a: `admission` is the optional House buyer admission the resale
+/// writer repeats for a resold House-born licence (the House resale fixture's
+/// refusing stub); personal stories pass `None`.
 fn resale_configuration(
     participants: PurchaseParticipants,
+    admission: Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>,
 ) -> Result<mush_market::mind_paid_resale::PaidResaleConfig, ModError> {
+    let writer = mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new();
+    let writer = match admission {
+        Some(policy) => writer.with_buyer_admission(policy)?,
+        None => writer,
+    };
     mush_market::mind_paid_resale::PaidResaleConfig::new(
         issuer().map_err(module_error)?,
         GOD,
         600,
         participants,
-        mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new(),
+        writer,
         None,
     )
 }
@@ -597,7 +606,7 @@ impl GameModule for PurchaseRoll {
             config
         };
         let config = if self.paid_resales {
-            let resale = resale_configuration(purchase.participants.clone())?;
+            let resale = resale_configuration(purchase.participants.clone(), None)?;
             let config = config.with_paid_mind_resale(
                 resale.writer(),
                 purchase.participants.clone(),

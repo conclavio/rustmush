@@ -28,6 +28,10 @@ pub(crate) struct BirthProof {
     pub(crate) reference: PaidBirthRefV1,
     pub(crate) holder: ObjId,
     pub(crate) revision: RevisionIdentity,
+    /// 17g C1a: the issuing House of a House-born licence, read from the same
+    /// proved allocation row; `None` for every personal birth route. The resale
+    /// fence hands it to a configured House buyer admission and nothing else.
+    pub(crate) house_issuer: Option<crate::commerce::house_catalogue::HouseIssuer>,
 }
 pub(crate) fn birth(
     ctx: &impl CommerceRead,
@@ -60,10 +64,15 @@ pub(crate) fn birth(
     )?;
     acquired::granted(ctx, f, ratings, &original, term)?;
     let reference = birth_reference(row)?;
+    let house_issuer = match row {
+        Birth::House(a) => Some(a.issuer()),
+        Birth::Legacy(_) | Birth::Entitlement(_) => None,
+    };
     Ok(BirthProof {
         reference,
         holder: row.holder(),
         revision: row.revision(),
+        house_issuer,
     })
 }
 pub(crate) fn birth_reference(row: Birth<'_>) -> Result<PaidBirthRefV1, PublicationError> {

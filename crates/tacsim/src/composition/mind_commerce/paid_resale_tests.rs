@@ -157,3 +157,59 @@ fn paid_resale_compound_revocation_keeps_both_explicit_configuration_orders() ->
     }
     Ok(())
 }
+/// 17g C1a: a refusal-only stand-in for the launch's Coprates admission.
+#[derive(Debug)]
+struct Stub;
+impl mush_roll::commerce::house_purchase::HouseBuyerAdmission for Stub {
+    fn check(
+        &self,
+        _: &World,
+        _: mush_roll::commerce::house_catalogue::HouseIssuer,
+        _: mush_core::ObjId,
+    ) -> Result<(), mush_roll::commerce::records::PublicationError> {
+        Err(mush_roll::commerce::records::PublicationError::Unavailable)
+    }
+}
+#[test]
+fn paid_resale_inherits_the_house_buyer_admission() -> TestResult {
+    let house = || -> Result<MindCommerce, ModError> {
+        prepare(CommerceMode::Active)?
+            .with_original_purchases(quotes()?)?
+            .with_house_filings()
+    };
+    let fenced = house()?
+        .with_house_minds_and_admission(house_policy()?, Some(std::sync::Arc::new(Stub)))?
+        .with_paid_mind_resales(mush_core::GOD, 60)?;
+    let writer = fenced
+        .state
+        .paid_resales
+        .as_ref()
+        .ok_or("paid resale configuration")?
+        .writer();
+    check!(writer.has_buyer_admission());
+    // The fenced writer still composes with every real owner.
+    house_engine(&fenced, true)?;
+    let open = house()?
+        .with_house_minds(house_policy()?)?
+        .with_paid_mind_resales(mush_core::GOD, 60)?;
+    check!(
+        !open
+            .state
+            .paid_resales
+            .as_ref()
+            .ok_or("paid resale configuration")?
+            .writer()
+            .has_buyer_admission()
+    );
+    let late = house()?
+        .with_paid_mind_resales(mush_core::GOD, 60)?
+        .with_house_minds_and_admission(house_policy()?, Some(std::sync::Arc::new(Stub)));
+    match late {
+        Ok(_) => return Err("an admission after paid resale was accepted".into()),
+        Err(error) => check_eq!(
+            error.to_string(),
+            "house buyer admission must precede paid resale"
+        ),
+    }
+    Ok(())
+}

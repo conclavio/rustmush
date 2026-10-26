@@ -1014,3 +1014,288 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
     }
     Ok(())
 }
+
+// 17g C1a: the four player-market owners the builder could not select, and
+// the order the full player-market chain follows (plan §2.3). Every boot
+// composes fresh owner handles: actual writers are installed once.
+fn renewal_policy() -> Result<mush_market::mind_renewal::RenewalPolicy, ModError> {
+    use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
+    Ok(mush_market::mind_renewal::RenewalPolicy {
+        registry: GrossRecipientCut {
+            permille: 50,
+            recipient: Some(Recipient {
+                account: AccountId(1),
+                owner: PrincipalId::System(issuer()?),
+            }),
+        },
+        venue: None,
+        offer_ic_seconds: 259_200,
+    })
+}
+fn entitled() -> Result<MindCommerce, ModError> {
+    entitlement_tests::prepared()?.with_mind_entitlements(entitlement_tests::policy()?)
+}
+fn registered(engine: &Engine, reference: &DefinitionRef) -> bool {
+    engine
+        .registry
+        .definitions()
+        .is_some_and(|definitions| definitions.get_exact(reference).is_ok())
+}
+
+#[test]
+fn personal_renewals_are_explicit_active_entitlement_bound_and_once() -> TestResult {
+    check!(
+        prepare(CommerceMode::Initialize)?
+            .with_mind_renewals(renewal_policy()?)
+            .is_err()
+    );
+    check!(
+        prepare(CommerceMode::Active)?
+            .with_mind_renewals(renewal_policy()?)
+            .is_err()
+    );
+    // The dependent-owner chain without its entitlement composition.
+    check!(
+        entitlement_tests::prepared()?
+            .with_mind_renewals(renewal_policy()?)
+            .is_err()
+    );
+    let selected = entitled()?.with_mind_renewals(renewal_policy()?)?;
+    let actions = selected
+        .state
+        .renewals
+        .as_ref()
+        .ok_or("personal renewal configuration")?
+        .actions()?;
+    check_eq!(selected.state.renewal_actions.as_ref(), Some(&actions));
+    let actual = house_engine(&selected, true)?;
+    for action in &actions {
+        check!(registered(&actual, action), "personal renewal action");
+    }
+    check!(has(&actual, "market", "action", "draft_mind_renewal"));
+    check!(!has(
+        &actual,
+        "market",
+        "action",
+        "draft_house_mind_renewal"
+    ));
+    let without = house_engine(&entitled()?, true)?;
+    for action in &actions {
+        check!(!registered(&without, action), "unselected renewal action");
+    }
+    check!(
+        selected.with_mind_renewals(renewal_policy()?).is_err(),
+        "personal renewals are configured once"
+    );
+    Ok(())
+}
+
+#[test]
+fn personal_renewal_service_requires_renewals_and_registers_its_close() -> TestResult {
+    check!(
+        prepare(CommerceMode::Active)?
+            .with_mind_renewal_service()
+            .is_err()
+    );
+    check!(entitled()?.with_mind_renewal_service().is_err());
+    let renewals_only = entitled()?.with_mind_renewals(renewal_policy()?)?;
+    let selected = entitled()?
+        .with_mind_renewals(renewal_policy()?)?
+        .with_mind_renewal_service()?;
+    let action = selected
+        .state
+        .renewals
+        .as_ref()
+        .ok_or("personal renewal configuration")?
+        .service_action()?
+        .ok_or("personal renewal service action")?;
+    check_eq!(selected.state.renewal_service.as_ref(), Some(&action));
+    let actual = house_engine(&selected, true)?;
+    check!(
+        registered(&actual, &action),
+        "the service close is registered"
+    );
+    let config = selected.state.renewals.as_ref().ok_or("renewals")?;
+    for reference in config.actions()? {
+        check!(registered(&actual, &reference));
+    }
+    check!(!registered(
+        house_engine(&renewals_only, true)?.as_ref(),
+        &action
+    ));
+    // A missing paired native configuration returns its own error at host
+    // composition rather than panicking on a private invariant.
+    let mut missing = prepare(CommerceMode::Active)?;
+    missing.state.renewal_service = selected.state.renewal_service.clone();
+    check!(missing.configure_economy(EconomyModule::new()).is_err());
+    check!(
+        selected.with_mind_renewal_service().is_err(),
+        "the service is configured once"
+    );
+    Ok(())
+}
+
+#[test]
+fn withdrawal_attestation_and_requalification_are_explicit_active_once() -> TestResult {
+    // The registered ids, as the Roll owners declare them: `withdrawal.rs`,
+    // `owner_attestation/protocol.rs` and `owner_qualification/protocol.rs`.
+    const IDS: [&str; 3] = [
+        "withdraw_authored_mind",
+        "attest_owner_mind",
+        "replace_owner_parent_qualification",
+    ];
+    type Select = fn(MindCommerce) -> Result<MindCommerce, ModError>;
+    let selectors: [Select; 3] = [
+        MindCommerce::with_author_withdrawal,
+        MindCommerce::with_owner_attestations,
+        MindCommerce::with_owner_parent_qualification,
+    ];
+    let plain = house_engine(&entitlement_tests::prepared()?, true)?;
+    for id in IDS {
+        check!(!has(&plain, "roll", "action", id), "unselected {id}");
+    }
+    for (index, select) in selectors.iter().enumerate() {
+        check!(select(prepare(CommerceMode::Initialize)?).is_err());
+        let selected = select(entitlement_tests::prepared()?)?;
+        let actual = house_engine(&selected, true)?;
+        for (other, id) in IDS.iter().enumerate() {
+            check_eq!(
+                has(&actual, "roll", "action", id),
+                other == index,
+                "only the selected owner registers"
+            );
+        }
+        check!(select(selected).is_err(), "configured once");
+    }
+    Ok(())
+}
+
+#[test]
+fn requalification_requires_dependent_owner_filing() -> TestResult {
+    let before = prepare(CommerceMode::Active)?
+        .with_original_source_purchases(quotes()?)?
+        .with_authored_forks()?
+        .with_marked_registry()?;
+    check!(before.with_owner_parent_qualification().is_err());
+    entitlement_tests::prepared()?.with_owner_parent_qualification()?;
+    Ok(())
+}
+
+fn revocation_policy()
+-> Result<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy, ModError> {
+    mush_roll::commerce::registry_revocation::RegistryRevocationPolicy::new(
+        issuer()?,
+        mush_org::OrgId(4),
+        mush_org::OrgScopeId(5),
+        vec![mush_core::ObjId(6)],
+    )
+}
+fn recall_policy() -> Result<mush_roll::commerce::registry_recall::RegistryRecallPolicy, ModError> {
+    mush_roll::commerce::registry_recall::RegistryRecallPolicy::new(
+        issuer()?,
+        mush_org::OrgId(4),
+        mush_org::OrgScopeId(5),
+        vec![mush_core::ObjId(6)],
+    )
+}
+fn pending_policy() -> Result<mush_roll::commerce::PendingCharterTransferConfig, ModError> {
+    mush_roll::commerce::PendingCharterTransferConfig::new(mush_core::ObjId(7), 259_200)
+}
+/// The player-market chain in C1c's builder order, without the House part.
+/// `revocation_first` false moves revocation after pending charters and paid
+/// resale: a convention, not a guard (plan §2.3).
+fn player_market(revocation_first: bool) -> Result<MindCommerce, ModError> {
+    let c = entitled()?
+        .with_compatible_updates()?
+        .with_derived_updates()?
+        .with_charter_transfers()?;
+    let c = if revocation_first {
+        c.with_registry_revocation(revocation_policy()?)?
+            .with_pending_charter_transfers(pending_policy()?)?
+            .with_paid_mind_resales(mush_core::ObjId(7), 86_400)?
+    } else {
+        c.with_pending_charter_transfers(pending_policy()?)?
+            .with_paid_mind_resales(mush_core::ObjId(7), 86_400)?
+            .with_registry_revocation(revocation_policy()?)?
+    };
+    c.with_registry_recall(recall_policy()?)?
+        .with_mind_renewals(renewal_policy()?)?
+        .with_mind_renewal_service()?
+        .with_author_withdrawal()?
+        .with_owner_attestations()?
+        .with_owner_parent_qualification()
+}
+fn definitions_of(engine: &Engine) -> Result<Vec<DefinitionRef>, Box<dyn std::error::Error>> {
+    let mut all: Vec<_> = engine
+        .registry
+        .definitions()
+        .ok_or("definitions")?
+        .iter()
+        .map(|entry| entry.reference().clone())
+        .collect();
+    all.sort();
+    Ok(all)
+}
+
+#[test]
+fn full_player_market_chain_registers_every_owner_in_builder_order() -> TestResult {
+    let chain = player_market(true)?;
+    let actual = house_engine(&chain, true)?;
+    let mut expected: Vec<DefinitionRef> = Vec::new();
+    expected.extend(chain.state.purchase_actions.clone().ok_or("purchases")?);
+    for set in chain
+        .state
+        .entitlement_actions
+        .clone()
+        .ok_or("entitlements")?
+    {
+        expected.extend(set);
+    }
+    expected.extend(chain.state.dependent_filing_action.clone());
+    expected.extend(chain.state.compatible_update_action.clone());
+    expected.extend(chain.state.derived_update_action.clone());
+    expected.extend(chain.state.charter_transfer_action.clone());
+    expected.extend(chain.state.registry_revocation_action.clone());
+    expected.push(recall_policy()?.action()?);
+    expected.extend(pending_policy()?.actions()?);
+    expected.extend(mush_roll::commerce::paid_resale::protocol::actions()?);
+    expected.extend(chain.state.renewal_actions.clone().ok_or("renewals")?);
+    expected.extend(chain.state.renewal_service.clone());
+    // purchases 3, entitlements 6, dependent filing, compatible and derived
+    // updates, charter accept, revocation, recall, pending 4, resale 5,
+    // renewals 5 and their service.
+    check_eq!(
+        expected.len(),
+        3 + 6 + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 5 + 5 + 1
+    );
+    for reference in &expected {
+        check!(registered(&actual, reference), "{reference:?}");
+    }
+    for id in [
+        "fork_paid_mind",
+        "withdraw_authored_mind",
+        "attest_owner_mind",
+        "replace_owner_parent_qualification",
+    ] {
+        check!(has(&actual, "roll", "action", id), "{id}");
+    }
+    // Real guards: swapping either pair refuses.
+    check!(
+        entitlement_tests::prepared()?
+            .with_mind_renewals(renewal_policy()?)
+            .is_err(),
+        "personal renewals before entitlements"
+    );
+    check!(
+        entitled()?
+            .with_pending_charter_transfers(pending_policy()?)
+            .is_err(),
+        "pending charters before charter transfers"
+    );
+    // A convention, not a guard: revocation after pending charters and paid
+    // resale composes, and registers exactly the same definitions.
+    let late = player_market(false)?;
+    let reordered = house_engine(&late, true)?;
+    check_eq!(definitions_of(&reordered)?, definitions_of(&actual)?);
+    Ok(())
+}

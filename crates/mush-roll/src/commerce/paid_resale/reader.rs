@@ -64,6 +64,11 @@ pub struct PaidResaleFacts {
     economics: ResaleEconomics,
     previous: Option<PaidResaleRecord>,
     claims: ResaleClaimObservation,
+    /// 17g C1a: the issuing House when the licence is House-born, from the same
+    /// birth proof as `revision`. Omitted for personal births, so their facts
+    /// serialize as before. Only the buyer-side fence reads it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    house_issuer: Option<crate::commerce::house_catalogue::HouseIssuer>,
 }
 impl PaidResaleFacts {
     pub const fn requester(&self) -> ObjId {
@@ -95,6 +100,13 @@ impl PaidResaleFacts {
     }
     pub fn phase_at(&self, now: WorldIcSeconds) -> TermPhase {
         self.binding.term().window().phase_at(now)
+    }
+    /// 17g C1a: the House whose buyer admission a resale of this licence must
+    /// pass, or `None` for a personal-born licence.
+    pub(crate) const fn house_issuer(
+        &self,
+    ) -> Option<crate::commerce::house_catalogue::HouseIssuer> {
+        self.house_issuer
     }
     /// The actual typed preimage read is retained separately by the writer.
     /// This repeats volatile lifecycle/clock/claim facts under Root custody.
@@ -307,6 +319,7 @@ fn observe(
         economics,
         previous,
         claims,
+        house_issuer: birth.house_issuer,
     };
     facts.check_world(ctx.world())?;
     Ok(facts)
