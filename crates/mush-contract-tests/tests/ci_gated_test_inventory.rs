@@ -18,12 +18,19 @@
 //! - it is **covered** when `ci.yml` names the function verbatim, or (for an
 //!   integration target) names that target as `-p <pkg> --test <target>`,
 //!   the target's name ending there (`--test minds_rhai` is not `--test
-//!   minds`). An `#[ignore]`d test, which nothing but such a step runs, is
-//!   covered by its target only when the step runs the whole target, with no
-//!   test-name filter after it (`invokes_target`; a filtered `--ignored`
-//!   step runs only the test it names, and covers that one by its name).
+//!   minds`) and with no test-name filter after it (`invokes_target`). A
+//!   filtered step (`--test twin some_test -- --exact`, with or without
+//!   `--ignored`) runs only the test it names, and covers that one by its
+//!   name; it proves nothing about the other gated tests of the same file.
+//!   That holds for a `REDIS_URL`-reading test as much as for an `#[ignore]`d
+//!   one: the workspace sweep runs the former, but only its skip or in-memory
+//!   branch — the branch that needs the backend exists only under a job that
+//!   sets `REDIS_URL`, and a filtered step there runs only the test it names.
+//!   (`clean_shutdown_drains_and_snapshots` in `mushd/tests/durability_e2e.rs`
+//!   was the case: `redis-faults` invoked its target only with its kill -9
+//!   twin's name as the filter, so its Redis branch ran in no job at all.)
 //!   A unit test under `src/` must be named verbatim: `-p <pkg> --lib` with a
-//!   filter proves nothing about a *different* ignored test in the same crate.
+//!   filter proves nothing about a *different* gated test in the same crate.
 //!
 //! Tests whose names merely end in `_gated` in the English sense
 //! (`chown_is_power_gated`, `harm_is_staff_gated`) are not backend-gated: they
@@ -268,10 +275,14 @@ const CARGO_VALUE_OPTIONS: [&str; 14] = [
 /// with no test-name filter among cargo's own arguments after it. A filtered
 /// invocation (`--test twin some_test -- --ignored --exact`, or a bare
 /// substring filter) runs only the tests it names, which are covered by
-/// their verbatim names: for an `#[ignore]`d test, which nothing else runs,
-/// a named single-test step must not cover every other ignored test of its
-/// file. (A test that only reads `REDIS_URL` runs in the workspace sweep
-/// either way, and keeps the target rule without `whole`.)
+/// their verbatim names: a named single-test step must not cover every
+/// other gated test of its file. The policy test asks for `whole` for every
+/// backend-gated test, the `REDIS_URL`-reading ones included: the workspace
+/// sweep runs those, but only their skip or in-memory branch, and the branch
+/// that needs the backend runs only under a job that sets `REDIS_URL` — where
+/// a filtered step is as blind to the file's other tests as it is for an
+/// `#[ignore]`d one. (`whole = false` answers only whether the target is
+/// named at all; the unit test below pins the difference.)
 fn invokes_target(workflow: &str, package: &str, target: &str, whole: bool) -> bool {
     let needle = format!("-p {package} --test {target}");
     workflow.lines().any(|line| {
@@ -303,7 +314,7 @@ fn invokes_target(workflow: &str, package: &str, target: &str, whole: bool) -> b
 }
 
 #[test]
-fn an_ignored_test_is_covered_only_by_an_unfiltered_invocation_of_its_target() {
+fn a_gated_test_is_covered_only_by_an_unfiltered_invocation_of_its_target() {
     let whole = "run: cargo test -p mushd --test persistence -- --test-threads=1";
     assert!(invokes_target(whole, "mushd", "persistence", true));
     assert!(invokes_target(
@@ -378,8 +389,10 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
         if workflow.contains(&test.name) {
             continue;
         }
+        // The whole target, filter-free, for every gated test: a filtered
+        // step covers only the test it names, by its name (checked above).
         if let Some((package, target)) = test.integration_target()
-            && invokes_target(&workflow, package, target, test.ignored)
+            && invokes_target(&workflow, package, target, true)
         {
             continue;
         }
@@ -389,7 +402,8 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
     assert!(
         unowned.is_empty(),
         "these proofs skip themselves without a live backend and no CI job runs them — \
-         name each one (or its `-p <pkg> --test <target>`) in .github/workflows/ci.yml:\n  {}",
+         name each one (or its `-p <pkg> --test <target>`, with no test-name filter) \
+         in .github/workflows/ci.yml:\n  {}",
         unowned.into_iter().collect::<Vec<_>>().join("\n  ")
     );
 }

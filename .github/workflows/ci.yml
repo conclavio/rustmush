@@ -774,10 +774,16 @@ jobs:
           cargo test -p mush-server --lib persist::tests::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored --exact
           cargo test -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored
           cargo test -p mush-server --test authoritative_boot -- --test-threads=1
-      - name: Split-process kill and restart recovery
+      - name: Split-process kill, clean shutdown and restart recovery
         run: |
           cargo test -p mush-gateway --test authoritative_process_kill -- --test-threads=1
           cargo test -p mushd --test durability_e2e kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1
+          # The kill's orderly twin: in-game `@shutdown` drains the writer and
+          # triggers the shutdown BGSAVE against Redis (its own logical db 12).
+          # Without `REDIS_URL` the test runs its child against the in-memory
+          # store, so the workspace sweep never reaches this branch: the gated
+          # inventory requires its name here.
+          cargo test -p mushd --test durability_e2e clean_shutdown_drains_and_snapshots -- --exact --test-threads=1
           cargo test -p mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
       # 08j S4: without these the seven `*_redis_gated` proofs in
       # `crates/mushd/tests/persistence.rs` and the two single-test twins take
