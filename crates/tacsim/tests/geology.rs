@@ -783,6 +783,40 @@ fn sm1_the_site_cache_holds_sixteen_and_evicts_the_least_recent() {
     );
 }
 
+/// **The LRU counts its builds and evictions** (doc 20 cut SM.12c, the cost lane; doc 20 §11's
+/// composite churn): seventeen distinct keys into the sixteen-entry cache read seventeen builds,
+/// one eviction and sixteen entries; re-inserting a present key replaces it in place and moves
+/// neither count, and a hit moves neither.
+#[test]
+fn sm12c_the_lru_counts_builds_and_evictions() {
+    let ground = site_ground();
+    let region = RecordKey::new(cid("sm12c"), cid("site"));
+    let key = |revision: u64| SiteGroundKey {
+        region: region.clone(),
+        revision,
+        key_version: 1,
+    };
+    let mut cache = SiteGroundCache::default();
+    assert_eq!(
+        cache.counters(),
+        tacsim::surface::SiteCacheCounters::default()
+    );
+    for revision in 0..17 {
+        cache.insert(key(revision), ground.clone());
+    }
+    let counted = cache.counters();
+    assert_eq!(
+        (counted.builds, counted.evictions, counted.entries),
+        (17, 1, 16),
+        "{counted:?}"
+    );
+    // A present key (16, the last inserted) replaced in place: neither count moves.
+    cache.insert(key(16), ground.clone());
+    assert_eq!(cache.counters(), counted, "a re-insert is no build");
+    assert!(cache.get(&key(16)).is_some(), "a hit");
+    assert_eq!(cache.counters(), counted, "a hit moves nothing");
+}
+
 /// **The revision is cached beside the ground** (doc 20 cut SM.4a's pre-commit round, item 1;
 /// the SM.4a brief's K14 STOP): an input no entry was built over reads its full
 /// `site_revision`; once an entry is inserted with its capture, the same input (and spec, under

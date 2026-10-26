@@ -524,9 +524,40 @@ impl CachedSite {
 pub struct SiteGroundCache {
     entries: Vec<CachedSite>,
     clock: u64,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's composite churn): the entries inserted
+    /// under a key not already present. RAM only, never persisted, never shown to a player.
+    builds: u64,
+    /// **Doc 20 cut SM.12c**: the least-recently-used entries dropped at capacity. RAM only, never
+    /// persisted, never shown to a player.
+    evictions: u64,
+}
+
+/// **The site-ground LRU's counters** (doc 20 cut SM.12c, the cost lane; doc 20 §11's composite
+/// churn): the entries it holds, the builds inserted under a new key and the evictions at
+/// capacity, this boot. A present key replaced moves neither count, and a body's table replaced
+/// (`forget_body`) drops entries without counting an eviction — a table replacement, not churn.
+/// RAM only, never persisted, never shown to a player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SiteCacheCounters {
+    /// The entries held now.
+    pub entries: u32,
+    /// The entries inserted under a key not already present.
+    pub builds: u64,
+    /// The least-recently-used entries dropped at capacity.
+    pub evictions: u64,
 }
 
 impl SiteGroundCache {
+    /// **The cache's counters** (doc 20 cut SM.12c, the cost lane): read only.
+    #[must_use]
+    pub fn counters(&self) -> SiteCacheCounters {
+        SiteCacheCounters {
+            entries: u32::try_from(self.entries.len()).unwrap_or(u32::MAX),
+            builds: self.builds,
+            evictions: self.evictions,
+        }
+    }
+
     /// The next tick.
     fn tick(&mut self) -> u64 {
         self.clock = self.clock.saturating_add(1);
@@ -650,7 +681,9 @@ impl SiteGroundCache {
                 .map(|(at, _)| at)
         {
             self.entries.swap_remove(oldest);
+            self.evictions = self.evictions.saturating_add(1);
         }
+        self.builds = self.builds.saturating_add(1);
         self.entries.push(CachedSite {
             key,
             ground: Arc::clone(&ground),
@@ -662,7 +695,8 @@ impl SiteGroundCache {
 
     /// Drop every entry built for `body`: its table (or radius) is not in the key, so the one
     /// writer of tables (`crate::surface::install_body_geology`) forgets the body's sites when it
-    /// replaces them. Returns how many it dropped.
+    /// replaces them. Returns how many it dropped. **Doc 20 cut SM.12c**: a table replacement, not
+    /// churn — the dropped entries are never counted as evictions.
     pub(crate) fn forget_body(&mut self, body: &CanonicalId) -> usize {
         let before = self.entries.len();
         self.entries

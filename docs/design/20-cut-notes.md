@@ -5304,3 +5304,333 @@ The judge's first residual was that the cohort had passed only on the code befor
 | minerd | Kerwan | 4 | 25.0 min | 59 | J | 1 | 12 t metals | 12 t | 735.00cr | 1 |
 
 Both sites' heard paths passed with the overlap proven by the stamps (heard1, heard2, overlap1, overlap2 all true). CI on the merge under it (`a8a1761b`) passed in full; on `d2f4ee7c` every job but `rest-servers`, then still running, was green, the bot shard with the canary included.
+
+## SM.12c-lane
+
+**The cost lane** (doc 20 §13's SM.12 row, the cost-lane clauses, as the lead split it; doc 20a §5.3 items 1–10, 13 and 14, the plan of record), built 2026-10-26 in a worktree on `claude/sm12-train` at base `d842fdd0` (SM.12c-bot's note); doc 20's Draft 0.13 (`20e207a4`) landed on the branch during the run. The train's last cut. Judged **ship-with-notes**. One commit, pushed to origin/main. The surface and port ticks now time themselves in RAM and the site-ground LRU counts its builds and evictions; nothing is persisted or shown to a player. `tests/cost_lane.rs` holds every mining-layer act kind's writes to a gate table, gates the surface tick at a release p99 under 5 ms (0.77 ms measured at ten TVs), and pins a restart twin, the eighteen-ground LRU and the CI-comment and lane-diff parity. The `#[ignore]`d release-only IC month, run by hand through `scripts/cost-lane.sh`, writes `cost-lane.json`. Of the three conditional decisions, (c) is built on the figures (the unload finish keeps its hopper markers one real hour); (a) and (b) were not needed. The 64-TV month stops at the economy's per-party cap of 32 live contracts, left to the owner as O-19c; the month ran at 30 TVs. The cut takes no lane version: `LANE_VERSION` stays 15 with every digest unmoved.
+
+### What landed
+
+1. **The fire's own clock in the surface tick** (`crates/tacsim/src/surface/tick.rs`, `surface/mod.rs`, `surface/chart.rs`, `surface/plan.rs`).
+   - `SurfaceFireStats` gains seven measured fields and one count:
+     - `elapsed_us`: the body after the layer check, the warm included, with one `Instant` before `warm_one`.
+     - `warmed` and `warm_us`.
+     - `searches` and `search_us`: every `drive_plan` call `decide_walk` makes, yard rigs included, timed into the call's own `Peeks`.
+     - `peeks` and `peek_us`: `chart::peek_site` memo misses, timed there.
+     - `markers_held`: hold decisions, counted in `walk`'s `Visit::Submit if markers_hold(..)` arm beside `passed_over`. Its doc says one held queue reads about one decision per 60 fires.
+   - `plan_step` and `idle_step` fold their `Peeks` into the fire's stats (`add_peeks`).
+   - `Peeks` gains `legs`, `leg_us`, `site_misses` and `peek_us`.
+   - New `pub enum tacsim::surface::Warmed { Nothing, Site, Home, Failed }`. `warm_one` and `warm_one_home` return it and keep their `tracing::debug!` lines.
+   - New `pub fn tacsim::surface::surface_fires(w)`.
+   - Every new item is RAM only and saturating, with no `as` cast and no panic site.
+
+2. **The port tick's clock by arm** (`crates/tacsim/src/port_tick.rs`).
+   - `PortFireStats` gains `elapsed_us` and `stock`, `site` and `dispatch: ArmFireStats` (`visited`, `worked`, `deferred`, `held`, `refused`), counted in `walk`'s per-agent loop.
+   - `stock` is documented as every lane port's clerk (five), never the Ceres clerk's figure.
+
+3. **The site-ground LRU's counters** (`crates/tacsim/src/surface/ground.rs`).
+   - `SiteGroundCache` counts `builds` (a new key) and `evictions` (a `swap_remove` at capacity). `forget_body` counts no eviction.
+   - New `SiteCacheCounters`, `SiteGroundCache::counters()`, and `tacsim::surface::site_cache_counters(w)`.
+   - Pinned by `geology.rs`'s `sm12c_the_lru_counts_builds_and_evictions` (17 / 1 / 16; a re-insert and a hit move nothing).
+
+4. **The content bounds** (`crates/tacsim/src/port/def.rs`): `MAX_PROGRAMME_POOL` 16 → 32 and `MAX_VEHICLE_POOL` 16 → 64. Each carries O-19's provisional sentence. The shipped lane stays at 8 / 8, and `LANE_VERSION` stays 15 with every digest unmoved.
+
+5. **Decision (c), the per-entry ring horizon** (`crates/mush-inventory/src/record.rs`, `pool.rs`; `crates/tacsim/src/surface/act.rs`).
+   - `RingEntry.keep_s: Option<i64>`, serde-skipped when absent, so every older ring encodes byte-identically.
+   - One private `evictions` helper over `(wall, horizon)` pairs, shared by `MarkerRing::push` and `admits` (SM.11's R6 discharged). `admits` keeps its signature. The head-of-line behaviour is documented on `push`.
+   - New `InventoryFamilies::transfer_many_marked_keeping`, with `transfer_many_marked` delegating at the default. It refuses `InventoryError::MarkerHorizon` outside `1..=MARKER_RETENTION_SECS`, with nothing staged.
+   - New `InventoryRecordError::MarkerRingHorizon` at decode and push.
+   - The unload finish keeps its hopper markers `UNLOAD_MARKER_KEEP_S` = 3,600 real seconds (O-22).
+   - The `MarkerRing` and `retain_marker` docs are amended to match.
+
+6. **The cost lane's pure half** (`crates/tacsim/tests/support/cohort.rs`, new).
+   - The nearest-rank percentiles and windows.
+   - `WRITE_GATES` with `Basis` and `Lane`, and `MEASURED_AT`.
+   - `CENSUS`, the four tests' constructed kinds.
+   - `kind_of`: every mining-layer id mapped. Claims go by receipt prefix plus the driver's label; an unlabelled player claim reads `claim.unlabelled`.
+   - `unclassified`, the leak guard's core.
+   - `LEVER_PATHS`, `json_diff`, and the `Report` serde shape with `report_path`.
+
+7. **The cost lane** (`crates/tacsim/tests/cost_lane.rs`, new). The rig:
+   - `drones.rs`'s keyed composition root with `mill.rs`'s seed `Roster` held by the rig. The lane latch and world rate 24 are asserted after every reboot.
+   - The rig attributes every landing house, clerk or player, and counts dropped owners as `other.dropped.<owner>`.
+   - There is one `count_and_fold`.
+   - Pages are summed over the port tick's five readers, across reboots.
+
+   The tests:
+   - **C1, the four census tests** (`sm12c_every_act_kind_counts_its_writes_{on_the_surface,in_a_plan,in_tenure,at_the_port}`): every kind built at its structural worst case. That includes four ores into four fresh pools with 32 evictions (`done.unload` 63), a two-family pocket, a body forget of five rows, the claimed-block drive, the relisting after a lapse (`other.list`, never `mill.restock`), and exact op lists for the restock and the house licence.
+   - **The coverage test.**
+   - **C2** (`sm12c_the_surface_tick_is_measured`): ten TVs, 1,800 one-second fires, five runs in release with the minimum p99 under 5,000 µs, the debug pair under `TACSIM_ASSERT=1`, and plain debug at 500 ms / 2,500 ms. It also asserts the players' in-span activity.
+   - **C3** (`sm12c_a_restart_inside_the_cohort_changes_nothing`):
+     - It takes a quiet point in fires 300..=450 and `C3_WINDOW` 320 s (the 300 s weather tick).
+     - Arm B's warm fires must write nothing in the mining namespaces and must build a `Warmed::Site` and a `Warmed::Home`.
+     - The post-images are equal by name. Both arms record player landings after the point (equal and above zero) and raise no page.
+   - **C4** (`sm12c_the_site_ground_lru_under_eighteen_grounds`): 54 / 38 / 16, with the warm and cold peeks timed.
+   - **C5**: the CI-comment parity pin.
+   - **C7**: the lane-diff pin, exact by identity paths both ways.
+   - **The ring pin** (`sm12c_a_full_hopper_ring_holds_the_queued_unload_and_never_fails`).
+   - **(c)'s acceptance** (`sm12c_a_hopper_ring_of_hour_old_markers_still_unloads_its_queue`).
+   - **C6, the `#[ignore]`d release-only month** (`sm12c_cost_lane_cohort_over_an_ic_month`), writing `cost-lane.json`.
+
+8. **T9's pinned points** (`crates/tacsim/tests/drones.rs`): `T9_POINTS = [397, 441]`, re-scouted at `d842fdd0` with the first point's jump in place (422 is no longer quiet). The scout arm is dropped. Both arms assert each point quiet, after a delivery and inside a mining run, failing loudly with the re-scout recipe.
+
+9. **The run by hand and its CI wiring.**
+   - `scripts/cost-lane.sh` (new) exports `TACSIM_ASSERT=1` and `TACSIM_COST_JSON=cost-lane.json`, sets `TACSIM_COHORT_TVS` to 30 when unset, and runs the two lines verbatim.
+   - `.github/workflows/ci.yml` gains one comment block after SM.12c-bot's and before `# 16b cut H`. No job runs it (O-28 (i)).
+   - `cost_lane` is added to shard 2 of `.github/tacsim-integration-shards.txt`.
+   - `.gitignore` gains `/cost-lane*.json`.
+
+10. **`mush-inventory/tests/ic14.rs`**: the `RingEntry` literals gain `keep_s: None`. `sm11_admits_answers_exactly_what_push_would` is extended over four mixed-horizon rings and the hour instant. Five new (c) tests are added.
+
+**The month's figures** (the owner's table; release, `TACSIM_ASSERT=1`, 30 TVs over 30 IC days, the fixer's final run):
+
+| Measure | Figure |
+|---|---|
+| Surface fire p50 / p99 / max | 89 / 1,435 / 9,043 µs (n 108,000) |
+| Surface fire p99 by window | 1,388, 1,831, 1,489, 1,092, 1,099 µs |
+| Port fire p50 / p99 / max | 4,713 / 8,552 / 27,490 µs |
+| The other ticks p50 / p99 | 1,227 / 3,351 µs |
+| Marker mirror max | 1,117 (the O-27 STOP at 3,900; a pre-(c) projection of about 4,060) |
+| Ring minimum headroom | 121 |
+| `PlanWait::Markers`, `unload_markers`, `MarkersFull`, back-pressure | 0, 0, 0, 0 |
+| Mined | 25,739 t |
+| Loops | 17 / 30 / 40 |
+| Breaches | none |
+| Wall | 449.75 s |
+| Release C2 at ten TVs (the gate, under 5,000 µs) | minimum p99 769 µs (0.77 ms) at gate 3 |
+| C4 release capture plus build p50 / p99 | 3,226 / 4,031 µs |
+| C4 warm peek; cold peek (release) | 22 / 67 / 67 µs; 405 / 841 / 841 µs |
+| AP's exhausted-budget median (release) | 9.43 ms against 10 ms |
+| Q8 (release) | least 2.61 ms, median 2.65 ms |
+| The 64-TV month | STOPPED at the kit-up on the per-party contract cap (O-19c) |
+
+### Deferred, and why
+
+- **The 64-TV month: STOPPED at the kit-up on an engine cap.** `mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY = 32` (`crates/mush-economy/src/contract.rs:94`) refuses every Draw and stake once Occator holds 64 leases and the Co-op Trust and the Registry 32 each.
+  - Per the brief's L10 rule it is not raised. The month ran at 30 TVs, the largest cohort the cap admits; 170 bunker Draws still hit the cap transiently there.
+  - New **owner item O-19c**: the per-party contract cap at cohort scale.
+- **The script's default is 30 TVs (DEP-C).** `scripts/cost-lane.sh` sets `TACSIM_COHORT_TVS=30` when unset, where the brief asked for pass-through. The test's own default stays 64, which STOPs. The `ci.yml` comment says so.
+- **The contest in the month (DEP-B).** At 30 TVs no Ceres site holds two hand pilots, so no contest can be scripted. The census gates `claim.contest`; the month's check passes vacuously.
+- **The month's pilots park when every Ceres site comes home dry for them** (the fix round's answer to the review's correctness/F5). Before it, the script flew empty loops until pilots 0 and 10 could not pay the bunker.
+  - Seven of fifteen pilots parked between IC days 11.9 and 24.5. All are even-index metal-family plan pilots.
+  - "Dry" is per pilot and per family, so it is metal exhaustion, not site exhaustion. Reported, not asserted.
+- **The cost_lane binary's debug wall** (the review's tests/T6, deferred) is 105–162 s at default threads and 175 s at two, against the brief's soft 90 s.
+  - The long poles are C3 (51 s, two sequential arms), C2 (42 s; its 1,800 fires are untouchable) and C4 (7 s).
+  - Getting under the budget would need a second binary or shared setup, a restructuring for the lead.
+- **Two census variants were rebutted as non-structural, with code evidence:**
+  - A reading into a chart near its row cap: one chart key per (principal, site), and `chart::body_admits` refuses at the cap rather than evicting.
+  - A plan at its 16-address cap: the plan lives in the one rig record key.
+- **(c)'s acceptance drops the brief's `+tv/plan show` WAIT_MARKERS clause.** It cannot fail for a hand-recovered rig. The test asserts the queued start at the tick's first decision instead, which is stronger.
+- **Decision (a), the off-loop site-ground runner: not needed at this cohort.**
+  - The month's site warm max was 4,530 µs (builder's run) and its home warm max 8,889 µs; C4's release capture plus build max was 4,031 µs. The line is 20 ms.
+  - SM.4a's per-region revision cache is recorded "landed as SM.4a's pre-commit item 1 (capture + equality)": warm peek 22 / 67 / 67 µs, cold peek 405 / 841 / 841 µs (C4 release).
+- **Decision (b), AP's memo: not needed at this cohort.**
+  - The tick's per-leg p99 was 1,170 µs in the final month, and the hand drive's p99 1,072 µs (an upper bound).
+  - AP's re-read sits nearest its line: the exhausted-budget median is 9.43 ms against 10 ms.
+- **The plan path's double search: not built (a sketch for the lead).** The tick's searched leg would be reused by its own offer, keyed `(rig, target, ground revision, record ordinal)`, RAM only. Figure: 6,582 plan-drive landings (an upper bound) against 6,854 tick searches.
+- **Decision (c): built (DEP-4).** It was triggered by the pre-(c) smoke's mirror projection of about 4,060 against the 3,900 margin.
+- **The staff ring-clear verb: not built** (O-22's default).
+- **The proposed `surface-cost-lane` schedule stanza and the Windows weekly entry exist as text only** (O-28 (iii)). The house cron is daily, so a weekly run needs the day-of-week guard.
+- **Lead item, not fixed:** `crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance included, to "That purchase needs an approval your account rule has not granted yet."
+- **Lead or owner item:** the Ceres clerk sat idle while a batch was due in 177 port fires of the month. Either the one-act slot binds or the batch-due predicate is stricter than `mill_step`. Report-only.
+- **No `state-slot-owners.toml` row.** `state_slot_owners` refuses a `cost_lane.rs` row, because the rig reaches its oracle only through `support/claims.rs:76`, which already has one.
+- **Owner-critical defaults taken (all provisional or default, none silently beyond it):**
+  - O-19: 32 / 64 bounds.
+  - O-20: Measured pins over §11's targets:
+    - `done.unload` constructed 63 against SM.8's 19 handed
+    - `forget` 5
+    - `claim.stake` 9, `contest` 6, `release` 6, `renew` 5, `unpaid` 6, `lapse` 6, `seed` 7
+    - `site.open` 5, `site.worked` 6
+    - `licence.buy` 14, `lease.take` 19, `lease.return` 15
+  - O-21: the test-only lever variant, printed against the shipped values, with this run's values recorded in `cohort.levers_diff`.
+  - O-22: one real hour for the unload's hopper markers.
+  - O-24: drip and emergency bid reported, not gated. O-24b: tvpref writes 1, so there is no item.
+  - O-25: the debug pairs.
+  - O-26: Vesta refused at the epoch.
+  - O-27: the mirror STOP at 3,900; the month's max was 1,117.
+  - O-28 (i).
+  - O-29: the every-build gate at ten TVs.
+  - O-30: six sites.
+- **There were no lead rulings from the planner** (`lead_rulings` empty, `owner_critical` empty).
+
+### Pins re-blessed
+
+- **`.github/tacsim-integration-shards.txt`**: `cost_lane` is added to line 2, in alphabetical order, because a new tacsim target must run in exactly one shard (`ci_tacsim_shards`). Line 2 was the lightest shard at `a8a1761b`.
+- **`ci_gated_test_inventory`**: no pin moved. It passes because the new `ci.yml` comment names `sm12c_cost_lane_cohort_over_an_ic_month`.
+- **`the_weekly_script_runs_the_ci_jobs_two_lines_verbatim`**: unmoved and green. The new block sits before `# 16b cut H`, outside the harness parity cut.
+- **`tests/lane.rs:1411`**: "vehicles occator.rig_lease: pool must be 1..=16, not 0" becomes "... 1..=64, not 0", for O-19's raised `MAX_VEHICLE_POOL`.
+- **`tests/drones.rs` T9**: the scout arm is replaced by `T9_POINTS = [397, 441]` (was 397 / 422 at SM.12b). 422 is no longer quiet once the first point's jump is in place. The equality assertion and the delivery assertion are unmoved, and each point is now asserted quiet in both arms.
+- **`mush-inventory/tests/ic14.rs`**: the `RingEntry` literals gain `keep_s: None` for the new field. `sm11_admits_answers_exactly_what_push_would` is re-blessed and extended: its four old rings stand, and four mixed-horizon rings and the hour instant are added, to show `admits` and `push` share one eviction rule.
+- **`sm8_the_unload_finish_counts_its_writes`**: re-run green with its pins unmoved. Its aged markers carry the default horizon.
+- **The test-side gate table (`cohort::WRITE_GATES`, new)**: `done.unload` ceiling 63 (Pinned SM.8, handed 19) and `forget` Measured 5, each the constructed structural maximum. They were 33 and 3 in the builder's first table, before the fix round's four-goods unload and body-forget variants.
+- **Verified unmoved:**
+  - `LANE_VERSION` 15 and the shipped `LANE_JSON` digest (asserted by C7).
+  - The panic budgets (`panic_budget` 8 / 8).
+  - The state-slot owners: no row added, and `state_slot_owners` passes 5 / 5.
+  - `tests/excursions.rs`' stats reads, the boot-parity manifest and strict rustdoc.
+
+### How it was verified
+
+The final gate (round 3) ran in the worktree on `claude/sm12-train`; the logs are under the cut's `gate3/` scratch folder.
+
+**Gate steps:**
+- **fmt**: `cargo fmt --all -- --check` hits the box's os error 206 and checks nothing. The substitute is green: `cargo fmt -p <pkg> -- --check` rc=0 on 48/48 packages, and `rustfmt --check --edition 2024` on the 16 changed `.rs` files exits 0.
+- **clippy**: `cargo clippy --workspace --all-targets -j 8 -- -D warnings` gives "Finished `dev` profile ... in 8.97s", exit 0.
+- **rustdoc**: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` gives "Finished ... in 1m 31s", exit 0.
+- **cost_lane (debug)**: `cargo test -j 8 -p tacsim --test cost_lane -- --nocapture` gives "test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 134.81s". The debug C2 read p99 8,965 µs, max 18,266 µs.
+- **cost_lane (release)**: `cargo test -j 8 --release -p tacsim --test cost_lane sm12c_the_surface_tick_is_measured -- --exact --nocapture`:
+  - "cost_lane: C2 (release) p99s [805, 806, 769, 842, 816] max [1899, 1975, 1827, 1955, 2298]: the gate's minimum p99 769 us"
+  - "test result: ok. 1 passed; ... finished in 33.13s"
+- **geology**: "test result: ok. 20 passed; ... finished in 12.79s".
+- **drones**: "test result: ok. 22 passed; ... finished in 182.75s".
+- **The nine tacsim suites**, all ok:
+
+  | Suite | Passed | Finished in |
+  |---|---|---|
+  | claims | 35 | 76.39 s |
+  | driving | 21 | 34.45 s |
+  | excursions | 24 | 15.99 s |
+  | knowing | 32 | 51.45 s |
+  | lane | 16 | 6.25 s |
+  | mill | 25 | 48.40 s |
+  | plans | 28 | 62.39 s |
+  | quarry | 11 | 15.86 s |
+  | unloading | 18 | 31.30 s |
+
+- **harness parity**: "test result: ok. 1 passed; ... 32 filtered out".
+- **mush-inventory**: lib 10, e7c2 66, e7r2 16, ic10 4, ic14 14, sm6 4, sm8 5, all ok.
+- **mush-server `--test boot_parity --test sm_story`**: the first attempt failed to link with LNK1140 while the disk had 418 MB free. The rerun gave boot_parity "22 passed ... 10.20s" and sm_story "2 passed ... 56.76s".
+- **mush-contract-tests**: all 33 targets ok, including panic_budget 8 and state_slot_owners 5.
+- **The workspace sweep** (`--exclude mush-bot`): 448 targets, 10,323 passed, 1 failed, 98 ignored. The one failure, boot_parity's `stop_ledger_archive_joins_the_pass_rather_than_detaching_it` ("the stand-in pass never ran"), passed alone twice (0.08 s, 0.07 s). It is a 20 ms tokio-tick timing flake in a crate this cut does not touch (`git diff --quiet d842fdd0 HEAD -- crates/mush-server` is clean), so it counts as passed.
+- **mush-bot**: 26 `test result: ok` lines. The SM.12c-bot canary `mining_cohort` read "3 passed; 0 failed; 1 ignored; ... finished in 528.95s".
+- **Peers**: neither known peer failure reproduced, and `server_panic_relaunch` passed.
+
+**The builder's and fixer's own runs** (release, `TACSIM_ASSERT=1`):
+- **The pre-(c) 30-TV smoke**: its mirror projection was about 4,060, which triggered (c).
+- **The smoke with (c)**: 5 IC days, "breaches []".
+- **The final month at 30 TVs**:
+  - "cost_lane: month IC span 2592000 s (30 IC days)"
+  - "month surface fire p50 89 p99 1435 max 9043 us (n 108000)"
+  - five-window p99s [1388, 1831, 1489, 1092, 1099]
+  - port fire p50 4,713, p99 8,552, max 27,490 µs
+  - the other ticks p50 1,227, p99 3,351 µs
+  - mirror max 1,117, ring minimum headroom 121
+  - PlanWait::Markers 0, unload_markers 0, MarkersFull 0, back-pressure 0
+  - mined 25,739 t, loops 17 / 30 / 40
+  - "breaches []" and "test result: ok. 1 passed; ... finished in 449.75s"
+- **The 64-TV kit-up**: "month STOPPED at the kit-up: [("occator", 64), ("freeport_registry", 32)] reach the economy's per-party cap of 32 live contracts".
+- **C4 (release)**: counters 54 / 38 / 16. Capture plus build p50 3,226, p99 4,031 µs. Warm peek 22 / 67 / 67 µs, cold peek 405 / 841 / 841 µs.
+- **AP re-read (release)**: exhausted-budget median 9.43 ms.
+- **Q8 (release)**: least 2.61 ms, median 2.65 ms.
+- **C2 under `TACSIM_ASSERT=1` in debug**: minimum p99 9,896 µs.
+- **`--test-threads=2`**: 175.35 s.
+
+**The review lenses** (correctness, conformance, tests) raised 35 findings. All five must-fix findings were fixed and checked in code by the judge. Of the rest, one was deferred with timings (T6) and the others were fixed or left as notes.
+
+**Flakes identified**: the boot_parity `stop_ledger_archive...` 20 ms window, and the disk-full link failures (environment).
+
+### Surface for the next cuts
+
+**Production surface, verified against the diff.**
+
+`tacsim::surface::tick::SurfaceFireStats` gains these pub fields (re-exported as `tacsim::surface::SurfaceFireStats`):
+- `elapsed_us: u64`
+- `warmed: tacsim::surface::Warmed`
+- `warm_us: u64`
+- `searches: u32`
+- `search_us: u64`
+- `peeks: u32`
+- `peek_us: u64`
+- `markers_held: u32`
+
+`tacsim::surface` adds:
+- `pub enum Warmed { Nothing, Site, Home, Failed }`. `warm_one` returns it and stays `pub(crate)`.
+- `pub fn surface_fires(w: &World) -> u64`.
+- `pub fn site_cache_counters(w: &World) -> SiteCacheCounters`.
+- `pub use ground::SiteCacheCounters`.
+
+`tacsim::surface::ground` adds:
+- `pub struct SiteCacheCounters { entries: u32, builds: u64, evictions: u64 }`.
+- `SiteGroundCache::counters(&self)`.
+
+`Peeks` (still `pub(crate)`) gains `legs`, `leg_us`, `site_misses` and `peek_us`.
+
+`tacsim::port_tick` changes:
+- `PortFireStats` gains `elapsed_us: u64`, plus `stock`, `site` and `dispatch` of type `ArmFireStats`.
+- New `pub struct ArmFireStats { visited, worked, deferred, held, refused }`.
+
+`tacsim::port::def` raises `MAX_PROGRAMME_POOL` to 32 and `MAX_VEHICLE_POOL` to 64.
+
+`tacsim::surface::act` adds `pub(crate) const UNLOAD_MARKER_KEEP_S: i64 = 3_600`; the unload finish uses `transfer_many_marked_keeping`.
+
+`mush_inventory` changes:
+- `record::RingEntry.keep_s: Option<i64>` (serde default, skipped when None).
+- New variant `record::InventoryRecordError::MarkerRingHorizon`.
+- `InventoryFamilies::transfer_many_marked_keeping(txn, from, to, moves, actor, now, wall, keep_s: i64)`.
+- New variant `InventoryError::MarkerHorizon`.
+- `MarkerRing::push` and `admits` keep their signatures and share a private `evictions` rule.
+
+**Test surface.**
+
+`crates/tacsim/tests/support/cohort.rs` provides:
+- `WRITE_GATES` (`Gate`, `Basis`, `Lane`), `MEASURED_AT` and `CENSUS`.
+- `kind_of`, `unclassified` and `MINING_IDS`.
+- `LEVER_PATHS`, `is_lever` and `json_diff`.
+- `pct`, `p50`, `p99`, `max` and `windows`.
+- `Report`, `report_path` and `write_report`.
+
+`crates/tacsim/tests/drones.rs` adds `T9_POINTS = [397, 441]`.
+
+`cost-lane.json`:
+- Top-level keys: `schema`, `cohort` (with `levers_diff`), `surface`, `port`, `other_ticks`, `writes`, `landings`, `churn`, `planning`, `frames`, `rings`, `mirror`, `clerk` (with `idle_while_due_by_step`), `activity` (with `worked_out` and `parked`), `claims`, `decisions`, `days`, `breaches`, `stopped`, `wall_s`.
+- Knobs: `TACSIM_COHORT_TVS` (test default 64, script default 30) and `TACSIM_COHORT_IC_DAYS`.
+
+The script and CI comment:
+- `scripts/cost-lane.sh` holds the two cargo lines, pinned equal to `ci.yml`'s "Doc 20 cut SM.12c-lane" comment block by C5.
+
+**Owed to a later cut:**
+- A committed cost-lane baseline and delta step (D-H-8).
+- The economy's per-party contract cap at cohort scale (O-19c), before any 64-TV month.
+- The plan path's tick-to-offer search reuse (the sketch).
+- The staff ring-clear verb (O-22).
+- Splitting `cost_lane` to meet the 90 s budget.
+
+### Doc 20 amendments owed
+
+Written against Draft 0.13 (`20e207a4`), which landed during the run:
+
+1. **§11 Tick row**, "as built (SM.12c-lane)":
+   - The write bounds are now measured and gated by `tests/cost_lane.rs`'s census and `support/cohort.rs`'s `WRITE_GATES`.
+   - Completions hold ≤ 8 everywhere except `done.unload`. That is pinned at SM.8's 19 handed and SM.12c's constructed structural maximum of 63: four ores into four fresh hold pools, each push evicting eight. Two goods read 33.
+   - `mill.batch` 5 on the shipped lane (6 rig-only). `dispatch.deliver` 6 into a fresh storefront pool, then 5 (7/8 rig-only). `mill.restock` 2, `dispatch.survey` 1, `site.house_licence` 3, `tvpref` 1.
+   - Measured overruns of "≤ 3 for any other act" (O-20), as built:
+     - `forget` 5 (a body's forget, one row per Ceres site)
+     - `claim.stake` 9, `contest` 6, `release` 6, `renew` 5, `unpaid` 6, `lapse` 6, `seed` 7
+     - `site.open` 5, `site.worked` 6
+     - `licence.buy` 14, `lease.take` 19, `lease.return` 15 (normal lane)
+   - The row's "the write bounds unmeasured until SM.12" is now false.
+2. **§11 Caps row**: `MAX_PROGRAMME_POOL` is 32 and `MAX_VEHICLE_POOL` 64 (content bounds, O-19 provisional), with the shipped lane at 8 / 8. The economy's `MAX_LIVE_CONTRACTS_PER_PARTY` 32 caps a cohort at 30 TVs (owner item O-19c).
+3. **§3.2**, "As built (SM.12c-lane)": the off-loop runner was not needed. The month's site warm max was 4.5 ms and C4's release build max 4.0 ms, against the 20 ms line. SM.4a's revision cache is the landed peek: warm 67 µs, cold 841 µs p99 release. §16's "builds stay off-loop" therefore reads as "they stay on the tick, measured".
+4. **§8**, "As built (AP)" / "Leaving it running": AP's memo was not needed. The tick's per-leg p99 was 1.2 ms, the hand drive's 1.1 ms, and AP's exhausted-budget median 9.43 ms against 10 ms. SM.11's double search is reported (about 6,600 plan-drive landings a 30-TV month) and not built.
+5. **§13**:
+   - The prose paragraph and the SM.12 row's "SM.12c-lane ... still building, not landed" become landed, with the commit.
+   - Add an SM.12c-lane row, mirroring the SM.12c-bot row.
+   - The SM.12 acceptance cell, as built:
+     - Tick p99 < 5 ms met: release C2 minimum p99 0.77 ms at ten TVs; the 30-TV month's p99 1.4 ms.
+     - The write clause is met under the pins above.
+     - The cohort runs over six sites, not "8" (O-30), at 30 TVs, not 64. The 64-TV month STOPs at the economy's per-party contract cap (O-19c).
+     - The Vesta hulls are refused at the epoch (O-26).
+     - "Beside the arena baseline" is met by order, through `scripts/cost-lane.sh` after `harness-weekly.sh`; the committed baseline and delta are deferred (D-H-8).
+   - The SM.8 inherit: the ring tool was not built (O-22); the relief is a per-entry horizon of one real hour on the unload's hopper markers.
+   - The SM.9 inherit: Q8 in release is least 2.61 ms, median 2.65 ms.
+   - The SM.10 inherit is closed "measured, not reduced".
+   - The SM.11 inherit: (c) was built.
+6. **§15**: the O-19, O-20, O-22, O-24/24b, O-25 to O-30 "as built" figures, as in the deferred list. Add **O-19c**, the economy's per-party live-contract cap (32) at cohort scale.
+7. **§16**, risks retired with figures:
+   - The submit queue: at most 5 of 64 a fire.
+   - The composite LRU: 54 / 38 / 16, with 6 builds and 0 evictions in a month.
+   - The Vesta passage: O-26.
+   - The marker ring and the applied mirror (O-27): mirror max 1,117 with (c), against a pre-(c) projection of about 4,060 against 3,900.
+8. **Doc 18 IC14 owner item O7 and E7c2 D1**: the surface unload's hopper markers keep one real hour (`UNLOAD_MARKER_KEEP_S`, O-22); every other marker keeps the day.
+9. **Doc 20a**: its CI anchors (`ci.yml:326` etc.), its "weekly 17 4 * * 1" cron (now daily), its 12.9 ms / 408 µs peek figures and its `DecideCounters.legs` source of searches are stale (the brief's §10 D-1, D-2, D-4).
+10. **`docs/ops.md`**: the cost-lane run. Run `scripts/cost-lane.sh` by hand after `harness-weekly.sh`, never beside it and never on a serving host. It runs `TACSIM_COHORT_TVS=30` by default and writes `cost-lane.json` at the root. Note that a rollback past this cut cannot decode a hopper ring that carries `keep_s`.

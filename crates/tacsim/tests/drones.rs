@@ -3074,6 +3074,16 @@ fn sm12b_four_excursions_bind_the_dispatcher() {
 const T9_FIRES: u32 = 800;
 /// T9's reboot window, real seconds (`plans.rs`'s `reboot_point`'s shape).
 const T9_WINDOW: i64 = 60;
+/// **T9's reboot points** (fire indexes; doc 20 cut SM.12c, the lead's ruling, lead note item 7):
+/// re-scouted at SM.12c-lane's base (`d842fdd0`; the first delivery at fire 125). The first is the
+/// first quiet point after the first delivery (397, as SM.12b's scout found it at `1b5dd371`); the
+/// second is scouted **with the first point's jump in place** — the arms pass the window at the
+/// first point, so SM.12b's second point (422, read off a run that never jumped) is not quiet in
+/// either arm (an act due in the window) — as the first quiet point inside a mining run more than
+/// 20 fires after the first. If the world moves, the test fails naming the point and what is due:
+/// re-scout by running `t9_arm(&[], false)` (the scout this constant replaced) for the first and
+/// `t9_arm(&[first], false)` for the second, reading the quiet points each returns.
+const T9_POINTS: [u32; 2] = [397, 441];
 
 /// What T9 compares.
 #[derive(Debug, PartialEq)]
@@ -3197,8 +3207,11 @@ fn quiet_point(rig: &mut Rig) -> Result<(), &'static str> {
 
 /// One arm of T9's script: the seeded yard run for [`T9_FIRES`] fires; at each of `points` (fire
 /// indexes) the window passes in one step — rebooting first when `rebooting`, then warming
-/// Occator Rim; the post-image. With no points, the quiet points the run passed (for the
-/// scout).
+/// Occator Rim; the post-image. With fewer than two points, the quiet points the run passed (the
+/// scout, kept callable for [`T9_POINTS`]' re-scout recipe). **Doc 20 cut SM.12c**: at each
+/// pinned point, before any reboot, both arms assert the point is still quiet ([`quiet_point`]),
+/// that a delivery has landed by the first and that a yard rig is inside a mining run at the
+/// second — loudly, naming the re-scout.
 fn t9_arm(points: &[u32], rebooting: bool) -> (Post, Vec<(u32, bool)>, Vec<u32>) {
     let mut rig = yard_world();
     let _ = seeded(&mut rig);
@@ -3207,6 +3220,24 @@ fn t9_arm(points: &[u32], rebooting: bool) -> (Post, Vec<(u32, bool)>, Vec<u32>)
     let mut reasons: BTreeMap<&str, u32> = BTreeMap::new();
     for n in 0..T9_FIRES {
         if points.contains(&n) {
+            if let Err(why) = quiet_point(&mut rig) {
+                panic!("T9 point {n} is no longer quiet: {why}; re-scout (see T9_POINTS)");
+            }
+            if points.first() == Some(&n) && deliveries.is_empty() {
+                panic!(
+                    "T9 point {n} is no longer quiet: no delivery has landed before it; re-scout \
+                     (see T9_POINTS)"
+                );
+            }
+            let mining = yard_rigs(&rig.tw)
+                .iter()
+                .any(|tv| record_of(&mut rig.tw, *tv).is_some_and(|record| record.run.is_some()));
+            if points.get(1) == Some(&n) && !mining {
+                panic!(
+                    "T9 point {n} is no longer quiet: no yard rig is inside a mining run; \
+                     re-scout (see T9_POINTS)"
+                );
+            }
             let at = rig.tw.world().now() + T9_WINDOW;
             if rebooting {
                 rig = reboot(rig, &[]);
@@ -3224,7 +3255,7 @@ fn t9_arm(points: &[u32], rebooting: bool) -> (Post, Vec<(u32, bool)>, Vec<u32>)
             land_all(&mut rig, &queued);
             continue;
         }
-        if points.is_empty() {
+        if points.len() < 2 {
             match quiet_point(&mut rig) {
                 Ok(()) => {
                     let mining = yard_rigs(&rig.tw).iter().any(|tv| {
@@ -3241,7 +3272,7 @@ fn t9_arm(points: &[u32], rebooting: bool) -> (Post, Vec<(u32, bool)>, Vec<u32>)
         }
         land_all(&mut rig, &queued);
     }
-    if points.is_empty() {
+    if points.len() < 2 {
         println!(
             "SM.12b T9 scout: {} quiet points; the rest {reasons:?}",
             quiet.len()
@@ -3256,24 +3287,17 @@ fn t9_arm(points: &[u32], rebooting: bool) -> (Post, Vec<(u32, bool)>, Vec<u32>)
 /// rule, sharpened for the port tick's mill and drip); both arms warm Occator Rim and stand at the
 /// same instant after each. The post-images are equal: the yard rigs' records and projections,
 /// the pools, the dispatch and mill ledgers, the dispatcher's chart row, the cursors, the mined
-/// ring, the site map and the IC clock.
+/// ring, the site map and the IC clock. **Doc 20 cut SM.12c** (the lead's ruling, lead note item
+/// 7): the points are pinned ([`T9_POINTS`]) and the scout arm is dropped; each arm asserts each
+/// point still quiet, after the first delivery and inside a mining run.
 #[test]
 fn sm12b_the_restart_changes_nothing() {
-    let (_, quiet, deliveries) = t9_arm(&[], false);
-    let first = *deliveries.first().expect("a delivery lands in the span");
-    let after = quiet
-        .iter()
-        .map(|(n, _)| *n)
-        .find(|n| *n > first)
-        .expect("a quiet point after the first delivery");
-    let later = quiet
-        .iter()
-        .find(|(n, mining)| *n > after + 20 && *mining)
-        .map(|(n, _)| *n)
-        .expect("a second quiet point inside a mining run");
-    println!("SM.12b T9 reboot points {after} and {later} (first delivery {first})");
-    let (a, _, _) = t9_arm(&[after, later], false);
-    let (b, _, _) = t9_arm(&[after, later], true);
+    println!(
+        "SM.12b T9 reboot points {} and {} (pinned)",
+        T9_POINTS[0], T9_POINTS[1]
+    );
+    let (a, _, _) = t9_arm(&T9_POINTS, false);
+    let (b, _, _) = t9_arm(&T9_POINTS, true);
     assert_eq!(a, b, "the restart changes nothing");
     assert!(a.dispatch.is_some_and(|ledger| ledger.deliveries >= 1));
 }

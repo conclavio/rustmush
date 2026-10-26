@@ -915,6 +915,54 @@ pub struct PortFireStats {
     /// Doc 18 cut IC14 row 20 (lead ruling L16): agents waiting on staff or a backoff
     /// that have already paged — counted, never the generic refusal warning.
     pub held: u32,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the fire's own wall time in
+    /// microseconds — the tick's body after the layer check, the pages and the walk included.
+    /// RAM only, never persisted, never shown to a player.
+    pub elapsed_us: u64,
+    /// **Doc 20 cut SM.12c**: the stock arm's agents this fire — **every latched lane port map's
+    /// stock clerk** (five vendor ports on the shipped lane), never one clerk's figure. RAM only,
+    /// never persisted, never shown to a player.
+    pub stock: ArmFireStats,
+    /// **Doc 20 cut SM.12c**: the site clerks' agents this fire (`Arm::Site`). RAM only, never
+    /// persisted, never shown to a player.
+    pub site: ArmFireStats,
+    /// **Doc 20 cut SM.12c**: the yard dispatchers' agents this fire (`Arm::Dispatch`). RAM only,
+    /// never persisted, never shown to a player.
+    pub dispatch: ArmFireStats,
+}
+
+/// **One arm's share of a port fire** (doc 20 cut SM.12c, the cost lane; doc 20a §5.6's "by
+/// arm"): counted in the walk beside [`PortFireStats`]' totals for the stock, site and dispatch
+/// arms (the other arms count only in the totals). `deferred` counts the `Fire::as_principal`
+/// refusals that defer — the principal already acted this fire, owed its act to another agent,
+/// or has a submission still in flight (`Pending`). RAM only, never persisted, never shown to a
+/// player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArmFireStats {
+    /// Agents of the arm visited.
+    pub visited: u32,
+    /// Agents of the arm worked (`Worked` and `Submitted`).
+    pub worked: u32,
+    /// Agents of the arm deferred.
+    pub deferred: u32,
+    /// Agents of the arm held (waiting on staff or a backoff, already paged).
+    pub held: u32,
+    /// Agents of the arm refused.
+    pub refused: u32,
+}
+
+impl ArmFireStats {
+    /// Count one visited agent's step (doc 20 cut SM.12c).
+    fn count(&mut self, step: Step) {
+        self.visited = self.visited.saturating_add(1);
+        match step {
+            Step::Idle => {}
+            Step::Worked | Step::Submitted => self.worked = self.worked.saturating_add(1),
+            Step::Deferred => self.deferred = self.deferred.saturating_add(1),
+            Step::Held => self.held = self.held.saturating_add(1),
+            Step::Refused => self.refused = self.refused.saturating_add(1),
+        }
+    }
 }
 
 /// The last fire's stats, `None` before the first fire that found the layer on.
@@ -1197,6 +1245,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     {
         return;
     }
+    // Doc 20 cut SM.12c (the cost lane): the fire's own clock, the pages and the walk included.
+    let started = std::time::Instant::now();
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
     };
@@ -1213,7 +1263,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     if state.fires == 1 {
         crate::port::voyage::launch_retell(ctx, &state);
     }
-    let stats = walk(ctx, &mut state);
+    let mut stats = walk(ctx, &mut state);
+    stats.elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     state.last_fire = Some(stats);
     if let Some(slot) = ctx.w.module_state_mut::<PortTickState>() {
         *slot = state;
@@ -1344,6 +1395,17 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         last_visited = Some(agent);
         let step = step(ctx, state, &mut fire, agent, principal, arm);
         fire.settle(agent, step);
+        // Doc 20 cut SM.12c (the cost lane): the stock, site and dispatch arms' own shares.
+        match arm {
+            Arm::Stock => fire.stats.stock.count(step),
+            Arm::Site => fire.stats.site.count(step),
+            Arm::Dispatch => fire.stats.dispatch.count(step),
+            Arm::Release { .. }
+            | Arm::Launch { .. }
+            | Arm::Recall { .. }
+            | Arm::Order { .. }
+            | Arm::Probe => {}
+        }
         match step {
             Step::Idle => {}
             Step::Worked => fire.stats.worked = fire.stats.worked.saturating_add(1),

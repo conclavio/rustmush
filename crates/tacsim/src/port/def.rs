@@ -83,8 +83,11 @@ pub const MAX_TRANCHE_MAJOR: u64 = 800_000;
 /// (D-18-14; doc 18 §4.7 "Config flips"): above [`MAX_TRANCHE_MAJOR`], so every
 /// tranche fits under it, and above any single drip the game issues.
 pub const PORT_MINT_CAP_MAJOR: u64 = 1_000_000;
-/// The largest hull pool one programme may author.
-pub const MAX_PROGRAMME_POOL: u32 = 16;
+/// The largest hull pool one programme may author. **Doc 20 cut SM.12c**: raised from 16 to 32 so
+/// the cost lane can author the 64-TV cohort (32 Dray-P hulls of two rigs); the shipped lane stays
+/// at eight and eight — the pool is the owner's lever, these are content bounds (O-19,
+/// provisional).
+pub const MAX_PROGRAMME_POOL: u32 = 32;
 /// The longest registry prefix one programme may author, in bytes.
 pub const MAX_REGISTRY_PREFIX_BYTES: usize = 16;
 /// The longest a programme's dormancy window may be, in real days.
@@ -94,8 +97,11 @@ pub const MAX_PROGRAMME_REFITS: usize = 4;
 /// The refit word that always means the programme's own unit, and is never
 /// authored (doc 20 cut SM.3a).
 pub const STANDARD_REFIT: &str = "standard";
-/// The largest rig pool one lessor may author (doc 20 cut SM.3a).
-pub const MAX_VEHICLE_POOL: u32 = 16;
+/// The largest rig pool one lessor may author (doc 20 cut SM.3a). **Doc 20 cut SM.12c**: raised
+/// from 16 to 64 so the cost lane can author the 64-TV cohort (32 Dray-P hulls of two rigs); the
+/// shipped lane stays at eight and eight — the pool is the owner's lever, these are content bounds
+/// (O-19, provisional).
+pub const MAX_VEHICLE_POOL: u32 = 64;
 /// The longest rig lease term, IC days (doc 20 cut SM.3a).
 pub const MAX_VEHICLE_TERM_IC_DAYS: u32 = 365;
 /// The most tools one rig pool may name (doc 20 cut SM.3a).

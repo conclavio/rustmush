@@ -394,6 +394,7 @@ fn ic14_a_ring_over_its_cap_does_not_decode() {
         MarkerRing::new(vec![RingEntry {
             key: SmolStr::new(""),
             wall: T0,
+            keep_s: None,
         }])
         .is_err()
     );
@@ -402,19 +403,24 @@ fn ic14_a_ring_over_its_cap_does_not_decode() {
 /// **`MarkerRing::admits` is `push`'s rule, read only** (doc 20 cut SM.11, the lead's pre-commit
 /// round, item 1): over a ring at its cap of young entries, a ring with room, a ring whose oldest
 /// entries aged past the horizon and a ring that ages by fewer than one push evicts, `admits(n,
-/// now)` answers exactly whether `n` pushes stamped `now` all succeed.
+/// now)` answers exactly whether `n` pushes stamped `now` all succeed. **Doc 20 cut SM.12c**
+/// (decision (c)): re-blessed over rings mixing default and kept horizons — every entry kept an
+/// hour, kept entries an hour old behind one young default entry (head of line), and kept entries
+/// aged past their hour but not past the day ahead of default ones.
 #[test]
 fn sm11_admits_answers_exactly_what_push_would() {
-    let entry = |n: usize, wall: i64| RingEntry {
+    const HOUR: i64 = 3_600;
+    let entry = |n: usize, (wall, keep_s): (i64, Option<i64>)| RingEntry {
         key: SmolStr::new(format!("{n:080x}")),
         wall,
+        keep_s,
     };
-    let ring_of = |walls: &[i64]| {
+    let ring_of = |entries: &[(i64, Option<i64>)]| {
         MarkerRing::new(
-            walls
+            entries
                 .iter()
                 .enumerate()
-                .map(|(n, wall)| entry(n, *wall))
+                .map(|(n, pair)| entry(n, *pair))
                 .collect(),
         )
         .expect("a ring")
@@ -422,28 +428,51 @@ fn sm11_admits_answers_exactly_what_push_would() {
     let pushes = |ring: &MarkerRing, n: usize, now: i64| {
         let mut ring = ring.clone();
         for k in 0..n {
-            match ring.push(entry(100_000 + k, now), now) {
+            match ring.push(entry(100_000 + k, (now, None)), now) {
                 Ok((next, _)) => ring = next,
                 Err(_) => return false,
             }
         }
         true
     };
-    let young = vec![T0; MAX_MARKER_RING];
-    let room = vec![T0; MAX_MARKER_RING - 2];
-    let aged = vec![T0 - MARKER_RETENTION_SECS; MAX_MARKER_RING];
+    let default = |wall: i64| (wall, None);
+    let kept = |wall: i64| (wall, Some(HOUR));
+    let young = vec![default(T0); MAX_MARKER_RING];
+    let room = vec![default(T0); MAX_MARKER_RING - 2];
+    let aged = vec![default(T0 - MARKER_RETENTION_SECS); MAX_MARKER_RING];
     // Only a few of the full ring's entries aged: fewer than one push may evict.
-    let mut few = vec![T0; MAX_MARKER_RING];
-    few[0] = T0 - MARKER_RETENTION_SECS;
-    for walls in [&young, &room, &aged, &few] {
-        let ring = ring_of(walls);
+    let mut few = vec![default(T0); MAX_MARKER_RING];
+    few[0] = default(T0 - MARKER_RETENTION_SECS);
+    let kept_young = vec![kept(T0); MAX_MARKER_RING];
+    let kept_aged = vec![kept(T0 - HOUR); MAX_MARKER_RING];
+    // One young default entry ahead of hour-old kept ones holds them all.
+    let mut held = vec![kept(T0 - HOUR); MAX_MARKER_RING];
+    held[0] = default(T0);
+    // Kept entries past their hour ahead of young default ones: only the kept may go.
+    let mut mixed = vec![default(T0); MAX_MARKER_RING];
+    for slot in mixed.iter_mut().take(5) {
+        *slot = kept(T0 - HOUR);
+    }
+    let rings = [
+        &young,
+        &room,
+        &aged,
+        &few,
+        &kept_young,
+        &kept_aged,
+        &held,
+        &mixed,
+    ];
+    for entries in rings {
+        let ring = ring_of(entries);
         for n in 0..=MAX_RING_EVICTIONS_PER_PUSH + 2 {
-            for now in [T0, T0 + 1, T0 + MARKER_RETENTION_SECS] {
+            for now in [T0, T0 + 1, T0 + HOUR, T0 + MARKER_RETENTION_SECS] {
                 assert_eq!(
                     ring.admits(n, now),
                     pushes(&ring, n, now),
-                    "{} entries, {n} pushes at {now}",
-                    walls.len()
+                    "{} entries ({:?} first), {n} pushes at {now}",
+                    entries.len(),
+                    entries.first()
                 );
             }
         }
@@ -454,6 +483,18 @@ fn sm11_admits_answers_exactly_what_push_would() {
     assert!(
         ring_of(&young).admits(1, T0 + MARKER_RETENTION_SECS),
         "the ring frees as its markers age"
+    );
+    assert!(
+        ring_of(&kept_aged).admits(8, T0),
+        "hour-old kept entries free the ring"
+    );
+    assert!(
+        !ring_of(&held).admits(1, T0),
+        "a young default entry ahead holds the ring"
+    );
+    assert!(
+        ring_of(&mixed).admits(5, T0) && !ring_of(&mixed).admits(6, T0),
+        "only the aged kept entries make room"
     );
 }
 
@@ -610,4 +651,248 @@ fn ic14_a_provider_move_records_its_marker_in_the_source_ring() {
     let entry = &ring.entries()[0];
     assert_eq!(entry.wall, T0, "stamped with the offer's real second");
     assert!(applied(engine, &families, &entry.key));
+}
+
+// ---- doc 20 cut SM.12c, decision (c): a per-entry retention horizon -------------
+
+/// One real hour: the horizon TacSim's unload finish keeps its hopper markers.
+const HOUR: i64 = 3_600;
+
+/// A ring entry `n` stamped `wall`, kept `keep_s`.
+fn ring_entry(n: usize, wall: i64, keep_s: Option<i64>) -> RingEntry {
+    RingEntry {
+        key: SmolStr::new(format!("{n:080x}")),
+        wall,
+        keep_s,
+    }
+}
+
+/// One marked move of 1 metals out of `from` through `transfer_many_marked_keeping`.
+fn go_keeping(
+    engine: &mut Engine,
+    families: &InventoryFamilies,
+    (from, to): (EndpointRef, EndpointRef),
+    id: &SmolStr,
+    wall: i64,
+    keep_s: i64,
+) -> Result<(), InventoryError> {
+    apply(engine, families, |txn| {
+        families
+            .transfer_many_marked_keeping(
+                txn,
+                from,
+                to,
+                &[(commodity(), 1, id.clone())],
+                GOD,
+                &now(),
+                wall,
+                keep_s,
+            )
+            .map(|_| ())
+    })
+}
+
+/// **`admits` honours a kept entry's horizon**: a full ring of entries kept an hour refuses
+/// inside the hour and admits a push's worth of evictions at it; the same walls at the default
+/// horizon still refuse at the hour.
+#[test]
+fn sm12c_admits_honours_a_kept_entrys_horizon() {
+    let kept = MarkerRing::new(
+        (0..MAX_MARKER_RING)
+            .map(|n| ring_entry(n, T0, Some(HOUR)))
+            .collect(),
+    )
+    .expect("a ring");
+    let default = MarkerRing::new(
+        (0..MAX_MARKER_RING)
+            .map(|n| ring_entry(n, T0, None))
+            .collect(),
+    )
+    .expect("a ring");
+    assert!(
+        !kept.admits(1, T0 + HOUR - 1),
+        "a kept entry inside its hour holds"
+    );
+    assert!(kept.admits(1, T0 + HOUR), "a kept entry an hour old may go");
+    assert!(
+        kept.admits(MAX_RING_EVICTIONS_PER_PUSH, T0 + HOUR),
+        "a push evicts up to its eight"
+    );
+    assert!(
+        !default.admits(1, T0 + HOUR),
+        "the default horizon is the day"
+    );
+    assert!(default.admits(1, T0 + MARKER_RETENTION_SECS));
+}
+
+/// **A kept entry ages out at its own horizon**, through the families: forty moves kept an hour,
+/// then one more past the hour evicts up to its eight from the front and retires their applied
+/// markers in the same bundle; the forty at the default horizon evict nothing at the same second.
+#[test]
+fn sm12c_a_kept_entry_ages_out_at_its_own_horizon() {
+    let (mut world, families) = boot();
+    let engine = world.engine_mut();
+    let (hold, store, other) = (endpoint(1), endpoint(2), endpoint(3));
+    seed(engine, &families, &[hold, other], 1_000);
+    let ids: Vec<SmolStr> = (0..40)
+        .map(|n| {
+            let id = marker(hold, n);
+            go_keeping(
+                engine,
+                &families,
+                (hold, store),
+                &id,
+                T0 + 60 * n as i64,
+                HOUR,
+            )
+            .expect("a kept move");
+            id
+        })
+        .collect();
+    let kept = ring(engine, &families, hold);
+    assert_eq!(kept.len(), 40, "nothing younger than its hour is evicted");
+    assert!(
+        kept.entries().iter().all(|e| e.keep_s == Some(HOUR)),
+        "each entry carries its horizon"
+    );
+    let later = T0 + 60 * 39 + HOUR;
+    let next = marker(hold, 1_000);
+    go(engine, &families, hold, store, &next, later).expect("a move past the hour");
+    let ring_now = ring(engine, &families, hold);
+    assert_eq!(ring_now.len(), 41 - MAX_RING_EVICTIONS_PER_PUSH);
+    for id in &ids[..MAX_RING_EVICTIONS_PER_PUSH] {
+        assert!(!applied(engine, &families, id), "{id} aged out at its hour");
+    }
+    for id in &ids[MAX_RING_EVICTIONS_PER_PUSH..] {
+        assert!(applied(engine, &families, id), "{id} is still held");
+    }
+    assert_eq!(ring_now.entries().last().map(|e| e.keep_s), Some(None));
+    // The same walls at the default horizon: nothing goes.
+    for n in 0..40 {
+        go(
+            engine,
+            &families,
+            other,
+            store,
+            &marker(other, n),
+            T0 + 60 * n as i64,
+        )
+        .expect("a default move");
+    }
+    go(
+        engine,
+        &families,
+        other,
+        store,
+        &marker(other, 1_000),
+        later,
+    )
+    .expect("one more");
+    assert_eq!(
+        ring(engine, &families, other).len(),
+        41,
+        "the default keeps the day"
+    );
+}
+
+/// **A ring without horizons encodes as before**: an entry with no `keep_s` serializes to exactly
+/// the pre-cut `{key, wall}`, a pre-cut ring decodes with every horizon absent and re-encodes
+/// byte-identically, and a kept entry carries `keep_s`.
+#[test]
+fn sm12c_a_ring_without_horizons_encodes_as_before() {
+    let key = format!("{:080x}", 7);
+    let before = format!(r#"[{{"key":"{key}","wall":{T0}}}]"#);
+    let ring: MarkerRing = serde_json::from_str(&before).expect("a pre-cut ring decodes");
+    assert_eq!(ring.entries()[0].keep_s, None);
+    assert_eq!(serde_json::to_string(&ring).expect("encodes"), before);
+    assert_eq!(
+        serde_json::to_value(ring_entry(7, T0, None)).expect("encodes"),
+        json!({"key": key, "wall": T0})
+    );
+    assert_eq!(
+        serde_json::to_value(ring_entry(7, T0, Some(HOUR))).expect("encodes"),
+        json!({"key": key, "wall": T0, "keep_s": HOUR})
+    );
+    let kept: MarkerRing =
+        serde_json::from_value(json!([{"key": key, "wall": T0, "keep_s": HOUR}])).expect("decodes");
+    assert_eq!(kept.entries()[0].keep_s, Some(HOUR));
+    for keep_s in [0, -1, MARKER_RETENTION_SECS + 1] {
+        assert!(
+            serde_json::from_value::<MarkerRing>(
+                json!([{"key": key, "wall": T0, "keep_s": keep_s}])
+            )
+            .is_err(),
+            "a stored horizon of {keep_s} does not decode"
+        );
+    }
+}
+
+/// **A horizon past the default is refused**: `keep_s` outside `1..=MARKER_RETENTION_SECS` is
+/// `MarkerHorizon` with nothing staged (no balance moved, no marker, no ring); the day itself is
+/// admitted.
+#[test]
+fn sm12c_a_horizon_past_the_default_is_refused() {
+    let (mut world, families) = boot();
+    let engine = world.engine_mut();
+    let (hold, store) = (endpoint(1), endpoint(2));
+    seed(engine, &families, &[hold], 10);
+    for (n, keep_s) in [MARKER_RETENTION_SECS + 1, 0, -1, i64::MAX]
+        .into_iter()
+        .enumerate()
+    {
+        let id = marker(hold, n as u64);
+        assert_eq!(
+            go_keeping(engine, &families, (hold, store), &id, T0, keep_s),
+            Err(InventoryError::MarkerHorizon),
+            "keep_s {keep_s}"
+        );
+        assert!(!applied(engine, &families, &id));
+    }
+    assert_eq!(balance(engine, &families, hold), 10, "nothing moved");
+    assert!(
+        ring(engine, &families, hold).is_empty(),
+        "nothing was ringed"
+    );
+    let id = marker(hold, 99);
+    go_keeping(
+        engine,
+        &families,
+        (hold, store),
+        &id,
+        T0,
+        MARKER_RETENTION_SECS,
+    )
+    .expect("the day itself is a horizon");
+    assert_eq!(
+        ring(engine, &families, hold).entries()[0].keep_s,
+        Some(MARKER_RETENTION_SECS)
+    );
+}
+
+/// **A default entry ahead holds the ring** (head of line): one default-horizon entry ahead of
+/// 127 kept ones, all stamped `T0`; past the kept hour a push still refuses `MarkerRingFull`
+/// (eviction is FIFO from the front), and once the front entry is a day old the push evicts it and
+/// up to seven kept ones behind it.
+#[test]
+fn sm12c_a_default_entry_ahead_holds_the_ring() {
+    let mut entries = vec![ring_entry(0, T0, None)];
+    entries.extend((1..MAX_MARKER_RING).map(|n| ring_entry(n, T0, Some(HOUR))));
+    let ring = MarkerRing::new(entries).expect("a ring");
+    let later = T0 + 2 * HOUR;
+    assert!(!ring.admits(1, later));
+    assert!(
+        ring.push(ring_entry(500, later, Some(HOUR)), later)
+            .is_err()
+    );
+    let day = T0 + MARKER_RETENTION_SECS;
+    assert!(ring.admits(1, day));
+    let (next, evicted) = ring
+        .push(ring_entry(500, day, Some(HOUR)), day)
+        .expect("the front aged");
+    assert_eq!(evicted.len(), MAX_RING_EVICTIONS_PER_PUSH);
+    assert_eq!(evicted[0], SmolStr::new(format!("{:080x}", 0)));
+    assert_eq!(
+        next.len(),
+        MAX_MARKER_RING + 1 - MAX_RING_EVICTIONS_PER_PUSH
+    );
 }

@@ -199,11 +199,12 @@ pub use excursion::{
     ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
     tv_rec_key, tv_rec_key_owner,
 };
+pub use ground::SiteCacheCounters;
 pub use ground::site_ground_cached;
 pub use tick::{
     DONE_BACKOFF_FIRES, MAX_DONE_ATTEMPTS, MAX_EXCURSIONS_VISITED_PER_FIRE,
     MAX_EXCURSIONS_WORKED_PER_FIRE, MAX_RIG_RECORDS, SCAN_PAGE, SURFACE_TICK, SURFACE_TICK_PERIOD,
-    SurfaceFireStats, SurfaceTickState, last_surface_fire,
+    SurfaceFireStats, SurfaceTickState, last_surface_fire, surface_fires,
 };
 
 /// The most body tables one world holds.
@@ -279,6 +280,47 @@ pub(crate) struct Peeks {
     pub sites: BTreeMap<CanonicalId, chart::SitePeek>,
     /// (Site entry, ramp cell) → its home's peek ([`peek_home`]).
     pub homes: BTreeMap<(CanonicalId, (i64, i64)), HomePeek>,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the drive legs this call's
+    /// `plan::decide_walk` searched (one per `act::drive_plan` call it made). RAM only, never
+    /// persisted, never shown to a player.
+    pub legs: u32,
+    /// **Doc 20 cut SM.12c**: those searches' summed wall time in microseconds. RAM only, never
+    /// persisted, never shown to a player.
+    pub leg_us: u64,
+    /// **Doc 20 cut SM.12c**: the site peeks this call paid (`chart::peek_site` memo misses — the
+    /// capture and the cache lookup). RAM only, never persisted, never shown to a player.
+    pub site_misses: u32,
+    /// **Doc 20 cut SM.12c**: those peeks' summed wall time in microseconds. RAM only, never
+    /// persisted, never shown to a player.
+    pub peek_us: u64,
+}
+
+/// **What one fire's warm did** (doc 20 cut SM.12c, the cost lane; doc 20 §11's Tick row): the
+/// variant the tick's warm step answers, recorded on
+/// [`SurfaceFireStats::warmed`](crate::surface::SurfaceFireStats::warmed). RAM only, never
+/// persisted, never shown to a player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Warmed {
+    /// Nothing was built: nothing wanted, a site already warm with no home to build, a site read
+    /// dark, or a cold site's home kept wanted.
+    #[default]
+    Nothing,
+    /// A wanted site's ground was built into the cache (`ground::site_ground_sync`'s `Ok`).
+    Site,
+    /// A wanted home field was built and inserted, over a warm ground or keyless.
+    Home,
+    /// A site's ground or a home field failed to build (it reads dark until the next boot).
+    Failed,
+}
+
+/// **The site-ground LRU's counters** (doc 20 cut SM.12c, the cost lane; doc 20 §11's composite
+/// churn): the cache's entries, builds and evictions this boot, or zeros when no geology slot is
+/// composed. RAM only, never persisted, never shown to a player.
+#[must_use]
+pub fn site_cache_counters(w: &World) -> SiteCacheCounters {
+    w.module_state::<GeologyState>()
+        .map(|state| state.sites.counters())
+        .unwrap_or_default()
 }
 
 /// Whether `entry` is a lane site (keyless: `chart::lane_sites`).
@@ -450,7 +492,7 @@ fn insert_home(
 /// and the home kept wanted, nothing else this fire; dark → the field over the keyless terrain
 /// (`ground::site_terrain`, R3). Each build is timed (`tracing::debug!`); a build that fails
 /// warns once and joins `homes_failed` (never wanted or warned again this boot).
-fn warm_one_home(ctx: &mut Ctx<'_>) {
+fn warm_one_home(ctx: &mut Ctx<'_>) -> Warmed {
     // The first wanted home that needs a build. A failed one is skipped (D25), and — the
     // review's correctness/F3 — so is one whose field over the current ground (or, dark, its
     // keyless field) still stands: every drive's arrival wants its home again, and that costs
@@ -463,7 +505,7 @@ fn warm_one_home(ctx: &mut Ctx<'_>) {
             .module_state_mut::<GeologyState>()
             .and_then(|state| state.homes_wanted.pop_first())
         else {
-            return;
+            return Warmed::Nothing;
         };
         let failed = ctx
             .w
@@ -492,7 +534,7 @@ fn warm_one_home(ctx: &mut Ctx<'_>) {
             if let Some(state) = ctx.w.module_state_mut::<GeologyState>() {
                 state.homes_wanted.insert((entry, ramp));
             }
-            return;
+            return Warmed::Nothing;
         }
         chart::SitePeek::Dark => ground::site_terrain(ctx.w, &entry).and_then(|terrain| {
             terrain
@@ -514,6 +556,7 @@ fn warm_one_home(ctx: &mut Ctx<'_>) {
                 ms = started.elapsed().as_millis(),
                 "tacsim: a site's home field was warmed"
             );
+            Warmed::Home
         }
         Err(error) => {
             tracing::warn!(
@@ -524,6 +567,7 @@ fn warm_one_home(ctx: &mut Ctx<'_>) {
             if let Some(state) = ctx.w.module_state::<GeologyState>() {
                 state.homes_failed.set().insert(entry);
             }
+            Warmed::Failed
         }
     }
 }
@@ -655,23 +699,26 @@ pub(crate) fn fail_site(w: &World, entry: &CanonicalId) -> bool {
 /// `warm_failed` and is dropped — never wanted or warned again this boot (D25). With none wanted,
 /// **or with the layer dark** (R3: a rig's way home never depends on the geology key), one wanted
 /// **home field** is worked instead (`warm_one_home`).
-pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
+///
+/// **Doc 20 cut SM.12c** (the cost lane): it answers what it did ([`Warmed`]) — `Site` when the
+/// build landed in the cache, `Failed` when it (or the site's context) failed, else whatever the
+/// home step answered; the caller (the tick) times the call, so this keeps its `tracing::debug!`
+/// lines and returns only the variant.
+pub(crate) fn warm_one(ctx: &mut Ctx<'_>) -> Warmed {
     if live(ctx.w).is_err() {
-        warm_one_home(ctx);
-        return;
+        return warm_one_home(ctx);
     }
     let Some(entry) = ctx
         .w
         .module_state_mut::<GeologyState>()
         .and_then(|state| state.warm.pop_first())
     else {
-        warm_one_home(ctx);
-        return;
+        return warm_one_home(ctx);
     };
     // A site a peek has marked dark since it was wanted (the pre-commit round's item 5) is
     // not built, and so not warned a second time.
     if warm_failed(ctx.w, &entry) {
-        return;
+        return Warmed::Nothing;
     }
     // Doc 20 cut SM.4b: a site wanted again while already warm (a cold home's command, a drive's
     // arrival) costs no build, so the fire goes on to a wanted home — a site re-wanted every
@@ -685,8 +732,7 @@ pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
         )
     });
     if already_warm {
-        warm_one_home(ctx);
-        return;
+        return warm_one_home(ctx);
     }
     let started = std::time::Instant::now();
     let built = chart::site_context(ctx.w, &entry)
@@ -694,11 +740,14 @@ pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
         .map_err(|dark| dark.reason())
         .and_then(|(frame, spec)| ground::site_ground_sync(ctx.w, &frame, &spec));
     match built {
-        Ok(_) => tracing::debug!(
-            site = %entry,
-            ms = started.elapsed().as_millis(),
-            "tacsim: a site's ground was warmed"
-        ),
+        Ok(_) => {
+            tracing::debug!(
+                site = %entry,
+                ms = started.elapsed().as_millis(),
+                "tacsim: a site's ground was warmed"
+            );
+            Warmed::Site
+        }
         Err(error) => {
             tracing::warn!(
                 site = %entry,
@@ -706,6 +755,7 @@ pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
                 "tacsim: a site's ground does not build; it reads dark until the next boot"
             );
             let _ = fail_site(ctx.w, &entry);
+            Warmed::Failed
         }
     }
 }

@@ -1408,7 +1408,7 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
-            "vehicles occator.rig_lease: pool must be 1..=16, not 0",
+            "vehicles occator.rig_lease: pool must be 1..=64, not 0",
             Box::new(|doc| doc["entries"]["ceres_port"]["def"]["vehicles"]["pool"] = json!(0)),
         ),
         (

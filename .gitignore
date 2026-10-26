@@ -39,6 +39,10 @@ Thumbs.db
 # crates/tacsim/tests/harness_baseline/
 /harness*.json
 
+# The surface-mining cost lane's report, written at the root by scripts/cost-lane.sh (doc 20 cut
+# SM.12c-lane)
+/cost-lane*.json
+
 # Python bytecode caches (a guard test of scripts/prune_target.py left one under scripts/ on 2026-09-28)
 __pycache__/
 *.pyc

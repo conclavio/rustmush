@@ -1404,10 +1404,12 @@ pub(crate) fn peek_site(
     entry: &CanonicalId,
     peeks: &mut crate::surface::Peeks,
 ) -> SitePeek {
-    let peeks = &mut peeks.sites;
-    if let Some(found) = peeks.get(entry) {
+    if let Some(found) = peeks.sites.get(entry) {
         return found.clone();
     }
+    // Doc 20 cut SM.12c (the cost lane): a memo miss is a peek paid — counted and timed into the
+    // call's own `Peeks` (RAM only; the tick folds its plan steps' into the fire's stats).
+    let started = std::time::Instant::now();
     let found = match site_context(w, entry) {
         Err(_) => SitePeek::Dark,
         Ok(_) if crate::surface::warm_failed(w, entry) => SitePeek::Dark,
@@ -1426,7 +1428,11 @@ pub(crate) fn peek_site(
             }
         },
     };
-    peeks.insert(entry.clone(), found.clone());
+    peeks.site_misses = peeks.site_misses.saturating_add(1);
+    peeks.peek_us = peeks
+        .peek_us
+        .saturating_add(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    peeks.sites.insert(entry.clone(), found.clone());
     found
 }
 

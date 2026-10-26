@@ -315,6 +315,16 @@ pub fn plan_clear_key(tv: ObjId, no: u32, seq: u32) -> Option<IdempotencyKeyText
 /// the first, never its idempotency conflict.
 pub const PLAN_CLEAR_ORDINAL: u32 = 1;
 
+/// **How long an unload's hopper markers stay in the hopper's ring, real seconds** (doc 20 cut
+/// SM.12c, decision (c); the owner's O-22 default, provisional): the finish moves the hopper's goods
+/// by `InventoryFamilies::transfer_many_marked_keeping` at this horizon instead of the ring's real
+/// day (`mush_inventory::record::MARKER_RETENTION_SECS`). The unload's durable replay guard once it
+/// lands is the rig record's ordinal, written in the same bundle, so the hopper's marker is needed
+/// only across the finish's own re-drives — eight attempts and the 60-fire back-offs — which one
+/// real hour covers many times over; a hopper writes at most about a dozen markers an hour at rate
+/// 24. The market's markers keep the day.
+pub(crate) const UNLOAD_MARKER_KEEP_S: i64 = 3_600;
+
 /// **An ended plan's strike key** (D17): `tacsim.surface/{tv}/plan/{no}/strike/{ordinal}` — hand
 /// acts may move the ordinal under an ended plan, so a retry after one is a new key.
 #[must_use]
@@ -9673,7 +9683,8 @@ impl SurfaceDoneProvider {
     ///    finish of this unload refused mid-bundle (`DoneRig::failed` holding `(ordinal, 0)`: the
     ///    dump's `SpoilGone` precedent) — any failing → `Refused { HoldRefused }`, nothing staged,
     ///    paged (staff state only: §6's gate keeps an honest fill inside the hold's room);
-    /// 4. **the move** — ONE `InventoryFamilies::transfer_many_marked` hopper → hold, one
+    /// 4. **the move** — ONE `InventoryFamilies::transfer_many_marked_keeping` hopper → hold (its
+    ///    ring entries kept [`UNLOAD_MARKER_KEEP_S`], doc 20 cut SM.12c decision (c)), one
     ///    `inventory.transferred` marker a good under `crate::surface::unload::marker`'s id, stamped
     ///    at the act's due on the offer's IC clock; the hopper's marker ring full of young markers
     ///    (`MarkerRingFull`, decided there before anything is staged) is `Refused { MarkersFull }`
@@ -9858,7 +9869,7 @@ impl SurfaceDoneProvider {
                 clock: clock.clock,
                 at: act.due_ic,
             };
-            let moved = self.inventory.transfer_many_marked(
+            let moved = self.inventory.transfer_many_marked_keeping(
                 txn,
                 source,
                 destination,
@@ -9866,6 +9877,7 @@ impl SurfaceDoneProvider {
                 act.operator,
                 &stamp,
                 wall,
+                UNLOAD_MARKER_KEEP_S,
             );
             if matches!(moved, Err(mush_inventory::InventoryError::MarkerRingFull)) {
                 // Decided before anything was staged (`transfer_many_marked`'s contract), so the

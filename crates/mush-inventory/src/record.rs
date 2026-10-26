@@ -1219,6 +1219,13 @@ pub struct RingEntry {
     pub key: SmolStr,
     /// The real (OOC) second the writing offer was drafted.
     pub wall: i64,
+    /// **The entry's own retention horizon, real seconds** (doc 20 cut SM.12c, decision (c); the
+    /// owner's O-22 default): `None` reads [`MARKER_RETENTION_SECS`]; a writer that keeps a
+    /// shorter replay window stamps it (`InventoryFamilies::transfer_many_marked_keeping`, which
+    /// accepts only `1..=MARKER_RETENTION_SECS`: a horizon may only shorten). Skipped when absent,
+    /// so every ring written before the cut encodes byte-identically (no migration: pre-launch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_s: Option<i64>,
 }
 
 /// The applied-marker ids one endpoint wrote as a marker's source, oldest
@@ -1226,9 +1233,15 @@ pub struct RingEntry {
 /// `mush-industry`'s `MarkerRing`; its count-only replay argument is **not**
 /// borrowed (E7c2 owner decision D1: the inventory marker is the only replay
 /// guard that survives a reboot), so [`MarkerRing::push`] evicts only past
-/// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`] **and** past
-/// [`MARKER_RETENTION_SECS`] of real age, and a ring of
-/// [`MAX_MARKER_RING`] young entries refuses rather than evicts.
+/// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`] **and** past each entry's own
+/// horizon of real age — its [`RingEntry::keep_s`], else
+/// [`MARKER_RETENTION_SECS`] — and a ring of [`MAX_MARKER_RING`] young entries
+/// refuses rather than evicts. Doc 20 cut SM.12c (decision (c); the owner's
+/// O-22 default): only `InventoryFamilies::transfer_many_marked_keeping`
+/// stamps a shorter horizon — the surface unload finish's hopper markers keep
+/// one real hour, because that act's durable replay guard after it lands is
+/// the rig record's ordinal in the same bundle; every other marker keeps the
+/// real day of D1.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct MarkerRing(Vec<RingEntry>);
@@ -1254,7 +1267,8 @@ impl MarkerRing {
     /// [`InventoryRecordError::MarkerRingFull`] past [`MAX_MARKER_RING`],
     /// [`InventoryRecordError::MarkerRingKey`] for a key failing the
     /// applied-marker key rule, [`InventoryRecordError::MarkerRingDuplicate`]
-    /// for a key listed twice.
+    /// for a key listed twice, [`InventoryRecordError::MarkerRingHorizon`] for a
+    /// `keep_s` outside `1..=MARKER_RETENTION_SECS` (doc 20 cut SM.12c).
     pub fn new(entries: Vec<RingEntry>) -> Result<Self, InventoryRecordError> {
         if entries.len() > MAX_MARKER_RING {
             return Err(InventoryRecordError::MarkerRingFull {
@@ -1268,6 +1282,9 @@ impl MarkerRing {
             }
             if !seen.insert(entry.key.as_str()) {
                 return Err(InventoryRecordError::MarkerRingDuplicate);
+            }
+            if !entry.horizon_ok() {
+                return Err(InventoryRecordError::MarkerRingHorizon);
             }
         }
         Ok(Self(entries))
@@ -1299,17 +1316,25 @@ impl MarkerRing {
 
     /// Append `entry`, then evict aged entries from the front: while the ring
     /// holds more than [`MAX_RETAINED_MARKERS_PER_ENDPOINT`], the front entry
-    /// is at least [`MARKER_RETENTION_SECS`] old at `now_wall`, and fewer than
+    /// is at least its horizon old at `now_wall` — its own
+    /// [`RingEntry::keep_s`] when it carries one (doc 20 cut SM.12c), else
+    /// [`MARKER_RETENTION_SECS`] — and fewer than
     /// [`MAX_RING_EVICTIONS_PER_PUSH`] were removed. Returns the new ring and
     /// the evicted keys (the caller removes them from `inventory.applied` in
     /// the same bundle). A `wall` in the future (a clock stepped back) simply
     /// never ages: safe.
     ///
+    /// **Head of line** (doc 20 cut SM.12c): eviction is FIFO from the front,
+    /// so a default-horizon entry ahead of kept ones holds them until it
+    /// ages itself — a kept horizon shortens only what reaches the front.
+    ///
     /// # Errors
     /// [`InventoryRecordError::MarkerRingFull`] when, after eviction, the ring
     /// would still hold more than [`MAX_MARKER_RING`] (every entry too young
     /// to evict); [`InventoryRecordError::MarkerRingKey`] /
-    /// [`InventoryRecordError::MarkerRingDuplicate`] for a bad or repeated key.
+    /// [`InventoryRecordError::MarkerRingDuplicate`] for a bad or repeated key;
+    /// [`InventoryRecordError::MarkerRingHorizon`] for a horizon outside
+    /// `1..=MARKER_RETENTION_SECS`.
     pub fn push(
         &self,
         entry: RingEntry,
@@ -1321,15 +1346,15 @@ impl MarkerRing {
         if self.0.iter().any(|e| e.key == entry.key) {
             return Err(InventoryRecordError::MarkerRingDuplicate);
         }
+        if !entry.horizon_ok() {
+            return Err(InventoryRecordError::MarkerRingHorizon);
+        }
         let mut entries: std::collections::VecDeque<RingEntry> = self.0.iter().cloned().collect();
         entries.push_back(entry);
+        let ages: std::collections::VecDeque<(i64, i64)> =
+            entries.iter().map(RingEntry::age_pair).collect();
         let mut evicted = Vec::new();
-        while entries.len() > MAX_RETAINED_MARKERS_PER_ENDPOINT
-            && evicted.len() < MAX_RING_EVICTIONS_PER_PUSH
-            && entries
-                .front()
-                .is_some_and(|front| front.wall.saturating_add(MARKER_RETENTION_SECS) <= now_wall)
-        {
+        for _ in 0..evictions(&ages, now_wall) {
             if let Some(front) = entries.pop_front() {
                 evicted.push(front.key);
             }
@@ -1343,35 +1368,62 @@ impl MarkerRing {
     }
 
     /// **Whether `n` more markers stamped `now_wall` would fit** (doc 20 cut SM.11, the lead's
-    /// pre-commit round, item 1): [`Self::push`]'s rule run over the entries' walls alone — each
-    /// push appended, then aged entries evicted from the front (past
-    /// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`], at least [`MARKER_RETENTION_SECS`] old at
-    /// `now_wall`, at most [`MAX_RING_EVICTIONS_PER_PUSH`] a push) — `false` exactly when one of
-    /// the `n` pushes would refuse [`InventoryRecordError::MarkerRingFull`]. A pure read: a caller
-    /// that must not stage a marker-writing move into a full ring (TacSim's queued unload start)
-    /// asks this first; the move itself still decides.
+    /// pre-commit round, item 1): [`Self::push`]'s rule run over the entries' walls and horizons
+    /// alone — each push appended, then aged entries evicted from the front (past
+    /// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`], at least their horizon old at `now_wall`, at most
+    /// [`MAX_RING_EVICTIONS_PER_PUSH`] a push) — `false` exactly when one of the `n` pushes would
+    /// refuse [`InventoryRecordError::MarkerRingFull`]. A pure read: a caller that must not stage
+    /// a marker-writing move into a full ring (TacSim's queued unload start) asks this first; the
+    /// move itself still decides. **Doc 20 cut SM.12c**: one eviction rule with `push`
+    /// (`evictions`, SM.11's R6 discharged); the `n` simulated entries are stamped `now_wall`
+    /// and so never age within the call, whatever their horizon.
     #[must_use]
     pub fn admits(&self, n: usize, now_wall: i64) -> bool {
-        let mut walls: std::collections::VecDeque<i64> =
-            self.0.iter().map(|entry| entry.wall).collect();
+        let mut ages: std::collections::VecDeque<(i64, i64)> =
+            self.0.iter().map(RingEntry::age_pair).collect();
         for _ in 0..n {
-            walls.push_back(now_wall);
-            let mut evicted = 0_usize;
-            while walls.len() > MAX_RETAINED_MARKERS_PER_ENDPOINT
-                && evicted < MAX_RING_EVICTIONS_PER_PUSH
-                && walls
-                    .front()
-                    .is_some_and(|front| front.saturating_add(MARKER_RETENTION_SECS) <= now_wall)
-            {
-                walls.pop_front();
-                evicted = evicted.saturating_add(1);
+            ages.push_back((now_wall, MARKER_RETENTION_SECS));
+            for _ in 0..evictions(&ages, now_wall) {
+                ages.pop_front();
             }
-            if walls.len() > MAX_MARKER_RING {
+            if ages.len() > MAX_MARKER_RING {
                 return false;
             }
         }
         true
     }
+}
+
+impl RingEntry {
+    /// The entry's `(wall, horizon)`: its own [`RingEntry::keep_s`], else
+    /// [`MARKER_RETENTION_SECS`] (doc 20 cut SM.12c).
+    fn age_pair(&self) -> (i64, i64) {
+        (self.wall, self.keep_s.unwrap_or(MARKER_RETENTION_SECS))
+    }
+
+    /// Whether the entry's horizon is absent or in `1..=MARKER_RETENTION_SECS`.
+    fn horizon_ok(&self) -> bool {
+        self.keep_s
+            .is_none_or(|keep| (1..=MARKER_RETENTION_SECS).contains(&keep))
+    }
+}
+
+/// **The ring's one eviction rule** (doc 20 cut SM.12c; SM.11's R6 discharged: `push` and
+/// `admits` both count through it): how many entries to evict from the front of a ring of
+/// `(wall, horizon)` pairs after a push at `now_wall` — while more than
+/// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`] remain, the front is at least its horizon old, and fewer
+/// than [`MAX_RING_EVICTIONS_PER_PUSH`] were counted.
+fn evictions(ages: &std::collections::VecDeque<(i64, i64)>, now_wall: i64) -> usize {
+    let mut evicted = 0_usize;
+    while ages.len().saturating_sub(evicted) > MAX_RETAINED_MARKERS_PER_ENDPOINT
+        && evicted < MAX_RING_EVICTIONS_PER_PUSH
+        && ages
+            .get(evicted)
+            .is_some_and(|(wall, horizon)| wall.saturating_add(*horizon) <= now_wall)
+    {
+        evicted = evicted.saturating_add(1);
+    }
+    evicted
 }
 
 /// A record refused its own invariants.
@@ -1489,4 +1541,8 @@ pub enum InventoryRecordError {
     /// A marker ring listing one key twice.
     #[error("a marker ring lists each key once")]
     MarkerRingDuplicate,
+    /// A marker ring entry whose `keep_s` lies outside `1..=MARKER_RETENTION_SECS` (doc 20 cut
+    /// SM.12c, decision (c)): a horizon may only shorten the ring's day.
+    #[error("a marker ring entry keeps its marker at most a real day")]
+    MarkerRingHorizon,
 }

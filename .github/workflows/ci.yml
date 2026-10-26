@@ -854,6 +854,19 @@ jobs:
   # By hand:
   # cargo test -p mush-bot --test mining_cohort four_bots_mine_and_sell_over_ssh_in_line_mode -- --ignored --nocapture
 
+  # Doc 20 cut SM.12c-lane (doc 20a §5.3.13; the owner's O-28 default (i), provisional):
+  # the surface-mining cost lane. sm12c_the_surface_tick_is_measured runs in the
+  # tacsim-integration shard in debug with generous ceilings only; its 5 ms release gate and
+  # the IC month sm12c_cost_lane_cohort_over_an_ic_month (crates/tacsim/tests/cost_lane.rs;
+  # #[ignore]d, release-only; 30 TVs by the script, since the test's default 64 STOPs at the
+  # economy's per-party live-contract cap; about 8 minutes on the build box at 30 TVs)
+  # are run by hand through scripts/cost-lane.sh, after scripts/harness-weekly.sh and never
+  # beside it, and no job runs them: not on push, not on a dispatch, not on the daily
+  # schedule. Naming the month here is what the gated-test inventory asks of an ignored test.
+  # By hand (scripts/cost-lane.sh runs these two lines, kept equal by the C5 pin):
+  # cargo test --release -p tacsim --test cost_lane sm12c_the_surface_tick_is_measured -- --exact --nocapture
+  # cargo test --release -p tacsim --test cost_lane sm12c_cost_lane_cohort_over_an_ic_month -- --ignored --exact --test-threads=1 --nocapture
+
   # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
   # It composes the production composition root in a memory-store test world,
   # generates a relief from TACSIM_SEED, applies it through the atlas's pack

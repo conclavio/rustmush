@@ -2203,7 +2203,16 @@ fn decide_walk(
                 },
             };
             count(w, rig.tv, |c| &c.legs);
-            match crate::surface::act::drive_plan(w, rig, &stand_of, &target, &rates, peeks) {
+            // Doc 20 cut SM.12c (the cost lane): every leg searched, yard rigs included, counted
+            // and timed into the call's own `Peeks` (RAM only; `count` above skips yard rigs).
+            let searched = std::time::Instant::now();
+            let planned =
+                crate::surface::act::drive_plan(w, rig, &stand_of, &target, &rates, peeks);
+            peeks.legs = peeks.legs.saturating_add(1);
+            peeks.leg_us = peeks
+                .leg_us
+                .saturating_add(u64::try_from(searched.elapsed().as_micros()).unwrap_or(u64::MAX));
+            match planned {
                 Ok(planned) => Some(planned),
                 Err(refusal) => match fate_of(&refusal) {
                     Fate::Pass(why) => {

@@ -732,6 +732,47 @@ impl InventoryFamilies {
         now: &ClockStamp,
         wall: i64,
     ) -> Result<Vec<Moved>, InventoryError> {
+        self.transfer_many_marked_with(txn, (from, to), moves, (actor, now), (wall, None))
+    }
+
+    /// **[`Self::transfer_many_marked`] with its markers kept `keep_s` real seconds** (doc 20 cut
+    /// SM.12c, decision (c); the owner's O-22 default): the same moves, markers and checks, each
+    /// ring entry stamped with its own horizon ([`RingEntry::keep_s`](crate::record::RingEntry::keep_s)),
+    /// so the source's ring may evict it once it is `keep_s` old instead of
+    /// [`MARKER_RETENTION_SECS`](crate::record::MARKER_RETENTION_SECS). For a writer whose durable
+    /// replay guard lies elsewhere (TacSim's unload finish: the rig record's ordinal in the same
+    /// bundle). A horizon may only shorten.
+    ///
+    /// # Errors
+    /// [`InventoryError::MarkerHorizon`] when `keep_s` is outside
+    /// `1..=MARKER_RETENTION_SECS`, with nothing staged; else [`Self::transfer_many_marked`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_many_marked_keeping(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        moves: &[(CanonicalId, u64, smol_str::SmolStr)],
+        actor: mush_core::ObjId,
+        now: &ClockStamp,
+        wall: i64,
+        keep_s: i64,
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if !(1..=crate::record::MARKER_RETENTION_SECS).contains(&keep_s) {
+            return Err(InventoryError::MarkerHorizon);
+        }
+        self.transfer_many_marked_with(txn, (from, to), moves, (actor, now), (wall, Some(keep_s)))
+    }
+
+    /// [`Self::transfer_many_marked`]'s body, the ring entries' horizon given.
+    fn transfer_many_marked_with(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        (from, to): (EndpointRef, EndpointRef),
+        moves: &[(CanonicalId, u64, smol_str::SmolStr)],
+        (actor, now): (mush_core::ObjId, &ClockStamp),
+        (wall, keep_s): (i64, Option<i64>),
+    ) -> Result<Vec<Moved>, InventoryError> {
         if from == to {
             return Err(InventoryError::SameEndpoint);
         }
@@ -766,7 +807,7 @@ impl InventoryFamilies {
         let marked: Vec<smol_str::SmolStr> =
             moves.iter().map(|(_, _, marker)| marker.clone()).collect();
         // The ring's push decided before anything is staged (correctness/F2).
-        let ring = self.ring_after(txn, from, &marked, wall)?;
+        let ring = self.ring_after(txn, from, &marked, (wall, keep_s))?;
         let plain: Vec<(CanonicalId, u64)> = moves
             .iter()
             .map(|(commodity, amount, _)| (commodity.clone(), *amount))
@@ -793,12 +834,18 @@ impl InventoryFamilies {
     /// Deliver leg's guard, its settlement Fact and the re-stage's read. A
     /// marker is therefore retired only when its endpoint holds more than
     /// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`](crate::record::MAX_RETAINED_MARKERS_PER_ENDPOINT)
-    /// and it is older than
-    /// [`MARKER_RETENTION_SECS`](crate::record::MARKER_RETENTION_SECS) of real
-    /// time — past every window in which a Fact, an over-sell guard, a
-    /// re-stage or a re-driven offer reads it. A request replayed after that
-    /// horizon is not guarded: that is the owner's D1 trade, recorded as doc 18
-    /// cut IC14 owner item O7.
+    /// and it is older than its own horizon of real time — past every window
+    /// in which a Fact, an over-sell guard, a re-stage or a re-driven offer
+    /// reads it. The horizon is
+    /// [`MARKER_RETENTION_SECS`](crate::record::MARKER_RETENTION_SECS) for every
+    /// marker this writes; since doc 20 cut SM.12c (decision (c); the owner's
+    /// O-22 default) a writer whose act carries a durable replay guard of its
+    /// own may shorten it through [`Self::transfer_many_marked_keeping`] (the
+    /// surface unload finish: one real hour), recorded on the ring entry
+    /// ([`RingEntry::keep_s`](crate::record::RingEntry::keep_s)). A request
+    /// replayed after its horizon is not guarded by the marker: that is the
+    /// owner's D1 trade, recorded as doc 18 cut IC14 owner item O7, and O-22
+    /// for the shortened horizon.
     ///
     /// # Errors
     /// [`InventoryError::MarkerRingFull`] when the ring holds
@@ -839,19 +886,20 @@ impl InventoryFamilies {
         ids: &[smol_str::SmolStr],
         wall: i64,
     ) -> Result<(), InventoryError> {
-        let ring = self.ring_after(txn, endpoint, ids, wall)?;
+        let ring = self.ring_after(txn, endpoint, ids, (wall, None))?;
         self.stage_ring(txn, endpoint, ring)
     }
 
     /// **[`Self::retain_markers`]' push, in memory** (doc 20 cut SM.8): `endpoint`'s ring
     /// read, `ids` pushed in order, the evictions collected — nothing staged, so
-    /// [`InventoryError::MarkerRingFull`] here leaves the bundle untouched.
+    /// [`InventoryError::MarkerRingFull`] here leaves the bundle untouched. Since doc 20 cut SM.12c
+    /// the entries carry `keep_s` (`None`: the default horizon).
     fn ring_after(
         &self,
         txn: &mut ActionTxn<'_>,
         endpoint: EndpointRef,
         ids: &[smol_str::SmolStr],
-        wall: i64,
+        (wall, keep_s): (i64, Option<i64>),
     ) -> Result<RingAfter, InventoryError> {
         let current = txn.get(&self.marker_ring, &endpoint)?.cloned();
         let mut next = current
@@ -863,6 +911,7 @@ impl InventoryFamilies {
                 crate::record::RingEntry {
                     key: id.clone(),
                     wall,
+                    keep_s,
                 },
                 wall,
             );
@@ -2033,6 +2082,11 @@ pub enum InventoryError {
     /// bundle, so the list is refused before anything is staged.
     #[error("that move names one commodity twice")]
     DuplicateCommodity,
+    /// [`InventoryFamilies::transfer_many_marked_keeping`] was asked for a marker
+    /// horizon outside `1..=MARKER_RETENTION_SECS` (doc 20 cut SM.12c, decision
+    /// (c)): a horizon may only shorten the ring's day, and nothing is staged.
+    #[error("that move's marker horizon is out of range")]
+    MarkerHorizon,
 }
 
 /// Whether a create path counts its new pool in `inventory.census` itself, or

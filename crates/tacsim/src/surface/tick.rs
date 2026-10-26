@@ -206,6 +206,39 @@ pub struct SurfaceFireStats {
     pub passed_over: u32,
     /// Completion lines told.
     pub told: u32,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the fire's own wall time in
+    /// microseconds — the tick's body from just after the layer check to the stats' store, the
+    /// warm included. RAM only, never persisted, never shown to a player.
+    pub elapsed_us: u64,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): what this fire's warm did
+    /// (`crate::surface::warm_one`). RAM only, never persisted, never shown to a player.
+    pub warmed: crate::surface::Warmed,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the warm's wall time in
+    /// microseconds, timed around the one `warm_one` call. RAM only, never persisted, never
+    /// shown to a player.
+    pub warm_us: u64,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the drive legs this fire's
+    /// own plan steps (and idle returns) searched — every `act::drive_plan` call their
+    /// `plan::decide_walk` made, yard rigs included (summed from each call's
+    /// `crate::surface::Peeks`). RAM only, never persisted, never shown to a player.
+    pub searches: u32,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): those searches' summed wall
+    /// time in microseconds. RAM only, never persisted, never shown to a player.
+    pub search_us: u64,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): the non-building site peeks
+    /// (`chart::peek_site` memo misses) this fire's plan steps paid. RAM only, never persisted,
+    /// never shown to a player.
+    pub peeks: u32,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): those peeks' summed wall time
+    /// in microseconds. RAM only, never persisted, never shown to a player.
+    pub peek_us: u64,
+    /// **Doc 20 cut SM.12c** (the cost lane; doc 20 §11's Tick row): **the hold decisions** the
+    /// queued arm took this fire — each time `markers_hold` found a queued unload's hopper ring
+    /// full and held its start. A held queue backs off [`DONE_BACKOFF_FIRES`] (60) fires before it
+    /// is decided again, so **one held queue reads about one decision per 60 fires, not one per
+    /// held fire**: held fires and held seconds come from the rig's own ring samples, never from
+    /// this field. RAM only, never persisted, never shown to a player.
+    pub markers_held: u32,
 }
 
 /// The last fire's stats, `None` before the first fire that found the layer on.
@@ -213,6 +246,29 @@ pub struct SurfaceFireStats {
 pub fn last_surface_fire(w: &World) -> Option<SurfaceFireStats> {
     w.module_state::<SurfaceTickState>()
         .and_then(|state| state.last_fire)
+}
+
+/// **How many `tacsim.surface` fires found the layer on this boot** (doc 20 cut SM.12c, the cost
+/// lane; `crate::port_tick::fires`' precedent): a status read for tests, which compare it across a
+/// step to know whether the tick fired. RAM only, never persisted, never shown to a player.
+#[must_use]
+pub fn surface_fires(w: &World) -> u64 {
+    w.module_state::<SurfaceTickState>()
+        .map_or(0, |state| state.fires)
+}
+
+/// Whole microseconds since `started`, saturating (doc 20 cut SM.12c: no `as` cast).
+fn micros_since(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// **Fold one call's peeks into the fire's stats** (doc 20 cut SM.12c, the cost lane): the legs it
+/// searched and the site peeks it paid, with their wall times, saturating.
+fn add_peeks(stats: &mut SurfaceFireStats, peeks: &crate::surface::Peeks) {
+    stats.searches = stats.searches.saturating_add(peeks.legs);
+    stats.search_us = stats.search_us.saturating_add(peeks.leg_us);
+    stats.peeks = stats.peeks.saturating_add(peeks.site_misses);
+    stats.peek_us = stats.peek_us.saturating_add(peeks.peek_us);
 }
 
 /// The most act ordinals of one rig [`finish_retried`] hands the finish's offer: the highest
@@ -332,15 +388,23 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     {
         return;
     }
+    // Doc 20 cut SM.12c (the cost lane): the fire's own clock, the warm included; one `Instant`
+    // around the warm here rather than inside `warm_one` (one clock, no second seam through its
+    // early returns).
+    let started = std::time::Instant::now();
     // Doc 20 cut SM.4a (lead ruling 6): at most one wanted site's ground a fire, here and
     // never on an act's path; a dark geology layer returns at once.
-    crate::surface::warm_one(ctx);
+    let warmed = crate::surface::warm_one(ctx);
+    let warm_us = micros_since(started);
     let Some(slot) = ctx.w.module_state_mut::<SurfaceTickState>() else {
         return;
     };
     let mut state = std::mem::take(slot);
     state.fires = state.fires.saturating_add(1);
-    let stats = walk(ctx, &mut state);
+    let mut stats = walk(ctx, &mut state);
+    stats.warmed = warmed;
+    stats.warm_us = warm_us;
+    stats.elapsed_us = micros_since(started);
     state.last_fire = Some(stats);
     if let Some(slot) = ctx.w.module_state_mut::<SurfaceTickState>() {
         *slot = state;
@@ -921,6 +985,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                             // fires) and `WHY_MARKERS_QUEUED` is told once per queue.
                             Visit::Submit if markers_hold(ctx, state, record, queued) => {
                                 stats.passed_over = stats.passed_over.saturating_add(1);
+                                // Doc 20 cut SM.12c (the cost lane): one hold decision
+                                // (`markers_hold`'s only caller, so this counts its true
+                                // branch).
+                                stats.markers_held = stats.markers_held.saturating_add(1);
                                 Step::Held
                             }
                             Visit::Submit => {
@@ -1699,6 +1767,8 @@ fn plan_step(
         let w: &World = ctx.w;
         crate::surface::plan::decide(w, &*ctx, &rig, record, &counts, &tools, &mut peeks, now)
     };
+    // Doc 20 cut SM.12c (the cost lane): the legs this step searched and the peeks it paid.
+    add_peeks(stats, &peeks);
     let Some(moved) = moved else {
         return Step::Worked;
     };
@@ -1859,6 +1929,9 @@ fn idle_step(
                 .map(|()| plan)
         })
     };
+    // Doc 20 cut SM.12c (the cost lane): the idle return's peeks too (its recover plan searches
+    // no leg through `decide_walk`, so `searches` gains nothing here; the site peeks count).
+    add_peeks(stats, &peeks);
     match planned {
         Ok(_) => {}
         Err(Refusal::LegShort { .. } | Refusal::Far { .. }) => {
