@@ -1,0 +1,215 @@
+{
+  "schema": {
+    "sections": [
+      {
+        "id": "field",
+        "label": "Field Series terms",
+        "station": "helm",
+        "fields": [
+          {
+            "id": "band_permille",
+            "label": "Engagement band",
+            "widget": {
+              "kind": "slider",
+              "min": 500,
+              "max": 1000,
+              "step": 50,
+              "default": 750,
+              "scale": 1,
+              "unit": "permille",
+              "help": "Stand-off fraction of native weapon reach; the current commander's range cap still applies."
+            }
+          },
+          {
+            "id": "pursuit_m",
+            "label": "Ordered target range",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 800,
+              "step": 100,
+              "default": 500,
+              "scale": 1,
+              "unit": "m",
+              "help": "Only the exact fresh ordered hostile inside this observed range authorizes pursuit. This is not a distance-from-origin leash."
+            }
+          },
+          {
+            "id": "withdraw_permille",
+            "label": "Withdrawal health",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 700,
+              "step": 50,
+              "default": 350,
+              "scale": 1,
+              "unit": "permille",
+              "help": "Below this own observed health, return toward the own entry while an order remains current."
+            }
+          },
+          {
+            "id": "fresh_ms",
+            "label": "Maximum plot age",
+            "widget": {
+              "kind": "slider",
+              "min": 1000,
+              "max": 5000,
+              "step": 500,
+              "default": 3000,
+              "scale": 1,
+              "unit": "ms",
+              "help": "Old, unclassified, missing or visibly dead contact plots never authorize engagement or following."
+            }
+          },
+          {
+            "id": "retry_ms",
+            "label": "Blocked route delay",
+            "widget": {
+              "kind": "slider",
+              "min": 1000,
+              "max": 5000,
+              "step": 500,
+              "default": 2000,
+              "scale": 1,
+              "unit": "ms",
+              "help": "After an actual NoRoute, hold for this delay before another attempt at the same goal."
+            }
+          },
+          {
+            "id": "station_m",
+            "label": "Support station",
+            "widget": {
+              "kind": "slider",
+              "min": 10,
+              "max": 100,
+              "step": 10,
+              "default": 40,
+              "scale": 1,
+              "unit": "m",
+              "help": "Follow the exact current friendly Support plot to this public stand-off distance."
+            }
+          },
+          {
+            "id": "support_leash_m",
+            "label": "Support firing leash",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 400,
+              "step": 50,
+              "default": 200,
+              "scale": 1,
+              "unit": "m",
+              "help": "Beyond this charge range, return to station without firing; never chase another target away from the charge."
+            }
+          },
+          {
+            "id": "screen_half_deg",
+            "label": "Screen half arc",
+            "widget": {
+              "kind": "slider",
+              "min": 30,
+              "max": 180,
+              "step": 15,
+              "default": 90,
+              "scale": 1,
+              "unit": "degrees",
+              "help": "Under Screen, face the current ordered bearing and defend only public hostile plots inside this half arc."
+            }
+          }
+        ]
+      },
+      {
+        "id": "fire",
+        "label": "Firing terms",
+        "station": "fire",
+        "fields": [
+          {
+            "id": "fire_min_permille",
+            "label": "Minimum firing odds",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 900,
+              "step": 50,
+              "default": 400,
+              "scale": 1,
+              "unit": "permille",
+              "help": "Minimum condition odds, or the actual governed floor if higher; actual native conditions decide every shot."
+            }
+          },
+          {
+            "id": "keep_rounds",
+            "label": "Ammunition kept",
+            "widget": {
+              "kind": "slider",
+              "min": 0,
+              "max": 5,
+              "step": 1,
+              "default": 1,
+              "scale": 1,
+              "unit": "rounds",
+              "help": "Each weapon keeps this many rounds; no initial-ammunition or hidden inventory estimate."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "presets": {
+    "Field": {
+      "band_permille": 750,
+      "pursuit_m": 500,
+      "fire_min_permille": 400,
+      "keep_rounds": 1,
+      "withdraw_permille": 350,
+      "fresh_ms": 3000,
+      "retry_ms": 2000,
+      "station_m": 40,
+      "support_leash_m": 200,
+      "screen_half_deg": 90
+    },
+    "Reserve": {
+      "band_permille": 1000,
+      "pursuit_m": 300,
+      "fire_min_permille": 650,
+      "keep_rounds": 3,
+      "withdraw_permille": 500,
+      "fresh_ms": 2000,
+      "retry_ms": 3000,
+      "station_m": 40,
+      "support_leash_m": 150,
+      "screen_half_deg": 60
+    }
+  },
+  "profiles": {
+    "Field": {
+      "band_permille": 750,
+      "pursuit_m": 500,
+      "fire_min_permille": 400,
+      "keep_rounds": 1,
+      "withdraw_permille": 350,
+      "fresh_ms": 3000,
+      "retry_ms": 2000,
+      "station_m": 40,
+      "support_leash_m": 200,
+      "screen_half_deg": 90
+    },
+    "Reserve": {
+      "band_permille": 1000,
+      "pursuit_m": 300,
+      "fire_min_permille": 650,
+      "keep_rounds": 3,
+      "withdraw_permille": 500,
+      "fresh_ms": 2000,
+      "retry_ms": 3000,
+      "station_m": 40,
+      "support_leash_m": 150,
+      "screen_half_deg": 60
+    }
+  },
+  "rules": {},
+  "declared_class": "II",
+  "mind_abi": "rhai=1.26.0;api=5;stock=2"
+}

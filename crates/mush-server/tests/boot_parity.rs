@@ -60,6 +60,7 @@
 //! | `[atlas].pack_paths` | `game_modules` -> `build_engine` / `check_config` | `check_config_finds_the_world_half_refusals_without_booting` |
 //! | `[tacsim].enabled` / `.pack_paths` | `game_modules` -> `build_engine` | `split_build_engine_composes_the_tacsim_layer`, the matrix |
 //! | `[tacsim].seed_paths` | `build_engine` + an applied seed | `a_seeded_pack_resolves_a_route` |
+//! | `[tacsim.minds].launch_path` | `game_modules` / `check_config` | `check_config_preflights_the_bounded_named_launch_document` |
 //! | `[tacsim].recovery` | `game_modules` (into the built-ins) | `the_split_boot_carries_the_operator_recovery_policy` |
 //! | `[tacsim].ground_pulse_ms` / `.space_pulse_ms` | `build_engine` post-composition | `the_engine_knobs_reach_the_booted_world` |
 //! | `[llm].decision_workers` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
@@ -201,9 +202,11 @@ async fn boot_fixture(tag: &str, mutate: impl FnOnce(&mut Config)) -> Fixture {
     mutate(&mut cfg);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = spool(&cfg);
-    let booted = boot::build_engine(&cfg, &store, &spool)
-        .await
-        .expect("the split half boots");
+    let pending = boot::build_engine(&cfg, &store, &spool);
+    // A caller may add tracing or sequence several boots, as the readiness
+    // regression below does. Its future must not embed the entire boot state.
+    assert!(std::mem::size_of_val(&pending) <= 128);
+    let booted = pending.await.expect("the split half boots");
     Fixture {
         cfg,
         booted,
@@ -246,9 +249,9 @@ fn expected_roster() -> Vec<&'static str> {
         "housing",
         "weather",
         "party",
-        "market",
-        // M6's character-owned drafts and immutable revisions have their own owner.
+        // Roll's final audit opens the readiness required by Market's recovery.
         "roll",
+        "market",
         "script",
         // The composition root's own two, after the built-ins.
         "worldgen",
@@ -562,6 +565,20 @@ fn geology_line(engine: &mush_core::Engine) -> tacsim::port::ReadinessLine {
         .expect("a geology line")
 }
 
+// Keep successive complete boot results out of the caller's async frame.
+// This remains the actual production boot, with unchanged errors and laziness.
+fn boxed_boot_engine<'a>(
+    cfg: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    quarantine: &'a QuarantineSpool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Box<BootedEngine>, String>> + 'a>> {
+    Box::pin(async move {
+        boot::build_engine(cfg, store, quarantine)
+            .await
+            .map(Box::new)
+    })
+}
+
 /// **Doc 20 cut SM.1 (Q-20-12, §16)**: the production root loads the geology key from
 /// `[tacsim.geology].key_dir`, hands it to the layer after composition, and the first boot pins
 /// its fingerprint; a second boot over the same store and directory compares it and reads Ready;
@@ -578,7 +595,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let quarantine = spool(&cfg);
 
-    let booted = boot::build_engine(&cfg, &store, &quarantine)
+    let booted = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("a keyed world boots");
     let line = geology_line(&booted.engine);
@@ -594,7 +611,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     );
     drop(booted);
 
-    let again = boot::build_engine(&cfg, &store, &quarantine)
+    let again = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("the same store and key boot again");
     let line = geology_line(&again.engine);
@@ -603,7 +620,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
 
     // A fresh key directory: a new key, not the pinned one. The boot is never refused.
     std::fs::remove_dir_all(&key_dir).expect("the key directory is removed");
-    let wrong = boot::build_engine(&cfg, &store, &quarantine)
+    let wrong = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("a wrong key disables the layer and never refuses the boot");
     let line = geology_line(&wrong.engine);
@@ -632,7 +649,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
         b"not a manifest",
     )
     .expect("the manifest is overwritten");
-    let unreadable = boot::build_engine(&cfg, &store, &quarantine)
+    let unreadable = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("an unreadable key directory disables the layer and never refuses the boot");
     let line = geology_line(&unreadable.engine);
@@ -657,7 +674,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     keyless.tacsim.enabled = true;
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let quarantine = spool(&keyless);
-    let booted = boot::build_engine(&keyless, &store, &quarantine)
+    let booted = boxed_boot_engine(&keyless, &store, &quarantine)
         .await
         .expect("a keyless world boots");
     let line = geology_line(&booted.engine);
@@ -1309,6 +1326,45 @@ fn check_config_finds_the_world_half_refusals_without_booting() {
 }
 
 // ---- 7: the config-read coverage table -------------------------------------
+
+#[test]
+fn check_config_preflights_the_bounded_named_launch_document() {
+    let mut cfg = stock_config("check-launch");
+    let path = cfg.server.data_dir.join("named-launch.json");
+    cfg.tacsim.minds.launch_path = Some(path.display().to_string());
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("launch deployment requires enabled Tacsim"))
+    );
+    enable_tacsim(&mut cfg);
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("named-launch.json"))
+    );
+    for bytes in [
+        Vec::new(),
+        b"{\"format\":1,\"eligible\":true}".to_vec(),
+        vec![b' '; tacsim::launch::MAX_DEPLOYMENT_BYTES + 1],
+    ] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            boot::check_config(&cfg)
+                .iter()
+                .any(|r| r.contains("named-launch.json") && r.contains("launch deployment"))
+        );
+    }
+    cfg.tacsim.minds.launch_path = Some(String::new());
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("launch deployment path is empty"))
+    );
+    cfg.tacsim.minds.launch_path = None;
+    assert!(boot::check_config(&cfg).is_empty());
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
 
 /// Every boot-relevant knob the ENGINE half owns, set to a non-default value in
 /// one boot, each with an observable asserted.

@@ -21,6 +21,8 @@
 //!   transport gates on [`GameBridge::is_ip_blocked`] before every auth
 //!   attempt.
 
+mod legal_action;
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -58,6 +60,49 @@ use crate::poison::locked;
 const DELIVERY_BARRIER_ATTEMPTS: usize = 3;
 const DELIVERY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const DELIVERY_BARRIER_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+/// How long, and how patiently, one ordered barrier waits.
+#[derive(Clone, Copy, Debug)]
+struct BarrierPolicy {
+    /// The whole barrier's deadline.
+    timeout: Duration,
+    /// How many `Busy` answers end it; `None` retries until the deadline.
+    busy_attempts: Option<usize>,
+    /// The longest pause between `Busy` retries; each pause doubles up to it.
+    max_retry_delay: Duration,
+}
+
+/// QUIT/boot's bounded teardown barrier: the policy above, as it was.
+const TEARDOWN_BARRIER: BarrierPolicy = BarrierPolicy {
+    timeout: DELIVERY_BARRIER_TIMEOUT,
+    busy_attempts: Some(DELIVERY_BARRIER_ATTEMPTS),
+    max_retry_delay: DELIVERY_BARRIER_RETRY_DELAY,
+};
+
+/// A command's reply barrier. A world that is alive but working (a match
+/// start's commit, a full defer queue) answers `Busy`, which the server
+/// documents as retryable, or takes longer than a teardown may wait. Ending the
+/// player's connection then costs a session for a slow command, so this retries
+/// `Busy` with backoff until a longer deadline; past it, the producer counts as
+/// unresponsive and the connection ends as before.
+const REPLY_BARRIER: BarrierPolicy = BarrierPolicy {
+    timeout: Duration::from_secs(30),
+    busy_attempts: None,
+    max_retry_delay: Duration::from_millis(250),
+};
+
+/// How one ordered delivery barrier ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarrierEnd {
+    /// The exact `Barrier` came back.
+    Completed,
+    /// The boundary went down under the request: the producer that owed the
+    /// reply is gone with it, so none of its output can arrive late.
+    LinkLost,
+    /// Busy, unavailable, timed out or answered with the wrong response: the
+    /// producer may still be live and emitting.
+    Failed,
+}
 
 /// Hard cap on one narrative-backlog reply (interface plan I12), mirroring the
 /// comsys `MAX_BACKLOG_LIMIT`. The ring itself is only `resume_ring` deep, so a
@@ -287,8 +332,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// success response, `Busy` gets a few retries, and boundary/protocol/world
     /// failures return `false` for an explicit degraded detach.
     pub(crate) async fn delivery_barrier(&self, conn: ConnId, operation: &'static str) -> bool {
-        self.ordered_barrier(conn, operation, ServiceReq::Barrier)
+        self.ordered_barrier(conn, operation, ServiceReq::Barrier, TEARDOWN_BARRIER)
             .await
+            == BarrierEnd::Completed
     }
 
     async fn ordered_barrier(
@@ -296,9 +342,13 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         conn: ConnId,
         operation: &'static str,
         request: ServiceReq,
-    ) -> bool {
-        let deadline = Instant::now() + DELIVERY_BARRIER_TIMEOUT;
-        for attempt in 1..=DELIVERY_BARRIER_ATTEMPTS {
+        policy: BarrierPolicy,
+    ) -> BarrierEnd {
+        let deadline = Instant::now() + policy.timeout;
+        let mut delay = DELIVERY_BARRIER_RETRY_DELAY.min(policy.max_retry_delay);
+        let mut attempt = 0_usize;
+        loop {
+            attempt += 1;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
@@ -308,12 +358,14 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     Ok(response) => response,
                     Err(_) => {
                         tracing::warn!(conn = conn.0, operation, "delivery barrier timed out");
-                        return false;
+                        return BarrierEnd::Failed;
                     }
                 };
             match response {
-                Some(ServiceResp::Barrier) => return true,
-                Some(ServiceResp::Busy) if attempt < DELIVERY_BARRIER_ATTEMPTS => {
+                Some(ServiceResp::Barrier) => return BarrierEnd::Completed,
+                Some(ServiceResp::Busy)
+                    if policy.busy_attempts.is_none_or(|limit| attempt < limit) =>
+                {
                     tracing::warn!(
                         conn = conn.0,
                         operation,
@@ -321,24 +373,33 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         "delivery barrier admission busy; retrying"
                     );
                     let remaining = deadline.saturating_duration_since(Instant::now());
-                    tokio::time::sleep(DELIVERY_BARRIER_RETRY_DELAY.min(remaining)).await;
+                    tokio::time::sleep(delay.min(remaining)).await;
+                    delay = delay.saturating_mul(2).min(policy.max_retry_delay);
                 }
                 Some(ServiceResp::Busy) => {
                     tracing::warn!(
                         conn = conn.0,
                         operation,
-                        attempts = DELIVERY_BARRIER_ATTEMPTS,
+                        attempts = attempt,
                         "delivery barrier remained busy; degrading to bounded teardown"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
                 }
-                Some(ServiceResp::Unavailable) | None => {
+                Some(ServiceResp::Unavailable) => {
                     tracing::warn!(
                         conn = conn.0,
                         operation,
                         "delivery barrier unavailable; degrading to bounded teardown"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
+                }
+                None => {
+                    tracing::warn!(
+                        conn = conn.0,
+                        operation,
+                        "delivery barrier lost its boundary; degrading to bounded teardown"
+                    );
+                    return BarrierEnd::LinkLost;
                 }
                 Some(other) => {
                     tracing::error!(
@@ -347,7 +408,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                         ?other,
                         "delivery barrier returned the wrong response type"
                     );
-                    return false;
+                    return BarrierEnd::Failed;
                 }
             }
         }
@@ -356,7 +417,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             operation,
             "delivery barrier deadline elapsed; degrading to bounded teardown"
         );
-        false
+        BarrierEnd::Failed
     }
 
     /// The actor a connection is playing, if attached.
@@ -1028,18 +1089,27 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         if outcome == LineOutcome::Close {
             return outcome;
         }
-        let completed = !forwarded
-            || self
-                .ordered_barrier(
-                    conn,
-                    "command reply",
-                    ServiceReq::ReplyBarrier { conn: conn.0 },
-                )
-                .await;
+        let barrier = if forwarded {
+            self.ordered_barrier(
+                conn,
+                "command reply",
+                ServiceReq::ReplyBarrier { conn: conn.0 },
+                REPLY_BARRIER,
+            )
+            .await
+        } else {
+            BarrierEnd::Completed
+        };
+        let completed = barrier == BarrierEnd::Completed;
         // Observe recovery before closing the reply bracket. An unavailable
         // world can answer before IPC EOF; a fast restart can finish before
-        // this task wakes. Neither case should discard the held transport.
-        let recovering = !completed && self.link.wait_for_recovery(generation).await;
+        // this task wakes. Neither case should discard the held transport. A
+        // boundary that went down under the barrier needs no wait: it left no
+        // producer to emit late output, and the session rides the restart (or,
+        // on a link with no supervisor, the loss) exactly as it would once a
+        // gap is raised.
+        let recovering = !completed
+            && (barrier == BarrierEnd::LinkLost || self.link.wait_for_recovery(generation).await);
         if !completed {
             send_event_to_conn(
                 &self.sessions,
@@ -1207,6 +1277,30 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         let Some(actor) = self.actor_of(conn_id) else {
             return;
         };
+        if let mush_proto::InvokeRequest::LegalAction(action) = &request {
+            // No representable correlation exists for an unsafe JSON integer.
+            if id > MAX_VIEW_WIRE_INTEGER {
+                return;
+            }
+            if request.validate().is_err() {
+                self.legal_action_reply(
+                    conn_id,
+                    actor,
+                    id,
+                    mush_proto::LegalActionResponse::Invalid {},
+                );
+            } else if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+                self.legal_action_reply(
+                    conn_id,
+                    actor,
+                    id,
+                    mush_proto::LegalActionResponse::Busy {},
+                );
+            } else {
+                self.legal_action_invoke(conn_id, actor, id, action).await;
+            }
+            return;
+        }
         if request.validate().is_err()
             || self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled
         {

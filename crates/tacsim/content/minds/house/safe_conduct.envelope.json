@@ -1,0 +1,150 @@
+{
+  "schema": {
+    "sections": [
+      {
+        "id": "conduct",
+        "label": "Safe Conduct",
+        "station": "helm",
+        "fields": [
+          {
+            "id": "role",
+            "label": "Role",
+            "widget": {
+              "kind": "choice",
+              "choices": [
+                "escort",
+                "transit"
+              ],
+              "default": "escort",
+              "help": "Escort follows an earned friendly Support plot; Transit follows an Advance destination and stops for observed threats."
+            }
+          },
+          {
+            "id": "leash_m",
+            "label": "Charge leash",
+            "widget": {
+              "kind": "slider",
+              "min": 50,
+              "max": 400,
+              "step": 50,
+              "default": 150,
+              "scale": 1,
+              "unit": "m",
+              "help": "Never pursue a hostile away from the charge; lost or stale charge means hold."
+            }
+          },
+          {
+            "id": "station_m",
+            "label": "Charge station",
+            "widget": {
+              "kind": "slider",
+              "min": 10,
+              "max": 50,
+              "step": 10,
+              "default": 30,
+              "scale": 1,
+              "unit": "m",
+              "help": "Follow the public charge plot to this stand-off distance."
+            }
+          },
+          {
+            "id": "threat_m",
+            "label": "Threat distance",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 600,
+              "step": 100,
+              "default": 300,
+              "scale": 1,
+              "unit": "m",
+              "help": "Transit stops for a fresh classified hostile within this public range."
+            }
+          },
+          {
+            "id": "fresh_ms",
+            "label": "Plot age",
+            "widget": {
+              "kind": "slider",
+              "min": 1000,
+              "max": 5000,
+              "step": 1000,
+              "default": 3000,
+              "scale": 1,
+              "unit": "ms",
+              "help": "Older or missing plots cannot authorize following or firing."
+            }
+          },
+          {
+            "id": "withdraw_permille",
+            "label": "Withdrawal health",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 500,
+              "step": 100,
+              "default": 300,
+              "scale": 1,
+              "unit": "permille",
+              "help": "Below this own public health, withdraw toward the own entry."
+            }
+          },
+          {
+            "id": "retry_ms",
+            "label": "Blocked route delay",
+            "widget": {
+              "kind": "slider",
+              "min": 1000,
+              "max": 5000,
+              "step": 1000,
+              "default": 2000,
+              "scale": 1,
+              "unit": "ms",
+              "help": "Retry an actual NoRoute after this bounded delay while the same order remains current."
+            }
+          },
+          {
+            "id": "fire_min_permille",
+            "label": "Minimum firing odds",
+            "widget": {
+              "kind": "slider",
+              "min": 100,
+              "max": 900,
+              "step": 100,
+              "default": 500,
+              "scale": 1,
+              "unit": "permille",
+              "help": "Ordinary native conditions still enforce actual odds, range, heat and ammunition."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "presets": {},
+  "profiles": {
+    "Escort": {
+      "role": "escort",
+      "leash_m": 150,
+      "station_m": 30,
+      "threat_m": 300,
+      "fresh_ms": 3000,
+      "withdraw_permille": 300,
+      "retry_ms": 2000,
+      "fire_min_permille": 500
+    },
+    "Transit": {
+      "role": "transit",
+      "leash_m": 150,
+      "station_m": 30,
+      "threat_m": 300,
+      "fresh_ms": 3000,
+      "withdraw_permille": 300,
+      "retry_ms": 2000,
+      "fire_min_permille": 500
+    }
+  },
+  "rules": {},
+  "declared_class": "II",
+  "mind_abi": "rhai=1.26.0;api=5;stock=2"
+}

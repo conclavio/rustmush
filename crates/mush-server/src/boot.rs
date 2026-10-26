@@ -290,9 +290,69 @@ pub fn game_modules(
     config: &Config,
     llm: &Arc<LlmService>,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
+    game_modules_with_optional_commerce(config, llm, None)
+}
+
+/// The existing production roster with a host-supplied, opaque commerce policy.
+/// Default boot never selects this API. It preserves owner order and all boot
+/// hooks; Initialize and Active still need the real durable setup/audits.
+///
+/// # Errors
+/// Ordinary configuration errors, or a Tacsim config/catalog that differs from
+/// the exact resources captured by `commerce`.
+pub fn game_modules_with_mind_commerce(
+    config: &Config,
+    llm: &Arc<LlmService>,
+    commerce: &modules::mind_commerce::MindCommerce,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
+    game_modules_with_optional_commerce(config, llm, Some(commerce))
+}
+
+/// Shared host-only preflight. World owner identities and readiness are checked
+/// later by actual composition; this never opens the store or creates owners.
+fn load_launch_deployment(
+    config: &Config,
+) -> Result<Option<tacsim::launch::LaunchDeployment>, String> {
+    use std::io::Read;
+    let Some(path) = config.tacsim.minds.launch_path.as_ref() else {
+        return Ok(None);
+    };
+    if !config.tacsim.enabled {
+        return Err("launch deployment requires enabled Tacsim".to_owned());
+    }
+    if path.is_empty() {
+        return Err("launch deployment path is empty".to_owned());
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("launch deployment {path}: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take((tacsim::launch::MAX_DEPLOYMENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("launch deployment {path}: {e}"))?;
+    tacsim::launch::LaunchDeployment::decode(&bytes)
+        .map(Some)
+        .map_err(|e| format!("launch deployment {path}: {e}"))
+}
+
+fn game_modules_with_optional_commerce(
+    config: &Config,
+    llm: &Arc<LlmService>,
+    commerce: Option<&modules::mind_commerce::MindCommerce>,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
     // E7 cut 1: the TacSim layer's frozen block, read **host-side** and BEFORE the
     // module list, because `[tacsim.recovery]` is mapped into the built-ins below.
     let tacsim = config_ext::tacsim_config(&config.tacsim)?;
+    if commerce.is_some() && config.tacsim.minds.launch_path.is_some() {
+        return Err("choose one explicit mind commerce composition".into());
+    }
+    let launch = load_launch_deployment(config)?
+        .map(|deployment| {
+            let layer = tacsim::TacsimRuleset::with_game_content(tacsim.clone(), tacsim.enabled)
+                .with_conduct_carrier()
+                .map_err(|e| e.to_string())?;
+            tacsim::launch::LaunchComposition::prepare(&layer, deployment)
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
     // S1: `[atlas]` likewise — its `pack_paths` are read host-side so a bad pack file
     // fails the boot naming the file, and the typed config reaches the atlas inside
     // the built-ins.
@@ -305,17 +365,40 @@ pub fn game_modules(
     // Doc 18 cut IC5 (D-18-33, §4.4): the built-ins of a roster that composes the
     // TacSim layer — `mush-inventory` names `tacsim` its third quantity delegate,
     // and the inventory handle cell comes back for the layer below.
-    let (mut mods, inventory) = modules::server_modules_with_tacsim(
-        config_ext::weather_config(&config.weather),
-        config_ext::economy_config_with(&config.economy, &contributed)?,
-        atlas,
-        &onboarding,
-        &game,
-        // E7r1 R4: the composed roster ends in the TacSim layer, so the recovery
-        // provider gets the operator's own `[tacsim.recovery]` policy. A disabled
-        // block is still fail-closed, and `@recovery` says so out loud.
-        modules::recovery_policy(&tacsim.recovery),
-    );
+    let weather = config_ext::weather_config(&config.weather);
+    let economy = config_ext::economy_config_with(&config.economy, &contributed)?;
+    // The ordinary operator recovery policy reaches both roster choices.
+    let recovery = modules::recovery_policy(&tacsim.recovery);
+    let (mut mods, inventory) = match (launch.as_ref(), commerce) {
+        (Some(launch), None) => modules::server_modules_with_launch(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+            launch,
+        )
+        .map_err(|e| e.to_string())?,
+        (_, Some(commerce)) => modules::server_modules_with_tacsim_and_mind_commerce(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+            commerce,
+        )
+        .map_err(|e| e.to_string())?,
+        (None, None) => modules::server_modules_with_tacsim(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+        ),
+    };
     mods.push(modules::worldgen_module_with(
         Arc::clone(llm),
         config_ext::worldgen_config(&config.worldgen),
@@ -350,11 +433,26 @@ pub fn game_modules(
     // content latch's boot list below move together.
     // Doc 18 cut IC5: handed the inventory cell (`tacsim_module_wired`, which takes
     // no test-world flag: production is never a test world, IC3 L15).
-    mods.push(modules::tacsim_module_wired(
-        tacsim,
-        tacsim_enabled,
-        inventory,
-    ));
+    mods.push(match (launch.as_ref(), commerce) {
+        (Some(launch), None) => Box::new(
+            launch
+                .configure_tacsim(
+                    tacsim::TacsimRuleset::with_game_content(tacsim, tacsim_enabled)
+                        .with_conduct_carrier()
+                        .map_err(|e| e.to_string())?
+                        .with_inventory(inventory),
+                )
+                .map_err(|e| e.to_string())?,
+        ) as Box<dyn GameModule>,
+        (_, Some(commerce)) => modules::tacsim_module_wired_with_mind_commerce(
+            tacsim,
+            tacsim_enabled,
+            inventory,
+            commerce,
+        )
+        .map_err(|error| error.to_string())?,
+        (None, None) => modules::tacsim_module_wired(tacsim, tacsim_enabled, inventory),
+    });
     // S1: the content module LAST of all — its boot pass applies the starter packs
     // through the atlas's and the NPC module's appliers, which must have hydrated
     // their own slots first (`on_world_loaded` runs in list order). Zero LLM calls:
@@ -398,7 +496,7 @@ pub struct BootedEngine {
 /// purpose: a boot that admitted a write before it could sign one would be a
 /// world whose first offers, resolutions and decisions are unverifiable.
 ///
-/// `_validated_spool` is not read — it is the K0 preflight's evidence, borrowed
+/// `validated_spool` is not read — it is the K0 preflight's evidence, borrowed
 /// so this cannot be called on a boot path that never opened one.
 ///
 /// # Errors
@@ -406,7 +504,20 @@ pub struct BootedEngine {
 /// Unprovisionable key rings, a store that is not K3-durable, a failed recovery
 /// barrier, failed migrations or accounts import, a rejected config stanza, a
 /// module registration clash, or a module boot pass that fails.
-pub async fn build_engine(
+pub fn build_engine<'a>(
+    config: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    validated_spool: &'a QuarantineSpool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
+    // Boot retains the composed engine and registry across store awaits. Keep
+    // that state on the heap so each caller's async frame does not embed it
+    // again. Nested boot/logging futures otherwise exhaust a normal thread's
+    // stack in debug builds. Construction remains lazy: no boot work runs until
+    // the returned future is polled, and the validated spool stays borrowed.
+    Box::pin(build_engine_inner(config, store, validated_spool))
+}
+
+async fn build_engine_inner(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
@@ -679,6 +790,9 @@ pub async fn build_engine(
 pub fn check_config(config: &Config) -> Vec<String> {
     let mut refusals = mush_config::preflight::check(config);
     if let Err(error) = config_ext::tacsim_config(&config.tacsim) {
+        refusals.push(error);
+    }
+    if let Err(error) = load_launch_deployment(config) {
         refusals.push(error);
     }
     // S1: `[atlas].pack_paths` are read host-side and are boot-fatal for the same

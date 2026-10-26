@@ -1580,7 +1580,11 @@ pub(crate) fn audit_mind_revisions(ctx: &mut Ctx<'_>) -> Result<(), mush_roll::R
         .w
         .module_state::<TacsimStore>()
         .ok_or(mush_roll::RollError::Missing)?;
-    let audit = roll.prepare_source_audit(&crate::minds::authoring::RevisionRules, sources)?;
+    // Archive validity is independent of today's executable ABI. Fresh saves
+    // still use RevisionRules; a retained source needs a current certificate
+    // before it may execute again under the new engine.
+    let audit =
+        roll.prepare_source_audit(&crate::minds::authoring::RetainedRevisionRules, sources)?;
     let roll = ctx
         .w
         .module_state_mut::<mush_roll::RollStore>()
@@ -3236,6 +3240,172 @@ mod tests {
             let store = engine.world.module_state::<TacsimStore>().unwrap();
             assert!(store.mind_source_keys.contains(source.as_bytes()));
             assert_eq!(store.has_mind_source(source.as_bytes()), !corrupt);
+        }
+    }
+
+    #[test]
+    fn retained_api4_source_survives_actual_cold_audit_without_new_save_authority() {
+        use mush_roll::RevisionAdapter as _;
+        const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
+        const SOURCE: &str = "const MIND = #{name: \"Retained\", api: 4, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) { this.marker = 73; }";
+        assert_ne!(crate::minds::MIND_ABI, OLD_ABI);
+
+        // Build the migration image through the actual Roll/source save union.
+        // This test-only previous-ABI adapter validates the known-compatible
+        // source in the real current sandbox; it issues no certificate or seal.
+        struct PreviousAbiRules;
+        impl mush_roll::RevisionAdapter for PreviousAbiRules {
+            fn normalize_source(&self, source: &str) -> Result<String, mush_roll::RollError> {
+                crate::minds::normalize::normalize_source(source)
+            }
+            fn validate(
+                &self,
+                source: &str,
+                envelope: &mush_roll::Envelope,
+            ) -> Result<(), mush_roll::RollError> {
+                check_eq!(envelope.mind_abi, OLD_ABI);
+                crate::minds::authoring::validate_retained_registry(source, envelope)
+            }
+        }
+        let actor = ObjId(10);
+        let mut draft = transaction_draft();
+        draft.source = SOURCE.into();
+        draft.envelope.mind_abi = OLD_ABI.into();
+        assert!(
+            crate::minds::authoring::RevisionRules
+                .validate(SOURCE, &draft.envelope)
+                .is_err()
+        );
+        let mut engine = Box::new(transaction_engine(true));
+        let mut operations = Vec::new();
+        {
+            let roll = engine
+                .world
+                .module_state_mut::<mush_roll::RollStore>()
+                .unwrap();
+            let change = roll.prepare_create(actor, "retained", draft).unwrap();
+            roll.publish_with(change, |batch| operations.extend_from_slice(batch))
+                .unwrap();
+        }
+        let roll = engine.world.module_state::<mush_roll::RollStore>().unwrap();
+        let base = roll.mind(actor, "retained").unwrap().base();
+        let sources = engine.world.module_state::<TacsimStore>().unwrap();
+        assert!(
+            roll.prepare_save(
+                actor,
+                "retained",
+                base,
+                "",
+                None,
+                &crate::minds::authoring::RevisionRules,
+                sources
+            )
+            .is_err()
+        );
+        let prepared = roll
+            .prepare_save(
+                actor,
+                "retained",
+                base,
+                "",
+                None,
+                &PreviousAbiRules,
+                sources,
+            )
+            .unwrap();
+        let source = prepared.source().digest;
+        let (saved, mut out) = publish_transaction(&mut engine, actor, prepared);
+        let saved = saved.unwrap();
+        let revision_bytes = serde_json::to_vec(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .revision(actor, saved.key)
+                .unwrap(),
+        )
+        .unwrap();
+        operations.extend(
+            out.take_deferred()
+                .into_iter()
+                .map(|deferred| match deferred {
+                    mush_core::Deferred::Persist(op) => op,
+                    _ => panic!("the save only queues durable writes"),
+                }),
+        );
+        let mut disk = BTreeMap::new();
+        for operation in operations {
+            match operation.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    disk.insert((operation.ns, key), value);
+                }
+                _ => panic!("create/save need no removals"),
+            }
+        }
+        drop(engine);
+        let docs = |namespace: &str| -> Vec<_> {
+            disk.iter()
+                .filter(|((ns, _), _)| ns == namespace)
+                .map(|((_, key), value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        for corrupt in [false, true] {
+            let mut source_docs = docs(NS);
+            if corrupt {
+                let (_, value) = source_docs.first_mut().expect("actual saved source");
+                value["bytes"] = serde_json::json!("tampered");
+            }
+            let mut boot = std::collections::HashMap::new();
+            boot.insert(
+                SmolStr::new_static(NS),
+                mush_core::ModuleBootData {
+                    kv: source_docs,
+                    ..Default::default()
+                },
+            );
+            boot.insert(
+                SmolStr::new_static(mush_roll::NS),
+                mush_core::ModuleBootData {
+                    kv: docs(mush_roll::NS),
+                    ..Default::default()
+                },
+            );
+            let mut cold = Box::new(transaction_engine(true));
+            let mut boot_out = Outbox::new();
+            cold.modules_loaded(boot, &mut boot_out, &mut mush_core::Effects::default())
+                .unwrap();
+            let roll = cold.world.module_state::<mush_roll::RollStore>().unwrap();
+            assert_eq!(roll.quarantine().is_empty(), !corrupt);
+            assert_eq!(roll.revision(actor, saved.key).is_ok(), !corrupt);
+            if corrupt {
+                assert!(roll.prepare_prune(128).is_err());
+            } else {
+                let revision = roll.revision(actor, saved.key).unwrap();
+                assert_eq!(serde_json::to_vec(revision).unwrap(), revision_bytes);
+                assert_eq!(revision.reference(), saved);
+                let sources = cold.world.module_state::<TacsimStore>().unwrap();
+                assert_eq!(sources.read_source(source).unwrap(), SOURCE);
+                assert!(
+                    roll.prepare_save(
+                        actor,
+                        "retained",
+                        roll.mind(actor, "retained").unwrap().base(),
+                        "",
+                        None,
+                        &crate::minds::authoring::RevisionRules,
+                        sources
+                    )
+                    .is_err()
+                );
+            }
+            assert!(
+                cold.take_module_ops().is_empty(),
+                "boot must not rewrite history"
+            );
+            assert!(
+                boot_out.take_deferred().is_empty(),
+                "audit is read-only on disk"
+            );
         }
     }
 

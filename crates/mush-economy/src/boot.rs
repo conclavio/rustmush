@@ -77,47 +77,47 @@ use crate::record::{
 };
 use crate::snapshot::EconomySnapshot;
 
-/// Rebuild the [`EconomyStore`] from boot data.
-#[allow(clippy::too_many_lines)]
-pub(crate) fn load_boot(
-    ctx: &mut ModuleCtx<'_>,
-    data: ModuleBootData,
-    providers: &CustodyTable,
-    outcomes: &crate::contract::CanonOutcomeKinds,
-    tail_max: usize,
-    window_secs: i64,
-) -> Result<EconomyStore, ModError> {
-    let ModuleBootData {
-        kv,
-        ledger: mut ledger_docs,
-        omitted,
-        ..
-    } = data;
-    // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
-    // min-present marker the inspection honours; 0 for a whole fetch.
-    let narrowed_below: u64 = omitted
-        .get(crate::module::JOURNAL_LOG)
-        .copied()
-        .unwrap_or(0);
-    // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
-    // contiguity decision, the ledger restore and the typed pass below; each
-    // chunk is decoded from its text once, and the text is dropped as it goes.
-    // Unreplayable journal → fail the boot (never destructively "recover" money).
-    let mut journal = Ledger::new();
-    let history = journal.inspect_from(&ledger_docs, &omitted);
-    if !history.is_clean() {
-        return Err(ModError::msg(format!(
-            "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
-            history.total_breaches(),
-            history.breaches().first()
-        )));
-    }
-    journal.restore_from_history(&history).map_err(|error| {
-        ModError::msg(format!(
-            "economy: authoritative journal restore refused: {error}"
-        ))
-    })?;
-
+struct ParsedDocuments {
+    instruments: BTreeMap<InstrumentId, InstrumentDef>,
+    stored_accounts: BTreeMap<AccountId, Account>,
+    stored_assets: BTreeMap<ObjId, EconomicAsset>,
+    stored_vaults: BTreeMap<VaultId, Vault>,
+    stored_approvals: BTreeMap<ApprovalRequestId, ApprovalRequest>,
+    stored_holds: BTreeMap<HoldId, Hold>,
+    stored_obligations: BTreeMap<ObligationId, Obligation>,
+    stored_cadences: BTreeMap<CadenceId, CadenceClock>,
+    stored_escalations: BTreeMap<EscalationId, Escalation>,
+    stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
+    meta: Option<serde_json::Value>,
+    max_approval_key: Option<u64>,
+    max_obligation_key: Option<u64>,
+    max_cadence_key: Option<u64>,
+    max_escalation_key: Option<u64>,
+    max_contract_key: Option<u64>,
+    checkpoint_keys: BTreeSet<SmolStr>,
+}
+struct DocumentRecovery {
+    require_charter_pending: bool,
+    require_coverage: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+}
+#[inline(never)]
+fn parse_documents(
+    kv: &[(SmolStr, serde_json::Value)],
+    recovery: DocumentRecovery,
+) -> Result<ParsedDocuments, ModError> {
+    let DocumentRecovery {
+        require_charter_pending,
+        require_coverage,
+        require_house_renewal_receipts,
+        require_paid_resale,
+        require_purchase_receipts,
+        require_renewal_receipts,
+    } = recovery;
     // Parse the persisted docs. Instruments + accounts + vaults are containers (a
     // corrupt one fails the boot — proceeding would classify live money, or a live
     // custody binding, as absent). An asset doc is a projection, but a corrupt one
@@ -148,7 +148,7 @@ pub(crate) fn load_boot(
     let mut max_contract_key: Option<u64> = None;
     let mut checkpoint_keys: BTreeSet<SmolStr> = BTreeSet::new();
 
-    for (key, value) in &kv {
+    for (key, value) in kv {
         if key == META_KEY {
             meta = Some(value.clone());
         } else if let Some(id) = key.strip_prefix("instrument:") {
@@ -309,6 +309,56 @@ pub(crate) fn load_boot(
                     c.id
                 )));
             }
+            // This legacy recovery owner cannot reconcile the entitlement half.
+            // Refuse before journal healing or any queued container rewrite; the
+            // closed paid-operation replay lane must be installed first.
+            if let Some(managed) = c.consent.managed.as_ref() {
+                if managed.hull_coverage_marker().is_some() {
+                    if !require_coverage {
+                        return Err(ModError::msg(
+                            "economy: hull coverage requires complete paired recovery",
+                        ));
+                    }
+                } else if managed.paid_resale_marker().is_some() {
+                    if !require_paid_resale {
+                        return Err(ModError::msg(
+                            "economy: paid resale requires complete paired recovery",
+                        ));
+                    }
+                } else if managed.charter_pending_marker().is_some() {
+                    if !require_charter_pending {
+                        return Err(ModError::msg(
+                            "economy: pending charter contract requires complete paired recovery",
+                        ));
+                    }
+                } else if !require_purchase_receipts {
+                    return Err(ModError::msg(
+                        "economy: managed contract requires complete entitlement recovery",
+                    ));
+                }
+            }
+            if c.consent
+                .managed
+                .as_ref()
+                .and_then(|m| m.renewal_offer_marker())
+                .is_some()
+                && !require_renewal_receipts
+            {
+                return Err(ModError::msg(
+                    "economy: renewal contract requires complete paired recovery",
+                ));
+            }
+            if c.consent
+                .managed
+                .as_ref()
+                .and_then(|m| m.house_renewal_offer_marker())
+                .is_some()
+                && !require_house_renewal_receipts
+            {
+                return Err(ModError::msg(
+                    "economy: house_renewal contract requires complete paired recovery",
+                ));
+            }
             stored_contracts.insert(c.id, c);
         } else if let Some(id) = key.strip_prefix("escalation:") {
             // A **leaf** (§4.6), exactly like an approval request: an unreadable alert
@@ -386,53 +436,191 @@ pub(crate) fn load_boot(
         }
     }
 
-    // J2: the typed pass and the fold are one streamed loop (below), chunk by
-    // chunk, so no more than one chunk's records exist outside the RAM tail at
-    // any moment. What the fold needs of the whole journal is known up front.
-    // J4-F1: the journal's length is the restored tail's next sequence, not the
-    // inspection's entry count — a narrowed fetch hands over only the chunks
-    // at or above the manifest's floor, and a tail floor computed from those
-    // alone sat far too low (every present body was retained).
-    let journal_len = journal.next_seq(crate::module::JOURNAL_LOG);
-    let journal_empty = journal_len == 0;
-    let journal_max: Option<u64> = journal_len.checked_sub(1);
-    // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
-    // this sequence. The index below keeps every id.
-    let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
-    let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
-    let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
-    let mut chunk_first_ids: BTreeMap<u64, TransactionId> = BTreeMap::new();
-    // Doc 13 W2 (W-D2): the replay keeps only the window's keys in the map and
-    // the index — once every key has its document (W-D5); the count bound is
-    // applied when the store is up. The filter takes every key regardless.
-    let boot_now = ctx.w.now();
+    Ok(ParsedDocuments {
+        instruments,
+        stored_accounts,
+        stored_assets,
+        stored_vaults,
+        stored_approvals,
+        stored_holds,
+        stored_obligations,
+        stored_cadences,
+        stored_escalations,
+        stored_contracts,
+        stored_notices,
+        meta,
+        max_approval_key,
+        max_obligation_key,
+        max_cadence_key,
+        max_escalation_key,
+        max_contract_key,
+        checkpoint_keys,
+    })
+}
 
-    // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
-    // the live post path uses too), plus what only boot captures — each
-    // projection's journal value at the sequence its stored doc CLAIMS (the
-    // drift detectors), the idempotency index and the reversed set into the
-    // snapshot, the transaction index, and the RAM tail.
-    let mut state = FoldState::default();
-    let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
-    // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
-    // `index_transaction` uses, so replay and live indexing cannot disagree.
-    let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
-    let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
-    let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
-    // Doc 13 (W-D3): every key ever posted — replayed whole, or seeded from the
-    // checkpoint's bloom part and extended by the tail.
-    let mut key_filter = crate::bloom::ScalableBloom::new();
-    let mut snapshot = EconomySnapshot::new();
-    for def in instruments.values() {
-        snapshot.put_instrument(def.clone());
+struct CheckpointRecovery {
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_house_renewal_receipts: bool,
+}
+
+#[inline(never)]
+fn select_boot_checkpoint(
+    kv: &[(SmolStr, serde_json::Value)],
+    journal_max: Option<u64>,
+    history: &mush_core::LedgerHistory,
+    narrowed_below: u64,
+    recovery: CheckpointRecovery,
+) -> Result<Option<ValidCheckpoint>, ModError> {
+    let CheckpointRecovery {
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_house_renewal_receipts,
+    } = recovery;
+    let (mut checkpoint, mut checkpoint_notes) =
+        crate::checkpoint::select(kv, journal_max, history);
+    if require_filing_receipts
+        && checkpoint
+            .as_ref()
+            .is_some_and(|saved| !saved.head.body.fold.filing_receipts.checkpoint_complete())
+    {
+        checkpoint_notes.push(
+            "checkpoint lacks complete initial-filing receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
     }
-    // J3: seed from the newest VALID checkpoint, if any; every rejected one is
-    // said at `error` and ignored — a checkpoint is a projection, never
-    // authority, so an invalid one costs a full replay and nothing else.
-    let checkpoint_started = std::time::Instant::now();
-    let (checkpoint, checkpoint_notes) = crate::checkpoint::select(&kv, journal_max, &history);
+    if require_purchase_receipts
+        && checkpoint.as_ref().is_some_and(|saved| {
+            !saved
+                .head
+                .body
+                .fold
+                .purchase_receipts
+                .checkpoint_complete(&saved.rows)
+        })
+    {
+        checkpoint_notes.push(
+            "checkpoint lacks exact original-purchase receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .coverage_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact hull coverage inventory; full replay required".into());
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .paid_resale_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact paid resale inventory coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !crate::managed_renewal::bridge::checkpoint_complete(
+            &saved.head.body.fold,
+            &saved.rows,
+            require_renewal_receipts,
+        )
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact renewal inventory coverage; full replay required".into());
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !crate::managed_house_renewal::bridge::checkpoint_complete(
+            &saved.head.body.fold,
+            &saved.rows,
+            require_house_renewal_receipts,
+        )
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact house_renewal inventory coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .update_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks complete compatible-update receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .charter_transfer_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact charter-transfer receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .core_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact Core integration receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .refit_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact Core refit receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .charter_pending_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact pending charter coverage; full replay required".into());
+        checkpoint = None;
+    }
     for note in &checkpoint_notes {
         tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
     }
@@ -459,6 +647,35 @@ pub(crate) fn load_boot(
             });
         }
     }
+    Ok(checkpoint)
+}
+
+struct CheckpointProjection<'a> {
+    key_filter: &'a mut crate::bloom::ScalableBloom,
+    snapshot: &'a mut EconomySnapshot,
+    tx_index: &'a mut BTreeMap<TransactionId, TxRef>,
+    state: &'a mut FoldState,
+    debit_window: &'a mut BTreeMap<AccountId, crate::module::WindowTail>,
+    chunk_firsts: &'a mut BTreeMap<u64, u64>,
+    chunk_first_ids: &'a mut BTreeMap<u64, TransactionId>,
+}
+
+#[inline(never)]
+fn seed_boot_checkpoint(
+    checkpoint: Option<ValidCheckpoint>,
+    keep_from: u64,
+    narrowed_below: u64,
+    projection: CheckpointProjection<'_>,
+) -> Result<(Option<u64>, u64, Option<CheckpointMeta>), ModError> {
+    let CheckpointProjection {
+        key_filter,
+        snapshot,
+        tx_index,
+        state,
+        debit_window,
+        chunk_firsts,
+        chunk_first_ids,
+    } = projection;
     let mut covered: Option<u64> = None;
     let mut skip_below_chunk: u64 = 0;
     let mut checkpoint_meta: Option<CheckpointMeta> = None;
@@ -469,7 +686,7 @@ pub(crate) fn load_boot(
         filter,
     }) = checkpoint
     {
-        key_filter = filter;
+        *key_filter = filter;
         for row in &rows {
             let Some((record, tx_ref)) = ValidCheckpoint::record_of(row) else {
                 return Err(ModError::msg(format!(
@@ -480,13 +697,13 @@ pub(crate) fn load_boot(
             snapshot.put_idempotency(record);
             tx_index.insert(row.tx, tx_ref);
         }
-        state = head.body.fold;
+        *state = head.body.fold;
         for target in &state.reversed {
             snapshot.mark_reversed(*target);
         }
-        debit_window = head.body.debit_window;
-        chunk_firsts = head.body.chunk_firsts;
-        chunk_first_ids = head.body.chunk_first_ids;
+        *debit_window = head.body.debit_window;
+        *chunk_firsts = head.body.chunk_firsts;
+        *chunk_first_ids = head.body.chunk_first_ids;
         covered = Some(head.covered_seq);
         // J3-F4: the RAM tail (J2) is the newest `tail_max` bodies whatever the
         // boot seeded from, so the chunks holding `keep_from..` are decoded
@@ -524,249 +741,53 @@ pub(crate) fn load_boot(
             "economy: booting from a checkpoint; replaying the tail"
         );
     }
-    let checkpoint_ms = u64::try_from(checkpoint_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok((covered, skip_below_chunk, checkpoint_meta))
+}
 
-    // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
-    // journal has nothing to backfill.
-    let idem_backfill_txid = meta
-        .as_ref()
-        .and_then(|m| m.get("idem_backfill_txid"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let idem_backfilled = meta
-        .as_ref()
-        .and_then(|m| m.get("idem_backfilled"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-        || journal_empty;
-    let mut fold = |seq: u64, tx: EconomicTransaction, retain_only: bool| -> Result<(), ModError> {
-        // J3-F4: an entry the checkpoint covers is not folded again — only its
-        // body is kept when it falls inside the RAM tail.
-        if retain_only {
-            if seq >= keep_from {
-                transactions.insert(tx.id, tx);
-            }
-            return Ok(());
-        }
-        // A journal line or hold referencing an account with no doc is corruption —
-        // the account metadata was lost while its money history survived. Fail closed.
-        for line in &tx.lines {
-            if !stored_accounts.contains_key(&line.account) {
-                return Err(ModError::msg(format!(
-                    "economy: journal seq {seq} references unknown account {}; refusing to boot",
-                    line.account
-                )));
-            }
-        }
-        for effect in &tx.hold_effects {
-            if !stored_accounts.contains_key(&effect.hold.account) {
-                return Err(ModError::msg(format!(
-                    "economy: journal seq {seq} holds against unknown account {}; refusing to boot",
-                    effect.hold.account
-                )));
-            }
-        }
-        state.fold_entry(seq, &tx);
-        key_filter.insert(&tx.idempotency);
-        // The drift detectors: each projection's journal value at the sequence
-        // its stored doc claims (E4b1 verify fold, B3/B5).
-        for line in &tx.lines {
-            if stored_accounts
-                .get(&line.account)
-                .map(|a| a.last_journal_seq)
-                == Some(seq)
-            {
-                snapshot_at_stored.insert(
-                    line.account,
-                    state.running.get(&line.account).copied().unwrap_or(0),
-                );
-            }
-        }
-        for effect in &tx.asset_effects {
-            if stored_assets
-                .get(&effect.object)
-                .map(|a| a.last_journal_seq)
-                == Some(seq)
-                && let Some(post) = state.journal_assets.get(&effect.object)
-            {
-                asset_at_stored.insert(effect.object, post.clone());
-            }
-        }
-        for effect in &tx.hold_effects {
-            let post = &effect.hold;
-            if stored_holds.get(&post.id).map(|h| h.last_journal_seq) == Some(seq)
-                && let Some(journal) = state.journal_holds.get(&post.id)
-            {
-                hold_at_stored.insert(post.id, journal.clone());
-            }
-            if stored_accounts.get(&post.account).map(|a| a.last_hold_seq) == Some(seq) {
-                held_at_stored.insert(
-                    post.account,
-                    state.running_held.get(&post.account).copied().unwrap_or(0),
-                );
-            }
-        }
-        // Idempotency index (journal-derived — the double-post backstop); doc 13
-        // W2: only the window's, once the window is on.
-        let in_window = !idem_backfilled || boot_now.saturating_sub(tx.posted_at) < window_secs;
-        if in_window {
-            snapshot.put_idempotency(IdempotencyRecord {
-                idempotency: tx.idempotency.clone(),
-                plan_hash: tx.plan_hash,
-                transaction: tx.id,
-                posted_at: tx.posted_at,
-            });
-        }
-        if let Some(target) = tx.reverses {
-            snapshot.mark_reversed(target);
-        }
-        // The account rules are not in the snapshot yet (the stored docs land below),
-        // so replay folds every debit and the membership filter runs once at the end
-        // — D4's "only windowed accounts are tracked", reached the other way round.
-        let _ = crate::module::note_window_debits(&mut debit_window, &tx);
-        // J2: the index keeps every id the window holds (doc 13 W2); the tail
-        // keeps the newest bodies, by move.
-        if in_window {
-            tx_index.insert(
-                tx.id,
-                TxRef {
-                    seq,
-                    idempotency: tx.idempotency.clone(),
-                    posted_at: tx.posted_at,
-                },
-            );
-        }
-        if seq >= keep_from {
-            transactions.insert(tx.id, tx);
-        }
-        Ok(())
-    };
-    // The streamed typed pass (J1/J2): every chunk in the order the inspection
-    // fixed, decoded straight from its text — no `Value` tree in between — folded
-    // at once, its text released as it goes. The inspection proved the sequence
-    // gap-free and chunk-ordered; the check here is the cheap guarantee that the
-    // fold never depends on that proof.
-    let mut expected_seq = covered.map_or(0, |c| c.saturating_add(1));
-    let mut replayed = 0usize;
-    for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
-        // J3: a chunk wholly below the checkpoint's is never decoded; its
-        // text goes with the rest.
-        if chunk < skip_below_chunk {
-            continue;
-        }
-        let text = std::mem::take(&mut ledger_docs[position].1);
-        let typed = typed_entries::<EconomicTransaction>(&text)
-            .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
-        if let Some((first, tx)) = typed.first() {
-            chunk_firsts.insert(chunk, *first);
-            chunk_first_ids.insert(chunk, tx.id);
-        }
-        for (seq, tx) in typed {
-            if covered.is_some_and(|c| seq <= c) {
-                fold(seq, tx, true)?;
-                continue;
-            }
-            if seq != expected_seq {
-                return Err(ModError::msg(format!(
-                    "economy: journal order breach at seq {seq} (expected {expected_seq}); refusing to boot"
-                )));
-            }
-            expected_seq = expected_seq.saturating_add(1);
-            fold(seq, tx, false)?;
-            replayed += 1;
-        }
-    }
-    // The fold's borrows end with its last use above; the texts and the
-    // inspection are done with.
-    drop(ledger_docs);
-    drop(history);
-    // Doc 13 W2: boot's gate over the complete filter (no cold cache yet); the
-    // contracts it cannot decide are the sweep's (W-D7).
-    let no_cold: BTreeMap<crate::record::IdempotencyKey, crate::module::ColdKey> = BTreeMap::new();
-    let boot_gate = crate::module::StoreKeyGate::new(&key_filter, &no_cold, idem_backfilled);
-    let mut heal_wanted: BTreeSet<ContractId> = BTreeSet::new();
+struct ProjectionInputs<'a> {
+    meta: &'a Option<serde_json::Value>,
+    state: &'a FoldState,
+    snapshot: &'a mut EconomySnapshot,
+    stored_accounts: BTreeMap<AccountId, Account>,
+    stored_assets: &'a mut BTreeMap<ObjId, EconomicAsset>,
+    stored_holds: &'a mut BTreeMap<HoldId, Hold>,
+    journal_max: Option<u64>,
+    snapshot_at_stored: &'a BTreeMap<AccountId, i128>,
+    held_at_stored: &'a BTreeMap<AccountId, i128>,
+    asset_at_stored: &'a BTreeMap<ObjId, EconomicAsset>,
+    hold_at_stored: &'a BTreeMap<HoldId, Hold>,
+    lag_accounts: &'a BTreeSet<AccountId>,
+    lag_held: &'a BTreeSet<AccountId>,
+    lag_assets: &'a BTreeSet<ObjId>,
+    lag_holds: &'a BTreeSet<HoldId>,
+}
 
-    // J3 (doc 12 §5.5, D-12-2): a document claiming a sequence at or before the
-    // checkpoint's is judged only when that sequence is the last the fold
-    // touched for it — the checkpoint's value is then the value at the claim.
-    // Otherwise it LAGS a pre-checkpoint version: healed to the journal-derived
-    // value below, without a drift or "never appears at" verdict, said at info.
-    let mut lag_accounts: BTreeSet<AccountId> = BTreeSet::new();
-    let mut lag_held: BTreeSet<AccountId> = BTreeSet::new();
-    let mut lag_assets: BTreeSet<ObjId> = BTreeSet::new();
-    let mut lag_holds: BTreeSet<HoldId> = BTreeSet::new();
-    if let Some(c) = covered {
-        // The fold's last touch decides what a stored sequence alone cannot
-        // (J3-F3): a claim AT the touch is judged at the value — a real first
-        // touch at seq 0 included, which `last_journal_seq == 0` also spells
-        // as the never-touched sentinel; a touch PAST the claim lags — the
-        // sentinel on an account the journal did touch included; no touch, or a
-        // touch before the claim, is left to the verdicts below (an untouched
-        // sentinel is nothing to judge; a claim the journal never made is B5).
-        for (id, a) in &stored_accounts {
-            if a.last_journal_seq <= c {
-                match state.last_touch.get(id) {
-                    Some(&t) if t == a.last_journal_seq => {
-                        snapshot_at_stored.insert(*id, state.running.get(id).copied().unwrap_or(0));
-                    }
-                    Some(&t) if t > a.last_journal_seq => {
-                        lag_accounts.insert(*id);
-                    }
-                    _ => {}
-                }
-            }
-            if a.last_hold_seq <= c {
-                match state.last_hold_touch.get(id) {
-                    Some(&t) if t == a.last_hold_seq => {
-                        held_at_stored
-                            .insert(*id, state.running_held.get(id).copied().unwrap_or(0));
-                    }
-                    Some(&t) if t > a.last_hold_seq => {
-                        lag_held.insert(*id);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for (object, a) in &stored_assets {
-            if a.last_journal_seq <= c {
-                match state.journal_assets.get(object) {
-                    Some(j) if j.last_journal_seq == a.last_journal_seq => {
-                        asset_at_stored.insert(*object, j.clone());
-                    }
-                    Some(j) if j.last_journal_seq > a.last_journal_seq => {
-                        lag_assets.insert(*object);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for (id, h) in &stored_holds {
-            if h.last_journal_seq <= c {
-                match state.journal_holds.get(id) {
-                    Some(j) if j.last_journal_seq == h.last_journal_seq => {
-                        hold_at_stored.insert(*id, j.clone());
-                    }
-                    Some(j) if j.last_journal_seq > h.last_journal_seq => {
-                        lag_holds.insert(*id);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let lagging = lag_accounts.len() + lag_held.len() + lag_assets.len() + lag_holds.len();
-        if lagging > 0 {
-            tracing::info!(
-                accounts = lag_accounts.len(),
-                held = lag_held.len(),
-                assets = lag_assets.len(),
-                holds = lag_holds.len(),
-                covered_seq = c,
-                "economy: documents lagging a pre-checkpoint version are healed unverified (doc 12 §5.5)"
-            );
-        }
-    }
+struct ProjectionRepairs {
+    frozen: bool,
+    healed: Vec<Account>,
+    healed_assets: Vec<EconomicAsset>,
+    healed_holds: Vec<Hold>,
+}
 
+#[inline(never)]
+fn reconcile_boot_projections(inputs: ProjectionInputs<'_>) -> ProjectionRepairs {
+    let ProjectionInputs {
+        meta,
+        state,
+        snapshot,
+        stored_accounts,
+        stored_assets,
+        stored_holds,
+        journal_max,
+        snapshot_at_stored,
+        held_at_stored,
+        asset_at_stored,
+        hold_at_stored,
+        lag_accounts,
+        lag_held,
+        lag_assets,
+        lag_holds,
+    } = inputs;
     // Directional self-heal + drift/ahead detection per account.
     //
     // The freeze latch starts from the **stored** one: a boot that froze also healed
@@ -1069,94 +1090,47 @@ pub(crate) fn load_boot(
         );
     }
 
-    // ---- E3: vaults -------------------------------------------------------
-    let mut healed_vaults: Vec<Vault> = Vec::new();
-    for (_, mut v) in stored_vaults {
-        if v.status == VaultStatus::Active && !backing_usable(ctx.w, providers, &v) {
-            tracing::warn!(
-                vault = v.id.0,
-                "economy: vault backing is gone or unusable; freezing the vault"
-            );
-            v.status = VaultStatus::Frozen;
-            v.revision += 1;
-            healed_vaults.push(v.clone());
-        }
-        snapshot.put_vault(v);
+    ProjectionRepairs {
+        frozen,
+        healed,
+        healed_assets,
+        healed_holds,
     }
+}
 
-    // ---- E3b2: approval requests (leaf docs, §4.1) ------------------------
-    //
-    // Three directional rules, all of which move a request toward "not usable":
-    // a Pending request the journal proves was spent becomes `Consumed` (healed by
-    // ID, never by hash); one past its TTL becomes `Expired`; and a long-dead one is
-    // garbage-collected. Nothing here ever revives a request.
-    let now = ctx.w.now();
-    let mut healed_approvals: Vec<ApprovalRequest> = Vec::new();
-    let mut dropped_approvals: Vec<ApprovalRequestId> = Vec::new();
-    let max_stored_approval: Option<u64> = stored_approvals.keys().map(|id| id.0).max();
-    for (id, mut r) in stored_approvals {
-        if r.status == crate::record::ApprovalStatus::Pending {
-            if let Some(tx) = state.consumed_approval.get(&id) {
-                tracing::warn!(
-                    approval = id.0,
-                    transaction = tx.0,
-                    "economy: approval doc lags the journal; marking it consumed"
-                );
-                r.status = crate::record::ApprovalStatus::Consumed { transaction: *tx };
-                r.revision += 1;
-                healed_approvals.push(r.clone());
-            } else if now >= r.expires_at {
-                r.status = crate::record::ApprovalStatus::Expired;
-                r.revision += 1;
-                healed_approvals.push(r.clone());
-            }
-        }
-        // GC: a dead request stops being an audit trail long before it stops being
-        // clutter. `Consumed` requests are NEVER collected — they are the other end
-        // of a journal entry's `consumed_approval`.
-        let dead = matches!(
-            r.status,
-            crate::record::ApprovalStatus::Expired | crate::record::ApprovalStatus::Cancelled
-        );
-        if dead && now.saturating_sub(r.expires_at) > crate::APPROVAL_GC_AFTER_SECS {
-            dropped_approvals.push(id);
-            continue;
-        }
-        snapshot.put_approval(r);
-    }
+struct ContractReconciliation<'a> {
+    stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    state: &'a FoldState,
+    snapshot: &'a mut EconomySnapshot,
+    outcomes: &'a crate::contract::CanonOutcomeKinds,
+    tx_index: &'a BTreeMap<TransactionId, TxRef>,
+    boot_gate: &'a dyn crate::engine::KeyGate,
+    idem_backfilled: bool,
+    key_filter: &'a crate::bloom::ScalableBloom,
+    heal_wanted: &'a mut BTreeSet<ContractId>,
+    frozen: &'a mut bool,
+    opened_escalations: &'a mut Vec<Escalation>,
+    next_escalation: &'a mut u64,
+    now: i64,
+}
 
-    // ---- E4b1: cadence clocks (containers) -------------------------------
-    for (_, c) in stored_cadences {
-        snapshot.put_cadence(c);
-    }
-
-    // ---- E4b1: escalation records (leaf docs, §4.6) -----------------------
-    //
-    // One directional rule, and it only ever moves a record toward "gone": an
-    // ACKNOWLEDGED alert older than the retention window is collected. An open one is
-    // never touched — it is the only thing still saying a human has to look.
-    let mut escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
-    let mut dropped_escalations: Vec<EscalationId> = Vec::new();
-    for (id, e) in stored_escalations {
-        let collectable = e
-            .acked_at
-            .is_some_and(|at| now.saturating_sub(at) > ESCALATION_GC_AFTER_SECS);
-        if collectable {
-            dropped_escalations.push(id);
-            continue;
-        }
-        escalations.insert(id, e);
-    }
-    // The escalation allocator has to be live BEFORE obligation reconciliation, which
-    // may open records of its own.
-    let mut next_escalation = meta_u64(&meta, "next_escalation_id")
-        .max(next_after(max_escalation_key))
-        .max(next_after(escalations.keys().map(|i| i.0).max()));
-    // Boot's own level-2 records, capped at `MAX_BOOT_ESCALATIONS` across BOTH
-    // reconciliation passes: a broken world must not mint an unbounded alert storm,
-    // and the subject is stopped either way.
-    let mut opened_escalations: Vec<Escalation> = Vec::new();
-
+#[inline(never)]
+fn reconcile_boot_contracts(inputs: ContractReconciliation<'_>) -> Vec<EconomicContract> {
+    let ContractReconciliation {
+        stored_contracts,
+        state,
+        snapshot,
+        outcomes,
+        tx_index,
+        boot_gate,
+        idem_backfilled,
+        key_filter,
+        heal_wanted,
+        frozen,
+        opened_escalations,
+        next_escalation,
+        now,
+    } = inputs;
     // ---- E4b2: contracts (containers, §5) --------------------------------
     //
     // Contracts load BEFORE obligations, because a `Contract`-caused obligation's
@@ -1225,7 +1199,7 @@ pub(crate) fn load_boot(
                 // that the journal says is not. The key resolves the question with no
                 // guessing at all.
                 if broken && quarantine.is_none() {
-                    match finished_transition(&c, &snapshot, &tx_index, &boot_gate) {
+                    match finished_transition(&c, snapshot, tx_index, boot_gate) {
                         // Doc 13 W2 (W-D7): the keys are outside the RAM window and
                         // the filter has seen one — the sweep asks the store and
                         // finishes it exactly as this arm would; not a quarantine.
@@ -1285,9 +1259,9 @@ pub(crate) fn load_boot(
                         "economy: a settled contract names a transaction that is not its own \
                          settlement; freezing the economy"
                     );
-                    frozen = true;
+                    *frozen = true;
                     if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                        && let Some(id) = mint_escalation(&mut next_escalation)
+                        && let Some(id) = mint_escalation(next_escalation)
                     {
                         opened_escalations.push(Escalation::page(
                             id,
@@ -1328,7 +1302,7 @@ pub(crate) fn load_boot(
             c.revision += 1;
             healed_contracts.push(c.clone());
             if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                && let Some(id) = mint_escalation(&mut next_escalation)
+                && let Some(id) = mint_escalation(next_escalation)
             {
                 // M6: a settlement re-runs the structural check this contract just
                 // failed, so recommending it would be recommending a refusal.
@@ -1421,7 +1395,7 @@ pub(crate) fn load_boot(
                 "economy: an escrow hold names a contract with no record"
             );
             if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                && let Some(id) = mint_escalation(&mut next_escalation)
+                && let Some(id) = mint_escalation(next_escalation)
             {
                 opened_escalations.push(Escalation::page(
                     id,
@@ -1440,7 +1414,7 @@ pub(crate) fn load_boot(
         // Does it qualify? Ask the real predicate, with the hold provisionally listed.
         let mut probe = c.clone();
         probe.escrow.push(hold.id);
-        let qualifies = crate::contract::qualifying_escrow(&probe, &snapshot)
+        let qualifies = crate::contract::qualifying_escrow(&probe, snapshot)
             .holds
             .iter()
             .any(|h| h.id == hold.id);
@@ -1481,7 +1455,7 @@ pub(crate) fn load_boot(
         }
         tracing::error!(hold = hold.id.0, contract = contract.0, state = ?c.state.kind(), "economy: an escrow hold belongs to no consideration its contract names");
         if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-            && let Some(id) = mint_escalation(&mut next_escalation)
+            && let Some(id) = mint_escalation(next_escalation)
         {
             opened_escalations.push(Escalation::page(
                 id,
@@ -1501,6 +1475,36 @@ pub(crate) fn load_boot(
         }
     }
 
+    healed_contracts
+}
+
+struct RemainingReconciliation<'a> {
+    world: &'a World,
+    providers: &'a CustodyTable,
+    stored_obligations: BTreeMap<ObligationId, Obligation>,
+    snapshot: &'a mut EconomySnapshot,
+    opened_escalations: &'a mut Vec<Escalation>,
+    next_escalation: &'a mut u64,
+    escalations: &'a mut BTreeMap<EscalationId, Escalation>,
+    state: &'a FoldState,
+    healed_assets: &'a mut Vec<EconomicAsset>,
+    now: i64,
+}
+
+#[inline(never)]
+fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -> Vec<Obligation> {
+    let RemainingReconciliation {
+        world,
+        providers,
+        stored_obligations,
+        snapshot,
+        opened_escalations,
+        next_escalation,
+        escalations,
+        state,
+        healed_assets,
+        now,
+    } = inputs;
     // ---- E4b1: obligations (containers, §4.2) ----------------------------
     //
     // Boot never guesses and never deletes: an obligation whose debtor, creditor, or
@@ -1510,13 +1514,13 @@ pub(crate) fn load_boot(
     // lost, and a staffer sees the question rather than a silent stall.
     let mut healed_obligations: Vec<Obligation> = Vec::new();
     for (_, mut o) in stored_obligations {
-        if let Some(reason) = obligation_unusable(ctx.w, &snapshot, &o)
+        if let Some(reason) = obligation_unusable(world, snapshot, &o)
             && o.status.in_due_pool()
         {
             {
                 tracing::error!(obligation = o.id.0, %reason, "economy: boot suspended an obligation it cannot settle");
                 let minted = (opened_escalations.len() < MAX_BOOT_ESCALATIONS)
-                    .then(|| mint_escalation(&mut next_escalation))
+                    .then(|| mint_escalation(next_escalation))
                     .flatten();
                 let suspend = if let Some(id) = minted {
                     let record = Escalation::page(
@@ -1545,7 +1549,7 @@ pub(crate) fn load_boot(
         }
         snapshot.put_obligation(o);
     }
-    for e in &opened_escalations {
+    for e in opened_escalations.iter() {
         escalations.insert(e.id, e.clone());
     }
 
@@ -1566,9 +1570,9 @@ pub(crate) fn load_boot(
             );
             continue;
         };
-        let answer = crate::custody::resolve(providers, ctx.w, &vault.backing, None)
+        let answer = crate::custody::resolve(providers, world, &vault.backing, None)
             .ok()
-            .and_then(|p| p.holds(ctx.w, &vault.backing, object));
+            .and_then(|p| p.holds(world, &vault.backing, object));
         match answer {
             Some(true) => {}
             Some(false) => {
@@ -1606,7 +1610,7 @@ pub(crate) fn load_boot(
     // ---- E3: liveness (the boot half of the destruction backstop) ---------
     let dead: Vec<ObjId> = snapshot
         .assets()
-        .filter(|a| !a.frozen && !asset_is_live(ctx.w, a))
+        .filter(|a| !a.frozen && !asset_is_live(world, a))
         .map(|a| a.object)
         .collect();
     for object in dead {
@@ -1616,6 +1620,686 @@ pub(crate) fn load_boot(
             healed_assets.push(a.clone());
         }
     }
+
+    healed_obligations
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_boot_with_coverage(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+    require_refit_receipts: bool,
+    require_coverage: bool,
+) -> Result<EconomyStore, ModError> {
+    let ModuleBootData {
+        kv,
+        ledger: mut ledger_docs,
+        omitted,
+        ..
+    } = data;
+    let renewal_documents =
+        crate::managed_renewal::bridge::documents(&kv, require_renewal_receipts)?;
+    let house_renewal_documents =
+        crate::managed_house_renewal::bridge::documents(&kv, require_house_renewal_receipts)?;
+    // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
+    // min-present marker the inspection honours; 0 for a whole fetch.
+    let narrowed_below: u64 = omitted
+        .get(crate::module::JOURNAL_LOG)
+        .copied()
+        .unwrap_or(0);
+    // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
+    // contiguity decision, the ledger restore and the typed pass below; each
+    // chunk is decoded from its text once, and the text is dropped as it goes.
+    // Unreplayable journal → fail the boot (never destructively "recover" money).
+    let mut journal = Ledger::new();
+    let history = journal.inspect_from(&ledger_docs, &omitted);
+    if !history.is_clean() {
+        return Err(ModError::msg(format!(
+            "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
+            history.total_breaches(),
+            history.breaches().first()
+        )));
+    }
+    journal.restore_from_history(&history).map_err(|error| {
+        ModError::msg(format!(
+            "economy: authoritative journal restore refused: {error}"
+        ))
+    })?;
+
+    let ParsedDocuments {
+        instruments,
+        stored_accounts,
+        mut stored_assets,
+        stored_vaults,
+        stored_approvals,
+        mut stored_holds,
+        stored_obligations,
+        stored_cadences,
+        stored_escalations,
+        mut stored_contracts,
+        stored_notices,
+        meta,
+        max_approval_key,
+        max_obligation_key,
+        max_cadence_key,
+        max_escalation_key,
+        max_contract_key,
+        checkpoint_keys,
+    } = parse_documents(
+        &kv,
+        DocumentRecovery {
+            require_charter_pending,
+            require_coverage,
+            require_house_renewal_receipts,
+            require_paid_resale,
+            require_purchase_receipts,
+            require_renewal_receipts,
+        },
+    )?;
+
+    // J2: the typed pass and the fold are one streamed loop (below), chunk by
+    // chunk, so no more than one chunk's records exist outside the RAM tail at
+    // any moment. What the fold needs of the whole journal is known up front.
+    // J4-F1: the journal's length is the restored tail's next sequence, not the
+    // inspection's entry count — a narrowed fetch hands over only the chunks
+    // at or above the manifest's floor, and a tail floor computed from those
+    // alone sat far too low (every present body was retained).
+    let journal_len = journal.next_seq(crate::module::JOURNAL_LOG);
+    let journal_empty = journal_len == 0;
+    let journal_max: Option<u64> = journal_len.checked_sub(1);
+    // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
+    // this sequence. The index below keeps every id.
+    let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
+    let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
+    let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut chunk_first_ids: BTreeMap<u64, TransactionId> = BTreeMap::new();
+    // Doc 13 W2 (W-D2): the replay keeps only the window's keys in the map and
+    // the index — once every key has its document (W-D5); the count bound is
+    // applied when the store is up. The filter takes every key regardless.
+    let boot_now = ctx.w.now();
+
+    // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
+    // the live post path uses too), plus what only boot captures — each
+    // projection's journal value at the sequence its stored doc CLAIMS (the
+    // drift detectors), the idempotency index and the reversed set into the
+    // snapshot, the transaction index, and the RAM tail.
+    let mut state = FoldState::default();
+    let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
+    // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
+    // `index_transaction` uses, so replay and live indexing cannot disagree.
+    let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
+    let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
+    let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
+    // Doc 13 (W-D3): every key ever posted — replayed whole, or seeded from the
+    // checkpoint's bloom part and extended by the tail.
+    let mut key_filter = crate::bloom::ScalableBloom::new();
+    let mut snapshot = EconomySnapshot::new();
+    for def in instruments.values() {
+        snapshot.put_instrument(def.clone());
+    }
+    // J3: seed from the newest VALID checkpoint, if any; every rejected one is
+    // said at `error` and ignored — a checkpoint is a projection, never
+    // authority, so an invalid one costs a full replay and nothing else.
+    let checkpoint_started = std::time::Instant::now();
+    let checkpoint = select_boot_checkpoint(
+        &kv,
+        journal_max,
+        &history,
+        narrowed_below,
+        CheckpointRecovery {
+            require_filing_receipts,
+            require_purchase_receipts,
+            require_renewal_receipts,
+            require_house_renewal_receipts,
+        },
+    )?;
+    let (covered, skip_below_chunk, checkpoint_meta) = seed_boot_checkpoint(
+        checkpoint,
+        keep_from,
+        narrowed_below,
+        CheckpointProjection {
+            key_filter: &mut key_filter,
+            snapshot: &mut snapshot,
+            tx_index: &mut tx_index,
+            state: &mut state,
+            debit_window: &mut debit_window,
+            chunk_firsts: &mut chunk_firsts,
+            chunk_first_ids: &mut chunk_first_ids,
+        },
+    )?;
+    let checkpoint_ms = u64::try_from(checkpoint_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
+    // journal has nothing to backfill.
+    let idem_backfill_txid = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfill_txid"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let idem_backfilled = meta
+        .as_ref()
+        .and_then(|m| m.get("idem_backfilled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || journal_empty;
+    let mut fold = |seq: u64, tx: EconomicTransaction, retain_only: bool| -> Result<(), ModError> {
+        // J3-F4: an entry the checkpoint covers is not folded again — only its
+        // body is kept when it falls inside the RAM tail.
+        if retain_only {
+            if seq >= keep_from {
+                transactions.insert(tx.id, tx);
+            }
+            return Ok(());
+        }
+        // A journal line or hold referencing an account with no doc is corruption —
+        // the account metadata was lost while its money history survived. Fail closed.
+        for line in &tx.lines {
+            if !stored_accounts.contains_key(&line.account) {
+                return Err(ModError::msg(format!(
+                    "economy: journal seq {seq} references unknown account {}; refusing to boot",
+                    line.account
+                )));
+            }
+        }
+        for effect in &tx.hold_effects {
+            if !stored_accounts.contains_key(&effect.hold.account) {
+                return Err(ModError::msg(format!(
+                    "economy: journal seq {seq} holds against unknown account {}; refusing to boot",
+                    effect.hold.account
+                )));
+            }
+        }
+        state.fold_entry(seq, &tx);
+        key_filter.insert(&tx.idempotency);
+        // The drift detectors: each projection's journal value at the sequence
+        // its stored doc claims (E4b1 verify fold, B3/B5).
+        for line in &tx.lines {
+            if stored_accounts
+                .get(&line.account)
+                .map(|a| a.last_journal_seq)
+                == Some(seq)
+            {
+                snapshot_at_stored.insert(
+                    line.account,
+                    state.running.get(&line.account).copied().unwrap_or(0),
+                );
+            }
+        }
+        for effect in &tx.asset_effects {
+            if stored_assets
+                .get(&effect.object)
+                .map(|a| a.last_journal_seq)
+                == Some(seq)
+                && let Some(post) = state.journal_assets.get(&effect.object)
+            {
+                asset_at_stored.insert(effect.object, post.clone());
+            }
+        }
+        for effect in &tx.hold_effects {
+            let post = &effect.hold;
+            if stored_holds.get(&post.id).map(|h| h.last_journal_seq) == Some(seq)
+                && let Some(journal) = state.journal_holds.get(&post.id)
+            {
+                hold_at_stored.insert(post.id, journal.clone());
+            }
+            if stored_accounts.get(&post.account).map(|a| a.last_hold_seq) == Some(seq) {
+                held_at_stored.insert(
+                    post.account,
+                    state.running_held.get(&post.account).copied().unwrap_or(0),
+                );
+            }
+        }
+        // Idempotency index (journal-derived — the double-post backstop); doc 13
+        // W2: only the window's, once the window is on.
+        let in_window = !idem_backfilled || boot_now.saturating_sub(tx.posted_at) < window_secs;
+        if in_window {
+            snapshot.put_idempotency(IdempotencyRecord {
+                idempotency: tx.idempotency.clone(),
+                plan_hash: tx.plan_hash,
+                transaction: tx.id,
+                posted_at: tx.posted_at,
+            });
+        }
+        if let Some(target) = tx.reverses {
+            snapshot.mark_reversed(target);
+        }
+        // The account rules are not in the snapshot yet (the stored docs land below),
+        // so replay folds every debit and the membership filter runs once at the end
+        // — D4's "only windowed accounts are tracked", reached the other way round.
+        let _ = crate::module::note_window_debits(&mut debit_window, &tx);
+        // J2: the index keeps every id the window holds (doc 13 W2); the tail
+        // keeps the newest bodies, by move.
+        if in_window {
+            tx_index.insert(
+                tx.id,
+                TxRef {
+                    seq,
+                    idempotency: tx.idempotency.clone(),
+                    posted_at: tx.posted_at,
+                },
+            );
+        }
+        if seq >= keep_from {
+            transactions.insert(tx.id, tx);
+        }
+        Ok(())
+    };
+    // The streamed typed pass (J1/J2): every chunk in the order the inspection
+    // fixed, decoded straight from its text — no `Value` tree in between — folded
+    // at once, its text released as it goes. The inspection proved the sequence
+    // gap-free and chunk-ordered; the check here is the cheap guarantee that the
+    // fold never depends on that proof.
+    let mut expected_seq = covered.map_or(0, |c| c.saturating_add(1));
+    let mut replayed = 0usize;
+    for (chunk, position) in history.chunk_docs(crate::module::JOURNAL_LOG) {
+        // J3: a chunk wholly below the checkpoint's is never decoded; its
+        // text goes with the rest.
+        if chunk < skip_below_chunk {
+            continue;
+        }
+        let text = std::mem::take(&mut ledger_docs[position].1);
+        let typed = typed_entries::<EconomicTransaction>(&text)
+            .map_err(|err| ModError::msg(format!("economy: bad journal chunk {chunk}: {err}")))?;
+        if let Some((first, tx)) = typed.first() {
+            chunk_firsts.insert(chunk, *first);
+            chunk_first_ids.insert(chunk, tx.id);
+        }
+        for (seq, tx) in typed {
+            if covered.is_some_and(|c| seq <= c) {
+                fold(seq, tx, true)?;
+                continue;
+            }
+            if seq != expected_seq {
+                return Err(ModError::msg(format!(
+                    "economy: journal order breach at seq {seq} (expected {expected_seq}); refusing to boot"
+                )));
+            }
+            expected_seq = expected_seq.saturating_add(1);
+            fold(seq, tx, false)?;
+            replayed += 1;
+        }
+    }
+    // The fold's borrows end with its last use above; the texts and the
+    // inspection are done with.
+    drop(ledger_docs);
+    drop(history);
+    // Fee-only update history is closed even when its paired consumer is absent.
+    // Complete replay (or a complete checkpoint plus tail) proves absence; an
+    // omitted/unavailable inventory is never treated as an empty history.
+    state.update_receipts.finish_replay().map_err(|error| {
+        ModError::msg(format!(
+            "economy: compatible-update receipt replay refused: {error}"
+        ))
+    })?;
+    if !require_update_receipts {
+        state.update_receipts.require_absent().map_err(|error| {
+            ModError::msg(format!(
+                "economy: compatible-update history requires paired recovery: {error}"
+            ))
+        })?;
+    }
+    state
+        .charter_transfer_receipts
+        .finish_replay()
+        .map_err(|_| ModError::msg("economy: charter-transfer receipt replay refused"))?;
+    if !require_charter_transfer_receipts {
+        state
+            .charter_transfer_receipts
+            .require_absent()
+            .map_err(|_| {
+                ModError::msg("economy: charter-transfer history requires paired recovery")
+            })?;
+    }
+    crate::managed_coverage::bridge::recover(
+        &mut state.coverage_receipts,
+        &state.journal_holds,
+        &state.journal_assets,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &stored_assets,
+        require_coverage,
+    )
+    .map_err(|_| ModError::msg("economy: hull coverage requires exact paired recovery"))?;
+    crate::managed_paid_resale::bridge::recover(
+        &mut state.paid_resale_receipts,
+        &state.journal_holds,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        require_paid_resale,
+    )
+    .map_err(|_| ModError::msg("economy: paid resale history requires exact paired recovery"))?;
+    crate::managed_charter_transfer::bridge::recover(
+        &mut state,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        require_charter_pending,
+    )
+    .map_err(|_| {
+        ModError::msg("economy: pending charter history requires exact paired recovery")
+    })?;
+    crate::core_integration::bridge::recover(
+        &mut state,
+        &stored_holds,
+        &stored_assets,
+        require_core_receipts,
+    )?;
+    crate::core_refit::bridge::recover(&mut state, &stored_holds, require_refit_receipts)?;
+    let renewal_offers = crate::managed_renewal::bridge::recover(
+        &mut state,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &renewal_documents,
+        require_renewal_receipts,
+    )?;
+    let house_renewal_offers = crate::managed_house_renewal::bridge::recover(
+        &mut state,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &house_renewal_documents,
+        require_house_renewal_receipts,
+    )?;
+    // Managed purchases are a paired immutable protocol, not legacy container
+    // reconciliation. Inspect exact raw contract/hold documents before any
+    // legacy repair can manufacture or advance either projection.
+    if require_purchase_receipts {
+        state
+            .purchase_receipts
+            .finish_replay()
+            .map_err(|error| ModError::msg(format!("economy: {error}")))?;
+        let mut contracts = BTreeSet::new();
+        let mut holds = BTreeSet::new();
+        for history in state
+            .purchase_receipts
+            .receipts()
+            .map_err(|error| ModError::msg(error.to_string()))?
+        {
+            let contract = stored_contracts
+                .get(&history.funding().contract())
+                .ok_or_else(|| ModError::msg("economy: purchase contract is missing"))?;
+            let hold = stored_holds
+                .get(&history.funding().hold())
+                .ok_or_else(|| ModError::msg("economy: purchase hold is missing"))?;
+            history
+                .verify_documents(contract, hold)
+                .map_err(|error| ModError::msg(format!("economy: {error}")))?;
+            if state.journal_holds.get(&hold.id) != Some(hold)
+                || !contracts.insert(contract.id)
+                || !holds.insert(hold.id)
+            {
+                return Err(ModError::msg(
+                    "economy: purchase projection is crossed or differs from journal",
+                ));
+            }
+        }
+        if stored_contracts
+            .values()
+            .any(|c| c.consent.managed.is_some() && !contracts.contains(&c.id))
+            || stored_holds.values().any(|h| {
+                crate::managed_purchase::closed_namespace(h.holder.namespace.as_str())
+                    && !holds.contains(&h.id)
+            })
+        {
+            return Err(ModError::msg(
+                "economy: purchase projection lacks authoritative history",
+            ));
+        }
+        for id in contracts {
+            let contract = stored_contracts.remove(&id).ok_or_else(|| {
+                ModError::msg("economy: purchase contract disappeared during recovery")
+            })?;
+            snapshot.put_contract(contract);
+        }
+    } else if !state.purchase_receipts.uninitialized() {
+        return Err(ModError::msg(
+            "economy: purchase history requires complete entitlement recovery",
+        ));
+    }
+    // Doc 13 W2: boot's gate over the complete filter (no cold cache yet); the
+    // contracts it cannot decide are the sweep's (W-D7).
+    let no_cold: BTreeMap<crate::record::IdempotencyKey, crate::module::ColdKey> = BTreeMap::new();
+    let boot_gate = crate::module::StoreKeyGate::new(&key_filter, &no_cold, idem_backfilled);
+    let mut heal_wanted: BTreeSet<ContractId> = BTreeSet::new();
+
+    // J3 (doc 12 §5.5, D-12-2): a document claiming a sequence at or before the
+    // checkpoint's is judged only when that sequence is the last the fold
+    // touched for it — the checkpoint's value is then the value at the claim.
+    // Otherwise it LAGS a pre-checkpoint version: healed to the journal-derived
+    // value below, without a drift or "never appears at" verdict, said at info.
+    let mut lag_accounts: BTreeSet<AccountId> = BTreeSet::new();
+    let mut lag_held: BTreeSet<AccountId> = BTreeSet::new();
+    let mut lag_assets: BTreeSet<ObjId> = BTreeSet::new();
+    let mut lag_holds: BTreeSet<HoldId> = BTreeSet::new();
+    if let Some(c) = covered {
+        // The fold's last touch decides what a stored sequence alone cannot
+        // (J3-F3): a claim AT the touch is judged at the value — a real first
+        // touch at seq 0 included, which `last_journal_seq == 0` also spells
+        // as the never-touched sentinel; a touch PAST the claim lags — the
+        // sentinel on an account the journal did touch included; no touch, or a
+        // touch before the claim, is left to the verdicts below (an untouched
+        // sentinel is nothing to judge; a claim the journal never made is B5).
+        for (id, a) in &stored_accounts {
+            if a.last_journal_seq <= c {
+                match state.last_touch.get(id) {
+                    Some(&t) if t == a.last_journal_seq => {
+                        snapshot_at_stored.insert(*id, state.running.get(id).copied().unwrap_or(0));
+                    }
+                    Some(&t) if t > a.last_journal_seq => {
+                        lag_accounts.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+            if a.last_hold_seq <= c {
+                match state.last_hold_touch.get(id) {
+                    Some(&t) if t == a.last_hold_seq => {
+                        held_at_stored
+                            .insert(*id, state.running_held.get(id).copied().unwrap_or(0));
+                    }
+                    Some(&t) if t > a.last_hold_seq => {
+                        lag_held.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (object, a) in &stored_assets {
+            if a.last_journal_seq <= c {
+                match state.journal_assets.get(object) {
+                    Some(j) if j.last_journal_seq == a.last_journal_seq => {
+                        asset_at_stored.insert(*object, j.clone());
+                    }
+                    Some(j) if j.last_journal_seq > a.last_journal_seq => {
+                        lag_assets.insert(*object);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (id, h) in &stored_holds {
+            if h.last_journal_seq <= c {
+                match state.journal_holds.get(id) {
+                    Some(j) if j.last_journal_seq == h.last_journal_seq => {
+                        hold_at_stored.insert(*id, j.clone());
+                    }
+                    Some(j) if j.last_journal_seq > h.last_journal_seq => {
+                        lag_holds.insert(*id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let lagging = lag_accounts.len() + lag_held.len() + lag_assets.len() + lag_holds.len();
+        if lagging > 0 {
+            tracing::info!(
+                accounts = lag_accounts.len(),
+                held = lag_held.len(),
+                assets = lag_assets.len(),
+                holds = lag_holds.len(),
+                covered_seq = c,
+                "economy: documents lagging a pre-checkpoint version are healed unverified (doc 12 §5.5)"
+            );
+        }
+    }
+
+    let ProjectionRepairs {
+        mut frozen,
+        healed,
+        mut healed_assets,
+        healed_holds,
+    } = reconcile_boot_projections(ProjectionInputs {
+        meta: &meta,
+        state: &state,
+        snapshot: &mut snapshot,
+        stored_accounts,
+        stored_assets: &mut stored_assets,
+        stored_holds: &mut stored_holds,
+        journal_max,
+        snapshot_at_stored: &snapshot_at_stored,
+        held_at_stored: &held_at_stored,
+        asset_at_stored: &asset_at_stored,
+        hold_at_stored: &hold_at_stored,
+        lag_accounts: &lag_accounts,
+        lag_held: &lag_held,
+        lag_assets: &lag_assets,
+        lag_holds: &lag_holds,
+    });
+
+    // ---- E3: vaults -------------------------------------------------------
+    let mut healed_vaults: Vec<Vault> = Vec::new();
+    for (_, mut v) in stored_vaults {
+        if v.status == VaultStatus::Active && !backing_usable(ctx.w, providers, &v) {
+            tracing::warn!(
+                vault = v.id.0,
+                "economy: vault backing is gone or unusable; freezing the vault"
+            );
+            v.status = VaultStatus::Frozen;
+            v.revision += 1;
+            healed_vaults.push(v.clone());
+        }
+        snapshot.put_vault(v);
+    }
+
+    // ---- E3b2: approval requests (leaf docs, §4.1) ------------------------
+    //
+    // Three directional rules, all of which move a request toward "not usable":
+    // a Pending request the journal proves was spent becomes `Consumed` (healed by
+    // ID, never by hash); one past its TTL becomes `Expired`; and a long-dead one is
+    // garbage-collected. Nothing here ever revives a request.
+    let now = ctx.w.now();
+    let mut healed_approvals: Vec<ApprovalRequest> = Vec::new();
+    let mut dropped_approvals: Vec<ApprovalRequestId> = Vec::new();
+    let max_stored_approval: Option<u64> = stored_approvals.keys().map(|id| id.0).max();
+    for (id, mut r) in stored_approvals {
+        if r.status == crate::record::ApprovalStatus::Pending {
+            if let Some(tx) = state.consumed_approval.get(&id) {
+                tracing::warn!(
+                    approval = id.0,
+                    transaction = tx.0,
+                    "economy: approval doc lags the journal; marking it consumed"
+                );
+                r.status = crate::record::ApprovalStatus::Consumed { transaction: *tx };
+                r.revision += 1;
+                healed_approvals.push(r.clone());
+            } else if now >= r.expires_at {
+                r.status = crate::record::ApprovalStatus::Expired;
+                r.revision += 1;
+                healed_approvals.push(r.clone());
+            }
+        }
+        // GC: a dead request stops being an audit trail long before it stops being
+        // clutter. `Consumed` requests are NEVER collected — they are the other end
+        // of a journal entry's `consumed_approval`.
+        let dead = matches!(
+            r.status,
+            crate::record::ApprovalStatus::Expired | crate::record::ApprovalStatus::Cancelled
+        );
+        if dead && now.saturating_sub(r.expires_at) > crate::APPROVAL_GC_AFTER_SECS {
+            dropped_approvals.push(id);
+            continue;
+        }
+        snapshot.put_approval(r);
+    }
+
+    // ---- E4b1: cadence clocks (containers) -------------------------------
+    for (_, c) in stored_cadences {
+        snapshot.put_cadence(c);
+    }
+
+    // ---- E4b1: escalation records (leaf docs, §4.6) -----------------------
+    //
+    // One directional rule, and it only ever moves a record toward "gone": an
+    // ACKNOWLEDGED alert older than the retention window is collected. An open one is
+    // never touched — it is the only thing still saying a human has to look.
+    let mut escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
+    let mut dropped_escalations: Vec<EscalationId> = Vec::new();
+    for (id, e) in stored_escalations {
+        let collectable = e
+            .acked_at
+            .is_some_and(|at| now.saturating_sub(at) > ESCALATION_GC_AFTER_SECS);
+        if collectable {
+            dropped_escalations.push(id);
+            continue;
+        }
+        escalations.insert(id, e);
+    }
+    // The escalation allocator has to be live BEFORE obligation reconciliation, which
+    // may open records of its own.
+    let mut next_escalation = meta_u64(&meta, "next_escalation_id")
+        .max(next_after(max_escalation_key))
+        .max(next_after(escalations.keys().map(|i| i.0).max()));
+    // Boot's own level-2 records, capped at `MAX_BOOT_ESCALATIONS` across BOTH
+    // reconciliation passes: a broken world must not mint an unbounded alert storm,
+    // and the subject is stopped either way.
+    let mut opened_escalations: Vec<Escalation> = Vec::new();
+
+    let healed_contracts = reconcile_boot_contracts(ContractReconciliation {
+        stored_contracts,
+        state: &state,
+        snapshot: &mut snapshot,
+        outcomes,
+        tx_index: &tx_index,
+        boot_gate: &boot_gate,
+        idem_backfilled,
+        key_filter: &key_filter,
+        heal_wanted: &mut heal_wanted,
+        frozen: &mut frozen,
+        opened_escalations: &mut opened_escalations,
+        next_escalation: &mut next_escalation,
+        now,
+    });
+
+    let healed_obligations = reconcile_boot_obligations_and_custody(RemainingReconciliation {
+        world: ctx.w,
+        providers,
+        stored_obligations,
+        snapshot: &mut snapshot,
+        opened_escalations: &mut opened_escalations,
+        next_escalation: &mut next_escalation,
+        escalations: &mut escalations,
+        state: &state,
+        healed_assets: &mut healed_assets,
+        now,
+    });
 
     // Conservation tripwire (R-R5): with a zero start and all mint/burn through a
     // system source/sink, every instrument's balances sum to exactly zero. A
@@ -1753,7 +2437,31 @@ pub(crate) fn load_boot(
     // stored docs, after the journal fold), so the membership filter runs here, once,
     // against the assembled snapshot.
     debit_window.retain(|account, _| crate::module::account_windowed(&snapshot, *account));
-    let store = EconomyStore::from_parts(BootParts {
+    if frozen && (require_filing_receipts || !state.filing_receipts.uninitialized()) {
+        snapshot.managed_titles = crate::managed_title::ManagedTitleIndex::Unavailable;
+    } else if require_filing_receipts || !state.filing_receipts.uninitialized() {
+        state.filing_receipts.finish_replay().map_err(|error| {
+            ModError::msg(format!("economy: filing receipt replay refused: {error}"))
+        })?;
+        snapshot.managed_titles =
+            crate::managed_title::ManagedTitleIndex::from_filings(&state.filing_receipts)
+                .map_err(|_| ModError::msg("economy: managed title history refused"))?;
+        state
+            .charter_transfer_receipts
+            .verify_lineages(&state.filing_receipts, &state.journal_assets)
+            .map_err(|_| {
+                ModError::msg("economy: managed charter lineage differs from complete history")
+            })?;
+    }
+    if frozen && (require_core_receipts || require_refit_receipts) {
+        snapshot.managed_titles = crate::managed_title::ManagedTitleIndex::Unavailable;
+    } else if !frozen {
+        snapshot.managed_titles = snapshot
+            .managed_titles
+            .with_cores(&state.core_receipts)
+            .map_err(|_| ModError::msg("economy: managed Core title history refused"))?;
+    }
+    let mut store = EconomyStore::from_parts(BootParts {
         snapshot,
         journal,
         transactions,
@@ -1792,6 +2500,10 @@ pub(crate) fn load_boot(
         boot_frozen,
         frozen,
     });
+    store.renewal_offers = renewal_offers;
+    store.renewal_inventory_checked = true;
+    store.house_renewal_offers = house_renewal_offers;
+    store.house_renewal_inventory_checked = true;
     // Persist `meta` at the END of every boot, always. Two things ride on it and
     // both were previously RAM-only until the next post happened to write one: the
     // whole-economy **freeze latch** (a boot that froze, healed, and never wrote it

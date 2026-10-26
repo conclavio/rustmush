@@ -75,6 +75,10 @@ word = "+history"
 reason = "the same front-end scrollback reader under its older spelling"
 
 [[token]]
+word = "+actions"
+reason = "the gateway intercepts it to discover current legal offers (mush-gateway/src/bridge_common.rs), before the world command registry"
+
+[[token]]
 word = "+act"
 reason = "the gateway intercepts it to take an offered action (mush-gateway/src/bridge_common.rs)"
 

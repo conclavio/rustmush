@@ -1020,6 +1020,29 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.inputs.len(),
                 def.outputs.len()
             ),
+            PackEntry::HardwareRecipe(def) => {
+                use mush_economy::core_integration::CoreClass;
+                format!(
+                    "{} — Class I/II/III: {}/{}/{} hourly work units",
+                    def.label(),
+                    def.work_units(CoreClass::I),
+                    def.work_units(CoreClass::II),
+                    def.work_units(CoreClass::III)
+                )
+            }
+            PackEntry::HardwareCatalogue(def) => {
+                use mush_economy::core_integration::CoreClass;
+                format!(
+                    "governed cores I/II/III: {}/{}/{} cr; fitting {} cr; Basin monthly dies {}/{}/{}",
+                    def.finished_minor(CoreClass::I) / 100,
+                    def.finished_minor(CoreClass::II) / 100,
+                    def.finished_minor(CoreClass::III) / 100,
+                    def.fitting_minor() / 100,
+                    def.monthly_dies()[0],
+                    def.monthly_dies()[1],
+                    def.monthly_dies()[2]
+                )
+            }
             PackEntry::Location(def) => format!("{} [{}]", def.label, def.role),
             // E7 cut 3: the authored **bands** and never the authored reserve.
             // `@tacsim/pack show` is a staff-adjacent catalogue read, but the

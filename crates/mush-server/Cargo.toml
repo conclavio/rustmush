@@ -95,6 +95,8 @@ sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Explicit production commerce roster tests use real Roll configuration types.
+mush-roll.workspace = true
 fred.workspace = true
 mush-contract-tests.workspace = true
 # 16b cut R-b: the platform tests that used the deleted game rulesets as sheet /

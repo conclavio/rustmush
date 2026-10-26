@@ -71,7 +71,7 @@ impl Branch {
         serial: u64,
         parent_event: usize,
         memory_allowed: bool,
-    ) -> Result<Self, BulkError> {
+    ) -> Result<Box<Self>, BulkError> {
         arena.arena_cfg.snapshot_max_bytes = CHECKPOINT_BYTES;
         crate::arena::snapshot_capacity::admit(&arena)
             .map_err(|_| invalid("fork state exceeds the reserved capacity"))?;
@@ -80,7 +80,7 @@ impl Branch {
         arena.tape_witnesses.disable();
         let clock = arena.clock.replay_state();
         let wall = arena.clock.replay_wall_ms().unwrap_or(0);
-        Ok(Self {
+        Ok(Box::new(Self {
             timeline: Timeline::Fork {
                 serial: serial.to_string(),
                 parent_event,
@@ -101,7 +101,7 @@ impl Branch {
             cursor: 0,
             possessed: false,
             refusals: Vec::new(),
-        })
+        }))
     }
     pub fn arena(&self) -> Option<&Arena> {
         self.arena.as_ref()
@@ -485,7 +485,7 @@ mod tests {
         Channel, Controller, Team,
         test_support::{arena_of, pose, tank},
     };
-    fn branch() -> Branch {
+    fn branch() -> Box<Branch> {
         let mut red = tank(ObjId(4), Team::Red, pose(1500, 4500));
         red.weapons.push(crate::arena::test_support::cannon());
         red.controller = Controller::Mind;
@@ -501,7 +501,7 @@ mod tests {
             .unwrap()
             .epochs
             .current(ObjId(4), Channel::Helm);
-        assert!(branch.command("STARTUP").is_err());
+        assert!(crate::test_checks::is_refusal(branch.command("STARTUP")));
         branch.possess(true).unwrap();
         let arena = branch.arena.as_mut().unwrap();
         assert_eq!(arena.unit(ObjId(4)).unwrap().controller, Controller::Pilot);
@@ -523,7 +523,7 @@ mod tests {
             Controller::Mind
         );
         assert!(!branch.possessed());
-        assert!(branch.command("HEADING 90").is_err());
+        assert!(crate::test_checks::is_refusal(branch.command("HEADING 90")));
     }
     #[test]
     fn station_parser_uses_only_own_carried_weapons_and_visible_contacts() {
@@ -552,7 +552,9 @@ mod tests {
             branch.command("HEADING 90").unwrap();
         }
         let hash = crate::arena::state_hash(branch.arena().unwrap());
-        assert!(branch.command("HEADING 180").is_err());
+        assert!(crate::test_checks::is_refusal(
+            branch.command("HEADING 180")
+        ));
         assert_eq!(branch.inputs.len(), INPUT_COUNT);
         assert_eq!(crate::arena::state_hash(branch.arena().unwrap()), hash);
     }

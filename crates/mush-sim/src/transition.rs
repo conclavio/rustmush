@@ -23,6 +23,9 @@ use crate::graph::{ancestors, project, rebuild};
 /// Why a transition was refused. Nothing was mutated.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SpatialError {
+    /// A dedicated IC owner retains this hull until its genuine close event.
+    #[error("{0} is held by IC custody")]
+    IcCustody(ObjId),
     /// The object does not exist or is being destroyed.
     #[error("{0} does not exist (or is being destroyed)")]
     NoSuchObject(ObjId),
@@ -953,6 +956,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             plan.set_placements.push(rec);
         }
     }
+    crate::ic_exclusion::check_plan(w, &plan)?;
     Ok(plan)
 }
 
@@ -969,6 +973,9 @@ pub fn apply(
     out: &mut Outbox,
     plan: Plan,
 ) -> Result<(), SpatialError> {
+    // Public callers may retain a previously checked plan. Recheck dedicated
+    // IC custody before the first audit allocation, projection or state write.
+    crate::ic_exclusion::check_plan(w, &plan)?;
     let prepared_audit = if plan.audit.is_null() {
         None
     } else {

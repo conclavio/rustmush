@@ -99,4 +99,39 @@ describe("owned mind working copies", () => {
     expect(store.names).toEqual(["other"]);
     expect(store.notice).toContain("existing seals remain");
   });
+  it("requests an attributed entry by name without reading source or clearing it optimistically", async () => {
+    const rpc = vi.fn<MindRpc>().mockResolvedValueOnce({ status: "library", names: ["mine"] })
+      .mockResolvedValueOnce({ status: "removal_requested", name: "mine" });
+    const store = new MindsStore(rpc);
+    await store.show(); await store.removeAttributed("mine");
+    expect(rpc.mock.calls[1]![0]).toEqual({ op: "remove", name: "mine" });
+    expect(store.names).toEqual(["mine"]); expect(store.draft).toBeNull();
+    expect(store.removalRequested).toEqual(["mine"]); expect(store.notice).toContain("requested");
+    await store.removeAttributed("mine"); expect(rpc).toHaveBeenCalledTimes(2);
+    rpc.mockResolvedValueOnce({ status: "library", names: ["mine"] });
+    await store.show(); expect(store.removalRequested).toEqual(["mine"]);
+    rpc.mockResolvedValueOnce({ status: "library", names: [] });
+    await store.show(); expect(store.removalRequested).toEqual([]); expect(store.notice).toContain("no longer appears");
+  });
+  it("retains an uncertain removal without replay and accepts only explicit refusal or library absence", async () => {
+    const rpc = vi.fn<MindRpc>().mockResolvedValueOnce({ status: "library", names: ["mine"] })
+      .mockRejectedValueOnce(new Error("connection unavailable"));
+    const store = new MindsStore(rpc); await store.show(); await store.removeAttributed("mine");
+    expect(store.removalRequested).toEqual(["mine"]); expect(store.names).toEqual(["mine"]);
+    await store.removeAttributed("mine"); expect(rpc).toHaveBeenCalledTimes(2);
+    store.clear(); expect(store.removalRequested).toEqual([]);
+    rpc.mockResolvedValueOnce({ status: "library", names: ["mine"] })
+      .mockResolvedValueOnce({ status: "error", code: "stale", message: "Unavailable" });
+    await store.show(); await store.removeAttributed("mine");
+    expect(store.removalRequested).toEqual([]); expect(store.names).toEqual(["mine"]);
+  });
+  it("keeps the loaded draft and base when lifecycle removal is only requested", async () => {
+    const rpc = vi.fn<MindRpc>().mockResolvedValueOnce(read())
+      .mockResolvedValueOnce({ status: "removal_requested", name: "mine" });
+    const store = new MindsStore(rpc); await store.load("mine");
+    const before = store.draft; await store.lifecycle({ kind: "remove" });
+    expect(store.draft).toEqual(before); expect(store.base).toEqual({ edit: 3, revision: 1 });
+    expect(store.removalRequested).toEqual(["mine"]); expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
 });

@@ -1467,6 +1467,9 @@ impl Default for TacsimCommandCfg {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimMindsCfg {
+    /// Explicit bounded named-launch deployment JSON. Absent keeps all launch
+    /// owners and content publication routes disabled.
+    pub launch_path: Option<String>,
     /// Independent proving worker threads; 1–8, separate from live minds.
     pub proving_workers: usize,
     /// Maximum queued private jobs; 1–128.
@@ -1533,6 +1536,7 @@ pub struct TacsimMindsCfg {
 impl Default for TacsimMindsCfg {
     fn default() -> Self {
         TacsimMindsCfg {
+            launch_path: None,
             proving_workers: 1,
             proving_queued: 32,
             proving_daily_unit_minutes: 2_000,

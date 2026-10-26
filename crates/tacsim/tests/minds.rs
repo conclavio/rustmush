@@ -3447,9 +3447,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x9a92_d1a3_e3d7_284c),
-            Some(0xade7_0222_c151_7f03),
-            Some(0xd763_0ae7_1acf_63f7)
+            Some(0x2fde_0a11_f694_234e),
+            Some(0x8dcb_ccd8_aeed_9ed9),
+            Some(0xf93e_4819_dcdc_9eab)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -5772,6 +5772,55 @@ fn charge_run(charge: Charge, stop_at_fire: bool) -> (Rig, Vec<Kept>) {
     (rig, kept)
 }
 
+#[test]
+fn l2_a_self_charged_support_expires_once_as_engage() {
+    let mut rig = Rig::new(charge_field());
+    let first = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(order(
+            RED_ONE,
+            Objective::Support { of: RED },
+            Some(RED2),
+            1_000,
+        ))),
+        1,
+    );
+    let _ = rig.pulse(&[], &[first]);
+    let held = rig.arena.frame_order(RED).expect("the self-charge landed");
+    assert_eq!(held.objective, MindObjective::Engage { target: None });
+    let deadline = held.expires_ms;
+    assert_eq!(rig.arena.minds[&RED].order_charge, None);
+    assert!(rig.lines("order_expired", RED).is_empty());
+
+    let _ = rig.until(deadline + 3 * STOCK_THINK_MS, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.order.is_none())
+    });
+    assert!(
+        rig.arena.now_ms >= deadline,
+        "the self-charge did not expire early"
+    );
+    let state = &rig.arena.minds[&RED];
+    assert_eq!(state.order_issuer, None);
+    assert_eq!(state.order_charge, None);
+    let after = rig.arena.now_ms + 3 * STOCK_THINK_MS;
+    let _ = rig.until(after + SUBSTEP, |arena| arena.now_ms >= after);
+    let expired: Vec<_> = rig
+        .journal()
+        .into_iter()
+        .filter(|event| event.kind.as_str() == "order_expired")
+        .collect();
+    assert_eq!(expired.len(), 1);
+    assert!(expired[0].t_ms >= deadline);
+    let line = serde_json::to_value(&expired[0].kind).expect("expiry event");
+    assert_eq!(line["unit"], serde_json::json!(RED.0));
+    assert_eq!(line["squad"], serde_json::json!("red-1"));
+    assert_eq!(line["objective"], serde_json::json!("engage"));
+}
+
 /// **A self-charged `Support` fights on doctrine** (17b cut L.2; the plan's
 /// Q-L6; D-UM-15; M1a.6's residual (3), reachable now that a mind's hull is in
 /// a squad). `rekey_order` re-keys `Support { of: self }` through the
@@ -6742,15 +6791,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,

@@ -39,6 +39,8 @@
 //! fail-closed argument: a `Fact`-gated contract in a world where the owning module
 //! is not loaded waits forever rather than paying out on a question nobody asked.
 
+pub mod scoped;
+
 use std::sync::Arc;
 
 use mush_core::{ObjId, World};
@@ -74,6 +76,43 @@ pub trait FactProvider: Send + Sync + std::fmt::Debug {
     /// Resolve one fact, or `None` for *unknown* — an unrecognized `kind`, a record
     /// that does not exist, or a `revision` the provider considers stale.
     fn resolve(&self, w: &World, kind: &str, id: &str, revision: Option<u64>) -> Option<FactState>;
+
+    /// Opt in per reference. The unscoped bridge refuses such references even if
+    /// an implementation accidentally answers them in `resolve`.
+    fn requires_scope(&self, _fact: &ExternalRef) -> bool {
+        false
+    }
+
+    /// Authorize attachment, disclosure or use of this exact reference against
+    /// actual dispatch and contract scope. Opt-in defaults to refusal. Event
+    /// attribution and arbitrary party membership are never subject authority.
+    fn authorize_scope(&self, _ctx: &scoped::ScopedFactContext<'_>, _fact: &ExternalRef) -> bool {
+        false
+    }
+
+    /// Called only after scope authorization. This grants no mutation authority.
+    fn resolve_scoped(
+        &self,
+        ctx: &scoped::ScopedFactContext<'_>,
+        fact: &ExternalRef,
+    ) -> Option<FactState> {
+        self.resolve(
+            ctx.world(),
+            fact.kind.as_str(),
+            fact.id.as_str(),
+            fact.revision,
+        )
+    }
+
+    /// Request immutable owner services under the actual Economy registrar.
+    /// Other consumers must obtain their own registered handles; a public API
+    /// call does not change its dispatch's owner identity.
+    fn register_scoped(
+        &self,
+        _reg: &mut mush_core::module::Registrar<'_>,
+    ) -> Result<(), mush_core::module::ModError> {
+        Ok(())
+    }
 }
 
 /// The wiring-frozen provider table (an `Arc` so the store can hand out cheap
@@ -101,6 +140,9 @@ impl WorldFacts<'_> {
             .providers
             .iter()
             .find(|p| p.provider() == fact.provider.as_str())?;
+        if provider.requires_scope(fact) {
+            return None;
+        }
         provider.resolve(self.w, fact.kind.as_str(), fact.id.as_str(), fact.revision)
     }
 }

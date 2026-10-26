@@ -452,16 +452,18 @@ impl Outbox {
     #[must_use]
     pub fn authoritative_pending(&self, actor: ObjId) -> bool {
         self.pending_authoritative.contains(&actor)
-            || self.deferred.iter().any(
-                |d| matches!(d, Deferred::AuthoritativeSubmit(request) if request.actor == actor),
-            )
+            || self.deferred.iter().any(|d| match d {
+                Deferred::AuthoritativeSubmit(request) => request.actor == actor,
+                Deferred::ObservedAuthoritativeSubmit(request) => request.actor() == actor,
+                _ => false,
+            })
     }
 
     /// Whether the engine's authoritative submit queue is full for a new
     /// actor (doc 18 cut IC14 row 2): the number of **distinct** actors in
     /// the noted set (exactly the engine queue's keys at the note) together
-    /// with the actor of every [`Deferred::AuthoritativeSubmit`] this outbox
-    /// already carries is at least
+    /// with the actor of every ordinary or observed authoritative submission
+    /// this outbox already carries is at least
     /// [`AUTHORITATIVE_SUBMIT_QUEUE_MAX`](crate::engine::AUTHORITATIVE_SUBMIT_QUEUE_MAX).
     ///
     /// It mirrors [`authoritative_pending`](Self::authoritative_pending)'s
@@ -480,8 +482,14 @@ impl Outbox {
     pub fn authoritative_queue_full(&self) -> bool {
         let mut actors: std::collections::BTreeSet<ObjId> = self.pending_authoritative.clone();
         for d in &self.deferred {
-            if let Deferred::AuthoritativeSubmit(request) = d {
-                actors.insert(request.actor);
+            match d {
+                Deferred::AuthoritativeSubmit(request) => {
+                    actors.insert(request.actor);
+                }
+                Deferred::ObservedAuthoritativeSubmit(request) => {
+                    actors.insert(request.actor());
+                }
+                _ => {}
             }
         }
         actors.len() >= crate::engine::AUTHORITATIVE_SUBMIT_QUEUE_MAX

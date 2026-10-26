@@ -2,7 +2,10 @@
 //!
 //! This crate owns drafts, immutable revision envelopes, selections and explicit
 //! retention records. Game semantics and source storage belong to caller adapters.
-//! It has no simulation, script, market, licence or settlement dependency.
+//! Commercial values and closed first-filing owner adapters live in [`commerce`].
+//! Data decoding never grants rights. Only actual registered owner composition
+//! can activate filing. The closed IC writer consumes concrete Tactics and Sim
+//! owner outputs; it has no Tacsim engine, interpreter or Market dependency.
 //!
 //! Every mutation is prepared, validated and fully serialized before publication.
 //! A caller publishes both owners inside one world operation and queues all their
@@ -20,6 +23,15 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption for `panic_in_result_fn`, so a test or
+// fixture helper that returns `Result` checks with `check!`/`check_eq!`/
+// `check_ne!` — its asserts as early `Err` returns. Declared before every other
+// module because `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
+pub mod commerce;
 mod model;
 mod owner;
 

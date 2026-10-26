@@ -44,6 +44,7 @@
 /// **16b cut I.1**: the fixture yard both fixture blessers draw on.
 pub mod yard;
 
+mod api4_identity;
 /// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
 /// fixed gateway-account oracle and the deposit-count rig's three geology tables.
 pub mod claims;
@@ -68,6 +69,7 @@ pub mod moon;
 pub mod ore;
 pub mod rig;
 pub mod scripted;
+pub use api4_identity::Api4SealHashControl;
 /// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants; since
 /// SM.6 also the helpers that open a keyed site.
 pub mod sites;
@@ -1021,6 +1023,26 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
     .expect("the shipped-scale arena checks out");
     install_sealed(&mut arena, &sources);
     arena
+}
+
+/// The same real shipped check-out and arena construction, retaining the actual
+/// custody seals for an identity-only hash control after the run has settled.
+pub fn shipped_arena_with_api4_hash_control(
+    world: &TestWorld,
+    sides: &[&[Muster]],
+) -> (Arena, Api4SealHashControl) {
+    let custody = shipped_custody_seeded(world, sides, SEED);
+    let identity = Api4SealHashControl::capture(&custody.units);
+    let sources = sealed_sources(&custody.units);
+    let mut arena = Arena::new(
+        custody,
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the shipped-scale arena checks out");
+    install_sealed(&mut arena, &sources);
+    (arena, identity)
 }
 
 /// **The source a fixture's seal may name, by its SHA-256** (17b cut M3.5):

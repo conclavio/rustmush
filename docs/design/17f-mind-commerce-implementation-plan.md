@@ -1,32 +1,1838 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-Implementation continuation, 2026-10-18, on `codex/unit-minds-through-m6`.
+## Current status — green integration, 2026-10-22 (runs completed 2026-10-23 00:21 UTC)
+
+**M7's integration is green on one commit.** At `1e26aee6` (branch
+`codex/unit-minds-through-m6`, main merged in at `ba360da5`) a single run, on
+the Linux host CI mirrors, passed with zero failures:
+
+- the workspace test sweep (`cargo nextest run --workspace --exclude mush-bot`,
+  then `-p mush-bot`, the split CI's `Test` step uses so `mush-bot`'s
+  `serde_json/arbitrary_precision` never unifies into the worldgen tests):
+  `9,478` + `718` tests, 0 failed, 0 timed out;
+- the four `#[ignore]` commerce stories, exactly one test each, serial
+  (`ci.yml` job `mind-commerce-acceptance`): the author/buyer lifecycle
+  (`2,938` s), server persistence and uncertain acknowledgement
+  (`7,644` s), Conduct and qualified coverage (`1,338` s), the
+  named launch catalogue (`6,465` s);
+- the eight Redis scopes of the `redis-faults` job, against a private Redis 8
+  with `rejson` and `redisearch`;
+- `cargo fmt --all --check`, the `M7 memory-size limits` clippy step, `cargo doc
+  --workspace --no-deps --document-private-items` and the doctests.
+
+The stories are now scheduled (daily cron, or `workflow_dispatch`), not
+push-time: the server story alone paces a Registry lease through real
+maintenance ticks at roughly three seconds each (about two hours).
+
+### What it took (2026-10-21 → 22)
+
+Codex's checkpoint of 2026-10-20 had never completed a full run; the stories had
+never run past their first failing phase, so each run only ever showed the next
+one. The campaign ran the purchase story about thirty times on the host,
+fixing one or two phases a run, until a side-branch filter and a
+record-and-continue collector (both test-only, both since removed) let one run
+list everything left. Of what it found:
+
+- **Production defects (fixed on this branch):**
+  - `roll_mind_lapse_occurrences` had no `valid_key` shape, so no lapse
+    occurrence could be read or recorded and every scoped `licence.lapsed`
+    fact attachment was refused (`families.rs`).
+  - Economy booted over a renewal **service closure** without the service-close
+    action in its composition — proof it could not audit; it now refuses, for
+    personal and House renewals alike.
+  - Paid resale of a licence born from a **legacy original-purchase quote**
+    read the live quote that funding had already retired; it now reads the
+    quote retained on the purchase operation (the licence's birth).
+  - The legacy purchase **boot audit** refused any world after a resale,
+    comparing the current pointer with the original holder; it now checks the
+    birth form and proves the holder chain, as the entitlement audit did.
+  - IC claim **reconstruction** restored `next_transition` but not
+    `generation`, so a reboot after any claim left an observation the paid
+    resale and pending-charter checks refuse.
+  - `offer_contract` asserted an allocator preflight; it refuses instead (the
+    crate denies `panic_in_result_fn`).
+  - Outside M7: the arena **hydrate-sample validation** (`arena/runtime.rs`)
+    rejects valid samples — the same code is on `main` and dev1.
+  - mush-core gained **read-only state-family grants** (`grant_state_family_read`)
+    so Market can audit Roll families it may not write; the Roll root-anchor
+    allow-list became an exhaustive match.
+- **Test-side contradictions of production rules**, each fixed in the test:
+  market actions need the actor in ROOM (#0) while a fresh boot seats everyone
+  in the lobby (#9), and SIM commands need the lobby; core admits one pending
+  commit per engine, so a second action under a prepared or staged one must be
+  asserted refused, never landed; contracts settle only in the 30 s Economy
+  sweep; generations and ids are decimal strings in JSON; single-row helpers
+  after a second row exists; a refused staff command is asserted, not
+  propagated; a Follow owner licence reads no source after withdrawal;
+  `/filed` lists owner licences only (owner ruling — the paid-holdings listing
+  is a follow-up); a staged action refuses to share a step with legacy object
+  mutations, so fixture seat changes drain `take_dirty()`; `bench_eval_ops`
+  defaults to its maximum.
+- **The size-lint step** failed on none of the four size lints: the six crates'
+  pre-M7 `#![deny(clippy::panic_in_result_fn, …)]` roots (WS01-S12) forbid
+  `assert!` in `-> Result` functions, which M7's new tests used throughout.
+  Those tests now return early `Err`s through per-crate test-only `check!`
+  macros (no `allow` anywhere; `restriction_lints` forbids them), and the
+  production `indexing_slicing`/`unreachable!` sites in Roll's charter-pending,
+  charter-transfer, recall and revocation code became checked accesses that
+  refuse. `5,853` sites across `five crates (mush-economy, mush-roll, mush-industry, mush-market, tacsim)`.
+
+No balance, hold, escrow or ledger assertion failed at any point: every defect
+was in the per-product commerce glue, none in the economy core.
+
+### Outside "integration green" (unchanged, explicit)
+
+- Standard workspace `cargo clippy -- -D warnings` is still red (about 1,700
+  warnings, mostly unused imports and complexity in M7 crates).
+- Web/frontend checks, the cross-host (Windows) lane and the separate M6
+  24-mind scale replay were not run.
+- The branch is **not merged into main** and not deployed (dev1 stays at
+  `8c648527`; dev2 at main). The arena hydrate fix is the one commit `main`
+  needs regardless.
+
+### Merged with main for CI (2026-10-24, branch `claude/m7-remerge`, PR #5)
+
+The line was merged with `main` up to `8cc0aa64`. That redid the 2026-10-23
+merge `2eb7f840`, which did not compile, from `a5a7c14c`. The merge settled
+three things that neither side's own suite could see:
+
+- **IPC version 11.** M7's 8 (FiledSource) and 9 (attributed Remove) stack on
+  main's 8 (world health) and 9 (reply framing).
+- **The D-UM-28 cross-platform corpus pins are re-blessed.** M7's `ec886bb4`
+  raised the mind API to 5. That moved `MIND_ABI`, the Standard Doctrine's
+  sealed identity and so every seal the state hash folds, but the `#[ignore]`d
+  pin was never moved with it. A bisect over the line found that commit the
+  only mover. Stopping times and the float probe are unmoved, and Windows and
+  Linux agree on the new values.
+- **The 16b harness baseline's five deterministic leaves moved for the same
+  reason.** These are the four minds lanes' `final_substep_hash` values and
+  `ledger_bytes_streamed` (+562 bytes). Setting only the API back to 4
+  restores all five exactly, and `origin/main` alone matches the old values.
+  They are recorded as `blessed.m7_deterministic_update` beside M6's; the VPS
+  timings and blessing host are unchanged.
+- **The M6 author story's frozen-game decoder now reads tape format 2.** M7's
+  `31d19f25` raised `TAPE_FORMAT`, because opening snapshots and seals carry
+  the filed certificates, but the dispatch-only story still pinned format 1.
+- **Merge-made repairs:** the SM.6/SM.10 industry seams run through M7's split
+  registration helpers, and the composed scheduled path seeds main's
+  `completes` flag.
+
+The first PR run also showed the docs job's `unused_parens` and the features
+job's first lints; both are fixed.
+
+### Follow-ups the campaign surfaced
+
+- A paid-holdings listing for `/filed` (owner: keep original-owner only for now).
+- `registry_recall::notice::tick` aborts a whole notice round when one
+  connected holder's holding fails to read; skipping that holder is arguably
+  right.
+- Server Registry pacing: about 3–7 s per lease, about two hours per rating.
+- M7 implements "a sale" six separate ways (legacy original, entitlement,
+  House, paid resale, charter transfer, personal/House renewal), each with its
+  own records, boot audit and lifecycle copy; two of the defects above were one
+  copy lagging another. A shared instrument lifecycle (birth, holder chain,
+  terms, renewal, audit written once and configured per product) is the right
+  next design conversation before another feature needs sales or transfers.
+
+### Rerunning the exact checks
+
+The commands are CI's own (`.github/workflows/ci.yml`): the `Test` step's split
+sweep, the `mind-commerce-acceptance` matrix (one `cargo test --locked -p
+<package> --lib <test> -- --ignored --exact --test-threads=1` per story), the
+`redis-faults` job's eight commands with `REDIS_URL` set, and the `Format`,
+`M7 memory-size limits` and documentation steps. Expect exactly one executed
+test per story command. Keep the normal stack size; nothing here needs
+`RUST_MIN_STACK`.
+
+<details>
+<summary>Historical checkpoints and evidence (Codex, N35–V18) — superseded by the status above</summary>
+
+### N111 full-run checkpoint
+
+The frozen candidate was tree
+`4f1d6a0b58af55ff87b932c45e3fa0e6de6acd5b`. Its sealed full-run archive SHA-256 is
+`c6c7a78783530708aa8e56089747bcf16ceb281186965aa9d7203bb148755d76`.
+Compilation and all 29 commerce-roster tests passed. The next stage, the exact
+ignored genuine purchase story, aborted with a stack overflow during its initial
+fixture construction. The complete source census remained unchanged. The other
+73 stages and all eight isolated Redis scopes were unrun.
+
+Exact-binary GDB diagnosed a 2,014,256-byte frame in the story test, before the
+actual purchase scenario began. The GDB record SHA-256 is
+`530fb35a60b6cbeabf9178523bc0cabcaf44f9e0e5244a413f5db4957d8e812c`.
+The reviewed fixture repair
+`5ad87db36c05bbcf8f5ec5da480a814e45494d188b8a20d86c15414f48e8287c`
+boxes `PurchaseFixture.engine` and keeps construction behind a non-inline
+boundary. The entire story body, assertions, child flows, module roster and
+cleanup order are unchanged. It does not increase the test stack.
+
+### First N111 four-story diagnostic — second measured stack abort
+
+The first temporary run started from that exact N111 source with only the
+reviewed purchase-fixture repair. Its input archive SHA-256 was
+`51713967dc3316c34d58e6d8da4ac98c402641e26b6030800d1f7ba6fc8482b4`;
+the runner SHA-256 was
+`34c0df61d3e711451862963c40f4e286ea6bdb835ad8549b87cd0ecb05ed67c8`.
+It finished the genuine Registry phase and entered the House branch, then stopped
+on a second stack overflow. The other three stories did not execute. The private
+purchase log SHA-256 is
+`e6084821972333f20ef6ba4baa87eeae201d02a88e650c840a13fcd52d231f6f`;
+the preserved diagnostic status SHA-256 is
+`337c684950fe21fdc16308c416892487cf7b0724135957fae4ec5fbc9c415773`.
+
+The exact second GDB record SHA-256 is
+`00924a48505e1f53a49b45623d6bc3960293304e05f1e2cce20f9a9680c94df4`.
+It confirms that the purchase frame fell to 207,744 bytes; the remaining House
+exercise and boot frames were 918,400 and 360,992 bytes. The separate reviewed
+House repair
+`932a81318f4914d611e0a76ff1192e49148cf2366a9cea21debd5c81e7f4a376`
+boxes the actual House fixture Engine behind the same non-inline construction
+boundary, with its complete exercise and catalogue assertions unchanged.
+
+### Host recovery and second four-story diagnostic
+
+After that GDB run completed and its JSON record was downloaded, the VPS rebooted
+during the upgrade from 4 vCPUs/16 GB to 8 vCPUs/32 GB. No test was running at the
+reboot. The temporary workspace, diagnostic overlay and compile cache were lost.
+The raw second GDB log was not downloaded: only its recorded SHA-256,
+`def040a5cc82b4bedbccc36dd3bc86e7182a0186977ce9e414beef18d22a532c`,
+survives. The downloaded GDB JSON, diagnostic status and purchase log remain
+available; the raw GDB log is not claimed as preserved evidence.
+
+The complete frozen N111 source archive SHA-256 is
+`39b93aad946089294c8f9726948090279446ca21e30f60e47b1ea166fbb87b52`.
+Its 2,679 files were independently checked against the original complete census
+`b84b132479126ec5bd0a554bf69ee9da7503c6774b90257fbbc554eeead9a184`.
+Root restored that source under persistent `/var/tmp` storage, with the previous
+`/tmp` path retained as an alias.
+
+The second diagnostic uses both reviewed fixture repairs. Its input archive
+SHA-256 is
+`0a99b39f957f9633b1ff702b1da3507c990891126c3ba5a29b4a10cb769f590d`;
+the reviewed runner SHA-256 is
+`c4ca38c5a8c4a241aac1729871da80700b35672a55f85e9fe88b8804f5966795`.
+It retains the same four exact ignored-story selections and single test thread;
+only Cargo build parallelism changes to four jobs. The resolved binary-root
+check supports the persistent path alias. Ordinary test failures still permit
+the remaining stories to run, while a stack abort preserves the exact source
+and binary for diagnosis. Ordinary outcomes require complete source verification
+and restoration of the original N111 census.
+
+The purchase stage completed with one ordinary failure and no stack overflow.
+Its private log SHA-256 is
+`76c0bcbca102b899b901d9e8918c20003cc0f426136b99ece55541a28833809a`.
+Core correctly refused the test-only Market wrapper's unclassified
+`@house-policy-test` command. The reviewed one-line repair
+`314c1745662e04ed6644660619c432a49c2d2bda999b22a124c62aa0afdca0a6`
+declares `LegacyPostImage`, matching the handler's actual validated Org
+post-image/audit submission. Its handler, authority checks and assertions are
+unchanged. Root prepared all three reviewed fixture repairs in the local
+canonical overlay (packages 503 to 506) for the next candidate. Tracked HEAD,
+the main remote run and the copied diagnostic source remain unchanged.
+No runtime pass for the command-class repair is claimed.
+
+At the intermediate checkpoint, the server story was still running the real
+Registry schedule, including long simulated battles and real transaction retry
+waits. Conduct and named launch were queued. Later retained evidence established
+the fixed-time-guard stop, Conduct stack abort and unstarted main launch recorded
+below; the intermediate elapsed-time observation was not a pass.
+
+Eight-job build settings were reviewed separately for subsequent runs; this
+four-job run retained its original runner and verifier. Test execution remains
+serial. These diagnostics are ineligible for acceptance.
+
+### Independent copied-binary Conduct check — stack abort
+
+After independent isolation review, the separate diagnostic copied the exact
+N111-plus-two-repairs source and already-built Tacsim binary. It ran Conduct
+directly with the same serial ignored-test arguments. Conduct aborted with a
+stack overflow (exit signal 6); launch was left unstarted. No successful test
+result is inferred from the abort.
+
+The sealed archive SHA-256 is
+`0358013b93fcb2767819ba045f10db61da9d80548a73ec1e025ca176a3233d67`
+(291,593 bytes; 11 verified files). Its status SHA-256 is
+`191f744bc49fa0b4fd076a82233409b825f446228b90f773ad42489d2a0dc591`;
+the exact copied-runner SHA-256 is
+`390d9ea320b391c1930106371e37448d2bba9e026d666a99ddca5aedc1eda6b7`.
+The local archive check verified every indexed file hash, both original-status
+snapshots, the pinned input and runner, and the complete 2,679-file copied census.
+The terminal record reports unchanged copied source, binary and system libraries,
+quiescent owned sessions, and no original-source mutation. The copied source and
+binary remain on the host. Exact GDB has now completed and its downloaded
+metadata/log pair was checked locally. The metadata SHA-256 is
+`b1df88fabcdd50138c1a7bcb25ecaf8c1c161167b508314fbadcb7bb31f3daaa`;
+the private log SHA-256 is
+`8efe1576f1ade53fcdceab3ec8ccdfb2163e38b8cbf5ae2fb1d196dce5016792`.
+The matching binary stopped on SIGSEGV; measured frames include 707,840 bytes
+in the Conduct root and 705,392 bytes in the PurchaseRoll registration wrapper.
+The source remained unchanged. A separate launch-only check subsequently ran on
+that immutable copy after the completed GDB prerequisite. Its completed outcome
+is recorded below. Neither copied check can be appended as a full-run stage
+result.
+
+### Systematic stack/future lint pass — complete baseline, repairs in progress
+
+The requested four size lints cover `mush-roll`, `mush-economy`, `mush-market`,
+`mush-industry`, `mush-core` and `tacsim`, including test frames and exported APIs.
+The thresholds remain 65,536 bytes for frames and 16,384 bytes for futures.
+The first two diagnostic attempts were blocked by unrelated lint errors. The
+third used diagnostic-only `--cap-lints warn` while retaining all four size
+force-warns; repository policy and test stacks were not changed.
+
+The verified v3 inventory covers all six crates: 1,935 raw reports at 1,737
+unique package/lint/source locations, comprising 53 future, 1,788 frame and
+94 enum reports (no by-value reports). Its SHA-256 is
+`1140222b4f1c738754913d0b7ed6f2b7a6e7f4a40cba936c5c5daa5c7f48b4a6`.
+After only the two shared Core storage repairs, v4 reports 652 raw warnings at
+489 unique locations: seven future, 555 frame and 90 enum reports. Core itself
+has 14 frame reports and no enum warning. The v4 inventory SHA-256 is
+`18bc5d59856e945cb995a29d3967969f33ab8cf9ed3311869b805f1e22a5e224`.
+These counts were independently recomputed from the retained inventories.
+
+The combined v5 run was incomplete: five Economy test compiler errors stopped
+full collection. V6 was also incomplete with three Industry test type-path
+errors. V7 stopped at four Core stamp-type diagnostics before producing a size
+inventory. These are compiler-blocked runs, not zero-finding results. The narrow
+compiler repairs were reviewed before the later complete measurements below.
+None of these diagnostic measurements establishes runtime correctness,
+a repository lint-gate pass or a clean integration baseline. Their evidence
+remains separate from the runtime diagnostics.
+
+The complete v9 diagnostic compiled all six crates and all targets with no
+compiler errors. Independently deduplicating its 233 raw reports yields 191
+frame locations: Economy 63, Tacsim 61, Industry 30, Roll 29 and Market eight;
+Core has none. Future, enum and by-value size warning counts are zero. Its
+inventory SHA-256 is
+`6b4e69e80770c089b2c7e3bcba558dcd5ca49669649596647cf9c5c9d49e8622`.
+The snapshot includes the Root capture and resale observation changes but not
+the later Registry producer and registration-declaration phase packages.
+Diagnostic `--cap-lints warn` remains explicit; this is not an ordinary lint
+policy pass or runtime proof.
+
+The v10 collection was incomplete: 16 Economy test compiler errors prevented
+a complete replacement measurement. The narrowly reviewed correction preserves
+all test bodies and assertions. Its status SHA-256 is
+`917e2f677aedae4bf36f23392fe0da591d515b287508beaa4a1cc7399dba96fb`.
+V11 then compiled all six crates and all targets with exit zero and no compiler
+errors. Its 123 raw reports reduce to 101 unique frame-warning locations: Core
+zero, Economy 18, Industry 29, Market one, Roll 21 and Tacsim 32. The other three
+size-warning classes remain zero. The inventory SHA-256 is
+`ccb99d6ea72da4ab647b8a821ec20b27f6e58ac4145928655cd8d41e6dc2849e`;
+the status SHA-256 is
+`e7d65e24d4b287837a76a19fa11844c46960217a0cbbe1e1d7d64725b60e6e25`.
+
+V12 is incomplete: two Tacsim helper-visibility compiler errors stopped the
+all-target collection. Its partial 22 frame locations (Economy ten, Industry
+four, Roll six, two reported Tacsim locations; Core and Market zero) are not a complete
+replacement for V11: the Tacsim test-library collection is incomplete. Those
+visibility errors were then repaired locally before V13. V12 inventory and status SHA-256 values are
+`5996ac75ad78c6b475c54fec840b36cd7414d7592c23fafee2db23d40b7a621f`
+and `225ad6dcf22004cab49664e59e989b1f4c7e06be786e9251ec7661bb29f81fec`.
+Incomplete collection never means zero findings.
+
+Retained main-story evidence now confirms the server test stopped at its fixed
+7,200-second Registry guard while still running, without a terminal result.
+The following Conduct test stack-aborted and the main launch test was unstarted.
+The read-only evidence helper and local reconciliation bind the same 2,679-file
+source, input, binary, test and arguments. The prior copied GDB used a different
+environment sanitization recipe, so it does not discharge the exact-main trace.
+The local pre-seal `target/m7-prep-main-story-evidence/offline-reconciliation.json`
+SHA-256 is
+`eb4d8f82fbac7bfc3b5964ed2a1a3011b612aabc164b32d3ebb7cdb8ab51f68e`.
+The host-sealed `reconciliation.json` inside
+`target/m7-n111-stories-preflight-v2-sealed-evidence.tar.gz` has SHA-256
+`ac979a275f6eef92c59fdffb05f9f6578a220825a669cedce42af5d8e4927a2d`;
+this is the actual sealed reconciliation, including the host source checks.
+
+The exact-main Conduct GDB trace has now also completed. Its metadata SHA-256 is
+`42ad0e1df84dac7cffc1167bcf6456ade11e252f86f4eac7de0a4eb02e0ab39d`;
+its private log SHA-256 is
+`ad8cbc7db07667132f31e6a2251bcf95885f51908c9f041df0b4c5ed00a6f71c`.
+It records SIGSEGV and the same 31 frames, with source, binary, retained evidence
+and system libraries unchanged and the owned debugger session quiescent. The
+original runtime environment was not captured completely; the recorded recipe
+and that historical gap remain explicit. This trace diagnoses the failure and
+does not add a runtime pass.
+
+V13 is the latest complete collection: all six crates and all targets completed
+with exit zero and no compiler errors. Its 16 raw reports reduce to 13 unique
+locations: twelve frame warnings (Economy two, Industry one, Roll two, Tacsim
+seven) and one Roll enum warning. Core and Market have none of the four requested
+size warnings; future and by-value warning counts remain zero. The inventory
+SHA-256 is
+`41d155b1e0979a565aa929ecf48ff0feaa6a3aafc1630a614f798e49dccc147d`;
+the status SHA-256 is
+`773aab90d3e1f12b896eff68148554eeb280a4c3e6f316d96abd77dd74c2bd3a`.
+The remaining repair batch and code generation for the actual 16 KiB future
+bound are separate from this diagnostic result. No runtime pass or clean
+integrated baseline is inferred.
+
+The V13 Tacsim test-binary build then completed with exit zero and no compiler
+errors, instantiating the existing compile-time 16 KiB story-future bounds.
+No test executed. Source and inventory evidence remained unchanged. Build status
+SHA-256 is
+`3eab8c21455b81bb0515f940fd2f026e41d3fd589d5868feae1d41244b85d129`;
+its artifact index is
+`914f6b3c4c3e80432479490886d52e98081c59ba4bec39a06915ef0221fd8c29`.
+
+After the exact-main GDB trace, the separately reviewed restoration helper
+reversed only the two original fixture patches and verified the complete
+2,679-file N111 base. Original failed status, sealed evidence and binary remained
+unchanged; no compiler or test ran during restoration. The distinct receipt at
+`target/m7-n111-stories-preflight-v2-restoration.json` has SHA-256
+`c1643548acfb04f78efa6f02b2299211fcf7611e98947bd184c24ff208733cc3`.
+This is source restoration evidence, not a changed test outcome.
+
+### Independent copied-binary launch check — Registry time guard
+
+The separate launch-only check completed with exit 101 after 7,206 seconds:
+zero passed, one failed and 1,513 filtered. It reports neither an outer-runner
+timeout nor a stack abort. The exact error is the named Registry service time
+guard. The 401-byte private log at
+`target/m7-n111-v2-copied-launch-only-launch-story.log` has SHA-256
+`f59b880f1c512e9fdae727dce6201998ef5d90ecc613277087853c233ed59ee2`;
+its status at `target/m7-n111-v2-copied-launch-only-status.json` has SHA-256
+`74d6f451e262ba0769aabb7b458a0d05bdfe907e58cb994d4acb84cc05f6ff63`.
+
+That log contains no case-progress observations, so it does not establish
+whether this launch run stalled or needed more time. The separate server-story
+log records 238 progress updates through case 11 before its 7,200-second guard;
+that continuing progress cannot be attributed to the copied launch run. Neither
+story has a full pass. The copied launch status records unchanged source, binary,
+libraries and retained evidence, quiescent owned sessions, no original-source
+mutation and diagnostic-only eligibility. Test observability is being prepared
+without changing semantics or guards.
+
+V14 completed on snapshot 605 with exit zero, no compiler errors and all six
+crates and targets collected. Four raw reports reduce to three frame-warning
+locations: one Roll registration frame and two Tacsim story frames. Future,
+enum and by-value counts are zero. Its inventory SHA-256 is
+`225d64e421b3c9d5013e51a906af9ec67d13ca5a711b5351c693c54f0b4a6fce`;
+its status SHA-256 is
+`ed3092e830ce29968bfe1afaf00bbccb1e7302133b482243a1997802a80cb675`.
+The three residual repairs have been reviewed for the next measurement. This
+result concerns the four selected size lints only; the diagnostic command caps
+other lint levels to warnings. Other warnings remain, and no standard workspace
+Clippy gate or runtime result is claimed. The separate two-binary V14 code-generation check subsequently failed, as
+recorded below.
+
+### Selected size lints clear; separate server future bound still blocks codegen
+
+V15 completed snapshot 608 across all six selected crates and all targets with
+exit zero, a complete inventory, zero selected reports and zero compiler errors.
+All four requested size-warning counts are zero. The input archive SHA-256 is
+`5401517fcf7344a721debe985a2b72bda6c7825a20883d9cf2b44c44e9684bbc`;
+the inventory SHA-256 is
+`c7470931324afb018f210fb77d55a7d5cea6fad874a3dc47777d911bd373eeae`;
+the status SHA-256 is
+`77c85f28f8c3506d20adf4516e5e6e2f5ac5106854a9f4969d7a2fac2b5a591f`.
+The raw compiler log, inventory, stderr and status match the retained index.
+There are still 1,714 other warnings under diagnostic `--cap-lints warn`; this
+clears only the four selected size lints, not the standard workspace lint gate.
+No runtime test or integrated acceptance follows from this result.
+
+The separate V14 two-package test-binary build (`tacsim` and `mush-server`,
+`--lib --no-run`) failed with exit 101 and one E0080: the actual
+`Running::boot_inner` future exceeds its configured 16 KiB compile-time bound.
+It retained a Tacsim binary, but the combined build did not succeed and no tests
+executed. Source and inventory evidence remained unchanged. Its status SHA-256
+is `51700c87b43065778ac1d5738e5234aa1915e853c6fb64867828ab51f46bbd05`;
+its artifact-index SHA-256 is
+`9c944ded7049df58f03244fb45893208264a8f514180ce105a33c95b518f9b33`.
+The indexed status, compiler log and stderr were checked locally. This does not
+contradict the earlier successful V13 Tacsim-only code generation: the server
+future was outside that earlier build. Its repair and the test-observability
+changes require subsequent snapshot checks. The draft remains unfrozen.
+
+### Post-measurement bookkeeping and current main divergence
+
+V16 on snapshot 611 includes the reviewed observations, CI step and server
+storage repair, but collection is incomplete: one E0583 names the missing test
+pacing module. The narrow explicit-path correction was applied before V17.
+V16 is not zero-warning evidence; V15 was the last complete result at that
+checkpoint, superseded by the complete V17 measurement below.
+V16 status and inventory SHA-256 values are
+`96ad83b974c85b2aec875ddd6f360b870ea95a7fae15969b96d5fdfd98b697da`
+and `a1b56c17b146c507a470e54e4ee6f27d81c8b098987d0e337961bbdc50138572`.
+The installed CI memory step has not been demonstrated uncapped-clean: existing
+denied lints, including panic_in_result_fn, remain outside this size repair.
+No CI or standard workspace Clippy pass is claimed.
+
+The separately reviewed executable-mode helper restored only the two census
+100755 script entries from 0600 to 0755 on the restored N111 main source. All
+2,679 file bytes, other modes and original evidence remained unchanged; no script
+or Cargo ran. Receipt `target/m7-n111-original-executable-modes.json` has SHA-256
+`e946b91b92435fe567758e2942a4644a224b8ddbc1b62779cf2a5359022f59f7`;
+helper SHA-256 is
+`76827486c4c8480beb7f08fd0f51a3795d4060ed220bc41af27591ee03d608f4`.
+
+A read-only Git check finds clean worktree HEAD
+`db93d6b89962901b9ce15adee6f015f05f576493`, while the locally available
+origin/main is `eb99c9be49a3474a0a3448072974c80931e0adee`. Main adds the three
+SM.2/SM.3a/SM.3b surface commits since shared ancestor
+`6f79797409f6792447d0fb1ed2d15335d2214387`. They are not folded into the frozen
+runtime candidate. The overlap assessment is retained at
+`target/m7-prep-main-overlap/README.md` (SHA-256
+`ea4414af8de4e53013620d7b4a5394798d1eb9fc0693cb77dd8188ae1da56870`):
+106 incoming files, 23 shared changed paths, with likely textual joins in the
+port action definitions and test-support imports. This is a static assessment,
+not an attempted merge. After feedback on the current repair batch, latest main
+must be integrated and the exact roster, selected lints, code generation and
+runtime checks repeated before final acceptance.
+
+### V17 selected-lint check complete; combined code generation pending
+
+V17 snapshot 612, containing 2,682 source files, completed all six crates and
+all targets with exit zero, a complete inventory, zero compiler errors and zero
+reports for all four selected size lints. Its 1,714 other warnings remain; this
+is still diagnostic selected-lint evidence, not an uncapped CI or workspace
+Clippy pass. It includes the CI step, test-only Registry observations, server
+fixture storage and explicit observer-module path correction. No test executed.
+The two-package test-binary build was still running at that lint checkpoint;
+its subsequent verified successful result is recorded below.
+
+Input archive SHA-256:
+`117f77e0feee7882ef52e2a2ab3f0a545494ff5f3c334645ffcff84c1db67a72`.
+Complete source census SHA-256:
+`cca9271c48bb189c84e3bb7224383cdb973efae6f46e04a1c4f2f3e0f1d1f3df`.
+Inventory SHA-256:
+`0153f9d5b7325fb302cc24d8a7bb4e35e10ea3deb806acb657a7bf1e31065c6d`.
+Status SHA-256:
+`142dd42251349416acef76433dfad56e3aa728161ce4522fab9c908d4725d99d`.
+The local raw compiler log, inventory, stderr and status match their retained
+index entries. The separately reviewed copied-binary pacing helper is ready,
+with intentional time-bounded stops classified incomplete and no acceptance
+eligibility; readiness of that helper is not a runtime result.
+
+### V17 test binaries built; bounded runtime observations active
+
+The actual V17 two-package `--lib --no-run` build completed with exit zero, no
+compiler errors and both Tacsim and mush_server binaries. The inline-constant
+16 KiB future guards instantiated successfully, including the repaired server
+boot future. The indexed status, compiler log and stderr were verified locally;
+source and inventory evidence remained unchanged. No test executed in this build.
+Build status SHA-256:
+`7620a6b7e75328f3ac8bfde0e08cf5e78ff9c8a8874fee795d645697c0666a01`.
+Build artifact-index SHA-256:
+`c06e9a1a3263cffc0429d883af9afe78a0b652670d4de765577453ad588b3a8c`.
+
+Two independent immutable-copy observations are now active under the reviewed
+runner: `m7-registry-pacing-v17-regressions` selects purchase then Conduct, and
+`m7-registry-pacing-v17-pacing` selects server then launch. Each exact case runs
+serially within its own scenario for at most 600 seconds. A deliberate cutoff
+is incomplete; it does not satisfy the full story. Any ordinary result remains
+a focused diagnostic result, and a stack abort preserves the exact copy for
+GDB. No runtime outcome is claimed at this checkpoint. The draft stays unfrozen
+until the first verified outcomes arrive.
+
+### First V17 focused runtime outcome — ordinary purchase failure
+
+The copied purchase case completed after 99.646 seconds with exit 101, zero
+passed and one failed, without a stack abort. Its short fixed error is
+`renewal paired recovery is incomplete or contradictory`. This identifies the
+refusing boundary, not yet the underlying cause. Conduct was still running in
+the same scenario at the captured checkpoint. The 869-byte completed purchase
+log at `target/m7-registry-pacing-v17-purchase.log` matches the stage hash
+`42ff18b44821a976c465884cfa2aab31b67747a6d3598493add227683eb1e877`
+in `target/m7-registry-pacing-v17-regressions-live-2-status.json`, SHA-256
+`4014841865f9b01296f263cadbae1faf0b14847cd6f76cb123fdbed5ae57d056`.
+The enclosing diagnostic is still live; no sealed final-scenario result is
+claimed and the ordinary failure is not a purchase-story pass.
+
+The separate server live1 sample contains five grant store reserve-entry to
+commit-receipt intervals with median 24.856 milliseconds, versus four consecutive
+grant-entry intervals with median 7.013819 seconds. These are small unsealed
+store observations, not worker duration or consumed service-ACK measurements;
+they do not by themselves identify the delay. The numeric reduction at
+`target/m7-registry-pacing-v17-server-live-1-reduced.json` has SHA-256
+`e70115f4a88e15a849ac3ddc01979a1ac86e4f0d7c64f6a1081991369863e83b`.
+Its reviewed reducer SHA-256 is
+`869bf31ccc220ccf7efd8c1c5cdf9422da9bffe5ef2ab589a8a80d43f0e03567`;
+it retains closed observer fields, excludes conflicting/negative intervals and
+labels live snapshots unsealed and ineligible for acceptance.
+
+
+### V17 purchase and Conduct diagnostic finished — shared fixture dependency
+
+The final regressions status has SHA-256
+`8b1031ea06e34e528ec45f9019208a92cf4d6b52b174a46f235c22047bcddf5a`.
+Conduct completed after 199.007 seconds with exit 101, zero passed and one failed,
+without a stack abort. Its fixed error is
+`paid purchase recovery: invalid commercial record`. The 859-byte completed log
+`target/m7-registry-pacing-v17-regressions-conduct.log` has SHA-256
+`6a2bf7c9e6f071cf26414fb0de273359c9126b0c38fa010a6f09ffe68aeb8754`,
+matching the final status. Original/copy source and copied binaries remained
+unchanged, and owned sessions are quiescent. These are two ordinary failed
+checks, not an integrated or story pass.
+
+Independent source review traced both errors to `IcWorld::boot_source_qualified`:
+its fixture places Market before Roll, while Core executes final audits in
+module order. Conduct's retained paid purchase requires Roll's completed audit;
+House renewal requires the same readiness even for an empty inventory. The
+production roster already places Roll before Market. A shared fixture correction
+is being prepared without weakening recovery checks; it has not been rerun.
+
+
+### Shared fixture repair and V18 inventory — runtime rerun pending
+
+The reviewed one-file fixture patch
+`57799d281cc5bb83470fcb4913a0975918e4b2c38e6df676a46187b4c5d851dd`
+now matches production Economy → Roll → Market order. Constructor expressions,
+typed hydration, configured guards and assertions are unchanged. It is applied
+locally as snapshot 613; the actual purchase and Conduct stories remain the
+required runtime regressions.
+
+V18 completes all six crates/all targets with zero selected size-lint reports,
+zero compiler errors and 1,714 other warnings. It remains diagnostic capped-lint
+evidence, not an uncapped Clippy/CI or runtime pass. Input archive SHA-256 is
+`800dbe2a1079d007ed61be8bb675897cde498a87cab593aafc372b53c09d6b68`,
+status SHA-256 is
+`b6fe6b1fc232682f066cc26127c5f3a6f8e3599b733fac83c11056ac07630998`,
+and inventory SHA-256 is
+`f1368eb106e9c1efd3cfdb25293ee8b1aed666e341efb0cc07c938140ab81ee4`.
+The recorded 2,682-file census SHA-256 is
+`fc91d63aaf0d18ea87505b209cef78b766daa7c144649e3ca99795518b35e4d7`.
+The local status, inventory, raw Clippy output and stderr match the artifact
+index. The new two-package test-binary build is active; no result or runtime
+repair pass is claimed yet.
+
+The prior V17 server observation reached its intentional 600-second cutoff:
+exit -15 after 600.152 seconds, no stack abort, classification incomplete.
+Its 30,736-byte log SHA-256 is
+`8459c0af3255a8c8318e6cf5ff650e6799368d276ab4ee90da83119a682643ae`,
+and the 313-observation JSON SHA-256 is
+`4f8985ba0cd5baf6c21cb958fe5aaac0e3b3ecff6c3749825dda97be9673c60f`.
+Both match the completed stage in the live3 status snapshot; the following
+launch case is still active in that snapshot. This is no server-story pass.
+
+
+### V17 pacing observation finished — both cases intentionally incomplete
+
+The final pacing status has SHA-256
+`c0a95e1a6f751e4d757451c99b904488459d85aa5811b6b0d47a724f652e46df`.
+Server and launch were deliberately stopped at their 600-second observation
+limits after 600.152 and 600.164 seconds respectively. Both exited -15, were
+classified incomplete and had no stack abort. Original/copy source, copied
+binaries and linked libraries remained unchanged; owned sessions are quiescent.
+The final status, both logs and both observation files match the local artifact
+index. Launch log SHA-256 is
+`28ca94c4096ad0023e5a4851944f9efe3ad357fc5790d95d8d4e563b23881329`;
+its 214-record observation file SHA-256 is
+`25ac2712ea9fbd7de88115ff610786db8217a3dd62efaed9b0ee8e2a6c06cc16`.
+Neither diagnostic ran the full story to a result.
+
+The first 32 actual launch leases retain all six phase points in the final
+evidence. Their median worker-handling interval is 13.8635 milliseconds, compared
+with a 4.012937-second consecutive-lease-start interval. Grant and settlement
+submission to consumed ACK take medians 1.010734 and 1.0094815 seconds; worker
+end to settlement submission takes 976.8595 milliseconds. These bounded samples
+support repeated continuation/retry waiting as a pacing problem, not a claim
+about all cases or total Registry throughput. The narrow wakeup proposal is
+under review and remains unapplied pending fixture-only V18 runtime feedback.
+
+
+### V18 actual two-package build passed — fixture-only rerun active
+
+The actual Tacsim and server test-binary build completed with exit zero and no
+compiler errors. It instantiates the inline-const future-size checks and executed
+no tests. Both source and inventory evidence remained unchanged. The status
+SHA-256 is
+`2ca95640511e25aa9f1261b07d3bcbda49c41b7bf8ed1ea0da061a4039a1dd96`;
+status, build JSONL and stderr match the local build artifact index.
+
+The unchanged bounded runner `03d84130` now runs the fixture-only candidate's
+purchase and Conduct cases under `m7-registry-pacing-v18-regressions`, with the
+same 600-second limit per case. It is active with no outcome yet. This separates
+selected-lint success and successful test code generation from the still-unproved
+actual story results. The wakeup proposal is not part of this runtime candidate.
+
+
+### Stopping checkpoint — V18 terminal failures and unvalidated wakeup change
+
+The final V18 regressions status has SHA-256
+`83698fdb328ba5699a50edc13ff9e5a39a728485beea325ca5e552c4301d5430`.
+Purchase and Conduct each completed with exit 101, zero passed and one failed,
+without stack aborts. The respective durations were 103.377 and 294.512 seconds.
+The purchase log is 838 bytes with SHA-256
+`e4f986ec5058194fd888965e54092913c29dd68c2e1da8459cf17cca9c7c0728`;
+the Conduct log is 1,208 bytes with SHA-256
+`2a2bcc1dc4ac1dde19c3693b9bb4fd5a62105c7bd5d33065b5a79af24fef7eb1`.
+Both match the final status, which records unchanged original/copy source and
+copied binaries, and quiescent owned sessions. The earlier recovery errors are
+gone; these later failures are not passes and do not prove later story phases.
+
+The purchase refusal is the fixed `actual HouseV2 public offer` lookup in
+`house_two_seat_integration_tests.rs`. Its expected @2 verbs exactly match the
+registered Market presentation. Independent source review found the fixture's
+`fixture` venue policy paired with the production PortVenueGate; the private
+parent Venue adapter already maps actual ROOM presence to that fixture venue.
+No corrective patch has been prepared or applied at this checkpoint.
+
+Conduct reaches `conduct_trial_admit` and receives `ProviderRejected` with the
+fixed message `The owned Conduct trial is unavailable or its evidence changed.`
+from Roll's Conduct registration. The generic refusal does not identify the
+failed proof. Stop here and diagnose admission on resumption rather than
+asserting a speculative cause.
+
+Canonical 614 additionally contains the reviewed successful-progress wakeup
+patch `e4dcfaa818076e8395a29bad49e0b9ad4b2b49939f5e65b19412fc5f5ef8782b`.
+V18 measured and ran snapshot 613, before that change. The new ordinary
+registered-continuation regression and two augmented service tests remain
+unexecuted, and the wakeup candidate still requires fresh lint/codegen evidence.
+N112 is reserved and ungenerated; this stopping checkpoint carries no N112
+compile, runtime, full-baseline or acceptance claim. No further build/runtime
+work is being started as part of the checkpoint.
+
+### N110 focused repairs before the N111 run (historical)
+
+**M6 is merged. M7 still has no clean integrated baseline. New feature work is
+paused while the included code is stabilized.**
+
+**What has passed:** N110 compiled and passed all 29 commerce-roster and boot-parity
+tests. Subsequent focused checks used the ordinary stack size:
+
+| Focused check | Result |
+| --- | --- |
+| Whole Tacsim library | 1,510 passed; 4 ignored; no failures or stack abort |
+| Whole cockpit binary | 182 passed; 1 failed |
+| Whole match-lifecycle binary | 142 passed; 1 failed |
+| Whole Sim library after the boot repair | 42 passed; no failures or ignored tests |
+
+The cockpit restart and lifecycle retention cases both passed later exact checks
+after their repairs. All known failures from these focused checks are addressed.
+These are results from separate diagnostic candidates, however; they do not
+establish that the assembled N111 product works together. The four ignored
+genuine M7 stories were not run by these checks.
+
+**What blocks integrated proof:** the last full run, N110, failed with five
+assertions and a Tacsim library stack abort. It stopped before the four genuine
+M7 stories and left 73 stages plus all eight isolated Redis scopes unrun. The
+repairs now have focused passing evidence, but the assembled candidate has not
+completed a full run.
+
+The next full run will put the real purchase, server recovery, Conduct and named
+launch stories earlier, then complete the same 76 stages and eight Redis scopes
+on one candidate. Passes from separate checks cannot replace that result. A green
+baseline will still not mean M7 acceptance: lint, frontend and cross-host checks
+remain separate. The ignored M6 scale-replay check is also outside the
+76-stage/Redis roster and has not been rerun here.
+
+**What is parked:** paid Follow's Market/Roll/native consumers, the original-major
+producer and its genuine story, scoped House author updates/attestation/source
+access, and the remaining House or dependent major variants. They will resume
+only after the baseline is green, in smaller validated steps.
+
+### N110 focused ordinary-stack diagnostic
+
+The full three-binary diagnostic used original N110 tree
+`06fc2ee58498ec506cc8ac86dd44a45a02cfd5a2` with only the reviewed
+authored-forks fixture stack repair and lifecycle Roll-delegation fixture repair.
+The original source census was restored after the run. All logs and source
+hashes were verified; its archive SHA-256 is
+`2a2896377c862cde81a75844e417fec136ed40cf1393ac5da53021c6261dccba`.
+The Tacsim library passed 1,510 tests with four ignored, cockpit passed 182 and
+failed one, and match lifecycle passed 142 and failed one. All three completed
+without a stack abort. This was a failed diagnostic, explicitly ineligible for
+acceptance, not the full integration or ignored-story run.
+
+### N110 subsequent boot-refresh diagnostic
+
+The later boot-refresh check added the reviewed Sim lease-view boot repair to
+the same two fixture repairs. Its archive SHA-256 is
+`4d887f330aa867aeb09685929e1508616058a4e0bce600e825331acd1c571daf`.
+All 42 Sim library tests passed with none ignored, including
+`handoff::tests::boot_reads_hydrated_control_leases_before_any_tick`.
+The unchanged exact cockpit restart story
+`af3_the_pilots_board_the_resumed_match_through_the_reclaim` passed with the other
+182 cockpit tests filtered. Both suites used the ordinary stack size; source and
+log hashes were verified and the original N110 source census was restored.
+This focused pass resolves that observed cockpit failure but is explicitly
+ineligible for acceptance. It does not turn the earlier full cockpit run or the
+full N110 run into a pass.
+
+### N110 subsequent lifecycle retention diagnostic
+
+The exact lifecycle case `m5_the_sim_seal_takes_no_seat_and_posts_nothing` passed
+after the reviewed roster and two-root retention-census corrections. Its archive
+SHA-256 is `2cdfc60a462220a09643c17d7df377d486b1e4f7d3c4241c7a92a8a82d47c142`.
+Compilation passed; the selected test passed with 142 tests filtered, none
+ignored and no stack abort. Source and log hashes were verified and the original
+N110 source census was restored. This is a separate focused diagnostic, explicitly
+ineligible for acceptance. It resolves the remaining observed focused failure,
+without relabeling the earlier whole-binary or full-run failures as passes.
+
+Neither these diagnostics nor the 76-stage/Redis roster invokes the
+ignored `m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep`
+scale-replay test; it requires its own explicit invocation.
+
+### N110 full-run checkpoint (historical)
+
+**M6 is complete and merged. M7 has never passed a clean full integration
+run.** New feature work remains paused while the included code is stabilized.
+
+The latest sealed run, N110, tested tree
+`06fc2ee58498ec506cc8ac86dd44a45a02cfd5a2`. Compilation and all 29
+commerce-roster/boot-parity tests passed. The workspace suite failed with five
+assertions and one Tacsim library stack abort. The remaining 73 stages and all
+eight isolated Redis scopes did not run. Exact source and evidence hashes were
+verified unchanged; the evidence archive SHA-256 is
+`862093a6328bf2e3d1829c92421330b89e971cbb11f7940bb5ff4c6cf8e3b691`.
+**This is failed integration evidence, not acceptance.**
+
+Of N109's 54 failed-test or stack-abort observations, N110 explicitly passed
+50, repeated one failure, and did not reach three. All three old stack cases
+passed. The new Tacsim library abort occurred after 700 named passes and hides
+813 later outcomes, including four tests intended to be ignored. Those missing
+results cannot be counted as passes. Completed-suite summaries omit the 700
+passes emitted before that abort.
+
+**Next:** repair the observed failures, then run the three whole affected
+binaries first: the Tacsim library, `cockpit`, and `match_lifecycle`. If those
+pass, run the unchanged 76-stage integration roster and all eight live Redis
+scopes on one candidate. Earlier or focused passes cannot be combined into a
+clean result. Workspace tests can skip service-gated Redis checks, so the owned
+Redis run remains separate and required.
+
+A green baseline will establish that the included code works together, not
+that M7 is complete. Paid Follow's Market/Roll/native consumers, the original-major
+producer and its genuine story, scoped House author updates/attestation/source
+access, and remaining House or dependent major variants stay parked. Feature
+work resumes only after the baseline is green, in smaller validated steps.
+Lint, frontend and cross-host acceptance requirements also remain.
+
+### N109 integration and identity diagnostics (historical)
+
+**M6 is complete and merged. M7 has not yet passed a clean integrated run.**
+New feature work is paused at the owner's request. Code volume is not a useful
+completion percentage; the immediate goal is one candidate passing together.
+
+The latest full integration attempt, N109, tested source tree
+`5f122cc4531c0224e822c46a0741e58711f0ad14`. Compilation and all
+29 commerce-roster/boot-parity tests passed. The default workspace
+suite then found 51 assertion or source-contract failures and 3 test-process
+stack overflows. The remaining 73 stages did not run. **This is failed
+integration evidence, not acceptance.**
+
+| Check | N109 result |
+| --- | --- |
+| Compile selected production and test targets | Passed |
+| Commerce roster and server boot parity | Passed, including the earlier geology stack failure |
+| Default workspace suite | Failed: 51 assertions/contracts and 3 stack overflows |
+| Remaining selected gates and separate bot suite | Not reached |
+| Genuine purchase, server recovery, Conduct and named launch stories | Not reached |
+| Live Redis recovery on an isolated instance | Still required on the same passing candidate |
+| Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
+
+The failures include stale module/capability and wire-format expectations, source
+scans that mishandle test modules or new directories, production panic paths,
+an outdated integrity-receipt expectation, warmed-service reboot fixtures, and
+mind identity/hash expectations. Three test binaries aborted on stack overflow.
+Stack repairs must work at the ordinary stack size.
+
+A later isolated N109 diagnostic reproduced all five original hash failures with
+unchanged failure output. All 89 recorded hash comparisons matched the retained
+expectations after accounting for the reviewed mind-identity changes. This
+supports the hash repairs for those measured cases; it is not a passing run.
+
+The same diagnostic explained the authored lance failure for seed 2350:
+of 48 order requests, 24 were accepted, 11 living recipients were refused because
+their commander was wrecked (`NoCommander`), and 13 recipients were themselves
+wrecked. The fixture had incorrectly expected all 35 living recipients to receive
+an order. A further diagnostic passed all three seeds' unchanged behavioral
+checks, including Engage and Hold, with zero divergences. An isolated control
+recovered the old coverage counts only by removing the commander check. The
+fixture repair keeps that check, verifies each actual acceptance or refusal,
+and pins the measured 6,001 scripted and 164 stand-in thinks.
+
+N109's exact source and all logs were verified unchanged. Its evidence archive
+SHA-256 is `f0f0d7289d009ac12026cbc2e819f982d9dc4a4f07227339f478c204d40e9701`.
+Older passes cannot be combined with a newer candidate to claim acceptance.
+
+**What happens next:** the corrected fixtures still await all 76 integration
+stages and the eight live Redis scopes on one candidate. The workspace suite alone
+does not prove Redis: its service-gated tests can skip when no Redis URL is present.
+Runner errors count as errors to fix. The final record will distinguish passing,
+failing and unexecuted checks.
+
+**What a green baseline will mean:** the code currently included works together
+under the integration suite. It will not mean M7 is finished. Paid Follow's
+Market/Roll/native consumers, the original-major producer and its genuine story,
+scoped House author updates/attestation/source access, and remaining House or
+dependent major variants are parked outside this baseline. Those features will
+resume only after the baseline is green, in smaller validated steps.
+
+Implementation continuation, 2026-10-19, on `codex/unit-minds-through-m6`.
 M6 is accepted in `17097f5b` with the owner's explicit one-time parity
 exception; [17e](17e-field-pilot-acceptance.md) preserves the failed raw comparison
 and the passing functional evidence. The current economy checkpoint is IC14
 merge `eafe0064caa86411dadb08d4c24ae17488a2bd69`, tree
 `2262fd9eb65a765fbbd2ae4d69df8c3ddcd82697`: 49 stages and 1,508 tests pass,
-including actual Redis recovery. A fresh fetch still resolves main to `a690412e`.
+including actual Redis recovery. On 2026-10-18, the owner requested the accepted
+through-M6 work land before M7. A fresh fetch confirmed main at `a690412e`, then
+a normal fast-forward push advanced it to `6fafaa11dfa6765c0b3a56ef81bc3a2f6e44e4fa`;
+an independent remote-ref read verified that result. Executable tracked bytes
+are unchanged from the passing IC14/M6 checkpoint; later commits only updated
+the five design/acceptance documents. No M7 implementation was in that merge.
 [17b §6](17b-unit-minds-implementation-plan.md#6-m6-candidate-and-acceptance-work--2026-10-17)
 records the archive and exact provenance. Both implementation prerequisites are
 complete. The owner has authorized progress through M7 and progressive pushes.
 
+### N97 checkpoint (historical)
+
+M7 remains in progress. The latest fetched main is
+`6f79797409f6792447d0fb1ed2d15335d2214387`, already included by merge
+`2feaf6cced628c4254119b0912d592caf2846151`. The latest pushed implementation
+checkpoint is `7de3f023e63fd54f49ee721069d7e0513cc9cfc8`; newer reviewed source
+is being integrated for the next Linux run. Historical runs below are retained
+for provenance and must not be combined into an acceptance result.
+
+N97 tested tree `b2a740ae7d5d8c37a228ca9f6d0adc273ff5cdb6` (428 integrated
+packages). Compilation passed. Its 32 completed stages contain 1,517 passing
+test observations and six failed tests; overlapping filters mean this is not a
+unique-test count. Conduct composition failed one test, hardware composition
+failed three, and the actual Conduct worker failed two qualification tests.
+Industry then aborted with a stack overflow, so later stages and genuine
+commerce stories did not run. The earlier measured-rejection stack case passed.
+The 33-file terminal evidence archive is 92,000 bytes, SHA-256
+`a3ed8ce7bce3f29f6080922e5315d49fec6d326dc79aee840449897380c4ba03`;
+status SHA-256 is
+`4151a50924e3968152762f4b4d12f1c9e18c87ac57c762143e57fe26d7e99095`.
+Exact source and all log hashes were independently verified unchanged.
+
+Reviewed repairs distinguish the original host configuration from normalized
+Conduct trial rules and restore typed action-state hydration in hardware test
+reboots. The industry debugger identified nested inline test-world copies;
+its repair keeps the fixture world on the heap without increasing the test
+stack or weakening assertions. Conduct now has bounded numeric failure counters
+for diagnosis; its actual qualification failure is still unresolved.
+
+The next source candidate also contains class-bounded Follow selection, the
+closed Core paid-Follow purchase/renewal/resale formats, native original-major
+fees, a real derived-compatible-update producer, named launch composition and
+its Coprates membership story, and explicit manual CI inventory for the genuine
+stories. These additions have static review; their integrated runtime validation
+is pending. Paid Follow's Market/Roll/native consumers, the original-major
+producer, scoped House author updates/attestation/source access, and the remaining
+House/dependent major variants are still being completed.
+
+Completion requires passing the repaired integrated run, the actual paid/native
+and saved-source lifecycle stories, restart/inverse/privacy checks, and the
+remaining workspace, contract, lint, documentation, determinism and bound checks.
+Only the persistent-host IC journey may remain conditional when that host is
+absent; Conduct and coverage are mandatory. Timing and launch-scale misses remain
+report-only under the owner's waiver. No M7 acceptance or deployment is claimed.
+
+### Earlier integration evidence
+
 This note promotes the reviewed isolated design into the programme's tracked
 implementation plan. The substantial prepared code remains under active
-integration and testing; it is not M7 acceptance or deployment. The frozen N35
-preparation passed its compile and 215 fast tests (one ignored), then its genuine
-purchase story aborted at a nested test-future stack overflow. Its independent
-server custody story remains under investigation. N36 freezes the reviewed
-future-allocation repair, unfunded renewal offers and marked-draft retirement
-for the next serialized Linux run. Neither parsing nor those partial gates
-establishes the complete author/buyer story. Each further commit records its
-actual passing, failing and unexecuted scope.
+integration and testing; it is not M7 acceptance or deployment. N35 passed
+compile and 215 fast tests (one ignored), then its genuine purchase story aborted
+at a nested test-future stack overflow. Its independent server story was
+diagnostically cancelled after sustained Registry waiting without an execution
+cursor. Recovery of its disconnected runner preserved the original terminal
+stage outcomes and separately recorded source verification. N36 was superseded
+without execution. N37 failed compilation on a private constant; the narrow
+visibility repair allowed N38 to compile.
 
+N38 (`c4f5317d9b5af6464200870f2bd9bb2deed59207`) finished with 392 passing
+tests, two failures and one ignored test. The failures were an obsolete
+fork-only deletion assertion after retirement support and an unmatched expected
+boot-refusal message. Both expensive stories remained unexecuted. All 13 retained
+files verify, with unchanged source; archive SHA-256 is
+`2a49296d82bf60eb4d29701056bce316d4f11b1ec1358d98c92797d1009d4f2d`.
+The source-only F2 renewal capacity prerequisite has independent review and
+seven prepared coordinator tests, but no Cargo result yet.
+
+N39 froze 180 reviewed packages at
+`2500edb31d3b2e199d3fe4f9b13574d7a9bb147f`. After the unrelated host release
+build finished, compilation identified an import and exact-lookup visibility
+error; all runtime stages remained unexecuted. Those errors were repaired.
+
+On the next continuation, main was fetched at `3160cdd0` and merged normally
+into the implementation branch at `4b6d710f`, then pushed. The candidate includes
+the owner's line-tables-only debug profile, Linux CI changes, AQ command-name
+protection and P-B's Missing-only Co-op admission rule. Accepted main remains
+separate from M7 acceptance. All cumulative preparation through N42 is now
+materialized in this implementation checkout for review and progressive commits.
+N45 tree `54f804536f00e025abbe1519a4c881fe6cd794f5` was committed and pushed
+as `31d19f25` (458 files). This is an implementation checkpoint, not M7 acceptance.
+
+N40 (`e7afe36ab47067da3ec76c08c81c465f6bf9c159`) added the reviewed renewal
+capacity, exact linked retry, Economy recovery/participant bridge, Roll renewal
+writer and immutable-history audit, strict Market renewal records, Republic
+membership guard and upstream reconciliation. Compilation found a missing
+re-export of the existing 1,024-byte receipt limit; the limit did not change.
+N41 (`3e23a5c7c287dfd358f900621510cd7d31b660e4`) then found missing generic
+scan bounds in Market's entitlement recovery. N42
+(`225264bae5e652e95538cf3284e58a4539901312`) reached the test fixtures and found
+two outdated API calls: the canonical idempotency parser and infallible offer-key
+setter. The narrow repairs preserve all production checks and test assertions.
+These three runs failed compilation, executed no runtime tests, and retained
+their exact unchanged source, logs and verified evidence archives. None is an
+acceptance result.
+
+N43 and N44 also failed compilation; repairs corrected a test-only JSON macro,
+explicit generic lifetime bounds and an old retirement fixture field. N45
+compiles and has passed 554 Core tests, nine Republic-membership tests, two
+future-size tests, 20 protocol unit tests, 32 protocol wire/property tests,
+14 IPC tests, 14 SSH workshop tests, 146 Economy tests, 174 Roll tests and
+eight composition tests. Market has 74 passes and two failures: the public
+numeric licence selector was decoded as a persistent string ID, and a negative
+fixture broke its own strict funding/contract consistency before the intended
+pairing assertion. Workshop has 26 passes and one failure: owned stale retirement
+selection returned `missing` instead of the existing `stale` response. Narrow
+repairs are prepared; the original failed results remain retained. Later N45
+stages then completed: 1,149 tests passed, three failed and one was ignored.
+Both genuine stories remained unstarted because earlier required gates failed.
+The 18-file evidence archive verifies against unchanged source, SHA-256
+`a904086547f38d2f2574bf6342ff0da2fd03e54faf53db4de3d5c94438ce8500`.
+Neither genuine story is claimed passed. All 59 web test files / 625 tests pass
+against the committed N45 tree.
+The first web attempt executed zero tests because Windows sandbox temporary-file
+renames were denied; the authorized unsandboxed rerun passed. The actual Rust
+protocol exporter then passed both tests and supplied the two removal message
+variants. Those generated files are included in N46, whose production web build
+and typecheck pass with zero checker errors or warnings. The existing bundle-size
+advisory remains report-only. Complete M7 acceptance remains required.
+
+N46 tree `a65939338a12f679ac0576e731108a8045d61056` was committed and pushed
+as `bde138fd`. Compilation and 1,165 tests pass; seven fail and one is ignored.
+The six Tactics failures share a fixture whose unit roots were not explicitly
+selected as current, so real `@unit/create` refused before replacement. One
+withdrawal fixture used numeric persistent commerce IDs instead of their
+canonical string representation. Both narrow fixture repairs preserve production
+checks and assertions. N45's two Market failures and workshop stale-response
+failure now pass. Both genuine stories remain unstarted because required gates
+failed. The 19-file evidence archive verifies unchanged source, SHA-256
+`998e8e5623c68feddbecc4518436f644030ea012c7ccbd84f8430a3c8af5a516`.
+
+The next candidate adds the reviewed optional renewal service: separate immutable
+Economy cleanup proof, exact Roll/Market progression, private retained service
+intent, holder-bound due processing, and source-free status/request/accept/decline/
+retry commands. Automatic processing never pays or retries a closed offer.
+Its six Economy, four Market, one reader and genuine child checks still need
+execution. The new inactive IC prerequisite adds strict permanent claim history,
+ordered capacity replay, actual personal admission reading, and eight structural
+tests including same-generation close-clock rollback refusal. It registers no
+IC service or custody adapter; the actual four-owner custody, full seal, future
+close reservation and host integration remain separate work. These prepared
+packages and fixture repairs are not acceptance results or default activation.
+
+N47 tree `25ab15488942154a09f16d20c3060266d9fc9082` stopped at compilation:
+the renewal integration added a field to the unrelated purchase registration and
+omitted an explicit nested test path. Its two-file terminal archive is verified,
+SHA-256 `9ae2ef1470963df1e09e7b2c1a1c99cfecb50614eec84dc911135d3e3c572b21`.
+N48 tree `0b949813fba009c16bd1c3b79266ee1262082870` resolved both, then
+stopped on an ambiguous redundant String conversion in Market's status output.
+Its two-file terminal archive is verified, SHA-256
+`eea057e3b5f8afb23ec32f4a9119097da7b62e53f43a7f7617bbfaeea77b749f`.
+Both runs executed zero runtime tests; all downstream stages remain unstarted.
+The next candidate removes that conversion without changing output bytes.
+
+N49 tree `3dcf5b3e21b5981ef7a1e3286e7fcac980edc3e1` also stopped at
+compilation on the two remaining redundant status-output conversions. It ran
+zero tests; its verified archive is
+`edb8e088f64fd633843bc622f8a577e739b573086093a2ae54a41220f4ef69af`.
+N50 tree `f3067fa096c0c94ab3826cd2c47d72b5503fcede` compiled and finished
+with 1,184 passing tests, 8 failures and 1 ignored test. Six Tactics
+replacement tests now reach the actual provider and expose its test fixture's
+missing typed transaction receipt. Two renewal-service tests expose an overlong
+capability identifier. Narrow repairs add the test-only typed receipt and retain
+the complete domain-separated service digest within Core's 64-byte identifier
+limit. Core's 564 tests, Economy's 152 and Roll's 186 pass. Both genuine stories
+remain unstarted because required gates failed. All retained evidence verifies
+against unchanged source; archive SHA-256 is
+`569f7eced01fcca8e8f32f1d39d319529e961b49278fa165bb9edecfe9cc21da`. These failed runs remain evidence,
+not acceptance results.
+
+N50 was committed and pushed as `2d9d79fd`. A fresh fetch then found main at
+`9cc0dc16`; its CI-only linker/job/resource changes were merged normally and
+pushed as `bc817ac9`. The next candidate includes that exact CI update. It also
+adds opt-in compatible original-line publication with an actual new Registry
+certificate and fee, and personal dependent-owner parent-licence replacement.
+The latter preserves original source ancestry, child expiry and independent
+paid-customer terms; Open restores owner rights while OpenResale is required for
+new sales and renewals. Neither prepared feature has runtime acceptance yet.
+The four-owner IC custody service and its fixed future-close capacity are still
+in separate preparation; the inactive claim records alone do not enable it.
+
+N51 tree `f64926fae3bc9acc84a91a7b6a6f314ecaa52507` stopped at compilation
+because two already-public compatible-update types lacked the parent module
+re-exports used by Roll. It executed zero runtime tests. Its two-file archive
+verifies unchanged source, SHA-256
+`fc043ec96f75d3fb33682713d9df09d5555afe8644403109743127226c6ce716`.
+The next candidate fixes those exports and adds the reviewed Core IC capacity
+prerequisite: one fixed Roll claim target with Tacsim metadata, immutable Open
+fingerprint, reserved complete Close capacity, exact four-owner preparation and
+all binds before any apply. Current optional commerce needs 60 participant
+requests; IC adds eight, so the declaration ceiling becomes 128. Eight adapters
+cover the seven IC/commerce slots plus optional hardware. Same-owner adapters
+may share a state slot only with disjoint exact actions; each invocation still
+refuses duplicate slots. Ordinary transactions retain their three-image/two-module
+limit; only the fully validated IC protocol receives four/four. Ten new tests
+and the updated 128/129 boundary are prepared, not passing evidence. Physical
+owners, actual seal/event authority and complete integration remain required.
+
+N52 tree `60ba2a4f39fa9a4858407e54ca4ff4c5e0755f15` was frozen and
+materialized but superseded before upload or execution. Static review caught a
+compatible-update history helper calling mutable transaction reads through an
+immutable reference. The narrow repair accepts the existing mutable transaction
+and owns the exact operation row across subsequent reads; all identity/proof
+checks remain. N52 has no compiler or runtime result. The next runner applies
+its combined delta directly over the retained terminal N51 source.
+
+N53 tree `d27ad8f27a00c33c5e876c75d523d8e60e560783` stopped at compilation on two
+overlapping mutable transaction borrows in the compatible-update provider. It
+ran no tests. Its unchanged-source archive verifies as
+`fbfcd14dcc5c0493fd08d1b640cdf653090a5ae7d242bd88a7c4de7dd1477261`. The repair owns the charter and
+licence snapshots before reading subsequent rows; identity and eligibility
+predicates are unchanged. The next candidate also incorporates upstream main
+`41e7259d` (astronomy engine A.1) and adds its sky regression gate.
+
+The next candidate includes the reviewed Sim/Tactics physical IC owners and
+their actual Engine adapter tests. The Sim guard rechecks even retained public
+transition plans before effects, refuses retirement of the captured domain and
+fails closed on missing or crossed indexed custody history. Strict test-only
+typed receipts accompany the physical prepared images. These are prerequisites,
+not a complete IC service: actual sealed Tacsim runtime/host event authority,
+paired Roll roots/claims and complete four-owner boot audit remain required.
+
+N54 tree `2ae22abee09c0fecb49e2e5056043fb1f35a2052` stopped at compilation on three
+private `CarrierJourney.root` field accesses in the new Sim boot audit. Its
+verified unchanged-source archive is
+`d88c64bb5714c90df05fcd6668f741a1c6819a77ca9a3cec82a947545247ec47`; zero tests ran. The next
+candidate uses the existing read-only `root()` accessor for the same hull,
+base-space and domain-host overlap checks. No admission predicate changes.
+
+N55 tree `67f4627978a2ea8c003d666d4d8e8ed9c6b229eb` passed production checking but
+the compile stage failed on a missing `DefinitionValidationContext` import in
+the Tactics component-replacement test module. No runtime tests executed. Its
+unchanged-source archive is
+`ad6e317446ca64fd049d5cbeb5f94e6d117375b0749c253c65e6cd7bf367f75d`. The next candidate adds only
+that test import and this evidence note before rerunning all required gates.
+
+Continuation on 2026-10-19: checkpoint N56, tree
+`f6dfe46241bd357cd21db5504ff2fbbac096d273`, was committed and pushed as
+`b476faee`. The normal merge of main `41e7259d` was pushed as `8eb5c3d4`.
+A fresh fetch then found main `c44c0bb6` (astronomy A.2-A.6); it was merged
+normally and pushed as `94af1bfb`, tree
+`cc86e77afee3983b0abf003871155fd50a8d97e4`. The newer chart, pricing,
+route-planning and ephemeris changes are included in the next candidate.
+N56's running source remains the earlier exact tree; its results do not
+validate the later main merge.
+
+N56 finished with 1,309 passing tests, 11 failures and two ignored tests.
+Core's 574 tests, all 45 deliberation tests, the actual BOARD/order and RELEASE
+regressions, all seven Tactics replacement checks, the bot arena contract,
+Market's 80 tests and Roll's 197 tests pass. Four Sim adapter tests stop at
+incomplete test-only participant registration. Five Economy update tests stop
+at an initial-filing fixture without a typed transaction write. The snapshot
+shape test first stops at obsolete expected format 13 (production is 15).
+The ownership census rejects three unnecessary same-owner declarations; its
+cross-owner access requirement remains unchanged. The reviewed narrow repairs
+are prepared. Both genuine stories remain unstarted because required earlier
+gates failed. All 29 retained files verify against unchanged source; archive
+SHA-256 is `b2181d4e099760cfbec47d686a6662d7bec7fb29416ccf2c53aca218de982be7`.
+This is partial correctness evidence, not M7 acceptance. N56 supplies runtime
+evidence for delayed commander fitness and the whole-squad RELEASE notice
+correction described below.
+
+The next candidate adds reviewed Core output reservations, personal owner
+attestation and compatible updates after attestation, plus explicit leader
+record/default and self-charge expiry tests. Output reservations are inert
+factory prerequisites, not completed manufacture, delivery or installation.
+The adapter registration ceiling becomes nine for the actual four commerce,
+three IC, Tactics replacement and Industry slots; ordinary transaction image
+and module limits do not change. The owner-attestation paths preserve paid
+customer terms, original ancestry and historical update generations. These
+new paths still require execution. An isolated snapshot diagnostic will first
+check the complete format-15 shape before its hash/count are repinned; merely
+changing the version assertion is not acceptance. Lost order watches on resume
+and the complete IC runtime remain separate work.
+
+N57 tree `074d5a62ab57220bda39a37949983f0f93dc194a` was an isolated
+snapshot diagnostic. It stopped during compilation: an Arc-backed Core test
+owner lacked `Clone`, the attestation history reader called a context-specific
+receipt API, and its nested JSON fixture exceeded the macro recursion limit.
+No runtime test or snapshot diagnostic executed. Its two-file archive verifies
+unchanged source, SHA-256
+`1547ee6d64bd471afa90cc690fb85e9e154e0a7706380b202392eb6886bbc4b3`.
+The next candidate repairs those integration errors before repeating the
+snapshot diagnostic; the complete runtime gate remains required.
+
+N58 tree `9f16c2d7e1161e930b791898479623d15d3d7810` compiled the N57
+repairs, then stopped on Industry API mismatches: three page-cursor conversions,
+two typed replay-write identifiers and two test uses of the acknowledged bundle.
+No runtime tests executed. Its unchanged-source archive is
+`f30b4af25b175c040f7c157be4295f59c3e6ffca32dcb41255817a4df5a8cd9f`.
+The narrow API repair precedes the repeated diagnostic.
+
+N59 tree `8bfe7d5caaa4d9c089151266d524dedf75319b91` compiled and ran
+the focused diagnostics: 37 passed, 16 failed, none ignored. Core output
+reservation (11), E4 update (6), owner attestation (6), attested compatible
+update (6), leader-record/default (1), self-charge expiry (1), state-owner
+contract (5) and snapshot shape (1) pass. The format-15 opening fixture retains
+the existing 693-path digest: neither the filed-origin variant nor the new
+refusal payload is populated by that walk, so this does not claim full format
+coverage. No shape hash was changed merely to make the diagnostic pass.
+
+All four Sim tests stopped on the fixture's invalid canonical namespace; all
+twelve Industry tests stopped because their cold-boot fixture omitted the real
+server's typed-state hydration step. The next candidate fixes those two setup
+errors without changing production predicates or weakening assertions. N59's
+12-file archive verifies unchanged source, SHA-256
+`2a01e0f301f7477fefe841f1a0902e691b2db60b55b38c35ee2cf658bd2f190a`
+(15,347 bytes); status SHA-256
+`00942606a5c2ed33432d42f5e7527e6bfc37450029bcec51368e67608b25acde`.
+This was a focused diagnostic, not the full gate; the genuine purchase and
+server stories were not part of its run.
+
+The reviewed L R4 recovery implementation now retains bounded, actual accepted
+order attribution in snapshot format 16. It restores the latest squad watch
+against the published arena clock, keeps an empty latest-group tombstone to
+prevent an older order from returning, and preserves character/persona notice
+scope. Existing world-clock watches retain their policy. The record grants no
+authority and changes no combat hash, public view or order wire. Thirteen new
+native, bridge and actual-boot tests plus independent shape capture ran in N60.
+Eleven of the twelve native/bridge tests pass. The 300-stock-hull test stopped
+because its fixture constructed overlapping hulls before placement; the actual
+boot test stopped because its lobby had not requested the second fill squad.
+The next candidate corrects those setups without removing capacity or recovery
+assertions. Cross-crash delivery remains subject to the acknowledged snapshot
+rollback boundary, not a new exactly-once guarantee.
+
+N60 tree `ba4502a433e00ab0c1c599859789341c0b5e572d` compiles and records
+**51 passed, 15 failed, 0 ignored** in its focused diagnostic. Core output (11),
+Economy update (6), owner attestation (6), attested update (6), leader record (1),
+self-charge expiry (1) and state-owner contract (5) pass. Sim reaches 1/4 and
+Industry 3/12; remaining cases stopped on pending bootstrap writes at the real
+commit boundary. The fixture repairs fold completed boot effects before the
+action, leaving the production dirty-world and legacy-write fences intact.
+
+The format-16 diagnostic deliberately retained the old shape pin. Its actual
+walk has **712 paths**, SHA-256
+`502a2e44b3572828e4ffbff518604fb8f31975f0210b20376dfe41899ece2d58`.
+Independent review found exactly 19 added `state.order_watches` paths; removing
+those reproduces all 693 old paths and their exact digest. The next candidate
+pins this observed shape; this does not claim coverage of unpopulated variants.
+
+N60's 14-file archive verifies unchanged source, SHA-256
+`5c58466c02858dfa56f45a3da0c778fec171659ab4583d0ba6e4e6d9ea71e274`
+(22,035 bytes); status SHA-256
+`b3e6be45e6ad11151b9fc97c21deedfad93dc1f905f45870f8093cbc27a58061`.
+The full runtime gate and both genuine purchase stories were outside this
+diagnostic. No M7 acceptance or deployment follows from these counts.
+
+N61 tree `899d3b5e3d518af1a43e54619b12b11b8bd701e6` compiles and records
+**1,512 passed, 5 failed, 2 ignored**. All twelve R4 native/bridge recovery
+checks pass; both leader presentation checks and the actual bot lapse producer
+pass. Sim IC custody (4), Industry (18, including all 12 Origin checks), Core
+(585), Economy (158), Roll (204) and Market (80) pass.
+
+Four failures are stale exact version-15 checks after the reviewed format-16
+change: two deliberation cases, one conditions snapshot and old-version replay
+refusal. The repair pins 16 while retaining all hash/behavior assertions and
+explicit predecessor refusal. The fifth failure is the R4 actual-boot fixture:
+its legacy partial restart reuses an already-hydrated BulkService. The repair
+uses the actual fresh production composition and complete normalized committed
+image, preserving the accepted Character/Persona attribution assertions.
+
+N61's 39-file archive verifies unchanged source, SHA-256
+`5379e4d53c68007b36e5d21d6d91254fa9e51b91810c24cbdcc4cebb78b4d0af`
+(71,634 bytes); status SHA-256
+`7439f225585a8ffda867ccd1722e0cac77cc5eb6605e435380edc34a64933721`.
+Both genuine purchase stories remained unstarted because prerequisite gates
+failed. N61 does not accept M7. N62 includes reviewed exact input reservation,
+four-owner IC runtime composition, scoped contract-fact consent and these
+fixture repairs. It also imports fetched main `e962b662ec22843f8883c711b4c2e386941aea10`
+(A.4b emergency bids and A.7 moons); the implementation branch's merge ancestry
+will be recorded at its next checkpoint. These additions still need runtime
+evidence; the actual persistent IC region driver remains a named dependency.
+
+N62 (`289bf58dd69031668e7653f9209b77f5507b0265`), N63
+(`313ae13434ead458e70f657fd8fbb71d7134e710`) and N64
+(`a9911e8c77c723428a90d72a2eae5550828be5d4`) stopped at compilation,
+with zero runtime tests and 43/44/44 downstream stages unstarted respectively.
+The repairs correct owner registration visibility and fixture API mismatches,
+including the existing ModuleCtx/Ctx alias, physical unit query routes and
+lossless DomainId conversion. No production predicate or assertion was relaxed.
+N63 also adds the opt-in actual Registry recall action, private holder notices
+and genuine-story branch; that behavior still needs runtime evidence.
+All three terminal archives were hash-verified and reconciled against unchanged
+source: N62 `9867bf53ef3753055d8e2afb27a09d42a79cdd1a9c871ebd3b99a4d53786d55b`
+(4,245 bytes), N63 `6bdf639d8786c7f40a476a58cfe77c15cbeb04162a7ae31f6c803cff94821195`
+(3,471 bytes), and N64 `e4ef0b5b404697a50e4046e13d7c9f42b394cfee7500eaedfd560d7201c44f39`
+(5,034 bytes).
+
+N65 (`dbec12c467be59ddd5e9fc65a01a6fe6c70a6871`) compiled and ran 43
+stages: 2,075 tests passed, eight failed and two were ignored. Its unchanged-source
+44-file archive is SHA-256
+`82f2013d8b76822772eae6fb47abb69114eee14f53fa45a3e8791b600fd014ef`
+(71,835 bytes). The three bot failures exposed feature-dependent JSON number
+spelling in the A.7 lane pack. The first attempted repair incorrectly rounded
+four moon coordinates and broke the published digest in N69. N70 restores the
+exact upstream values and generator, spelling small exponent values as decimal
+text. Decimal equality against upstream and independent canonical hashing retain
+published digest `11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541`;
+the real production-loader and bot-composition checks must pass again. No Core
+canonical codec or previously published identity is changed. Four recall authority fixtures
+and one composition test exposed missing exact definition-validator registration;
+that registration is repaired without changing the authority predicates. The IC
+runtime stage selected zero tests because its filter used the file name instead
+of the Rust module name; N66 corrects the filter and still requires all three.
+Both genuine purchase stories remained unstarted. L resume/watch, cold resume,
+leader presentation, deliberation, physical custody and OOC compatibility checks
+passed on N65; these results do not accept M7.
+
+N66 adds the reviewed term-scoped Registry revocation, public signed-selector
+repairs, strict measured-nonconformance artifact codec and the additive format2
+IC ownership parser. The latter reserves no new authority: an owned Open may
+capture an exact retained charter transfer; old Opens keep their original format.
+The full charter producer and measured-failure publication are still separate
+implementation work. Actual scoped personal-term lapse facts are queued with
+strict private contract consent and committed occurrences. These additions
+require their own compilation, runtime and genuine-story evidence.
+
+N66 (`4004a453a89adc0b08a1c6f30e747c5d60e6c310`) stopped at compilation:
+nine fixture accesses to private initial-filing fields, with no runtime tests.
+The unchanged-source terminal archive is SHA-256
+`d1106393d32f24c9a76b4ffc3c962a9a9a3bdf523f732219dbba1e3fda6f3552`
+(4,979 bytes, two files). The fixture repairs preserve strict typed decoding
+and use checked public serialization, without widening production visibility.
+N67 also queues a dependent generation-two source-access correction and the
+actual measured-rejection worker/publication path. Rejection remains distinct
+from a successful certificate and from infrastructure failure, with an additive
+admission marker preserving older quota bytes and capacity promises. Automatic
+reconformance, current-certificate selection and resulting recall remain separate
+work. No M7 acceptance is claimed.
+
+N67 (`3a9cf2b1f9bca7779e72eb5022da14db881c1657`) stopped at compilation
+on two test-only issues: an inferred collection needed its explicit vector type,
+and the server's bounded phase logger needed the new Nonconforming enum arm.
+Its unchanged-source archive is SHA-256
+`7190377e2731451a62c3398e9c026d776f5fd004e80272b6cbb114d6779745ad`
+(5,428 bytes, two files); no runtime tests ran. Both narrow repairs preserve
+the original assertions and production authority. N68 also includes the reviewed
+fixed Industry completion-capacity prerequisite with eight structural tests;
+actual factory orders and payments remain separate integration work.
+
+N68 (`a9e9d0cf74024d564eb23d74b79ac24080764ebf`) stopped at compilation
+on the new Industry capacity module's private helper scopes and canonical-byte
+accessor. Its unchanged-source archive is SHA-256
+`87da83926a8c0d2b2fded21d7ea6224bad7425237a8e589b4effb4487f6f4180`
+(3,314 bytes, two files); no runtime tests ran. The repair exposes four helpers
+only to their enclosing coordinator module and uses the existing byte accessor.
+N69 also adds the inactive closed reconformance coordinator profile: exact
+Registry service actions, the same 123 future result targets, admission-only
+head publication and linear retry-history audit. Five structural coordinator
+tests preserve old declaration bytes and cover actual transaction/hydration
+boundaries. Registry source access, service submission, certification selection
+and automatic recall remain separate producer integration work.
+
+N69 (`8b866937db843ee4e4b94fe16d58869e15d36e0f`) compiled and completed
+45 stages: **1,993 passed, 133 failed, 2 ignored**. Its 46-file unchanged-source
+archive is SHA-256
+`dbaa388b8f537ee2a8963f4500d5a1f5d78022b324b1fe53304b11923a1b68c0`
+(83,725 bytes), verified and reconciled. Both genuine purchase stories remained
+unstarted after prerequisite failures. The eight Industry-capacity and five
+reconformance-capacity tests passed, as did Inventory (103), Economy E4 (340),
+Market (80), Economy unit (159), IC runtime composition (3), OOC seal compatibility
+(15), twelve L resume/watch tests, two leader presentation tests and the real bot
+lapse producer.
+
+One negative Core fixture needs to observe the intended early refusal rather
+than later prepare failure; its repair preserves production behavior. The actual
+measured rejection worker fails at settlement, with bounded phase instrumentation
+queued for diagnosis. Three Roll reader failures exposed missing key-validator
+rules for the revocation operation and exact licence/term families: even an absent
+sanction could not be read. N71 adds only those canonical key grammars and an
+actual registered-family empty-read/insert/readback regression, retaining malformed
+key rejection and transaction poisoning. The other 128 failures occur in the
+lane-pack-dependent gates affected by the incorrect rounding repair above.
+
+N70 was frozen at `1989f01a31f3c3dbf7d6a807a89bf80797a27f81`, committed in
+`79c5097b`, then merged normally with main at `03ce517e` and pushed. It never ran:
+the newly identified revocation key bug is included in the superseding N71 input,
+which starts from the actual last tested N69 source. N70's queued changes below
+are therefore tested as part of N71, without claiming a nonexistent N70 result.
+M7 acceptance remains open.
+
+N70 includes reviewed actual immediate personal charter sales: signed seller
+consent, actual buyer payment and native title transfer in the same acknowledged
+union; immutable ownership history; current-owner attestations and compatible
+updates; old-title IC claim completion; and complete cold inverse audit. Seven
+native and five Roll tests are queued. Sales with open claims currently refuse;
+paid pending transfer, timed settlement and refunds remain implementation work.
+
+N70 also includes reviewed Core factory integration: actual scoped supplier
+consent, named buyer acceptance, exact certified die/facility holds, native cash
+reservation, bounded real K schedule progress, governed output birth/title and
+stable cancellation/refund. Ten actual Engine factory tests and three schedule
+replay tests are queued. Production recipe activation, positive Class III and
+customer-input acceptance, delivery and Install/Replace remain outstanding.
+These additions are not represented as runtime passes.
+
+Fetched main `4465bf06abf924b224cd63667a41c5723211ac3b` adds A.3b's chart panel,
+TUI screen and web rendering. Its source is included in N70; the implementation
+branch records normal merge ancestry at the checkpoint. The chart-screen and
+existing travel/chart checks run with M7. Registry reconformance lifecycle,
+automatic measured recall, organization catalogue/payment, pending resale and
+Safe Conduct production services still require implementation and acceptance.
+
+The certified Origin producer passes its twelve actual Engine checks in N61:
+actual Inventory mint, same-commit certificate and shared civil-month quota,
+scoped Org/E4 authority, an independent permanent Industry issuance index and
+complete cold reconciliation. Twelve Engine checks cover genuine initialization
+followed by an Active restart, real authority/custody boundaries and history
+corruption. Initialize cannot issue stock. No importer or hardware producer is
+enabled by default. Factory orders, payment/title and consumption are now queued
+for N70 validation. Production activation, delivery and installation are still required.
+
+
+N71 through N75 stopped at compilation and executed zero runtime tests.
+Their repairs preserve the existing checks and correct actual owner API,
+registration and fixture module boundaries. N76 compiled successfully on exact
+tree `2d15c68e499ed1e755da226cef0740e743a7b5f4` (335 reviewed packages), then
+completed its runtime roster with unchanged source. Its evidence archive is
+`ae10dcb2894067fd5c29732e531187b7810688f489f5fb7305ebfb1fea8ad0f9`.
+
+N76 passed all 244 Roll tests, 80 Market tests, 340 selected Economy E4 tests,
+103 Inventory tests, 15 commerce-composition tests and 27 commerce-roster tests.
+Its focused L leader, admission, release, deliberation, resume/watch, presentation
+and expiry producer checks passed, as did the actual IC custody/composition,
+wire, snapshot, shipped-configuration and state-owner contract checks. The Roll
+runner itself failed because four exact prefix counts were stale after adding
+the ownership-capture tests; those counts are corrected in the successor.
+
+N76 still failed seven Core delivery-capacity tests, five Industry integration
+tests, the measured-rejection worker and eleven Economy pending-transfer tests.
+Bounded diagnostics isolated the closed delivery guard, scheduled readiness,
+terminal quota charge and missing immediate-transfer fixture provider respectively.
+Reviewed repairs are included in N78; they require fresh runtime verification.
+N77 was frozen but never launched and was superseded by N78 after the last two
+N76 findings. No N77 result is claimed.
+
+N78, exact tree `e944b3b8dda208f9178a555093f30f547d512ae3` with 347 reviewed
+packages, stopped at compilation and executed zero runtime tests. The compiler
+found two Core test API mismatches and a missing serialization implementation
+on the House customer read result. The terminal archive verifies unchanged source:
+`6be282c15d0419d5346d7975891c9d65b1ebd8ab9d4b6438f3cf8c6169e86c27`.
+The narrow fixes are prepared for the next candidate. These are progress
+checkpoints, not M7 acceptance or public paid-service activation.
+
+Current main `f3df3205` was merged normally at `31c3e561`; another fetch on
+2026-10-19 found no newer main commit. N78 includes that exact main ancestry.
+
+The re-conformance implementation preserves the filed version, uses actual paid
+Registry work, and selects a current certificate only after successful completion.
+Measured nonconformance publishes permanent evidence and a separate automatic
+recall. Its genuine purchase/re-conformance story and the repaired terminal quota
+path still require combined execution.
+
+The house catalogue uses actual organization and scope identities and scoped
+publishing authority. House policy preserves listings after curator departure;
+personal customers pay for their own licence. Reviewed House checkout now connects
+actual Market, Economy and Roll owners, with Org treasury recipients and personal
+payers. Its disclosed future renewal terms may differ from the initial term.
+House renewal and default catalogue activation remain in progress; checkout's
+prepared tests have not yet run successfully in the combined candidate.
+
+Reviewed Industry delivery now uses the actual paid manufacture order, original
+capacity reservation, real title and custody checks, and Core's prebuilt carry
+images and permanent receipt. Core Install/Replace mechanics also preserve exact
+ordinary object images with two native owner images. Actual refit consumption
+and production activation remain required. Pending charter funding now connects
+the native Economy owner, four-target Core completion recipe and actual Roll
+service, including last-close/deadline settlement and compound Registry refund.
+Its combined runtime and genuine-story checks have not yet passed.
+Personal renewal terminal holds are retained through the actual garbage collector
+because cold recovery requires their native evidence. New boundary tests for this
+retention, full WorkOrderId values and pending-transfer capacity are queued.
+
+Further verification through N81 is retained as **compile-only failure evidence**,
+not runtime acceptance. All three immutable archives were downloaded, hash-checked
+against every log and the input/source census, and confirmed source-unchanged:
+
+| Run | Exact tree | Terminal result | Evidence archive SHA-256 |
+| --- | --- | --- | --- |
+| N79 | `aaa731af4cd1a7e0719e4edb6fa3b911aaf447b6` | One House account iterator lifetime error; subsequently repaired with a retained principal binding | `136bbce1fc874ed36c2938aaa78b52860a8c5bbcc21433b8a03e8ec8afaf8aca` |
+| N80 | `9297d2e33ed8e4b1f2eb0391e820fde16e125584` | Four Tacsim fixture import/path/helper-shadow errors; subsequently repaired without changing assertions | `5ad9a21de05aae4eef9d2f21caeab42ce8baf54bd3db888d13ee31ac2c08d268` |
+| N81 | `233abcbeceed1855f31bdccbc39b60e83cb12c58` | Two House renewal Core fixture visibility/owned-registry clone errors; reviewed repairs await the next run | `eee121da8147f0dcd1e56428d035fccab210530c5f88783102f53aa4f22331b6` |
+
+Reviewed additions reserve seven exact House renewal targets (81,920 bytes) with
+personal/House coexistence and independent service closure. The pure Safe Conduct
+financial layer now has strict versioned terms, checked minor-unit arithmetic and
+same-generation WorldIc term/claim-delay calculations. Its dual price illustration
+is conditional; it is not an eligibility proof, quote acceptance, premium, policy,
+liability reservation or claim service. The five financial/window tests pass in N82; this is arithmetic evidence, not a bound policy.
+Paid-resale IC capture has a separate exact format 3 carrying only paid ownership;
+format 2 remains charter ownership and format 1 remains unchanged. This Core
+shape and its prepared tests do not substitute for actual resale issuance/history.
+The full House renewal owner path has now passed its assigned source reviews and
+is integrated for the next runtime candidate. Native paid resale and actual
+Industry refit have since passed source review and await runtime validation;
+the paired resale producer remains under implementation. None of N79–N81 ran
+runtime stages.
+
+Latest fetched main `b0d036d324b987ae280dfe9b8d388b5cc71f4133` merged cleanly
+as `1457eba89c0f97c4281ccb45566969ded472c7bb`: doc 19 A8a's versioned goods,
+parent-frame moon passage and throttle bisection updates remain in the M7 tree.
+N82's immutable tree `313987d7848c00e79107d92aa37f534b0d87ee2b` includes that
+merge and the reviewed charter PendingTransfer term-window correction. The
+correction uses Roll's actual bounded interval rules: issue during Grace is
+valid history and never shifts any date or revives current admission. N82
+compilation and five underwriting arithmetic/window checks pass. N82 completed
+50 stages with 2,331 reported passing test executions, 55 assertion failures and
+two ignored cases; overlapping filters mean these are not unique-test counts.
+The full archive was downloaded, hash-verified and reconciled, and its source
+census remained unchanged: archive SHA-256
+`8df5d60297f8d8f6f8943705dbc56726095b3d887c201f760643044907decd08`
+(100,349 bytes, 51 files). This is diagnostic evidence, not acceptance.
+
+All 32 Core failures traced to the House fixture's missing coexisting entitlement
+profile, unordered output references, or the completed PendingTransfer join's
+incorrect current-ownership comparison. All 21 Industry failures reached an
+unclassified legacy fixture command. The Roll envelope fixture tried to create a
+protected House record outside its registered protocol, and one composition
+fixture reused a filled once-only writer cell after an intentionally failed boot.
+Reviewed repairs retain the production admission and history fences. Economy's
+188 executed checks passed; its runner incorrectly expected 14 rather than 15
+funded-renewal tests. The House admission census also used the wrong Rust module
+path; both runner counts are corrected for the next candidate.
+
+The roster stage additionally aborted in
+`the_boot_says_whether_the_simulator_is_there` with a stack overflow. Inspection
+of the exact failed Linux binary showed nested boot-future frames exhausting the
+normal test-thread stack. The production boot entry now returns a boxed, lazy
+future, preserving the validated-spool borrow and all boot ordering; the existing
+real boot fixture checks its small inline size. No stack allowance was increased.
+This repair still needs the next runtime run.
+
+The focused L deliberation, boarded/cockpit order, resume/watch, match-boot and
+leader-presentation checks all pass in N82, as do the E4, IC composition and
+source-owner contract checks selected by that run. Both combined purchase-story
+stages were unstarted because earlier stages failed. N83 and N84 were frozen
+drafts only, never launched, and are superseded by the N85 candidate.
+
+N85 and N86 both stopped at compilation, so neither ran runtime gates. N85
+exposed Core paid-resale helper visibility, a fixture action-set type mismatch
+and three test helper result aliases. The narrow reviewed repairs allowed N86
+to reach a House-renewal iterator borrow and refit policy visibility/missing test
+import errors. Those four errors now have reviewed source repairs for N87;
+admission predicates and test assertions are unchanged. N86's archive is
+hash-verified and reconciled, with its full source census unchanged: SHA-256
+`57452abef253368a1cf11c355589f7c4574de86005bec2c85b8d1f187fe0d36e`
+(6,315 bytes, two files). N85's archive is likewise verified: SHA-256
+`f3b6d16a6bbf2d3af889f34ae10f554b61e01b3b993f84f761d5a99002d67211`
+(5,708 bytes, two files). Runtime and acceptance remain open.
+
+
+N87 also stopped at compilation, on a missing native-coverage test import and
+an inaccessible filing fixture helper. Its unchanged source and two-file
+archive verify: SHA-256
+`2f060cae7361afc353be21564763f873574883310a060ff588a5fa090d7b7eab`
+(6,426 bytes). The narrow two-file repair allowed N88 to compile. N88's exact
+tree `b3f4f29a51b00f5a10e70b97e22e7f341e22a65a` is committed and pushed as `3654f439`.
+Its completed run reports 2,220 passing test executions,
+0 failed assertions and 2 ignored tests across
+53 stages; overlapping focused and full suites are not
+unique tests. Native coverage, Industry and Economy aborted with stack
+overflows, so their incomplete stages are failures even where preceding cases
+printed passes. Core executed all 694 tests successfully; its runner still
+returned failure because a six-test prefix used the file name instead of the
+Rust module name. That prefix is corrected for the next candidate; N88's raw
+failure is retained. Both genuine purchase-story stages remained unstarted.
+The full source census and every retained log verify unchanged. The archive is
+SHA-256 `ffbcdfce919a8dfa369551852ce470ff5d32bb7c58af95c43d6013135658eaa6`
+(109,928 bytes, 54 files).
+
+Reviewed source added after N88 includes the actual paid-resale producer and
+paired native/Roll/Market recovery, plus transferred-holder renewal providers.
+Receipts use the acceptance commit key reserved by Core while preserving the
+later terminal operation in their immutable history. Its genuine continuation
+and focused owner/composition cases await execution. The finite shipped
+hardware pack now publishes the class I/II/III integration and refit recipes
+through the actual enabled content ledger. Actual production composition,
+funded manufacture/delivery/refit and activation still require completion.
+
+The actual Conduct worker now measures its fixed role trials using the real
+simulation, subject interpreter, cargo and observations; ten focused checks
+await execution. This worker alone grants no qualification. The separate
+acknowledged Conduct owner, quota, retained result and current-certificate
+integration remain required. The registered-owner ceiling is now sixteen to
+fit the twelve-adapter optional roster; its exact 16/17 boundary keeps the
+ordinary three-image/two-module and closed IC four-image/four-module limits.
+
+The native hull-coverage owner and reviewed Core completion reservation are
+integrated. Core reserves six exact Tacsim/Roll targets totaling 131,072 bytes,
+requires both real owner images and binds terminal rows to the original policy
+commit. Ten structural Core tests await execution; they do not substitute for
+the actual underwriting producer, withheld host departure, money or cold
+recovery stories. No newly prepared package is acceptance or deployment.
+
+The completed N88 binary was then reproduced under gdb without argument data or
+a larger stack allowance. Coverage and PendingTransfer measured the same
+1,279,296-byte Economy participant dispatch frame; Industry faulted while
+allocating that same frame. A reviewed split moves all 44 unchanged request
+branches into separate private typed preparation functions. Every original
+branch and argument order is retained. This repair requires execution and a
+post-change frame measurement; no passing runtime result is inferred from it.
+
+The ordinary underwriting producer is now integrated after two independent
+source reviews. It publishes through the actual scoped Org and metadata owner,
+then requires an acknowledged IC Open plus retained private departure before
+Quote/Bind. The actual E4/Roll path reserves premium/liability/collateral and
+Core completion room before one-shot departure release. A refusal-only host
+and issuer check repeats at stage and consuming take; historical terminal
+cleanup does not require fresh issuer eligibility. Its genuine child covers
+Unknown/observed NoIntent retry, cold inverse joins, real delayed destruction
+Claim and clean/cancel release. Three composition tests, one Roll close codec,
+one new product check and that child await Linux execution. Qualified Conduct
+discounts, launch publication and live-region acceptance remain separate.
+
+N89 and N90 stopped at compilation and executed no runtime tests. Both source
+censuses and evidence archives verify unchanged inputs. N89 tree
+`6282687de52493c122e696b35e1ad0e2e3b9e678` needed an explicit captured
+`Option<CommitToken>` annotation; archive SHA-256
+`3e5daf7a1b12e160e85c91f69d747096d1efe1fca3368a0dbf171ed398402e20`
+(2,700 bytes). N90 tree `e8b9f57a303b8fcbeeb23d1aa9b13e6a8b3dd6c9`
+reached Roll's resale/renewal integration and found private paths, stale API
+calls and a missing House issuer argument. Archive SHA-256
+`b354e693098762c2cfcbecdbf7379258aa1286c2dd2c4f498b2298d42e5c61ff`
+(7,149 bytes). The reviewed repair restores exact issuer checking as well as
+correcting those calls; it does not drop caller validation.
+
+Conduct Core completion is now integrated after independent Core and producer
+API reviews. Its fixed execution/result reservation is two targets and 8,192
+bytes, with all three real owner images required before preparation and again
+at composed consumption. Immutable admission, prepaid work, cancellation,
+stopped-worker recovery and cold reverse joins have ten prepared structural
+tests. Native owner/service and qualification evidence remain outstanding.
+The role worker also now checks retained movement after silent answers; its
+new adversarial case prevents an old drive order escaping the stop rule.
+Three further actual paid-resale route continuations cover OriginalV3,
+DerivedV1 and transferable HouseV1. They remain children of the existing
+genuine purchase story, not separate passed top-level tests. Two JSON content
+files are normalized to the repository's required LF line endings, preserving
+their parsed definitions. No performance exception changes these correctness
+requirements or turns an unexecuted story into acceptance.
+
+N91–N93 also stopped at compilation, with zero runtime tests executed. Each
+archive and source census was independently verified; all later stages remain
+unstarted, not passed. N91 tree
+`51939790c6c57bdf57b8b97eafc33a776de9c580` exposed one optional module-name
+comparison in the resale writer; archive SHA-256
+`6cd4fb953963f896aa6d2ca7ab5924e3b3b8258578fb803c7924507a3a93f282`
+(5,123 bytes). N92 tree `e21e40a9ae74b0a16590fc560c192a14682f6d60`
+exposed a projected-field result annotation and two stale renewal test
+constructors after holder generation was added; archive SHA-256
+`c55018551a551c6ece4bd3c23e251df033a290e38477b0f55fceb0f118d1ff6d`
+(6,816 bytes). N93 tree `e609d8a2af1f26df1e388c3705503d73f2302c4b`
+reached Tacsim and exposed missing explicit imports in the coverage history
+check and genuine coverage fixture; archive SHA-256
+`9f9651bdede7bda4098ef56d0a762cd572e4e17827ae4df7866441c82d562aac`
+(7,169 bytes). Narrow repairs retain all eligibility checks and assertions;
+the renewal identity test additionally distinguishes successive holders.
+
+Hardware now has the explicit production `GovernedHardware::compose` entry,
+one finite catalogue shared by mechanics and Registry, and three prepared
+actual-owner manufacture/delivery/refit tests. Defaults remain absent; selected
+host identities and acknowledged deployment still matter. HouseV2 now supplies
+an explicitly selected two-seat sealed Pin product, separate full @2 purchase
+actions and policy, exact Core envelope, owner persistence and transferred
+renewal. HouseV1's one-seat bytes and action references remain unchanged. Its
+genuine continuation uses the real purchase, one old IC claim, pending resale,
+deadline settlement, buyer's remaining seat, old Close freeing the other seat,
+restart and holder renewal. Those stories have not yet executed on this tree.
+Distinct House transition/product command verbs now select the actual signed
+offer, retaining the gateway's duplicate-offer refusal.
+
+The renewed closure audit distinguishes unfinished M7 code from later M8 work.
+Remaining mandatory implementation includes the complete Conduct owner/service
+and qualified discount, committed resale facts, collision-free commercial
+callers, newest-eligible Follow and explicit major/paid-Follow producers,
+promised dependent/scoped House update boundaries, and named launch composition
+and publication under real authority. These have assigned implementation work;
+an isolated source candidate is not acceptance. The historical L residual list
+is not a fresh defect list: current leader/admission/watch/record fixes still
+need exact final-tree evidence. The absent persistent region driver's actual
+departure/loss/return producer remains the specific conditional live integration;
+it does not excuse Conduct or service-composition gates. Timing remains
+report-only, while provenance, bounds, privacy and replay gates stay required.
+
+The next main integration is merge `2feaf6cced628c4254119b0912d592caf2846151`,
+including `origin/main` at `6f79797409f6792447d0fb1ed2d15335d2214387`
+(moon ports and SM.1 geology). The additive Tacsim registration conflicts retain
+both underwriting and geology. The merged implementation checkpoint is pushed
+to the authorized branch; it is not deployed or accepted as M7.
+
+N94 tree `6b784e90b04f2a9b196666dda5f9696471e5c4ad` included that merge,
+distinct personal purchase/renewal callers and the committed-transfer fact
+bridge. Compilation stopped on three references to a fixture's source filename
+instead of its actual Rust module name. The source remained unchanged; no runtime
+tests executed. Verified archive SHA-256
+`69f75dd2fcd59c57f46677342d66d4ba4b41d24f8717d10a60015aa38a7071e5`
+(9,922 bytes), compile-log SHA-256
+`9ad29be877c71b46dbef746668c6be2e579db45bcf3ce0a0b584c98b3af57629`.
+The narrow repair changes only those module references and leaves assertions
+and production behavior intact.
+
+The reviewed transfer fact now joins actual acceptance, holder generation,
+settlement and scoped historical parties; pending/refunded sales remain false.
+The public callers retain exact signed-offer resolution with distinct verbs.
+Newest-eligible Follow is also integrated: a bounded nonserialized locator is
+rebuilt from audited history, updated only with acknowledged owner state, and
+the selected revision is fully rechecked. Its prepared actual second-certificate
+story covers withdrawal/recall fallback, cold restart, stale preparation and
+unchanged paid Pin use. These additions still need runtime evidence. Conduct's
+actual owner/service and qualified discount, explicit major/paid-Follow producers,
+dependent/scoped House lifecycle, named production publication and final exact-tree
+M7/L acceptance remain outstanding.
+
+N95 completed on unchanged tree `3bc28ace943395806c733da54ec5480fb8400967`
+(413 packages, before the later Conduct owner). Compilation and 17 runtime
+stages passed; recorded stage summaries contain 1,379 passes and 11 failures.
+Counts may overlap between stages and do not establish final-tree acceptance.
+Verified evidence archive is
+`3cebd8a701aa019f9cda60a0da53661f22714dd969bba3f47c66d24bd62b9e73`
+(82,968 bytes, 22 files), with status digest
+`047ca6d9a5c16076f1cf8b091a2948aaec7e0b74ff2c2e116692c319bd51d815`.
+All 723 Core tests, 16 native coverage tests, five Follow tests, and the selected
+geology/moon-port and trade-content checks passed. The native coverage test that
+previously overflowed now passes; exact binary prologue inspection measures the
+Economy participant dispatcher at 27,224 bytes, down from the earlier 1,279,296.
+The other previously aborted Economy/Industry cases remain unexecuted in N95.
+
+Three hardware composition cases refused the new refit definitions because the
+actual Industry validator omitted their six action shapes and outcome. Eight
+Conduct worker cases refused the carrier's empty cargo-section consequence
+list under the existing strict unit loader. Reviewed repairs add the exact
+registered refit shapes and an actual cargo `DestroyUnit` consequence with its
+recomputed content digest; neither repair loosens validation. The measured
+maximum-class rejection test then aborted during Registry fixture boot. GDB on
+the exact failed binary, without frame arguments, showed approximately 2.09 MB
+of cumulative stack, including repeated by-value Engine/Fixture returns. Later
+stages and expensive genuine stories stayed unstarted. The fixture-frame repair
+and a new exact-tree run are required; no increased test stack is an acceptance.
+
+The subsequent reviewed source now includes the actual prepaid Conduct owner,
+five signed service transitions, complete typed/native/artifact/root recovery,
+and opaque historical/current proof reader. Qualified coverage consumes that
+actual proof, retains its publication roots, and rechecks the exact selected
+profile and certificate at quote and Bind. The prepared combined genuine story
+uses one shipped-source certificate and real Transit trial for ordinary/qualified
+pricing, stale Recall at all custody boundaries, cold recovery and retained-premium
+cancellation. These later source packages have not executed in N95.
+
+Acquired parent rights now retain the exact settled resale holder independently
+of immutable paid-term history, both for owner qualification/attestation and for
+draft/initial source provenance. Legacy omitted bytes retain their old meaning;
+later ownership loss blocks fresh authority without invalidating accepted
+history. Explicit dependent updates, major versions, paid Follow, scoped House
+lifecycle, actual named launch publication and final M7/L acceptance remain due.
+
+Subsequent reviewed source packages, not included in N82, add:
+
+- The actual House renewal E4/Roll/Market providers, native contract/hold inverse
+  checks, historical cleanup and optional service lifecycle, retaining distinct
+  captured purchase terms and current renewal terms. Its genuine child uses the
+  real paid House purchase and exercises curator departure, retry, service close,
+  terminal hold retention, restart and captured IC checkout. Eight Roll, eight
+  Market and two composition tests plus the genuine continuation await execution.
+- A bounded immutable underwriting product payload binding real Org/scope/account
+  identifier domains, adjudicator, complete financial terms, exact hull/zone
+  definitions and exact charter/line/filed revision/certificate/role-trial/profile
+  references. It requires an explicit recorded-IC-destruction loss rule, excludes
+  OOC elimination and journey anomalies, and requires same-transition wreck title
+  on payout. This payload still grants no publication, eligibility, money or host
+  authority. Five structural tests await execution. The actual CREDIT example
+  uses its two-decimal scale: 10,000cr insured value, 100cr ordinary premium,
+  conditional 90cr qualified premium and 8,000cr reserved maximum payout.
+
+The next candidate also contains the reviewed native paid-resale payment,
+escrow, settlement/refund and complete replay inventory, plus the real Industry
+refit owner. Refit accepts certified manufacture/delivery, reserves the actual
+seven-IC-day K slot and 100cr fee, and runs scheduled install/replace or cancel
+through the Tactics, Economy and Core owners. Fourteen new Industry integration
+tests await execution. First/replacement Core transitions reserve eight/nine
+exact targets (424,960/429,056 bytes); this is an optional profile, not a global
+capacity increase. Finite shipped hardware composition and activation remain due.
+
+Underwriting Bind is a separate E4/Roll transition after acknowledged four-owner
+IC Open and before a genuine host releases covered departure. Its private host
+permit must be retained through Unknown; unavailable host cannot charge. Cover
+starts at Bind, never retroactively at Open. Full funded binding, immutable
+loss/close evaluation, delayed payout and liability release remain implementation
+obligations; the product/math packages do not satisfy those gates.
+
+The L R4 release-notice correction passes in N56: a side lead's fully offered
+whole-squad RELEASE also removes the persona commander's watch, preventing a
+false expiry announcement. A partial offer or wingman's release preserves the
+squad-wide watch. The public BOARD/reply/RELEASE/TTL regression is included;
+that regression passes in N56. The later format-16 accepted-watch implementation
+repairs resume attribution: N65 passes twelve focused resume/watch tests and the
+actual match-boot test with character and persona authors. Watches remain
+record-only, outside MindView and combat hashes; empty latest groups prevent an
+older held order from regaining its watch.
+
+The L residual audit also confirms and repairs 17b's R1: direct character ORDER
+admission now binds `issuer` to the actual occupied hull and applies the same
+published wreck predicate as typed cockpit ORDER. The existing actual boarded
+lead/wingman regression adds missing/borrowed issuer and egress-wreck refusals,
+preserving its valid controls and Persona rules. Its actual boarded regression
+passes in N50 and N56. The implementation rechecks commander fitness when a delayed
+persona reply lands, tests wrecked/disabled/inert commanders, and replaces five
+older manually seated fixtures with actual public BOARD. The new no-commander
+snapshot notice requires snapshot format 15; old formats refuse explicitly.
+Those additional checks pass in N56, but do not close every historical L residual.
+
+The five real renewal providers and genuine renewal story are integrated, with
+new service cleanup/due/status/control work continuing separately. Reviewed
+prerequisites add the bounded 32-service registration ceiling (per-invocation
+budgets unchanged), a closed Tactics component replacement owner adapter, and
+the separately registered sixth unfunded-renewal cleanup action. Personal-author
+withdrawal adds current title/readiness fences and permanent cause/root audits;
+its genuine child preserves paid Pins and captured sorties. These new source
+packages still require their combined runtime gates and are not default service
+activation. No existing paid term is truncated to start a renewal early.
+
+Renewal due processing and cleanup/control, owner attestation, compatible
+updates and author withdrawal now have implementations and focused evidence;
+their genuine combined commerce stories and final acceptance remain required.
+Registry recall/revocation and production IC claim/close are implemented with
+focused checks; their combined genuine-story and final acceptance gates remain.
+Automatic re-conformance, current certificate selection and the scoped house
+catalogue reader now have reviewed implementations awaiting their combined
+runtime evidence. House renewal now awaits its combined runtime and genuine-story
+evidence. The paired paid-licence resale producer is now integrated and needs
+its combined execution evidence. Remaining implementation includes the
+acknowledged Conduct qualification, qualified underwriting and production
+activation. The ordinary underwriting producer now awaits runtime evidence. The governed refit owner is
+source-complete and reviewed but awaits runtime and genuine-flow acceptance.
+Reviewed checkout and delivery need their combined runtime
+and genuine-story acceptance.
+The acknowledged Core output reservation and certified Origin producer are
+prerequisites, not completed manufacturing or usable installed hardware.
+
+These are M7 obligations. Only integration with an unavailable live IC sortie
+or convoy driver is conditional; its production services remain required.
+M8's contraband and NPC procurement programme remains separate. Current parallel
+work covers paid-licence holder transfer and Industry refit, alongside
+underwriting and combined House renewal verification. The absent region caller does not waive its claim, capacity
+or custody owner services. Scoped fact consumers, generated client bindings,
+operator surfaces and final complete acceptance still follow their actual
+implementation. Existing partial passes and source review do not substitute
+for those gates.
 The detailed cuts below state the complete intended result. Existing inert
 components can land with focused evidence; public paid services require their
 own complete phase gates. Hardware, renewal/transfer, the house catalogue and
 full acceptance are still implementation work. No Windows Cargo build is needed
 for the current loop: Linux uses one exclusive build lane with two Cargo jobs.
+
+
+</details>
 
 ## 1. Result and boundaries
 
@@ -262,6 +2068,14 @@ are independent facts. A dominant display refusal must not discard another
 fact. New admission evaluates integrity → current principal/title → sanctions →
 dependency → term → pending transfer → exact revision → class/station/floor →
 IC seat. The captured seal is independent thereafter.
+
+**Explicit user ruling, 2026-10-19:** Registry revocation covers the current
+accepted term, including its original Grace. The immutable sanction names the
+exact licence and accepted generation; the old generation remains revoked,
+including after clock rollback. At or after that term's original Grace end,
+a normal fresh term may be issued through current eligibility and consent
+checks. There is no automatic extension or restoration of the old term, and
+historical sanction evidence remains. Already sealed sorties still finish.
 
 The dependency step names the operation and licence kind. A dependent owner-use
 request checks that current owner's immediate-parent grant. Existing paid
@@ -544,10 +2358,11 @@ finish all IC13 work substitutes for that evidence.
 
 Track IC10's 4,096 inventory-marker deployment blocker and its other documented
 delivery/boot residuals as existing trade constraints. IC12 did not repair them.
-IC12 also makes Treasury and Bids readiness close Co-op enrolment, including a
-house bid that cannot fund one unit (Q-18-60); Sky remains reported/paged but
-ungated. Record this existing trade policy and its normal-funds-depletion effect
-without silently weakening it or making M7 own that unrelated policy change.
+Current main's P-B supersedes IC12's funds-depletion enrolment gate:
+only Missing required Treasury/Bids dependencies close Co-op enrolment; normal
+insufficient funds are reported/paged without blocking enrolment. Sky remains
+reported/paged and ungated. Preserve that current trade policy in M7 composition
+and regression checks; do not restore the superseded Pending-funds rule.
 Do not copy the marker scheme or silently make this cut unrelated trade cleanup.
 If those paths are required by the chosen deployment, activation waits for their
 tracked repair. Coordinate `contract_live`, market APIs and tacsim composition;

@@ -21,7 +21,7 @@
 //! refuses beside dirty state), then `ActionCoordinator::command_ingress` →
 //! `preflight` → the actor's own projection and resolve → `prepare_and_stage_resolved`
 //! → `take_staged_action` → `reserve_authoritative_intent` → `reconcile_authoritative`
-//! → `install_prepared_action_announcing` → `checkpoint_authoritative`. So the typed
+//! → `install_composed_action_announcing` → `checkpoint_authoritative`. So the typed
 //! state lives in the store, a same-epoch resubmission is the coordinator's HIT (a
 //! replay, never landed), and **every restart is a plain `build_engine` re-boot over
 //! the kept store**, the typed partition hydrated before any module's boot pass as in
@@ -135,7 +135,7 @@ enum Landing {
 
 /// One booted engine over a kept store.
 struct Rig {
-    tw: TestWorld,
+    tw: Box<TestWorld>,
     cfg: Config,
     store: Arc<dyn ObjectStore>,
     spool: QuarantineSpool,
@@ -146,7 +146,7 @@ struct Rig {
     boots: u32,
     /// Every pilot made here and its gateway account.
     accounts: BTreeMap<ObjId, AccountId>,
-    /// What landings made observers hear (`install_prepared_action_announcing`).
+    /// What landings made observers hear (`install_composed_action_announcing`).
     heard: Vec<(Audience, OutputEvent)>,
     /// The providers' summaries, as the world task tells the actor.
     told: Vec<(ObjId, String)>,
@@ -163,11 +163,23 @@ impl Drop for Rig {
 }
 
 /// **Boot the production root** over a fresh in-memory store.
+// Keep the production boot's large result out of the enclosing fixture future.
+// The heap-backed future remains lazy and propagates the actual boot result.
+fn boxed_boot_engine<'a>(
+    cfg: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    spool: &'a QuarantineSpool,
+) -> std::pin::Pin<
+    Box<impl std::future::Future<Output = Result<Box<boot::BootedEngine>, String>> + 'a>,
+> {
+    Box::pin(async move { boot::build_engine(cfg, store, spool).await.map(Box::new) })
+}
+
 async fn boot(tag: &str) -> Rig {
     let cfg = config(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boot::build_engine(&cfg, &store, &spool)
+    let booted = boxed_boot_engine(&cfg, &store, &spool)
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -184,7 +196,7 @@ async fn boot(tag: &str) -> Rig {
             .test_world(),
         "the production composition is never a test world"
     );
-    let tw = TestWorld::from_engine(booted.engine);
+    let tw = Box::new(TestWorld::from_engine(booted.engine));
     let mut rig = Rig {
         tw,
         cfg,
@@ -234,12 +246,12 @@ async fn flush(rig: &mut Rig) {
 async fn restart(rig: &mut Rig, probe: impl FnOnce(&mut TestWorld) -> bool) {
     flush(rig).await;
     let now = rig.tw.world().now();
-    let old = std::mem::replace(&mut rig.tw, TestWorld::new());
+    let old = std::mem::replace(&mut rig.tw, Box::new(TestWorld::new()));
     drop(old);
-    let booted = boot::build_engine(&rig.cfg, &rig.store, &rig.spool)
+    let booted = boxed_boot_engine(&rig.cfg, &rig.store, &rig.spool)
         .await
         .expect("the restart boots over the kept store");
-    rig.tw = TestWorld::from_engine(booted.engine);
+    *rig.tw = TestWorld::from_engine(booted.engine);
     rig.tw.set_now(now);
     rig.epoch = rig.epoch.saturating_add(1);
     rig.boots = rig.boots.saturating_add(1);
@@ -396,7 +408,7 @@ async fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Landing {
                     .await
                     .expect("the bundle reconciles");
                 assert!(receipt.matches_bundle(&bundle));
-                let heard = rig.tw.install_prepared_action_announcing(installation);
+                let heard = rig.tw.install_composed_action_announcing(installation);
                 rig.heard.extend(heard);
                 auth.checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
                     .await
@@ -4586,7 +4598,7 @@ async fn r9_schedule(rig: &mut Rig) {
         auth.reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();
-        rig.tw.install_prepared_action_announcing(installation);
+        rig.tw.install_composed_action_announcing(installation);
         auth.checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .unwrap();

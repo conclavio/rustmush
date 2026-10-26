@@ -2936,7 +2936,9 @@ impl Arena {
 
     /// **The odds a frame carries** (17b cut M1a.3; doc 17 §3, D-UM-5): per
     /// weapon, against the platform's lock and its nearest **classified
-    /// hostile** contacts, at most [`STOCK_ODDS_ROWS`].
+    /// hostile** contacts. Keep the existing two-row pilot floor; a current
+    /// effective sealed Class II/III may publish its configured wider odds
+    /// capacity. This same projection feeds the cockpit and the mind view.
     ///
     /// * **Which contacts** (the lead's ruling on 17b's Q2, built in 17b cut
     ///   M1b.3). Only a held row whose class is `Classified { team }` with
@@ -2946,7 +2948,8 @@ impl Arena {
     ///   it is such a row — the contact a pilot is about to shoot is the one the
     ///   rows must quote, however far it is; then every other such row, nearest
     ///   first by the range to the **plot**, `ContactId` ascending on a tie; the
-    ///   first [`STOCK_ODDS_ROWS`]. A friendly lock takes no row (its `LOCK`
+    ///   first `max(STOCK_ODDS_ROWS, effective_class.odds_rows)`. A friendly
+    ///   lock takes no row (its `LOCK`
     ///   line still quotes the lock's own aim). Never an unclassified contact:
     ///   [`Arena::resolve_seen`] reads the target's silhouette off the unit, and
     ///   for a return the platform has not told apart that table is the chassis
@@ -2990,7 +2993,7 @@ impl Arena {
         let rows: Vec<ContactId> = locked
             .into_iter()
             .chain(nearest.into_iter().map(|(_, id)| id))
-            .take(STOCK_ODDS_ROWS)
+            .take(STOCK_ODDS_ROWS.max(self.mind_profile(platform).odds_rows))
             .collect();
         // The weapon a bare `FIRE` would fire, through the one rule
         // (`UnitState::default_weapon`, 16b cut F.3) the view's

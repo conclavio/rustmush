@@ -357,6 +357,17 @@ impl CustodyEval for NoCustody {
 /// contract can never settle on a fact nobody can answer, which is why the default
 /// impl answers `None` and [`NoFacts`] exists at all (D-E4-4).
 pub trait FactEval {
+    /// Resolve within the exact contract the pure engine is evaluating. Legacy
+    /// pure evaluators keep their existing behavior; live restricted providers
+    /// must authenticate this scope against retained world truth.
+    fn resolve_in_contract(
+        &self,
+        _contract: &crate::EconomicContract,
+        fact: &ExternalRef,
+    ) -> Option<bool> {
+        self.resolve(fact)
+    }
+
     /// Resolve one fact.
     fn resolve(&self, _fact: &ExternalRef) -> Option<bool> {
         None
@@ -473,6 +484,160 @@ pub fn validate(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> PlanResult {
+    validate_guarded(plan, snapshot, env, PlanGuard::Legacy)
+}
+
+/// Only the private closed purchase adapter can construct this proof. Public
+/// post/approval paths always select Legacy, including exact-key retries.
+pub(crate) fn validate_purchase(
+    proof: &crate::managed_purchase::ClosedPurchasePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::Purchase(proof))
+}
+
+/// Separate private renewal proof. Existing purchase and Legacy routes do not
+/// accept a renewal namespace or infer authority from a managed contract.
+pub(crate) fn validate_renewal(
+    proof: &crate::managed_renewal::ClosedRenewalPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::Renewal(proof))
+}
+pub(crate) fn validate_house_renewal(
+    proof: &crate::managed_house_renewal::ClosedHouseRenewalPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::HouseRenewal(proof))
+}
+/// Separate closed fee proof; public legacy posting cannot occupy its history.
+pub(crate) fn validate_compatible_update(
+    proof: &crate::registry_filing::update::ClosedUpdatePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CompatibleUpdate(proof),
+    )
+}
+/// Only the private native adapter may authorize a managed charter mutation.
+pub(crate) fn validate_charter_transfer(
+    proof: &crate::registry_filing::charter_transfer::ClosedCharterTransferPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CharterTransfer(proof),
+    )
+}
+pub(crate) fn validate_charter_pending(
+    proof: &crate::managed_charter_transfer::ClosedCharterPendingPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CharterPending(proof),
+    )
+}
+pub(crate) fn validate_paid_resale(
+    proof: &crate::managed_paid_resale::ClosedPaidResalePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::PaidResale(proof))
+}
+pub(crate) fn validate_core_integration(
+    proof: &crate::core_integration::ClosedCorePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CoreIntegration(proof),
+    )
+}
+pub(crate) fn validate_core_refit(
+    proof: &crate::core_refit::ClosedRefitPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreRefit(proof))
+}
+pub(crate) fn validate_hull_coverage(
+    proof: &crate::managed_coverage::ClosedCoveragePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::HullCoverage(proof))
+}
+#[derive(Clone, Copy)]
+enum PlanGuard<'a> {
+    HullCoverage(&'a crate::managed_coverage::ClosedCoveragePlan),
+    PaidResale(&'a crate::managed_paid_resale::ClosedPaidResalePlan),
+    Legacy,
+    CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
+    CharterPending(&'a crate::managed_charter_transfer::ClosedCharterPendingPlan),
+    CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
+    CoreRefit(&'a crate::core_refit::ClosedRefitPlan),
+    Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
+    Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
+    HouseRenewal(&'a crate::managed_house_renewal::ClosedHouseRenewalPlan),
+    CompatibleUpdate(&'a crate::registry_filing::update::ClosedUpdatePlan),
+}
+impl PlanGuard<'_> {
+    fn managed_mutations(
+        self,
+        plan: &EconomyPlan,
+        snapshot: &EconomySnapshot,
+    ) -> Result<(), EconomyError> {
+        match self {
+            Self::CharterTransfer(proof) => proof.check(plan, snapshot),
+            Self::CharterPending(proof) => proof.check(plan, snapshot),
+            _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
+        }
+    }
+    fn check(self, plan: &EconomyPlan, snapshot: &EconomySnapshot) -> Result<(), EconomyError> {
+        match self {
+            Self::Legacy => crate::contract::managed::require_legacy_plan(plan, snapshot),
+            Self::HullCoverage(proof) => proof.check(plan, snapshot),
+            Self::PaidResale(proof) => proof.check(plan, snapshot),
+            Self::Purchase(proof) => proof.check(plan, snapshot),
+            Self::CoreIntegration(proof) => proof.check(plan, snapshot),
+            Self::CoreRefit(proof) => proof.check(plan, snapshot),
+            Self::Renewal(proof) => proof.check(plan, snapshot),
+            Self::HouseRenewal(proof) => proof.check(plan, snapshot),
+            Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
+            Self::CharterTransfer(proof) => proof.check(plan, snapshot),
+            Self::CharterPending(proof) => proof.check(plan, snapshot),
+        }
+    }
+}
+fn validate_guarded(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+    guard: PlanGuard<'_>,
+) -> PlanResult {
+    if let Err(error) = guard.check(plan, snapshot) {
+        return PlanResult::Refused(error);
+    }
+    if let Err(error) = guard.managed_mutations(plan, snapshot) {
+        return PlanResult::Refused(error);
+    }
     let hash = plan_hash(plan);
 
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
@@ -489,7 +654,7 @@ pub fn validate(
         KeyVerdict::Fresh => {}
     }
 
-    match validate_inner(plan, snapshot, env, hash, false) {
+    match validate_inner(plan, snapshot, env, hash, false, guard) {
         Ok(prepared) => PlanResult::Post(Box::new(prepared)),
         Err(Fail::Refused(e)) => PlanResult::Refused(e),
         Err(Fail::NeedsApproval(need)) => PlanResult::NeedsApproval(Box::new(need)),
@@ -502,9 +667,12 @@ fn validate_inner(
     env: &ValidateEnv<'_>,
     hash: [u8; 32],
     skip_approval: bool,
+    guard: PlanGuard<'_>,
 ) -> Result<Prepared, Fail> {
     // Boundedness caps (R-B5) — cheap, first, so a huge plan is refused before work.
     caps(plan)?;
+    guard.check(plan, snapshot)?;
+    guard.managed_mutations(plan, snapshot)?;
 
     // Expected-revision staleness on ECONOMIC data (authorization is live, below).
     for e in &plan.expected_revisions {
@@ -2189,6 +2357,9 @@ pub fn plan_reversal(
     auth: &dyn AuthEval,
     keys: &dyn KeyGate,
 ) -> PlanResult {
+    if let Err(error) = crate::contract::managed::require_legacy_transaction(original, snapshot) {
+        return PlanResult::Refused(error);
+    }
     // Invariant 28 extends E3's rule to reservations: money-only compensation would
     // pay the payer back and leave the hold `Consumed`, so the payee's credit
     // vanishes while the reservation still says it was spent. A capture is unwound by
@@ -2257,7 +2428,7 @@ pub fn plan_reversal(
         spent: BTreeMap::new(),
         keys,
     };
-    match validate_inner(&plan, snapshot, &env, hash, true) {
+    match validate_inner(&plan, snapshot, &env, hash, true, PlanGuard::Legacy) {
         Ok(mut prepared) => {
             prepared.reverses = Some(original.id);
             PlanResult::Post(Box::new(prepared))

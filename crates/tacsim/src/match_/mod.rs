@@ -57,11 +57,13 @@ pub mod cockpit;
 // character may choose at the lobby, Standard Doctrine alone in production.
 // Documented by its own module doc.
 pub mod draft_holdings;
+pub(crate) mod filed_holdings;
 pub mod holdings;
 pub mod lobby;
 /// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
 /// channels made at boot, joined at the check-out and left with the seat.
 pub(crate) mod net;
+pub(crate) mod original_access;
 pub(crate) mod selection_refs;
 // 16b cut I.4: the staff picture's payload, `arena.observer` — deliberately
 // its own module and never the cockpit's, which builds only what a pilot is
@@ -832,6 +834,9 @@ pub enum StartError {
     /// A named unit is already in a match.
     #[error("{0}")]
     Deployed(#[from] mush_sim::deployed::UnitDeployed),
+    /// IC keeps a separate authority and never borrows an OOC match ID.
+    #[error("{unit} is held by IC sortie {sortie}; its custody owner must close it")]
+    IcCustody { unit: ObjId, sortie: u64 },
     /// The arena definition is unknown.
     #[error("there is no arena definition called `{0}`")]
     NoArena(SmolStr),
@@ -1145,7 +1150,14 @@ pub fn start(
                 return Err(StartError::DuplicateUnit(unit));
             }
             seen.push(unit);
-            mush_sim::deployed::refuse_if_deployed(ctx.w, unit)?;
+            if let Err(held) = mush_sim::deployed::refuse_if_custodied(ctx.w, unit) {
+                return Err(match held {
+                    mush_sim::deployed::UnitCustodied::Match(old) => StartError::Deployed(old),
+                    mush_sim::deployed::UnitCustodied::Ic { unit, sortie } => {
+                        StartError::IcCustody { unit, sortie }
+                    }
+                });
+            }
             // "Is it a unit at all" before "is it placed": an object that is
             // neither wants the first answer, not the second.
             if mush_tactics::module::unit_of(ctx.w, unit).is_none() {

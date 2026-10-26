@@ -99,6 +99,109 @@ impl Default for ScalableBloom {
 }
 
 impl ScalableBloom {
+    /// Prepare one exact insertion without cloning the filter or publishing a
+    /// bit. The bounded patch contains at most HASHES changed words.
+    pub(crate) fn prepare_insert(&self, key: &IdempotencyKey) -> Option<PreparedBloomInsert> {
+        if !self.is_well_formed() {
+            return None;
+        }
+        let (h1, h2) = Self::hashes(key);
+        if self.slices.iter().any(|slice| slice.get(h1, h2)) {
+            return Some(PreparedBloomInsert::Present);
+        }
+        let last = self.slices.last()?;
+        if last.count == last.capacity {
+            let capacity = last.capacity.checked_mul(2)?;
+            let mut slice = Slice::new(capacity);
+            slice.set(h1, h2);
+            slice.count = 1;
+            return Some(PreparedBloomInsert::Append {
+                length: self.slices.len(),
+                capacity: last.capacity,
+                count: last.count,
+                slice,
+            });
+        }
+        let mut words = std::collections::BTreeMap::new();
+        for i in 0..u64::from(HASHES) {
+            let index = h1.wrapping_add(i.wrapping_mul(h2)) % last.m();
+            let word = usize::try_from(index / 64).ok()?;
+            let old = *last.bits.get(word)?;
+            let entry = words.entry(word).or_insert((old, old));
+            entry.1 |= 1u64 << (index % 64);
+        }
+        Some(PreparedBloomInsert::Words {
+            length: self.slices.len(),
+            capacity: last.capacity,
+            count: last.count,
+            next_count: last.count.checked_add(1)?,
+            words: words.into_iter().collect(),
+        })
+    }
+
+    /// All lookup/shape checks finish before mutable word references escape.
+    pub(crate) fn bind_insert(
+        &mut self,
+        prepared: PreparedBloomInsert,
+    ) -> Option<BoundBloomInsert<'_>> {
+        match prepared {
+            PreparedBloomInsert::Present => Some(BoundBloomInsert::Present),
+            PreparedBloomInsert::Append {
+                length,
+                capacity,
+                count,
+                slice,
+            } => {
+                let last = self.slices.last()?;
+                if self.slices.len() != length || last.capacity != capacity || last.count != count {
+                    return None;
+                }
+                Some(BoundBloomInsert::Append {
+                    slices: &mut self.slices,
+                    slice,
+                })
+            }
+            PreparedBloomInsert::Words {
+                length,
+                capacity,
+                count,
+                next_count,
+                words,
+            } => {
+                if self.slices.len() != length {
+                    return None;
+                }
+                let last = self.slices.last_mut()?;
+                if last.capacity != capacity
+                    || last.count != count
+                    || words
+                        .iter()
+                        .any(|(index, (old, _))| last.bits.get(*index) != Some(old))
+                {
+                    return None;
+                }
+                let mut remaining = last.bits.as_mut_slice();
+                let mut offset = 0;
+                let mut bound = Vec::with_capacity(words.len());
+                for (index, (_, value)) in words {
+                    let relative = index.checked_sub(offset)?;
+                    if relative >= remaining.len() {
+                        return None;
+                    }
+                    let (_, right) = remaining.split_at_mut(relative);
+                    let (word, rest) = right.split_first_mut()?;
+                    bound.push((word, value));
+                    remaining = rest;
+                    offset = index.checked_add(1)?;
+                }
+                Some(BoundBloomInsert::Words {
+                    words: bound,
+                    count: &mut last.count,
+                    next_count,
+                })
+            }
+        }
+    }
     /// An empty filter with its first slice.
     #[must_use]
     pub fn new() -> ScalableBloom {
@@ -177,6 +280,55 @@ impl ScalableBloom {
                 .slices
                 .iter()
                 .all(|s| !s.bits.is_empty() && s.count <= s.capacity && s.capacity > 0)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum PreparedBloomInsert {
+    Present,
+    Append {
+        length: usize,
+        capacity: u64,
+        count: u64,
+        slice: Slice,
+    },
+    Words {
+        length: usize,
+        capacity: u64,
+        count: u64,
+        next_count: u64,
+        words: Vec<(usize, (u64, u64))>,
+    },
+}
+
+pub(crate) enum BoundBloomInsert<'a> {
+    Present,
+    Append {
+        slices: &'a mut Vec<Slice>,
+        slice: Slice,
+    },
+    Words {
+        words: Vec<(&'a mut u64, u64)>,
+        count: &'a mut u64,
+        next_count: u64,
+    },
+}
+impl BoundBloomInsert<'_> {
+    pub(crate) fn apply(self) {
+        match self {
+            Self::Present => {}
+            Self::Append { slices, slice } => slices.push(slice),
+            Self::Words {
+                words,
+                count,
+                next_count,
+            } => {
+                for (word, value) in words {
+                    *word = value;
+                }
+                *count = next_count;
+            }
+        }
     }
 }
 

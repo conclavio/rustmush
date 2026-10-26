@@ -1,0 +1,565 @@
+//! Structural consent, canonical identity and E4 calculation tests only.
+//! No fixture below claims a paid journal entry or a current source grant.
+use super::{
+    codec::{Bounded, Row},
+    protocol,
+    purchase::*,
+    records::*,
+};
+use mush_core::mechanics::{
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+};
+use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_economy::managed_entitlement::{
+    EntitlementProtocol, GrossRecipientCut, Recipient, RoyaltyRecipientCut, RoyaltyTitleRecipient,
+};
+use mush_economy::managed_purchase::FundingReceipt;
+use mush_economy::{AccountId, Amount, InstrumentId};
+use mush_roll::commerce::entitlement::{
+    DownstreamTermsV1, EntitlementAllocationV1, FiledRoyaltyTermsV1, GrantEconomicsV1,
+    RenewalTemplateV1,
+};
+use mush_roll::commerce::paid::{PaidForm, PaidTerms};
+use mush_roll::commerce::purchase::{PurchaseParticipants, PurchasePhase};
+use mush_roll::commerce::rating::{RatingClass, RatingRef};
+use mush_roll::commerce::records::RevisionPolicy;
+use mush_roll::commerce::{
+    CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
+    WorldIcSeconds,
+};
+use serde_json::{Value, json};
+
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+fn token(n: u8) -> CommitToken {
+    CommitToken::from_bytes([n; 16])
+}
+fn hash(n: u8) -> DefinitionDigest {
+    DefinitionDigest::from_bytes([n; 32])
+}
+fn identity(n: u64) -> TestResult<RevisionIdentity> {
+    Ok(serde_json::from_value(
+        json!({"format":1,"revision":{"key":{"character":7,"mind":n,"number":1},"digest":hash(1)},"source":hash(2)}),
+    )?)
+}
+fn definition(owner: &str, kind: &str, id: &str, version: u32) -> TestResult<DefinitionRef> {
+    Ok(DefinitionRegistryBuilder::new().register(
+        OwnerId::new(owner)?,
+        DefinitionDescriptor::new(
+            DefinitionKind::new(kind)?,
+            DefinitionId::new(id)?,
+            version,
+            json!({"format":version}),
+        )?,
+    )?)
+}
+fn at(n: i64) -> TestResult<WorldIcSeconds> {
+    Ok(WorldIcSeconds::from_stamp(&ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: n,
+    })?)
+}
+fn fixture(
+    protocol: EntitlementProtocol,
+    depth: u64,
+    form: PaidForm,
+) -> TestResult<EntitlementQuoteV1> {
+    let revision = identity(10)?;
+    let mut edges = Vec::new();
+    let mut parents = Vec::new();
+    for n in 1..=depth {
+        edges.push(json!({"parent":{"filed":n.to_string(),"revision":identity(n)?},"charter":(100+n).to_string(),"line":n.to_string(),
+            "acquisition":{"licence":n.to_string(),"term":"1","operation":token(u8::try_from(n)?),"product_digest":hash(3)},
+            "royalty_permille":100,"basis":{"kind":"explicit_term_economics_v1","digest":hash(4)}}));
+        parents.push(ParentCut(RoyaltyRecipientCut {
+            charter: ObjId(u32::try_from(100 + n)?),
+            permille: 100,
+            title: Some(RoyaltyTitleRecipient {
+                title_revision: 1,
+                recipient: Recipient {
+                    account: AccountId(20 + n),
+                    owner: mush_org::PrincipalId::Object(ObjId(u32::try_from(20 + n)?)),
+                },
+            }),
+        }));
+    }
+    let royalty: FiledRoyaltyTermsV1 = serde_json::from_value(
+        json!({"format":1,"filed":"10","revision":revision,"publication":token(9),"edges":edges}),
+    )?;
+    let subject = EntitlementSubjectV1 {
+        seller: ObjId(7),
+        title_revision: 1,
+        charter: CharterId::new(20)?,
+        line: LineId::new(10)?,
+        filed: FiledRevisionId::new(10)?,
+        sequence: 1,
+        owner_licence: LicenceId::new(10)?,
+        owner_term: TermGeneration::new(1)?,
+        owner_window: TermWindow::new(at(0)?, at(0)?, at(100)?, at(110)?)?,
+        revision,
+        schema: hash(5),
+        definition: hash(6),
+        rating: serde_json::from_value::<RatingRef>(
+            json!({"job":token(1),"id":hash(7),"schema":1,"receipt_digest":hash(8)}),
+        )?,
+        compatibility: hash(9),
+        declared: RatingClass::II,
+        minimum: RatingClass::II,
+        parent: royalty.edges().first().map(|e| e.parent()),
+    };
+    let terms: PaidTerms = serde_json::from_value(
+        json!({"seats":1,"class":RatingClass::II,"form":form,"transferable":false}),
+    )?;
+    let revision_policy = RevisionPolicy::Pin {
+        filed: subject.filed,
+        revision,
+    };
+    let policy = definition("market", "entitlement_policy", "personal", 1)?;
+    let instrument = InstrumentId::new("cr").ok_or("instrument")?;
+    let renewal = RenewalTemplateV1::new(
+        instrument.clone(),
+        Amount::from_minor(600),
+        800,
+        80,
+        terms,
+        revision_policy,
+        policy.clone(),
+    )?;
+    let grant = GrantEconomicsV1::new(
+        match form {
+            PaidForm::Sealed {} => DownstreamTermsV1::Sealed {},
+            _ => DownstreamTermsV1::Source {
+                royalty_permille: 0,
+            },
+        },
+        renewal,
+        royalty.reference()?,
+    )?;
+    let product = EntitlementProductV1 {
+        protocol,
+        terms,
+        revision: revision_policy,
+        term_seconds: 900,
+        grace_seconds: 90,
+        grant,
+    };
+    let registry = Cut(GrossRecipientCut {
+        permille: 50,
+        recipient: Some(Recipient {
+            account: AccountId(11),
+            owner: mush_org::PrincipalId::System(
+                mush_org::SystemPrincipalId::new("roll.registry").ok_or("system")?,
+            ),
+        }),
+    });
+    let venue = Venue {
+        name: crate::MarketId::new("registry").ok_or("venue")?,
+        cut: Cut(GrossRecipientCut {
+            permille: 20,
+            recipient: Some(Recipient {
+                account: AccountId(12),
+                owner: mush_org::PrincipalId::Object(ObjId(12)),
+            }),
+        }),
+    };
+    let listing = EntitlementListingV1 {
+        format: 1,
+        publication: token(2),
+        subject,
+        product,
+        royalty,
+        price: Amount::from_minor(400),
+        instrument,
+        venue,
+        registry,
+        policy,
+        observed_at_utc: 100,
+    };
+    listing.validate()?;
+    let mut q = EntitlementQuoteV1 {
+        format: 1,
+        publication: token(3),
+        listing: listing.publication,
+        listing_digest: listing.digest()?,
+        buyer: ObjId(8),
+        subject: listing.subject,
+        product_digest: listing.product.digest()?,
+        product: listing.product,
+        royalty: listing.royalty,
+        price: listing.price,
+        instrument: listing.instrument,
+        registry: listing.registry,
+        venue: listing.venue,
+        parents: Bounded(parents),
+        remainder: Recipient {
+            account: AccountId(9),
+            owner: mush_org::PrincipalId::Object(ObjId(7)),
+        },
+        payer: AccountId(8),
+        payouts: Bounded(Vec::new()),
+        policy: listing.policy,
+        quoted_at_utc: 100,
+        expires_at_utc: 160,
+    };
+    reprice(&mut q)?;
+    Ok(q)
+}
+fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
+    q.product_digest = q.product.digest()?;
+    q.payouts = Bounded(
+        q.economic_data(q.product_digest)?
+            .payouts()?
+            .into_iter()
+            .map(|p| Payout {
+                account: p.account,
+                owner: p.owner,
+                amount: p.amount,
+            })
+            .collect(),
+    );
+    q.validate()?;
+    Ok(())
+}
+fn purchase(q: EntitlementQuoteV1) -> TestResult<EntitlementPurchaseV1> {
+    let participants = PurchaseParticipants::new(
+        definition("economy", "owner_participant", "initial_filing", 1)?,
+        definition("roll", "owner_participant", "commercial_roots", 1)?,
+    )?;
+    let funding: FundingReceipt = serde_json::from_value(
+        json!({"contract":1,"hold":2,"transaction":3,"journal_seq":4,"consent_hash":([0_u8;32]),"at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100}}),
+    )?;
+    let p = EntitlementPurchaseV1 {
+        format: 1,
+        operation: token(4),
+        effect: protocol::historical_fund(
+            q.product.protocol,
+            q.subject.compatibility,
+            &participants,
+        )?,
+        participants,
+        quote_digest: q.digest()?,
+        quote: q,
+        licence: LicenceId::new(30)?,
+        term: TermGeneration::new(1)?,
+        funding,
+        phase: PurchasePhase::Funded {},
+        updated_by: token(4),
+    };
+    p.validate()?;
+    Ok(p)
+}
+fn allocation(p: &EntitlementPurchaseV1) -> TestResult<EntitlementAllocationV1> {
+    let q = &p.quote;
+    Ok(serde_json::from_value(
+        json!({"format":1,"protocol":q.product.protocol,"operation":p.operation,"participants":p.participants,
+        "licence":p.licence,"term":p.term,"quote":q.publication,"quote_digest":p.quote_digest,"product_digest":q.product_digest,
+        "holder":q.buyer,"charter":q.subject.charter,"line":q.subject.line,"filed":q.subject.filed,"revision":q.subject.revision,"rating":q.subject.rating,"terms":q.product.terms,
+        "economics":{"format":1,"licence":p.licence,"generation":p.term,"operation":p.operation,"product_digest":q.product_digest,"grant":q.product.grant},
+        "funding":p.funding,"phase":p.phase,"updated_by":p.updated_by}),
+    )?)
+}
+fn obj(v: &mut Value) -> TestResult<&mut serde_json::Map<String, Value>> {
+    v.as_object_mut().ok_or_else(|| "object".into())
+}
+
+#[test]
+fn new_protocols_roundtrip_and_derive_exact_e4_conservation() -> TestResult {
+    for (protocol, depth) in [
+        (EntitlementProtocol::OriginalV3, 0),
+        (EntitlementProtocol::DerivedV1, 3),
+    ] {
+        let q = fixture(protocol, depth, PaidForm::Sealed {})?;
+        check_eq!(EntitlementQuoteV1::decode(&serde_json::to_vec(&q)?)?, q);
+        let e = q.economic_subject()?;
+        let payouts = e.payouts()?;
+        check_eq!(
+            payouts
+                .iter()
+                .try_fold(Amount::ZERO, |sum, p| sum.checked_add(p.amount))
+                .ok_or("sum")?,
+            q.price
+        );
+        check_eq!(payouts.len(), usize::try_from(depth)? + 3);
+        check_eq!(e.quote_digest, q.digest()?);
+        check_eq!(e.grant_economics_digest, q.product.grant.digest()?);
+        check_eq!(e.royalty_chain_digest, q.royalty.digest()?);
+    }
+    Ok(())
+}
+#[test]
+fn required_nulls_unknowns_duplicates_and_bounded_arrays_refuse() -> TestResult {
+    let q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
+    let raw = serde_json::to_string(&q)?;
+    check!(EntitlementQuoteV1::decode(raw.replacen("{", "{\"format\":1,", 1).as_bytes()).is_err());
+    let mut v = serde_json::to_value(&q)?;
+    obj(&mut v)?.insert("allow".into(), json!(true));
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    let mut v = serde_json::to_value(&q)?;
+    obj(v.get_mut("subject").ok_or("subject")?)?.remove("parent");
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    for raw in [
+        r#"{"permille":0}"#,
+        r#"{"permille":0,"recipient":null,"extra":1}"#,
+    ] {
+        check!(serde_json::from_str::<Cut>(raw).is_err());
+    }
+    check!(serde_json::from_str::<ParentCut>(r#"{"charter":1,"permille":0}"#).is_err());
+    let mut v = serde_json::to_value(fixture(
+        EntitlementProtocol::DerivedV1,
+        3,
+        PaidForm::Sealed {},
+    )?)?;
+    let parents = v
+        .get_mut("parents")
+        .and_then(Value::as_array_mut)
+        .ok_or("parents")?;
+    parents.push(parents.first().ok_or("parent")?.clone());
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    check!(EntitlementQuoteV1::decode(&vec![b' '; MAX_QUOTE_BYTES + 1]).is_err());
+    Ok(())
+}
+#[test]
+fn product_protocol_parent_and_renewal_cannot_be_crossed_after_rehash() -> TestResult {
+    let q = fixture(EntitlementProtocol::DerivedV1, 1, PaidForm::OpenResale {})?;
+    let mut crossed = q.clone();
+    crossed.product.protocol = EntitlementProtocol::OriginalV3;
+    crossed.product_digest = crossed.product.digest()?;
+    check!(crossed.validate().is_err());
+    let mut crossed = q.clone();
+    crossed.policy = definition("market", "entitlement_policy", "personal", 2)?;
+    check!(crossed.validate().is_err());
+    let mut crossed = q.clone();
+    crossed.parents.0.first_mut().ok_or("parent")?.0.charter = ObjId(999);
+    check!(crossed.validate().is_err());
+    let mut crossed = q.clone();
+    crossed.instrument = InstrumentId::new("other").ok_or("instrument")?;
+    check!(crossed.validate().is_err());
+    check!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::OpenResale {}).is_err());
+    check!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::Open {}).is_ok());
+    Ok(())
+}
+#[test]
+fn payer_royalty_stays_a_credit_beside_full_gross_and_zero_cuts_keep_identity() -> TestResult {
+    let mut q = fixture(EntitlementProtocol::DerivedV1, 1, PaidForm::Sealed {})?;
+    let parent = q
+        .parents
+        .0
+        .first_mut()
+        .ok_or("parent")?
+        .0
+        .title
+        .as_mut()
+        .ok_or("title")?;
+    parent.recipient = Recipient {
+        account: q.payer,
+        owner: mush_org::PrincipalId::Object(q.buyer),
+    };
+    reprice(&mut q)?;
+    let e = q.economic_subject()?;
+    check_eq!(e.price, Amount::from_minor(400));
+    check!(
+        e.payouts()?
+            .iter()
+            .any(|p| p.account == q.payer && p.amount == Amount::from_minor(40))
+    );
+    q.price = Amount::from_minor(1);
+    reprice(&mut q)?;
+    check_eq!(q.payouts.0.len(), 1);
+    q.parents.0.first_mut().ok_or("parent")?.0.title = None;
+    check!(q.validate().is_err());
+    Ok(())
+}
+#[test]
+fn allocation_economics_is_exact_and_old_shapes_do_not_become_new_births() -> TestResult {
+    let p = purchase(fixture(
+        EntitlementProtocol::OriginalV3,
+        0,
+        PaidForm::OpenResale {},
+    )?)?;
+    let a = allocation(&p)?;
+    p.matches_allocation(&a)?;
+    check_eq!(EntitlementPurchaseV1::decode(&serde_json::to_vec(&p)?)?, p);
+    for field in ["licence", "generation", "operation", "product_digest"] {
+        let mut v = serde_json::to_value(&a)?;
+        let economics = obj(v.get_mut("economics").ok_or("economics")?)?;
+        let changed = match field {
+            "licence" | "generation" => json!("99"),
+            "operation" => json!(token(99)),
+            _ => json!(hash(99)),
+        };
+        economics.insert(field.into(), changed);
+        check!(serde_json::from_value::<EntitlementAllocationV1>(v).is_err());
+    }
+    let mut old = serde_json::to_value(&a)?;
+    obj(&mut old)?.remove("economics");
+    obj(&mut old)?.remove("protocol");
+    check!(serde_json::from_value::<EntitlementAllocationV1>(old).is_err());
+    let mut crossed = p.clone();
+    crossed.effect = protocol::historical_fund(
+        EntitlementProtocol::DerivedV1,
+        p.quote.subject.compatibility,
+        &p.participants,
+    )?;
+    check!(crossed.validate().is_err());
+    Ok(())
+}
+#[test]
+fn terminal_receipt_requires_exact_phase_stamp_and_grant_digest() -> TestResult {
+    let mut p = purchase(fixture(
+        EntitlementProtocol::OriginalV3,
+        0,
+        PaidForm::Sealed {},
+    )?)?;
+    p.phase = PurchasePhase::Refunded { commit: token(5) };
+    p.updated_by = token(5);
+    let r = EntitlementReceiptV1 {
+        format: 1,
+        operation: p.operation,
+        commit: p.updated_by,
+        outcome: Outcome::Refunded {},
+        contract: p.funding.contract(),
+        hold: p.funding.hold(),
+        transaction: mush_economy::TransactionId(6),
+        journal_seq: 7,
+        licence: p.licence,
+        term: p.term,
+        quote_digest: p.quote_digest,
+        product_digest: p.quote.product_digest,
+        grant_economics_digest: p.quote.product.grant.digest()?,
+        issued_at_ic: None,
+    };
+    r.matches_purchase(&p)?;
+    check_eq!(EntitlementReceiptV1::decode(&serde_json::to_vec(&r)?)?, r);
+    let mut v = serde_json::to_value(&r)?;
+    obj(&mut v)?.remove("issued_at_ic");
+    check!(serde_json::from_value::<EntitlementReceiptV1>(v).is_err());
+    let mut bad = r.clone();
+    bad.grant_economics_digest = hash(99);
+    check!(bad.matches_purchase(&p).is_err());
+    let mut bad = r.clone();
+    bad.outcome = Outcome::Granted {};
+    check!(bad.validate().is_err());
+    p.phase = PurchasePhase::Granted { commit: token(5) };
+    bad.issued_at_ic = Some(ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: 170,
+    });
+    bad.matches_purchase(&p)?;
+    bad.issued_at_ic = Some(ClockStamp {
+        clock: ClockRef::WorldIc { generation: 2 },
+        at: 170,
+    });
+    check!(bad.matches_purchase(&p).is_err());
+    check!(r.matches_purchase(&p).is_err());
+    Ok(())
+}
+
+#[test]
+fn closed_action_domains_bind_manifest_participants_and_protocol() -> TestResult {
+    let participants = PurchaseParticipants::new(
+        definition("economy", "owner_participant", "initial_filing", 1)?,
+        definition("roll", "owner_participant", "commercial_roots", 1)?,
+    )?;
+    let manifest = definition("tacsim", "registry_manifest", "combat", 1)?;
+    let mut identities = std::collections::BTreeSet::new();
+    for protocol in [
+        EntitlementProtocol::OriginalV3,
+        EntitlementProtocol::DerivedV1,
+    ] {
+        for transition in [
+            protocol::Transition::Fund,
+            protocol::Transition::Grant,
+            protocol::Transition::Refund,
+        ] {
+            let descriptor = protocol::descriptor(protocol, transition, &manifest, &participants)?;
+            let reference =
+                DefinitionRegistryBuilder::new().register(OwnerId::new("market")?, descriptor)?;
+            check_eq!(reference.version(), protocol.version());
+            check_eq!(
+                reference.key().id.as_str(),
+                protocol::action(protocol, transition)
+            );
+            check!(identities.insert(reference.to_string()));
+        }
+        let historical = protocol::historical_fund(protocol, manifest.digest(), &participants)?;
+        let changed = protocol::historical_fund(protocol, hash(91), &participants)?;
+        check_ne!(historical, changed);
+        let changed_participants = PurchaseParticipants::new(
+            definition("economy", "owner_participant", "initial_filing", 1)?,
+            DefinitionRegistryBuilder::new().register(
+                OwnerId::new("roll")?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("owner_participant")?,
+                    DefinitionId::new("commercial_roots")?,
+                    1,
+                    json!({"different":"payload"}),
+                )?,
+            )?,
+        )?;
+        check_ne!(
+            historical,
+            protocol::historical_fund(protocol, manifest.digest(), &changed_participants)?
+        );
+    }
+    check_eq!(identities.len(), 6);
+    check_ne!(
+        protocol::domain(EntitlementProtocol::OriginalV3, "product")?,
+        "market.original_product.v2"
+    );
+    check_ne!(
+        protocol::domain(EntitlementProtocol::DerivedV1, "quote")?,
+        "market.original_quote.v3"
+    );
+    check!(
+        protocol::descriptor(
+            EntitlementProtocol::OriginalV3,
+            protocol::Transition::Fund,
+            &definition("tacsim", "registry_manifest", "foreign", 1)?,
+            &participants
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn quote_bounds_and_measured_payouts_are_revalidated_after_repaired_hashes() -> TestResult {
+    let q = fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::Sealed {})?;
+    let mut bad = q.clone();
+    bad.expires_at_utc = bad.quoted_at_utc;
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.expires_at_utc = bad.quoted_at_utc + 601;
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.buyer = bad.subject.seller;
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.payer = bad.remainder.account;
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.payouts.0.first_mut().ok_or("payout")?.amount = Amount::from_minor(1);
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.payouts.0.reverse();
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.price = Amount::ZERO;
+    check!(bad.validate().is_err());
+    let mut bad = q.clone();
+    bad.product.term_seconds = 0;
+    check!(bad.product.digest().is_err());
+    let p = purchase(q)?;
+    let a = allocation(&p)?;
+    check_eq!(p.key(), p.operation.to_hex());
+    check_eq!(
+        EntitlementPurchaseV1::FAMILY,
+        "market_mind_entitlement_purchase"
+    );
+    check!(serde_json::to_vec(&p)?.len() < EntitlementPurchaseV1::MAX_BYTES);
+    check!(serde_json::to_vec(&a)?.len() < 8192);
+    let mut bad = serde_json::to_value(a)?;
+    obj(&mut bad)?.insert("term".into(), json!("2"));
+    obj(bad.get_mut("economics").ok_or("economics")?)?.insert("generation".into(), json!("2"));
+    check!(serde_json::from_value::<EntitlementAllocationV1>(bad).is_err());
+    Ok(())
+}

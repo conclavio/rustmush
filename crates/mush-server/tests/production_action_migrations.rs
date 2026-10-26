@@ -234,7 +234,7 @@ async fn execute_offer_announcing(
         .await
         .expect("the bundle reconciles");
     assert!(receipt.matches_bundle(&bundle));
-    let announced = world.install_prepared_action_announcing(installation);
+    let announced = world.install_composed_action_announcing(installation);
     store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await

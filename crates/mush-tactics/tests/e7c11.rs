@@ -67,7 +67,9 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
             // moved out of `unit_damage` and the census did not grow: still four
             // production writers beyond boot, and still no second lane.
             "apply_plan".to_owned(),
-            "boot_units".to_owned(),
+            // The legacy boot wrapper and configured IC boot share this
+            // same hydration writer; the eight-site census is unchanged.
+            "boot_units_with_ic".to_owned(),
             // 16b cut C.2: `@unit/create`'s body became the public
             // `create_unit`, so a caller with no command line — the arena
             // pack's applier, making doc 16 §3.3's stock tanks at a
@@ -97,7 +99,7 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
     );
     // The narrow claim §14 makes that DOES survive: no production CELL writer.
     // The store's binding-repair writer is declared once and called twice, both
-    // inside boot, so nothing outside `boot_units` touches a cell.
+    // inside boot, so nothing outside `boot_units_with_ic` touches a cell.
     assert_eq!(
         text[..boundary].matches("push_binding_repair(").count(),
         3,

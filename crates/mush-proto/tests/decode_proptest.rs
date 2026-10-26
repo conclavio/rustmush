@@ -41,6 +41,19 @@ fn client_command_strategy() -> impl Strategy<Value = ClientCommand> {
     let query = prop_oneof![
         Just(Query::Who),
         Just(Query::Sheet),
+        (any::<bool>(), any::<Option<u128>>()).prop_map(|(own, after)| {
+            Query::MarketOriginalMinds(mush_proto::MarketOriginalMindsRequest {
+                kind: if own {
+                    mush_proto::MarketOriginalMindsKind::Own
+                } else {
+                    mush_proto::MarketOriginalMindsKind::Listings
+                },
+                after: after.map(|n| {
+                    mush_proto::ProjectedCommitToken::new(format!("{n:032x}"))
+                        .expect("canonical generated cursor")
+                }),
+            })
+        }),
         (any::<Option<u64>>(), any::<Option<u16>>())
             .prop_map(|(run, page)| Query::MindBulk { run, page }),
         any::<Option<String>>().prop_map(|folder| Query::MailList { folder }),

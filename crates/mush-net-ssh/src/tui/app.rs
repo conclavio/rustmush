@@ -487,7 +487,9 @@ mod m6_workshop_tests {
         assert!(key(&mut app, Key::Down).invokes.is_empty());
         let r = key(&mut app, Key::Enter);
         assert!(r.submit.is_empty());
-        let (id, InvokeRequest::Mind(request)) = r.invokes.into_iter().next().unwrap();
+        let (id, InvokeRequest::Mind(request)) = r.invokes.into_iter().next().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(
             matches!(request,MindRequest::Edit {base:MindEditBase {edit:1,..},edit:MindEdit::Set {value,..},..} if value=="false")
         );
@@ -599,7 +601,9 @@ mod m6_workshop_tests {
         assert!(key(&mut app, Key::Char('f')).invokes.is_empty());
         let request = key(&mut app, Key::Enter);
         assert!(request.submit.is_empty());
-        let (id, InvokeRequest::Mind(request)) = request.invokes.into_iter().next().unwrap();
+        let (id, InvokeRequest::Mind(request)) = request.invokes.into_iter().next().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(matches!(
             request,
             MindRequest::Trace {

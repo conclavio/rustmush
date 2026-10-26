@@ -276,7 +276,9 @@ impl SshHooks for MockHooks {
             let Some(tx) = self.tx_of(conn) else {
                 return;
             };
-            let mush_proto::InvokeRequest::Mind(request) = request;
+            let mush_proto::InvokeRequest::Mind(request) = request else {
+                panic!("Mind-only fixture")
+            };
             use mush_proto::MindResponse;
             let result = match request {
                 mush_proto::MindRequest::Read { name, revision } => MindResponse::Read {

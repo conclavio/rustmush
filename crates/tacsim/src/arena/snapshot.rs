@@ -324,7 +324,16 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// cursor and the captured snapshot byte limit replace the old fixed-card shape.
 /// Earlier formats, including 12 and 11, are refused by name before state decode;
 /// in-flight matches restart rather than migrating.
-pub const SNAPSHOT_FORMAT: u32 = 13;
+/// **14 since M7:** filed origins carry the exact immutable Registry certificate
+/// and saved revision identity, including when the effective execution is ROM.
+/// There is no default certificate or migration from an unbound filed origin.
+/// **15 since the L delayed-order closure:** the carried refusal enum adds
+/// `no_commander`. A delayed persona reply must still have its actual live command
+/// hull when it lands. Format14 is refused before decoding; no migration is made.
+/// **16:** bounded latest accepted order attribution and cleared-group tombstones.
+/// Record-only metadata, outside state_hash and public mind views. Older formats
+/// are refused; missing authors are never inferred from current seats/leaders.
+pub const SNAPSHOT_FORMAT: u32 = 16;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -623,6 +632,7 @@ impl Snapshot {
                 units: arena.awaiting.iter().copied().collect(),
             });
         }
+        arena.validate_order_watches()?;
         let state = String::from_utf8(super::snapshot_capacity::json_bytes(
             &ArenaStateRef::from(arena),
             limit,
@@ -927,6 +937,7 @@ struct ArenaStateRef<'a> {
     pilots: &'a [Pilot],
     motors: &'a MotorTable,
     minds: &'a BTreeMap<ObjId, MindState>,
+    order_watches: &'a super::order_watch::OrderWatches,
     cards: &'a crate::arena::runtime_card::CardCatalog,
     profiles: &'a BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: &'a ConditionTable,
@@ -991,6 +1002,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             motors,
             // Carried (17b cut M1a.5): every unit mind's row.
             minds,
+            order_watches,
             cards,
             profiles,
             // Carried (17b cut M1b.1): every hull's condition slots, the
@@ -1071,6 +1083,7 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             pilots,
             motors,
             minds,
+            order_watches,
             cards,
             profiles,
             conditions,
@@ -1120,6 +1133,7 @@ struct ArenaState {
     pilots: Vec<Pilot>,
     motors: MotorTable,
     minds: BTreeMap<ObjId, MindState>,
+    order_watches: super::order_watch::OrderWatches,
     cards: crate::arena::runtime_card::CardCatalog,
     profiles: BTreeMap<ObjId, crate::arena::profile_runtime::ProfileRuntime>,
     conditions: ConditionTable,
@@ -1169,6 +1183,7 @@ impl ArenaState {
             pilots,
             motors,
             minds,
+            order_watches,
             cards,
             profiles,
             conditions,
@@ -1249,6 +1264,7 @@ impl ArenaState {
             pilots,
             motors,
             minds,
+            order_watches,
             cards,
             profiles,
             conditions,
@@ -1301,6 +1317,7 @@ impl ArenaState {
         arena
             .hydrate_profiles()
             .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
+        arena.validate_order_watches()?;
         Ok(arena)
     }
 }

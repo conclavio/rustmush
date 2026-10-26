@@ -795,7 +795,7 @@ fn stand_down(ctx: &mut Ctx<'_>, grant: &SeatGrant, offer: &SeatOffer) -> Result
     // an arena that never hears about it keeps taking the evicted pilot's queued
     // orders. So the eviction is refused at the door instead, which is the one
     // defence the seam's shape allows.
-    mush_sim::deployed::refuse_if_deployed(ctx.w, offer.scope.unit.0)
+    mush_sim::deployed::refuse_if_custodied(ctx.w, offer.scope.unit.0)
         .map_err(|error| CmdError::msg(error.to_string()))?;
     let station = mush_sim::StationId::new(offer.scope.station.as_str()).ok_or_else(no_seat)?;
     mush_sim::request_seat_activation(

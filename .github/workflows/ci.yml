@@ -19,7 +19,8 @@ on:
   # H3: the `scale` job below runs only on these two triggers.
   workflow_dispatch:
   schedule:
-    - cron: "17 4 * * 1"
+    # Daily (the repo is public, so hosted-runner minutes are free).
+    - cron: "17 4 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +29,53 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  mind-commerce-acceptance:
+    name: M7 ${{ matrix.name }}
+    # Daily with the scale job, or by hand: the server story alone paces about
+    # 3 s a Registry lease through real maintenance ticks (roughly three hours).
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # 2026-10-25: no `max-parallel`. Each story runs on its own runner
+      # against its own in-process world, so the four share nothing, and one
+      # at a time made the job the sum of them: 31 + 131 + 18 + 55 min, about
+      # 236, in run 40211204236. In parallel it is the longest, the server
+      # story's 131.
+      matrix:
+        include:
+          - name: author and buyer lifecycle
+            package: tacsim
+            test: minds::bulk::registry_integration_tests::original_purchase::genuine_registry_original_purchase_grant_refund_and_paired_recovery
+          - name: server persistence and uncertain acknowledgement
+            package: mush-server
+            test: world_task::submission_disposition::tests::paid_purchase::genuine_registry_purchase_writer_unknown_expiry_and_recovery
+          - name: Conduct and qualified coverage
+            package: tacsim
+            test: minds::bulk::registry_integration_tests::original_purchase::ic_tests::conduct::genuine_safe_conduct_service_result_and_complete_cold_inverse
+          - name: named launch catalogue
+            package: tacsim
+            test: hardware::flow::launch::story::named_coprates_real_save_rate_house_sale_and_membership_fences
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The automatic key is the job id, shared by every matrix cell, so
+          # the first story to finish would save its package's dependencies
+          # and the others would restore that set and never save their own
+          # (the test job's 2026-10-20 note). One key per package: the three
+          # tacsim stories share theirs.
+          key: ${{ matrix.package }}
+      # Real Registry schedules make these unsuitable for the ordinary fast
+      # workspace run. Each exact ignored case owns its actual service, native
+      # receipt, cold recovery and failure assertions; no synthetic certificate
+      # or timing waiver replaces those correctness checks.
+      - name: Execute the exact M7 story
+        run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1
+
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
     if: github.event_name == 'workflow_dispatch'
@@ -46,7 +94,14 @@ jobs:
       - name: Validate acceptance artifact comparison
         run: python -B scripts/test_mind_port_acceptance.py
       - name: Complete author story and fresh thirty-match external comparison
-        run: python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
+        # The script makes its evidence directory without parents, and a fresh
+        # runner has built nothing yet, so `target/` itself may not exist.
+        # The win-rate parity comparison is report-only under the owner's
+        # c58c3d98 exception (17e); the story, decoders and zero mind faults
+        # still fail the job.
+        run: |
+          mkdir -p target
+          python scripts/mind_port_acceptance.py run target/m6-acceptance-evidence
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -237,6 +292,19 @@ jobs:
       - name: Clippy
         if: matrix.shard == 'lint'
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Keep memory-size enforcement scoped to the M7 owners, including
+      # standalone integration-test targets as well as library fixtures.
+      - name: M7 memory-size limits
+        # Its own clippy config (the root's plus the M7 thresholds and
+        # avoid-breaking-exported-api = false), so exported-API naming lints
+        # are not switched on for every crate the step above lints.
+        env:
+          CLIPPY_CONF_DIR: ${{ github.workspace }}/.github/clippy-m7
+        run: >-
+          cargo clippy -p mush-roll -p mush-economy -p mush-market
+          -p mush-industry -p mush-core -p tacsim --all-targets --no-deps --
+          -D clippy::large_futures -D clippy::large_stack_frames
+          -D clippy::large_enum_variant -D clippy::large_types_passed_by_value
       # There is no separate `cargo build --workspace --all-targets` step: it
       # built every test binary a second time beside the Test step's own build
       # (the only example target in the workspace, mush-bot's, is built by its
@@ -689,7 +757,7 @@ jobs:
   # H3 (11-h §3.3): the scale harness — cold journal replay, world boot,
   # the authoritative write-through soak and the tick-shaped bundle. Every
   # test is `#[ignore]`; this job is the only thing that runs them, on demand
-  # or weekly, never on push. It is report-only by design (D-H-8): a shared
+  # or daily, never on push. It is report-only by design (D-H-8): a shared
   # runner's speed is not a threshold, so read the `scale_*:` lines in the log.
   # Run the harness locally with `SCALE_ASSERT=1` to assert the thresholds.
   # Redis twins use logical dbs 1 and 2.
@@ -719,7 +787,7 @@ jobs:
   # figure is the `WIN RATE:` line and one `match` line each in the log (the
   # owner's target is seven in ten; below it is input for a later machine cut,
   # 16c Q-AJ5, not a failure). About seventy-five minutes, so it runs on
-  # demand only, never on push or on the weekly schedule. It is the only job
+  # demand only, never on push or on the daily schedule. It is the only job
   # that runs `arena_win_rate`, which is `#[ignore]` for exactly that reason.
   # Its sibling bot-muster-rate (below) flies the same bot from the muster.
   bot-win-rate:
@@ -755,7 +823,7 @@ jobs:
   # above stays as the duel benchmark. REPORT-ONLY: it asserts only that ten
   # matches finished; the figure is the `WIN RATE FROM THE MUSTER:` line, one
   # `match` line each and the reading lines in the log. Up to about two hours,
-  # so it runs on demand only, never on push or on the weekly schedule. It is
+  # so it runs on demand only, never on push or on the daily schedule. It is
   # the only job that runs `arena_muster_rate`, which is `#[ignore]` for exactly
   # that reason.
   bot-muster-rate:
@@ -784,7 +852,7 @@ jobs:
   # unit minds in four variants, fill first, on a real think pool)
   # (`harness_*:` lines in the log, `harness*.json` uploaded). Every
   # test is `#[ignore]`; this job is the only CI job that runs them, on demand
-  # or weekly, never on push, and no Redis is involved. Since 17b cut M4.5
+  # or daily, never on push, and no Redis is involved. Since 17b cut M4.5
   # every lane fields unit minds at the ROM (Class 0, the native stock mind)
   # where it fielded the reflex controller — the report's `motor` and
   # `minds.states_at_end` objects where `reflex` was.

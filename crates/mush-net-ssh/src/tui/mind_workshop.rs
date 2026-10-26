@@ -72,6 +72,7 @@ enum Action {
     Trace { follow: bool },
     RenameMind,
     RemoveMind,
+    RemoveAttributed { name: String },
     VersionRename,
     VersionForget,
     Prune,
@@ -102,6 +103,7 @@ pub(super) struct MindWorkshop {
     pub(super) open: bool,
     page: Page,
     names: Vec<String>,
+    removal_requested: Vec<String>,
     selected: usize,
     profile: usize,
     row: usize,
@@ -126,6 +128,7 @@ impl Default for MindWorkshop {
             open: false,
             page: Page::Library,
             names: Vec::new(),
+            removal_requested: Vec::new(),
             selected: 0,
             profile: 0,
             row: 0,
@@ -173,6 +176,19 @@ impl MindWorkshop {
             self.message = "An operation is pending; wait for its result.".into();
             return;
         }
+        let removal_name = match &request {
+            MindRequest::Remove { name }
+            | MindRequest::Lifecycle {
+                name,
+                edit: MindLifecycle::Remove {},
+                ..
+            } => Some(name),
+            _ => None,
+        };
+        if removal_name.is_some_and(|name| self.removal_requested.contains(name)) {
+            self.message = "Removal already requested; r refreshes without resubmitting.".into();
+            return;
+        }
         let invoke = InvokeRequest::Mind(request.clone());
         if let Err(error) = invoke.validate() {
             self.message = format!("Request refused: {error}");
@@ -199,7 +215,9 @@ impl MindWorkshop {
         let Some(pending) = self.pending.as_ref().filter(|p| p.id == id) else {
             return;
         };
-        let InvokeResult::Mind(response) = result;
+        let InvokeResult::Mind(response) = result else {
+            return;
+        };
         if let MindResponse::Queued { job } | MindResponse::Pending { job } = response {
             if let Some(p) = self.pending.as_mut() {
                 p.job = Some(*job);
@@ -236,10 +254,21 @@ impl MindWorkshop {
             MindResponse::Library { names } => {
                 self.names = names.iter().take(MAX_LIBRARY).cloned().collect();
                 self.selected = self.selected.min(self.names.len().saturating_sub(1));
-                self.message = if names.len() > MAX_LIBRARY {
+                let removed = self
+                    .removal_requested
+                    .iter()
+                    .any(|name| !names.contains(name));
+                self.removal_requested.retain(|name| names.contains(name));
+                self.message = if removed {
+                    "Requested entry no longer appears in your library; retained revisions remain."
+                        .into()
+                } else if !self.removal_requested.is_empty() {
+                    "Removal requested; entry still present. r refreshes without resubmitting."
+                        .into()
+                } else if names.len() > MAX_LIBRARY {
                     "Library exceeds this client's bound; use the line reader.".into()
                 } else {
-                    "Enter reads the selected working copy. n creates from Standard.".into()
+                    "Enter reads. n creates from Standard. X requests attributed draft removal without source.".into()
                 };
             }
             MindResponse::Read {
@@ -303,6 +332,24 @@ impl MindWorkshop {
                     "Working copy has diagnostics; Report shows them. Source remains readable."
                         .into()
                 };
+            }
+            MindResponse::RemovalRequested { name } => {
+                if !matches!(&request,
+                    MindRequest::Remove { name: selected }
+                    | MindRequest::Lifecycle { name: selected, edit: MindLifecycle::Remove {}, .. }
+                    if selected == name)
+                {
+                    self.message = "Mismatched removal request; refresh the library.".into();
+                    return;
+                }
+                self.form = None;
+                if !self.removal_requested.contains(name)
+                    && self.removal_requested.len() < MAX_LIBRARY
+                {
+                    self.removal_requested.push(name.clone());
+                }
+                self.message = "Removal requested, not yet confirmed. r refreshes your library; current editor is retained.".into();
+                self.page = Page::Library;
             }
             MindResponse::Removed { name } => {
                 self.form = None;
@@ -597,6 +644,20 @@ impl MindWorkshop {
                 "Rename current owned mind; Enter confirms",
                 "",
             ),
+            Key::Char('X') if self.page == Page::Library && self.pending.is_none() => {
+                if let Some(name) = self.names.get(self.selected).cloned() {
+                    if self.removal_requested.contains(&name) {
+                        self.message =
+                            "Removal already requested; r refreshes without resubmitting.".into();
+                    } else {
+                        self.begin(
+                            Action::RemoveAttributed { name },
+                            "Request attributed draft removal; Enter confirms",
+                            "",
+                        );
+                    }
+                }
+            }
             Key::Char('X') if self.editable() => self.begin(
                 Action::RemoveMind,
                 "Remove current mind from library; Enter confirms (retained seals/history remain)",
@@ -858,6 +919,12 @@ impl MindWorkshop {
                 });
             } else {
                 self.message = "Enter a hull number and optional count from 1 to 64.".into();
+            }
+            return;
+        }
+        if let Action::RemoveAttributed { name } = &action {
+            if self.names.contains(name) && !self.removal_requested.contains(name) {
+                self.send(MindRequest::Remove { name: name.clone() });
             }
             return;
         }
@@ -1737,7 +1804,9 @@ mod tests {
         assert!(state.take_invokes().is_empty());
         assert_eq!(state.form.as_ref().unwrap().line.text(), "510");
         state.key(Key::Enter);
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert_eq!(
             request,
             MindRequest::Edit {
@@ -1773,7 +1842,9 @@ mod tests {
         state.key(Key::Enter);
         assert!(state.take_invokes().is_empty());
         state.key(Key::Ctrl('r'));
-        let (id, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (id, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(matches!(request, MindRequest::Read { revision: None, .. }));
         let mut response = read_response(MindEditBase {
             edit: 8,
@@ -1788,7 +1859,9 @@ mod tests {
         }
         state.accept(id, &InvokeResult::Mind(response));
         state.key(Key::Enter);
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(
             matches!(request, MindRequest::Edit { base:MindEditBase {edit:8,revision:Some(4)}, edit:MindEdit::Set { profile, value, .. }, .. } if profile == "Alpha long profile" && value == "510")
         );
@@ -1806,7 +1879,9 @@ mod tests {
         );
         assert!(state.take_invokes().is_empty());
         state.key(Key::Enter);
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(
             matches!(request, MindRequest::Edit { edit:MindEdit::Rule {slot:1,text,..}, .. } if text == "FIRE cannon HOLD WHEN heat>80%")
         );
@@ -1829,7 +1904,9 @@ mod tests {
             state.key(Key::Char(c));
         }
         state.key(Key::Enter);
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(
             matches!(request, MindRequest::Edit {edit:MindEdit::Rule {slot:1,text,..},..} if text.is_empty())
         );
@@ -1892,7 +1969,9 @@ mod tests {
             state.key(Key::Char(c));
         }
         state.key(Key::Enter);
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(
             matches!(request, MindRequest::Lifecycle {base:b,edit:MindLifecycle::VersionRename {old,new},..} if b==base && old=="old" && new=="new")
         );
@@ -2115,7 +2194,9 @@ mod tests {
                 },
             }),
         );
-        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap();
+        let (_, InvokeRequest::Mind(request)) = state.take_invokes().pop().unwrap() else {
+            panic!("expected workshop Mind request");
+        };
         assert!(matches!(request, MindRequest::Read { revision: None, .. }));
         assert!(state.form.is_none());
     }
@@ -2195,5 +2276,88 @@ mod tests {
         assert_eq!(rows.concat(), long);
         assert!(rows.iter().all(|r| Line::from(r.as_str()).width() <= 118));
         assert_eq!(rule_glyph("cannon holds fire when hot", false), "H");
+    }
+    #[test]
+    fn attributed_removal_selects_library_metadata_and_waits_for_actual_refresh() {
+        let mut state = MindWorkshop {
+            open: true,
+            names: vec!["marked".into()],
+            ..MindWorkshop::default()
+        };
+        state.key(Key::Char('X'));
+        state.key(Key::Enter);
+        let (id, request) = state.take_invokes().pop().expect("name-only request");
+        assert_eq!(
+            request,
+            InvokeRequest::Mind(MindRequest::Remove {
+                name: "marked".into()
+            })
+        );
+        assert!(state.loaded.is_none());
+        state.accept(
+            id,
+            &InvokeResult::Mind(MindResponse::RemovalRequested {
+                name: "marked".into(),
+            }),
+        );
+        assert_eq!(state.names, vec!["marked"]);
+        assert_eq!(state.removal_requested, vec!["marked"]);
+        state.key(Key::Char('X'));
+        assert!(state.take_invokes().is_empty());
+        state.key(Key::Char('r'));
+        let (id, request) = state.take_invokes().pop().expect("refresh");
+        assert_eq!(request, InvokeRequest::Mind(MindRequest::List {}));
+        state.accept(
+            id,
+            &InvokeResult::Mind(MindResponse::Library { names: vec![] }),
+        );
+        assert!(state.names.is_empty() && state.removal_requested.is_empty());
+        assert!(state.message.contains("no longer appears"));
+    }
+    #[test]
+    fn requested_removal_keeps_loaded_editor_and_refusal_keeps_selection() {
+        let mut state = loaded();
+        let name = state.loaded.as_ref().expect("loaded").name.clone();
+        let before = state.loaded.as_ref().expect("loaded").base;
+        state.key(Key::Char('X'));
+        state.key(Key::Enter);
+        let (id, _) = state.take_invokes().pop().expect("lifecycle request");
+        state.accept(
+            id,
+            &InvokeResult::Mind(MindResponse::RemovalRequested { name: name.clone() }),
+        );
+        assert_eq!(state.loaded.as_ref().expect("retained").base, before);
+        assert_eq!(state.removal_requested, vec![name]);
+        // RemovalRequested returns to Library but deliberately retains the
+        // fresh editor. Switching to it must not reopen the legacy lifecycle
+        // route as a second removal request while custody is unresolved.
+        assert_eq!(state.page, Page::Library);
+        let next_id = state.next_id;
+        state.key(Key::Tab);
+        assert_eq!(state.page, Page::Card);
+        state.key(Key::Char('X'));
+        state.key(Key::Enter);
+        assert!(state.take_invokes().is_empty());
+        assert!(state.pending.is_none());
+        assert_eq!(state.next_id, next_id);
+        assert!(state.message.contains("already requested"));
+        assert_eq!(state.loaded.as_ref().expect("retained").base, before);
+        let mut state = MindWorkshop {
+            open: true,
+            names: vec!["marked".into()],
+            ..MindWorkshop::default()
+        };
+        state.key(Key::Char('X'));
+        state.key(Key::Enter);
+        let (id, _) = state.take_invokes().pop().expect("request");
+        state.accept(
+            id,
+            &InvokeResult::Mind(MindResponse::Error {
+                code: "stale".into(),
+                message: "Unavailable".into(),
+            }),
+        );
+        assert_eq!(state.names, vec!["marked"]);
+        assert!(state.removal_requested.is_empty());
     }
 }

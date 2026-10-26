@@ -1143,8 +1143,11 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(!seen.contains("Locked on"), "{seen}");
 
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
-    // The asynchronous lock notice can arrive beside an older weapon reply.
-    // Wait for the command's weapon telemetry, not that out-of-band notice.
+    // The asynchronous lock notice (`Locked on BA, 69% to hit.`) can arrive
+    // beside an older weapon reply that still renders the frame before the
+    // lock. Wait for the command's weapon telemetry, not that out-of-band
+    // notice: a weapon row carries its range band only in a frame that holds
+    // the lock ("no lock, no band"), and the notice never does.
     let locked = poll_whole(&mut ada, "WEAPONSTATUS", "band 1 of 2").await;
     assert!(locked.contains(&named), "the lock is the contact: {locked}");
     assert!(

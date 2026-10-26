@@ -123,7 +123,11 @@ fn reboot(tw: &mut TestWorld, kv: &Kv) {
             )
         })
         .collect();
-    tw.modules_loaded(data);
+    // Cold hydration requires fresh owner slots over the retained world.
+    let previous = std::mem::replace(tw, TestWorld::new());
+    *tw = previous
+        .reboot_into(reboot_roster(), data)
+        .expect("the retained world boots with fresh owner slots");
 }
 
 /// Every object in the world whose name starts with `prefix`.

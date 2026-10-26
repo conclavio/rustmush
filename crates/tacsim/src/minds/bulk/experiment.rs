@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub(super) enum Edit {
+pub(in crate::minds) enum Edit {
     Diff(Candidate),
     DiffOff,
     Swap { candidate: Candidate, serial: u64 },

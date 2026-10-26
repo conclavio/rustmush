@@ -134,6 +134,25 @@ pub fn register(
     inventory: Option<&InventoryHandleCell>,
     burn: Option<crate::port::burn::BurnTable>,
 ) -> Result<(), ModError> {
+    register_with_ic(reg, test_world, inventory, burn, None)
+}
+pub(crate) fn register_with_ic(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    inventory: Option<&InventoryHandleCell>,
+    burn: Option<crate::port::burn::BurnTable>,
+    ic: Option<&crate::minds::ic_sortie::registration::Registration>,
+) -> Result<(), ModError> {
+    register_with_coverage(reg, test_world, inventory, burn, ic, None)
+}
+pub(crate) fn register_with_coverage(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    inventory: Option<&InventoryHandleCell>,
+    burn: Option<crate::port::burn::BurnTable>,
+    ic: Option<&crate::minds::ic_sortie::registration::Registration>,
+    coverage: Option<&crate::underwriting::registration::Registration>,
+) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
@@ -152,7 +171,13 @@ pub fn register(
     };
     // One `outcome` validator for the whole crate, over the very descriptors
     // registered next (built once, so the two cannot drift).
-    let outcomes = outcome_descriptors(test_world)?;
+    let mut outcomes = outcome_descriptors(test_world)?;
+    if let Some(ic) = ic {
+        outcomes.push(ic.outcome()?);
+    }
+    if let Some(coverage) = coverage {
+        outcomes.push(coverage.outcome()?);
+    }
     reg.definition_validator(
         kind("outcome")?,
         crate::definitions::exact_validator(outcomes.clone()),
@@ -202,7 +227,7 @@ pub fn register(
         .get(crate::relay_foundry::OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("relay fabrication outcome missing"))?;
-    let actions = action_descriptors(
+    let mut actions = action_descriptors(
         (&stock_outcome, &mill_outcome),
         &relay_outcome,
         &burn_outcome,
@@ -211,6 +236,12 @@ pub fn register(
         (&site_work_outcome, &dispatch_outcome),
         probe_outcome.as_ref(),
     )?;
+    if let Some(ic) = ic {
+        actions.extend(ic.actions()?);
+    }
+    if let Some(coverage) = coverage {
+        actions.extend(coverage.descriptors()?);
+    }
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),

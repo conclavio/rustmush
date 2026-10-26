@@ -375,7 +375,12 @@ impl Arena {
             });
             match runtime.lease.sample() {
                 Some(sample) => {
-                    if !delay_range.contains(&sample.lands_ms.saturating_sub(sample.sampled_ms)) {
+                    // A sample is stamped with its picture's millisecond (the
+                    // substep boundary at or after the scheduled think,
+                    // ae959449), and lands one substep after the think: the lead
+                    // runs from zero to one maximum substep, not from MIN.
+                    let lead = sample.lands_ms.saturating_sub(sample.sampled_ms);
+                    if !(0..=*delay_range.end()).contains(&lead) {
                         return Err(invalid(
                             "active sample differs from collection landing delay",
                         ));
@@ -425,7 +430,12 @@ impl Arena {
                     || pending.period_ms != self.classes.row(pending.profile_class).think_ms
                     || pending.t_ms < 0 || pending.t_ms > self.now_ms
                     || !delay_range.contains(&pending.lands_ms.saturating_sub(pending.t_ms))
-                    || pending.rule_sample.as_ref().is_some_and(|sample| sample.sampled_ms != pending.t_ms)
+                    || pending.rule_sample.as_ref().is_some_and(|sample| {
+                        // Stamped at its picture: never before the think, never
+                        // after its landing or the arena's present.
+                        sample.sampled_ms < pending.t_ms
+                            || sample.sampled_ms > pending.lands_ms.min(self.now_ms)
+                    })
                     || !self.due.iter().any(|event| event.t_ms == pending.lands_ms && matches!(event.kind,
                         DueKind::MindLand { unit, think_seq } if unit == own.id && think_seq == pending.think_seq)) {
                     return Err(invalid("pending sample schedule differs from collection"));

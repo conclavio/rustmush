@@ -248,7 +248,10 @@ fn ic2_the_lane_pack_is_pinned() {
         LANE_DIGEST,
         "the lane's digest moved; re-review the content and re-pin it"
     );
-    let raw = mush_content::parse_pack(LANE_JSON).expect("parses");
+    // The production content latch reads raw authored values; its digest must
+    // agree with the typed lane loader even for sub-micro-AU moon data.
+    let raw = mush_content::load_pack(LANE_JSON).expect("the production content pack verifies");
+    assert_eq!(raw.manifest().digest().to_hex(), LANE_DIGEST);
     let mut kinds: Vec<(String, String)> = raw
         .entries()
         .iter()

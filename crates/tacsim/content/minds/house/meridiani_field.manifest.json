@@ -1,0 +1,45 @@
+{
+  "name": "Meridiani Field Series",
+  "content_id": "meridiani.field_series",
+  "content_version": 2,
+  "status": "unfiled_combat_content",
+  "intended_legal_class": "discretion",
+  "intended_form": "sealed",
+  "declared_class": "II",
+  "ops_ceiling": 3000,
+  "mind_abi": "rhai=1.26.0;api=5;stock=2",
+  "source_sha256": "6c906d59c182632a4227d589fe9d60887c04af97975ebead865316c4270505d5",
+  "source_bytes": 4678,
+  "envelope_sha256": "5f468eaefad01c60b7b2ee197fb162bd7767f733f4327935a4d725bf8d15d6e3",
+  "profiles": [
+    {
+      "name": "Field",
+      "behavior": "Order-bound combat with moderate firing odds, one round kept per weapon and a shorter stand-off band."
+    },
+    {
+      "name": "Reserve",
+      "behavior": "Same order contract with higher firing odds and health withdrawal, more ammunition kept, narrower screen, shorter pursuit range and longer failed-route delay."
+    }
+  ],
+  "memory_keys": [
+    "goal",
+    "blocked",
+    "retry_at"
+  ],
+  "functions": [
+    "cease",
+    "fresh",
+    "named",
+    "closest",
+    "route",
+    "engage",
+    "think"
+  ],
+  "authoring_choices": "Profile names, parameters and tactics are provisional content choices. No current order or Hold means hold and disarm; no substitute hostile for an unusable Engage target. Advance defends without changing its route, Support defends only inside the charge leash, and Screen fires only inside its public arc. Discretion names the intended legal category, not a separate authority or measured class.",
+  "authority": "Source/envelope/probes only. No real Meridiani organization, title, filing, Registry certificate, listing, licence, dispatch or activation.",
+  "integration_required": [
+    "real scoped house publisher and paid filing",
+    "genuine Registry measurement and current result",
+    "ordinary sealed product and licensed distribution"
+  ]
+}

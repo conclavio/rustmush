@@ -1,20 +1,16 @@
 <script lang="ts">
   import type { GameApp } from "$lib/game.svelte";
+  import { actionControl } from "$lib/legal-action-control";
+  import LegalActionForm from "./LegalActionForm.svelte";
+  import ActionTransactions from "./ActionTransactions.svelte";
 
   let {
     app,
-    onCmd,
   }: {
     app: GameApp;
     onCmd: (command: string) => void;
   } = $props();
 
-  function invoke(verb: string): void {
-    // The line adapter re-enumerates the current offer before submitting its
-    // opaque ID. This deliberately cannot turn the displayed token into a
-    // client-authored exact action or stale authorization cache.
-    onCmd(`+act ${verb}`);
-  }
 </script>
 
 <div class="actions">
@@ -23,6 +19,8 @@
     <button type="button" class="ghost" onclick={() => app.refreshLegalActions()}>Refresh</button>
   </div>
 
+  {#if app.actionRequests.notice}<p role="alert">{app.actionRequests.notice}</p>{/if}
+  <ActionTransactions requests={app.actionRequests} />
   {#if !app.actions.loaded}
     <p class="muted">Loading current actions…</p>
   {:else if app.actions.actions.length === 0}
@@ -30,15 +28,22 @@
   {:else}
     <div class="list">
       {#each app.actions.actions as action (action.offer)}
+        {@const control = actionControl(action)}
+        {#if control}
+          <LegalActionForm {action} {control} requests={app.actionRequests}
+            submit={values => app.submitLegalAction(action, values)} />
+        {:else}
         <button
           type="button"
           class="action"
           title={action.presentation.help}
-          onclick={() => invoke(action.presentation.verb)}
+          disabled
         >
           <strong>{action.presentation.label}</strong>
           {#if action.presentation.help}<span>{action.presentation.help}</span>{/if}
+          <span>This action is unavailable in these controls.</span>
         </button>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -90,6 +95,8 @@
   .action:focus-visible {
     border-color: var(--accent);
   }
+
+  .action:disabled { cursor: default; opacity: 0.6; }
 
   .action span,
   .muted {

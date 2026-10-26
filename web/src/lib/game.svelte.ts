@@ -82,6 +82,9 @@ import {
 import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
 import { MindsStore } from "./stores/minds.svelte";
 import { MindRpcClient } from "./mind-rpc";
+import { LegalActionRpcClient } from "./legal-action-rpc";
+import { ActionRequestsStore } from "./stores/action-requests.svelte";
+import type { LegalAction } from "./stores/actions.svelte";
 import { decodeMindTrace, type MindTrace } from "./mind-trace";
 import { decodeProvingView } from "./mind-bulk";
 import { decodeBenchView } from "./mind-bench";
@@ -273,6 +276,9 @@ export class GameApp {
   mindTrace = $state<MindTrace | null>(null);
   mindReadoutOpen = $state(false);
   #mindRpc: MindRpcClient | null = null;
+  #legalActionRpc: LegalActionRpcClient | null = null;
+  actionRequests = new ActionRequestsStore(request => this.#legalActionRpc!.request(request),
+    () => this.refreshLegalActions());
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -402,6 +408,7 @@ export class GameApp {
       },
     });
     this.#mindRpc = new MindRpcClient(this.client);
+    this.#legalActionRpc = new LegalActionRpcClient(this.client);
     this.#wire();
 
     // Boot: restore theme + credentials.
@@ -1372,7 +1379,14 @@ export class GameApp {
     );
   }
 
-  /** Explicit refresh used by a future legal-actions control surface. */
+  /** Submit only an offer still displayed by the current viewer projection. */
+  async submitLegalAction(action: LegalAction, values: Record<string, string>): Promise<void> {
+    const current = this.actions.actions.find(item => item.offer === action.offer);
+    if (!current) { this.actionRequests.notice = "This offer changed. Refresh available actions."; return; }
+    await this.actionRequests.submit(current, values);
+  }
+
+  /** Explicit refresh of the current legal-actions control surface. */
   refreshLegalActions(): void {
     if (this.session.hasPanel("legal.actions")) {
       this.actions.resyncPending = false;
@@ -1821,6 +1835,8 @@ export class GameApp {
 
   #clearMinds(): void {
     this.#mindRpc?.clear();
+    this.#legalActionRpc?.clear();
+    this.actionRequests.clear();
     this.minds.clear();
     this.mindTrace = null;
     this.mindReadoutOpen = false;

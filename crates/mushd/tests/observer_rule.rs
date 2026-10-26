@@ -768,7 +768,7 @@ fn unseated(feed: &str) -> Value {
         // 17b cut M1a.3 bumped the cockpit frame to version 2, 17b cut M1b.3
         // to 3, M5rules to 4, M5r to 5, and M6 to 6 for authored cards/rules.
         _ => json!({
-            "schema": { "id": "arena.cockpit", "version": 6, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 7, "retain": "latest" },
             "seated": false,
         }),
     }
@@ -2531,13 +2531,13 @@ async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found()
         "an empty scope, before detection: {cockpit}"
     );
     // **17b cut M1a.3** (doc 17 §3): the frame's own clock and a piloted
-    // hull's order, which is none; version 6 includes authored cards/rules.
+    // hull's order, which is none; version 7 includes the class-based shared odds projection.
     assert!(
         cockpit.get("t_ms").is_some_and(Value::is_i64),
         "the frame carries its arena millisecond: {cockpit}"
     );
     assert_eq!(cockpit.get("order"), Some(&Value::Null), "{cockpit}");
-    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(6)));
+    assert_eq!(cockpit.pointer("/schema/version"), Some(&json!(7)));
     assert_eq!(
         cockpit.get("callsign").and_then(Value::as_str),
         Some("RA"),

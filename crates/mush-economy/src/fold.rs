@@ -31,6 +31,71 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 /// The journal-derived accumulators at [`FoldState::covered_seq`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldState {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_coverage::book::CoverageBook::uninitialized"
+    )]
+    pub(crate) coverage_receipts: crate::managed_coverage::book::CoverageBook,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_paid_resale::book::PaidResaleBook::uninitialized"
+    )]
+    pub(crate) paid_resale_receipts: crate::managed_paid_resale::book::PaidResaleBook,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_charter_transfer::history::CharterPendingAudit::uninitialized"
+    )]
+    pub(crate) charter_pending_receipts:
+        crate::managed_charter_transfer::history::CharterPendingAudit,
+    /// Exact charter transfer journal inventory, including its inverse key index.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::charter_transfer::CharterTransferReceiptAudit::uninitialized"
+    )]
+    pub(crate) charter_transfer_receipts:
+        crate::registry_filing::charter_transfer::CharterTransferReceiptAudit,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::core_integration::receipt::CoreReceiptAudit::uninitialized"
+    )]
+    pub(crate) core_receipts: crate::core_integration::receipt::CoreReceiptAudit,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
+    )]
+    pub(crate) refit_receipts: crate::core_refit::receipt::RefitReceiptAudit,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::update::UpdateReceiptAudit::uninitialized"
+    )]
+    pub(crate) update_receipts: crate::registry_filing::update::UpdateReceiptAudit,
+    /// Sparse historical proof for registered original filings. Old checkpoints
+    /// omit it and remain usable outside commerce; commerce requires full replay
+    /// before it can open a missing proof, even when no filings are visible.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::ReceiptAudit::uninitialized"
+    )]
+    pub(crate) filing_receipts: crate::registry_filing::ReceiptAudit,
+    /// Sparse proof of managed original purchases. Its runtime provenance is
+    /// opened only by actual replay; old checkpoints omit this exact field.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_purchase::PurchaseReceiptAudit::uninitialized"
+    )]
+    pub(crate) purchase_receipts: crate::managed_purchase::PurchaseReceiptAudit,
+    /// Separate renewal provenance; old checkpoints retain exact omission.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_renewal::receipt::RenewalReceiptAudit::uninitialized"
+    )]
+    pub(crate) renewal_receipts: crate::managed_renewal::receipt::RenewalReceiptAudit,
+    /// Separate renewal provenance; old checkpoints retain exact omission.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_house_renewal::receipt::RenewalReceiptAudit::uninitialized"
+    )]
+    pub(crate) house_renewal_receipts: crate::managed_house_renewal::receipt::RenewalReceiptAudit,
     /// The last journal sequence folded, or `None` before any.
     pub covered_seq: Option<u64>,
     /// Per account, the sum of every journal line (`i128`, so an overflow past
@@ -77,6 +142,18 @@ impl FoldState {
     /// Fold one journal entry at `seq`. The one function boot replay and the
     /// live post path both call; a change here changes both.
     pub fn fold_entry(&mut self, seq: u64, tx: &EconomicTransaction) {
+        self.paid_resale_receipts.observe(tx);
+        self.coverage_receipts.observe(tx);
+        self.core_receipts.observe(tx);
+        self.refit_receipts.observe(tx);
+        self.filing_receipts.observe(tx);
+        self.update_receipts.observe(tx);
+        self.charter_pending_receipts.observe(tx);
+        self.charter_transfer_receipts
+            .observe_with_pending(tx, &self.charter_pending_receipts);
+        self.purchase_receipts.observe(tx);
+        self.renewal_receipts.observe(tx);
+        self.house_renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
             *self.running.entry(line.account).or_insert(0) += line.delta.widen();

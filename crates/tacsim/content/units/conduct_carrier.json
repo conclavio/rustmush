@@ -1,0 +1,350 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.conduct_carrier",
+    "version": 1,
+    "kind": "rules_definition",
+    "requires": [
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.cores",
+        "version": 1
+      }
+    ],
+    "digest": "355a9688f6afb856e6e4167e6975992cf0bdfccf60841631318a19ee58bc1a7a"
+  },
+  "entries": {
+    "tacsim.unit.conduct_carrier": {
+      "kind": "unit",
+      "def": {
+        "label": "Safe Conduct tracked cargo carrier",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 100
+              },
+              {
+                "id": "left",
+                "armor": 100
+              },
+              {
+                "id": "right",
+                "armor": 100
+              },
+              {
+                "id": "rear",
+                "armor": 100
+              },
+              {
+                "id": "top",
+                "armor": 100
+              }
+            ],
+            "internals": 200,
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
+          },
+          {
+            "id": "cab",
+            "facets": [
+              {
+                "id": "front",
+                "armor": 100
+              },
+              {
+                "id": "left",
+                "armor": 100
+              },
+              {
+                "id": "right",
+                "armor": 100
+              },
+              {
+                "id": "rear",
+                "armor": 100
+              }
+            ],
+            "internals": 150,
+            "consequences": [
+              {
+                "kind": "destroy_core"
+              }
+            ]
+          },
+          {
+            "id": "left_track",
+            "facets": [
+              {
+                "id": "left",
+                "armor": 100
+              }
+            ],
+            "internals": 100,
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              },
+              {
+                "kind": "no_turn_toward",
+                "side": "left"
+              },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": [
+                  "left_track",
+                  "right_track"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [
+              {
+                "id": "right",
+                "armor": 100
+              }
+            ],
+            "internals": 100,
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              },
+              {
+                "kind": "no_turn_toward",
+                "side": "right"
+              },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": [
+                  "left_track",
+                  "right_track"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 120,
+            "consequences": [
+              {
+                "kind": "disable_motion"
+              }
+            ],
+            "struck_through": {
+              "section": "hull",
+              "facet": "rear"
+            }
+          },
+          {
+            "id": "cargo",
+            "facets": [
+              {
+                "id": "left",
+                "armor": 75
+              },
+              {
+                "id": "right",
+                "armor": 75
+              },
+              {
+                "id": "top",
+                "armor": 50
+              }
+            ],
+            "internals": 250,
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "id": "visual_sensor",
+            "section": "cab",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ],
+              "initial": "off"
+            }
+          },
+          {
+            "id": "core",
+            "section": "cab",
+            "role": {
+              "kind": "core",
+              "core": "tacsim.core.line"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 800,
+            "accel_cms2": 80,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 50
+              },
+              {
+                "section": "cab",
+                "weight": 50
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "left_track",
+                "weight": 30
+              },
+              {
+                "section": "cab",
+                "weight": 30
+              },
+              {
+                "section": "cargo",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "right_track",
+                "weight": 30
+              },
+              {
+                "section": "cab",
+                "weight": 30
+              },
+              {
+                "section": "cargo",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 40
+              },
+              {
+                "section": "engine",
+                "weight": 30
+              },
+              {
+                "section": "cab",
+                "weight": 30
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "hull",
+                "weight": 50
+              },
+              {
+                "section": "cab",
+                "weight": 50
+              },
+              {
+                "section": "cargo",
+                "weight": 30
+              }
+            ]
+          }
+        ],
+        "silhouettes": [
+          {
+            "band": "front",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "left",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "right",
+            "width_cm": 700,
+            "height_cm": 250
+          },
+          {
+            "band": "rear",
+            "width_cm": 350,
+            "height_cm": 250
+          },
+          {
+            "band": "top",
+            "width_cm": 700,
+            "height_cm": 350
+          }
+        ],
+        "sensor_height_cm": 150,
+        "note": "Dedicated fieldable ground carrier for deterministic Safe Conduct Transit proving. Core II and visual sensor in the cab, no weapon or fire station, bounded tracked motion. The exact role scenario binds this complete hull definition to its actual checked cargo compartment and lot custody. No ship drive, pilot exemption, live cargo inventory or IC host is implied.",
+        "class": "armour",
+        "ground_stowage": {
+          "cargo": {
+            "accepts": [
+              "stow.bulk"
+            ],
+            "limits": {
+              "si.mass_kg": 2000,
+              "si.volume_l": 4000
+            }
+          }
+        }
+      }
+    }
+  }
+}

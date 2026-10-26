@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+use mush_core::account::{AccountIdentityEpoch, AccountPairSnapshot, PersonalAccountSnapshot};
 use mush_core::{AccountId, AccountIdentity, ObjId};
 use mush_store::ObjectStore;
 
@@ -55,6 +56,7 @@ pub struct AccountMap {
     /// make one panic into an error line per command for the rest of the
     /// process's life.
     poison_said: AtomicBool,
+    epoch: AccountIdentityEpoch,
 }
 
 impl AccountMap {
@@ -65,6 +67,7 @@ impl AccountMap {
         AccountMap {
             by_character: RwLock::new(by_character),
             poison_said: AtomicBool::new(false),
+            epoch: AccountIdentityEpoch::default(),
         }
     }
 
@@ -103,6 +106,7 @@ impl AccountMap {
 
     /// Say a poisoned lock ONCE, whichever of the three paths meets it first.
     fn say_poisoned(&self, consequence: &str) {
+        self.epoch.invalidate();
         if !self.poison_said.swap(true, Ordering::Relaxed) {
             tracing::error!(
                 consequence,
@@ -115,6 +119,38 @@ impl AccountMap {
 impl AccountIdentity for AccountMap {
     fn account_of(&self, character: ObjId) -> Option<AccountId> {
         self.read().get(&character).copied()
+    }
+
+    fn capture_personal_account(&self, character: ObjId) -> Option<PersonalAccountSnapshot> {
+        let table = match self.by_character.read() {
+            Ok(table) => table,
+            Err(_) => {
+                self.say_poisoned("composed account observations are unavailable");
+                return None;
+            }
+        };
+        self.epoch
+            .personal_account(character, *table.get(&character)?)
+    }
+
+    fn observe_distinct_accounts(
+        &self,
+        requester: ObjId,
+        other: ObjId,
+    ) -> Option<AccountPairSnapshot> {
+        let table = match self.by_character.read() {
+            Ok(table) => table,
+            Err(_) => {
+                self.say_poisoned("composed account observations are unavailable");
+                return None;
+            }
+        };
+        self.epoch.distinct_pair(
+            requester,
+            *table.get(&requester)?,
+            other,
+            *table.get(&other)?,
+        )
     }
 
     fn link(&self, character: ObjId, account: AccountId) -> bool {
@@ -142,6 +178,7 @@ impl AccountIdentity for AccountMap {
                 false
             }
             None => {
+                self.epoch.invalidate();
                 table.insert(character, account);
                 true
             }
@@ -158,7 +195,13 @@ impl AccountIdentity for AccountMap {
             );
             return false;
         };
-        table.remove(&character).is_some()
+        if table.contains_key(&character) {
+            self.epoch.invalidate();
+            table.remove(&character);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -416,7 +459,77 @@ mod tests {
             }
         }
         let fixed = Fixed;
+        assert!(fixed.capture_personal_account(ObjId(1)).is_none());
         assert!(!fixed.link(ObjId(1), AccountId::mint("Nick", 1).unwrap()));
         assert!(!fixed.unlink(ObjId(1)));
+        assert!(
+            fixed
+                .observe_distinct_accounts(ObjId(1), ObjId(2))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn m7_account_capture_uses_hydrated_and_live_account_mapping() {
+        let store = InMemoryStore::new();
+        store
+            .create_account(account("Nick", 1, &[(7, "Nicky"), (8, "Alt")]))
+            .await
+            .unwrap();
+        store
+            .create_account(account("Zoe", 2, &[(9, "Zed")]))
+            .await
+            .unwrap();
+        let map = Arc::new(hydrate(&store).await.unwrap());
+        for character in [7, 8, 9] {
+            assert!(map.capture_personal_account(ObjId(character)).is_some());
+        }
+        assert!(map.capture_personal_account(ObjId(99)).is_none());
+        assert!(map.observe_distinct_accounts(ObjId(7), ObjId(9)).is_some());
+        assert!(map.observe_distinct_accounts(ObjId(9), ObjId(7)).is_some());
+        for (left, right) in [(7, 7), (7, 8), (7, 99), (99, 9)] {
+            assert!(
+                map.observe_distinct_accounts(ObjId(left), ObjId(right))
+                    .is_none()
+            );
+        }
+
+        // The simulator holds this same oracle, not the Engine wrapper. Its
+        // destruction observer must make a later account capture unavailable.
+        let simulator_oracle: Arc<dyn AccountIdentity> = map.clone();
+        assert!(simulator_oracle.unlink(ObjId(9)));
+        assert!(map.capture_personal_account(ObjId(9)).is_none());
+        assert!(map.observe_distinct_accounts(ObjId(7), ObjId(9)).is_none());
+        let nick = map.account_of(ObjId(7)).unwrap();
+        assert!(simulator_oracle.link(ObjId(9), nick));
+        // Single-account capture deliberately does not require a second,
+        // distinct account; known alternate characters are valid requesters.
+        assert!(map.capture_personal_account(ObjId(9)).is_some());
+        assert!(map.observe_distinct_accounts(ObjId(7), ObjId(9)).is_none());
+    }
+
+    #[test]
+    fn m7_account_capture_refuses_poisoned_mapping_while_legacy_reads_continue() {
+        let nick = AccountId::mint("Nick", 1).unwrap();
+        let zoe = AccountId::mint("Zoe", 2).unwrap();
+        let map = Arc::new(AccountMap::from_map(BTreeMap::from([
+            (ObjId(7), nick),
+            (ObjId(9), zoe),
+        ])));
+        assert!(map.observe_distinct_accounts(ObjId(7), ObjId(9)).is_some());
+        assert!(map.capture_personal_account(ObjId(7)).is_some());
+        let holder = Arc::clone(&map);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = holder.by_character.write().unwrap();
+                panic!("poison the account map");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(map.observe_distinct_accounts(ObjId(7), ObjId(9)).is_none());
+        assert!(map.capture_personal_account(ObjId(7)).is_none());
+        assert_eq!(map.account_of(ObjId(7)), Some(nick));
+        assert_eq!(map.account_of(ObjId(9)), Some(zoe));
     }
 }

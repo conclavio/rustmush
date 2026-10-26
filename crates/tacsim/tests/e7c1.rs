@@ -119,12 +119,21 @@ fn boot_data(kv: &Kv) -> HashMap<SmolStr, ModuleBootData> {
 }
 
 fn reboot(tw: &mut TestWorld, kv: &Kv) {
-    tw.modules_loaded(boot_data(kv));
+    reboot_result(tw, kv).expect("actual module boot data must load");
 }
 
-/// A reboot that may **refuse**, which `TestWorld::modules_loaded` cannot express: the
-/// P1 digest gate is a boot error, and a boot error is the thing being asserted.
+/// Register fresh owner slots over the retained world before loading the store.
+/// Keep the fresh engine even when boot refuses: P1 checks its actual pack
+/// verification response after the refused re-publication.
 fn reboot_result(tw: &mut TestWorld, kv: &Kv) -> Result<(), mush_core::module::ModError> {
+    let cfg = snap(tw).config().clone();
+    let (empty, registry) = mush_testkit::boot_world();
+    let world = std::mem::replace(tw.world_mut(), empty);
+    *tw.engine_mut() = mush_core::Engine::with_modules(
+        world,
+        registry,
+        vec![Box::new(TacsimRuleset::with_config(cfg))],
+    )?;
     let mut out = mush_core::Outbox::new();
     let mut fx = mush_core::Effects::new();
     tw.engine_mut()

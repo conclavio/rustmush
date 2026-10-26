@@ -53,6 +53,15 @@ use mush_core::{
 use mush_proto::RichText;
 use smol_str::SmolStr;
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
+pub mod component_replacement;
 mod contact;
 /// 16b cut T.3: **handing a unit to a simulation authority, and taking it back**
 /// (doc 16 §3.1 "Custody").
@@ -62,6 +71,7 @@ mod contact;
 /// with no live arena behind them.
 pub mod custody;
 pub mod ground;
+pub mod ic_custody;
 pub mod mobility;
 pub mod module;
 pub mod sensor;

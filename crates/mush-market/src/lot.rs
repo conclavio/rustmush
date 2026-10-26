@@ -1162,7 +1162,7 @@ fn descriptor(kind: &str, id: &str, payload: Value) -> Result<DefinitionDescript
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-fn exact_validator(
+pub(crate) fn exact_validator(
     descriptors: &[DefinitionDescriptor],
 ) -> impl Fn(&DefinitionValidationContext<'_>) -> Result<(), String> + Send + Sync + 'static {
     let expected: BTreeMap<_, _> = descriptors
@@ -1246,6 +1246,7 @@ pub(crate) fn register(
     families: &InventoryFamilies,
     draws: DrawReceipts,
     capacity: Option<std::sync::Arc<dyn CapacityProvider>>,
+    additional_definitions: &[DefinitionDescriptor],
 ) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
@@ -1254,7 +1255,16 @@ pub(crate) fn register(
     )?;
     reg.definition_validator(
         DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
-        exact_validator(std::slice::from_ref(&outcome_descriptor)),
+        exact_validator(
+            &std::iter::once(outcome_descriptor.clone())
+                .chain(
+                    additional_definitions
+                        .iter()
+                        .filter(|d| d.kind().as_str() == "outcome")
+                        .cloned(),
+                )
+                .collect::<Vec<_>>(),
+        ),
     )?;
     let outcome = reg.definition(outcome_descriptor)?;
     let action_descriptor = descriptor(
@@ -1265,7 +1275,16 @@ pub(crate) fn register(
     .with_references(vec![outcome.clone()]);
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
-        exact_validator(std::slice::from_ref(&action_descriptor)),
+        exact_validator(
+            &std::iter::once(action_descriptor.clone())
+                .chain(
+                    additional_definitions
+                        .iter()
+                        .filter(|d| d.kind().as_str() == "action")
+                        .cloned(),
+                )
+                .collect::<Vec<_>>(),
+        ),
     )?;
     let action = reg.definition(action_descriptor)?;
     reg.action_provider(

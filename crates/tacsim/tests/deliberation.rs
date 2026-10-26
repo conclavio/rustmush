@@ -2228,10 +2228,10 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
     // cadence a snapshot is taken under the standing order (the first pulse at
     // or past 5,000 ms; the order stands to 10,000), every carried standing
     // order decodes field for field, and the arena resumed from it steps to the
-    // same hash sequence the uninterrupted run did. (17b cut M4.5a, Q3: the
-    // order rides the mind row, which carries its squad and objective and no
-    // author — the `by` round trip this proved on the reflex row is LOST, not
-    // re-asserted.)
+    // same hash sequence the uninterrupted run did. This fixture checks the
+    // mind's projected order. Format 16 separately restores accepted author
+    // attribution through record-only watches; the r4 snapshot and actual
+    // match-boot tests cover that path without adding authors to MindView.
     for (at, cadence) in cadences.into_iter().enumerate() {
         let resumed = replay_ordered_hashes_resumed_at(cadence, 30_000, 5_000);
         let whole = runs
@@ -2249,24 +2249,17 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
 /// one decoded from its own snapshot at the first pulse at or past `snap_ms`
 /// (17b cut L.1). Asserts, at the swap, that the document is the current
 /// format and that every standing order the arena carried came back field for
-/// field (on the reflex row that included its author; see below).
+/// field. These are the projected `FrameOrder` fields the mind reads: squad,
+/// objective, constraints and deadline. `MindState::order_issuer` separately
+/// retains the commanding hull. The squad assertion does not prove author
+/// identity: it comes from `Order.squad`, not `Order.by`.
 ///
-/// **17b cut M4.5a** (Q3; the M4.3 precedent, `cockpit.rs`'
-/// `l1_a_typed_order_carries_the_seats_character`): the squad's machines are
-/// minds, so the snapshot carries each hull's order on its mind row as the
-/// `FrameOrder` the mind reads — red-1's squad word, the objective, the
-/// constraints and `expires_ms` — and every one is asserted back field for
-/// field. A mind's order names no author: D-UM-52's `by` is the world's watch's
-/// and the tape's, and the issuer is not mind-row state at M4.5 (since 17b cut
-/// M4.6, the owner's STOP C, it is: `MindState::order_issuer`, carried and
-/// unfolded; the author still is not), so **the
-/// author half of the round trip is LOST** (Q3), where the reflex row carried
-/// the `StandingOrder` whole. What is asserted is what the mind row carries:
-/// the order's squad and objective. The squad check is not an author check —
-/// `FrameOrder.squad` comes from `Order.squad`, not `Order.by`, and would read
-/// red-1 whoever the author were. The loop steps
-/// `step_settled`: a snapshot right after `Arena::step` can be refused while a
-/// think is unanswered.
+/// Format 16 carries accepted author attribution in record-only watches. The
+/// r4 snapshot and actual match-boot tests prove that recovery, including
+/// character and persona authors and superseded-order tombstones. This helper
+/// checks projection and combat hash continuity at three pulse cadences. It
+/// uses `step_settled`, because a snapshot immediately after `Arena::step` can
+/// be refused while a think is unanswered.
 fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64) -> Vec<u64> {
     use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot};
     let cfg = arena_cfg(30_000);
@@ -2311,7 +2304,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             );
             // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
-            assert_eq!(SNAPSHOT_FORMAT, 13);
+            // Format 16 adds record-only accepted-order attribution (R4).
+            assert_eq!(SNAPSHOT_FORMAT, 16);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2328,10 +2322,9 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
                     "{unit:?}'s standing order came back field for field"
                 );
                 if let Some(standing) = written {
-                    // What the mind row carries: the order's squad (from
-                    // `Order.squad` — red-1, the squad the fixture's persona
-                    // leads; NOT the author, whose round trip is lost, Q3)
-                    // and its objective.
+                    // The mind projection carries the squad and objective.
+                    // Accepted-author recovery has its own r4 record tests;
+                    // the squad word alone does not identify the author.
                     let CharacterRef::Persona { squad } = persona(red_one()) else {
                         unreachable!("the fixture's author is a persona");
                     };
@@ -2777,6 +2770,34 @@ async fn l2_the_world_says_the_leaders_order_lapsed_once() {
         .expect("the registry");
     assert_eq!((issued, refused), (1, 0));
     assert_eq!(in_flight, 0, "the reply gave its in-flight slot back");
+}
+
+/// A lead's public RELEASE ends a persona order's notice as well as its
+/// arena authority. Keeping the watch used to announce a false later expiry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn l2_releasing_the_whole_squad_cancels_its_persona_lapse_notice() {
+    let mut tw = TestWorld::with_modules(roster());
+    let (match_id, squads, pilots) = l2_running_match(&mut tw, &[Team::Red, Team::Blue]);
+    let (red, _) = l1_sides(&squads);
+    let payload = y1_reply(match_id, red.id);
+    l2_said(&mut tw, |ctx| {
+        tacsim::arena_bridge::on_deliberation_reply(ctx, &payload);
+    });
+    assert_eq!(y1_state(&tw, match_id, red.id).2, Some(persona(red.id)));
+    let said = tw.run(pilots[0].0, "ORDER red-1 RELEASE");
+    assert!(
+        said.iter()
+            .any(|(_, event)| render(event).contains("Released red-1 to its mind"))
+    );
+    assert_eq!(y1_state(&tw, match_id, red.id).2, None);
+    let now = tw.world().now();
+    tw.set_now(now + 61);
+    let said = l2_said(&mut tw, tacsim::arena_bridge::drain_egress);
+    assert!(
+        l2_lapses(&said).is_empty(),
+        "a released order cannot expire"
+    );
+    assert_eq!(y1_state(&tw, match_id, red.id).0, (1, 0, 0));
 }
 
 /// **A pilot's own order lapses to that pilot alone** (17b cut L.2; the plan's
@@ -4409,14 +4430,9 @@ fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
 // 16b cut Y.1 — a pilot's order outranks the machines' own commander
 // ---------------------------------------------------------------------------
 
-/// Start one match on the production composition root with a pilot a side and
-/// `ai_fill` fielding the rest, and answer it with its squads and the red
-/// pilot's tank — the setup of the lapse tests (17b cut L.2's
-/// `l2_the_world_says_the_leaders_order_lapsed_once` generalises it as
-/// `l2_running_match`).
-///
-/// **17b cut L.1**: it answers the two pilots too — `[red, blue]`, each the
-/// lead of their side (the admission reads who is at a seat).
+/// Start the older Y.1/L.1 tests through the same actual BOARD path as L.2.
+/// A claimed lobby slot is not a simulation seat: the pilot hulls must be
+/// Pilot-controlled and absent from the machine squads before authority is tested.
 fn y1_running_match(
     tw: &mut TestWorld,
 ) -> (
@@ -4425,58 +4441,16 @@ fn y1_running_match(
     ObjId,
     [ObjId; 2],
 ) {
-    let lobby = tacsim::match_::centre_object(tw.world(), tacsim::match_::LOBBY_ENTRY)
-        .expect("the OOC pack carries the simulator lobby");
-    let mut map = Accounts::default();
-    let mut pilots = Vec::new();
-    for n in 0..2 {
-        let pilot = tw.spawn_player(&format!("Pilot{n}"));
-        tw.world_mut()
-            .move_to(pilot, lobby)
-            .expect("a player walks into the lobby");
-        map.0.insert(
-            pilot,
-            AccountId::mint(&format!("account-{n}"), i64::from(n)).expect("an account id"),
-        );
-        pilots.push(pilot);
-    }
-    *tw.world_mut()
-        .module_state_mut::<mush_sim::AccountOracle>()
-        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
-    tw.run(pilots[0], "sim team red");
-    tw.run(pilots[1], "sim team blue");
-    tw.run(pilots[0], "sim start");
-    let mut red_tank = None;
-    for pilot in &pilots {
-        let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
-        let unit =
-            tacsim::match_::tank_of(tw.world(), pod).expect("the pod's tank is in the world");
-        red_tank.get_or_insert(unit);
-        let match_id = tacsim::match_::centre_of(tw.world())
-            .expect("the centre")
-            .match_id
-            .expect("a boarding centre has a match id");
-        let pilot = *pilot;
-        let _ = with_ctx(tw, pilot, |ctx| {
-            tacsim::match_::slot_seated(ctx, match_id, pilot, unit).expect("the seat is reported");
-        });
-    }
-    let match_id = tacsim::match_::centre_of(tw.world())
-        .expect("the centre")
-        .match_id
-        .expect("the match started");
-    let squads = tw
-        .world()
-        .module_state::<tacsim::match_::MatchBook>()
-        .and_then(|book| book.get(match_id))
-        .map(|record| record.squads.clone())
-        .expect("the record carries its squads");
-    (
-        match_id,
-        squads,
-        red_tank.expect("the red pilot's tank"),
-        [pilots[0], pilots[1]],
-    )
+    let (match_id, squads, seated) = l2_running_match(tw, &[Team::Red, Team::Blue]);
+    let [(red, red_tank), (blue, blue_tank)] = seated.as_slice() else {
+        panic!("one actual boarded pilot on each side");
+    };
+    assert!(
+        squads
+            .iter()
+            .all(|squad| !squad.holds(*red_tank) && !squad.holds(*blue_tank))
+    );
+    (match_id, squads, *red_tank, [*red, *blue])
 }
 
 /// One signal for `squad`, as a pulse of the arena would raise it.
@@ -4722,19 +4696,12 @@ fn l1_sides(
 /// before (`an_advance_order_moves_the_patrol_target` and the hint tests pass
 /// unchanged): the squad makes for the cell.
 ///
-/// **17b cut M4.5a — on the unit mind** (Q3; the M4.3 precedent,
-/// `cockpit.rs`' `l1_a_typed_order_carries_the_seats_character`): at M4.5 the
-/// author and the issuer are not mind-row state (the issuer is since 17b cut
-/// M4.6, `MindState::order_issuer`; the author is not) — a mind's order is the
-/// `FrameOrder` it reads (the squad word, the objective, the constraints and
-/// the deadline), and D-UM-52's `by` is the world's watch's. So the author
-/// and the issuer are asserted on the `Order` value issued (as before); the
-/// "stands under it **with that author**" half is LOST (Q3) — every unit of
-/// red-1 stands under the order on its mind row with red-1's squad word and
-/// the objective, and the squad word comes from `Order.squad`, so it would
-/// read the same for any `by`; and the issuer the order carried is the
-/// tape's: one `ordered` line per unit naming red-1 and no issuer (`None`
-/// against the fixture's `None`, as before — the commander's own scope).
+/// The assertions here cover the issued `Order`, each mind's projected squad
+/// and objective, and one `ordered` tape line per unit with the original
+/// issuer. A squad word alone does not identify an author. Format 16's
+/// record-only accepted watches retain that attribution separately; the r4
+/// snapshot and actual match-boot tests verify its recovery for both character
+/// and persona orders.
 #[test]
 fn l1_the_deliberation_fixtures_carry_by_and_issuer_unchanged() {
     let cfg = arena_cfg(30_000);
@@ -4823,6 +4790,111 @@ fn l1_a_wrecked_leaders_hull_drops_its_squad_to_doctrine() {
         later.iter().all(|signal| signal.squad != red_one()),
         "red-1 never asks again: {:?}",
         squads_of_signals(&later)
+    );
+}
+
+/// A genuine opening signal is followed by a lost commander before the reply
+/// lands. The surviving member keeps doctrine; the prior live control accepts
+/// exactly the same persona order. No world mirror can substitute for this fact.
+#[test]
+fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
+    let cfg = arena_cfg(30_000);
+    let delayed = order(Objective::Hold, 60_000);
+    let mut control = field(&cfg);
+    assert!(
+        issue(&mut control, &delayed)
+            .iter()
+            .all(|outcome| *outcome == IntentOutcome::AppliedContinuous)
+    );
+    for loss in ["wreck", "disabled", "inert"] {
+        let mut arena = field(&cfg);
+        assert!(
+            arena
+                .step(0, &[], &[])
+                .deliberation
+                .iter()
+                .any(|signal| { signal.squad == red_one() && signal.commander == RED_A })
+        );
+        let commander = arena.unit_mut(RED_A).expect("actual command hull");
+        match loss {
+            "wreck" => commander.limits.wreck = true,
+            "disabled" => commander.disabled = true,
+            "inert" => {
+                commander.weapons.clear();
+                commander.mobility.max_speed_cms = 0;
+            }
+            _ => unreachable!(),
+        }
+        let intent = Intent {
+            unit: RED_B,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(RED_B, Channel::Helm),
+            kind: IntentKind::Order(Box::new(delayed.clone())),
+            seq: 0,
+        };
+        assert_eq!(
+            apply_intent(
+                &mut arena,
+                &intent,
+                tacsim::arena::intents::IntentSource::Seat
+            ),
+            IntentOutcome::Refused(Refusal::NoCommander),
+            "late reply after {loss}"
+        );
+        assert!(order_on(&arena, RED_B).is_none());
+        let mut bytes = Vec::new();
+        assert!(
+            run(&mut arena, 60_000, &mut bytes)
+                .iter()
+                .all(|signal| signal.squad != red_one())
+        );
+    }
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+    use tacsim::arena::snapshot::{Snapshot, SnapshotError};
+    let notice = FrameNotice::Refused {
+        order: "order".into(),
+        refusal: Refusal::NoCommander,
+        weapon: None,
+        detail: RefusalDetail::None,
+    };
+    control
+        .minds
+        .get_mut(&RED_B)
+        .expect("accepted control mind")
+        .notices
+        .push(notice.clone());
+    let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
+    assert_eq!(snapshot.document["format"], 16);
+    let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
+    assert_eq!(
+        restored
+            .minds
+            .get(&RED_B)
+            .expect("restored mind")
+            .notices
+            .last(),
+        Some(&notice)
+    );
+    // Both the previous commander format and its predecessor remain refused.
+    for found in [15, 14] {
+        let mut old = snapshot.document.clone();
+        old["format"] = serde_json::json!(found);
+        assert_eq!(
+            Snapshot::head(&old).map(|head| head.format),
+            Err(SnapshotError::Format {
+                found,
+                expected: 16
+            })
+        );
+        assert!(matches!(
+            Snapshot::decode(&old, definition()),
+            Err(SnapshotError::Format { found: actual, expected: 16 }) if actual == found
+        ));
+    }
+    assert_eq!(Refusal::NoCommander.as_str(), "no_commander");
+    assert_eq!(
+        serde_json::to_value(Refusal::NoCommander).expect("wire refusal"),
+        serde_json::json!("no_commander")
     );
 }
 

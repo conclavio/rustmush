@@ -177,8 +177,8 @@ fn field_pilot_manifest_and_production_six_picture_check_are_real() {
     let manifest: serde_json::Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(
         super::API_VERSION,
-        4,
-        "this authored content requires the M6 API"
+        5,
+        "this authored content declares the current API"
     );
     assert_eq!(
         SOURCE.len(),

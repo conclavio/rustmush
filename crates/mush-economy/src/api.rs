@@ -560,6 +560,7 @@ impl AuthEval for WorldAuth<'_> {
             && let Some(store) = self.w.module_state::<EconomyStore>()
             && let Some(id) = store.snapshot().custody_lock(*object, *v)
             && let Some(c) = store.snapshot().contract(id)
+            && c.consent.managed.is_none()
             && c.consent.parties.iter().any(|p| self.acts_for(actor, p))
         {
             return true;
@@ -1341,6 +1342,12 @@ pub(crate) fn post_with_companions(
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
+        if companions
+            .iter()
+            .any(|c| !crate::contract::managed::legacy_contract(c, store.snapshot()))
+        {
+            return Err(EconomyError::ManagedContract);
+        }
         let providers = store.providers();
         let world_auth = WorldAuth { w: ctx.w };
         let auth: &dyn AuthEval = match auth {
@@ -1354,8 +1361,8 @@ pub(crate) fn post_with_companions(
         // E4c: the wiring-frozen fact table, read live. An empty table answers
         // `None` for everything, which is unknown, which is unsatisfied — exactly
         // the `NoFacts` behaviour this replaced.
-        let facts = crate::facts::WorldFacts {
-            w: ctx.w,
+        let facts = crate::facts::scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let now = ctx.w.now();
@@ -2579,7 +2586,26 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
     persist_cadence(ctx.out, &c);
 }
 
-/// Install a contract into RAM and queue its container doc (E4b2, §5).
+/// Preflight both the supplied consent and the actual retained identity.
+/// In particular, clearing a marker on a cloned record does not restore legacy
+/// mutation authority. Read-only visibility remains a separate policy.
+pub(crate) fn require_legacy_contract(
+    ctx: &Ctx<'_>,
+    contract: &crate::contract::EconomicContract,
+) -> Result<(), EconomyError> {
+    let store = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .ok_or(EconomyError::EconomyFrozen)?;
+    if crate::contract::managed::legacy_contract(contract, store.snapshot()) {
+        Ok(())
+    } else {
+        Err(EconomyError::ManagedContract)
+    }
+}
+
+/// A complete ordinary contract document admitted before any preceding money
+/// publication. No generic mutable record accessor is exposed.
 ///
 /// The latch rule (§4.2) holds here the way it does for an obligation: an
 /// [`crate::EconomicContract`] carries **no journal-authority field**. Its money is
@@ -2591,7 +2617,80 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
 /// [`crate::snapshot::EconomySnapshot::put_contract`] re-derives the custody locks from the record's
 /// `DepositInto` conditions as it installs it, so the lock lifts on exactly the
 /// state change that is being written and never a moment earlier.
-pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContract) {
+#[derive(Clone)]
+pub(crate) struct LegacyContractWrite {
+    contract: crate::contract::EconomicContract,
+}
+impl LegacyContractWrite {
+    pub(crate) fn settled(mut self, transaction: TransactionId) -> Self {
+        self.contract.state = crate::contract::ContractState::Settled { transaction };
+        self.contract.settle_attempts = 0;
+        self
+    }
+
+    /// The acceptance already admitted these exact considerations. Replace only
+    /// the predicted new hold IDs with the actual IDs returned by that post.
+    pub(crate) fn landed_escrow(mut self, predicted: &[HoldId], placed: &[HoldId]) -> Self {
+        self.contract
+            .escrow
+            .retain(|hold| !predicted.contains(hold));
+        self.contract.escrow.extend(placed.iter().copied());
+        self
+    }
+}
+
+pub(crate) fn prepare_contract_write(
+    ctx: &Ctx<'_>,
+    contract: crate::contract::EconomicContract,
+) -> Result<LegacyContractWrite, EconomyError> {
+    require_legacy_contract(ctx, &contract)?;
+    let current = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().contract(contract.id));
+    if current.is_none_or(|old| {
+        old.issuer != contract.issuer
+            || old.consent != contract.consent
+            || old.amendments != contract.amendments
+    }) {
+        let attachment = crate::facts::scoped::prepare_attachment(ctx, &contract)
+            .map_err(|_| EconomyError::Unauthorized)?;
+        if !attachment.matches(&contract) {
+            return Err(EconomyError::Unauthorized);
+        }
+    }
+    Ok(LegacyContractWrite { contract })
+}
+
+/// Only synchronous offer/amendment code holds this exact attachment preflight.
+/// No provider callback or actor/subject replacement occurs after money lands.
+pub(crate) fn prepare_contract_write_authorized(
+    ctx: &Ctx<'_>,
+    contract: crate::contract::EconomicContract,
+    attachment: &crate::facts::scoped::FactAttachment,
+) -> Result<LegacyContractWrite, EconomyError> {
+    require_legacy_contract(ctx, &contract)?;
+    if !attachment.matches(&contract) {
+        return Err(EconomyError::Unauthorized);
+    }
+    Ok(LegacyContractWrite { contract })
+}
+
+/// Direct document-only legacy write. A refusal happens before RAM, deferred
+/// persistence, or observer publication. Post-money callers prepare the image
+/// before posting and call `install_contract_write` instead.
+pub(crate) fn put_contract(
+    ctx: &mut Ctx<'_>,
+    contract: crate::contract::EconomicContract,
+) -> Result<(), EconomyError> {
+    let prepared = prepare_contract_write(ctx, contract)?;
+    install_contract_write(ctx, prepared);
+    Ok(())
+}
+
+/// Install the already-admitted document and publish its normal legacy event.
+pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContractWrite) {
+    let c = prepared.contract;
     let changed = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
             return;
@@ -2804,12 +2903,14 @@ pub fn mark_canon_published(ctx: &mut Ctx<'_>, id: crate::ids::ContractId, canon
     else {
         return;
     };
-    if c.canon_published.is_some() {
+    if c.consent.managed.is_some() || c.canon_published.is_some() {
         return;
     }
     c.canon_published = Some(SmolStr::new(canon_ref));
     c.revision = c.revision.saturating_add(1);
-    put_contract(ctx, c);
+    if let Err(error) = put_contract(ctx, c) {
+        tracing::error!(%error, "economy: legacy contract document refused before publication");
+    }
 }
 
 /// The system principal every contract's escrow is made out to (§5).

@@ -1468,6 +1468,7 @@ impl Arena {
         }
         // 17b cut M4.1: a think collected and not yet written is dropped at
         // its write (`Arena::settle_collected` reads this set).
+        self.clear_order_watch_member(unit);
         self.awaiting.remove(&unit);
         self.forget_mind_events(unit);
     }
@@ -1609,12 +1610,12 @@ impl Arena {
     /// own row ([`Arena::mind_profile`]) — `rows` contacts (Class I's 12,
     /// [`STOCK_CONTACT_ROWS`]), and the odds kept for the first `odds_rows`
     /// contacts the FRAME carries odds for, in the frame's order (a hostile
-    /// lock first, then nearest). The frame carries at most
-    /// `crate::arena::step::STOCK_ODDS_ROWS` — the pilot's picture, which
-    /// does not move until the cut that rates a mind above Class I (the
-    /// owner's OQ-10 (c); every M5 seal is Class I, whose row reads two) — so
-    /// a Class II or III mind reads at most the frame's two (D-UM-4: a tier
-    /// never extends the keyframe). At
+    /// lock first, then nearest). M7 completes the advertised Class II/III
+    /// ceilings in that shared frame: the actual carried, sealed and capped
+    /// class extends the human picture beyond its native/Class I two-row floor.
+    /// The mind still only truncates that picture (D-UM-4); an authored class
+    /// declaration grants no rows. This changes the frame/replay compatibility,
+    /// while the existing API4 getter and configured class ceilings remain. At
     /// `odds_rows == 0` (Class 0, the ROM) only the hull's lock row keeps its
     /// odds.
     ///
@@ -2757,6 +2758,7 @@ impl Arena {
             state.order_issuer = None;
             state.order_charge = None;
         }
+        self.clear_order_watch_member(unit);
         counters.orders_expired = counters.orders_expired.saturating_add(1);
         let _ = self.ledger.append(
             t_ms,
@@ -5958,11 +5960,11 @@ mod tests {
             "display text grants no provenance"
         );
         assert!(!renamed(&|s| s.origin =
-            crate::arena::profile_seal::MindOrigin::Filed {
-                charter: "bespoke".into(),
-                line: "custom".into(),
+            crate::arena::profile_seal::MindOrigin::Draft {
+                character: RED,
+                mind: 1,
                 revision: 1,
-                licence: "closed".into(),
+                digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
             }));
         assert!(renamed(&|s| s.engine = SealEngine::Scripted));
         assert!(renamed(&|s| s.engine = SealEngine::Reflex));
@@ -5991,11 +5993,11 @@ mod tests {
         let mut other = approaching();
         let mut seal = sealed();
         seal.mind = SmolStr::new("Load III");
-        seal.origin = crate::arena::profile_seal::MindOrigin::Filed {
-            charter: "bespoke".into(),
-            line: "custom".into(),
+        seal.origin = crate::arena::profile_seal::MindOrigin::Draft {
+            character: RED,
+            mind: 1,
             revision: 1,
-            licence: "closed".into(),
+            digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
         };
         if let Some(unit) = other.unit_mut(RED) {
             unit.seal = seal.seal_ref();

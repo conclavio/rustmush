@@ -1,0 +1,44 @@
+{
+  "name": "Coprates Drill",
+  "content_id": "territorial_force.coprates_drill",
+  "content_version": 2,
+  "status": "unfiled_combat_content",
+  "declared_class": "II",
+  "ops_ceiling": 3000,
+  "mind_abi": "rhai=1.26.0;api=5;stock=2",
+  "source_sha256": "36fd55d2c6494a56be77d483f70239f5926346f1b7e4723e67fd753ca86c9320",
+  "source_bytes": 4262,
+  "envelope_sha256": "dcf15fe788553aa32fcd85f6518163baab7dadad84abf42b007feac1f4d83e84",
+  "profiles": [
+    {
+      "name": "Drill",
+      "behavior": "Explicit movement drills; fire only inside the commanded range after actual stopped motion and confirmed public target lock."
+    },
+    {
+      "name": "Guard",
+      "behavior": "Same drill contract with stricter odds, shorter observed target range, fresher plots, narrower screen, earlier health withdrawal and more retained ammunition."
+    }
+  ],
+  "memory_keys": [
+    "goal",
+    "blocked",
+    "retry_at"
+  ],
+  "functions": [
+    "clear_fire",
+    "fresh",
+    "ordered_row",
+    "screen_row",
+    "march",
+    "fire_drill",
+    "think"
+  ],
+  "authoring_choices": "Drill/Guard names, values and stationary firing policy are provisional content defaults, not faction policy. No order or Hold clears and stops; Advance and Support never fire. Disabling motion or requesting a lock is not evidence of an already stopped/locked view.",
+  "authority": "No Territorial Force organization, Republic identity, standing rule, availability check, account, title, filing, listing, licence, certificate or activation.",
+  "integration_required": [
+    "actual scoped house publisher and paid filing",
+    "genuine current Registry result",
+    "separately selected current Republic-standing eligibility rule",
+    "ordinary licensed distribution with current transaction checks"
+  ]
+}

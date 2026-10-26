@@ -291,6 +291,8 @@ pub enum Deferred {
     /// since E7c2 fold C4, voids nothing of any *other* actor's, and nothing
     /// that actor queued in an earlier step).
     AuthoritativeSubmit(Box<AuthoritativeSubmit>),
+    /// The same ordinary lane, with one read-only attempt observation.
+    ObservedAuthoritativeSubmit(crate::submission_observation::ObservedSubmission),
     /// Select the actor for the dirty step's durable-write failure diagnostic
     /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)).
     /// Receipt-gating itself is unconditional at the server boundary.
@@ -580,7 +582,7 @@ pub struct ModuleComposition {
 /// there is no second persistence identity it could carry instead.
 pub struct StagedAction {
     bundle: Box<AuthoritativeBundle>,
-    installation: PreparedInstallation,
+    installation: crate::composed::ComposedInstallation,
     guards: GuardSet,
 }
 
@@ -596,7 +598,12 @@ impl fmt::Debug for StagedAction {
 
 impl StagedAction {
     /// Split the already-built exact-token bundle from the post-ack images.
-    pub fn into_parts(self) -> (Box<AuthoritativeBundle>, PreparedInstallation) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Box<AuthoritativeBundle>,
+        crate::composed::ComposedInstallation,
+    ) {
         (self.bundle, self.installation)
     }
 }
@@ -616,6 +623,8 @@ pub enum StagePreparedActionError {
     AuthoritativeScopeMismatch,
     #[error("authoritative bundle writes do not exactly match the prepared transaction")]
     AuthoritativeWriteSetMismatch,
+    #[error("registered owner inputs changed before staging")]
+    ParticipantInputsChanged,
 }
 
 /// Final process-local refusal while moving a staged action into writer
@@ -623,6 +632,8 @@ pub enum StagePreparedActionError {
 /// returned.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum StagedActionAdmissionError {
+    #[error("registered owner input changed before writer custody: {0}")]
+    Participant(crate::participant::ParticipantError),
     #[error("{component} registry is unavailable at final action admission")]
     RegistryUnavailable { component: &'static str },
     #[error("final action guard evaluation failed: {0}")]
@@ -665,7 +676,7 @@ pub struct Engine {
     /// installed it: what a relayed line's `(account, actor)` claim is checked
     /// against (programme D4). Absent in tests and tools; consumers fail
     /// closed.
-    account_identity: Option<Arc<dyn crate::AccountIdentity>>,
+    account_identity: crate::account::observation::AccountOracleBinding,
     /// Process-local durable key ring for opaque legal-action offers. The
     /// deployment loader installs it before module boot; it is never part of
     /// world persistence or a projected DTO.
@@ -711,7 +722,13 @@ pub struct Engine {
     /// `ActionCoordinator::preflight` already enforces downstream. Nothing in it
     /// requires the pre-ingress queue to be global. A second submission by the
     /// **same** actor is still back-pressure, and a handler still cannot buffer.
-    authoritative_submits: BTreeMap<ObjId, Box<AuthoritativeSubmit>>,
+    authoritative_submits: BTreeMap<ObjId, crate::submission_observation::QueuedSubmission>,
+    submission_runtime: Option<Arc<dyn crate::submission_observation::SubmissionRuntime>>,
+    // Process-local placement, independent of World clones or registry identity.
+    submission_placement: Arc<()>,
+    // Restored preflight custody keeps rotation active across every selection.
+    // Ordinary queue ordering resumes once no retry remains.
+    submission_retry_cursor: Option<ObjId>,
     /// Server-initiated requests outstanding, by engine-minted id (interface
     /// plan I10, D-I-22: RAM-only, lost on restart).
     pending_requests: HashMap<u64, crate::request::PendingRequest>,
@@ -751,7 +768,7 @@ impl Engine {
             sched: Scheduler::new(),
             modules: Vec::new(),
             action_state,
-            account_identity: None,
+            account_identity: crate::account::observation::AccountOracleBinding::default(),
             offer_keys: None,
             resolution_keys: None,
             decision_keys: None,
@@ -765,6 +782,9 @@ impl Engine {
             lag_last_ms: 0,
             lag_max_ms: 0,
             authoritative_submits: BTreeMap::new(),
+            submission_runtime: None,
+            submission_placement: Arc::new(()),
+            submission_retry_cursor: None,
             pending_requests: HashMap::new(),
             next_request_id: 1,
             request_epoch: {
@@ -787,7 +807,7 @@ impl Engine {
     /// Install the boot-hydrated character → account oracle (programme D4's
     /// relay re-validation reads it; the sim's own slot keeps its copy).
     pub fn set_account_identity(&mut self, identity: Arc<dyn crate::AccountIdentity>) {
-        self.account_identity = Some(identity);
+        self.account_identity.install(identity);
     }
 
     /// The account `character` belongs to, per the installed oracle — `None`
@@ -2238,34 +2258,42 @@ impl Engine {
     /// boot path runs without the hook.
     ///
     /// # Errors
-    /// The first module's `on_all_loaded` error, which fails the boot; the
-    /// modules after it are not called and the census does not run.
+    /// The first load/final-composition error fails boot. No final audit runs
+    /// until every old load hook succeeds; later hooks and the census do not
+    /// run after a refusal.
     pub fn all_modules_loaded(
         &mut self,
         out: &mut Outbox,
         fx: &mut Effects,
     ) -> Result<(), ModError> {
-        for index in 0..self.modules.len() {
-            let mut modules = std::mem::take(&mut self.modules);
-            let module_name = SmolStr::new(modules[index].name());
-            let typed_state = crate::action_state::ModuleActionState::for_module(
-                crate::action_state::TypedStateLens::Live(&self.action_state),
-                Some(module_name.as_str()),
-            );
-            let mut ctx = Ctx {
-                w: &mut self.world,
-                actor: GOD,
-                switches: SwitchSet::default(),
-                args: ParsedArgs::default(),
-                out,
-                reg: &self.registry,
-                module: Some(module_name),
-                typed_state,
-            };
-            let result = modules[index].on_all_loaded(&mut ctx);
-            self.modules = modules;
-            self.drain_deferred(out, fx);
-            result?;
+        for final_audit in [false, true] {
+            for index in 0..self.modules.len() {
+                let mut modules = std::mem::take(&mut self.modules);
+                let module_name = SmolStr::new(modules[index].name());
+                let typed_state = crate::action_state::ModuleActionState::for_dispatch(
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                    Some(module_name.as_str()),
+                    GOD,
+                );
+                let mut ctx = Ctx {
+                    w: &mut self.world,
+                    actor: GOD,
+                    switches: SwitchSet::default(),
+                    args: ParsedArgs::default(),
+                    out,
+                    reg: &self.registry,
+                    module: Some(module_name),
+                    typed_state,
+                };
+                let result = if final_audit {
+                    modules[index].finalize_owner_composition(&mut ctx)
+                } else {
+                    modules[index].on_all_loaded(&mut ctx)
+                };
+                self.modules = modules;
+                self.drain_deferred(out, fx);
+                result?;
+            }
         }
         self.warn_unowned_state_slots();
         Ok(())
@@ -2332,9 +2360,10 @@ impl Engine {
         // J1: ledger chunks reach every module as text, however they came.
         data.normalize();
         let module_name = SmolStr::new(modules[index].name());
-        let typed_state = crate::action_state::ModuleActionState::for_module(
+        let typed_state = crate::action_state::ModuleActionState::for_dispatch(
             crate::action_state::TypedStateLens::Live(&self.action_state),
             Some(module_name.as_str()),
+            GOD,
         );
         let mut ctx = Ctx {
             w: &mut self.world,
@@ -2478,7 +2507,7 @@ impl Engine {
         let completes = schedules.completes(candidate, self).map_err(|source| {
             crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
         })?;
-        providers.prepare_authoritative_invocation_seeded(
+        providers.prepare_typed_authoritative_invocation_seeded(
             candidate.action(),
             invocation,
             commit_token,
@@ -2522,7 +2551,7 @@ impl Engine {
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
         let mut worker = None;
-        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+        let (prepared, output) = providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2565,7 +2594,7 @@ impl Engine {
             .registry
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation_seeded(
+        providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2604,7 +2633,7 @@ impl Engine {
             .registry
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation_seeded(
+        providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2643,7 +2672,7 @@ impl Engine {
             .registry
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation_seeded(
+        providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2687,7 +2716,7 @@ impl Engine {
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
         let mut fallback_fence = None;
-        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+        let (prepared, output) = providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2731,7 +2760,7 @@ impl Engine {
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
         let mut fallback_fence = None;
-        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+        let (prepared, output) = providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2778,7 +2807,7 @@ impl Engine {
             .registry
             .decision_sources()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation_seeded(
+        providers.prepare_typed_authoritative_invocation_seeded(
             action,
             invocation,
             commit_token,
@@ -2796,13 +2825,559 @@ impl Engine {
         )
     }
 
+    pub fn prepare_registered_composed_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |_| Ok(()),
+        )
+    }
+
+    /// Prepare an action after the engine has privately resolved its subject
+    /// and selected targets. This is the production path for contact-targeted
+    /// actions; the projected invocation remains the durable request identity.
+    pub fn prepare_registered_composed_resolved_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        resolved: &crate::action::ResolvedActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_composed_resolved_authoritative_invocation(
+            action,
+            resolved,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            (
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            ),
+        )
+    }
+
+    /// Prepare a scheduled action while the kernel seeds its exact durable
+    /// cursor post-image into the same owner-scoped transaction before the
+    /// provider runs. Re-evaluation against current state makes a stale
+    /// discovery non-mutating and prevents providers from forgetting to
+    /// advance (or independently advancing) the authoritative cursor.
+    pub fn prepare_registered_composed_scheduled_authoritative_action(
+        &mut self,
+        candidate: &crate::schedule_source::ScheduledActionCandidate,
+        invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let schedules = self
+            .registry
+            .schedule_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let completes = schedules.completes(candidate, self).map_err(|source| {
+            crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+        })?;
+        providers.prepare_authoritative_invocation_seeded(
+            candidate.action(),
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                schedules
+                    .seed_advance(candidate, completes, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered owner action while the kernel seeds one exact
+    /// delayed-decision lease into the same transaction. The returned worker
+    /// lease remains caller custody and must not be spawned before the action's
+    /// exact authoritative receipt is acknowledged and installed.
+    pub fn prepare_registered_composed_decision_lease_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionDispatchCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionLeaseTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionWorkerLease,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut worker = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
+                    |source| {
+                        crate::action::ActionProviderPrepareError::DecisionLease(Box::new(source))
+                    },
+                )?);
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            worker.ok_or(crate::action::ActionProviderPrepareError::DecisionSeedResultMissing)?,
+        ))
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// the exact Leased-to-Resolving post-image into the same transaction.
+    pub fn prepare_registered_composed_decision_resolving_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionResolvingTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                decisions
+                    .seed_resolving(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionLifecycle(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact Resolving-to-Terminal post-image in the same transaction.
+    pub fn prepare_registered_composed_decision_terminal_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionTerminalTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                decisions
+                    .seed_terminal(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionTerminal(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered owner action while the kernel atomically
+    /// inserts a compact receipt and removes the terminal decision bundle.
+    pub fn prepare_registered_composed_decision_compaction_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionCompactionCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCompactionTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                decisions
+                    .seed_compaction(candidate, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCompaction(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
+    /// Prepare the registered controller-owner action while the kernel seeds
+    /// an exact provider-attempt result into the same transaction.
+    pub fn prepare_registered_composed_decision_attempt_action(
+        &mut self,
+        fence: &crate::decision::DecisionCompletionFence,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionAttemptTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            Option<crate::decision::DecisionCompletionFence>,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                fallback_fence = decisions
+                    .seed_attempt_failure(fence, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionAttempt(Box::new(source))
+                    })?;
+                Ok(())
+            },
+        )?;
+        Ok((prepared, output, fallback_fence))
+    }
+
+    /// Prepare the owner action while atomically transferring exact decision
+    /// custody to deterministic fallback.
+    pub fn prepare_registered_composed_decision_fallback_trigger_action(
+        &mut self,
+        candidate: &crate::decision_source::DecisionFallbackTriggerCandidate,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionFallbackTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+            crate::decision::DecisionCompletionFence,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let mut fallback_fence = None;
+        let (prepared, output) = providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                fallback_fence = Some(
+                    decisions
+                        .seed_fallback_trigger(candidate, transition, txn)
+                        .map_err(|source| {
+                            crate::action::ActionProviderPrepareError::DecisionFallbackTrigger(
+                                Box::new(source),
+                            )
+                        })?,
+                );
+                Ok(())
+            },
+        )?;
+        Ok((
+            prepared,
+            output,
+            fallback_fence
+                .ok_or(crate::action::ActionProviderPrepareError::DecisionSeedResultMissing)?,
+        ))
+    }
+
+    /// Prepare the owner action while atomically installing the exact
+    /// Terminal(cancelled) post-image.
+    pub fn prepare_registered_composed_decision_cancellation_action(
+        &mut self,
+        controller: &crate::decision::DecisionControllerId,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+        transition: crate::decision::DecisionCancellationTransition,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            crate::action::PreparedAuthoritativeAction,
+        ),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let decisions = self
+            .registry
+            .decision_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            Some((
+                self.registry
+                    .participants
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.world,
+                self.registry
+                    .owner_reads
+                    .as_ref()
+                    .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
+                &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
+            )),
+            |txn| {
+                decisions
+                    .seed_cancellation(controller, transition, txn)
+                    .map_err(|source| {
+                        crate::action::ActionProviderPrepareError::DecisionCancellation(Box::new(
+                            source,
+                        ))
+                    })
+            },
+        )
+    }
+
     /// Release a prepared transaction that could not be assembled into a
     /// complete authoritative bundle. This is distinct from aborting a
     /// [`PreparedInstallation`]: coordinators need this form when canonical
     /// hashing or bundle validation fails before staging consumes the
     /// transaction.
-    pub fn abort_prepared_transaction(&mut self, prepared: PreparedTxn) {
-        let (_, installation) = prepared.into_parts();
+    pub fn abort_prepared_transaction(
+        &mut self,
+        prepared: impl Into<crate::composed::PreparedComposedTxn>,
+    ) {
+        let (_, installation) = prepared.into().into_parts();
         self.release_installation(installation, "abort_prepared_transaction");
     }
 
@@ -2814,8 +3389,12 @@ impl Engine {
     /// mutates — so the refusal leaves live state untouched and the only thing
     /// left to do is say so loudly. It is never asserted: the world task owns
     /// this call and must never panic.
-    fn release_installation(&mut self, installation: PreparedInstallation, site: &'static str) {
-        if let Err(error) = self.action_state.abort(installation) {
+    fn release_installation(
+        &mut self,
+        installation: impl Into<crate::composed::ComposedInstallation>,
+        site: &'static str,
+    ) {
+        if let Err(error) = installation.into().abort(&mut self.action_state) {
             tracing::error!(
                 site,
                 %error,
@@ -2832,12 +3411,21 @@ impl Engine {
     /// before the synchronous final guard check transfers store custody.
     pub fn stage_authoritative_action(
         &mut self,
-        prepared: PreparedTxn,
+        prepared: impl Into<crate::composed::PreparedComposedTxn>,
         guards: GuardSet,
         bundle: AuthoritativeBundle,
     ) -> Result<(), StagePreparedActionError> {
+        let prepared = prepared.into();
         let refusal = if self.staged_action.is_some() {
             Some(StagePreparedActionError::AlreadyStaged)
+        } else if prepared
+            .recheck_with_lens(
+                &self.world,
+                crate::action_state::TypedStateLens::Live(&self.action_state),
+            )
+            .is_err()
+        {
+            Some(StagePreparedActionError::ParticipantInputsChanged)
         } else if prepared.owner() != bundle.provider() {
             Some(StagePreparedActionError::AuthoritativeProviderMismatch)
         } else if bundle.idempotency().scope().owner != *bundle.provider() {
@@ -2889,6 +3477,13 @@ impl Engine {
         let Some(staged) = self.staged_action.as_ref() else {
             return Ok(None);
         };
+        if let Err(error) = staged.installation.recheck_with_lens(
+            &self.world,
+            crate::action_state::TypedStateLens::Live(&self.action_state),
+        ) {
+            self.abort_staged_action();
+            return Err(StagedActionAdmissionError::Participant(error));
+        }
         let revalidation = self.revalidate_guards(&staged.guards);
         match revalidation {
             Ok(result) if result.is_current() => Ok(self.staged_action.take()),
@@ -2985,6 +3580,16 @@ impl Engine {
         self.action_state.install(installation)
     }
 
+    /// Silent fixture analogue of the production composed installation.
+    pub fn install_composed_action(
+        &mut self,
+        installation: impl Into<crate::composed::ComposedInstallation>,
+    ) -> Result<(), crate::composed::ComposedInstallError> {
+        installation
+            .into()
+            .install(&mut self.action_state, &mut self.world)
+    }
+
     /// Install typed post-images after the exact applied receipt **and tell
     /// the world** (interface plan I13): once the images are live, one
     /// [`WorldEvent::ActionStateChanged`] per touched `(owner, family)` reaches
@@ -3026,6 +3631,31 @@ impl Engine {
         Ok(())
     }
 
+    /// Apply the exact composed receipt. Every typed/owner binding succeeds
+    /// before any image is installed; the reservation settles after all apply.
+    /// Notification observers must not enqueue new persistence after this point.
+    pub fn install_composed_action_announcing(
+        &mut self,
+        installation: crate::composed::ComposedInstallation,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Result<(), crate::composed::ComposedInstallError> {
+        let touched = installation.touched_families();
+        installation.install(&mut self.action_state, &mut self.world)?;
+        for (owner, family, keys) in touched {
+            self.emit_world_event(
+                &WorldEvent::ActionStateChanged {
+                    owner,
+                    family,
+                    keys,
+                },
+                out,
+                fx,
+            );
+        }
+        Ok(())
+    }
+
     /// Discard typed post-images after an indeterminate/refused receipt.
     ///
     /// Refuses — never asserts — on the same identity mismatch
@@ -3033,9 +3663,9 @@ impl Engine {
     #[must_use = "an identity mismatch here is a wiring bug the caller must fail closed on"]
     pub fn abort_prepared_action(
         &mut self,
-        installation: PreparedInstallation,
+        installation: impl Into<crate::composed::ComposedInstallation>,
     ) -> Result<(), ActionStateError> {
-        self.action_state.abort(installation)
+        installation.into().abort(&mut self.action_state)
     }
 
     /// The registered game modules, in registration order. The driver uses
@@ -3169,6 +3799,12 @@ impl Engine {
                     // 16b cut AP.4: the connection whose line this is, for
                     // `OUTPUTPREFIX`/`OUTPUTSUFFIX` (a handler holds the World
                     // and no connection); `None` again once the body is done.
+                    let ingress = crate::connection_completion::ConnectionDispatch::ingress(
+                        &self.world,
+                        actor,
+                        conn,
+                    );
+                    self.world.set_connection_dispatch(ingress);
                     self.world.set_dispatching_conn(Some(conn));
                     // Line-mode answer to a server-initiated request
                     // (interface plan I10): `respond <arg>` when the actor has
@@ -3195,6 +3831,7 @@ impl Engine {
                         );
                     }
                     self.world.set_dispatching_conn(None);
+                    self.world.set_connection_dispatch(None);
                 } else {
                     tracing::warn!(%actor, "Cmd for missing actor dropped");
                 }
@@ -3330,6 +3967,26 @@ impl Engine {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
                     }
                 }
+                ScheduledKind::CommandContinuation(request) => {
+                    self.dec_pending_waits(request.actor());
+                    crate::cmd::dispatch_continuation(
+                        &self.registry,
+                        &mut self.world,
+                        &request,
+                        out,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
+                    );
+                }
+                ScheduledKind::ConnectionCompletion(request) => {
+                    self.dec_pending_waits(request.actor());
+                    crate::cmd::dispatch_connection_completion(
+                        &self.registry,
+                        &mut self.world,
+                        &request,
+                        out,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
+                    );
+                }
                 ScheduledKind::ModuleTick { module, tag } => {
                     self.fire_module_tick(module, tag, now_ms, out);
                 }
@@ -3380,9 +4037,10 @@ impl Engine {
             return;
         };
         {
-            let typed_state = crate::action_state::ModuleActionState::for_module(
+            let typed_state = crate::action_state::ModuleActionState::for_dispatch(
                 crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
+                GOD,
             );
             let mut ctx = Ctx {
                 w: &mut self.world,
@@ -3431,9 +4089,10 @@ impl Engine {
             return;
         };
         {
-            let typed_state = crate::action_state::ModuleActionState::for_module(
+            let typed_state = crate::action_state::ModuleActionState::for_dispatch(
                 crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
+                GOD,
             );
             let mut ctx = Ctx {
                 w: &mut self.world,
@@ -3941,13 +4600,17 @@ impl Engine {
             return;
         }
         let result = if request.validate().is_err() {
-            mush_proto::InvokeResult::error("invalid", "Invalid or oversized structured request.")
+            request.invalid()
         } else if let Some((owner, handler)) = self.registry.invoke_handler(request.service()) {
             let owner = owner.clone();
+            let ingress =
+                crate::connection_completion::ConnectionDispatch::ingress(&self.world, actor, conn);
+            self.world.set_connection_dispatch(ingress);
             self.world.set_dispatching_conn(Some(conn));
-            let typed_state = crate::action_state::ModuleActionState::for_module(
+            let typed_state = crate::action_state::ModuleActionState::for_dispatch(
                 crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(owner.as_str()),
+                actor,
             );
             let mut ctx = Ctx {
                 w: &mut self.world,
@@ -3961,9 +4624,10 @@ impl Engine {
             };
             let result = handler.invoke(&mut ctx, conn, id, request);
             self.world.set_dispatching_conn(None);
+            self.world.set_connection_dispatch(None);
             result
         } else {
-            mush_proto::InvokeResult::error("unavailable", "This service is unavailable.")
+            request.unavailable()
         };
         out.to_conn(
             conn,
@@ -3998,7 +4662,8 @@ impl Engine {
                     crate::action_state::TypedStateLens::Live(&self.action_state),
                     module,
                 )
-                .with_registry(&self.registry);
+                .with_registry(&self.registry)
+                .with_owner_read_caller(module, actor);
                 match handler.query_with_context(&context, actor, args) {
                     Ok(event) => event,
                     Err(err) => OutputEvent::Sys(err),
@@ -4113,8 +4778,13 @@ impl Engine {
                     fx.push_classified(class, effect);
                 }
                 Deferred::ScheduleIn { delay_ms, kind } => {
-                    if let ScheduledKind::WaitCmd { actor, .. } = &kind {
-                        let actor = *actor;
+                    let queued_actor = match &kind {
+                        ScheduledKind::WaitCmd { actor, .. } => Some(*actor),
+                        ScheduledKind::CommandContinuation(request) => Some(request.actor()),
+                        ScheduledKind::ConnectionCompletion(request) => Some(request.actor()),
+                        _ => None,
+                    };
+                    if let Some(actor) = queued_actor {
                         let n = self.pending_waits.entry(actor).or_insert(0);
                         if *n >= WAIT_QUEUE_MAX {
                             out.best_effort_error(actor, "Too many commands queued.");
@@ -4196,55 +4866,20 @@ impl Engine {
                     captured_this_drain.insert(actor);
                 }
                 Deferred::AuthoritativeSubmit(request) => {
-                    let actor = request.actor;
-                    if fanned_out.contains(&actor) {
-                        // Already told; a third submission adds no new fact.
-                        continue;
-                    }
-                    if queued_this_drain.contains(&actor) {
-                        // Fan-out: void only what THIS drain queued for THIS
-                        // actor, so the command stages nothing rather than an
-                        // arbitrary half — and an incumbent submission from an
-                        // earlier step, or anybody else's, is untouched. It used
-                        // to clear the engine-wide slot, which silently
-                        // destroyed a different actor's legitimate, still
-                        // pending submission and told them nothing at all.
-                        self.authoritative_submits.remove(&actor);
-                        queued_this_drain.remove(&actor);
-                        fanned_out.insert(actor);
-                        out.best_effort_error(
-                            actor,
-                            "That command tried to submit more than one authoritative action; nothing was staged.",
-                        );
-                        continue;
-                    }
-                    if self.authoritative_submits.contains_key(&actor) {
-                        // Back-pressure, not a buffer — and it names nobody
-                        // else's activity.
-                        out.best_effort_error(
-                            actor,
-                            "Your earlier action is still committing; try again in a moment.",
-                        );
-                        continue;
-                    }
-                    if self.authoritative_submits.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX {
-                        out.best_effort_error(
-                            actor,
-                            "Too many actions are committing right now; try again in a moment.",
-                        );
-                        continue;
-                    }
-                    self.authoritative_submits.insert(actor, request);
-                    queued_this_drain.insert(actor);
-                    // E7c2 fold R11: acknowledge RECEIPT without claiming a
-                    // mutation. The handler emits nothing and the only later
-                    // line is the driver's, so a submission dropped by a crash
-                    // or parked by a freeze was indistinguishable at the
-                    // terminal from one that was never accepted: the actor's
-                    // `@inv/move` produced no output whatever. `BestEffort`, so
-                    // the durable-ack gate never withholds it and it can never
-                    // be read as the confirmation.
-                    out.best_effort_info(actor, "Queued.");
+                    self.drain_authoritative_submit(
+                        crate::submission_observation::QueuedSubmission::Plain(request),
+                        &mut queued_this_drain,
+                        &mut fanned_out,
+                        out,
+                    );
+                }
+                Deferred::ObservedAuthoritativeSubmit(request) => {
+                    self.drain_authoritative_submit(
+                        crate::submission_observation::QueuedSubmission::Observed(request),
+                        &mut queued_this_drain,
+                        &mut fanned_out,
+                        out,
+                    );
                 }
                 Deferred::DurableGate { actor, strict } => {
                     // First gate of the step sets the actor; strictness DOMINATES —
@@ -4311,6 +4946,64 @@ impl Engine {
         }
     }
 
+    fn drain_authoritative_submit(
+        &mut self,
+        request: crate::submission_observation::QueuedSubmission,
+        queued_this_drain: &mut BTreeSet<ObjId>,
+        fanned_out: &mut BTreeSet<ObjId>,
+        out: &mut Outbox,
+    ) {
+        let actor = request.actor();
+        if fanned_out.contains(&actor) {
+            // Already told; a third submission adds no new fact.
+            return;
+        }
+        if queued_this_drain.contains(&actor) {
+            // Fan-out: void only what THIS drain queued for THIS
+            // actor, so the command stages nothing rather than an
+            // arbitrary half — and an incumbent submission from an
+            // earlier step, or anybody else's, is untouched. It used
+            // to clear the engine-wide slot, which silently
+            // destroyed a different actor's legitimate, still
+            // pending submission and told them nothing at all.
+            self.authoritative_submits.remove(&actor);
+            queued_this_drain.remove(&actor);
+            fanned_out.insert(actor);
+            out.best_effort_error(
+                actor,
+                "That command tried to submit more than one authoritative action; nothing was staged.",
+            );
+            return;
+        }
+        if self.authoritative_submits.contains_key(&actor) {
+            // Back-pressure, not a buffer — and it names nobody
+            // else's activity.
+            out.best_effort_error(
+                actor,
+                "Your earlier action is still committing; try again in a moment.",
+            );
+            return;
+        }
+        if self.authoritative_submits.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX {
+            out.best_effort_error(
+                actor,
+                "Too many actions are committing right now; try again in a moment.",
+            );
+            return;
+        }
+        self.authoritative_submits.insert(actor, request);
+        queued_this_drain.insert(actor);
+        // E7c2 fold R11: acknowledge RECEIPT without claiming a
+        // mutation. The handler emits nothing and the only later
+        // line is the driver's, so a submission dropped by a crash
+        // or parked by a freeze was indistinguishable at the
+        // terminal from one that was never accepted: the actor's
+        // `@inv/move` produced no output whatever. `BestEffort`, so
+        // the durable-ack gate never withholds it and it can never
+        // be read as the confirmation.
+        out.best_effort_info(actor, "Queued.");
+    }
+
     /// E7c2 B1: whether one command-originated authoritative submission is
     /// waiting for the driving loop. The loop arms its drain on this.
     #[must_use]
@@ -4328,9 +5021,82 @@ impl Engine {
     /// submission. The driving loop owns every later step; nothing here
     /// projects, resolves, prepares or persists.
     pub fn take_authoritative_submit(&mut self) -> Option<Box<AuthoritativeSubmit>> {
-        self.authoritative_submits
-            .pop_first()
-            .map(|(_, request)| request)
+        self.take_observed_authoritative_submit()
+            .map(|driven| driven.into_parts().0)
+    }
+
+    /// Install the trusted embedding adapter once. No Registrar or module
+    /// context can install, replace or pass a runtime with an individual request.
+    pub fn set_submission_runtime(
+        &mut self,
+        runtime: Arc<dyn crate::submission_observation::SubmissionRuntime>,
+    ) -> Result<(), &'static str> {
+        if self.submission_runtime.is_some() {
+            return Err("submission runtime is already installed");
+        }
+        self.submission_runtime = Some(runtime);
+        Ok(())
+    }
+
+    /// Driver-only transfer of the selector and the runtime's private paired
+    /// state. Dropping this handoff leaves its observation unresolved.
+    pub fn take_observed_authoritative_submit(
+        &mut self,
+    ) -> Option<crate::submission_observation::DrivenSubmission> {
+        if !self
+            .authoritative_submits
+            .values()
+            .any(|request| request.is_retry())
+        {
+            self.submission_retry_cursor = None;
+        }
+        let actor = self
+            .submission_retry_cursor
+            .and_then(|after| {
+                self.authoritative_submits
+                    .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+                    .next()
+                    .map(|(actor, _)| *actor)
+            })
+            .or_else(|| {
+                self.authoritative_submits
+                    .first_key_value()
+                    .map(|(actor, _)| *actor)
+            })?;
+        let request = self.authoritative_submits.remove(&actor)?;
+        self.submission_retry_cursor = self
+            .authoritative_submits
+            .values()
+            .any(|request| request.is_retry())
+            .then_some(actor);
+        request.drive(
+            self.submission_runtime.as_deref(),
+            Arc::clone(&self.submission_placement),
+        )
+    }
+
+    /// Runtime-only restoration after a transient read-only preflight. The
+    /// opaque handoff carries its original completion state and Engine placement;
+    /// no new observed attempt or selector can be supplied through this method.
+    /// The caller must not have staged or handed this attempt to a writer.
+    pub fn requeue_observed_authoritative_submit(
+        &mut self,
+        driven: crate::submission_observation::DrivenSubmission,
+    ) -> Result<(), crate::submission_observation::DrivenSubmission> {
+        let actor = driven.request().actor;
+        if !driven.is_observed()
+            || !driven.belongs_to(&self.submission_placement)
+            || self.authoritative_submits.contains_key(&actor)
+            || self.authoritative_submits.len() >= AUTHORITATIVE_SUBMIT_QUEUE_MAX
+        {
+            return Err(driven);
+        }
+        self.authoritative_submits.insert(
+            actor,
+            crate::submission_observation::QueuedSubmission::Retry(driven),
+        );
+        self.submission_retry_cursor = Some(actor);
+        Ok(())
     }
 
     /// E7c2 fold R11: the actors whose submissions are queued but not yet
@@ -4354,7 +5120,10 @@ impl Engine {
         {
             return Err(submit);
         }
-        self.authoritative_submits.insert(actor, submit);
+        self.authoritative_submits.insert(
+            actor,
+            crate::submission_observation::QueuedSubmission::Plain(submit),
+        );
         Ok(())
     }
 

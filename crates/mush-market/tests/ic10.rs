@@ -2217,6 +2217,133 @@ fn ic14_two_same_fire_sells_on_a_nearly_full_queue_escrow_once() {
     no_settlement_pages(&r.tw);
 }
 
+/// An actual observed selector and a real sale share one timer drain. The
+/// observed handler does not move money; the later sale must count its deferred
+/// actor before the house escrows. No runtime completion or certificate is mocked.
+#[test]
+fn m7_ic14_observed_work_counts_before_same_fire_escrow_and_preserves_custody() {
+    observed_then_sale(false);
+}
+
+/// An observed attempt for an already queued actor takes no additional place.
+/// The earlier selector survives backpressure; only this duplicate attempt is
+/// NotDispatched, and the other seller can use the actual remaining queue slot.
+#[test]
+fn m7_ic14_observed_duplicate_actor_counts_once_before_same_fire_escrow() {
+    observed_then_sale(true);
+}
+
+fn observed_then_sale(duplicate_actor: bool) {
+    use mush_core::submission_observation::{SubmissionDisposition, SubmissionObservation};
+
+    let mut r = rig();
+    fill_engine_queue(&mut r.tw, if duplicate_actor { 62 } else { 63 });
+    if duplicate_actor {
+        let incumbent = forged(&r.tw, r.pat, json!({"incumbent": true}));
+        r.tw.engine_mut()
+            .queue_authoritative_submit(Box::new(incumbent))
+            .expect("the actor's incumbent takes the 63rd place");
+    }
+    assert_eq!(r.tw.engine().queued_authoritative_actors().count(), 63);
+    let before = books(&r);
+    let captured: Arc<Mutex<Option<SubmissionObservation>>> = Arc::new(Mutex::new(None));
+    let observed = forged(&r.tw, r.pat, json!({"attempt": "observed"}));
+    let (pat, quinn) = (r.pat, r.quinn);
+    let sale = format!("+market/sell {}=20", r.bid);
+    with_probe(&mut r.tw, GOD, move |ctx| {
+        for (actor, line) in [(pat, "+ic10probe".to_owned()), (quinn, sale)] {
+            ctx.out.defer(mush_core::Deferred::ScheduleIn {
+                delay_ms: 5_000,
+                kind: mush_core::ScheduledKind::WaitCmd { actor, line },
+            });
+        }
+    });
+    // The next real probe dispatch is the first timer above, as Pat. Leave the
+    // immutable actor capture to Ctx; do not construct a deferred observation.
+    let sink = Arc::clone(&captured);
+    let jobs =
+        r.tw.world()
+            .module_state::<ProbeQueue>()
+            .expect("probe")
+            .clone();
+    jobs.0
+        .lock()
+        .expect("probe queue")
+        .push(Box::new(move |ctx| {
+            let observation = ctx
+                .submit_authoritative_observed(
+                    observed.action,
+                    observed.subject,
+                    observed.targets,
+                    observed.parameters,
+                    observed.key,
+                )
+                .expect("actual observed dispatch");
+            *sink.lock().expect("observation slot") = Some(observation);
+        }));
+    let t = r.tw.world().now() + 5;
+    r.tw.set_now(t);
+    let said = texts(&r.tw.fire_due(t * 1_000));
+    let mut observation = captured
+        .lock()
+        .expect("observation slot")
+        .take()
+        .expect("the actual timer captured one observation");
+    assert!(!said.contains("Too many actions are committing"), "{said}");
+    assert_eq!(r.tw.engine().queued_authoritative_actors().count(), 64);
+    assert!(r.tw.engine().has_authoritative_submit_for(pat));
+    if duplicate_actor {
+        assert!(!said.contains(mush_market::SELL_QUEUE_FULL), "{said}");
+        let after = books(&r);
+        assert_eq!(after.contracts, before.contracts + 1);
+        assert_eq!(after.quotes, before.quotes + 1);
+        assert_eq!(after.house_held, before.house_held + BID * 20);
+        assert_eq!(after.bid, before.bid.map(|quantity| quantity - 20));
+        assert!(r.tw.engine().has_authoritative_submit_for(quinn));
+        assert_eq!(
+            observation.take_terminal(),
+            Some(SubmissionDisposition::NotDispatched)
+        );
+        assert_eq!(observation.take_terminal(), None, "consumed once");
+    } else {
+        assert!(said.contains(mush_market::SELL_QUEUE_FULL), "{said}");
+        assert_eq!(
+            books(&r),
+            before,
+            "no contract, quote, intake or escrow change"
+        );
+        assert!(!r.tw.engine().has_authoritative_submit_for(quinn));
+        assert_eq!(
+            observation.take_terminal(),
+            None,
+            "queued custody is unresolved"
+        );
+    }
+    let mut selected = None;
+    while let Some(driven) = r.tw.engine_mut().take_observed_authoritative_submit() {
+        if driven.request().actor == pat {
+            assert!(selected.is_none(), "one selector for Pat");
+            selected = Some(driven);
+        }
+    }
+    let selected = selected.expect("the queued selector survived capacity inspection");
+    assert_eq!(selected.is_observed(), !duplicate_actor);
+    assert_eq!(
+        selected.request().parameters,
+        if duplicate_actor {
+            json!({"incumbent": true})
+        } else {
+            json!({"attempt": "observed"})
+        }
+    );
+    assert_eq!(
+        observation.take_terminal(),
+        None,
+        "driving is not absence proof"
+    );
+    no_settlement_pages(&r.tw);
+}
+
 /// **Doc 18 cut IC14 row 2: the sale names its remedy** — a second line after the
 /// policy's sale line, naming `+market/accept <quote>` with the sale's quote id.
 #[test]

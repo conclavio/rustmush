@@ -636,34 +636,8 @@ typist. A human's account takes an NPC's seat as a proxy, which production does
 through `+seat/activate`; the test seeds that same `ActiveFocus` through
 `FocusState::claim_for_test`, the `testkit`-fenced door mush-propagation's and
 mush-campaign's proxy-seat tests already use, rather than drive a whole campaign
-seat offer the arena roster has no NPC for. 16b cut AF.3 adds the second
-site: the reboot rig resets the map to the empty one a new server half starts
-with (`FocusState` is never hydrated at boot).
-"""
-
-[[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
-accessor = "World::module_state_mut"
-slot = "DeployedUnits"
-owner = "sim"
-reason = """
-16b cut AF.3: the in-process reboot rig (`Rig::reboot_mid_match`) stands for a
-restart of the server half, and a new process starts with `mush-sim`'s custody
-index empty — it is RAM, rebuilt by `mush-tactics`' boot from the markers on
-the unit records. The rig empties it before the boot so the markers the boot
-keeps are the only ones in it, exactly as a fresh process would hold them.
-"""
-
-[[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
-accessor = "World::module_state_mut"
-slot = "FocusState"
-owner = "sim"
-reason = """
-16b cut AF.3, for the reason one row above: `FocusState` is never hydrated at
-boot (D-E7-34), so a restarted server half holds no pilot's focus. The reboot
-rig resets it to the empty map a new process starts with; without it a resumed
-pilot would still appear to fly a tank the resume released.
+seat offer the arena roster has no NPC for. The reboot fixture instead
+registers a fresh production composition, so it no longer writes this slot.
 """
 
 [[site]]
@@ -679,16 +653,6 @@ no longer registered), so the test plants it in the tactics store's RAM index
 (`UnitStore.units`, a pub field) as the boot's hydration would have, then runs
 `match_::reset_stock_tanks` — the production path under test — which refits it
 through `mush_tactics::module::refit_unit`. Test-only; no production write.
-"""
-
-[[site]]
-path = "crates/tacsim/tests/cockpit.rs"
-accessor = "World::module_state_mut"
-slot = "DeployedUnits"
-owner = "sim"
-reason = """
-16b cut AF.3: this file's copy of `match_lifecycle.rs`'s reboot rig empties
-`mush-sim`'s custody index before the boot, as a new process holds it.
 """
 
 [[site]]
@@ -1273,6 +1237,187 @@ invalidates prepared pruning and blocks new collection even if the malformed
 header's prior root is missing. Existing roots and immutable source bytes stay
 untouched; a corrected boot rebuilds the owner and is the only way to clear the
 guard. The published refusal carries no character, revision or source detail.
+"""
+
+
+[[site]]
+path = "crates/mush-server/tests/mind_commerce_composition.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Full-roster boot test installs the same genuinely hydrated AccountIdentity in
+Engine and Sim's existing oracle, following the actual production boot boundary.
+It creates no account mapping, commercial readiness, deployment or receipt.
+"""
+
+
+[[site]]
+path = "crates/mush-server/src/world_task/submission_disposition/tests/paid_purchase/runtime.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+M7 test-only actual-server purchase recovery boot performs the same host wiring as
+boot.rs: the hydrated authentication map is shared by Engine and Sim before owner
+hydration, public Registry commands, and ordinary acknowledged purchase actions.
+The fixture does not mint an account or replace a business owner through this slot.
+"""
+
+[[site]]
+path = "crates/mush-server/src/world_task/submission_disposition/tests/paid_purchase/runtime.rs"
+accessor = "World::module_state_mut"
+slot = "PulseConfig"
+owner = "sim"
+reason = """
+M7 test-only actual-server purchase recovery boot installs the operator's ground
+and space pulse configuration at the same post-composition boundary as boot.rs.
+The actual server loop advances time; the fixture never moves the clock through
+pending custody or invokes a private commerce transition through this slot.
+"""
+
+[[site]]
+path = "crates/mush-roll/src/commerce/bootstrap.rs"
+accessor = "World::module_state_insert"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+M7 cfg(test) initialization refusal fixture seeds an unreplayed default EconomyStore in a minimal World. It asserts that empty maps cannot establish historical receipt readiness; production bootstrap uses the registered owner and actual journal replay.
+"""
+
+[[site]]
+path = "crates/mush-roll/src/commerce/bootstrap.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 cfg(test) initialization refusal fixture seeds an unaudited default RollStore in a minimal World. It proves that an empty owner map is not source-audit or deployment evidence; production bootstrap does not insert a slot.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/bench_service/tests/lineage.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only BENCH privacy fixture replaces its Roll slot with a strictly decoded persisted provenance image after caching a picture. It proves current and delayed output refusal, not an Open grant or live parent authority; production publication and frozen Arena behavior are unchanged.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/workshop/structured/tests/lineage.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only structured workshop fixture installs a strictly decoded marked Roll image after an original draft read. It tests refusal of source reads, replacements, copies, saves and delayed results; it does not issue provenance or commercial rights in production.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/support/holdings.rs"
+accessor = "World::module_state_mut"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only holdings adapter seeds three immutable revisions before commands using actual Roll prepare_create, prepare_save and publish_with. It retains the returned setup writes for restart tests and does not bypass production save, source verification, or ownership checks.
+"""
+
+[[site]]
+path = "crates/mush-economy/src/registry_filing/house/tests.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+M7 scoped-filing test-only organization command uses the actual OrgStore policy
+allocator and mush_org::submit service under the registered org owner. It installs
+real Allow/Deny policies through the normal audited persistence path to test
+current authorization and Deny precedence; it does not construct title, money,
+commercial readiness, source or rating evidence.
+"""
+
+[[site]]
+path = "crates/mush-tactics/src/component_replacement/tests.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = """
+M7 test-only prepared component replacement inserts an unreadable retained journey
+into the actual registered Sim slot. It proves that missing journey authority
+cannot authorize a replacement; no unit, title, custody or work order is minted.
+"""
+
+
+
+
+
+[[site]]
+path = "crates/mush-industry/src/core_production/tests.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) Org command uses the real policy allocator and audited Org submit
+service to install scoped Allow/Deny rules. Actual commands create the importer,
+scope and grants; no certificate, stock, quota or readiness state is fabricated.
+"""
+
+[[site]]
+path = "crates/mush-bot/tests/arena_contract/lapse_producer.rs"
+accessor = "World::module_state_mut"
+slot = "ArenaRegistry"
+owner = "tacsim"
+reason = "Test-only R14: seeds notice watches through the existing public integration seam, then renders actual egress-produced lapse events through the bot reader. No native order, match authority, or persistent state is created."
+
+[[site]]
+path = "crates/tacsim/tests/match_lifecycle/resume_watch.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+R4 test-only actual fresh production reboot restores the same real fixture
+character-to-account wiring after all module slots are newly registered and
+hydrated. This is host identity wiring, not source, seal or recall authority.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/house_filing_integration_tests/catalogue.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) house catalogue admin adapter uses the actual policy allocator and
+Org submit service to revoke a curator grant and install an explicit scoped Deny.
+No filing, title, rating, balance or catalogue authority is manufactured.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/house_purchase_integration_tests.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) house purchase admin adapter submits a real scoped curator-grant
+revocation through mush_org::submit. This tests publication-authority loss while
+retaining the actual house issuer; it does not manufacture title, money, filing,
+rating, paid rights or readiness state.
+"""
+
+[[site]]
+path = "crates/tacsim/src/hardware/flow/launch.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "Test-only named launch boot restores the same actual fixture account identity map after a fresh shared production composition. It supplies host login wiring, never source, certificate, paid rights or readiness."
+
+[[site]]
+path = "crates/mush-economy/src/registry_filing/update/tests/house.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) scoped House update Org command uses the actual policy allocator
+and audited mush_org::submit to install, replace and revoke scoped Allow/Deny
+policy. It is registered under the real Org owner and constructs no title,
+fee receipt, certificate or readiness state. Production reads remain read-only.
 """
 
 [[site]]

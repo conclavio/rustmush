@@ -3,6 +3,13 @@
 pub(crate) mod artifacts;
 pub(crate) mod bench;
 pub(crate) mod commit;
+pub(crate) mod conduct_budget;
+mod conduct_history;
+mod conduct_index;
+pub(crate) mod conduct_participant;
+mod conduct_projection;
+pub(crate) mod conduct_service;
+pub(crate) mod conduct_tickets;
 mod encoding;
 pub(crate) mod eval;
 pub(crate) mod executor;
@@ -14,6 +21,14 @@ pub(crate) mod preparation;
 pub(crate) mod proving;
 pub(crate) mod publication;
 pub(crate) mod query;
+pub(crate) mod registry_budget;
+pub(crate) mod registry_participant;
+mod registry_projection;
+mod registry_recovery;
+pub(crate) mod registry_service;
+pub(crate) mod registry_tickets;
+#[cfg(test)]
+pub(crate) mod registry_timing;
 pub(crate) mod replay;
 pub(crate) mod report;
 pub(crate) mod scenarios;
@@ -52,3 +67,5 @@ pub(super) mod bench_roots;
 pub(super) mod experiment;
 
 pub(super) mod branch;
+#[cfg(test)]
+mod registry_integration_tests;

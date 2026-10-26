@@ -1,13 +1,22 @@
 //! Character-owned authoring services shared by line, web and SSH entry points.
 //!
 //! Authenticated adapters supply the current character, never an owner from a
-//! request body. Every source-bearing operation resolves through `owned_copy`.
+//! request body. Original routes use `owned_copy`; marked synchronous draft
+//! reads/edits use the exact registered `authored_access` reader.
 //! Working edits do not compile; immutable saves use an opaque worker receipt.
 
 pub(crate) mod author_rules;
+pub(crate) mod authored_access;
+pub(in crate::minds) mod authored_jobs;
 pub(crate) mod commands;
 pub(crate) mod executor;
+pub(crate) mod filed_source;
+pub(crate) mod fork_material;
+mod retirement;
 pub(crate) mod structured;
+
+#[cfg(test)]
+mod lineage_tests;
 
 use mush_core::ObjId;
 use mush_roll::{
@@ -61,15 +70,15 @@ impl MindRef {
     }
 }
 
-/// One source authorization predicate. It has no staff bypass and no parameter
-/// for another character. Read, copy, diff, check and both remote adapters use it.
+/// Original-only source predicate, with no staff bypass or other-character
+/// parameter. Delayed check/save, copy and historical access remain here.
 pub(crate) fn owned_copy<S: SourceAdapter>(
     roll: &RollStore,
     sources: &S,
     actor: ObjId,
     reference: &MindRef,
 ) -> Result<WorkingCopy, RollError> {
-    let mind = roll.mind(actor, &reference.name)?;
+    let mind = authoring_mind(roll, actor, &reference.name)?;
     let Some(revision) = &reference.revision else {
         return Ok(mind.draft().clone());
     };
@@ -89,12 +98,25 @@ pub(crate) fn owned_copy<S: SourceAdapter>(
         }
     };
     let revision = roll.revision(actor, key)?;
+    revision.require_original_access()?;
     let source = sources.read_source(revision.source())?;
     revision.verify_source(sources)?;
     Ok(WorkingCopy {
         source: source.to_owned(),
         envelope: revision.envelope().clone(),
     })
+}
+
+/// Shared original-only source/editor predicate. The synchronous marked-draft
+/// reader is separate; this helper remains closed for all delayed operations.
+pub(crate) fn authoring_mind<'a>(
+    roll: &'a RollStore,
+    actor: ObjId,
+    name: &str,
+) -> Result<&'a mush_roll::Mind, RollError> {
+    let mind = roll.mind(actor, name)?;
+    mind.require_original_access()?;
+    Ok(mind)
 }
 
 pub(crate) fn create<S: SourceAdapter>(
@@ -113,7 +135,23 @@ pub(crate) fn create<S: SourceAdapter>(
             envelope: Envelope { schema: serde_json::json!({"sections": []}), presets: serde_json::json!({}), profiles: serde_json::json!({"Default": {}}), rules: serde_json::json!({}), declared_class: "I".into(), mind_abi: crate::minds::MIND_ABI.into() },
         },
         Some(name) if name.eq_ignore_ascii_case("Standard") => crate::minds::starter::standard_draft()?,
-        Some(reference) => owned_copy(roll, sources, actor, &MindRef::parse(reference)?)?,
+        Some(reference) => {
+            let reference = MindRef::parse(reference)?;
+            // Resolve/access-check using the same selector as source reads, but
+            // let Roll carry owner provenance rather than round-trip content.
+            owned_copy(roll, sources, actor, &reference)?;
+            let mind = authoring_mind(roll, actor, &reference.name)?;
+            let revision = reference.revision.as_ref().map(|revision| {
+                if let Some(digest) = revision.strip_prefix("sha:") {
+                    return roll.resolve_digest(actor, &reference.name, digest);
+                }
+                let number = revision.parse::<u64>().ok().filter(|n| *n > 0)
+                    .or_else(|| mind.named().get(&revision.to_ascii_lowercase()).copied())
+                    .ok_or(RollError::Missing)?;
+                Ok(roll.revision(actor, RevisionKey { character: actor, mind: mind.id(), number })?.reference())
+            }).transpose()?;
+            return roll.prepare_copy(actor, name, &reference.name, revision, sources);
+        },
     };
     roll.prepare_create(actor, name, draft)
 }
@@ -161,7 +199,7 @@ pub(crate) fn edit_text(
     base: EditBase,
     edit: TextEdit,
 ) -> Result<PreparedChange, RollError> {
-    let mind = roll.mind(actor, name)?;
+    let mind = authoring_mind(roll, actor, name)?;
     if mind.base() != base {
         return Err(RollError::StaleEdit);
     }
@@ -302,11 +340,21 @@ pub(crate) fn edit_card(
     edit: CardEdit,
     floor_permille: u16,
 ) -> Result<PreparedChange, RollError> {
-    let mind = roll.mind(actor, name)?;
+    let mind = authoring_mind(roll, actor, name)?;
     if mind.base() != base {
         return Err(RollError::StaleEdit);
     }
     let mut draft = mind.draft().clone();
+    apply_card_edit(&mut draft, edit, floor_permille)?;
+    roll.prepare_edit(actor, name, base, draft)
+}
+
+/// Pure bounded transformation. This performs no owner lookup or authorization.
+fn apply_card_edit(
+    draft: &mut WorkingCopy,
+    edit: CardEdit,
+    floor_permille: u16,
+) -> Result<(), RollError> {
     let mut card = decoded(&draft.envelope)?;
     match edit {
         CardEdit::Set {
@@ -426,8 +474,7 @@ pub(crate) fn edit_card(
             }
         }
     }
-    write_metadata(&mut draft.envelope, &card)?;
-    roll.prepare_edit(actor, name, base, draft)
+    write_metadata(&mut draft.envelope, &card)
 }
 
 fn parse_value(widget: &Widget, text: &str) -> Result<CardValue, RollError> {

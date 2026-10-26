@@ -371,6 +371,11 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
 /// tables.
 #[derive(Default)]
 pub struct MarketModule {
+    state: Box<MarketModuleState>,
+}
+
+#[derive(Default)]
+struct MarketModuleState {
     catalogs: Vec<Arc<dyn CatalogSource>>,
     availability: Vec<Arc<dyn AvailabilityProvider>>,
     delivery: Vec<Arc<dyn DeliveryProvider>>,
@@ -382,22 +387,101 @@ pub struct MarketModule {
     capacity: Option<Arc<dyn CapacityProvider>>,
     /// Doc 18 §4.1 (cut IC10): the proceeds policy. `None` = no cuts, the market's line.
     proceeds: Option<Arc<dyn ProceedsPolicy>>,
+    original_mind_quotes: Option<crate::mind_trade::OriginalQuoteConfig>,
+    original_mind_families: Option<crate::mind_trade::Families>,
+    original_mind_purchases: Option<crate::mind_trade::OriginalPurchaseConfig>,
+    original_purchase_families: Option<crate::mind_trade::PurchaseFamilies>,
+    mind_entitlements: Option<crate::mind_entitlement::EntitlementConfig>,
+    house_minds: Option<crate::mind_house::HouseConfig>,
+    house_families: Option<crate::mind_house::Families>,
+    entitlement_families: Option<crate::mind_entitlement::Families>,
+    mind_renewals: Option<crate::mind_renewal::RenewalConfig>,
+    renewal_families: Option<crate::mind_renewal::Families>,
+    house_renewals: Option<crate::mind_house_renewal::RenewalConfig>,
+    paid_resales: Option<crate::mind_paid_resale::PaidResaleConfig>,
+    paid_resale_families: Option<crate::mind_paid_resale::Families>,
+    house_renewal_families: Option<crate::mind_house_renewal::Families>,
 }
 
 impl std::fmt::Debug for MarketModule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MarketModule")
-            .field("catalog_sources", &self.catalogs.len())
-            .field("availability_providers", &self.availability.len())
-            .field("delivery_providers", &self.delivery.len())
-            .field("venue_gate", &self.venue_gate.is_some())
-            .field("capacity_provider", &self.capacity.is_some())
-            .field("proceeds_policy", &self.proceeds.is_some())
+            .field("catalog_sources", &self.state.catalogs.len())
+            .field("availability_providers", &self.state.availability.len())
+            .field("delivery_providers", &self.state.delivery.len())
+            .field("venue_gate", &self.state.venue_gate.is_some())
+            .field("capacity_provider", &self.state.capacity.is_some())
+            .field("proceeds_policy", &self.state.proceeds.is_some())
             .finish()
     }
 }
 
 impl MarketModule {
+    /// Register the typed original-personal listing/quote actions. Roll must
+    /// explicitly grant the matching reader and a real venue gate is required.
+    /// This does not activate managed purchase, money movement or paid grants.
+    #[must_use]
+    pub fn with_original_mind_quotes(
+        mut self,
+        config: crate::mind_trade::OriginalQuoteConfig,
+    ) -> Self {
+        self.state.original_mind_quotes = Some(config);
+        self
+    }
+
+    /// Opt into the closed paired purchase actions using Roll's exact frozen
+    /// writer and Economy participant. This requires the same quote policy.
+    #[must_use]
+    pub fn with_original_mind_purchases(
+        mut self,
+        config: crate::mind_trade::OriginalPurchaseConfig,
+    ) -> Self {
+        self.state.original_mind_quotes = Some(config.quotes.clone());
+        self.state.original_mind_purchases = Some(config);
+        self
+    }
+
+    /// Explicit original-v3 / derived-v1 personal Pin commerce. The host must
+    /// supply the matching Roll writer, Economy actions and current manifest.
+    #[must_use]
+    pub fn with_house_minds(mut self, config: crate::mind_house::HouseConfig) -> Self {
+        self.state.house_minds = Some(config);
+        self
+    }
+
+    pub fn with_mind_entitlements(
+        mut self,
+        config: crate::mind_entitlement::EntitlementConfig,
+    ) -> Self {
+        self.state.mind_entitlements = Some(config);
+        self
+    }
+
+    /// Explicit paid-property resale and bounded retained-escrow continuations.
+    /// Seller offers and buyer acceptance remain separate actual actions.
+    pub fn with_paid_mind_resale(
+        mut self,
+        config: crate::mind_paid_resale::PaidResaleConfig,
+    ) -> Self {
+        self.state.paid_resales = Some(config);
+        self
+    }
+    /// Explicit paired renewal providers. Acceptance is always explicit.
+    pub fn with_mind_renewals(mut self, config: crate::mind_renewal::RenewalConfig) -> Self {
+        self.state.mind_renewals = Some(config);
+        self
+    }
+
+    /// Explicit House renewal composition; buyers always accept new money holds.
+    #[must_use]
+    pub fn with_house_mind_renewals(
+        mut self,
+        config: crate::mind_house_renewal::RenewalConfig,
+    ) -> Self {
+        self.state.house_renewals = Some(config);
+        self
+    }
+
     /// A fresh module with every table empty — a server with no ruleset content
     /// registers the verbs, loads no pack, resolves no availability test and delivers
     /// nothing but title. Fail-closed in all three directions.
@@ -408,19 +492,19 @@ impl MarketModule {
     /// Freeze the content-pack sources.
     #[must_use]
     pub fn with_catalog_sources(mut self, t: Vec<Arc<dyn CatalogSource>>) -> MarketModule {
-        self.catalogs = t;
+        self.state.catalogs = t;
         self
     }
     /// Freeze the availability engines.
     #[must_use]
     pub fn with_availability(mut self, t: Vec<Arc<dyn AvailabilityProvider>>) -> MarketModule {
-        self.availability = t;
+        self.state.availability = t;
         self
     }
     /// Freeze the delivery providers.
     #[must_use]
     pub fn with_delivery(mut self, t: Vec<Arc<dyn DeliveryProvider>>) -> MarketModule {
-        self.delivery = t;
+        self.state.delivery = t;
         self
     }
     /// Freeze the system principal a stocked asset's title is minted under (B11,
@@ -433,7 +517,7 @@ impl MarketModule {
     /// game-neutral by being told rather than by knowing.
     #[must_use]
     pub fn with_issuer(mut self, issuer: mush_org::SystemPrincipalId) -> MarketModule {
-        self.issuer = Some(issuer);
+        self.state.issuer = Some(issuer);
         self
     }
 
@@ -454,7 +538,7 @@ impl MarketModule {
     /// refused it with since E6c.
     #[must_use]
     pub fn with_inventory(mut self, cell: mush_inventory::InventoryHandleCell) -> MarketModule {
-        self.inventory = Some(cell);
+        self.state.inventory = Some(cell);
         self
     }
 
@@ -465,7 +549,7 @@ impl MarketModule {
     /// The tacsim implementation is IC8's.
     #[must_use]
     pub fn with_venue_gate(mut self, gate: Arc<dyn VenueGate>) -> MarketModule {
-        self.venue_gate = Some(gate);
+        self.state.venue_gate = Some(gate);
         self
     }
 
@@ -474,7 +558,7 @@ impl MarketModule {
     /// prepare. **Unwired is no capacity rule.** The tacsim implementation is IC8's.
     #[must_use]
     pub fn with_capacity_provider(mut self, provider: Arc<dyn CapacityProvider>) -> MarketModule {
-        self.capacity = Some(provider);
+        self.state.capacity = Some(provider);
         self
     }
 
@@ -484,7 +568,7 @@ impl MarketModule {
     /// implementation is `CoopProceeds`.
     #[must_use]
     pub fn with_proceeds_policy(mut self, policy: Arc<dyn ProceedsPolicy>) -> MarketModule {
-        self.proceeds = Some(policy);
+        self.state.proceeds = Some(policy);
         self
     }
 }
@@ -538,7 +622,11 @@ impl GameModule for MarketModule {
         // time and because `MarketStore`'s frozen table carries them for the command
         // layer's own pre-checks. `None` is the E6c composition: no action, no lot
         // listing, and the same refusal E6c printed.
-        let inventory = self.inventory.as_ref().and_then(|cell| cell.get().cloned());
+        let inventory = self
+            .state
+            .inventory
+            .as_ref()
+            .and_then(|cell| cell.get().cloned());
         // K8.5 module compatibility: the module's own documents are bounded
         // whole-document post-images on the compatibility lane (08i §4, rule 1). The
         // two player-facing verbs are classified **per group** in
@@ -557,14 +645,14 @@ impl GameModule for MarketModule {
         };
         reg.state(MarketStore {
             tables: MarketTables {
-                catalogs: self.catalogs.clone(),
-                availability: self.availability.clone(),
-                delivery: self.delivery.clone(),
-                issuer: self.issuer.clone(),
+                catalogs: self.state.catalogs.clone(),
+                availability: self.state.availability.clone(),
+                delivery: self.state.delivery.clone(),
+                issuer: self.state.issuer.clone(),
                 inventory: inventory.clone(),
-                venue_gate: self.venue_gate.clone(),
-                capacity: self.capacity.clone(),
-                proceeds: self.proceeds.clone(),
+                venue_gate: self.state.venue_gate.clone(),
+                capacity: self.state.capacity.clone(),
+                proceeds: self.state.proceeds.clone(),
                 draws: draws.clone(),
             },
             ..MarketStore::default()
@@ -587,8 +675,215 @@ impl GameModule for MarketModule {
         // lift's mechanic: `reserve` at `@market/vendor stock`, `settle_sale` at
         // `+market/accept`, `release` at `@market/vendor withdraw`, all on cut 2's own
         // exported verbs under `lot::listing_holder(ListingId)`.
+        let mut quote_definitions = self
+            .state
+            .original_mind_quotes
+            .as_ref()
+            .map(crate::mind_trade::OriginalQuoteConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        let purchase_definitions = self
+            .state
+            .original_mind_purchases
+            .as_ref()
+            .map(crate::mind_trade::OriginalPurchaseConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        let entitlement_definitions = self
+            .state
+            .mind_entitlements
+            .as_ref()
+            .map(crate::mind_entitlement::EntitlementConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        let house_definitions = self
+            .state
+            .house_minds
+            .as_ref()
+            .map(crate::mind_house::HouseConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        let renewal_definitions = self
+            .state
+            .mind_renewals
+            .as_ref()
+            .map(crate::mind_renewal::RenewalConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(config) = &self.state.mind_renewals {
+            let entitlement = self
+                .state
+                .mind_entitlements
+                .as_ref()
+                .ok_or_else(|| ModError::msg("renewals require entitlement composition"))?;
+            if self.state.original_mind_purchases.is_none()
+                || config.manifest() != entitlement.manifest()
+                || config.participants() != entitlement.participants()
+            {
+                return Err(ModError::msg("renewal owner composition differs"));
+            }
+        }
+        let house_renewal_definitions = self
+            .state
+            .house_renewals
+            .as_ref()
+            .map(crate::mind_house_renewal::RenewalConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(config) = &self.state.house_renewals {
+            let house = self
+                .state
+                .house_minds
+                .as_ref()
+                .ok_or_else(|| ModError::msg("House renewals require House purchases"))?;
+            if config.manifest() != house.manifest()
+                || config.participants() != house.participants()
+                || config.purchase_policy() != &house.policy_ref()?
+                || config.two_seat_purchase_policy().cloned()
+                    != house
+                        .has_two_seat_pins()
+                        .then(|| {
+                            house.policy_ref_for_protocol(
+                                mush_roll::commerce::house_purchase::HouseProtocol::HouseV2,
+                            )
+                        })
+                        .transpose()?
+            {
+                return Err(ModError::msg("House renewal composition differs"));
+            }
+        }
+        let resale_definitions = self
+            .state
+            .paid_resales
+            .as_ref()
+            .map(crate::mind_paid_resale::PaidResaleConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        let mut purchase_definitions = purchase_definitions;
+        purchase_definitions.extend(entitlement_definitions.iter().cloned());
+        purchase_definitions.extend(house_definitions.iter().cloned());
+        purchase_definitions.extend(renewal_definitions.iter().cloned());
+        purchase_definitions.extend(house_renewal_definitions.iter().cloned());
+        purchase_definitions.extend(resale_definitions.iter().cloned());
+        quote_definitions.extend(purchase_definitions.iter().cloned());
+        crate::mind_entitlement::register_capabilities_with_house(
+            reg,
+            self.state.original_mind_purchases.as_ref(),
+            self.state.mind_entitlements.as_ref(),
+            self.state.house_minds.as_ref(),
+            self.state.venue_gate.clone(),
+        )?;
+        if let Some(purchase) = &self.state.original_mind_purchases {
+            let quotes = self
+                .state
+                .original_mind_quotes
+                .as_ref()
+                .ok_or_else(|| ModError::msg("paid purchase requires quote registration"))?;
+            if quotes.declarations()? != purchase.quotes.declarations()? {
+                return Err(ModError::msg("purchase and quote policies differ"));
+            }
+        }
+        let lot_registered = inventory.is_some() && draws.is_some();
         if let (Some(families), Some(draws)) = (&inventory, draws) {
-            crate::lot::register(reg, families, draws, self.capacity.clone())?;
+            crate::lot::register(
+                reg,
+                families,
+                draws,
+                self.state.capacity.clone(),
+                &quote_definitions,
+            )?;
+        }
+        if let Some(config) = &self.state.original_mind_quotes {
+            let gate = self.state.venue_gate.clone().ok_or_else(|| {
+                ModError::msg("original mind quotes require the actual venue gate")
+            })?;
+            let offers = if !purchase_definitions.is_empty() {
+                crate::mind_trade::register_with_purchase_definitions(
+                    reg,
+                    config,
+                    gate.clone(),
+                    lot_registered,
+                    &purchase_definitions,
+                )?
+            } else {
+                crate::mind_trade::register(reg, config, gate.clone(), lot_registered)?
+            };
+            if let Some(purchase) = &self.state.original_mind_purchases {
+                self.state.original_purchase_families = Some(crate::mind_trade::register_purchase(
+                    reg,
+                    purchase,
+                    offers.clone(),
+                    gate,
+                )?);
+            }
+            self.state.original_mind_families = Some(offers);
+        }
+        if let Some(config) = &self.state.mind_entitlements {
+            let gate = self
+                .state
+                .venue_gate
+                .clone()
+                .ok_or_else(|| ModError::msg("entitlements require the actual venue gate"))?;
+            self.state.entitlement_families =
+                Some(crate::mind_entitlement::register_with_house_definitions(
+                    reg,
+                    config,
+                    gate,
+                    lot_registered || self.state.original_mind_quotes.is_some(),
+                    &house_definitions
+                        .iter()
+                        .chain(house_renewal_definitions.iter())
+                        .chain(resale_definitions.iter())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )?);
+        }
+        if let Some(config) = &self.state.house_minds {
+            let gate =
+                self.state.venue_gate.clone().ok_or_else(|| {
+                    ModError::msg("house purchase requires the actual venue gate")
+                })?;
+            self.state.house_families = Some(crate::mind_house::register_with_renewal_definitions(
+                reg,
+                config,
+                gate,
+                lot_registered
+                    || self.state.original_mind_quotes.is_some()
+                    || self.state.mind_entitlements.is_some(),
+                self.state.mind_entitlements.is_some(),
+                &house_renewal_definitions
+                    .iter()
+                    .chain(resale_definitions.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )?);
+        }
+        if let Some(config) = &self.state.mind_renewals {
+            self.state.renewal_families = Some(crate::mind_renewal::register(reg, config)?);
+        }
+        if let Some(config) = &self.state.house_renewals {
+            self.state.house_renewal_families =
+                Some(crate::mind_house_renewal::register(reg, config)?);
+        }
+        if let Some(config) = &self.state.paid_resales {
+            if !lot_registered
+                && self.state.original_mind_quotes.is_none()
+                && self.state.mind_entitlements.is_none()
+                && self.state.house_minds.is_none()
+            {
+                for kind in ["action", "outcome"] {
+                    reg.definition_validator(
+                        mush_core::DefinitionKind::new(kind)
+                            .map_err(|e| ModError::msg(e.to_string()))?,
+                        crate::lot::exact_validator(&resale_definitions),
+                    )?;
+                }
+            }
+            self.state.paid_resale_families = Some(crate::mind_paid_resale::register(
+                reg,
+                config,
+                self.state.original_purchase_families.clone(),
+            )?);
         }
         crate::commands::register(reg)?;
         Ok(())
@@ -613,6 +908,85 @@ impl GameModule for MarketModule {
             *store = MarketStore { tables, ..loaded };
         }
         crate::boot::reconcile(ctx);
+        if let Some(families) = &self.state.original_mind_families {
+            families.audit(ctx)?;
+        }
+        Ok(())
+    }
+    fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        if let Some(config) = &self.state.original_mind_purchases {
+            let families = self
+                .state
+                .original_purchase_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("purchase families are unavailable"))?;
+            let offers = self
+                .state
+                .original_mind_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("purchase quote families are unavailable"))?;
+            families.audit_with_houses(
+                ctx,
+                config,
+                offers,
+                self.state.mind_entitlements.is_some(),
+                self.state.house_minds.is_some(),
+            )?;
+            crate::mind_trade::enable_purchase_service(ctx)?;
+        }
+        if let Some(config) = &self.state.mind_entitlements {
+            self.state
+                .entitlement_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("entitlement families unavailable"))?
+                .audit_with_house(
+                    ctx,
+                    config,
+                    self.state.original_mind_purchases.is_some(),
+                    self.state.house_minds.is_some(),
+                )?;
+        }
+        if let Some(config) = &self.state.house_minds {
+            self.state
+                .house_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("house families unavailable"))?
+                .audit(
+                    ctx,
+                    config,
+                    self.state.original_mind_purchases.is_some(),
+                    self.state.mind_entitlements.is_some(),
+                )?;
+        }
+        if let Some(config) = &self.state.mind_renewals {
+            self.state
+                .renewal_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("renewal families unavailable"))?
+                .audit(ctx, config)?;
+            crate::mind_renewal::enable_service(ctx)?;
+        } else {
+            crate::mind_renewal::require_disabled(ctx)?;
+        }
+        if let Some(config) = &self.state.house_renewals {
+            self.state
+                .house_renewal_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("House renewal families unavailable"))?
+                .audit(ctx, config)?;
+            crate::mind_house_renewal::enable_service(ctx)?;
+        } else {
+            crate::mind_house_renewal::require_disabled(ctx)?;
+        }
+        if let Some(config) = &self.state.paid_resales {
+            self.state
+                .paid_resale_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("paid resale families unavailable"))?
+                .audit(ctx, config, self.state.original_purchase_families.as_ref())?;
+        } else {
+            crate::mind_paid_resale::require_disabled(ctx)?;
+        }
         Ok(())
     }
 }

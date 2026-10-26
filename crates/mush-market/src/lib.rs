@@ -7,7 +7,7 @@
 //!
 //! ## Game-neutral, and that is a dependency claim
 //!
-//! `mush-market → {core, org, economy, inventory}` plus
+//! `mush-market → {core, org, economy, inventory, roll}` plus
 //! serde/serde_json/smol_str/tracing, and **nothing else**: no `mush-party`, no
 //! `mush-canon`, no ruleset edge. Nothing in this crate names a run, a fence, nuyen or
 //! a runner (answer 20 — it must serve WoD and TacSim too). The economy never depends
@@ -25,7 +25,12 @@
 //!
 //! Prices, availability, legality and what an item *means* are the ruleset's, and
 //! they arrive through three wiring-frozen tables — [`CatalogSource`],
-//! [`AvailabilityProvider`] and [`DeliveryProvider`] — never through an edge.
+//! [`AvailabilityProvider`] and [`DeliveryProvider`] — never through a ruleset edge.
+//!
+//! M7 additionally reads the generic Roll owner's original-mind records through
+//! its registered source-free service. The optional typed offer providers never
+//! use commodity delivery or a legacy quote id to establish licence authority.
+//! The dependency is Market -> Roll; Economy still does not depend on Market.
 //!
 //! ## The gate (§5.3, D-E6-14, doc 10 §14(b))
 //!
@@ -102,6 +107,14 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption for `panic_in_result_fn`, so a test or
+// fixture helper that returns `Result` checks with `check!`/`check_eq!`/
+// `check_ne!` — its asserts as early `Err` returns. Declared before every other
+// module because `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 mod api;
 mod boot;
 mod commands;
@@ -110,6 +123,10 @@ mod facts;
 mod ids;
 pub mod interface;
 mod lot;
+pub mod mind_entitlement;
+pub mod mind_paid_resale;
+pub mod mind_renewal;
+pub mod mind_trade;
 mod module;
 mod projection;
 mod record;
@@ -177,3 +194,6 @@ pub use trade::{
     accept, accept_at, accept_into, artefact_stamp, bid_take, is_current, quote, restage_deliver,
     restage_draw, sell, sell_into_bid,
 };
+
+pub mod mind_house;
+pub mod mind_house_renewal;

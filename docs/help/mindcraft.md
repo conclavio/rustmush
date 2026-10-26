@@ -1,5 +1,9 @@
 # Mindcraft
 
+`@mind/doctrine` opens the free Stickney teaching library for Standard Doctrine.
+Use `@mind/doctrine Sniper` (or another preset) for its current configured card;
+`help doctrine` explains these public pages.
+
 Open Minds with F10 in the browser or TUI. The browser has a source editor,
 card widgets, profiles, presets, rules, Check, and Save. The TUI offers the
 same library and card workflow with a read-only source view; use line editing

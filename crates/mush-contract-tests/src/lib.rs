@@ -2769,7 +2769,7 @@ mod tests {
 
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         assert_eq!(
             world

@@ -1,6 +1,6 @@
 //! Self-contained canonical profile custody before per-arena deduplication.
 
-use super::core::CoreProfile;
+use super::core::{CoreClass, CoreProfile};
 use super::profile_rules::BoundProgram;
 use super::runtime_card::{CardCatalog, CardDefinition, RuntimeCard, RuntimeProfiles};
 use super::schema::{SchemaError, validate_envelope};
@@ -9,6 +9,63 @@ use mush_core::{DefinitionDigest, ObjId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
+
+/// Immutable certificate identity carried by a filed seal. These values are
+/// evidence, not a licence or a trusted Registry result. Only the world-side
+/// owner reader can authorize their use; the arena checks internal coherence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FiledCertificate {
+    pub revision_character: ObjId,
+    pub revision_mind: u64,
+    pub revision_number: u64,
+    pub revision_digest: DefinitionDigest,
+    pub source_digest: DefinitionDigest,
+    /// Durable receipt key, distinct from the measured certificate content ID.
+    pub rating_job: mush_core::CommitToken,
+    pub rating_id: DefinitionDigest,
+    pub rating_schema: u16,
+    pub rating_digest: DefinitionDigest,
+    pub compatibility: DefinitionDigest,
+    pub definition: DefinitionDigest,
+    pub declared: CoreClass,
+    pub minimum: CoreClass,
+}
+impl FiledCertificate {
+    /// Checks the immutable shape, without reading workflow or interpreter state.
+    pub fn validate(&self) -> Result<(), SchemaError> {
+        if self.rating_schema == 0
+            || self.revision_mind == 0
+            || self.revision_number == 0
+            || self.declared == CoreClass::Zero
+            || self.minimum < self.declared
+            || [
+                self.revision_digest,
+                self.source_digest,
+                self.rating_id,
+                self.rating_digest,
+                self.compatibility,
+                self.definition,
+            ]
+            .iter()
+            .any(|digest| digest.as_bytes() == &[0; 32])
+        {
+            return Err(invalid("certificate", "invalid filed certificate binding"));
+        }
+        Ok(())
+    }
+
+    pub fn verify_definition(&self, definition: &CardDefinition) -> Result<(), SchemaError> {
+        self.validate()?;
+        if definition.declared_class != self.declared || definition.validate()? != self.definition {
+            return Err(invalid(
+                "certificate",
+                "filed definition differs from its certificate",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Workflow-neutral immutable provenance; personal drafts invent no charter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,9 +86,17 @@ pub enum MindOrigin {
         line: SmolStr,
         revision: u64,
         licence: SmolStr,
+        certificate: Box<FiledCertificate>,
     },
 }
 impl MindOrigin {
+    #[must_use]
+    pub fn certificate(&self) -> Option<&FiledCertificate> {
+        match self {
+            Self::Filed { certificate, .. } => Some(certificate),
+            Self::Doctrine { .. } | Self::Draft { .. } => None,
+        }
+    }
     #[must_use]
     pub const fn is_doctrine(&self) -> bool {
         matches!(self, Self::Doctrine { .. })
@@ -62,7 +127,9 @@ impl MindOrigin {
                 line,
                 revision,
                 licence,
+                certificate,
             } => {
+                certificate.validate()?;
                 *revision == 0
                     || [charter, line, licence]
                         .iter()
@@ -95,6 +162,16 @@ impl MindIdentity {
             || self.source_sha256 == [0; 32]
         {
             return Err(invalid("identity", "invalid immutable mind identity"));
+        }
+        if self
+            .origin
+            .certificate()
+            .is_some_and(|certificate| certificate.source_digest.as_bytes() != &self.source_sha256)
+        {
+            return Err(invalid(
+                "certificate",
+                "filed source differs from its certificate",
+            ));
         }
         Ok(())
     }

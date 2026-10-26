@@ -1417,4 +1417,177 @@ mod tests {
                 .is_empty()
         );
     }
+
+    /// A genuine persisted holder is visible before the first periodic tick.
+    /// The seat refusal must be occupancy, rather than a fabricated ready bit
+    /// or an unread mirror, and must leave the station untouched.
+    #[test]
+    fn boot_reads_hydrated_control_leases_before_any_tick() {
+        let mut world = World::new_minimal();
+        world.set_now(100);
+        let subject = world
+            .create(mush_core::ObjKind::Thing, "test vehicle", ObjId(1), None)
+            .unwrap();
+        let holder = world
+            .create(mush_core::ObjKind::Player, "holder", ObjId(1), None)
+            .unwrap();
+        let applicant = world
+            .create(mush_core::ObjKind::Player, "applicant", ObjId(1), None)
+            .unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(SimulationModule::new())],
+        )
+        .unwrap();
+        let (request_action, _, apply_action) = definition_refs();
+        let channel = ChannelId::new("movement").unwrap();
+        let request = invocation(
+            &request_action,
+            RequestUid::from_bytes([1; 16]),
+            subject,
+            json!({
+                "channel": channel,
+                "next_holder": PrincipalId::Object { id: holder },
+                "requested_at": { "clock": { "kind": "utc" }, "at": 99 },
+                "boundary": { "clock": { "kind": "utc" }, "at": 101 },
+                "reason": "operator_assigned",
+                "expected_revision": 0,
+            }),
+        );
+        let (prepared, _) = prepare(&mut engine, &request_action, &request, 1);
+        let mut image = mush_testkit::fold_module_ops(install(&mut engine, prepared));
+        engine.world.set_now(101);
+        let page = engine
+            .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+            .unwrap();
+        assert_eq!(page.candidates().len(), 1);
+        let candidate = page.candidates().first().unwrap();
+        assert_eq!(candidate.action(), &apply_action);
+        let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 1).unwrap();
+        let (_, scheduled, _) = engine
+            .plan_scheduled_action(candidate, &ingress)
+            .unwrap()
+            .into_parts();
+        let (prepared, _) = engine
+            .prepare_registered_scheduled_authoritative_action(
+                candidate,
+                &scheduled,
+                CommitToken::from_bytes([2; 16]),
+            )
+            .unwrap();
+        let applied = install(&mut engine, prepared);
+        let lease: ControlLeaseState = serde_json::from_value(lease_value(&applied)).unwrap();
+        assert_eq!(lease.holder(), Some(&PrincipalId::Object { id: holder }));
+        mush_testkit::fold_module_ops_into(&mut image, applied);
+
+        let mut reboot = Engine::with_modules(
+            engine.world,
+            Registry::new(),
+            vec![Box::new(SimulationModule::new())],
+        )
+        .unwrap();
+        let mut out = mush_core::Outbox::new();
+        let mut effects = mush_core::Effects::new();
+        // A compatibility context cannot claim that a scan completed.
+        {
+            let mut ctx = mush_core::Ctx {
+                w: &mut reboot.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &reboot.registry,
+                module: Some(SmolStr::new(NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            mush_core::GameModule::on_all_loaded(&mut SimulationModule::new(), &mut ctx).unwrap();
+        }
+        assert!(
+            !reboot
+                .world
+                .module_state::<crate::ControlLeaseView>()
+                .unwrap()
+                .is_complete()
+        );
+        let mut records = Vec::new();
+        for (namespace, data) in &mut image {
+            data.kv.retain(|(key, value)| {
+                if mush_core::is_action_state_persistence_key(key) {
+                    records.push(mush_core::ActionStateBootRecord::new(
+                        namespace.clone(),
+                        key.clone(),
+                        value.clone(),
+                    ));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        assert_eq!(
+            records.len(),
+            2,
+            "actual lease and completed schedule; job removed"
+        );
+        reboot.hydrate_action_state(records).unwrap();
+        let first_due = reboot.sched.next_due();
+        let scheduled_count = reboot.sched.len();
+        reboot
+            .modules_loaded(image, &mut out, &mut effects)
+            .unwrap();
+        assert_eq!(reboot.world.now(), 101);
+        assert_eq!(reboot.sched.next_due(), first_due);
+        assert_eq!(reboot.sched.len(), scheduled_count);
+        let view = reboot
+            .world
+            .module_state::<crate::ControlLeaseView>()
+            .unwrap();
+        assert!(view.is_complete());
+        assert_eq!(view.len(), 1);
+        assert_eq!(
+            crate::channel_lease_holder(&reboot.world, subject, &channel),
+            Some(PrincipalId::Object { id: holder })
+        );
+
+        let station = crate::StationId::new("pilot").unwrap();
+        let channels = std::collections::BTreeSet::from([channel.clone()]);
+        let mut ctx = mush_core::Ctx {
+            w: &mut reboot.world,
+            actor: applicant,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &reboot.registry,
+            module: Some(SmolStr::new("fixture")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        crate::declare_station(&mut ctx, subject, &station, "pilot", &channels, None, 0).unwrap();
+        let refusal = crate::request_seat_activation(
+            &mut ctx,
+            &crate::SeatRequest::Activate {
+                unit: subject,
+                station: station.clone(),
+                npc: applicant,
+                granted: channels,
+                fallback: None,
+            },
+        );
+        assert_eq!(refusal, Err(crate::SeatError::ChannelLeased { channel }));
+        assert!(
+            ctx.w
+                .module_state::<crate::FocusState>()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            ctx.w
+                .module_state::<crate::SpatialState>()
+                .unwrap()
+                .assignments
+                .get(&subject)
+                .and_then(|assignments| assignments.seats.get(&station))
+                .is_none()
+        );
+    }
 }

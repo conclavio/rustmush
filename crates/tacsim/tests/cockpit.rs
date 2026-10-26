@@ -1252,7 +1252,7 @@ async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
         live.get("schema"),
         Some(&serde_json::json!({
             "id": "arena.cockpit",
-            "version": 6,
+            "version": 7,
             "shape": "grid",
             "retain": "latest",
         }))
@@ -3871,7 +3871,7 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
     assert_eq!(
         cockpit::cockpit_cleared(),
         serde_json::json!({
-            "schema": { "id": "arena.cockpit", "version": 6, "retain": "latest" },
+            "schema": { "id": "arena.cockpit", "version": 7, "retain": "latest" },
             "seated": false,
         })
     );
@@ -7212,6 +7212,24 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
             "{who}"
         );
     }
+    // A valid principal cannot borrow the commander's or another unit's
+    // contact scope through the direct bridge entry.
+    for issuer in [None, Some(third_tank), Some(rb)] {
+        assert_eq!(
+            send(&mut rig, rb, l1_order(red_one, issuer, character(lead))),
+            refused,
+            "the lead's issuer must be their actual occupied tank"
+        );
+    }
+    assert_eq!(
+        send(
+            &mut rig,
+            rd,
+            l1_order(red_one, Some(lead_tank), character(third))
+        ),
+        refused,
+        "the wingman grant does not borrow the lead's contact scope"
+    );
     // Entitled: the non-lead for their own wingman, the lead for any red unit.
     assert_eq!(
         send(
@@ -7312,6 +7330,24 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
         Err(IntentRefusal::Unavailable),
         "a match with no record"
     );
+
+    // The same real egress wreck fact that stops typed ORDER also stops a
+    // direct send_order, for both a lead and an otherwise entitled wingman.
+    for (pilot, tank, author, unit) in [(0, lead_tank, lead, rb), (2, third_tank, third, rd)] {
+        let mut dead = rig.held_frame(pilot);
+        dead.notices.clear();
+        dead.wreck = true;
+        rig.push_frame(pilot, dead);
+        assert_eq!(
+            send(
+                &mut rig,
+                unit,
+                l1_order(red_one, Some(tank), character(author))
+            ),
+            refused,
+            "a destroyed pilot cannot bypass typed ORDER's alive check"
+        );
+    }
 
     // The record is the persona's warrant: with red-1's row gone from
     // `leaders`, red-1's own persona in the commander's scope is refused.
@@ -12339,16 +12375,27 @@ impl Rig {
         ops
     }
 
-    /// **A restart of the server half with a match running, in process** (16b
-    /// cut AF.3), by `match_lifecycle.rs`' steps: the old tasks stopped and
-    /// joined and their undrained egress dropped on purpose (a crashed process
-    /// never handled it), the queued writes folded into the image, a fresh
-    /// registry (`ArenaRegistry::fresh`) and its egress taken, the match book
-    /// , `mush-sim`'s custody index and focus map reset, the image handed to every module
-    /// as its boot data through `ModuleBootData::normalize`, and the account
-    /// oracle wired again. Connected flags are untouched. What the boot said is
-    /// recorded into [`Rig::log`] — nothing, since boot output reaches nobody.
+    /// Restart the server half over the retained module image with fresh owner
+    /// slots, including the one-shot BulkService. Stop/join old arena tasks and
+    /// discard undrained egress as a crashed process would. The real config,
+    /// account map and previously connected pilots survive this split-server
+    /// fixture; a pilot deliberately disconnected before boot stays disconnected.
+    /// Boot/reannouncement output is discarded, while the actual deferred-resume
+    /// fence keeps notices owed to the existing first-tick assertions.
     async fn reboot_mid_match(&mut self) {
+        let cfg = self
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the configured Tacsim owner")
+            .config()
+            .clone();
+        let connected: Vec<ObjId> = self
+            .pilots
+            .iter()
+            .copied()
+            .filter(|pilot| self.tw.world().is_connected(*pilot))
+            .collect();
         let old = self
             .tw
             .world()
@@ -12360,35 +12407,6 @@ impl Rig {
             while rx.try_recv().is_ok() {}
         }
         let _ = self.pump_ops();
-        {
-            let registry = self
-                .tw
-                .world_mut()
-                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
-                .expect("the arena registry");
-            *registry = tacsim::arena_bridge::ArenaRegistry::fresh(registry);
-        }
-        self.egress = self
-            .tw
-            .world()
-            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-            .map(|registry| registry.tasks().clone())
-            .and_then(|tasks| tasks.take_egress());
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<match_::MatchBook>()
-            .expect("the match book") = match_::MatchBook::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::deployed::DeployedUnits>()
-            .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::FocusState>()
-            .expect("the focus map") = mush_sim::FocusState::default();
         let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = self
             .image
             .iter()
@@ -12404,7 +12422,10 @@ impl Rig {
                 (ns.clone(), data)
             })
             .collect();
-        self.tw.modules_loaded(data);
+        let old_world = std::mem::replace(&mut self.tw, TestWorld::new());
+        self.tw = old_world
+            .reboot_into(roster_with(cfg), data)
+            .expect("actual fresh production boot");
         let mut map = Accounts::default();
         for (n, pilot) in self.pilots.iter().enumerate() {
             map.0.insert(
@@ -12417,6 +12438,23 @@ impl Rig {
             .world_mut()
             .module_state_mut::<mush_sim::AccountOracle>()
             .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        for pilot in &connected {
+            self.tw.connect(*pilot);
+        }
+        for pilot in &self.pilots {
+            assert_eq!(
+                self.tw.world().is_connected(*pilot),
+                connected.contains(pilot),
+                "the split-server fixture preserves each pilot's session presence"
+            );
+        }
+        self.egress = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .and_then(|tasks| tasks.take_egress());
+        assert!(self.egress.is_some(), "the fresh process owns arena egress");
         let _ = self.pump_ops();
     }
 
@@ -13872,11 +13910,11 @@ fn m1a3_the_keyframe_carries_aspect_odds_reads_dead_order_and_t_ms() {
     ))
     .expect("the fixture is JSON");
     assert_eq!(payload, committed, "the fixture round-trips with the keys");
-    // M6 adds the authored card schema, values and sealed rules at version 6.
-    assert_eq!(cockpit::FRAME_VERSION, 6);
+    // M7 completes the shared class-based odds projection at version 7.
+    assert_eq!(cockpit::FRAME_VERSION, 7);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(6))
+        Some(&serde_json::json!(7))
     );
     assert_eq!(payload.get("t_ms"), Some(&serde_json::json!(61_250)));
     assert_eq!(payload.get("order"), Some(&serde_json::Value::Null));
@@ -14458,10 +14496,10 @@ fn m1b3_the_keyframe_carries_the_arming_the_floor_and_an_unarmed_row_null() {
     use tacsim::arena::weapons::FrameArming;
     let frame = fixture::frame();
     let payload = cockpit::status_frame(fixture::MATCH, &frame);
-    assert_eq!(cockpit::FRAME_VERSION, 6);
+    assert_eq!(cockpit::FRAME_VERSION, 7);
     assert_eq!(
         payload.pointer("/schema/version"),
-        Some(&serde_json::json!(6))
+        Some(&serde_json::json!(7))
     );
     assert_eq!(
         payload.pointer("/weapons/0/armed"),
@@ -16650,10 +16688,23 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "@mind/live: no slider or preset named \"berserker\"."
     );
     let usage = "Usage: @mind/live <unit>[=<preset> | =<slider> <value>]";
-    // M6 gives the bare dispatcher to authoring. A live card read requires
-    // the explicit staff-only /live form, even when its argument is a dbref.
+    // M7 leads the workshop help with free teaching pages. Private authoring
+    // must remain discoverable; live card reads still require staff-only /live,
+    // even when the bare dispatcher's argument is a dbref.
     let author_help = rig.staff(&format!("@mind #{id}"));
-    assert!(author_help.starts_with("@mind/new <name>"), "{author_help}");
+    assert_eq!(
+        author_help.lines().next(),
+        Some(
+            "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)"
+        ),
+        "bare @mind must retain free teaching discovery"
+    );
+    assert!(
+        author_help
+            .lines()
+            .any(|line| line == "@mind/new <name> [FROM Standard|<owned mind>]"),
+        "bare @mind must retain private authoring discovery"
+    );
     assert!(
         author_help.contains(usage.trim_start_matches("Usage: ")),
         "{author_help}"

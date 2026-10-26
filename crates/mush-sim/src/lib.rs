@@ -16,6 +16,15 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::panic, clippy::unreachable, clippy::panic_in_result_fn)]
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped. The module file gates itself to test
+// builds; this file names no test cfg this early, because its source
+// censuses read the production half as the text before the first one.
+#[cfg_attr(test, macro_use)]
+mod test_checks;
+
 pub mod boot;
 pub mod commands;
 pub mod custody;
@@ -33,6 +42,7 @@ pub mod driver;
 pub mod focus;
 pub mod graph;
 mod handoff;
+pub mod ic_exclusion;
 pub mod journey;
 pub mod links;
 pub mod relay;
@@ -151,6 +161,7 @@ pub struct SimulationModule {
     /// by default). Carried into world state at `register`, where the
     /// composition root may upgrade it from `[tacsim]`.
     pulse: tick::PulseConfig,
+    ic_custody: Option<ic_exclusion::IcExclusionConfig>,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -180,7 +191,16 @@ impl SimulationModule {
             routes: None,
             carrier_hooks: None,
             pulse: tick::PulseConfig::default(),
+            ic_custody: None,
         }
+    }
+
+    /// Opt into Sim's dedicated IC exclusion owner. The actual four-owner
+    /// union and mandatory final joins remain required before any activation.
+    #[must_use]
+    pub fn with_ic_mind_custody(mut self, config: ic_exclusion::IcExclusionConfig) -> Self {
+        self.ic_custody = Some(config);
+        self
     }
 
     /// Install the pulse cadence from `[tacsim].ground_pulse_ms` /
@@ -956,6 +976,10 @@ impl GameModule for SimulationModule {
         // admission sites read it unconditionally, and a missing slot would be
         // an admission site that silently admits.
         reg.state(deployed::DeployedUnits::new());
+        reg.state(ic_exclusion::IcExclusions::default());
+        if let Some(config) = &self.ic_custody {
+            config.register(reg)?;
+        }
         // E7c5 B1: carry the composition-installed account oracle into world
         // state so command handlers consult it synchronously; unwired = fail
         // closed.
@@ -1057,8 +1081,13 @@ impl GameModule for SimulationModule {
         ctx: &mut ModuleCtx<'_>,
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
+        ic_exclusion::load(ctx, &mut data, self.ic_custody.is_some())?;
+        if let Some(config) = &self.ic_custody {
+            config.loaded(ctx)?;
+        }
         relay::load(ctx, &mut data)?;
         let carriers = journey::extract_carrier_journeys(&mut data);
+        ic_exclusion::check_boot_journeys(ctx.w, &carriers)?;
         let workflow = domain::extract_domain_workflow(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
         domain::install_domain_workflow(ctx, workflow);
@@ -1073,6 +1102,16 @@ impl GameModule for SimulationModule {
                 "sim: boot quarantined placements; see @spatial/quarantine"
             );
         }
+        Ok(())
+    }
+
+    fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        // The coordinator hydrated typed leases before the load callbacks.
+        // Read them through Sim's real owner lens before the first command:
+        // a restarted pilot may reclaim before any periodic tick has fired.
+        // The existing bounded scan keeps an unavailable or partial view
+        // incomplete, so the seat gate still refuses unknown occupancy.
+        seat::refresh_control_lease_view(ctx);
         Ok(())
     }
 }

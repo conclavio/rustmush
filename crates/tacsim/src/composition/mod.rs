@@ -53,12 +53,14 @@
 // The composition adapters that used to be `mush-server` modules (16b cut R-a, R2):
 // each maps one library seam onto the game's data and is wired below.
 pub mod campaign_formations;
+pub mod coprates_membership;
 pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
 pub mod industry_recipes;
 pub mod industry_seams;
 pub mod mail_transport;
+pub mod mind_commerce;
 pub mod salvage_source;
 pub mod seat_audit;
 pub mod sim_routes;
@@ -120,7 +122,20 @@ pub fn server_modules_with(
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
-    compose_server_modules(weather, economy, atlas, onboarding, game, recovery, false).0
+    let composed = compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Absent,
+        Ok::<_, std::convert::Infallible>,
+    );
+    match composed {
+        Ok(composed) => composed.0,
+        Err(never) => match never {},
+    }
 }
 
 /// [`server_modules_with`] for a roster that ALSO composes the TacSim layer (doc 18 cut IC5,
@@ -141,25 +156,127 @@ pub fn server_modules_with_tacsim(
     Vec<Box<dyn GameModule>>,
     mush_inventory::InventoryHandleCell,
 ) {
-    compose_server_modules(weather, economy, atlas, onboarding, game, recovery, true)
+    let composed = compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Standard,
+        Ok::<_, std::convert::Infallible>,
+    );
+    match composed {
+        Ok(composed) => composed,
+        Err(never) => match never {},
+    }
+}
+
+/// The existing full built-in roster with an explicit, prepared Registry and
+/// commerce configuration. Passing this value authorizes only its exact filing
+/// issuer in addition to the existing issuer set. Owner order, custody,
+/// providers, and inventory delegation remain the ordinary roster's.
+///
+/// Compose the returned inventory cell with
+/// [`tacsim_module_wired_with_mind_commerce`] using this same configuration.
+/// This creates no acknowledged deployment or commercial grant.
+///
+/// # Errors
+/// The actual native Economy configuration error from the supplied composition.
+pub fn server_modules_with_tacsim_and_mind_commerce(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &crate::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+    commerce: &mind_commerce::MindCommerce,
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    mush_core::ModError,
+> {
+    compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Commerce(commerce),
+        |module| commerce.configure_economy(module),
+    )
+}
+
+/// Explicit named M7 host entry using the same ordinary roster and owner order.
+///
+/// # Errors
+/// The actual native Economy configuration error from the supplied launch.
+pub fn server_modules_with_launch(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &crate::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+    launch: &crate::launch::LaunchComposition,
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    mush_core::ModError,
+> {
+    compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Launch(launch),
+        |module| launch.commerce().configure_economy(module),
+    )
+}
+
+enum TacsimComposition<'a> {
+    Absent,
+    Standard,
+    Commerce(&'a mind_commerce::MindCommerce),
+    Launch(&'a crate::launch::LaunchComposition),
 }
 
 /// The one body of [`server_modules_with`] and [`server_modules_with_tacsim`] (doc 18 cut
 /// IC5): `tacsim_delegate` adds [`crate::NS`] to `mush-inventory`'s quantity delegates, and
 /// the returned cell is the roster's inventory handle cell (filled by `mush-inventory`'s own
 /// `register`, so any module composed after it finds it filled).
-fn compose_server_modules(
+#[allow(clippy::too_many_arguments)]
+fn compose_server_modules<E>(
     weather: mush_weather::WeatherConfig,
     mut economy: mush_economy::EconomyConfig,
     atlas: mush_atlas::AtlasConfig,
     onboarding: &mush_core::OnboardingConfig,
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
-    tacsim_delegate: bool,
-) -> (
-    Vec<Box<dyn GameModule>>,
-    mush_inventory::InventoryHandleCell,
-) {
+    composition: TacsimComposition<'_>,
+    configure_economy: impl FnOnce(
+        mush_economy::EconomyModule,
+    ) -> Result<mush_economy::EconomyModule, E>,
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    E,
+> {
+    let (tacsim_delegate, commerce, launch) = match composition {
+        TacsimComposition::Absent => (false, None, None),
+        TacsimComposition::Standard => (true, None, None),
+        TacsimComposition::Commerce(commerce) => (true, Some(commerce), None),
+        TacsimComposition::Launch(launch) => (true, Some(launch.commerce()), Some(launch)),
+    };
     // Doc 18 cut IC3 (D-18-14; §4.7 "Config flips"): the corridor's ports
     // capitalize their institutions by one-shot treasury obligations of at most
     // 800,000 cr each, so the credit's own mint ceiling is contributed here as a
@@ -218,6 +335,12 @@ fn compose_server_modules(
     issuers.extend(mush_org::SystemPrincipalId::new(
         crate::port::hull::REGISTRY_ISSUER,
     ));
+    if let Some(commerce) = commerce {
+        let selected = commerce.filing_issuer();
+        if !issuers.contains(selected) {
+            issuers.push(selected.clone());
+        }
+    }
     let issuer = housing_on.then(housing_title_issuer);
     let market_issuer = market_on.then(market_title_issuer);
     // E7 cut 3 B1: the composition root's own wire between two modules whose
@@ -246,6 +369,18 @@ fn compose_server_modules(
     .into_iter()
     .chain(game.reserved_rooms.iter().copied())
     .collect();
+    let simulation = mush_sim::SimulationModule::new()
+        .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
+        .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
+    let tactics = match launch {
+        Some(launch) => launch.roster.tactics(),
+        None => mush_tactics::TacticsModule::with_catalog(tactics_catalog()),
+    }
+    .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
+    let (tactics, simulation) = match commerce {
+        Some(c) => c.configure_ic_physical(tactics, simulation),
+        None => (tactics, simulation),
+    };
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(
             mush_comsys::ComsysModule::new()
@@ -301,11 +436,7 @@ fn compose_server_modules(
         // same way — the manual-departure refusal on the resolved route and the
         // trade run's boundary and arrival narration (a no-op for anything that is
         // not a programme hull, so every roster carries it).
-        Box::new(
-            mush_sim::SimulationModule::new()
-                .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
-                .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks)),
-        ),
+        Box::new(simulation),
         // S1 (14-spatial-implementation-plan §3.1): the atlas — places with geometry
         // — immediately after `mush-sim`, whose placement graph S2's journeys read.
         // It owns the `atlas` records and the `+atlas`/`@atlas` surface; the packs
@@ -327,10 +458,7 @@ fn compose_server_modules(
         // the same unit from the same spec. The module composed with an empty
         // catalog until this cut and every `@unit/create` refused for want of a
         // schema.
-        Box::new(
-            mush_tactics::TacticsModule::with_catalog(tactics_catalog())
-                .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy)),
-        ),
+        Box::new(tactics),
         // E7 cut 7 (10b §3.7): the propagation layer itself. It composes AFTER
         // `mush-sim` (whose `SpatialState` every context is built from) and
         // after `mush-tactics` (whose leak-safe contact ledger its policy
@@ -360,7 +488,7 @@ fn compose_server_modules(
         // `custody-mismatch`. With sim ahead of it, the economy's custody
         // reconciliation and vault-backing validation see real state, and a
         // `Some(false)` can be trusted as the drift it claims to be.
-        Box::new(
+        Box::new({
             // E7 cut 3: `mush-industry` registers a `CustodyProvider` for its own
             // `CustodyRef::Registered { provider: "industry", .. }` backings, on
             // E3's rules unchanged (exactly one claiming provider,
@@ -368,7 +496,7 @@ fn compose_server_modules(
             // a registered backing has no world object, so `backing_valid`
             // answers without reading any state and cannot boot `Frozen` the way
             // an interior would.
-            mush_economy::EconomyModule::with_custody(vec![
+            let module = mush_economy::EconomyModule::with_custody(vec![
                 Arc::new(mush_sim::InteriorCustodyProvider),
                 Arc::new(mush_industry::IndustryCustodyProvider),
             ])
@@ -476,8 +604,13 @@ fn compose_server_modules(
             // Doc 18 cut IC14 row 7 (lead ruling L6): the market's dispute veto, on
             // every roster — game-neutral, it refuses only a seller disputing their
             // own sale into a bid and answers nothing with no market store.
-            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard)),
-        ),
+            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard));
+            let module = configure_economy(module)?;
+            match launch {
+                Some(launch) => launch.roster.economy(module),
+                None => module,
+            }
+        }),
         // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
         // It boots **immediately after `mush-economy`** because its own boot
         // reconciliation asks the economy about vault status — the housing
@@ -500,8 +633,8 @@ fn compose_server_modules(
         //
         // `mush-inventory -> {core, economy}` is unchanged and is pinned by
         // `mush-inventory/tests/e7c2.rs`: the new edge runs the other way.
-        Box::new(
-            mush_inventory::InventoryModule::new()
+        Box::new({
+            let module = mush_inventory::InventoryModule::new()
                 // E7 cut 3 B1: the cross-owner write bridge cut 2's own handoff
                 // named as cut 3's. `mush-inventory` delegates its typed
                 // families to `"industry"` so an extraction cycle debits the
@@ -539,15 +672,19 @@ fn compose_server_modules(
                 // registers no salvage action and refuses byte-identically to a
                 // wreck that does not exist.
                 .with_salvage_source(Arc::new(self::salvage_source::SimSalvageSource))
-                .with_handle_cell(Arc::clone(&inventory_handles)),
-        ),
+                .with_handle_cell(Arc::clone(&inventory_handles));
+            match launch {
+                Some(launch) => launch.roster.inventory(module),
+                None => module,
+            }
+        }),
         // E7 cut 3 (10b §3.3, D-E7-3, doc 10 §14): the neutral industry
         // authority. It composes **immediately after `mush-inventory`** — whose
         // handles and delegation it needs — and **before `mush-market`**, which
         // it does not touch at all: a `Representation::Lot` listing is still
         // refused at creation and lifting that refusal is cut 11's.
-        Box::new(
-            mush_industry::IndustryModule::new()
+        Box::new({
+            let module = mush_industry::IndustryModule::new()
                 .with_inventory(Arc::clone(&inventory_handles))
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
@@ -566,8 +703,12 @@ fn compose_server_modules(
                 // the TacSim layer, the site clerks' system opener, the surface draws the
                 // sweep reconciles each surface pool against, and the typed-state delegation
                 // to `tacsim` (the port tick and readiness read deposits).
-                .with_surface_seams_if(tacsim_delegate, &industry_handles),
-        ),
+                .with_surface_seams_if(tacsim_delegate, &industry_handles);
+            match launch {
+                Some(launch) => launch.roster.industry(module),
+                None => module,
+            }
+        }),
         // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
         // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
         // bond is an E4 hold on the economy's own carve-out lane, its `force.*`
@@ -633,6 +774,19 @@ fn compose_server_modules(
         // none of it, so it sits anywhere before the rulesets; here, beside the other
         // player-facing subsystems and ahead of `mush-script`'s deliberate last place.
         Box::new(mush_party::PartyModule::new()),
+        // 17d M6.1: neutral authoring records load before the game audits their
+        // immutable source references in on_all_loaded. Cross-namespace writes
+        // are delegated only on rosters which also compose the TacSim owner.
+        // Roll must also precede Market: its final commercial audit opens the
+        // readiness gate required by Market's paired renewal recovery. All
+        // ordinary owner load hooks finish before either final audit runs.
+        Box::new({
+            let module = mush_roll::RollModule::with_writers(tacsim_delegate.then_some(crate::NS));
+            match commerce {
+                Some(commerce) => commerce.configure_roll(module),
+                None => module,
+            }
+        }),
         // E6c (08f §2, §5): the neutral market. It boots **after** `mush-economy` —
         // it validates listings against real accounts, assets and vaults, and reads
         // the economy's own contract state for the trade tape the safe projection
@@ -671,20 +825,22 @@ fn compose_server_modules(
             // could reach `issue_title` answered `Unauthorized` — a permission
             // refusal for a capability the operator never asked for — instead of the
             // market's own "this server registers no market title issuer".
-            match market_issuer {
+            let m = match market_issuer {
                 Some(i) => m.with_issuer(i),
+                None => m,
+            };
+            let m = match commerce {
+                Some(commerce) => commerce.configure_market(m),
+                None => m,
+            };
+            match launch {
+                Some(launch) => launch.configure_market(m),
                 None => m,
             }
         }),
-        // 17d M6.1: neutral authoring records load before the game audits their
-        // immutable source references in on_all_loaded. Cross-namespace writes
-        // are delegated only on rosters which also compose the TacSim owner.
-        Box::new(mush_roll::RollModule::with_writers(
-            tacsim_delegate.then_some(crate::NS),
-        )),
         Box::new(mush_script::ScriptModule::new()),
     ];
-    (modules, Arc::clone(&inventory_handles))
+    Ok((modules, Arc::clone(&inventory_handles)))
 }
 
 /// **Doc 18 cut IC8's economy seam, composed only where the TacSim layer is**
@@ -850,6 +1006,10 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
             "relay.inspect",
             "relay.publish",
         ])
+        // Vocabulary declaration only; default composition grants nothing.
+        .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
+        .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
+        .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
 }
@@ -939,6 +1099,20 @@ pub fn tacsim_module_wired(
     inventory: mush_inventory::InventoryHandleCell,
 ) -> Box<dyn GameModule> {
     Box::new(crate::TacsimRuleset::with_game_content(cfg, game_content).with_inventory(inventory))
+}
+
+/// The real production layer with explicit prepared Registry configuration.
+/// Its exact config/catalog check refuses stale composition; no test-world
+/// flag or runtime authority is created by this constructor.
+pub fn tacsim_module_wired_with_mind_commerce(
+    cfg: crate::TacsimConfig,
+    game_content: bool,
+    inventory: mush_inventory::InventoryHandleCell,
+    commerce: &mind_commerce::MindCommerce,
+) -> Result<Box<dyn GameModule>, mush_core::ModError> {
+    let module =
+        crate::TacsimRuleset::with_game_content(cfg, game_content).with_inventory(inventory);
+    Ok(Box::new(commerce.configure_tacsim(module)?))
 }
 
 /// [`tacsim_module_wired`] as a **test world's** (IC3 L15; doc 18 cut IC5): the readiness

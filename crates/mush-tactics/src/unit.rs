@@ -59,6 +59,8 @@ use smol_str::SmolStr;
 
 use crate::mobility::{MobilityMode, MobilityProfile, ModeState};
 
+pub mod replacement;
+
 /// Max canonical length of any tactical id.
 pub const TACTICAL_ID_MAX: usize = 64;
 /// Maximum exact unit definitions in one frozen tactical catalog.
@@ -342,8 +344,8 @@ pub struct InstalledComponent {
     ///
     /// E3c gave the pointer a reader (`mush-economy` titles objects, and a title
     /// record names an `ObjId`), so it is no longer inert and no longer allowed
-    /// to outlive its referent: [`UnitMutationOp::SetComponentAsset`] is the one
-    /// way to change it, and the module nulls it on `ObjDestroyed` and at boot
+    /// to outlive its referent: [`UnitMutationOp::SetComponentAsset`] is the
+    /// ordinary mutation route, and the module nulls it on `ObjDestroyed` and at boot
     /// (`module.rs`). `mush-tactics` still takes **no** dependency on
     /// `mush-economy` — a dangling `ObjId` is a tactics-side integrity problem,
     /// and ObjIds are never reused, so the scrub cannot mis-target.
@@ -1198,7 +1200,7 @@ pub enum UnitMutationOp {
     },
     /// Point a component at an economic asset object, or clear the pointer
     /// (E3c). Idempotent; an unknown component is refused like every other
-    /// unresolved referent. This is the ONLY way
+    /// unresolved referent. This is the ordinary mutation route by which
     /// [`InstalledComponent::asset`] changes after `from_spec`, so a scrub is a
     /// real revision bump a queued order that captured `(subject, gen)` can see,
     /// not a silent doc edit.

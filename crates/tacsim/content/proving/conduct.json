@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "name": "safe_conduct.ground.v1",
+  "escort": "tacsim.unit.line_tank",
+  "carrier": "tacsim.unit.conduct_carrier",
+  "core": "tacsim.core.line",
+  "ground": "tacsim.arena.proving_ground",
+  "cargo": {
+    "compartment": "cargo",
+    "accepts": [
+      "stow.bulk"
+    ],
+    "limits": {
+      "si.mass_kg": 2000,
+      "si.volume_l": 4000
+    },
+    "commodity": "metals",
+    "quantity": 1,
+    "grade": 50
+  },
+  "seeds": [
+    2350,
+    2351,
+    2352,
+    2353,
+    2354
+  ],
+  "maximum_ms": 120000,
+  "roles": [
+    "Escort",
+    "Transit"
+  ],
+  "cases": [
+    "convoy",
+    "escort_threat",
+    "missing_charge",
+    "foreign_charge",
+    "hold_fire",
+    "threat_stop_resume",
+    "blocked_route",
+    "withdraw"
+  ],
+  "escort_cases": [
+    "convoy",
+    "escort_threat",
+    "missing_charge",
+    "foreign_charge",
+    "hold_fire",
+    "withdraw"
+  ],
+  "transit_cases": [
+    "convoy",
+    "missing_charge",
+    "hold_fire",
+    "threat_stop_resume",
+    "blocked_route",
+    "withdraw"
+  ],
+  "note": "Private deterministic proving scenario. Every step uses the captured native clock, real sandbox/profile, public commander order and earned perception. Cargo uses checked capacity and immutable lot custody; completion requires native arrival. This content grants no qualification or live IC authority by itself."
+}

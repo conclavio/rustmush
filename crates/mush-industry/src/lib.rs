@@ -64,7 +64,16 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption for `panic_in_result_fn`, so a test or
+// fixture helper that returns `Result` checks with `check!`/`check_eq!`/
+// `check_ne!` — its asserts as early `Err` returns. Declared before every other
+// module because `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 pub mod commands;
+pub mod core_production;
 pub mod custody;
 pub mod facility;
 pub mod facts;

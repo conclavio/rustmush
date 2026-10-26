@@ -102,7 +102,7 @@ pub fn boot_world() -> (World, Registry) {
 /// [`TestWorld::take_module_ops`]; timers (ticks, `@wait`) fire through
 /// [`TestWorld::fire_due`].
 pub struct TestWorld {
-    engine: Engine,
+    engine: Box<Engine>,
     next_conn: u64,
 }
 
@@ -137,7 +137,7 @@ impl TestWorld {
             .modules_loaded(HashMap::new(), &mut out, &mut fx)
             .expect("test module boot must not fail");
         let mut tw = TestWorld {
-            engine,
+            engine: Box::new(engine),
             next_conn: 0,
         };
         tw.connect(GOD); // boot-time output (none expected) is discarded
@@ -153,7 +153,7 @@ impl TestWorld {
     #[must_use]
     pub fn from_engine(engine: Engine) -> TestWorld {
         let mut tw = TestWorld {
-            engine,
+            engine: Box::new(engine),
             next_conn: 0,
         };
         tw.connect(GOD);
@@ -193,7 +193,7 @@ impl TestWorld {
     /// Consume the harness and return its real engine for driver-level tests.
     #[must_use]
     pub fn into_engine(self) -> Engine {
-        self.engine
+        *self.engine
     }
 
     /// Create a player named `name` in Limbo and mark them connected
@@ -317,6 +317,20 @@ impl TestWorld {
         out.take()
     }
 
+    /// Install the complete typed and owner-participant image after an exact
+    /// authoritative receipt, then deliver its action-state notifications.
+    pub fn install_composed_action_announcing(
+        &mut self,
+        installation: mush_core::composed::ComposedInstallation,
+    ) -> Vec<(Audience, OutputEvent)> {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine
+            .install_composed_action_announcing(installation, &mut out, &mut fx)
+            .expect("the composed fixture installs");
+        out.take()
+    }
+
     /// Feed wall time in (unix seconds) — module ticks and `@wait` due
     /// times are relative to it.
     pub fn set_now(&mut self, unix_seconds: i64) {
@@ -409,7 +423,7 @@ impl TestWorld {
         let (_, registry) = boot_world();
         let engine = Engine::with_modules(world, registry, modules)?;
         let mut tw = TestWorld {
-            engine,
+            engine: Box::new(engine),
             next_conn: self.next_conn,
         };
         tw.try_modules_loaded(boot)?;

@@ -71,7 +71,7 @@ class ComparisonTests(unittest.TestCase):
                               for index, row in enumerate(self.opening_rows)]
         self.frozen = {"format":2, "context":context, "games":[{
             "seed":index // 2, "swapped":index % 2 == 1,
-            "format":1, "match_id":index + 1, "limit":16 * 1024 * 1024,
+            "format":2, "match_id":index + 1, "limit":16 * 1024 * 1024,
             "engine":{}, "opening":{"state":json.dumps({"units":self.opening_units})},
             "clock":{}, "sources":[],
             "seals":[copy.deepcopy(seal), copy.deepcopy(opponent)]} for index in range(30)]}
@@ -136,6 +136,8 @@ class ComparisonTests(unittest.TestCase):
         self.assertFalse(result["intervals_do_not_overlap"])
         self.assertTrue(result["field_pilot_rate_in_external_wilson_95"])
         self.assertTrue(result["acceptance_passed"])
+        self.assertTrue(result["ci_gate"]["passed"])
+        self.assertEqual(result["ci_gate"]["report_only"], [])
         self.assertEqual(result["proving_faults"]["all_minds"], 0)
         self.assertIsNone(result["proving_faults"]["candidate"])
 
@@ -214,16 +216,21 @@ class ComparisonTests(unittest.TestCase):
 
     def test_overlapping_intervals_do_not_replace_the_point_rate_gate(self):
         # Both upper and lower misses can have overlapping Wilson intervals.
-        # They must still fail doc 17's port-point-rate-in-bot-interval gate.
+        # They still fail doc 17's port-point-rate-in-bot-interval criterion,
+        # recorded as such; under the owner's c58c3d98 parity exception CI
+        # reports the miss instead of failing on it.
         for wins in [21, 3]:
             with self.subTest(wins=wins):
                 self.set_embedded_wins(wins)
-                with self.assertRaisesRegex(ValueError, "point win rate is outside"):
-                    self.compare()
-                result = acceptance.read(self.directory / "comparison.json")
+                result = self.compare()
                 self.assertFalse(result["intervals_do_not_overlap"])
                 self.assertFalse(result["field_pilot_rate_in_external_wilson_95"])
                 self.assertFalse(result["acceptance_passed"])
+                self.assertIn("point win rate is outside", result["acceptance_failures"][0])
+                self.assertTrue(result["ci_gate"]["passed"])
+                self.assertEqual(result["ci_gate"]["hard_failures"], [])
+                self.assertIn("point win rate is outside", result["ci_gate"]["report_only"][0])
+                self.assertEqual(result["ci_gate"]["parity_exception"]["run"], "c58c3d98")
                 self.assertEqual(result["embedded_rhai"]["wins"], wins)
                 self.assertEqual(result["fresh_external_bot"]["timeouts"], 4)
                 self.assertEqual(result["context"], self.proving["context"])
@@ -231,11 +238,11 @@ class ComparisonTests(unittest.TestCase):
 
     def test_separated_intervals_preserve_the_failed_complete_report(self):
         self.set_embedded_wins(30)
-        with self.assertRaisesRegex(ValueError, "point win rate is outside"):
-            self.compare()
-        result = acceptance.read(self.directory / "comparison.json")
+        result = self.compare()
         self.assertTrue(result["intervals_do_not_overlap"])
         self.assertFalse(result["acceptance_passed"])
+        self.assertTrue(result["ci_gate"]["passed"])
+        self.assertEqual(len(result["ci_gate"]["report_only"]), 1)
         self.assertEqual(result["embedded_rhai"]["samples"], 30)
         self.assertEqual(result["interpretation"], "95% intervals do not overlap")
 
@@ -249,6 +256,8 @@ class ComparisonTests(unittest.TestCase):
         result = acceptance.read(self.directory / "comparison.json")
         self.assertTrue(result["field_pilot_rate_in_external_wilson_95"])
         self.assertFalse(result["acceptance_passed"])
+        self.assertFalse(result["ci_gate"]["passed"])
+        self.assertIn("3 mind faults", result["ci_gate"]["hard_failures"][0])
         self.assertEqual(result["proving_faults"]["all_minds"], 3)
         self.assertIsNone(result["proving_faults"]["candidate"])
         self.assertIsNone(result["proving_faults"]["opponent"])
@@ -352,7 +361,7 @@ class ComparisonTests(unittest.TestCase):
 
 class FrozenGameTests(unittest.TestCase):
     def setUp(self):
-        self.body = {"seed":2**64 - 1, "swapped":True, "format":1, "match_id":17,
+        self.body = {"seed":2**64 - 1, "swapped":True, "format":2, "match_id":17,
                      "limit":16 * 1024 * 1024, "engine":{}, "clock":{}, "sources":[],
                      "opening":{"state":'{"z":1,"a":"exact \\r\\n bytes"}'},
                      "seals":[{"unit":100}, {"unit":200}]}
@@ -406,7 +415,7 @@ class FrozenGameTests(unittest.TestCase):
             acceptance.frozen_game({**self.row, "extra":True})
 
     def test_rejects_changed_body_summary_even_with_correct_hash(self):
-        for key, value in [("format", 2), ("seed", True), ("swapped", 1), ("match_id", True)]:
+        for key, value in [("format", 1), ("seed", True), ("swapped", 1), ("match_id", True)]:
             with self.subTest(key=key):
                 altered = compressed_game({**self.body, key:value})
                 for summary in ["seed", "swapped", "match_id"]:

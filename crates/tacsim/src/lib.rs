@@ -68,6 +68,14 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption for `panic_in_result_fn`, so a test or
+// fixture helper that returns `Result` checks with `check!`/`check_eq!`/
+// `check_ne!` — its asserts as early `Err` returns. Declared before every other
+// module because `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 /// 16b cut A: **the combat arena's core library** (doc 16 §3.1–§3.4, §4, §8).
 ///
 /// A library with no input and no output: `arena::Arena` holds a match's state
@@ -117,10 +125,12 @@ pub mod deliberation;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
+pub mod hardware;
 pub mod ic_return;
 /// Doc 19 cut A.1: **the Kepler propagation** behind the moving sky — element
 /// tables, the calendar's Julian Day, the two-body solver (D-19-2 … D-19-4).
 pub mod kepler;
+pub mod launch;
 /// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
 /// counter, the RAM record of a match while it runs, the two custody transitions
 /// (`Boarding → Running` and the one check-in at `Ended | Aborted | Void`), the
@@ -170,6 +180,8 @@ pub mod store;
 /// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading
 /// rule, the geology key's boot and pin, the site ground cache and `@geology`.
 pub mod surface;
+/// Bounded Safe Conduct underwriting terms; owner services opt in separately.
+pub mod underwriting;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 
@@ -359,6 +371,21 @@ fn requires_cycle(
 
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
+    governed_hardware: Option<Box<hardware::Registration>>,
+    launch: Option<Box<launch::Registration>>,
+    ic_minds: Option<Box<minds::ic_sortie::registration::Registration>>,
+    coverage: Option<Box<underwriting::registration::Registration>>,
+    coverage_families: Option<underwriting::families::Families>,
+    registry_commerce: Option<Box<minds::registry::composition::Registration>>,
+    conduct_trials: Option<Box<minds::registry::conduct::composition::Registration>>,
+    fork_material: Option<mush_core::DefinitionRef>,
+    marked_registry: Option<mush_core::DefinitionRef>,
+    original_holdings: Option<mush_core::DefinitionRef>,
+    personal_filed_holdings: bool,
+    personal_source_forms: bool,
+    dependent_owner_holdings: bool,
+    entitlement_holdings: bool,
+    house_holdings: Option<mush_core::DefinitionRef>,
     cfg: TacsimConfig,
     /// The verified packs, or the host-facing message that names the failing file.
     loaded: Result<Vec<LoadedPack>, String>,
@@ -382,7 +409,57 @@ pub struct TacsimRuleset {
     goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
 }
 
+pub use minds::ic_sortie::{
+    CloseEvent as IcCloseEvent, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
+    IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
+};
 impl TacsimRuleset {
+    /// Add the real unarmed proving carrier before capturing Registry or
+    /// hardware catalogue references. This loads content, not qualification.
+    pub fn with_conduct_carrier(mut self) -> Result<Self, ModError> {
+        if self.governed_hardware.is_some()
+            || self.registry_commerce.is_some()
+            || self.conduct_trials.is_some()
+        {
+            return Err(ModError::msg(
+                "Conduct carrier must precede catalogue capture",
+            ));
+        }
+        let carrier = minds::registry::conduct::composition::carrier_pack()?;
+        let packs = self.loaded.as_mut().map_err(|e| ModError::msg(e.clone()))?;
+        if packs
+            .iter()
+            .any(|p| p.pack.manifest().id() == carrier.pack.manifest().id())
+        {
+            return Err(ModError::msg("Conduct carrier already configured"));
+        }
+        packs.push(carrier);
+        self.definition_catalog()?;
+        Ok(self)
+    }
+
+    /// Explicit actual owner composition; an absent region transition producer
+    /// still cannot mint a withheld departure or charge any premium.
+    pub fn with_hull_coverage(
+        mut self,
+        config: underwriting::CoverageConfiguration,
+    ) -> Result<Self, ModError> {
+        if self.coverage.is_some() {
+            return Err(ModError::msg("coverage already configured"));
+        }
+        self.coverage = Some(Box::new(config.layer(&self)?));
+        Ok(self)
+    }
+    pub fn coverage_host(&self) -> Option<underwriting::CoverageHost> {
+        self.coverage.as_deref().map(|r| r.host.clone())
+    }
+
+    /// The actual host retains opaque transition capabilities. This handle
+    /// creates no start/event and ordinary compositions return None.
+    pub fn ic_host(&self) -> Option<IcHost> {
+        self.ic_minds.as_deref().map(|r| r.host.clone())
+    }
+
     /// The layer with an explicit configuration.
     ///
     /// Parses eagerly: `register` refuses the composition if the packs do not verify,
@@ -424,6 +501,21 @@ impl TacsimRuleset {
             }
         };
         TacsimRuleset {
+            governed_hardware: None,
+            launch: None,
+            ic_minds: None,
+            coverage: None,
+            coverage_families: None,
+            registry_commerce: None,
+            conduct_trials: None,
+            fork_material: None,
+            marked_registry: None,
+            original_holdings: None,
+            personal_filed_holdings: false,
+            personal_source_forms: false,
+            dependent_owner_holdings: false,
+            entitlement_holdings: false,
+            house_holdings: None,
             cfg,
             loaded,
             test_world: false,
@@ -452,6 +544,64 @@ impl TacsimRuleset {
         self
     }
 
+    /// Enable the original-owner reader against the actual registered combat
+    /// manifest supplied by composition. Ordinary constructors leave this off.
+    /// Registry/Roll registration must independently declare this exact ref.
+    #[must_use]
+    pub fn with_original_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = false;
+        self.personal_source_forms = false;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+
+    /// Explicit OOC composition for current original personal Sealed Pin paid
+    /// holdings. No default activation, source display, IC seat or cash flow.
+    #[must_use]
+    pub fn with_personal_filed_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = true;
+        self.personal_source_forms = false;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+
+    /// Explicit v2 original-personal Pin execution and current paid source
+    /// reader. Actual Roll composition must install the exact versioned services.
+    /// No derivative access, grant, or source permission is created here.
+    #[must_use]
+    pub fn with_personal_filed_source_forms(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = true;
+        self.personal_source_forms = true;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+    /// Explicit dependent owner use/source; existing paid eligibility remains
+    /// based only on the paid holder's own acknowledged term and status.
+    pub fn with_dependent_owner_holdings(self, manifest: mush_core::DefinitionRef) -> Self {
+        let mut layer = self.with_personal_filed_source_forms(manifest);
+        layer.dependent_owner_holdings = true;
+        layer
+    }
+    /// Select the distinct current-customer reader; no licence is created.
+    pub fn with_mind_entitlement_holdings(self, manifest: mush_core::DefinitionRef) -> Self {
+        let mut layer = self.with_dependent_owner_holdings(manifest);
+        layer.entitlement_holdings = true;
+        layer
+    }
+
+    /// Add the distinct sealed House customer route. Existing personal owner
+    /// and paid routes retain their own exact family and eligibility contracts.
+    pub fn with_house_mind_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.house_holdings = Some(manifest);
+        self
+    }
+
     /// The layer, off.
     #[must_use]
     pub fn new() -> TacsimRuleset {
@@ -462,6 +612,16 @@ impl TacsimRuleset {
     #[must_use]
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
+    }
+
+    /// The exact composition-selected catalogue used by both mechanics and
+    /// Registry preparation. Ordinary layers retain the existing fielded set.
+    pub(crate) fn definition_catalog(&self) -> Result<definitions::Catalog, ModError> {
+        match &self.governed_hardware {
+            Some(hardware) => Ok(hardware.family.catalog().clone()),
+            None => definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
+                .map_err(|e| ModError::msg(e.to_string())),
+        }
     }
 
     /// The verified packs, or the message naming the failing file as a
@@ -545,6 +705,7 @@ impl GameModule for TacsimRuleset {
         };
         slot.install_packs(packs);
         reg.state(slot);
+        self.coverage_families = Some(underwriting::registration::register_base(reg)?);
         // Doc 20 cut SM.1 (§3.2, Q-20-12): the geology layer's RAM slot — the key the host hands
         // in after composition (`surface::install_geology`), the status the boot pass decides
         // once, the bodies' tables and the site ground cache. Never persisted.
@@ -564,6 +725,34 @@ impl GameModule for TacsimRuleset {
         // Standard Doctrine and its six presets. A test rig installs another
         // through `match_::holdings::install_holdings`.
         reg.state(match_::holdings::HoldingsSeam::production());
+        if let Some(manifest) = &self.original_holdings {
+            if self.entitlement_holdings {
+                match_::original_access::register_entitlements(reg, manifest)?;
+                minds::workshop::filed_source::register_entitlements(reg, manifest)?;
+                minds::workshop::filed_source::register_dependent(reg, manifest)?;
+            } else if self.dependent_owner_holdings {
+                match_::original_access::register_dependent_owners(reg, manifest)?;
+                minds::workshop::filed_source::register(reg, manifest)?;
+                minds::workshop::filed_source::register_dependent(reg, manifest)?;
+            } else if self.personal_source_forms {
+                match_::original_access::register_personal_source_forms(reg, manifest)?;
+                minds::workshop::filed_source::register(reg, manifest)?;
+            } else if self.personal_filed_holdings {
+                match_::original_access::register_personal(reg, manifest)?;
+            } else {
+                match_::original_access::register(reg, manifest)?;
+            }
+        }
+        if let Some(manifest) = &self.house_holdings {
+            if self
+                .original_holdings
+                .as_ref()
+                .is_some_and(|old| old != manifest)
+            {
+                return Err(ModError::msg("House and personal holding manifests differ"));
+            }
+            match_::original_access::register_house(reg, manifest)?;
+        }
         // Doc 18 cut IC4 (lead ruling L14): hull rooms are not atlas rooms, so
         // their details live on tacsim's own attribute shelf, and `look
         // <detail>` finds them through the registered prefix (16b cut D.5's
@@ -620,8 +809,7 @@ impl GameModule for TacsimRuleset {
         // **16b cut Q.8**: `build_fielded`, so the five extension items are
         // registered through the same C1 route as the stock eight and a
         // persisted unit may point at one.
-        let catalog = definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
-            .map_err(|error| ModError::msg(error.to_string()))?;
+        let catalog = self.definition_catalog()?;
         for kind in definitions::KINDS {
             let of_kind: Vec<_> = catalog
                 .descriptors
@@ -638,6 +826,15 @@ impl GameModule for TacsimRuleset {
         for descriptor in &catalog.descriptors {
             reg.definition(descriptor.clone())?;
         }
+        if let Some(launch) = &self.launch {
+            launch.register(reg)?;
+        }
+        if let Some(hardware) = &self.governed_hardware {
+            hardware.register(reg)?;
+        }
+        hardware::PublishedHardware::shipped()
+            .map_err(|error| ModError::msg(error.to_string()))?
+            .register(reg)?;
         // 16b cut T.2: the arena's world side — the `arena.cockpit` and
         // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
         // second), the
@@ -688,11 +885,13 @@ impl GameModule for TacsimRuleset {
         // neighbours: the tick returns at once while the layer is off.
         // Doc 18 cut IC9: the departure burn's provider holds the drive table built
         // here from the fielded catalog and the layer's goods table (D-18-11).
-        port_tick::register(
+        port_tick::register_with_coverage(
             reg,
             self.test_world,
             self.inventory.as_ref(),
             port::burn::burn_table(&catalog, self.goods.clone()),
+            self.ic_minds.as_deref(),
+            self.coverage.as_deref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -701,6 +900,55 @@ impl GameModule for TacsimRuleset {
         // Doc 18 cut IC8 (§4.3 "Stock and capital"; 18a C07/C08/P07/P08/P09/P11):
         // the boards. Registered unconditionally; silent while the layer is off.
         port::board::register_hooks(reg)?;
+        if let Some(registry) = &self.registry_commerce {
+            registry.register_with_conduct(
+                reg,
+                &self.cfg,
+                &catalog,
+                self.ic_minds.is_some(),
+                self.coverage.is_some(),
+                self.conduct_trials.is_some(),
+            )?;
+            if let Some(conduct) = &self.conduct_trials {
+                conduct.register(reg, &self.cfg, &catalog)?;
+            }
+            if let Some(ic) = &self.ic_minds {
+                ic.register(reg, &self.cfg, registry.reference())?;
+                if let Some(coverage) = &self.coverage {
+                    coverage.register(
+                        reg,
+                        self.coverage_families
+                            .clone()
+                            .ok_or_else(|| ModError::msg("coverage families unavailable"))?,
+                    )?;
+                }
+            }
+            if let Some(manifest) = &self.fork_material {
+                if manifest != registry.reference() {
+                    return Err(ModError::msg("fork material Registry differs"));
+                }
+                minds::workshop::fork_material::register(reg, manifest)?;
+                minds::workshop::authored_access::register(reg, manifest)?;
+            }
+            if let Some(manifest) = &self.marked_registry {
+                if self.fork_material.as_ref() != Some(manifest) || manifest != registry.reference()
+                {
+                    return Err(ModError::msg(
+                        "marked Registry requires exact authored fork composition",
+                    ));
+                }
+                minds::bulk::registry_service::register_marked(reg, manifest)?;
+            }
+        } else if self.fork_material.is_some()
+            || self.marked_registry.is_some()
+            || self.ic_minds.is_some()
+            || self.coverage.is_some()
+            || self.conduct_trials.is_some()
+        {
+            return Err(ModError::msg(
+                "fork material requires actual Registry registration",
+            ));
+        }
         Ok(())
     }
 
@@ -713,6 +961,8 @@ impl GameModule for TacsimRuleset {
             Ok(packs) => packs.clone(),
             Err(detail) => return Err(ModError::msg(detail.clone())),
         };
+        minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_deref())?;
+        underwriting::boot::load(ctx, &data, self.coverage.as_deref())?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv
             .iter()
@@ -878,6 +1128,19 @@ impl GameModule for TacsimRuleset {
             );
         }
         Ok(())
+    }
+    fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        if let Some(launch) = &self.launch {
+            launch.finalize(ctx)?;
+        }
+        minds::bulk::conduct_service::finalize(ctx, self.conduct_trials.is_some())?;
+        underwriting::boot::finalize(
+            ctx,
+            self.coverage_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("coverage families unavailable"))?,
+            self.coverage.as_deref(),
+        )
     }
 }
 

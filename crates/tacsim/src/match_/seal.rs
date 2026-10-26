@@ -54,7 +54,14 @@
 //!    definition, selected profile bindings and bound programs. Even a single
 //!    Line profile is explicit; [`MindSeal::rom`] carries the frozen fallback.
 //!
-//! The class the mind thinks at is `min(rated, core_class, class_cap)` under
+//! Draft and doctrine execution uses `min(rated, core_class, class_cap)`. A
+//! filed certificate keeps the immutable declaration and measured minimum
+//! separate: non-ROM execution must meet that minimum and use its exact source
+//! and definition. Missing/Class0 hardware still captures native ROM while the
+//! requested certificate remains in the seal. The terms' rating is checked
+//! against the certificate before either execution path is selected.
+//!
+//! The ordinary class calculation is under
 //! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
 //! and [`SealTerms::class_cap`] (17b cut M3's ruling, the plan's F4; 17b cut
 //! M4.1 put the rating and the cap on the terms and the think side reads the
@@ -126,12 +133,13 @@ pub const NO_CORE_FALLBACK: &str = "no core: the ROM";
 /// mind's identity, the profiles sealed and why a substituted hull flies
 /// Standard Doctrine (`fallback`).
 ///
-/// **`rated` and `engine_for_minds` stay the terms' own and authoritative**
+/// **Draft and doctrine `rated` and `engine_for_minds` stay the terms' own**
 /// (17b cut M5.2): [`seal_for`] takes only the five identity fields from
 /// [`SealTerms::identity`], never a rating or an engine, so every fixture
 /// lever ([`SealTerms::rated`], a scripted muster's engine, the harness's
 /// Load III heavies) stays whole and no seal digest moves by a second source
-/// of either.
+/// of either. Filed identities instead require these terms to agree with the
+/// immutable certificate and require scripted execution outside ROM.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealTerms {
     /// Authored immutable revision data; None selects the stock adapter below.
@@ -207,6 +215,43 @@ pub struct SealTerms {
     /// [`seal_for`] writes it as [`MindSeal::fallback`], unless the hull has
     /// no core, whose [`NO_CORE_FALLBACK`] says what actually flies (the ROM).
     pub fallback: Option<SmolStr>,
+}
+
+/// Internal shared execution inputs, deliberately without a match identity.
+/// A policy is data, not admission, a start event, or permission to publish.
+pub(crate) struct SealPolicy<'a> {
+    pub(crate) authored: Option<&'a CardDefinition>,
+    pub(crate) selected_profiles: &'a [SmolStr],
+    pub(crate) classes: &'a ClassTable,
+    pub(crate) rom_cfg: &'a ReflexConfig,
+    pub(crate) principal: &'a Option<CharacterRef>,
+    pub(crate) card: &'a StockCard,
+    pub(crate) odds_floor_permille: u32,
+    pub(crate) engine_for_minds: SealEngine,
+    pub(crate) rated: CoreClass,
+    pub(crate) class_cap: CoreClass,
+    pub(crate) identity: &'a SealIdentity,
+    pub(crate) profiles: &'a [(SmolStr, StockCard)],
+    pub(crate) fallback: &'a Option<SmolStr>,
+}
+impl<'a> From<&'a SealTerms> for SealPolicy<'a> {
+    fn from(v: &'a SealTerms) -> Self {
+        Self {
+            authored: v.authored.as_deref(),
+            selected_profiles: &v.selected_profiles,
+            classes: &v.classes,
+            rom_cfg: &v.rom_cfg,
+            principal: &v.principal,
+            card: &v.card,
+            odds_floor_permille: v.odds_floor_permille,
+            engine_for_minds: v.engine_for_minds,
+            rated: v.rated,
+            class_cap: v.class_cap,
+            identity: &v.identity,
+            profiles: &v.profiles,
+            fallback: &v.fallback,
+        }
+    }
 }
 
 /// **The fallback a substituted seal records** (17b cut M5.2; Q-UM-15 at the
@@ -411,11 +456,30 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             rounds_max: w.count_per_load,
         })
         .collect::<Vec<_>>();
+    seal_with_policy(
+        unit.id,
+        &unit.unit,
+        &weapons,
+        SortieId::in_match(terms.match_id.0, unit.id),
+        &SealPolicy::from(terms),
+    )
+}
+
+/// Pure executable sealing over actual owner hardware. The caller supplies an
+/// already allocated sortie identity; this calculation grants no custody or
+/// host-transition authority. OOC retains its exact wrapper above.
+pub(crate) fn seal_with_policy(
+    id: mush_core::ObjId,
+    unit: &mush_tactics::TacticalUnit,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    sortie: SortieId,
+    terms: &SealPolicy<'_>,
+) -> Result<MindSeal, SealError> {
     let mut channels = vec![Channel::Helm, Channel::Sensors];
     if !weapons.is_empty() {
         channels.push(Channel::Fire);
     }
-    let hardware = read_core(&unit.unit);
+    let hardware = read_core(unit);
     if let Some(hw) = hardware.as_ref()
         && hw.governed
         && terms.rated > hw.class
@@ -432,12 +496,31 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         None => (None, CoreClass::Zero, true),
     };
     let class = terms.rated.min(core_class).min(terms.class_cap);
+    if let Some(certificate) = terms.identity.origin.certificate() {
+        let definition = terms.authored.ok_or_else(|| {
+            SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "filed source requires its complete certified definition".into(),
+            })
+        })?;
+        certificate.verify_definition(definition)?;
+        if terms.rated != certificate.minimum
+            || terms.engine_for_minds != SealEngine::Scripted
+            || (class != CoreClass::Zero && class != certificate.minimum)
+        {
+            return Err(SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "selected class or engine is below the certified execution requirement"
+                    .into(),
+            }));
+        }
+    }
     let rom_identity = SealIdentity::doctrine();
     let rom = SealedCards::prepare(
-        rom_definition(&terms.rom_cfg, terms.odds_floor_permille)?,
+        rom_definition(terms.rom_cfg, terms.odds_floor_permille)?,
         &[],
         &terms.classes.row(CoreClass::Zero),
-        &weapons,
+        weapons,
         &channels,
         terms.odds_floor_permille,
     )?;
@@ -450,17 +533,17 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
         )
     } else {
-        let cards = prepare_cards(terms, class, &weapons, &channels)?;
+        let cards = prepare_policy_cards(terms, class, weapons, &channels)?;
         (
-            terms.identity.clone(),
+            (*terms.identity).clone(),
             terms.engine_for_minds,
             cards,
-            terms.fallback.clone(),
+            (*terms.fallback).clone(),
         )
     };
     let seal = MindSeal {
-        unit: unit.id,
-        sortie: SortieId::in_match(terms.match_id.0, unit.id),
+        unit: id,
+        sortie,
         core,
         core_class,
         class,
@@ -468,13 +551,13 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         mind: identity.mind,
         origin: identity.origin,
         source_sha256: identity.source_sha256,
-        requested: terms.identity.clone(),
+        requested: (*terms.identity).clone(),
         card: cards.opening_card.clone(),
         card_digest: cards.opening_digest,
         abi: crate::minds::MIND_ABI.into(),
-        principal: terms.principal.clone(),
+        principal: (*terms.principal).clone(),
         channels,
-        weapons: weapons.clone(),
+        weapons: weapons.to_vec(),
         odds_floor_permille: terms.odds_floor_permille,
         fallback,
         engine,
@@ -482,7 +565,7 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         rom_identity,
         rom,
     };
-    seal.verify(&terms.classes, &weapons)?;
+    seal.verify(terms.classes, weapons)?;
     Ok(seal)
 }
 
@@ -493,17 +576,37 @@ pub fn prepare_cards(
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
 ) -> Result<SealedCards, SealError> {
-    let (definition, names) = if let Some(definition) = &terms.authored {
-        if definition.declared_class != terms.rated
-            || terms.engine_for_minds != SealEngine::Scripted
-        {
+    prepare_policy_cards(&SealPolicy::from(terms), class, weapons, channels)
+}
+fn prepare_policy_cards(
+    terms: &SealPolicy<'_>,
+    class: CoreClass,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    channels: &[Channel],
+) -> Result<SealedCards, SealError> {
+    terms.identity.validate()?;
+    let (definition, names) = if let Some(definition) = terms.authored {
+        let class_matches = match terms.identity.origin.certificate() {
+            Some(certificate) => {
+                certificate.verify_definition(definition)?;
+                terms.rated == certificate.minimum && class == certificate.minimum
+            }
+            None => definition.declared_class == terms.rated,
+        };
+        if !class_matches || terms.engine_for_minds != SealEngine::Scripted {
             return Err(SealError::Schema(crate::arena::schema::SchemaError {
                 field: "mind".into(),
                 message: "authored source class or engine differs from immutable revision".into(),
             }));
         }
-        ((**definition).clone(), terms.selected_profiles.clone())
+        (definition.clone(), terms.selected_profiles.to_vec())
     } else {
+        if terms.identity.origin.certificate().is_some() {
+            return Err(SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "filed source cannot reconstruct its definition from stock presets".into(),
+            }));
+        }
         let selected = sealed_set(terms)?;
         for (name, card) in &selected {
             card.pair(name).map_err(SealError::Card)?;
@@ -541,9 +644,9 @@ pub fn prepare_cards(
 /// [`SealError::Card`] naming the presets for a profile that is none of
 /// them, and a range of 1 to 4 for a set of more than four — neither
 /// reachable through the lobby, which refuses both at the choice.
-fn sealed_set(terms: &SealTerms) -> Result<Vec<(&'static str, &StockCard)>, SealError> {
+fn sealed_set<'a>(terms: &SealPolicy<'a>) -> Result<Vec<(&'static str, &'a StockCard)>, SealError> {
     if terms.profiles.is_empty() {
-        return Ok(vec![("Line", &terms.card)]);
+        return Ok(vec![("Line", terms.card)]);
     }
     if terms.profiles.len() > crate::arena::card::ProfileSet::MOST {
         return Err(SealError::Card(CardError::Range {
@@ -664,6 +767,204 @@ mod tests {
             principal: Some(CharacterRef::Character { id: ObjId(77) }),
             ..SealTerms::fixture()
         }
+    }
+
+    /// Structural seal evidence only: this does not manufacture a usable Roll
+    /// receipt or exercise Registry certification. The owner-reader tests cover
+    /// current authority; here the pure arena must preserve exact bindings.
+    fn filed_terms() -> SealTerms {
+        use crate::arena::profile_seal::FiledCertificate;
+        use mush_core::DefinitionDigest;
+        let mut terms = terms();
+        let definition =
+            stock_definition(&[("Line".into(), terms.card.clone())], CoreClass::I).unwrap();
+        let certificate = FiledCertificate {
+            revision_character: ObjId(77),
+            revision_mind: 1,
+            revision_number: 1,
+            revision_digest: DefinitionDigest::from_bytes([1; 32]),
+            source_digest: DefinitionDigest::from_bytes([9; 32]),
+            rating_job: mush_core::CommitToken::from_bytes([4; 16]),
+            rating_id: DefinitionDigest::from_bytes([2; 32]),
+            rating_schema: 1,
+            rating_digest: DefinitionDigest::from_bytes([3; 32]),
+            compatibility: DefinitionDigest::from_bytes([4; 32]),
+            definition: definition.validate().unwrap(),
+            declared: CoreClass::I,
+            minimum: CoreClass::II,
+        };
+        terms.authored = Some(Arc::new(definition));
+        terms.selected_profiles = vec!["Line".into()];
+        terms.identity = SealIdentity {
+            mind: "Certified fixture".into(),
+            origin: MindOrigin::Filed {
+                charter: "1".into(),
+                line: "1".into(),
+                revision: 1,
+                licence: "1".into(),
+                certificate: Box::new(certificate),
+            },
+            source_sha256: [9; 32],
+        };
+        terms.rated = CoreClass::II;
+        terms.engine_for_minds = SealEngine::Scripted;
+        terms
+    }
+
+    #[test]
+    fn m7_filed_seal_preserves_declared_definition_and_requires_certified_execution() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::LINE_TANK,
+            ObjId(4),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        assert_eq!(unit.seal.class, CoreClass::II);
+        assert_eq!(unit.seal.cards.definition.declared_class, CoreClass::I);
+        assert_eq!(unit.seal.requested, terms.identity);
+        assert_eq!(unit.seal.identity(), terms.identity);
+        assert_eq!(Some(&unit.seal.cards.definition), terms.authored.as_deref());
+        let restored: MindSeal =
+            serde_json::from_slice(&serde_json::to_vec(&unit.seal).unwrap()).unwrap();
+        restored.verify(&terms.classes, &unit.seal.weapons).unwrap();
+        assert_eq!(restored, unit.seal);
+
+        let mut low = terms.clone();
+        low.class_cap = CoreClass::I;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "a nonzero cap cannot underclock certification"
+        );
+        low = terms.clone();
+        low.rated = CoreClass::I;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "terms cannot replace the certified minimum"
+        );
+        low = terms.clone();
+        low.engine_for_minds = SealEngine::Native;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "filed source cannot enter free native execution"
+        );
+        low = terms.clone();
+        low.authored = None;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "no stock-preset reconstruction for filed source"
+        );
+    }
+
+    #[test]
+    fn m7_filed_rom_keeps_requested_certificate_and_checks_it_before_substitution() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::TARGET_MK1,
+            ObjId(9),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        assert_eq!(unit.seal.class, CoreClass::Zero);
+        assert_eq!(unit.seal.identity(), unit.seal.rom_identity);
+        assert_eq!(unit.seal.cards, unit.seal.rom);
+        assert_eq!(unit.seal.requested, terms.identity);
+        let restored: MindSeal =
+            serde_json::from_slice(&serde_json::to_vec(&unit.seal).unwrap()).unwrap();
+        restored.verify(&terms.classes, &unit.seal.weapons).unwrap();
+        assert_eq!(restored.requested, terms.identity);
+        assert_eq!(
+            super::super::selection_refs::revisions([&restored, &unit.seal]),
+            vec![mush_roll::RevisionRef {
+                key: mush_roll::RevisionKey {
+                    character: ObjId(77),
+                    mind: 1,
+                    number: 1
+                },
+                digest: mush_core::DefinitionDigest::from_bytes([1; 32]),
+            },],
+            "ROM retains the exact requested revision once for open/result/tape roots"
+        );
+        let mut wrong_source = terms.clone();
+        wrong_source.identity.source_sha256 = [8; 32];
+        assert!(seal_for(&unit, &wrong_source).is_err());
+        let mut wrong_definition = terms.clone();
+        wrong_definition.authored = Some(Arc::new(
+            stock_definition(&[("Other".into(), terms.card.clone())], CoreClass::I).unwrap(),
+        ));
+        assert!(seal_for(&unit, &wrong_definition).is_err());
+    }
+
+    #[test]
+    fn m7_filed_certificate_decode_and_seal_binding_are_closed() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::LINE_TANK,
+            ObjId(4),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        let origin = serde_json::to_value(&terms.identity.origin).unwrap();
+        let mut absent = origin.clone();
+        absent.as_object_mut().unwrap().remove("certificate");
+        assert!(serde_json::from_value::<MindOrigin>(absent).is_err());
+        let mut missing_job = origin.clone();
+        missing_job
+            .get_mut("certificate")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("rating_job");
+        assert!(
+            serde_json::from_value::<MindOrigin>(missing_job).is_err(),
+            "a content digest cannot replace the exact durable receipt key"
+        );
+        let mut extra = origin;
+        extra
+            .get_mut("certificate")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("authority".into(), serde_json::json!(true));
+        assert!(serde_json::from_value::<MindOrigin>(extra).is_err());
+        let mut tampered = unit.seal.clone();
+        tampered.source_sha256 = [8; 32];
+        assert!(tampered.verify(&terms.classes, &unit.seal.weapons).is_err());
+        tampered = unit.seal.clone();
+        tampered.class = CoreClass::I;
+        assert!(tampered.verify(&terms.classes, &unit.seal.weapons).is_err());
+        tampered = unit.seal.clone();
+        if let MindOrigin::Filed { certificate, .. } = &mut tampered.requested.origin {
+            certificate.rating_digest = mush_core::DefinitionDigest::from_bytes([7; 32]);
+        }
+        assert_ne!(
+            tampered.digest(),
+            unit.seal.digest(),
+            "requested certificate is hashed"
+        );
+        assert!(
+            tampered.verify(&terms.classes, &unit.seal.weapons).is_err(),
+            "effective and requested receipts must agree"
+        );
+        tampered = unit.seal.clone();
+        if let MindOrigin::Filed { certificate, .. } = &mut tampered.requested.origin {
+            certificate.rating_job = mush_core::CommitToken::from_bytes([5; 16]);
+        }
+        assert_ne!(
+            tampered.digest(),
+            unit.seal.digest(),
+            "a different rating attempt changes custody identity"
+        );
+        assert!(
+            tampered.verify(&terms.classes, &unit.seal.weapons).is_err(),
+            "a requested receipt cannot name a different durable job"
+        );
     }
 
     /// **17b cut M3.3** (doc 17 §13): every field of a shipped line tank's
@@ -971,8 +1272,8 @@ mod m5_tests {
         )
     }
 
-    /// Default seal identities, re-blessed at M5rules for API 2 and the stock
-    /// source's API header. The Line card alone is pinned under
+    /// Default seal identities retain the reviewed API 4 custody pins as an
+    /// exact identity-only migration control. The Line card alone is pinned under
     /// [`SealTerms::fixture`] ([`MindSeal::fixture`]) and
     /// under [`SealTerms::production_fixture`] (what `crate::match_::start`
     /// seals an unchosen hull under), on an armed line tank, the heavy (the
@@ -981,7 +1282,18 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=5;stock=2");
+        let api4_source = crate::arena::snapshot::digest_from_text(
+            "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
+        )
+        .expect("the retained API 4 Standard source digest");
+        let api5_source = crate::arena::snapshot::digest_from_text(
+            "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af",
+        )
+        .expect("the reviewed API 5 Standard source digest");
+        assert_eq!(crate::minds::content::standard_digest().0, api5_source);
         let mut got = Vec::new();
+        let mut api4_got = Vec::new();
         for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
             for (which, terms) in [
                 ("fixture", SealTerms::fixture()),
@@ -999,6 +1311,25 @@ mod m5_tests {
                 if which == "fixture" {
                     assert_eq!(unit.seal, MindSeal::fixture(&unit), "{entry}");
                 }
+                assert!(
+                    unit.seal.abi == crate::minds::MIND_ABI
+                        && unit.seal.source_sha256 == api5_source
+                        && unit.seal.requested.source_sha256 == api5_source
+                        && unit.seal.rom_identity.source_sha256 == api5_source,
+                    "the actual default seal must carry all reviewed API 5 identities"
+                );
+                // Only the declared ABI and Standard's one-byte comment change
+                // may differ. Hash the actual seal type through its real digest
+                // path; every other custody byte remains covered by the old pins.
+                let mut api4 = unit.seal.clone();
+                api4.abi = "rhai=1.26.0;api=4;stock=2".into();
+                api4.source_sha256 = api4_source;
+                api4.requested.source_sha256 = api4_source;
+                api4.rom_identity.source_sha256 = api4_source;
+                api4_got.push(format!(
+                    "{entry} {which} {}",
+                    crate::arena::snapshot::digest_text(&api4.digest())
+                ));
                 let text = serde_json::to_string(&unit.seal).expect("a seal writes");
                 assert!(
                     serde_json::from_str::<serde_json::Value>(&text).unwrap()["card"].is_array()
@@ -1013,7 +1344,7 @@ mod m5_tests {
         // weapon facts/ROM and API 4. Standard's body is unchanged from M5r;
         // its API header alone changes the source digest. Cross-host gates must
         // reproduce this complete array before accepting the release.
-        let pinned = [
+        let api4_pinned = [
             "tacsim.unit.line_tank fixture \
              5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
             "tacsim.unit.line_tank production_fixture \
@@ -1032,6 +1363,34 @@ mod m5_tests {
              c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
             "tacsim.unit.target_mk1 production_principal \
              0e3ea202b9b5bb3179245ab95357f673e13b831bf49f13a462eabc5aff5436b3",
+        ];
+        assert_eq!(
+            api4_got, api4_pinned,
+            "default seal custody changed beyond the declared ABI/source migration"
+        );
+        // N109 emitted these exact API 5 identities for the same nine actual
+        // checkouts. The old pins above independently reject any other custody
+        // change. These are Linux observations; cross-host reproduction remains
+        // required before release acceptance.
+        let pinned = [
+            "tacsim.unit.line_tank fixture \
+             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+            "tacsim.unit.line_tank production_fixture \
+             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+            "tacsim.unit.line_tank production_principal \
+             b908ec2ff3302187c848725e492d944b49ba2582b26231eb0122880e8751d830",
+            "tacsim.unit.heavy_mk1 fixture \
+             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+            "tacsim.unit.heavy_mk1 production_fixture \
+             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+            "tacsim.unit.heavy_mk1 production_principal \
+             6bea8cd8289c331449cf266c4f3e24a19b80999176a894d653449b719114e810",
+            "tacsim.unit.target_mk1 fixture \
+             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+            "tacsim.unit.target_mk1 production_fixture \
+             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+            "tacsim.unit.target_mk1 production_principal \
+             879a3cdaee7b6c57d42da2a1b94dd38f9fc8dd465fdb192cf8de354bc7dffb02",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }
@@ -1146,11 +1505,11 @@ mod m5_tests {
         // The identity is the terms' — its rating and engine are not.
         let identity = SealIdentity {
             mind: SmolStr::new_static("Fixture I"),
-            origin: MindOrigin::Filed {
-                charter: "Fixture".into(),
-                line: "fixture_i".into(),
+            origin: MindOrigin::Draft {
+                character: ObjId(77),
+                mind: 1,
                 revision: 1,
-                licence: "test".into(),
+                digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
             },
             source_sha256: [9; 32],
         };

@@ -201,6 +201,28 @@
           ]
         }
       }
+    },
+    "m7_deterministic_update": {
+      "cut": "M7",
+      "recorded_utc": "2026-10-25T14:32:17+00:00",
+      "measured_revision": "5e3c39dc",
+      "source_sha256": "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af",
+      "mind_abi": "rhai=1.26.0;api=5;stock=2",
+      "snapshot_format": 16,
+      "frame_version": 7,
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.ceiling_authored.final_substep_hash",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash"
+      ],
+      "verified_hosts": [
+        "windows/alien18",
+        "linux/github-ubuntu-latest (run 40196613140)"
+      ],
+      "reason": "M7 ec886bb4 raised the mind API to 5 (MIND_ABI and the Standard Doctrine's sealed source identity), which every minds-lane seal and the sealed tape lines carry. Setting only the API back to 4 on the measured tree returns all five leaves to their previous values exactly; origin/main 9df93246 alone matches the previous values. The five new values agree on Windows and Linux.",
+      "timing_policy": "Original VPS timings and host retained; no threshold or host comparison changed."
     }
   },
   "classes": {
@@ -246,7 +268,7 @@
     "frames_per_pulse_mean": 21.25,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1642437,
+    "ledger_bytes_streamed": 1642999,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -286,7 +308,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "14062196396185489584",
+      "final_substep_hash": "15535978820706913562",
       "inline_thinks": 1747,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -392,7 +414,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "14629505131114303637",
+      "final_substep_hash": "2597155710936598970",
       "inline_thinks": 1672,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -434,7 +456,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "10692920777587841370",
+      "final_substep_hash": "11861791163083043009",
       "inline_thinks": 1687,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -467,7 +489,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "5894298730668762494",
+      "final_substep_hash": "13514296095064921033",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

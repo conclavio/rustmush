@@ -2420,6 +2420,65 @@ pub fn entry_cell(
     best.map(|(_, cell)| cell)
 }
 
+/// An own-entry goal whose whole motor arrival square lies inside the zone.
+///
+/// Unlike [`entry_cell`], this is for a caller that needs physical entry,
+/// rather than proximity to the nearest boundary. Each own zone is inset by
+/// [`ARRIVE_CELLS`]; its clamped interior cell is tried first, then its nearest
+/// passable interior cell by Manhattan distance. At most [`MAX_ENTRY_SCAN`]
+/// terrain probes are shared across all zones. Thin, blocked or exhausted
+/// zones supply no boundary fallback. Path clearance remains the motor's job.
+#[must_use]
+pub fn entry_interior_cell(
+    def: &ArenaDefinition,
+    team: Team,
+    cost_row: CostRow,
+    here: (u16, u16),
+) -> Option<(u16, u16)> {
+    let mut best: Option<(u32, (u16, u16))> = None;
+    let mut read = 0_usize;
+    for zone in def.entry_zones.iter().filter(|zone| zone.team == team) {
+        let (Some(x0), Some(x1), Some(y0), Some(y1)) = (
+            zone.x0.min(zone.x1).checked_add(ARRIVE_CELLS),
+            zone.x0.max(zone.x1).checked_sub(ARRIVE_CELLS),
+            zone.y0.min(zone.y1).checked_add(ARRIVE_CELLS),
+            zone.y0.max(zone.y1).checked_sub(ARRIVE_CELLS),
+        ) else {
+            continue;
+        };
+        if x0 > x1 || y0 > y1 {
+            continue;
+        }
+        let clamped = (here.0.clamp(x0, x1), here.1.clamp(y0, y1));
+        if read == MAX_ENTRY_SCAN {
+            return best.map(|(_, cell)| cell);
+        }
+        read += 1;
+        if def.terrain.passable_for(cost_row, clamped.0, clamped.1) {
+            return Some(clamped);
+        }
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if (x, y) == clamped {
+                    continue;
+                }
+                if read == MAX_ENTRY_SCAN {
+                    return best.map(|(_, cell)| cell);
+                }
+                read += 1;
+                if !def.terrain.passable_for(cost_row, x, y) {
+                    continue;
+                }
+                let distance = u32::from(x.abs_diff(here.0)) + u32::from(y.abs_diff(here.1));
+                if best.is_none_or(|(far, _)| distance < far) {
+                    best = Some((distance, (x, y)));
+                }
+            }
+        }
+    }
+    best.map(|(_, cell)| cell)
+}
+
 /// **The hunt's goal: a cell of some OTHER side's entry zone** (16b cut E.4,
 /// fanned by AI.1; `Arena::far_entry_cell`'s scan, lifted by 17b cut M1a.6) —
 /// see that method for the whole rule. `taken` is the hunt cells the rest of
@@ -4070,6 +4129,196 @@ mod tests {
             "a routeless stop is the one-cell test's, and no memory's"
         );
         assert!(row.route.is_empty());
+    }
+
+    #[test]
+    fn conduct_interior_entry_contains_the_whole_arrival_square() {
+        use crate::arena::state::EntryZone;
+        let mut def = crate::arena::test_support::definition();
+        for zone in [
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                x1: 3,
+                y0: 0,
+                y1: 7,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: 7,
+                x1: 4,
+                y0: 7,
+                y1: 0,
+            },
+        ] {
+            def.entry_zones = vec![zone];
+            for here in [(0, 0), (7, 0), (0, 7), (7, 7), (4, 4)] {
+                let goal = entry_interior_cell(&def, zone.team, CostRow::Tracked, here)
+                    .expect("passable interior");
+                for x in goal.0 - ARRIVE_CELLS..=goal.0 + ARRIVE_CELLS {
+                    for y in goal.1 - ARRIVE_CELLS..=goal.1 + ARRIVE_CELLS {
+                        assert!((zone.x0.min(zone.x1)..=zone.x0.max(zone.x1)).contains(&x));
+                        assert!((zone.y0.min(zone.y1)..=zone.y0.max(zone.y1)).contains(&y));
+                    }
+                }
+            }
+        }
+        def.entry_zones = vec![EntryZone {
+            team: Team::Red,
+            x0: 0,
+            x1: 3,
+            y0: 0,
+            y1: 7,
+        }];
+        assert_eq!(
+            entry_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            Some((3, 4))
+        );
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            Some((2, 4))
+        );
+        assert_eq!(
+            entry_interior_cell(&def, Team::Blue, CostRow::Tracked, (7, 4)),
+            None
+        );
+    }
+
+    #[test]
+    fn conduct_interior_entry_uses_the_cost_row_without_boundary_fallback() {
+        use crate::arena::state::EntryZone;
+        use crate::arena::test_support::priced_terrain;
+        use mush_atlas::TerrainClass;
+        let mut def = crate::arena::test_support::definition();
+        // The unchanged two-cell own zone has no complete arrival square.
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            None
+        );
+        def.entry_zones = vec![EntryZone {
+            team: Team::Red,
+            x0: 0,
+            x1: 3,
+            y0: 0,
+            y1: 7,
+        }];
+        def.terrain = priced_terrain(8, 8, TerrainClass::Rubble, &[((1, 4), TerrainClass::Grass)]);
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            Some((2, 4))
+        );
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Wheeled, (7, 4)),
+            Some((1, 4))
+        );
+        let interior = (1..=6).flat_map(|y| [(1, y), (2, y)]).collect::<Vec<_>>();
+        def.terrain = ai1_walled(&interior);
+        assert_eq!(
+            entry_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            Some((3, 4))
+        );
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+            None
+        );
+        for coordinate in [0, u16::MAX] {
+            def.entry_zones = vec![EntryZone {
+                team: Team::Red,
+                x0: coordinate,
+                x1: coordinate,
+                y0: coordinate,
+                y1: coordinate,
+            }];
+            assert_eq!(
+                entry_interior_cell(&def, Team::Red, CostRow::Tracked, (7, 4)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn conduct_interior_entry_stops_at_the_shared_probe_budget() {
+        use crate::arena::state::{ArenaTerrain, EntryZone};
+        let mut def = crate::arena::test_support::definition();
+        let mut wall = crate::arena::test_support::ground();
+        wall.move_cost = 0;
+        // A passable interior exists, but lies after the bounded scan. A
+        // second zone cannot restart the same exhausted terrain budget.
+        let mut cells = vec![wall; 64 * 64];
+        *cells.get_mut(62 * 64 + 62).expect("late interior") = crate::arena::test_support::ground();
+        def.terrain = ArenaTerrain::new(64, 64, 1_000, cells).expect("bounded map");
+        def.entry_zones = vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                x1: 63,
+                y0: 0,
+                y1: 63,
+            },
+            EntryZone {
+                team: Team::Red,
+                x0: 61,
+                x1: 63,
+                y0: 61,
+                y1: 63,
+            },
+        ];
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (0, 0)),
+            None
+        );
+        def.entry_zones.remove(0);
+        assert_eq!(
+            entry_interior_cell(&def, Team::Red, CostRow::Tracked, (0, 0)),
+            Some((62, 62))
+        );
+    }
+
+    #[test]
+    fn conduct_interior_entry_keeps_actual_motor_arrival_inside() {
+        let mut arena = ai1_machine(); // actual online hull at (3, 3)
+        let def = std::sync::Arc::make_mut(&mut arena.definition);
+        def.entry_zones
+            .iter_mut()
+            .find(|zone| zone.team == Team::Red)
+            .expect("own zone")
+            .x1 = 2;
+        let old = entry_cell(def, Team::Red, CostRow::Tracked, (3, 3)).expect("boundary");
+        let interior =
+            entry_interior_cell(def, Team::Red, CostRow::Tracked, (3, 3)).expect("interior");
+        assert_eq!((old, interior), ((2, 3), (1, 3)));
+        let row = |goal| MotorRow {
+            goal: Some(goal),
+            ..MotorRow::default()
+        };
+        let (_, boundary, _, _) = followed_under(&mut arena, row(old), Fallback::Notice);
+        assert!(
+            boundary.arrived,
+            "existing one-cell boundary arrival is unchanged"
+        );
+        let (_, outside, _, _) = followed_under(&mut arena, row(interior), Fallback::Notice);
+        assert!(
+            !outside.arrived,
+            "an outside cell cannot satisfy the inset goal"
+        );
+        arena.unit_mut(ObjId(4)).expect("actual hull").pose = pose(2_500, 3_500);
+        let (_, inside, plan, _) = followed_under(&mut arena, row(interior), Fallback::Notice);
+        assert!(inside.arrived);
+        assert_eq!(plan.speed_cms, Some(0));
+        let here = arena
+            .definition
+            .terrain
+            .cell_of(&arena.unit(ObjId(4)).expect("hull").pose)
+            .expect("cell");
+        assert!(
+            arena
+                .definition
+                .entry_zones
+                .iter()
+                .any(|zone| zone.team == Team::Red
+                    && (zone.x0..=zone.x1).contains(&here.0)
+                    && (zone.y0..=zone.y1).contains(&here.1))
+        );
     }
 
     /// The 8 by 8 test window with walls at `walls`.

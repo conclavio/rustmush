@@ -189,6 +189,21 @@ async fn god_cmd_committed(world: &WorldHandle, line: &str) {
     assert!(world.barrier().await, "world mutation commit barrier");
 }
 
+/// `create_player` refuses `Busy` while another authoritative action awaits
+/// its receipt (a module tick can land between two test commands); the
+/// documented contract is to retry, so a fence probe does.
+async fn create_player_acked(world: &WorldHandle, name: &str) -> ObjId {
+    for _ in 0..500 {
+        match world.create_player(name, None).await {
+            Err(world_task::CreatePlayerErr::Busy) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            other => return other.unwrap_or_else(|e| panic!("create {name}: {e}")),
+        }
+    }
+    panic!("create {name}: still busy");
+}
+
 // ---------------------------------------------------------------------------
 // 1. Boot → seed → play → reload round trip (shared with the Redis variant)
 // ---------------------------------------------------------------------------
@@ -211,10 +226,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Each command above crossed its exact commit barrier; player creation is
     // independently acknowledgement-gated too.
-    let nick = world
-        .create_player("Nick", None)
-        .await
-        .expect("create Nick");
+    let nick = create_player_acked(&world, "Nick").await;
 
     // --- second boot: a fresh world hydrated from the store --------------
     let mut reloaded = load_or_seed_world(&*store).await.expect("reload");
@@ -932,10 +944,7 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     // The ack-gated create fires the ObjCreated observer (placed in the chargen
     // area, = Limbo here) and lands the creation batch in the store.
-    let nick = world
-        .create_player("Nick", None)
-        .await
-        .expect("create Nick");
+    let nick = create_player_acked(&world, "Nick").await;
     // Connecting greets Nick and points at +chargen (the Connected hook).
     let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
     assert!(
@@ -993,10 +1002,7 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world2, &format!("+job/approve {job}=Welcome aboard.")).await;
     expect_text(&mut god_rx, "approved").await;
     // Fence the approval's sheet-stamp write.
-    world2
-        .create_player("Fence2", None)
-        .await
-        .expect("fence2 create");
+    create_player_acked(&world2, "Fence2").await;
 
     // --- reboot #3 (store alone): the approval survived. -----------------
     let reloaded2 = load_or_seed_world(&*store).await.expect("reload 2");
@@ -1290,10 +1296,7 @@ async fn sheet_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
-    let nick = world
-        .create_player("Nick", None)
-        .await
-        .expect("create Nick");
+    let nick = create_player_acked(&world, "Nick").await;
     // Staff-edit the sheet (@sheet/set is Royalty-gated; God qualifies). The
     // sheet is an attr on Nick's object, so these writes ride obj:* through.
     god_cmd_committed(&world, "@sheet/set Nick/callsign=Ladder").await;

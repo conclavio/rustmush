@@ -62,6 +62,9 @@ use tacsim::match_::{cockpit, lobby::SimError, resume};
 #[path = "support/arena.rs"]
 mod arena_rig;
 
+#[path = "arena_contract/lapse_producer.rs"]
+mod lapse_producer;
+
 // ---------------------------------------------------------------------------
 // The reader: the server's renderer, then the bot's own pipeline
 // ---------------------------------------------------------------------------
@@ -99,14 +102,17 @@ impl Reader {
 
     /// Every line one `Sys` event renders to, classified and applied.
     fn say(&mut self, sentence: &str) -> Vec<Line> {
+        self.event(&OutputEvent::Sys(RichText::tag(
+            "arena-notice",
+            sentence.to_owned(),
+        )))
+    }
+
+    /// Render the actual game event, retaining its tag and notice wrapper.
+    fn event(&mut self, event: &OutputEvent) -> Vec<Line> {
         self.now += 10;
         let mut bytes = Vec::new();
-        mush_ansi::render(
-            &OutputEvent::Sys(RichText::tag("arena-notice", sentence.to_owned())),
-            &self.caps,
-            &self.theme,
-            &mut bytes,
-        );
+        mush_ansi::render(event, &self.caps, &self.theme, &mut bytes);
         let text = self.decoder.feed(&bytes);
         self.assembler
             .feed(self.now, &text)
@@ -482,6 +488,7 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::Overheated,
         Refusal::NoWeapon,
         Refusal::NotMachine,
+        Refusal::NoCommander,
         Refusal::NoJammer,
         // 17b cut M1b.1: the law's two words and the count's.
         Refusal::Unwarranted,
@@ -507,6 +514,7 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::Overheated
             | Refusal::NoWeapon
             | Refusal::NotMachine
+            | Refusal::NoCommander
             | Refusal::NoJammer
             | Refusal::Unwarranted
             | Refusal::NoSlot
@@ -2572,6 +2580,7 @@ fn m5_1_the_selection_fog_reads_as_the_bot_reads_it() {
     use mush_bot::arena::lines::BoardPilot;
     use tacsim::match_::lobby::{self, MindChoice};
     let choice = MindChoice {
+        filed: None,
         saved: None,
         mind: "Standard Doctrine".into(),
         profiles: vec!["Sniper".into(), "Line".into()],

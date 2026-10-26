@@ -453,9 +453,11 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    // Version 9 carries mirrored reply settings and reply-completion fences.
-    // Deploy both peers together; an older peer cannot honor those contracts.
-    assert_eq!(IPC_VERSION, 9, "the boundary protocol version is pinned");
+    // Name-only attributed removal and its pending reply (9), authoritative
+    // world health (10) and mirrored reply settings with reply-completion
+    // fences (11) extend the closed vocabulary. An older peer cannot decode or
+    // honor them; deploy both halves together.
+    assert_eq!(IPC_VERSION, 11, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -744,4 +746,80 @@ fn typed_invoke_round_trips_under_custody_with_independent_size_limit() {
         illegal.logical_bytes().is_err(),
         "bounded before world dispatch"
     );
+}
+
+#[test]
+fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it() {
+    let request = mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::FiledSource {
+        licence: "2".into(),
+        first: 1,
+        last: 200,
+    });
+    round_trip_to_server(&ToServer::Inbound(WireInbound::Invoke {
+        conn: 9,
+        actor: ObjId(7),
+        id: 45,
+        request: request.clone(),
+    }));
+    // A deliberately narrow old vocabulary proves the relevant decoding
+    // difference, while the existing complete old golden/roundtrip suite pins
+    // every unchanged request. This is not an old executable compatibility run.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+    enum OldMind {
+        Read {
+            name: String,
+            revision: Option<String>,
+        },
+    }
+    let old = serde_json::json!({"op":"read","name":"mine","revision":null});
+    let OldMind::Read { name, revision } =
+        serde_json::from_value::<OldMind>(old).expect("old read");
+    assert_eq!(name, "mine");
+    assert!(revision.is_none());
+    let value = serde_json::to_value(request).expect("new request");
+    assert!(
+        serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
+            .is_err()
+    );
+    assert_eq!(IPC_VERSION, 11);
+}
+
+#[test]
+fn attributed_remove_requires_new_closed_invoke_vocabulary()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+    enum OldMind {
+        Read {
+            name: String,
+            revision: Option<String>,
+        },
+    }
+    let request = mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::Remove {
+        name: "mine".into(),
+    });
+    let wire = serde_json::to_value(&request)?;
+    assert_eq!(
+        serde_json::from_value::<mush_proto::InvokeRequest>(wire.clone())?,
+        request
+    );
+    assert!(
+        serde_json::from_value::<OldMind>(wire.get("request").ok_or("request")?.clone()).is_err()
+    );
+    let old: OldMind =
+        serde_json::from_value(serde_json::json!({"op":"read","name":"mine","revision":null}))?;
+    let OldMind::Read { name, revision } = old;
+    assert_eq!(name, "mine");
+    assert!(revision.is_none());
+    let reply = mush_proto::InvokeResult::Mind(mush_proto::MindResponse::RemovalRequested {
+        name: "mine".into(),
+    });
+    let bytes = serde_json::to_vec(&reply)?;
+    assert_eq!(
+        serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
+        reply
+    );
+    assert_eq!(IPC_VERSION, 11);
+    Ok(())
 }

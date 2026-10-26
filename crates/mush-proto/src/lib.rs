@@ -39,18 +39,27 @@
     clippy::panic_in_result_fn
 )]
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
 mod caps;
 mod client;
 mod envelope;
 mod event;
 mod invoke;
+mod legal_action;
 mod receipt;
 mod reply;
 pub use reply::{OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, OutputBrackets};
 mod text;
 
 pub use caps::{ClientCaps, ClientKind, ColorDepth};
-pub use client::{ClientCommand, Query};
+pub use client::{ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, Query};
 pub use envelope::Envelope;
 pub use event::{
     AssetPackInfo, AtlasMapDelta, AtlasMapFrame, ExitRef, InputMode, MAX_NOTICE_TEXT_BYTES,
@@ -65,6 +74,11 @@ pub use invoke::{
     InvokeRequest, InvokeResult, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MIND_ENVELOPE_BYTES,
     MAX_MIND_SOURCE_BYTES, MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle,
     MindPictureReport, MindRequest, MindResponse, validate_invoke_json,
+};
+pub use legal_action::{
+    LegalActionInteger, LegalActionParameters, LegalActionRequest, LegalActionResponse,
+    LegalActionScalar, MAX_LEGAL_ACTION_PARAMETER_BYTES, MAX_LEGAL_ACTION_PARAMETERS,
+    MAX_LEGAL_ACTION_TEXT_BYTES, ProjectedOfferId,
 };
 pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,

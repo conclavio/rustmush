@@ -19,6 +19,8 @@ use crate::config::ArenaConfig;
 use crate::store::TacsimStore;
 
 const SWITCHES: &[&str] = &[
+    "doctrine",
+    "launch",
     "live",
     "new",
     "rename",
@@ -52,12 +54,13 @@ const SWITCHES: &[&str] = &[
     "forget",
     "trace",
 ];
-const HELP: &str = "@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
+const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
 
 #[derive(Clone)]
 pub(crate) struct WorkshopCommands {
     pub(super) executor: WorkshopExecutor,
     pub(super) remote: Arc<Mutex<super::structured::RemoteJobs>>,
+    pub(super) authored: Arc<super::authored_jobs::Jobs>,
     cfg: ArenaConfig,
     pub(super) floor_permille: u16,
     /// Paste starts at depth zero and never pushes another context. This set
@@ -70,6 +73,7 @@ impl WorkshopCommands {
         Self {
             executor,
             remote: Arc::new(Mutex::new(super::structured::RemoteJobs::default())),
+            authored: Arc::new(super::authored_jobs::Jobs::default()),
             cfg,
             floor_permille,
             pasting: Arc::new(Mutex::new(BTreeSet::new())),
@@ -79,6 +83,7 @@ impl WorkshopCommands {
     /// Replace the old @mind registration with this one; `/live` is the only
     /// route to the staff setter. Author `/set` never reaches arena mutation.
     pub(crate) fn register(self: &Arc<Self>, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.state(super::authored_jobs::WorkshopService(Arc::downgrade(self)));
         reg.invoke_handler("mind", self.clone())?;
         let command = self.clone();
         reg.command(
@@ -121,6 +126,15 @@ impl WorkshopCommands {
         let [switch] = switches.as_slice() else {
             return Err(CmdError::msg(HELP));
         };
+        if switch == "launch" && ctx.args.raw().trim().is_empty() {
+            ctx.out.info(ctx.actor, crate::launch::HELP);
+            return Ok(());
+        }
+        if switch == "doctrine" {
+            let page = crate::minds::doctrine_library::page(ctx.args.raw(), &self.cfg.reflex)?;
+            ctx.out.info(ctx.actor, page);
+            return Ok(());
+        }
         if switch == "trace" {
             let text = ctx.args.raw().to_owned();
             return crate::minds::trace_feed::command(ctx, &text);
@@ -153,6 +167,28 @@ impl WorkshopCommands {
     ) -> Result<(), RollError> {
         let actor = principal.actor();
         match switch {
+            "launch" => {
+                let (recipe, name) = text.split_once('=').ok_or(RollError::Missing)?;
+                let recipe =
+                    crate::launch::LaunchRecipe::parse(recipe.trim()).ok_or(RollError::Missing)?;
+                if ctx
+                    .w
+                    .module_state_owner(std::any::TypeId::of::<
+                        crate::launch::registration::LaunchService,
+                    >())
+                    .map(|o| o.as_str())
+                    != Some(crate::NS)
+                {
+                    return Err(RollError::Missing);
+                }
+                let launch = ctx
+                    .w
+                    .module_state::<crate::launch::registration::LaunchService>()
+                    .ok_or(RollError::Missing)?;
+                let prepared = launch.0.import(ctx.w, actor, recipe, name.trim())?;
+                publish(ctx, prepared)?;
+                ctx.out.info(actor, "Launch draft imported. Check and save it, then request actual Registry rating; import grants no filing or licence.");
+            }
             "list" => {
                 let names = roll(ctx)?
                     .names(actor)
@@ -180,6 +216,12 @@ impl WorkshopCommands {
             "rename" | "remove" | "version-name" | "version-forget" => {
                 let (name, edit) = lifecycle_edit(switch, text)?;
                 let base = roll(ctx)?.mind(actor, &name)?.base();
+                if matches!(edit, mush_proto::MindLifecycle::Remove {})
+                    && super::retirement::request(ctx, &name, Some(base), None)?.is_some()
+                {
+                    ctx.out.info(actor, "Draft removal requested. Keep the entry until the server confirms; refresh your library to check.");
+                    return Ok(());
+                }
                 let prepared = super::lifecycle(roll(ctx)?, actor, &name, base, &edit)?;
                 publish(ctx, prepared)?;
                 ctx.out.info(actor, match edit {
@@ -214,7 +256,8 @@ impl WorkshopCommands {
                 ctx.out.info(actor, "Owned draft copied.");
             }
             "info" => {
-                let mind = roll(ctx)?.mind(actor, text)?;
+                let view = super::authored_access::View::current_source(ctx, text, None)?;
+                let mind = view.mind();
                 let line = format!(
                     "{}: {} bytes; class {}; edit {}; revision {}; {} named versions.",
                     mind.name(),
@@ -226,7 +269,7 @@ impl WorkshopCommands {
                         .map_or_else(|| "unsaved".into(), |number| number.to_string()),
                     mind.named().len()
                 );
-                ctx.out.info(actor, line);
+                view.emit(ctx, vec![line])?;
             }
             "source" => {
                 let (reference, range) = text
@@ -235,38 +278,32 @@ impl WorkshopCommands {
                     .map_or((text, (1, 200)), |(name, range)| {
                         (name, parse_range(range).unwrap_or((1, 200)))
                     });
-                let source = if reference.eq_ignore_ascii_case("Standard") {
-                    crate::minds::content::STANDARD_RHAI.to_owned()
+                if let Some(licence) = reference.strip_prefix("filed:") {
+                    return super::filed_source::line(ctx, licence, range.0, range.1);
+                }
+                if reference.eq_ignore_ascii_case("Standard") {
+                    for line in
+                        super::source_lines(crate::minds::content::STANDARD_RHAI, range.0, range.1)?
+                    {
+                        ctx.out.info(actor, line);
+                    }
                 } else {
-                    super::owned_copy(
-                        roll(ctx)?,
-                        sources(ctx)?,
-                        actor,
+                    let view = super::authored_access::View::source(
+                        ctx,
                         &MindRef::parse(reference)?,
-                    )?
-                    .source
-                };
-                for line in super::source_lines(&source, range.0, range.1)? {
-                    ctx.out.info(actor, line);
+                        None,
+                    )?;
+                    let lines = super::source_lines(&view.copy().source, range.0, range.1)?;
+                    view.emit(ctx, lines)?;
                 }
             }
             "diff" => {
                 let (left, right) = pair(text)?;
-                let left = super::owned_copy(
-                    roll(ctx)?,
-                    sources(ctx)?,
-                    actor,
+                super::authored_access::diff(
+                    ctx,
                     &MindRef::parse(left.trim())?,
-                )?;
-                let right = super::owned_copy(
-                    roll(ctx)?,
-                    sources(ctx)?,
-                    actor,
                     &MindRef::parse(right.trim())?,
                 )?;
-                for line in super::diff(&left, &right)? {
-                    ctx.out.info(actor, line);
-                }
             }
             "line" | "insert" | "delete" => {
                 let (left, value) = if switch == "delete" {
@@ -297,8 +334,7 @@ impl WorkshopCommands {
                     }
                 };
                 let base = roll(ctx)?.mind(actor, name)?.base();
-                let prepared = super::edit_text(roll(ctx)?, actor, name, base, edit)?;
-                publish(ctx, prepared)?;
+                super::authored_access::edit_text(ctx, name, base, edit, None)?;
                 ctx.out.info(actor, "Working source updated.");
             }
             "paste" => {
@@ -306,11 +342,21 @@ impl WorkshopCommands {
                     return Err(invalid("paste", "finish the current input first"));
                 }
                 let mind = roll(ctx)?.mind(actor, text)?;
+                let name = mind.name().to_owned();
+                let base = mind.base();
+                let marked = if mind.require_original_access().is_ok() {
+                    None
+                } else {
+                    Some(super::authored_access::PasteSession::capture(
+                        ctx, &name, base,
+                    )?)
+                };
                 let paste = Paste {
                     service: self.clone(),
                     principal,
-                    name: mind.name().to_owned(),
-                    base: mind.base(),
+                    name,
+                    base,
+                    marked,
                     buffer: String::new(),
                 };
                 self.pasting
@@ -343,27 +389,47 @@ impl WorkshopCommands {
                 } else {
                     JobKind::Check
                 };
-                let id = self
-                    .executor
-                    .submit(principal, roll(ctx)?, name.trim(), base, kind)?;
-                ctx.out
-                    .info(actor, format!("Authoring job {} queued.", id.number()));
+                if roll(ctx)?
+                    .mind(actor, name)?
+                    .require_original_access()
+                    .is_ok()
+                {
+                    let id = self
+                        .executor
+                        .submit(principal, roll(ctx)?, name, base, kind)?;
+                    ctx.out
+                        .info(actor, format!("Authoring job {} queued.", id.number()));
+                } else {
+                    let id = self.submit_authored(
+                        ctx,
+                        principal,
+                        name,
+                        base,
+                        kind,
+                        super::authored_jobs::Delivery::Line,
+                    )?;
+                    self.authored_queued(ctx, id);
+                }
             }
             "card" => {
                 let (name, profile) = text
                     .split_once('/')
                     .map_or((text, None), |(name, profile)| (name, Some(profile)));
-                let card = super::decoded(&roll(ctx)?.mind(actor, name)?.draft().envelope)?;
-                for line in super::card_lines(&card, profile)? {
-                    ctx.out.info(actor, line);
-                }
+                let view = super::authored_access::View::current_source(ctx, name, None)?;
+                let card = super::decoded(&view.copy().envelope)?;
+                view.emit(ctx, super::card_lines(&card, profile)?)?;
             }
             "set" | "preset" | "profile" | "rule" => {
                 let (name, edit) = parse_card_edit(switch, text)?;
                 let base = roll(ctx)?.mind(actor, &name)?.base();
-                let prepared =
-                    super::edit_card(roll(ctx)?, actor, &name, base, edit, self.floor_permille)?;
-                publish(ctx, prepared)?;
+                super::authored_access::edit_card(
+                    ctx,
+                    &name,
+                    base,
+                    edit,
+                    self.floor_permille,
+                    None,
+                )?;
                 ctx.out.info(actor, "Working card updated.");
             }
             "publish" => {
@@ -382,10 +448,11 @@ impl WorkshopCommands {
     }
 
     fn poll(&self, ctx: &mut Ctx<'_>) {
+        self.poll_authored(ctx);
         self.poll_remote(ctx);
         let caller = ctx.actor;
         for (actor, id) in self.executor.ready() {
-            if self.is_remote(id) {
+            if self.is_remote(id) || self.is_authored(id) {
                 continue;
             }
             ctx.actor = actor;
@@ -463,6 +530,7 @@ impl WorkshopCommands {
 
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         self.executor.cancel_character(actor);
+        self.cancel_authored_character(actor);
         let had_paste = self
             .pasting
             .lock()
@@ -502,6 +570,7 @@ struct Paste {
     principal: Principal,
     name: String,
     base: EditBase,
+    marked: Option<super::authored_access::PasteSession>,
     buffer: String,
 }
 impl Drop for Paste {
@@ -522,9 +591,31 @@ impl InputContext for Paste {
     }
     fn feed(&mut self, ctx: &mut Ctx<'_>, line: &str) -> ContextOutcome {
         if self.service.principal(ctx).ok() != Some(self.principal) {
-            ctx.out
-                .error(ctx.actor, "Paste cancelled; session changed.");
+            if let Some(session) = &self.marked {
+                session.emit(ctx, "Paste unavailable.");
+            } else {
+                ctx.out
+                    .error(ctx.actor, "Paste cancelled; session changed.");
+            }
             return ContextOutcome::Pop;
+        }
+        if let Some(session) = &mut self.marked {
+            if line == "." {
+                let result = session.replace(ctx, &self.name, std::mem::take(&mut self.buffer));
+                session.emit(
+                    ctx,
+                    if result.is_ok() {
+                        "Working source replaced; use @mind/check."
+                    } else {
+                        "Paste unavailable."
+                    },
+                );
+                return ContextOutcome::Pop;
+            }
+            if session.check(ctx, &self.name).is_err() {
+                session.emit(ctx, "Paste unavailable.");
+                return ContextOutcome::Pop;
+            }
         }
         if line == "." {
             let result = roll(ctx)
@@ -554,10 +645,14 @@ impl InputContext for Paste {
                 .saturating_add(1)
                 > mush_roll::MAX_SOURCE_BYTES
         {
-            ctx.out.error(
-                ctx.actor,
-                "Paste cancelled: maximum 32 KiB; NUL is forbidden.",
-            );
+            if let Some(session) = &self.marked {
+                session.emit(ctx, "Paste cancelled: maximum 32 KiB; NUL is forbidden.");
+            } else {
+                ctx.out.error(
+                    ctx.actor,
+                    "Paste cancelled: maximum 32 KiB; NUL is forbidden.",
+                );
+            }
             return ContextOutcome::Pop;
         }
         self.buffer.push_str(line);

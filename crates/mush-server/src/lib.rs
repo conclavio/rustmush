@@ -56,6 +56,15 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped. The module file gates itself to test
+// builds; this file names no test cfg this early, because its source
+// censuses read the production half as the text before the first one.
+#[cfg_attr(test, macro_use)]
+mod test_checks;
+
 pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;

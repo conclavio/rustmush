@@ -1018,7 +1018,8 @@ pub const LIVE_RECORD: &str = "tacsim.live";
 /// policy — and a record of another format is refused by name.
 // M6: immutable authored custody replaces the old stock-only seal/profile
 // shape. Old live records must fail the outer version check before state decode.
-pub const LIVE_FORMAT: u32 = 2;
+/// M7 requires complete filed certification in retained sortie custody.
+pub const LIVE_FORMAT: u32 = 3;
 
 /// **What the world holds of one running match, as the boot would need it**
 /// (16b cut AF.2): the document at [`live_key`].
@@ -2886,6 +2887,53 @@ mod tests {
     }
 
     #[test]
+    fn l5_live_leaders_round_trip_and_missing_field_stays_leaderless() {
+        use crate::deliberation::{CharacterRef, LanceLeader, SquadId};
+        let mut live = af2_live();
+        let red = SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        let blue = SquadId {
+            team: Team::Blue,
+            index: 1,
+        };
+        live.record.leaders = vec![
+            LanceLeader {
+                squad: red,
+                by: CharacterRef::Persona { squad: red },
+            },
+            LanceLeader {
+                squad: blue,
+                by: CharacterRef::Character { id: ObjId(5) },
+            },
+        ];
+        let mut document = live.to_document().expect("a live leader record serializes");
+        let restored = LiveRecord::from_document(&document).expect("leaders restore");
+        assert_eq!(restored.record.leaders, live.record.leaders);
+
+        // Model the earlier shape within this supported live envelope. The
+        // absence means no named leader, not permission to mint one at decode.
+        let mut state: serde_json::Value =
+            serde_json::from_str(document["state"].as_str().expect("encoded live state"))
+                .expect("live state JSON");
+        assert!(
+            state["record"]
+                .as_object_mut()
+                .expect("record")
+                .remove("leaders")
+                .is_some()
+        );
+        let state = serde_json::to_string(&state).expect("old record shape");
+        document["state_digest"] = serde_json::json!(live_state_digest(&state));
+        document["state"] = serde_json::json!(state);
+        let restored = LiveRecord::from_document(&document).expect("supported missing field");
+        assert!(restored.record.leaders.is_empty());
+        assert_eq!(restored.record.squads, live.record.squads);
+        assert_eq!(restored.centre, live.centre);
+    }
+
+    #[test]
     fn m6_live_record_retains_the_leads_selected_class_cap() {
         let mut live = af2_live();
         let account = live.centre.leads[0].1;
@@ -2906,31 +2954,27 @@ mod tests {
     }
 
     #[test]
-    fn m6_pre_authored_live_format_is_refused_before_old_state_decode() {
+    fn m7_pre_certificate_live_formats_refuse_before_old_state_decode() {
         let mut document = af2_live().to_document().expect("current live record");
-        assert_eq!(LIVE_FORMAT, 2, "M6 authored custody is live format 2");
-        document["format"] = serde_json::json!(1);
-        // Deliberately not the new MindSeal/Centre shape, with an invalid digest:
-        // old outer versions must be named before either payload check runs.
-        document["state"] = serde_json::json!(
-            r#"{"minds":{"4":{"charter":"Registry","line":"standard","profiles":[0]}}}"#
-        );
+        assert_eq!(LIVE_FORMAT, 3, "M7 certified custody is live format 3");
+        // Even a malformed inner state must receive the outer version refusal.
+        document["state"] = serde_json::json!("not a current state");
         document["state_digest"] = serde_json::json!("0".repeat(64));
-        assert_eq!(
-            LiveRecord::from_document(&document),
-            Err(LiveRecordError::Format {
-                found: 1,
-                expected: 2,
-            })
-        );
-        document["format"] = serde_json::json!(2);
-        assert!(
-            matches!(
+        for old in [1, 2] {
+            document["format"] = serde_json::json!(old);
+            assert_eq!(
                 LiveRecord::from_document(&document),
-                Err(LiveRecordError::DigestMismatch { .. })
-            ),
-            "current-format corruption still reaches the normal digest refusal"
-        );
+                Err(LiveRecordError::Format {
+                    found: old,
+                    expected: LIVE_FORMAT
+                })
+            );
+        }
+        document["format"] = serde_json::json!(LIVE_FORMAT);
+        assert!(matches!(
+            LiveRecord::from_document(&document),
+            Err(LiveRecordError::DigestMismatch { .. })
+        ));
     }
 
     /// **16b cut AF.2**: a live record round-trips equal — through a JSON

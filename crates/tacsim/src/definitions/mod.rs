@@ -46,6 +46,7 @@ pub mod ammunition;
 pub mod arena;
 pub mod content;
 pub mod core;
+pub mod core_replacement;
 pub mod goods;
 pub mod logistics;
 pub mod resolution;

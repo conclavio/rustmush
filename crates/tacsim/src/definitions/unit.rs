@@ -920,6 +920,11 @@ pub struct UnitSpec {
     /// moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interior: Option<crate::definitions::InteriorDef>,
+    /// Bounded ground cargo compartments, each naming an actual section.
+    /// Unlike spacecraft logistics, these declare no drive or berths. Present
+    /// entries are bound into the unit definition; absence preserves old bytes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ground_stowage: BTreeMap<CanonicalId, crate::definitions::StowageDef>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -1279,6 +1284,7 @@ impl UnitSpec {
         self.check_heat(entry)?;
         self.check_mobility(entry)?;
         self.check_logistics(entry)?;
+        self.check_ground_stowage(entry)?;
         if self.sensor_height_cm == 0 || self.sensor_height_cm > MAX_SENSOR_HEIGHT_CM {
             return Err(DefinitionError::value(
                 entry,
@@ -1324,6 +1330,32 @@ impl UnitSpec {
                 entry,
                 "a vehicle declares its logistics",
             ));
+        }
+        Ok(())
+    }
+
+    fn check_ground_stowage(&self, entry: &str) -> Result<(), DefinitionError> {
+        if self.ground_stowage.is_empty() {
+            return Ok(());
+        }
+        if !self.class_of().fieldable()
+            || self.logistics.is_some()
+            || self.ground_stowage.len() > super::logistics::MAX_COMPARTMENTS
+        {
+            return Err(DefinitionError::value(
+                entry,
+                "ground_stowage requires a fieldable ground hull and at most eight compartments",
+            ));
+        }
+        for (id, stowage) in &self.ground_stowage {
+            if self.section(id).is_none() {
+                return Err(DefinitionError::reference(
+                    entry,
+                    "ground cargo section",
+                    id.as_str(),
+                ));
+            }
+            stowage.check(entry, id)?;
         }
         Ok(())
     }
@@ -2091,6 +2123,14 @@ fn game_rules(spec: &UnitSpec) -> serde_json::Value {
     });
     if let (Some(class), Some(map)) = (spec.class, rules.as_object_mut()) {
         map.insert("class".to_owned(), serde_json::json!(class.as_str()));
+    }
+    if !spec.ground_stowage.is_empty()
+        && let Some(map) = rules.as_object_mut()
+    {
+        map.insert(
+            "ground_stowage".to_owned(),
+            serde_json::json!(spec.ground_stowage),
+        );
     }
     rules
 }

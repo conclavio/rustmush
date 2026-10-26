@@ -1525,9 +1525,9 @@ mod tests {
             "housing",
             "weather",
             "party",
-            "market",
-            // M6's character-owned draft/revision store composes before scripts.
+            // Roll opens readiness before Market's final renewal recovery audit.
             "roll",
+            "market",
             "script",
             // The composition root's own two, after the built-ins — the pair
             // the hand-built roster never had.
@@ -2266,8 +2266,8 @@ mod tests {
                 "housing",
                 "weather",
                 "party",
-                "market",
                 "roll",
+                "market",
                 "script"
             ]
         );
@@ -2321,8 +2321,8 @@ mod tests {
                 "housing",
                 "weather",
                 "party",
-                "market",
                 "roll",
+                "market",
                 "script",
                 // The composition root's own two, which only `game_modules`
                 // adds.
@@ -2349,6 +2349,13 @@ mod tests {
         // `@org/grant` would refuse the very grant that module needs — so this is a
         // real coupling, pinned here.
         let vocab = org_capability_vocabulary();
+        // M7 declares these exact scoped capabilities as vocabulary only;
+        // their presence creates no grant or authorization.
+        let registry_capabilities = [
+            mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
+            mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
+            mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+        ];
         // E7 cut 9 (OPEN 5): `mush_campaign::CAPABILITIES` joins them. A `force.*`
         // id missing here fails at REGISTRATION — `@org/grant` refuses it — rather
         // than silently at use, which is the whole point of the typo catcher.
@@ -2356,6 +2363,7 @@ mod tests {
             .iter()
             .chain(mush_housing::CAPABILITIES)
             .chain(mush_campaign::CAPABILITIES)
+            .chain(registry_capabilities.iter())
         {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
@@ -2381,6 +2389,7 @@ mod tests {
             mush_economy::CAPABILITIES.len()
                 + mush_housing::CAPABILITIES.len()
                 + mush_campaign::CAPABILITIES.len()
+                + registry_capabilities.len()
                 + administrative.len()
         );
         // …and a `force.*` id that is NOT declared is absent, so a typo'd grant
@@ -2447,8 +2456,8 @@ mod tests {
                 "housing",
                 "weather",
                 "party",
-                "market",
                 "roll",
+                "market",
                 "script",
                 "worldgen",
                 // 16b cut R-b: the one game sheet, and its rules interface.
@@ -2602,8 +2611,8 @@ mod tests {
                 "housing",
                 "weather",
                 "party",
-                "market",
                 "roll",
+                "market",
                 "script",
                 // 16b cut R-b: the one game sheet, and its rules interface.
                 "pilot",

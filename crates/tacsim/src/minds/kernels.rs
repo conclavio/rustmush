@@ -6,7 +6,9 @@
 //! wrapper over the ONE free function the native stock mind (T1) calls, never
 //! a second body** — so a Rhai port that calls a kernel where T1 calls the
 //! function answers what T1 answers (Gate A), and a fix to the function is a
-//! fix to both. Each wrapper converts its arguments (refusing a wrong shape
+//! fix to both. `entry_interior_cell` also exposes the shared native geometry
+//! used by the Conduct observer; the stock `entry_cell` contract is unchanged.
+//! Each wrapper converts its arguments (refusing a wrong shape
 //! `type` through the context's `refused`), charges its fee
 //! ([`super::fees`]) and calls:
 //!
@@ -24,7 +26,8 @@
 //! * `line_to` → `stock_mind::line_between` (a `()` cell on either end is a
 //!   line, with no trace), capped at the row's `line_to` a think (17b cut
 //!   M3.1; Class I's [`super::STOCK_LINE_TO_PER_THINK`]);
-//! * `entry_cell`, `far_entry_cell`, `patrol_step`, `fall_back_to_waypoint`
+//! * `entry_cell`, `entry_interior_cell`, `far_entry_cell`, `patrol_step`,
+//!   `fall_back_to_waypoint`
 //!   → the motor's pickers (`crate::arena::motor`), and `stand_off_cell` →
 //!   `stock_mind::stand_off_of`, every one through the context's map and as
 //!   a tracked hull (`CostRow::Tracked`, `stock_mind`'s residual: the view
@@ -397,6 +400,19 @@ fn entry_cell(v: &mut View) -> Result<Dynamic, Box<EvalAltResult>> {
     })
 }
 
+/// **`entry_interior_cell(v)`** — the own-entry goal whose entire native
+/// arrival square is inside the zone; fee 30. `()` off the window, without
+/// an own zone, or without a passable interior found within the bounded scan.
+fn entry_interior_cell(v: &mut View) -> Result<Dynamic, Box<EvalAltResult>> {
+    charge(FEE_NAV);
+    let view = &v.0;
+    with(|ctx| {
+        cell(view.cell.and_then(|here| {
+            motor::entry_interior_cell(&ctx.map, view.team, CostRow::Tracked, here)
+        }))
+    })
+}
+
 /// **`far_entry_cell(v)`** — `motor::far_entry_cell` from the view's cell,
 /// with no `taken` cells (the motor fans the landing: the M1a plan's
 /// departure (d)); fee 30.
@@ -528,6 +544,7 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
     function!(api, "terrain_at", terrain_at);
     function!(api, "spot_cell", spot_cell);
     function!(api, "entry_cell", entry_cell);
+    function!(api, "entry_interior_cell", entry_interior_cell);
     function!(api, "far_entry_cell", far_entry_cell);
     function!(api, "stand_off_cell", stand_off_cell);
     function!(api, "patrol_step", patrol_step);
@@ -600,6 +617,39 @@ mod tests {
             &eval_in(context_on(seen.clone()), expr)
                 .unwrap_or_else(|error| panic!("{expr}: {error}")),
         )
+    }
+
+    #[test]
+    fn interior_entry_api_matches_native_geometry_and_refusals() {
+        let mut seen = view();
+        seen.cell = Some((7, 4));
+        let mut map = fixture::map();
+        map.entry_zones
+            .iter_mut()
+            .find(|zone| zone.team == seen.team)
+            .expect("own zone")
+            .x1 = 3;
+        let native = motor::entry_interior_cell(&map, seen.team, CostRow::Tracked, (7, 4));
+        assert_eq!(native, Some((2, 4)));
+        let mut ctx = context_on(seen.clone());
+        ctx.map = Arc::new(map.clone());
+        assert_eq!(
+            shown(&eval_in(ctx, "entry_interior_cell(v)").expect("registered helper")),
+            shown(&cell(native))
+        );
+        seen.cell = None;
+        let mut ctx = context_on(seen);
+        ctx.map = Arc::new(map);
+        assert_eq!(
+            shown(&eval_in(ctx, "entry_interior_cell(v)").expect("off-window")),
+            "()"
+        );
+        assert_eq!(
+            on(&view(), "entry_interior_cell(v)"),
+            "()",
+            "unchanged narrow fixture zone"
+        );
+        assert!(eval("entry_interior_cell(42)").is_err(), "typed view only");
     }
 
     /// A rendered `Option<ContactId>` as the kernel answers it.
@@ -756,6 +806,7 @@ mod tests {
             ("terrain_at(v.cell)", FEE_TERRAIN),
             ("spot_cell(\"A\")", FEE_SPOT),
             ("entry_cell(v)", FEE_NAV),
+            ("entry_interior_cell(v)", FEE_NAV),
             ("far_entry_cell(v)", FEE_NAV),
             ("stand_off_cell(v, v.lock, 500)", FEE_NAV),
             ("patrol_step(v, false, (), (), ())", FEE_NAV),
@@ -932,6 +983,13 @@ mod tests {
         assert_eq!(
             shown(&eval("entry_cell(v)").expect("entry")),
             shown(&cell(entry))
+        );
+        let interior = seen
+            .cell
+            .and_then(|here| motor::entry_interior_cell(&map, seen.team, CostRow::Tracked, here));
+        assert_eq!(
+            shown(&eval("entry_interior_cell(v)").expect("interior entry")),
+            shown(&cell(interior))
         );
         let far = seen
             .cell

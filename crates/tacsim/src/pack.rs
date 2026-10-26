@@ -177,6 +177,11 @@ pub enum PackEntry {
     Commodity(CommodityDef),
     /// One recipe. Cut 1 authors it and runs it nowhere; cut 4 is production.
     Recipe(RecipeDef),
+    /// Certified die integration or governed component refitting. This is not
+    /// a pooled commodity recipe and cannot produce uncertified hardware.
+    HardwareRecipe(crate::hardware::HardwareRecipeDef),
+    /// Versioned prices and Basin quota for governed hardware.
+    HardwareCatalogue(crate::hardware::HardwareCatalogueDef),
     /// One route definition, with its endpoints named **symbolically** — the seed
     /// resolves them to the objects it creates, because a pack is authored long
     /// before any object exists.
@@ -249,6 +254,8 @@ impl PackEntry {
         match self {
             PackEntry::Commodity(_) => "commodity",
             PackEntry::Recipe(_) => "recipe",
+            PackEntry::HardwareRecipe(_) => "hardware_recipe",
+            PackEntry::HardwareCatalogue(_) => "hardware_catalogue",
             PackEntry::Route(_) => "route",
             PackEntry::Location(_) => "location",
             PackEntry::Deposit(_) => "deposit",
@@ -283,6 +290,8 @@ impl PackEntry {
     fn check(&self) -> Result<(), PackError> {
         let too_long = |label: &str| label.len() > MAX_LABEL_BYTES;
         match self {
+            PackEntry::HardwareRecipe(def) => def.validate().map_err(definition_error)?,
+            PackEntry::HardwareCatalogue(def) => def.validate().map_err(definition_error)?,
             // S7: a body's bounds are the wire's (`BodyDef::from_authored`).
             PackEntry::Body(_) => {}
             // 16b cut C.2: each of the six content kinds re-runs its own bounds,
@@ -1200,9 +1209,11 @@ fn place_coordinates_fault(place: &LocationDef) -> Option<String> {
 /// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
 /// the fifteenth, `core` (doc 17 §9); doc 18 cut IC3 the sixteenth, `port`
 /// (doc 18 §4.7).
-pub const OWNED_KINDS: [&str; 16] = [
+pub const OWNED_KINDS: [&str; 18] = [
     "commodity",
     "recipe",
+    "hardware_recipe",
+    "hardware_catalogue",
     "route",
     "location",
     "deposit",
@@ -1465,6 +1476,8 @@ impl RulesPack {
                     PackKind::CampaignSeed,
                     PackEntry::Commodity(_)
                         | PackEntry::Recipe(_)
+                        | PackEntry::HardwareRecipe(_)
+                        | PackEntry::HardwareCatalogue(_)
                         | PackEntry::Unit(_)
                         | PackEntry::Weapon(_)
                         | PackEntry::Ammunition(_)

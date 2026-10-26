@@ -3982,6 +3982,18 @@ pub trait ActionProvider: Send + Sync {
         )
         .expect("static trigger migration error is bounded"))
     }
+
+    /// The same frozen provider may use only its registered participant handles.
+    /// The default retains the pre-composition trigger behavior.
+    fn prepare_same_commit_trigger_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        trigger: &PreparedTrigger,
+        txn: &mut ActionTxn<'_>,
+        _context: &mut crate::resolution::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_same_commit_trigger(invocation, trigger, txn)
+    }
 }
 
 /// Provider-requested work that must finish in the root action's transaction.
@@ -4928,8 +4940,10 @@ impl ActionProviderRegistry {
             commit_token,
             state,
             resolution_keys,
+            None,
             |_| Ok(()),
         )
+        .and_then(|(prepared, output)| Ok((prepared.into_typed()?, output)))
     }
 
     /// Run one exact provider with server-private resolved subject/target
@@ -4950,11 +4964,46 @@ impl ActionProviderRegistry {
             commit_token,
             state,
             resolution_keys,
+            None,
+            |_| Ok(()),
+        )
+        .and_then(|(prepared, output)| Ok((prepared.into_typed()?, output)))
+    }
+
+    pub(crate) fn prepare_composed_resolved_authoritative_invocation(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        owners: (
+            &crate::participant::ParticipantRegistry,
+            &crate::World,
+            &crate::read_service::OwnerReadRegistry,
+            &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
+        ),
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            PreparedAuthoritativeAction,
+        ),
+        ActionProviderPrepareError,
+    > {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            resolved.invocation(),
+            Some(resolved),
+            commit_token,
+            state,
+            resolution_keys,
+            Some(owners),
             |_| Ok(()),
         )
     }
 
-    pub(crate) fn prepare_authoritative_invocation_seeded<F>(
+    pub(crate) fn prepare_typed_authoritative_invocation_seeded<F>(
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
@@ -4966,6 +5015,44 @@ impl ActionProviderRegistry {
     where
         F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
     {
+        self.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            state,
+            resolution_keys,
+            None,
+            seed,
+        )
+        .and_then(|(prepared, output)| Ok((prepared.into_typed()?, output)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_authoritative_invocation_seeded<F>(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        owners: Option<(
+            &crate::participant::ParticipantRegistry,
+            &crate::World,
+            &crate::read_service::OwnerReadRegistry,
+            &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
+        )>,
+        seed: F,
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            PreparedAuthoritativeAction,
+        ),
+        ActionProviderPrepareError,
+    >
+    where
+        F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
+    {
         self.prepare_authoritative_invocation_seeded_inner(
             action,
             invocation,
@@ -4973,6 +5060,7 @@ impl ActionProviderRegistry {
             commit_token,
             state,
             resolution_keys,
+            owners,
             seed,
         )
     }
@@ -4986,22 +5074,76 @@ impl ActionProviderRegistry {
         commit_token: CommitToken,
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        owners: Option<(
+            &crate::participant::ParticipantRegistry,
+            &crate::World,
+            &crate::read_service::OwnerReadRegistry,
+            &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
+        )>,
         seed: F,
-    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError>
+    ) -> Result<
+        (
+            crate::composed::PreparedComposedTxn,
+            PreparedAuthoritativeAction,
+        ),
+        ActionProviderPrepareError,
+    >
     where
         F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
     {
         let entry = self.get_exact(action)?;
         let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
+        txn.bind_registered_invocation(entry, invocation, commit_token);
+        let read_base = txn.read_base();
+        let mut read_observations = crate::read_service::ReadObservations::default();
+        let mut account_observations = crate::account::observation::AccountObservations::default();
         let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
         let root_cause = queue.allocate_root_event()?;
         let root_before_operations = txn.operation_count();
         seed(&mut txn)?;
+        let mut owner_images = crate::participant::OwnerImages::default();
+        let mut shell_objects = None;
         let mut prepare_context = crate::resolution::PrepareCtx::new(
             invocation.idempotency(),
             commit_token,
             resolution_keys,
         );
+        prepare_context =
+            prepare_context.with_registered_transaction(&read_base, entry.registration_ordinal());
+        if let Some((registry, world, _, _, hooks)) = owners {
+            prepare_context = prepare_context.with_carry_hooks(hooks);
+            prepare_context =
+                prepare_context.with_participants(crate::participant::ParticipantPreparation::new(
+                    registry,
+                    entry,
+                    world,
+                    &mut owner_images,
+                    &mut shell_objects,
+                    invocation,
+                ));
+        }
+        if let Some((_, world, reads, _, _)) = owners {
+            prepare_context =
+                prepare_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
+                    reads,
+                    world,
+                    entry,
+                    invocation,
+                    &read_base,
+                    &mut read_observations,
+                ));
+        }
+        if let Some((_, world, _, accounts, _)) = owners {
+            prepare_context = prepare_context.with_account_observations(
+                crate::account::observation::AccountPrepareContext::new(
+                    accounts,
+                    world,
+                    invocation,
+                    &mut account_observations,
+                ),
+            );
+        }
         let root_output = match resolved {
             Some(resolved) => entry
                 .provider()
@@ -5024,6 +5166,10 @@ impl ActionProviderRegistry {
             prepare_context.resolution_opened(),
             root_output.resolution().is_some(),
         )?;
+        if let Some(error) = prepare_context.owner_error() {
+            return Err(ActionProviderPrepareError::Participant(error.clone()));
+        }
+        drop(prepare_context);
         charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
@@ -5071,14 +5217,68 @@ impl ActionProviderRegistry {
         while let Some(work) = queue.pop_next()? {
             let cause = queue.allocate_derived_event(&work)?;
             let before_operations = txn.operation_count();
+            let mut trigger_context = crate::resolution::PrepareCtx::new(
+                invocation.idempotency(),
+                commit_token,
+                resolution_keys,
+            );
+            trigger_context = trigger_context
+                .with_registered_transaction(&read_base, entry.registration_ordinal());
+            if let Some((registry, world, _, _, hooks)) = owners {
+                trigger_context = trigger_context.with_carry_hooks(hooks);
+                trigger_context = trigger_context.with_participants(
+                    crate::participant::ParticipantPreparation::new(
+                        registry,
+                        entry,
+                        world,
+                        &mut owner_images,
+                        &mut shell_objects,
+                        invocation,
+                    ),
+                );
+            }
+            if let Some((_, world, reads, _, _)) = owners {
+                trigger_context =
+                    trigger_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
+                        reads,
+                        world,
+                        entry,
+                        invocation,
+                        &read_base,
+                        &mut read_observations,
+                    ));
+            }
+            if let Some((_, world, _, accounts, _)) = owners {
+                trigger_context = trigger_context.with_account_observations(
+                    crate::account::observation::AccountPrepareContext::new(
+                        accounts,
+                        world,
+                        invocation,
+                        &mut account_observations,
+                    ),
+                );
+            }
             let output = entry
                 .provider()
-                .prepare_same_commit_trigger(invocation, work.trigger(), &mut txn)
+                .prepare_same_commit_trigger_with_context(
+                    invocation,
+                    work.trigger(),
+                    &mut txn,
+                    &mut trigger_context,
+                )
                 .map_err(|source| ActionProviderPrepareError::Trigger {
                     action: Box::new(action.clone()),
                     handler: work.trigger().identity().handler.id().clone(),
                     source: Box::new(source),
                 })?;
+            if let Some(error) = trigger_context.owner_error() {
+                return Err(ActionProviderPrepareError::Participant(error.clone()));
+            }
+            // Same-commit triggers still may not introduce an independent RNG.
+            if trigger_context.resolution_opened() {
+                return Err(ActionProviderPrepareError::TriggerResolutionUnsupported);
+            }
+            drop(trigger_context);
             charge_new_operations(&mut queue, before_operations, &txn)?;
             let (
                 event_truth,
@@ -5113,12 +5313,26 @@ impl ActionProviderRegistry {
             queue.complete_trigger(work)?;
         }
         queue.finish()?;
+        if let Some((_, world, _, _, _)) = owners {
+            read_observations.recheck(world)?;
+            account_observations.recheck(world)?;
+        }
+        txn.require_ic_owner_images(&owner_images)?;
+        definitions.extend(owner_images.definitions().cloned());
+        definitions.extend(read_observations.definitions().cloned());
         definitions.sort();
         definitions.dedup();
         eligible_witnesses.sort();
         eligible_witnesses.dedup();
         let durable_outbox = renumber_durable_outbox(durable_outbox)?;
         let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
+        let prepared = crate::composed::PreparedComposedTxn::new(
+            prepared,
+            owner_images,
+            shell_objects,
+            read_observations,
+            account_observations,
+        )?;
         Ok((
             prepared,
             PreparedAuthoritativeAction {
@@ -5337,6 +5551,10 @@ fn renumber_durable_outbox(
 /// both live installation and persistence submission.
 #[derive(Debug, Error)]
 pub enum ActionProviderPrepareError {
+    #[error("registered owner preparation failed: {0}")]
+    Participant(#[from] crate::participant::ParticipantError),
+    #[error("complete composition preparation failed: {0}")]
+    Composition(#[from] crate::composed::ComposedPrepareError),
     #[error("action-provider registry is unavailable before module composition")]
     RegistryUnavailable,
     #[error("action provider cannot be selected: {0}")]
@@ -5370,6 +5588,8 @@ pub enum ActionProviderPrepareError {
     State(#[from] ActionStateError),
     #[error("durable schedule advance was not admissible: {0}")]
     Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
+    #[error("successful delayed-decision preparation omitted its seed result")]
+    DecisionSeedResultMissing,
     #[error("delayed-decision lease was not admissible: {0}")]
     DecisionLease(#[source] Box<crate::decision_source::DecisionSourcePlanError>),
     #[error("delayed-decision lifecycle transition was not admissible: {0}")]

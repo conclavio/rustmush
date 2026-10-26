@@ -638,7 +638,7 @@ impl ActionCoordinator {
         validate_invocation_identity(&permit.ingress, invocation)?;
         let token = deterministic_commit_token(&permit.ingress)?;
         let (prepared, output) = engine
-            .prepare_registered_authoritative_action(action, invocation, token)
+            .prepare_registered_composed_authoritative_action(action, invocation, token)
             .map_err(ActionCoordinatorError::Provider)?;
         let bundle = match assemble_bundle(
             &permit.ingress,
@@ -678,7 +678,7 @@ impl ActionCoordinator {
         validate_invocation_identity(&permit.ingress, invocation)?;
         let token = deterministic_commit_token(&permit.ingress)?;
         let (prepared, output) = engine
-            .prepare_registered_resolved_authoritative_action(&action, &resolved, token)
+            .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token)
             .map_err(ActionCoordinatorError::Provider)?;
         // E7c2 fold B12: the provider's own sentence for the acting principal,
         // taken through the very projection a HIT uses, so a first commit and
@@ -737,7 +737,11 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output) = engine
-            .prepare_registered_scheduled_authoritative_action(candidate, &invocation, token)
+            .prepare_registered_composed_scheduled_authoritative_action(
+                candidate,
+                &invocation,
+                token,
+            )
             .map_err(ActionCoordinatorError::Provider)?;
         let bundle = match assemble_bundle(
             permit.ingress(),
@@ -780,7 +784,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output, worker) = engine
-            .prepare_registered_decision_lease_action(
+            .prepare_registered_composed_decision_lease_action(
                 candidate,
                 &action,
                 &invocation,
@@ -885,7 +889,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output) = engine
-            .prepare_registered_decision_resolving_action(
+            .prepare_registered_composed_decision_resolving_action(
                 fence,
                 &action,
                 &invocation,
@@ -934,7 +938,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output) = engine
-            .prepare_registered_decision_terminal_action(
+            .prepare_registered_composed_decision_terminal_action(
                 fence,
                 &action,
                 &invocation,
@@ -981,7 +985,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output) = engine
-            .prepare_registered_decision_compaction_action(
+            .prepare_registered_composed_decision_compaction_action(
                 candidate,
                 &action,
                 &invocation,
@@ -1028,7 +1032,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output, fallback_fence) = engine
-            .prepare_registered_decision_attempt_action(
+            .prepare_registered_composed_decision_attempt_action(
                 fence,
                 &action,
                 &invocation,
@@ -1078,7 +1082,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output, fallback_fence) = engine
-            .prepare_registered_decision_fallback_trigger_action(
+            .prepare_registered_composed_decision_fallback_trigger_action(
                 candidate,
                 &action,
                 &invocation,
@@ -1128,7 +1132,7 @@ impl ActionCoordinator {
         validate_invocation_identity(permit.ingress(), &invocation)?;
         let token = deterministic_commit_token(permit.ingress())?;
         let (prepared, output) = engine
-            .prepare_registered_decision_cancellation_action(
+            .prepare_registered_composed_decision_cancellation_action(
                 controller,
                 &action,
                 &invocation,
@@ -1186,7 +1190,7 @@ fn assemble_bundle(
     action: &DefinitionRef,
     invocation: &ActionInvocation,
     token: CommitToken,
-    prepared: &mush_core::PreparedTxn,
+    prepared: &mush_core::composed::PreparedComposedTxn,
     output: mush_core::PreparedAuthoritativeAction,
 ) -> Result<AuthoritativeBundle, ActionCoordinatorError> {
     let provider = prepared.owner().clone();

@@ -273,6 +273,25 @@ impl PreparedLedgerAppend {
     }
 }
 
+// Own the validated plan and keep its exact destination exclusively borrowed
+// until application or discard. No authority is conveyed by this private type:
+// the ledger's exact tail/policy fence is not an owner or slot identity check.
+#[must_use = "binding does not append; apply consumes the validated plan"]
+/// Exact prepared append bound to its unchanged tail. Dropping this value does
+/// nothing; consuming it performs only the already-prepared insertion/write.
+pub struct BoundLedgerAppend<'a> {
+    ledger: &'a mut Ledger,
+    prepared: PreparedLedgerAppend,
+}
+
+impl BoundLedgerAppend<'_> {
+    pub fn apply(self) -> (u64, ModuleWrite) {
+        let Self { ledger, prepared } = self;
+        ledger.logs.insert(prepared.log_id, prepared.next_tail);
+        (prepared.seq, prepared.write)
+    }
+}
+
 /// Why a ledger append could not be prepared. Every variant is detected
 /// before the ledger is mutated.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -536,13 +555,27 @@ impl Ledger {
         &mut self,
         prepared: PreparedLedgerAppend,
     ) -> Result<(u64, ModuleWrite), LedgerApplyError> {
+        Ok(self.bind_prepared(prepared)?.apply())
+    }
+
+    // Keep the exact pre-state check separate from mutation. A future composed
+    // installer must finish every owner's bind before applying any image; this
+    // private step is also the existing public path's only admission check.
+    /// Bind the same opaque preparation accepted by `apply_prepared`, without
+    /// publishing it yet. Used to bind every owner before a composed apply.
+    pub fn bind_prepared(
+        &mut self,
+        prepared: PreparedLedgerAppend,
+    ) -> Result<BoundLedgerAppend<'_>, LedgerApplyError> {
         if self.chunk_target_bytes != prepared.chunk_target_bytes
             || self.logs.get(prepared.log_id.as_str()) != prepared.expected_tail.as_ref()
         {
             return Err(LedgerApplyError::StalePrestate);
         }
-        self.logs.insert(prepared.log_id, prepared.next_tail);
-        Ok((prepared.seq, prepared.write))
+        Ok(BoundLedgerAppend {
+            ledger: self,
+            prepared,
+        })
     }
 
     /// Compatibility append for consumers not yet migrated to the
@@ -2377,6 +2410,78 @@ mod tests {
             serde_json::json!({"event": "ready"})
         );
         assert_eq!(led.next_seq("s"), 1);
+    }
+
+    #[test]
+    fn bound_append_installs_the_exact_open_or_sealed_tail_and_write() {
+        for target in [usize::MAX, 0] {
+            let mut ledger = Ledger::with_chunk_target(target);
+            let prepared = ledger
+                .prepare_append("s", serde_json::json!({"event": "ready"}))
+                .unwrap();
+            let expected_tail = prepared.next_tail.clone();
+            let expected_write = prepared.write.clone();
+            let expected_seq = prepared.seq();
+            let before = ledger.clone();
+
+            let bound = ledger.bind_prepared(prepared).unwrap();
+            assert_eq!(*bound.ledger, before, "binding installs nothing");
+            let (seq, write) = bound.apply();
+            assert_eq!(seq, expected_seq);
+            assert_eq!(write, expected_write);
+            assert_eq!(ledger.logs.get("s"), Some(&expected_tail));
+            let (_, document) = chunk_of(&write);
+            assert_eq!(document.sealed, target == 0);
+            assert_eq!(ledger.next_seq("s"), 1);
+            assert_eq!(ledger.open_chunk("s"), u64::from(target == 0));
+        }
+    }
+
+    #[test]
+    fn dropping_a_bound_append_leaves_existing_and_absent_tails_unchanged() {
+        let mut ledger = Ledger::new();
+        let first = ledger
+            .prepare_append("existing", serde_json::json!(1))
+            .unwrap();
+        ledger.apply_prepared(first).unwrap();
+        for log in ["existing", "absent"] {
+            let before = ledger.clone();
+            let prepared = ledger.prepare_append(log, serde_json::json!(2)).unwrap();
+            let seq = prepared.seq();
+            let bound = ledger.bind_prepared(prepared).unwrap();
+            assert_eq!(*bound.ledger, before);
+            drop(bound);
+            assert_eq!(ledger, before);
+            let fresh = ledger.prepare_append(log, serde_json::json!(2)).unwrap();
+            assert_eq!(fresh.seq(), seq, "discarding never consumes a sequence");
+            ledger.apply_prepared(fresh).unwrap();
+        }
+    }
+
+    #[test]
+    fn last_ledger_bind_refusal_does_not_install_an_earlier_bound_tail() {
+        for changed_policy in [false, true] {
+            let mut first = Ledger::new();
+            let mut last = Ledger::new();
+            let first_plan = first.prepare_append("s", serde_json::json!(1)).unwrap();
+            let last_plan = last.prepare_append("s", serde_json::json!(2)).unwrap();
+            if changed_policy {
+                last.chunk_target_bytes = 0;
+            } else {
+                let competing = last.prepare_append("s", serde_json::json!(3)).unwrap();
+                last.apply_prepared(competing).unwrap();
+            }
+            let first_before = first.clone();
+            let last_before = last.clone();
+            let first_bound = first.bind_prepared(first_plan).unwrap();
+            assert!(matches!(
+                last.bind_prepared(last_plan),
+                Err(LedgerApplyError::StalePrestate)
+            ));
+            drop(first_bound);
+            assert_eq!(first, first_before);
+            assert_eq!(last, last_before);
+        }
     }
 
     #[test]

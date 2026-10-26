@@ -1,5 +1,7 @@
+use super::conduct_budget::{ConductBudget, ConductCursor};
+use super::registry_budget::{RegistryBudget, RegistryCursor};
 use super::{BulkError, invalid};
-use mush_core::{AccountId, ObjId};
+use mush_core::{AccountId, CommitToken, ObjId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -86,6 +88,8 @@ pub(crate) enum Opponent {
 pub(crate) enum WorkKind {
     Proving,
     Bench,
+    Registry,
+    Conduct,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,6 +132,10 @@ impl Artifact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conduct: Option<ConductBudget>,
     pub kind: WorkKind,
     pub scenario: Scenario,
     pub opponent: Opponent,
@@ -145,6 +153,12 @@ pub(crate) struct Plan {
 impl Plan {
     pub fn validate(&self) -> Result<(), BulkError> {
         self.start.validate()?;
+        if let Some(registry) = &self.registry {
+            registry.validate()?;
+        }
+        if let Some(conduct) = &self.conduct {
+            conduct.validate()?;
+        }
         let schedule_ok = match self.kind {
             WorkKind::Proving => {
                 (1..=6).contains(&self.per_side)
@@ -156,17 +170,31 @@ impl Plan {
             WorkKind::Bench => {
                 self.games == 1 && self.seeds.len() == 1 && (1..=300).contains(&self.unit_count)
             }
+            WorkKind::Registry | WorkKind::Conduct => {
+                ((self.kind == WorkKind::Registry && self.registry.is_some())
+                    || (self.kind == WorkKind::Conduct && self.conduct.is_some()))
+                    && self.per_side == 0
+                    && self.unit_count == 0
+                    && self.games == 0
+                    && self.seeds.is_empty()
+                    && self.limit_ms == 0
+                    && self.native_substep_ms == 0
+                    && self.scenario == Scenario::Duel
+                    && self.opponent == Opponent::Doctrine
+            }
         };
         if !schedule_ok
-            || (self.kind == WorkKind::Proving && self.start.bytes > MAX_ARTIFACT_BYTES)
+            || (self.kind != WorkKind::Registry && self.registry.is_some())
+            || (self.kind != WorkKind::Conduct && self.conduct.is_some())
+            || (self.kind != WorkKind::Bench && self.start.bytes > MAX_ARTIFACT_BYTES)
             || self
                 .seeds
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 != self.seeds.len()
-            || self.native_substep_ms < 50
-            || self.limit_ms == 0
+            || (!matches!(self.kind, WorkKind::Registry | WorkKind::Conduct)
+                && (self.native_substep_ms < 50 || self.limit_ms == 0))
             || (self.kind == WorkKind::Proving
                 && !(1_000..=30 * 60 * 1_000).contains(&self.limit_ms))
             || !(1..=MAX_ARTIFACT_BYTES).contains(&self.result_reservation_bytes)
@@ -178,18 +206,37 @@ impl Plan {
     pub fn units(&self) -> u64 {
         u64::from(self.unit_count)
     }
-    pub fn quantum_ms(&self) -> u64 {
-        u64::from(self.native_substep_ms) * LEASE_STEPS
-    }
     pub fn maximum_unit_ms(&self) -> u64 {
+        if let Some(registry) = &self.registry {
+            return registry.maximum_unit_ms();
+        }
+        if let Some(conduct) = &self.conduct {
+            return conduct.maximum_unit_ms();
+        }
         self.units()
             * (u64::from(self.limit_ms) + u64::from(self.native_substep_ms))
             * u64::from(self.games)
+    }
+    pub fn initial_charge(&self) -> Result<(u64, u32), BulkError> {
+        if let Some(conduct) = &self.conduct {
+            let case = conduct.case(ConductCursor::default())?;
+            return Ok((u64::from(case.units), case.native_ms));
+        }
+        if let Some(registry) = &self.registry {
+            let case = registry.case(RegistryCursor::default())?;
+            Ok((u64::from(case.units), case.native_ms))
+        } else {
+            Ok((self.units(), self.native_substep_ms))
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Flight {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conduct: Option<ConductCursor>,
     pub sequence: u64,
     pub utc_day: i64,
     pub allowance_unit_ms: u64,
@@ -197,6 +244,15 @@ pub(crate) struct Flight {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Run {
+    /// Exact acknowledged Registry admission. Absent in every M6 run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_job: Option<CommitToken>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conduct_job: Option<CommitToken>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conduct: Option<ConductCursor>,
     pub id: RunId,
     pub character: ObjId,
     pub nonce: u64,
@@ -211,6 +267,38 @@ pub(crate) struct Run {
     pub pins: u8,
 }
 impl Run {
+    pub fn charge(&self) -> Result<(u64, u32, u64), BulkError> {
+        match (&self.plan.conduct, self.conduct) {
+            (Some(budget), Some(cursor))
+                if self.plan.registry.is_none() && self.registry.is_none() =>
+            {
+                let case = budget.case(cursor)?;
+                return Ok((
+                    u64::from(case.units),
+                    case.native_ms,
+                    case.limit_ms()?
+                        .checked_sub(cursor.simulated_ms)
+                        .ok_or_else(|| invalid("Conduct trial progress"))?,
+                ));
+            }
+            (None, None) => {}
+            _ => return Err(invalid("Conduct cursor/plan mismatch")),
+        }
+        match (&self.plan.registry, self.registry) {
+            (Some(budget), Some(cursor)) => {
+                let case = budget.case(cursor)?;
+                Ok((
+                    u64::from(case.units),
+                    case.native_ms,
+                    case.limit_ms()?
+                        .checked_sub(cursor.simulated_ms)
+                        .ok_or_else(|| invalid("Registry case progress"))?,
+                ))
+            }
+            (None, None) => Ok((self.plan.units(), self.plan.native_substep_ms, u64::MAX)),
+            _ => Err(invalid("Registry cursor/plan mismatch")),
+        }
+    }
     pub fn retained_bytes(&self) -> u64 {
         // Bench references belong to TapeStore and its independently bounded
         // session budget. Only private proving artifacts consume this owner.
@@ -251,6 +339,64 @@ impl Account {
             runs: BTreeMap::new(),
         }
     }
+    /// The complete future document bound for an admitted Registry run. Every
+    /// field that can grow before terminal publication is rendered at its
+    /// maximal JSON width, preserving immutable plans and all other actual rows.
+    /// This is an encoding bound only, never a simulated/authoritative post-image.
+    pub(super) fn registry_document_ceiling(&self) -> Result<Option<usize>, BulkError> {
+        let active_registry = self.runs.values().any(|run| {
+            matches!(run.plan.kind, WorkKind::Registry | WorkKind::Conduct)
+                && !run.status.terminal()
+        });
+        if !active_registry {
+            return Ok(None);
+        }
+        let mut upper = self.clone();
+        {
+            upper.utc_day = i64::MIN;
+            upper.spent_unit_ms = u64::MAX;
+            upper.reserved_unit_ms = u64::MAX;
+            upper.request_watermark = u64::MAX;
+            upper.next_run = u64::MAX;
+            upper.active = Some(RunId(u64::MAX));
+            for run in upper.runs.values_mut().filter(|run| {
+                matches!(run.plan.kind, WorkKind::Registry | WorkKind::Conduct)
+                    && !run.status.terminal()
+            }) {
+                let cursor = RegistryCursor {
+                    index: u16::MAX,
+                    simulated_ms: u64::MAX,
+                };
+                let conduct_cursor = ConductCursor {
+                    index: u8::MAX,
+                    simulated_ms: u64::MAX,
+                };
+                let registry = (run.plan.kind == WorkKind::Registry).then_some(cursor);
+                let conduct = (run.plan.kind == WorkKind::Conduct).then_some(conduct_cursor);
+                run.registry = registry;
+                run.conduct = conduct;
+                run.finished_ms = Some(i64::MIN);
+                run.status = Status::CancelRequested;
+                run.charged_unit_ms = u64::MAX;
+                run.next_sequence = u64::MAX;
+                run.flight = Some(Flight {
+                    registry,
+                    conduct,
+                    sequence: u64::MAX,
+                    utc_day: i64::MIN,
+                    allowance_unit_ms: u64::MAX,
+                });
+                run.result = Some(Artifact {
+                    sha256: [255; 32],
+                    bytes: u64::MAX,
+                });
+                run.pins = u8::MAX;
+            }
+        }
+        serde_json::to_vec(&upper)
+            .map(|bytes| Some(bytes.len()))
+            .map_err(|_| invalid("account terminal capacity encoding"))
+    }
     pub fn validate(&self, _cfg: &BulkConfig) -> Result<(), BulkError> {
         if self.format != FORMAT
             || self.next_run == 0
@@ -262,15 +408,39 @@ impl Account {
         let mut active = None;
         let mut totals = BTreeMap::<ObjId, (usize, u64)>::new();
         let mut nonces = std::collections::BTreeSet::new();
+        let mut registry_jobs = std::collections::BTreeSet::new();
+        let mut conduct_jobs = std::collections::BTreeSet::new();
         for (id, run) in &self.runs {
             run.plan.validate()?;
-            if *id != run.id
+            let (units, native, remaining) = run.charge()?;
+            if run.status == Status::Complete {
+                if let (Some(budget), Some(cursor)) = (&run.plan.conduct, run.conduct)
+                    && !budget.complete(cursor)?
+                {
+                    return Err(invalid("Conduct completion at a partial trial"));
+                }
+                if let (Some(budget), Some(cursor)) = (&run.plan.registry, run.registry) {
+                    // Complete is a quota-terminal result. Certification and
+                    // measured rejection are distinguished by the actual
+                    // artifact/Registry owners, including on paired recovery.
+                    if !budget.can_certify(cursor)? && !budget.can_reject(cursor)? {
+                        return Err(invalid("Registry completion at a partial class cursor"));
+                    }
+                }
+            }
+            if (run.plan.kind == WorkKind::Conduct) != run.conduct_job.is_some()
+                || run.conduct_job.is_some_and(|job| !conduct_jobs.insert(job))
+                || (run.plan.kind == WorkKind::Registry) != run.registry_job.is_some()
+                || run
+                    .registry_job
+                    .is_some_and(|job| !registry_jobs.insert(job))
+                || *id != run.id
                 || id.0 == 0
                 || run.nonce == 0
                 || !nonces.insert(run.nonce)
                 || run.status.terminal() != run.finished_ms.is_some()
                 || (run.status == Status::Complete
-                    && run.plan.kind == WorkKind::Proving
+                    && run.plan.kind != WorkKind::Bench
                     && run.result.is_none())
                 || id.0 >= self.next_run
                 || run.nonce > self.request_watermark
@@ -290,7 +460,10 @@ impl Account {
             if let Some(flight) = &run.flight
                 && (flight.sequence.checked_add(1) != Some(run.next_sequence)
                     || flight.allowance_unit_ms == 0
-                    || flight.allowance_unit_ms > run.plan.units() * run.plan.quantum_ms()
+                    || flight.registry != run.registry
+                    || flight.conduct != run.conduct
+                    || flight.allowance_unit_ms > units * u64::from(native) * LEASE_STEPS
+                    || flight.allowance_unit_ms / units > remaining
                     || flight.allowance_unit_ms > run.charged_unit_ms
                     || flight.utc_day != self.utc_day)
             {
@@ -330,6 +503,11 @@ pub(crate) struct ArtifactBytes {
     context: Option<super::report::Context>,
 }
 impl ArtifactBytes {
+    /// Preparation-worker serialization refuses before the immutable artifact
+    /// allocation can exceed its existing byte ceiling.
+    pub(crate) fn encode(value: &impl serde::Serialize) -> Result<Self, BulkError> {
+        Self::new(super::encoding::encode(value, MAX_ARTIFACT_BYTES as usize)?)
+    }
     pub fn new(bytes: Vec<u8>) -> Result<Self, BulkError> {
         use sha2::{Digest as _, Sha256};
         if bytes.is_empty() || bytes.len() as u64 > MAX_ARTIFACT_BYTES {

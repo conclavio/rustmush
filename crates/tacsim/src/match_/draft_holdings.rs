@@ -11,6 +11,40 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::sync::Arc;
 
+/// Current diagnostic access is separate from a frozen execution seal. A
+/// marked Draft origin needs the future parent-rights resolver even when the
+/// arena is still correctly executing an older captured sortie.
+pub(crate) fn current_draft_source_access(owner: Option<&RollStore>, origin: &MindOrigin) -> bool {
+    let MindOrigin::Draft {
+        character,
+        mind,
+        revision,
+        digest,
+    } = origin
+    else {
+        return true;
+    };
+    owner
+        .and_then(|store| {
+            store
+                .revision(
+                    *character,
+                    mush_roll::RevisionKey {
+                        character: *character,
+                        mind: *mind,
+                        number: *revision,
+                    },
+                )
+                .ok()
+        })
+        .is_some_and(|row| {
+            row.reference().digest == *digest && row.require_original_access().is_ok()
+        })
+}
+
+#[cfg(test)]
+mod lineage_tests;
+
 /// Fully resolved source and executable envelope for an owned saved revision.
 /// A checkout retains this resolved clone; preview may resolve Follow again.
 /// Later edits never alter a clone that has already been sealed.
@@ -126,6 +160,9 @@ impl SavedMind {
         name: &str,
         revision: &Revision,
     ) -> Result<Self, RollError> {
+        // A marked derivative cannot enter through the personal M6 draft
+        // exception. Existing frozen seals/replay use their immutable custody.
+        revision.require_original_access()?;
         let reference = revision.reference();
         if reference.key.character != actor {
             return Err(RollError::Missing);

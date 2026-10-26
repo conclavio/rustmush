@@ -858,3 +858,57 @@ fn mind_bulk_is_a_closed_bounded_read_request() {
     assert!(serde_json::from_value::<Query>(json!({"t":"mind_bulk","d":{"page":65536}})).is_err());
     assert!(serde_json::from_value::<Query>(json!({"t":"mind_bulk","d":{"run":-1}})).is_err());
 }
+
+#[test]
+fn original_mind_market_read_has_closed_bounded_public_selectors() {
+    use mush_proto::{MarketOriginalMindsKind, MarketOriginalMindsRequest};
+    let value = ClientCommand::Req {
+        id: 55,
+        q: Query::MarketOriginalMinds(MarketOriginalMindsRequest {
+            kind: MarketOriginalMindsKind::Own,
+            after: Some(
+                ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").expect("cursor"),
+            ),
+        }),
+    };
+    roundtrip(&value);
+    assert_eq!(
+        serde_json::to_value(&value).expect("wire"),
+        json!({"t":"req","d":{"id":55,
+        "q":{"t":"market_original_minds","d":{"kind":"own","after":"0123456789abcdef0123456789abcdef"}}}})
+    );
+    roundtrip(&Query::MarketOriginalMinds(MarketOriginalMindsRequest {
+        kind: MarketOriginalMindsKind::Listings,
+        after: None,
+    }));
+    for extra in ["actor", "account", "buyer", "source", "limit", "params"] {
+        let mut forged = serde_json::to_value(&value).expect("wire");
+        forged
+            .pointer_mut("/d/q/d")
+            .expect("request")
+            .as_object_mut()
+            .expect("fields")
+            .insert(extra.into(), json!(7));
+        assert!(
+            serde_json::from_value::<ClientCommand>(forged).is_err(),
+            "unknown field {extra}"
+        );
+    }
+    for cursor in [
+        json!(""),
+        json!("0".repeat(31)),
+        json!("0".repeat(33)),
+        json!("A".repeat(32)),
+        json!("g".repeat(32)),
+        json!(7),
+    ] {
+        let forged = json!({"t":"market_original_minds","d":{"kind":"own","after":cursor}});
+        assert!(serde_json::from_value::<Query>(forged).is_err());
+    }
+    for kind in ["all", "OWN", "source", "buyer"] {
+        assert!(
+            serde_json::from_value::<Query>(json!({"t":"market_original_minds","d":{"kind":kind}}))
+                .is_err()
+        );
+    }
+}

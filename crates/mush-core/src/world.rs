@@ -186,6 +186,8 @@ pub struct World {
     /// every other moment (16b cut AP.4) — how `OUTPUTPREFIX` knows which
     /// connection it sets.
     dispatching_conn: Option<ConnId>,
+    // Actual core ingress/completion identity; no public setter and not cloned.
+    connection_dispatch: crate::connection_completion::ConnectionDispatchSlot,
     // Transient engine-fed transport binding. A reconnect or actor switch gets
     // a new lease, so delayed source-bearing replies cannot cross lifetimes.
     connection_bindings: HashMap<ConnId, (ObjId, u64)>,
@@ -943,6 +945,19 @@ impl World {
         self.dispatching_conn = conn;
     }
 
+    pub(crate) fn connection_dispatch(
+        &self,
+    ) -> Option<&crate::connection_completion::ConnectionDispatch> {
+        self.connection_dispatch.get()
+    }
+
+    pub(crate) fn set_connection_dispatch(
+        &mut self,
+        value: Option<crate::connection_completion::ConnectionDispatch>,
+    ) {
+        self.connection_dispatch.set(value);
+    }
+
     /// Fresh actor and lifetime for an attached physical connection.
     #[must_use]
     pub fn connection_binding(&self, conn: ConnId) -> Option<(ObjId, u64)> {
@@ -1577,6 +1592,39 @@ impl World {
     // ------------------------------------------------------------------
     // Typed module state slots
     // ------------------------------------------------------------------
+
+    pub(crate) fn participant_slot(
+        &self,
+        type_id: std::any::TypeId,
+    ) -> Option<(
+        crate::module::ErasedSlotCapture,
+        &(dyn std::any::Any + Send),
+    )> {
+        self.module_state.capture_erased(type_id)
+    }
+
+    pub(crate) fn participant_captured_slot(
+        &self,
+        capture: &crate::module::ErasedSlotCapture,
+    ) -> Option<&(dyn std::any::Any + Send)> {
+        self.module_state.get_erased_captured(capture)
+    }
+
+    /// Disjoint private storage for the registered slots and closed shell leg.
+    pub(crate) fn composed_install_parts_mut(
+        &mut self,
+    ) -> (
+        &mut ModuleStateMap,
+        crate::reserved_shell::ShellObjectStorage<'_>,
+    ) {
+        (
+            &mut self.module_state,
+            crate::reserved_shell::ShellObjectStorage {
+                objects: &mut self.objs,
+                next_id: &mut self.next_id,
+            },
+        )
+    }
 
     /// Read the module state slot for `T`.
     #[must_use]

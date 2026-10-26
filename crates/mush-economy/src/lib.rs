@@ -80,13 +80,37 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
 
+// The deny above has no test exemption, so a test or fixture helper that
+// returns `Result` checks with `check!`/`check_eq!`/`check_ne!` — its asserts
+// as early `Err` returns. Declared before every other module because
+// `macro_rules!` is textually scoped.
+#[cfg(test)]
+#[macro_use]
+mod test_checks;
+
+/// One account's fold before-image: its id, running balance, last touching
+/// transaction and touch count, as the managed install paths restore them.
+pub(crate) type AccountBeforeImage = (AccountId, Option<i128>, Option<u64>, Option<u64>);
+
 // E2a — the pure library.
 mod amount;
+pub mod core_integration;
+pub mod core_refit;
 mod engine;
 mod hash;
 mod ids;
+pub mod managed_charter_transfer;
+pub mod managed_coverage;
+pub mod managed_entitlement;
+pub mod managed_house_purchase;
+pub mod managed_house_renewal;
+pub mod managed_paid_resale;
+pub mod managed_purchase;
+pub mod managed_renewal;
+mod managed_title;
 mod plan;
 mod record;
+pub mod registry_filing;
 mod snapshot;
 
 // E4a — clocks, holds, obligations, contracts (still pure).
@@ -251,6 +275,7 @@ pub use contract_live::{
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};
+pub use facts::scoped::{ContractFactScope, FactPurpose, ScopedFactContext, contract_fact};
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts, has_fact_provider};
 pub use module::CANON_TAIL;
 pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};

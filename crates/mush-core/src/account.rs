@@ -20,6 +20,12 @@
 //! `Serialize`/`Deserialize` (transparent over the hex hash) inside the account
 //! document.
 
+pub(crate) mod observation;
+pub use observation::{
+    AccountIdentityEpoch, AccountPairSnapshot, DistinctPersonalAccounts,
+    PersonalAccountObservation, PersonalAccountSnapshot,
+};
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -96,6 +102,28 @@ pub trait AccountIdentity: Send + Sync {
     /// The account a character belongs to, or `None` when the character is not
     /// mapped (unknown, unmapped, or its account carries no id yet).
     fn account_of(&self, character: ObjId) -> Option<AccountId>;
+
+    /// Capture one actual personal account under the backend's map read lock.
+    /// Every map mutation must invalidate its `AccountIdentityEpoch` under the
+    /// same write lock. The default refuses retained capture while preserving
+    /// ordinary legacy account queries.
+    fn capture_personal_account(&self, character: ObjId) -> Option<PersonalAccountSnapshot> {
+        let _ = character;
+        None
+    }
+
+    /// Capture distinct personal accounts under the backend's map read lock.
+    /// Every map mutation must invalidate its `AccountIdentityEpoch` under the
+    /// same write lock, before changing the map. The default refuses composed
+    /// commerce while preserving all existing read-only account queries.
+    fn observe_distinct_accounts(
+        &self,
+        requester: ObjId,
+        other: ObjId,
+    ) -> Option<AccountPairSnapshot> {
+        let _ = (requester, other);
+        None
+    }
 
     /// **Record a character the world has just made** (16b cut F.4, the K6
     /// point).

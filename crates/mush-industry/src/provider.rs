@@ -4263,14 +4263,60 @@ pub fn register(
     jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
     tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
 ) -> Result<(), ModError> {
+    register_with_core_origins(
+        reg,
+        families,
+        recipes,
+        Seams {
+            opener,
+            jurisdiction,
+            tenure,
+        },
+        None,
+        None,
+    )
+}
+
+/// The doc 20 seams [`register`] hands every [`IndustryProvider`]: the system
+/// opener (cut SM.6), the jurisdiction row (cut SM.6) and the tenure authority
+/// (cut SM.10).
+pub(crate) struct Seams {
+    pub(crate) opener: Option<std::sync::Arc<dyn crate::seams::SystemOpener>>,
+    pub(crate) jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
+    pub(crate) tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
+}
+
+pub(crate) fn register_with_core_origins(
+    reg: &mut Registrar<'_>,
+    families: &IndustryFamilies,
+    recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
+    seams: Seams,
+    origins: Option<&crate::core_production::CoreOriginConfig>,
+    factory: Option<&crate::core_production::integration::CoreFactoryConfig>,
+) -> Result<(), ModError> {
+    let Seams {
+        opener,
+        jurisdiction,
+        tenure,
+    } = seams;
     let outcome_descriptor = descriptor(
         "outcome",
         OUTCOME_ID,
         json!({ "fields": ["actor", "verb", "summary"] }),
     )?;
+    let mut outcomes = vec![outcome_descriptor.clone()];
+    if let Some(config) = origins {
+        outcomes.push(config.outcome_descriptor()?);
+    }
+    if factory.is_some() {
+        outcomes.push(crate::core_production::integration::runtime::outcome_descriptor()?);
+    }
+    if factory.and_then(|c| c.refit.as_ref()).is_some() {
+        outcomes.push(crate::core_production::refit::runtime::outcome_descriptor()?);
+    }
     reg.definition_validator(
         DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
-        exact_validator(std::slice::from_ref(&outcome_descriptor)),
+        exact_validator(&outcomes),
     )?;
     let outcome = reg.definition(outcome_descriptor)?;
 
@@ -4286,9 +4332,40 @@ pub fn register(
             .map(|descriptor| descriptor.with_references(vec![outcome.clone()]))
         })
         .collect::<Result<Vec<_>, ModError>>()?;
+    let mut action_shapes = descriptors.clone();
+    if let Some(config) = origins {
+        action_shapes.extend([config.policy.action(true)?, config.policy.action(false)?]);
+    }
+    if let Some(config) = factory {
+        if config.payment().delivery.is_some() {
+            action_shapes.push(
+                config
+                    .payment()
+                    .action_descriptor(crate::core_production::integration::delivery::ACTION)
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+            );
+        }
+        if let Some(refit) = &config.refit {
+            for name in crate::core_production::refit::ACTIONS {
+                action_shapes.push(
+                    refit
+                        .action_descriptor(name)
+                        .map_err(|e| ModError::msg(e.to_string()))?,
+                );
+            }
+        }
+        for name in crate::core_production::integration::ACTIONS {
+            action_shapes.push(
+                config
+                    .payment()
+                    .action_descriptor(name)
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+            );
+        }
+    }
     reg.definition_validator(
         DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
-        exact_validator(&descriptors),
+        exact_validator(&action_shapes),
     )?;
     let mut advance_action: Option<DefinitionRef> = None;
     for (verb, descriptor) in verbs.into_iter().zip(descriptors) {

@@ -24,6 +24,9 @@ pub(crate) enum ReplayCommand {
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Picture {
+    /// Owner-rechecked metadata, never part of the emitted panel or replay hash.
+    #[serde(skip)]
+    pub access_origin: Option<MindOrigin>,
     pub unit: ObjId,
     pub event: usize,
     pub at_ms: i64,
@@ -161,7 +164,7 @@ struct ReplayMachine {
     unit: ObjId,
     memory_allowed: bool,
     diff: Option<super::experiment::Diff>,
-    branch: Option<super::branch::Branch>,
+    branch: Option<Box<super::branch::Branch>>,
     goal: Option<i64>,
     rewind: bool,
     picture: Arc<Picture>,
@@ -194,6 +197,7 @@ impl ReplayMachine {
             goal: None,
             rewind: false,
             picture: Arc::new(Picture {
+                access_origin: None,
                 unit,
                 event: 0,
                 at_ms: 0,
@@ -239,6 +243,14 @@ impl ReplayMachine {
             None
         };
         let picture = Picture {
+            access_origin: self
+                .lease
+                .tape
+                .header()
+                .seals
+                .iter()
+                .find(|seal| seal.unit == self.unit)
+                .map(|seal| seal.requested.origin.clone()),
             unit: self.unit,
             event: self.session.event(),
             at_ms: arena.now_ms,
@@ -286,7 +298,10 @@ impl ReplayMachine {
         self.picture = Arc::new(picture);
         Ok(())
     }
-    fn replace_branch(&mut self, next: Option<super::branch::Branch>) -> Result<(), BulkError> {
+    fn replace_branch(
+        &mut self,
+        next: Option<Box<super::branch::Branch>>,
+    ) -> Result<(), BulkError> {
         let old = std::mem::replace(&mut self.branch, next);
         if let Err(error) = self.refresh() {
             self.branch = old;
@@ -684,6 +699,8 @@ pub(super) fn open_reference(
         },
     )?;
     let plan = super::model::Plan {
+        registry: None,
+        conduct: None,
         kind: super::model::WorkKind::Bench,
         scenario: super::model::Scenario::Muster,
         opponent: super::model::Opponent::Mirror,
@@ -841,6 +858,49 @@ mod settle_boundary_tests {
             "Standard/Line",
         )
         .unwrap()
+    }
+    #[test]
+    fn access_metadata_tracks_verified_selection_and_is_absent_from_picture_wire() {
+        let mut machine = ReplayMachine::new(tape(), ObjId(99), ObjId(4)).unwrap();
+        let origin = machine
+            .lease
+            .tape
+            .header()
+            .seals
+            .iter()
+            .find(|seal| seal.unit == ObjId(4))
+            .unwrap()
+            .requested
+            .origin
+            .clone();
+        assert_eq!(machine.picture.access_origin.as_ref(), Some(&origin));
+        let callsign = machine
+            .session
+            .arena()
+            .unwrap()
+            .callsigns()
+            .iter()
+            .find(|(unit, _)| *unit == ObjId(4))
+            .unwrap()
+            .1
+            .to_string();
+        machine.bench_act_as(&callsign).unwrap();
+        assert_eq!(machine.picture.access_origin.as_ref(), Some(&origin));
+        machine
+            .bench_edit(super::super::experiment::Edit::Swap {
+                candidate: candidate(),
+                serial: 1,
+            })
+            .unwrap();
+        // Candidate access is independently retained by the world Entry; the
+        // selected reference still binds the verified tape's original source.
+        assert_eq!(machine.picture.access_origin.as_ref(), Some(&origin));
+        machine
+            .bench_edit(super::super::experiment::Edit::Reference)
+            .unwrap();
+        let wire = serde_json::to_value(machine.picture.as_ref()).unwrap();
+        assert!(wire.get("access_origin").is_none());
+        assert_eq!(machine.picture.access_origin.as_ref(), Some(&origin));
     }
     #[test]
     fn terminal_target_drains_same_time_settle_and_ledger_ack_to_the_exact_cursor() {

@@ -30,9 +30,13 @@ description = "mush-market (E6c): the neutral market — bounded catalogs and co
 # two is amended by this pass. `cargo tree -p mush-market` is the test.
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
 mush-org.workspace = true
 mush-economy.workspace = true
 mush-inventory.workspace = true
+# M7: typed original-mind offers read Roll-owned rights through its registered
+# service. Economy retains no Market or Roll dependency; no ruleset edge.
+mush-roll.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -41,7 +45,6 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-store.workspace = true
-mush-proto.workspace = true
 tokio.workspace = true
 
 [lints]

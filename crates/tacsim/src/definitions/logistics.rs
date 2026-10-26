@@ -115,6 +115,52 @@ pub struct StowageDef {
     pub limits: BTreeMap<CanonicalId, u64>,
 }
 
+impl StowageDef {
+    /// Re-run the shared bounded tag/measure rules for a real compartment.
+    pub fn check(&self, entry: &str, id: &CanonicalId) -> Result<(), DefinitionError> {
+        if self.accepts.is_empty() || self.accepts.len() > MAX_COMPARTMENT_KEYS {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "compartment `{id}` accepts 1 to {MAX_COMPARTMENT_KEYS} stowage tags; {} \
+                     is not",
+                    self.accepts.len()
+                ),
+            ));
+        }
+        if self.limits.is_empty() || self.limits.len() > MAX_COMPARTMENT_KEYS {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "compartment `{id}` limits 1 to {MAX_COMPARTMENT_KEYS} measures; {} is not",
+                    self.limits.len()
+                ),
+            ));
+        }
+        if let Some((measure, _)) = self.limits.iter().find(|(_, limit)| **limit == 0) {
+            return Err(DefinitionError::value(
+                entry,
+                format!("compartment `{id}` limits `{measure}` to 0; a limit is positive"),
+            ));
+        }
+        // Payload is mass: every compartment says what it weighs.
+        if !self
+            .limits
+            .keys()
+            .any(|measure| measure.as_str() == MASS_KG)
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "compartment `{id}` does not limit {MASS_KG}; every compartment says what \
+                     it weighs"
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// **A hull's drive**: its class, and the law that class flies under.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,41 +291,7 @@ impl LogisticsDef {
             ));
         }
         for (id, def) in &self.stowage {
-            if def.accepts.is_empty() || def.accepts.len() > MAX_COMPARTMENT_KEYS {
-                return Err(DefinitionError::value(
-                    entry,
-                    format!(
-                        "compartment `{id}` accepts 1 to {MAX_COMPARTMENT_KEYS} stowage tags; {} \
-                         is not",
-                        def.accepts.len()
-                    ),
-                ));
-            }
-            if def.limits.is_empty() || def.limits.len() > MAX_COMPARTMENT_KEYS {
-                return Err(DefinitionError::value(
-                    entry,
-                    format!(
-                        "compartment `{id}` limits 1 to {MAX_COMPARTMENT_KEYS} measures; {} is not",
-                        def.limits.len()
-                    ),
-                ));
-            }
-            if let Some((measure, _)) = def.limits.iter().find(|(_, limit)| **limit == 0) {
-                return Err(DefinitionError::value(
-                    entry,
-                    format!("compartment `{id}` limits `{measure}` to 0; a limit is positive"),
-                ));
-            }
-            // Payload is mass: every compartment says what it weighs.
-            if !def.limits.keys().any(|measure| measure.as_str() == MASS_KG) {
-                return Err(DefinitionError::value(
-                    entry,
-                    format!(
-                        "compartment `{id}` does not limit {MASS_KG}; every compartment says what \
-                         it weighs"
-                    ),
-                ));
-            }
+            def.check(entry, id)?;
         }
         // Doc 20 cut SM.3a: a stowage-only unit declares no drive, so it has no
         // law to bound.

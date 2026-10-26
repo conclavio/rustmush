@@ -474,7 +474,7 @@ pub fn close_window(ctx: &mut Ctx<'_>, domain: DomainId) -> Result<Vec<ObjId>, S
         .map(|(o, _)| o)
         .collect();
     for &obj in &members {
-        crate::deployed::refuse_if_deployed(ctx.w, obj).map_err(|error| error.to_string())?;
+        crate::deployed::refuse_if_custodied(ctx.w, obj).map_err(|error| error.to_string())?;
     }
     for &obj in &members {
         unplace(ctx, obj, "the window closed")?;

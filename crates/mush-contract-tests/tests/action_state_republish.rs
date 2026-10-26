@@ -1,14 +1,15 @@
 //! Architectural tripwire for interface cut I13 (docs/interface/02 §3.13): the
 //! production commit seam installs typed action-state post-images through
-//! `Engine::install_prepared_action_announcing`, which emits one
+//! `Engine::install_composed_action_announcing`, which emits one
 //! `WorldEvent::ActionStateChanged` per touched family once the images are
-//! live — the event the `<ruleset>.vitals` republish subscribes to beside
-//! `AttrSet`. A bare `install_prepared_action(…)` on a production path is a
+//! live, after all registered owner images also apply — the event the
+//! `<ruleset>.vitals` republish subscribes to beside `AttrSet`. A silent typed
+//! or composed install on a production path is a
 //! commit nobody hears about: a Willpower spend or Condition-Monitor damage
 //! lands, and every client keeps a stale sheet and stale vitals until its next
 //! poll. So this probe refuses it outside test code and fixture crates.
 //!
-//! `install_prepared_action` itself stays legitimate where there is no
+//! Both silent install helpers stay legitimate where there is no
 //! audience — test fixtures, the contract-test toy bootstraps, boot-time
 //! hydration — which is why `tests/` directories, `#[cfg(test)] mod … { … }`
 //! bodies (inline test modules, wherever they sit in a file), and the two
@@ -19,14 +20,13 @@
 //! The match is on the bare identifier followed by `(` — a method call, a
 //! UFCS call (`Engine::install_prepared_action(&mut e, i)`) and a path-valued
 //! call all match; only the method's own definition (`fn
-//! install_prepared_action(`) is exempt. `install_prepared_action_announcing(`
-//! never matches (the identifier continues).
+//! install_prepared_action(`) is exempt. Both announcing names are distinct
+//! identifiers and never match.
 
 use std::path::{Path, PathBuf};
 
-const FORBIDDEN: &str = "install_prepared_action(";
-const DEFINITION: &str = "fn install_prepared_action(";
-const REQUIRED_SEAM: &str = "install_prepared_action_announcing(";
+const SILENT_INSTALLS: [&str; 2] = ["install_prepared_action", "install_composed_action"];
+const REQUIRED_SEAM: &str = "install_composed_action_announcing(";
 
 /// Crates whose `src/` is test support. `mush-contract-tests` is dev-only
 /// everywhere; `mush-testkit` is a `[dependencies]` entry of the two
@@ -91,6 +91,11 @@ fn brace_delta(line: &str) -> i64 {
 /// `mod name;` declaration ends nothing — only an inline body is skipped, and
 /// scanning resumes after its closing brace.
 fn production_lines(source: &str) -> Vec<(usize, &str)> {
+    // An external test module carries its own explicit file-level fence. Its
+    // parent's cfg attribute is unavailable when scanning this file alone.
+    if source.lines().any(|line| line.trim() == "#![cfg(test)]") {
+        return Vec::new();
+    }
     let lines: Vec<&str> = source.lines().collect();
     let mut kept = Vec::with_capacity(lines.len());
     let mut index = 0;
@@ -130,7 +135,9 @@ fn crate_name_of(path: &Path, crates: &Path) -> String {
 }
 
 fn is_forbidden(line: &str) -> bool {
-    line.contains(FORBIDDEN) && !line.contains(DEFINITION)
+    SILENT_INSTALLS
+        .iter()
+        .any(|name| line.contains(&format!("{name}(")) && !line.contains(&format!("fn {name}(")))
 }
 
 #[test]
@@ -167,7 +174,7 @@ fn production_commit_seams_install_prepared_actions_announcing() {
     assert!(
         offenders.is_empty(),
         "production code installs prepared action state silently (use \
-         `install_prepared_action_announcing` so the world's observers hear the \
+         `install_composed_action_announcing` so the world's observers hear the \
          commit — interface plan I13):\n{}",
         offenders.join("\n")
     );
@@ -266,4 +273,29 @@ fn the_match_is_the_bare_identifier_not_the_method_syntax() {
     assert!(!is_forbidden(
         "    /// [`Engine::install_prepared_action`] stays for fixtures."
     ));
+    assert!(is_forbidden(
+        "    engine.install_composed_action(installation);"
+    ));
+    assert!(is_forbidden(
+        "    Engine::install_composed_action(&mut engine, installation);"
+    ));
+    assert!(!is_forbidden(
+        "    pub fn install_composed_action(&mut self, installation: I) {"
+    ));
+    assert!(!is_forbidden(
+        "    engine.install_composed_action_announcing(installation, out, fx);"
+    ));
+}
+
+#[test]
+fn an_explicit_external_test_file_is_excluded_but_an_outer_attribute_is_not() {
+    let test = "#![cfg(test)]\nfn fixture() { e.install_composed_action(i); }\n";
+    assert!(production_lines(test).is_empty());
+    let production =
+        "#[cfg(test)]\nmod tests;\nfn production() { e.install_composed_action(i); }\n";
+    assert!(
+        production_lines(production)
+            .iter()
+            .any(|(_, line)| is_forbidden(line))
+    );
 }

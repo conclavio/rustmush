@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod lineage;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{ModuleBootData, ModuleOp, ModuleWrite, ObjId, mechanics::DefinitionDigest};
@@ -1328,4 +1330,107 @@ fn retention_batch_is_atomic_bounded_and_rejects_cross_arm_duplicate_keys() {
             .reference_keys("game", ReferenceKind::MatchRecord),
         vec![record]
     );
+}
+
+#[test]
+fn reserved_roll_roots_refuse_external_replacement_and_release_before_lookup() {
+    let store = RollStore::default();
+    // Include all currently external kinds: a future internal kind must not
+    // accidentally make the owner-string release path a private-root API.
+    for kind in [
+        ReferenceKind::NamedVersion,
+        ReferenceKind::UnnamedHistory,
+        ReferenceKind::Selection,
+        ReferenceKind::MatchRecord,
+        ReferenceKind::Tape,
+        ReferenceKind::ProvingRun,
+        ReferenceKind::OpenSeal,
+        ReferenceKind::Listing,
+    ] {
+        let key = ReferenceKey {
+            owner: NS.into(),
+            kind,
+            record: "reserved".into(),
+        };
+        for result in [
+            store.prepare_reference(NS, key.clone(), Vec::new()),
+            store.prepare_release_reference(NS, &key),
+        ] {
+            assert!(matches!(
+                result,
+                Err(RollError::Invalid { field, message })
+                    if field == "reference owner"
+                        && message == "owner mismatch or reserved retention owner"
+            ));
+        }
+    }
+    assert!(store.quarantine().is_empty());
+}
+
+#[test]
+fn boot_does_not_accept_forged_or_unregistered_internal_root_families() -> Result<(), RollError> {
+    let revision = RevisionRef {
+        key: RevisionKey {
+            character: AUTHOR,
+            mind: 1,
+            number: 1,
+        },
+        digest: DefinitionDigest::from_hex(&"a".repeat(64))
+            .map_err(|e| invalid("test digest", e.to_string()))?,
+    };
+    // The now-known commercial codec still cannot activate itself in an M6
+    // deployment. Distinguish malformed anchors from valid but unwired roots.
+    let owner_refusal = "internal retention records belong only to roll";
+    for (owner, kind, record, refusal) in [
+        (NS, "listing", "reserved", owner_refusal),
+        ("game", "named_version", "reserved", owner_refusal),
+        ("game", "unnamed_history", "reserved", owner_refusal),
+        (
+            NS,
+            "commercial",
+            "reserved",
+            "invalid exact obligation anchor",
+        ),
+        ("game", "commercial", "reserved", owner_refusal),
+        (
+            NS,
+            "commercial",
+            "v1/filed/0000000000000001",
+            "commercial owner composition is absent",
+        ),
+    ] {
+        let key = format!("reference:{owner}:{kind}:{record}");
+        let value = json!({
+            "format": FORMAT,
+            "key": {"owner": owner, "kind": kind, "record": record},
+            "revisions": [revision],
+        });
+        let store = RollStore::load(&ModuleBootData {
+            kv: vec![(key.as_str().into(), value)],
+            ..Default::default()
+        })?;
+        check!(store.quarantine().contains_key(&key));
+        let reason = store
+            .quarantine()
+            .get(&key)
+            .ok_or_else(|| invalid("test quarantine", "missing expected refusal"))?;
+        check!(reason.contains(refusal), "unexpected quarantine: {reason}");
+        check!(matches!(
+            store.prepare_prune(1),
+            Err(RollError::Quarantined(_))
+        ));
+        check!(matches!(
+            store.prepare_prune_owned(AUTHOR, 1),
+            Err(RollError::Quarantined(_))
+        ));
+        for known in [
+            ReferenceKind::NamedVersion,
+            ReferenceKind::UnnamedHistory,
+            ReferenceKind::Listing,
+            ReferenceKind::Commercial,
+        ] {
+            check!(store.reference_keys(owner, known).is_empty());
+        }
+    }
+    Ok(())
 }
