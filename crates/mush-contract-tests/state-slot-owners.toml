@@ -1426,3 +1426,18 @@ accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
 reason = "R8a takes the Exchange operating account id from economy's monotonic allocator, then opens its zero-balance account through mush_economy::open_account. Same allocator-only boundary as port/apply.rs; capitalization is an ordinary conserved post, never a direct balance mutation."
+
+[[site]]
+path = "crates/mush-contract-tests/tests/scale_harness.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+H3 (PR #7): `h3_journal_seeder_answers_a_key_filter_false_positive` forces the
+key filter's false positive the cold replay's seeder meets at mint 59 233 onto
+the first mint, by inserting that mint's `cmd:` key through the economy's
+test-only `key_filter_mut_for_tests`. It reads the next transaction id and
+writes nothing else; the mint itself posts through the real `@econ/mint`
+surface and the slow key lookup, so the case pins the seeder's answer path on
+every `cargo test` run instead of only the ignored 100 000-entry run.
+"""
