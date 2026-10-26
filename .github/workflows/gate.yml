@@ -79,6 +79,12 @@ jobs:
       # Six of the eight cores for the compile; the service's Nice=10 yields
       # the rest to the game servers under contention.
       CARGO_BUILD_JOBS: "6"
+      # Every job's own temporary directory, wiped between jobs: /tmp on the
+      # box holds root-owned leftovers of by-hand harness runs
+      # (tacsim-lance-smoke, tacsim-minds-smoke), which the runner's user
+      # cannot write (the first by-hand sweep, 2026-10-26: two harness tests
+      # failed on exactly that).
+      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
@@ -116,8 +122,10 @@ jobs:
           done
           status=0
           # Each nextest invocation writes THE junit.xml of the ci profile
-          # (under the store directory, which follows CARGO_TARGET_DIR), so
-          # each one is kept under its own name for the artifact.
+          # under the store directory — the CHECKOUT's own target/nextest
+          # (the workspace root's), whatever CARGO_TARGET_DIR says (seen
+          # 2026-10-26) — so each one is kept under its own name for the
+          # artifact, before the next invocation replaces it.
           reports=0
           keep_junit() {
             for f in target/nextest/ci/junit.xml "$CARGO_TARGET_DIR/nextest/ci/junit.xml"; do

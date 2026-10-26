@@ -1859,7 +1859,9 @@ mush-bot` with `REDIS_URL` at the gate's private Redis, so every
 then `cargo test --doc`; or only the packages the dispatch names. The target
 directory is kept across runs beside the checkout (`_work/rustmush/target` under
 the runner's work tree), so a sweep compiles what changed and nothing else; the
-owner may `rm -rf` it on the box to start cold.
+owner may `rm -rf` it on the box to start cold: a cold sweep of the whole
+workspace built 128 GB of it on 2026-10-26 (`debug/deps` 106, `debug/incremental`
+21) on a 387 GB disk.
 
 **The rules the runner lives under** (the repository is public):
 
@@ -1881,6 +1883,11 @@ owner may `rm -rf` it on the box to start cold.
   with `appendfsync always`, as CI's disposable Redis runs), wiped with
   `FLUSHALL` before every sweep. The instances on 6379 (production), 6788
   (dev1), 6791 (dev2) and 6798 (dev1 trade) are never touched.
+- Every job has its own temporary directory (`TMPDIR` is the runner's
+  per-job temp, wiped between jobs): `/tmp` on the box holds root-owned
+  leftovers of by-hand harness runs (`tacsim-lance-smoke`,
+  `tacsim-minds-smoke`), which the runner's user cannot write, and two
+  harness tests write their report there.
 - `harness` and `cost-lane` are the owner's to dispatch: they compete with
   everything on the box for its cores, and their rules (the harness section
   above, and never beside each other) stand; the `concurrency` group keeps
