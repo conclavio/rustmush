@@ -90,6 +90,13 @@ impl LaunchComposition {
                 recipient: Some(deployment.venue.recipient.clone()),
             };
             commerce = commerce
+                .with_house_owner_terms(
+                    InitialFilingTerms::new(
+                        content::HOUSE_OWNER_TERM_SECONDS,
+                        content::GRACE_SECONDS,
+                    )
+                    .map_err(bad)?,
+                )?
                 .with_house_filings()?
                 .with_conduct_trials(&prepared_layer)?
                 .with_registry_reconformance()?

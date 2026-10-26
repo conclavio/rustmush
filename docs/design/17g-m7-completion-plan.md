@@ -21,6 +21,17 @@ it still needs.
 3. **The operator commands (17f M7.11) ship in M7.** Without them most of the
    built commerce code is unreachable.
 
+Later the same day, with PR #5 merged to `main` (`5d00f978`) and C0–C4 started:
+
+4. **§3 C2's command table is approved as proposed**: `@mind/*` for author acts,
+   `+minds/*` for holders and buyers, `@registry/*` for Registry staff (§5
+   question 1).
+5. **C3 is in M7.** The owner asked for C0–C4, so typed TUI and web actions ship
+   with M7 rather than after it (§5 question 2).
+6. **Player-market tuning takes provisional defaults** (§5 question 3), per the
+   owner's standing word on economy numbers: reasonable defaults now, tuned in
+   play, never a reason to hold a build. Each default C1 picks is listed in §7.
+
 ## 2. Where M7 stands (verified at `c123b069`)
 
 **Built and story-tested, composed only in tests.** Every player-to-player owner
@@ -295,3 +306,40 @@ and doc 17 §22.
   never print source, memory or a digest that would act as an oracle.
 - **Load.** Registry pacing and the queue's fairness with live players are unmeasured.
   Report them under C4, in line with the owner's report-only timing ruling.
+
+## 7. Ledger
+
+### C0 — the House owner's 365-day term (2026-10-25, branch `claude/m7-c0-house-term`)
+
+As built, against §3 C0:
+- **Two bounds, one window type.** `mush_roll::commerce::MAX_OWNER_TERM_SECONDS`
+  (365 days) sits beside `MAX_TERM_SECONDS` (90). `TermWindow` carries owner and
+  paid windows alike, so its own constructor and decode take the longer owner
+  bound, and `PaidTermRecord::validate` holds a paid window to 90 through the new
+  `TermWindow::term_seconds`. Every paid product, config and record that checks
+  `term_seconds` keeps `MAX_TERM_SECONDS` unchanged. `InitialFilingTerms::new`
+  takes the owner bound.
+- **The House term is its own setting.** `CommerceConfig::with_house_owner_terms`
+  (set once; the House filing otherwise files under the personal `terms`) feeds
+  the House filing action's definition and its builder.
+  `MindCommerce::with_house_owner_terms` must precede `with_house_filings`, which
+  fixes that definition. The launch sets `content::HOUSE_OWNER_TERM_SECONDS`
+  (365 days); the paid House Pin and its renewal keep `TERM_SECONDS` (90).
+- **mush-core's 90-day copies stay.** The charter-pending wire's window bound is
+  the personal owner term's: charter transfers and pending charters refuse a House
+  birth (`economic.house.is_some()`), so they never carry a House owner window.
+  Its comment now says so.
+- **The pins.** The House purchase and renewal integration fixtures file House
+  minds under their own explicit 90-day term and test protocol mechanics: an
+  issuer lapse is not inherited by a granted Pin, and a renewal runs while the
+  issuer is in Grace. Those cases stay valid and are what House owner attestation
+  will need, so they were left on the fixture term rather than re-choreographed.
+  C0's gate is on the production composition instead, in the named launch story
+  (`hardware/flow/launch/story.rs`): the Coprates owner term is 365 days with 3
+  of Grace, the paid House Pin 90 with 3, the issuer is Active (no longer in
+  Grace) at the Pin's due date, and the catalogue quotes one second before day
+  365 and during Grace and refuses at the Grace end.
+- **Docs.** 17f's term rule names the exception; `docs/help/house-minds.md` gives
+  the 365/3 and 90-day terms.
+- **Deploy note.** The House filing action's definition digest moves with its
+  term, so the next deploy of a launch world takes a fresh store (§6).

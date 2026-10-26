@@ -1916,7 +1916,11 @@ and membership loss after an eligible preview, not merely catalogue visibility.
   `none` and a free, non-transferable owner's licence. `/publish` may file first
   and then list through an explicit combined service; it cannot charge twice.
   Private filing never makes a mind eligible for future NPC procurement.
-* Terms are at most 90 IC days; Grace is at most 3. Renewal auto-drafts one fresh
+* Terms are at most 90 IC days; Grace is at most 3. One exception (17g C0, owner
+  ruling 2026-10-25): a House-filed mind's free owner licence runs 365 IC days
+  until House owner attestation exists; paid House terms stay at 90. Roll's
+  `TermWindow` admits 365 (`MAX_OWNER_TERM_SECONDS`) and a paid term record
+  holds itself to 90 (`MAX_TERM_SECONDS`). Renewal auto-drafts one fresh
   E4 contract per paid term, not automatic acceptance/debit. Owner renewal is
   attestation without a synthetic zero-price sale, levy or venue cut.
   A buyer may explicitly request a fresh offer after the exact preceding offer

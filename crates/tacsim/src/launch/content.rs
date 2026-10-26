@@ -6,7 +6,11 @@ use serde_json::json;
 
 pub const FILING_MINOR: i64 = 10_000;
 pub const HOUSE_MINOR: i64 = 40_000;
+/// The personal owner term and every paid House term (a Pin and its renewal).
 pub const TERM_SECONDS: i64 = 90 * 86_400;
+/// 17g C0 (owner, 2026-10-25): a House-filed mind's free owner licence, until
+/// House owner attestation exists. About 15.2 real days at IC rate 24, plus Grace.
+pub const HOUSE_OWNER_TERM_SECONDS: i64 = 365 * 86_400;
 pub const GRACE_SECONDS: i64 = 3 * 86_400;
 pub const OFFER_SECONDS: i64 = 3 * 86_400;
 pub const LEVY_PERMILLE: u16 = 50;

@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::rating::RatingClass;
 use super::records::{PublicationError, Record, RevisionPolicy};
-use super::{CharterId, LicenceId, LineId, PaidSeats, TermGeneration, TermWindow};
+use super::{
+    CharterId, LicenceId, LineId, MAX_TERM_SECONDS, PaidSeats, TermGeneration, TermWindow,
+};
 
 pub const PAID_RECORD_FORMAT: u16 = 1;
 pub const MAX_PAID_LICENCE_BYTES: usize = 4 * 1024;
@@ -408,8 +410,10 @@ impl Record for PaidTermRecord {
     fn key(&self) -> String {
         format!("{}/{}", self.licence.key(), self.generation.key())
     }
+    /// A paid window keeps the paid 90-day bound: [`TermWindow`]'s own bound is
+    /// the longer owner bound (17g C0).
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != PAID_RECORD_FORMAT {
+        if self.format != PAID_RECORD_FORMAT || self.window.term_seconds() > MAX_TERM_SECONDS {
             return Err(PublicationError::Invalid);
         }
         Ok(())

@@ -22,8 +22,14 @@ pub const VALUE_FORMAT: u16 = 1;
 /// open-claim storage reservations remain separate, lower operational limits.
 /// This ceiling never applies to an owner's dispatch authority.
 pub const MAX_PAID_SEATS: u16 = 1_024;
-/// Compact audit term bound, in world-IC seconds (90 days).
+/// Compact audit term bound, in world-IC seconds (90 days): every paid term, its
+/// renewals, and the personal and dependent owner terms.
 pub const MAX_TERM_SECONDS: i64 = 90 * 24 * 60 * 60;
+/// The owner-term bound, in world-IC seconds (365 days). 17g C0: a House-filed
+/// mind's free owner licence runs 365 IC days until House owner attestation
+/// exists. Only owner filing terms and [`TermWindow`] itself use it; a paid
+/// record still holds its window to [`MAX_TERM_SECONDS`].
+pub const MAX_OWNER_TERM_SECONDS: i64 = 365 * 24 * 60 * 60;
 /// Compact Grace bound, in world-IC seconds (3 days).
 pub const MAX_GRACE_SECONDS: i64 = 3 * 24 * 60 * 60;
 
@@ -316,6 +322,10 @@ pub enum TermPhase {
 /// eligibility origin prevents a late Grace issue from disguising an excessive
 /// original term. A parent-bound constructor must later prove where inherited
 /// dates came from; this value alone proves no parent grant.
+///
+/// One type carries owner and paid windows alike, so its own bound is the longer
+/// owner bound ([`MAX_OWNER_TERM_SECONDS`]); a paid record checks its window
+/// against [`MAX_TERM_SECONDS`] through [`TermWindow::term_seconds`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "TermWindowWire")]
 pub struct TermWindow {
@@ -351,7 +361,7 @@ impl TermWindow {
             .0
             .checked_sub(term_end.0)
             .ok_or(ValueError::Term)?;
-        if !(1..=MAX_TERM_SECONDS).contains(&term)
+        if !(1..=MAX_OWNER_TERM_SECONDS).contains(&term)
             || !(0..=MAX_GRACE_SECONDS).contains(&grace)
             || issued_at >= grace_end
         {
@@ -364,6 +374,13 @@ impl TermWindow {
             term_end,
             grace_end,
         })
+    }
+
+    /// The term's length, eligibility start to term end; positive and within
+    /// [`MAX_OWNER_TERM_SECONDS`] by construction.
+    #[must_use]
+    pub const fn term_seconds(self) -> i64 {
+        self.term_end.0 - self.eligibility_start.0
     }
 
     #[must_use]

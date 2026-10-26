@@ -431,6 +431,19 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// 17g C0: the House owner's free licence term, distinct from the personal
+    /// term `prepare` took. Set it before [`Self::with_house_filings`], which
+    /// fixes the House filing action's definition (the term is part of it).
+    pub fn with_house_owner_terms(mut self, terms: InitialFilingTerms) -> Result<Self, ModError> {
+        if self.state.house_filing_action.is_some() {
+            return Err(ModError::msg(
+                "the House owner term is set before House filing",
+            ));
+        }
+        self.state.roll = self.state.roll.with_house_owner_terms(terms)?;
+        Ok(self)
+    }
+
     /// Explicit scoped filing only. The real curator must independently hold
     /// every required current scoped authorization. House sales/use stay closed.
     pub fn with_house_filings(mut self) -> Result<Self, ModError> {

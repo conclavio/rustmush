@@ -9,9 +9,10 @@ use mush_core::{
     OfferExecutionContext, OfferSubmission, Outbox, PerceivedRef, RequestUid, ScopedIdempotencyKey,
 };
 use mush_roll::commerce::{
-    LicenceId,
+    LicenceId, TermWindow,
     paid::{PaidTermRecord, PersonalPaidLicence},
     rating::{RatingReceipt, RatingRef},
+    records::OwnerTerm,
 };
 use std::time::{Duration, Instant};
 
@@ -253,6 +254,27 @@ fn term(r: &Rig) -> Result<PaidTermRecord> {
         .find(|t| t.licence() == licence.id() && t.generation() == licence.term())
         .ok_or_else(|| "actual current paid term".into())
 }
+/// An owner licence's one owner term, as the launch's actual filing wrote it.
+fn owner_term(r: &Rig, licence: LicenceId) -> Result<OwnerTerm> {
+    let mut terms = r
+        .rows("roll_mind_owner_term")
+        .into_iter()
+        .map(serde_json::from_value::<OwnerTerm>)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|t| t.licence() == licence);
+    match (terms.next(), terms.next()) {
+        (Some(term), None) => Ok(term),
+        _ => Err("expected the owner licence's one term".into()),
+    }
+}
+/// A window's (term, Grace) lengths in IC seconds.
+fn lengths(window: TermWindow) -> (i64, i64) {
+    (
+        window.term_seconds(),
+        window.grace_end().get() - window.term_end().get(),
+    )
+}
 fn fence(r: &mut Rig, name: &str, parameters: Value) -> Result {
     let buyer = r.buyer;
     member(r, false)?;
@@ -418,6 +440,13 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     let birth = one(&r, "roll_mind_initial_filing")?;
     let owner_licence: LicenceId =
         serde_json::from_value(birth.get("licence").ok_or("actual owner licence")?.clone())?;
+    // 17g C0 (owner, 2026-10-25): the House owner's free licence runs 365 IC
+    // days with the usual 3 of Grace, until House owner attestation exists.
+    check_eq!(
+        lengths(owner_term(&r, owner_licence)?.window()),
+        (365 * 86_400, 3 * 86_400),
+        "the House owner's term"
+    );
     let buyer = r.buyer;
     for actor in [GOD, buyer] {
         r.world_mut().world_mut().move_to(actor, d.venue.room)?;
@@ -460,6 +489,12 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     )?;
     let accepted = paid(&r)?;
     let accepted_term = term(&r)?;
+    // The paid House Pin keeps the paid 90 days beside the 365-day owner term.
+    check_eq!(
+        lengths(accepted_term.window()),
+        (90 * 86_400, 3 * 86_400),
+        "the paid House Pin's term"
+    );
     check_eq!(before.0 - r.money(r.payer)?.0, 40000);
     member(&mut r, false)?;
     reboot(&mut r, &d)?;
@@ -475,8 +510,9 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         buyer,
         json!({"listing":listing})
     ))?);
-    // The issuer's original term is still in Grace at the buyer's actual due
-    // boundary. The next paid term separately requires current membership.
+    // The issuer's 365-day owner term is still Active at the buyer's actual due
+    // boundary, 90 days in (before 17g C0 it was in Grace there). The next paid
+    // term separately requires current membership.
     r.world_mut()
         .world_mut()
         .set_now(accepted_term.window().term_end().get());
@@ -544,5 +580,26 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     check_eq!(before.0 - r.money(r.payer)?.0, 160000);
     reboot(&mut r, &d)?;
     check_eq!(r.rows("roll_mind_personal_paid_licence"), holdings);
+    // 17g C0: the Coprates catalogue sells for the whole 365-day owner term and
+    // its Grace, and refuses once the owner's Grace ends. A quote moves no money.
+    let owner = owner_term(&r, owner_licence)?.window();
+    member(&mut r, true)?;
+    for (at, sells) in [
+        (owner.term_end().get() - 1, true),
+        (owner.term_end().get() + 86_400, true),
+        (owner.grace_end().get(), false),
+    ] {
+        r.world_mut().world_mut().set_now(at);
+        r.flush();
+        let quote = json!({"listing":listing});
+        if sells {
+            r.perform("market", "quote_house_mind", buyer, quote)?;
+        } else {
+            check!(
+                crate::test_checks::refused(r.plan("market", "quote_house_mind", buyer, quote))?,
+                "the catalogue sells past the House owner's Grace"
+            );
+        }
+    }
     Ok(())
 }

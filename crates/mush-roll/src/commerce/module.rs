@@ -33,6 +33,9 @@ pub struct CommerceConfig {
     conduct: Option<Box<super::conduct::ConductConfig>>,
     pub(crate) mode: CommerceMode,
     terms: InitialFilingTerms,
+    /// 17g C0: the House owner's own term, when composition sets one; the
+    /// House filing otherwise files under `terms`.
+    house_terms: Option<InitialFilingTerms>,
     manifest: DefinitionRef,
     compatibility: RatingCompatibility,
     original_market_quotes: bool,
@@ -132,6 +135,7 @@ impl CommerceConfig {
         Ok(Self {
             mode,
             terms,
+            house_terms: None,
             manifest,
             compatibility,
             original_market_quotes: false,
@@ -517,6 +521,22 @@ impl CommerceConfig {
         Ok(self)
     }
 
+    /// 17g C0: the House owner's free licence term, set once by composition.
+    /// Until House owner attestation exists the House files under its own
+    /// longer term (365 IC days at launch) rather than the personal one; the
+    /// House filing action's definition carries it, so its digest moves with it.
+    pub fn with_house_owner_terms(mut self, terms: InitialFilingTerms) -> Result<Self, ModError> {
+        if self.house_terms.is_some() {
+            return Err(ModError::msg("the House owner term is set once"));
+        }
+        self.house_terms = Some(terms);
+        Ok(self)
+    }
+
+    fn house_terms(&self) -> &InitialFilingTerms {
+        self.house_terms.as_ref().unwrap_or(&self.terms)
+    }
+
     /// Explicit private personal derivative filing and owner use/source only.
     /// This does not enable derivative sale, renewal or organization authority.
     pub fn with_dependent_owner_filings(mut self) -> Result<Self, ModError> {
@@ -726,7 +746,7 @@ impl CommerceConfig {
             "action",
             mush_economy::registry_filing::HOUSE_FILING_ACTION,
             json!({"format":1,"protocol":"scoped_original_house_filing_v1",
-                "terms":self.terms.payload(),
+                "terms":self.house_terms().payload(),
                 "capabilities":[mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
                     "asset.title.transfer","economy.account.post"]}),
         )?
@@ -1417,7 +1437,7 @@ fn register_filing_providers(
                 outcome,
                 manifest: config.manifest.clone(),
                 compatibility: config.compatibility.clone(),
-                terms: config.terms.clone(),
+                terms: config.house_terms().clone(),
                 families: families.clone(),
                 ratings: ratings.clone(),
                 shells: shells.clone(),
