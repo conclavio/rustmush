@@ -840,6 +840,15 @@ and D8), standing until the owner rules. The slot switches are `/1` to `/4` (`MA
 else the only rig; the pointer is RAM, so after a restart a two-rig act with no number refuses
 (SM.3b).
 
+**As built (post-buyout mining):** refitting, taking a rig lease and empty-bay
+status also accept the current active title to a programme hull. A graduation
+record is not authority: a former owner cannot use it after title passes on.
+The services read the current hull and its stowage-backed, active, pilot-owned
+hold, rather than the enrolment's historical hold. Fleet assignments do not
+grant these services. Normal berth, flight, cargo, licence and lease checks
+still apply; returning a rig remains keyed on the lessee's own live record,
+including after loss of helm.
+
 **As built (SM.5):** the seam is filled: `licence_seam` became `licence_check`, and `+tv/lease`
 (preview and `go`) is the one act besides mining, staking and renewal that reads the licence, at
 check 6 of `plan_take`, before the slot and before the term settle — refused `LEASE_LICENCE`, or

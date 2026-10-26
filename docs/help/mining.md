@@ -21,10 +21,12 @@ Commons on Vesta (`help travel`).
 ## The loop
 
 **1. Kit up.** At Ceres Freeport the Freeport Registry licenses prospectors
-(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered Dray into a
-Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles into its
-bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease needs a
-licence in force or in its grace.
+(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered or owned Dray
+into a Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles
+into its bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease
+needs a licence in force or in its grace. After buying out your Dray, your title lets you
+refit her and lease rigs on the same terms. Return any rigs before the buyout;
+once title has passed, you can lease them again.
 
   +licence/buy [go]        the Freeport Registry's prospecting licence
   +licence                 your licence: in force, in its grace, or lapsed

@@ -1073,6 +1073,298 @@ fn top_up(tw: &mut TestWorld, who: ObjId, minor: i64) {
     assert!(!out.contains("Usage"), "{out}");
 }
 
+/// File the real purchase without advancing its settlement window.
+fn file_buyout(rig: &mut Rig, pilot: ObjId) {
+    top_up(&mut rig.tw, pilot, 10_000_000);
+    let registry = desk(&rig.tw);
+    teleport(&mut rig.tw, pilot, registry);
+    let out = run(&mut rig.tw, pilot, "+coop/buyout");
+    assert!(
+        out.contains("The Registry writes the title transfer"),
+        "{out}"
+    );
+    assert_eq!(
+        store(&rig.tw)
+            .enrolment_of(pilot)
+            .map(|record| record.status),
+        Some(tacsim::port::EnrolmentStatus::BuyoutPending)
+    );
+}
+
+/// Settle the purchase through the economy sweep and prove the old charter is gone.
+fn settle_buyout(rig: &mut Rig, pilot: ObjId, hull: ObjId) {
+    sweep(&mut rig.tw, 31);
+    assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_none());
+    assert_eq!(
+        tacsim::port::coop::helm_of(rig.tw.world(), pilot),
+        Some(tacsim::port::coop::Helm {
+            hull,
+            standing: tacsim::port::coop::Standing::Title,
+        })
+    );
+    assert_eq!(
+        store(&rig.tw)
+            .enrolment_of(pilot)
+            .map(|record| record.status),
+        Some(tacsim::port::EnrolmentStatus::Graduated)
+    );
+}
+
+/// A purchased standard Dray can become a working prospector after title settles.
+/// The rig lease and its deposit remain ordinary leases across a restart and return.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn post_buyout_refit_lease_and_return_survive_restart() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    support::licence::buy_licence(&mut rig.tw, pilot);
+    sweep(&mut rig.tw, 31);
+    file_buyout(&mut rig, pilot);
+    let pending = store(&rig.tw).enrolment_of(pilot).cloned();
+    let account = account_of(&rig.tw, pilot);
+    let before = balances(&rig.tw, account);
+    let journal = economy(&rig.tw).journal_len();
+    let contracts = economy(&rig.tw).snapshot().contracts().count();
+    let want = tacsim::port::buyout::BUYOUT_PENDING
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark);
+    let out = refit(&mut rig, pilot, "prospector");
+    assert!(out.contains(&want), "title has not settled: {out}");
+    let out = at_occator(&mut rig, pilot, "+tv/lease go");
+    assert!(
+        out.contains(&want),
+        "no rigs during the purchase window: {out}"
+    );
+    assert_eq!(unit_id(&rig.tw, hull), DRAY);
+    assert!(records(&rig.tw, pilot).is_empty());
+    assert_eq!(balances(&rig.tw, account), before);
+    assert_eq!(economy(&rig.tw).journal_len(), journal);
+    assert_eq!(economy(&rig.tw).snapshot().contracts().count(), contracts);
+    assert_eq!(store(&rig.tw).enrolment_of(pilot).cloned(), pending);
+
+    settle_buyout(&mut rig, pilot, hull);
+    let graduated = store(&rig.tw).enrolment_of(pilot).cloned();
+    let out = refit(&mut rig, pilot, "prospector");
+    assert!(
+        out.contains("as a Dray-P"),
+        "the title permits refitting: {out}"
+    );
+    assert_eq!(unit_id(&rig.tw, hull), DRAY_P);
+    let status = run(&mut rig.tw, pilot, "+tv");
+    for slot in [1, 2] {
+        let empty = at_counter(&rig.tw, RIG_EMPTY).replace("{n}", &slot.to_string());
+        assert!(
+            status.contains(&empty),
+            "the owner's empty bay is visible: {status}"
+        );
+    }
+    let before = balances(&rig.tw, account);
+    lease_one(&mut rig, pilot);
+    let lease = records(&rig.tw, pilot)
+        .pop()
+        .expect("the owner's rig lease");
+    assert_eq!(lease.hull, hull);
+    assert!(in_bay(&rig.tw, lease.tv, bay_of(&row)));
+    assert_eq!(hold_status(&rig.tw, lease.hold), HoldStatus::Held);
+    assert_eq!(
+        balances(&rig.tw, account),
+        (before.0 - FEE_MINOR, before.1 + DEPOSIT_MINOR)
+    );
+
+    let mut rig = reboot(rig);
+    assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_none());
+    assert_eq!(record_on(&rig.tw, pilot, lease.tv), lease);
+    assert!(in_bay(&rig.tw, lease.tv, bay_of(&row)));
+    let out = refit(&mut rig, pilot, "standard");
+    assert!(
+        out.contains(&REFIT_BAY.replace("{n}", "1").replace("{name}", "Salt Moth")),
+        "ownership does not waive the occupied bay gate: {out}"
+    );
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    assert!(out.contains("back across Occator's counter"), "{out}");
+    assert_eq!(
+        record_on(&rig.tw, pilot, lease.tv).status,
+        TvLeaseStatus::Returned
+    );
+    assert!(contract_terminal(&rig.tw, lease.lease));
+    assert_eq!(hold_status(&rig.tw, lease.hold), HoldStatus::Released);
+    assert!(in_shed(&rig.tw, lease.tv));
+    assert_eq!(balances(&rig.tw, account), (before.0 - FEE_MINOR, before.1));
+    let out = refit(&mut rig, pilot, "standard");
+    assert!(out.contains("as a standard Dray"), "{out}");
+    assert_eq!(unit_id(&rig.tw, hull), DRAY);
+    assert_eq!(store(&rig.tw).enrolment_of(pilot).cloned(), graduated);
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(hull)
+            .map(|asset| asset.title_owner.clone()),
+        Some(PrincipalId::Object(pilot))
+    );
+    no_refused_writes(&rig.tw);
+}
+
+/// Graduation is historical bookkeeping, not permission after title is transferred
+/// or written off. Refused services must not charge, create leases or rebind the hull.
+#[test]
+fn post_buyout_services_require_a_current_active_title() {
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    file_buyout(&mut rig, pilot);
+    settle_buyout(&mut rig, pilot, hull);
+    let graduated = store(&rig.tw).enrolment_of(pilot).cloned();
+    let other = rig.tw.spawn_player("New owner");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, other.0),
+    );
+    assert!(out.contains("Title transferred"), "{out}");
+    let refused = |rig: &mut Rig| {
+        assert!(tacsim::port::coop::helm_of(rig.tw.world(), pilot).is_none());
+        let before = balances(&rig.tw, account_of(&rig.tw, pilot));
+        let journal = economy(&rig.tw).journal_len();
+        let contracts = economy(&rig.tw).snapshot().contracts().count();
+        let out = refit(rig, pilot, "standard");
+        assert!(
+            !out.contains("as a standard Dray"),
+            "a stale graduate refitted: {out}"
+        );
+        let out = at_occator(rig, pilot, "+tv/lease go");
+        assert!(
+            !out.contains("leases you"),
+            "a stale graduate leased a rig: {out}"
+        );
+        assert_eq!(unit_id(&rig.tw, hull), DRAY_P);
+        assert!(records(&rig.tw, pilot).is_empty());
+        assert_eq!(balances(&rig.tw, account_of(&rig.tw, pilot)), before);
+        assert_eq!(economy(&rig.tw).journal_len(), journal);
+        assert_eq!(economy(&rig.tw).snapshot().contracts().count(), contracts);
+        assert_eq!(store(&rig.tw).enrolment_of(pilot).cloned(), graduated);
+    };
+    refused(&mut rig);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, pilot.0),
+    );
+    assert!(out.contains("Title transferred"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/writeoff #{}=test inactive title", hull.0),
+    );
+    assert!(out.contains("Written off"), "{out}");
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(hull)
+            .map(|asset| asset.lifecycle),
+        Some(mush_economy::AssetLifecycle::WrittenOff)
+    );
+    refused(&mut rig);
+    no_refused_writes(&rig.tw);
+}
+
+/// Current title and the current hull hold govern service even when old purchase
+/// paperwork names a missing vault. Cargo in the actual hold still blocks a refit.
+#[test]
+fn post_buyout_services_read_the_current_hold_instead_of_the_old_enrolment() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    support::licence::buy_licence(&mut rig.tw, pilot);
+    sweep(&mut rig.tw, 31);
+    file_buyout(&mut rig, pilot);
+    settle_buyout(&mut rig, pilot, hull);
+    let key = tacsim::port::coop::enrolment_key(
+        store(&rig.tw)
+            .enrolment_of(pilot)
+            .expect("the old papers")
+            .account,
+    );
+    let mut rig = reboot_editing(rig, &key, |document| {
+        document["vault"] = serde_json::json!(u64::MAX);
+    });
+    assert_eq!(
+        store(&rig.tw)
+            .enrolment_of(pilot)
+            .map(|record| record.vault),
+        Some(u64::MAX)
+    );
+    let hold = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, hold, "metals", 1, LotId(98_601));
+    let out = refit(&mut rig, pilot, "prospector");
+    assert!(
+        out.contains(&REFIT_HOLD.replace("{name}", "Salt Moth")),
+        "the current hold's cargo must be seen: {out}"
+    );
+    assert_eq!(unit_id(&rig.tw, hull), DRAY);
+    take_pool(&mut rig, hold, "metals", 1);
+    let out = refit(&mut rig, pilot, "prospector");
+    assert!(
+        out.contains("as a Dray-P"),
+        "the actual title permits refitting: {out}"
+    );
+    lease_one(&mut rig, pilot);
+    let lease = records(&rig.tw, pilot)
+        .pop()
+        .expect("the owned hull's new lease");
+    assert_eq!(lease.hull, hull);
+    let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");
+    assert!(
+        out.contains("back across Occator's counter"),
+        "the current hold permits return: {out}"
+    );
+    assert_eq!(hold_status(&rig.tw, lease.hold), HoldStatus::Released);
+    no_refused_writes(&rig.tw);
+}
+
+/// Ownership of the hull alone cannot authorize setup against another owner's
+/// current cargo vault. Both setup commands refuse before any fee or lease changes.
+#[test]
+fn post_buyout_setup_refuses_a_current_hold_owned_by_someone_else() {
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    file_buyout(&mut rig, pilot);
+    settle_buyout(&mut rig, pilot, hull);
+    let hold = hold_vault(&rig.tw, &row);
+    let other = rig.tw.spawn_player("Hold owner");
+    let changed = support::with_ctx(&mut rig.tw, |ctx| {
+        mush_economy::rehome_vault(
+            ctx,
+            hold,
+            PrincipalId::Object(other),
+            None,
+            "Other hold".into(),
+        )
+    });
+    assert!(changed, "the fixture changes the actual hold's owner");
+    let account = account_of(&rig.tw, pilot);
+    let before = balances(&rig.tw, account);
+    let journal = economy(&rig.tw).journal_len();
+    let contracts = economy(&rig.tw).snapshot().contracts().count();
+    let out = refit(&mut rig, pilot, "standard");
+    assert!(
+        out.contains(&tacsim::port::refit::REFIT_HOLD_DARK.replace("{name}", "Salt Moth")),
+        "a foreign hold cannot be refitted: {out}"
+    );
+    let out = at_occator(&mut rig, pilot, "+tv/lease go");
+    assert!(
+        out.contains(LEASE_FAILED),
+        "a foreign hold cannot take a rig: {out}"
+    );
+    assert_eq!(unit_id(&rig.tw, hull), DRAY_P);
+    assert!(records(&rig.tw, pilot).is_empty());
+    assert_eq!(balances(&rig.tw, account), before);
+    assert_eq!(economy(&rig.tw).journal_len(), journal);
+    assert_eq!(economy(&rig.tw).snapshot().contracts().count(), contracts);
+    no_refused_writes(&rig.tw);
+}
+
 // ---------------------------------------------------------------------------
 // 1. The applier
 // ---------------------------------------------------------------------------
