@@ -2,7 +2,7 @@
 //! certificate/purchase story. No commercial row or readiness is fabricated.
 use super::*;
 use mush_economy::managed_entitlement::{EntitlementProtocol, GrossRecipientCut, Recipient};
-fn policy() -> Result<mush_market::mind_entitlement::EntitlementPolicy, ModError> {
+pub(super) fn policy() -> Result<mush_market::mind_entitlement::EntitlementPolicy, ModError> {
     Ok(mush_market::mind_entitlement::EntitlementPolicy {
         price: Amount::from_minor(100),
         instrument: InstrumentId::new("cr").ok_or_else(|| ModError::msg("instrument"))?,
@@ -27,7 +27,7 @@ fn policy() -> Result<mush_market::mind_entitlement::EntitlementPolicy, ModError
         renewal_grace_seconds: 3 * 86_400,
     })
 }
-fn prepared() -> Result<MindCommerce, ModError> {
+pub(super) fn prepared() -> Result<MindCommerce, ModError> {
     prepare(CommerceMode::Active)?
         .with_original_source_purchases(quotes()?)?
         .with_authored_forks()?

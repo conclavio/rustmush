@@ -60,7 +60,7 @@
 //! | `[atlas].pack_paths` | `game_modules` -> `build_engine` / `check_config` | `check_config_finds_the_world_half_refusals_without_booting` |
 //! | `[tacsim].enabled` / `.pack_paths` | `game_modules` -> `build_engine` | `split_build_engine_composes_the_tacsim_layer`, the matrix |
 //! | `[tacsim].seed_paths` | `build_engine` + an applied seed | `a_seeded_pack_resolves_a_route` |
-//! | `[tacsim.minds].launch_path` | `game_modules` / `check_config` | `check_config_preflights_the_bounded_named_launch_document` |
+//! | `[tacsim.minds].launch_path` | `game_modules` / `check_config` | `check_config_preflights_the_bounded_named_launch_document` (formats 1 and 2), `the_shipped_launch_example_decodes_to_the_provisional_terms` |
 //! | `[tacsim].recovery` | `game_modules` (into the built-ins) | `the_split_boot_carries_the_operator_recovery_policy` |
 //! | `[tacsim].ground_pulse_ms` / `.space_pulse_ms` | `build_engine` post-composition | `the_engine_knobs_reach_the_booted_world` |
 //! | `[llm].decision_workers` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
@@ -1355,6 +1355,30 @@ fn check_config_preflights_the_bounded_named_launch_document() {
                 .any(|r| r.contains("named-launch.json") && r.contains("launch deployment"))
         );
     }
+    // 17g C1b: a valid format-2 document (any ids: the preflight only decodes,
+    // and the world identities are checked at boot) yields no refusal.
+    let valid = serde_json::to_value(format_two_launch()).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
+    assert_eq!(boot::check_config(&cfg), Vec::<String>::new());
+    // A format-2 document naming GOD as its clerk, and one whose operators are
+    // not strictly ascending, are refused, naming the file.
+    for (pointer, value) in [
+        ("/market/clerk", serde_json::json!(1)),
+        (
+            "/market/registry_authority/operators",
+            serde_json::json!([41, 40]),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let refusals = boot::check_config(&cfg);
+        assert!(
+            refusals.iter().any(|r| r.contains("named-launch.json")
+                && r.contains("launch deployment player market differs")),
+            "{pointer}: {refusals:?}"
+        );
+    }
     cfg.tacsim.minds.launch_path = Some(String::new());
     assert!(
         boot::check_config(&cfg)
@@ -1364,6 +1388,104 @@ fn check_config_preflights_the_bounded_named_launch_document() {
     cfg.tacsim.minds.launch_path = None;
     assert!(boot::check_config(&cfg).is_empty());
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
+/// 17g C1b: a format-2 named launch document with illustrative ids. Decoding
+/// it checks shape and bounds only; no world is read.
+fn format_two_launch() -> tacsim::launch::LaunchDeployment {
+    use mush_core::ObjId;
+    use mush_economy::{
+        AccountId, VaultId, core_integration::ScopedCoreAccount, managed_entitlement::Recipient,
+    };
+    use mush_org::{OrgId, OrgScopeId, PrincipalId, SystemPrincipalId};
+    use tacsim::launch::{
+        HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
+        MarketTerms, NamedHouses, PlayerMarket, RegistryAuthority,
+    };
+    let system = |name: &str| SystemPrincipalId::new(name).unwrap();
+    let house = |n: u64, name: &str| HouseDeployment {
+        organization: OrgId(n),
+        scope: OrgScopeId(n),
+        treasury: AccountId(n),
+        publisher: ObjId(1),
+        source_name: name.into(),
+    };
+    LaunchDeployment {
+        format: 2,
+        mode: LaunchMode::Initialize,
+        registry_issuer: system("hardware.factory"),
+        registry: Recipient {
+            account: AccountId(20),
+            owner: PrincipalId::System(system("launch.registry")),
+        },
+        venue: LaunchVenue {
+            name: mush_market::MarketId::new("launch.counter").unwrap(),
+            room: ObjId(30),
+            recipient: Recipient {
+                account: AccountId(21),
+                owner: PrincipalId::System(system("launch.venue")),
+            },
+        },
+        houses: NamedHouses {
+            meridiani: house(1, "Meridiani Field Series"),
+            coprates: house(2, "Coprates Drill"),
+            tycho: house(3, "Safe Conduct"),
+        },
+        republic: mush_faction::FactionId(1),
+        hardware: HardwareCoordinates {
+            importer: OrgId(4),
+            stock_scope: OrgScopeId(4),
+            depot: VaultId(1),
+            agents: [
+                mush_industry::core_production::OriginAgent {
+                    actor: ObjId(1),
+                    stock: VaultId(2),
+                },
+                mush_industry::core_production::OriginAgent {
+                    actor: ObjId(31),
+                    stock: VaultId(3),
+                },
+            ],
+            grades: [
+                mush_inventory::Grade::new(10).unwrap(),
+                mush_inventory::Grade::new(20).unwrap(),
+                mush_inventory::Grade::new(30).unwrap(),
+            ],
+            supplier_account: AccountId(4),
+            integrator: ScopedCoreAccount {
+                account: AccountId(5),
+                organization: OrgId(4),
+                scope: OrgScopeId(5),
+            },
+            factory: ObjId(32),
+            output_container: ObjId(33),
+        },
+        market: Some(PlayerMarket {
+            clerk: ObjId(40),
+            registry_authority: RegistryAuthority {
+                organization: OrgId(6),
+                scope: OrgScopeId(6),
+                operators: vec![ObjId(41)],
+            },
+            terms: MarketTerms::PROVISIONAL,
+        }),
+    }
+}
+
+/// 17g C1b: the shipped example named launch document (the runbook's starting
+/// point) decodes as a format-2 deployment with exactly the provisional terms.
+#[test]
+fn the_shipped_launch_example_decodes_to_the_provisional_terms() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../deploy/instance/launch.json.example");
+    let bytes = std::fs::read(&path).unwrap();
+    let deployment = tacsim::launch::LaunchDeployment::decode(&bytes).unwrap();
+    assert_eq!(deployment.format, 2);
+    assert_eq!(deployment.mode, tacsim::launch::LaunchMode::Initialize);
+    assert_eq!(
+        deployment.market.map(|market| market.terms),
+        Some(tacsim::launch::MarketTerms::PROVISIONAL)
+    );
 }
 
 /// Every boot-relevant knob the ENGINE half owns, set to a non-default value in

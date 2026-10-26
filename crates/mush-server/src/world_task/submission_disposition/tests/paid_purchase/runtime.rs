@@ -15,7 +15,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tacsim::composition::mind_commerce::MindCommerce;
 use tokio::time::{Instant, timeout};
 
-pub(super) const STEP: Duration = Duration::from_secs(120);
+pub(in crate::world_task::submission_disposition::tests) const STEP: Duration =
+    Duration::from_secs(120);
 
 pub(super) fn now() -> TestResult<i64> {
     Ok(SystemTime::now()
@@ -71,7 +72,7 @@ impl GatewaySink for Recorder {
     }
 }
 
-pub(super) struct Running {
+pub(in crate::world_task::submission_disposition::tests) struct Running {
     handles: Option<PersistHandles>,
     store: Arc<PurchaseFaultStore>,
     recorder: Arc<Recorder>,
@@ -85,6 +86,12 @@ impl Running {
             .as_ref()
             .ok_or("server already stopped")?
             .handle)
+    }
+
+    /// 17g C1a: the booted registry's offer route table, read-only. C1c
+    /// compares it with a real `build_engine` boot over the same store.
+    pub(in crate::world_task::submission_disposition::tests) fn routes(&self) -> &OfferRouteTable {
+        &self.routes
     }
 
     pub fn drain_output(&self) -> TestResult {
@@ -441,7 +448,7 @@ impl Drop for Running {
     }
 }
 
-pub(super) async fn rows(
+pub(in crate::world_task::submission_disposition::tests) async fn rows(
     store: &PurchaseFaultStore,
     owner: &str,
     family: &str,
@@ -460,7 +467,7 @@ pub(super) async fn rows(
         })
         .collect())
 }
-pub(super) async fn one_row(
+pub(in crate::world_task::submission_disposition::tests) async fn one_row(
     store: &PurchaseFaultStore,
     owner: &str,
     family: &str,
@@ -471,7 +478,10 @@ pub(super) async fn one_row(
         .map_err(|_| format!("expected exactly one retained {owner}/{family} row"))?;
     Ok(row)
 }
-pub(super) fn field<'a>(value: &'a Value, name: &str) -> TestResult<&'a Value> {
+pub(in crate::world_task::submission_disposition::tests) fn field<'a>(
+    value: &'a Value,
+    name: &str,
+) -> TestResult<&'a Value> {
     value
         .get(name)
         .ok_or_else(|| format!("required retained field {name}").into())

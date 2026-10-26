@@ -6,6 +6,7 @@
 use super::*;
 use mush_core::authoritative::{AuthoritativeBundle, AuthoritativeBundleDraft, ReplayWrite};
 use mush_core::{OfferExecutionContext, OfferSubmission};
+use mush_roll::commerce::house_catalogue::HouseIssuer;
 use mush_roll::commerce::paid_resale::PaidResaleRecord;
 use mush_roll::commerce::{LicenceId, TermGeneration};
 
@@ -469,6 +470,105 @@ fn due(w: &mut PlayerWorld, at: i64) -> TestResult {
     check_eq!(w.engine.world.world_ic_now().clock, before.clock);
     Ok(())
 }
+/// 17g C1a: the House buyer admission the House resale fixture installs in
+/// the paid resale writer, standing in for the launch's Coprates admission.
+/// It refuses exactly the one armed `(issuer, buyer)` pair, admits every other
+/// pair, and records every pair it is consulted with. The record is what binds
+/// the fence: the route asserts that the fence asks about the resold licence's
+/// own House issuer and the accepting buyer, and only at the buyer's steps.
+#[derive(Debug, Default)]
+pub(super) struct AdmissionProbe {
+    armed: std::sync::Mutex<Option<(HouseIssuer, ObjId)>>,
+    consulted: std::sync::Mutex<Vec<(HouseIssuer, ObjId)>>,
+}
+impl AdmissionProbe {
+    fn arm(&self, pair: Option<(HouseIssuer, ObjId)>) -> TestResult {
+        *self.armed.lock().map_err(module_error)? = pair;
+        Ok(())
+    }
+    fn consulted(&self) -> TestResult<Vec<(HouseIssuer, ObjId)>> {
+        Ok(self.consulted.lock().map_err(module_error)?.clone())
+    }
+}
+impl mush_roll::commerce::house_purchase::HouseBuyerAdmission for AdmissionProbe {
+    fn check(
+        &self,
+        _: &mush_core::World,
+        issuer: HouseIssuer,
+        buyer: ObjId,
+    ) -> Result<(), mush_roll::commerce::records::PublicationError> {
+        fn unavailable<T>(_: T) -> mush_roll::commerce::records::PublicationError {
+            mush_roll::commerce::records::PublicationError::Unavailable
+        }
+        self.consulted
+            .lock()
+            .map_err(unavailable)?
+            .push((issuer, buyer));
+        if *self.armed.lock().map_err(unavailable)? == Some((issuer, buyer)) {
+            Err(mush_roll::commerce::records::PublicationError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+/// 17g C1a: the House buyer admission on paid resale. The probe is armed for
+/// the resold licence's House issuer and the offer's named buyer. That buyer's
+/// Accept of the open resale offer then refuses with exactly the bytes of an
+/// Accept naming an offer that does not exist: the uniform refusal, no
+/// sentence of its own. Fund is not reached here; with no open paid claim it
+/// refuses on that ground first.
+///
+/// The probe's record proves the refusal is the admission's: nothing before
+/// the buyer's Accept consulted it (not the boot, the House purchase, the
+/// seller's renewal attempt or the seller's Offer), the nonexistent offer
+/// never reaches it, and the fenced Accept asks about exactly the armed pair.
+/// A fence bound to another principal or issuer would be admitted, and fail
+/// here. Disarming leaves the existing admitted path to run unchanged.
+fn refused_admission(
+    w: &mut PlayerWorld,
+    probe: &AdmissionProbe,
+    issuer: HouseIssuer,
+    buyer: ObjId,
+    payer: WalletId,
+    start: u128,
+) -> TestResult {
+    check!(
+        probe.consulted()?.is_empty(),
+        "nothing before the buyer's Accept consults the House admission"
+    );
+    let missing = prepare(
+        w,
+        ACCEPT,
+        buyer,
+        start + 40,
+        json!({"offer":token(start+42),"payer":payer.0}),
+    );
+    check!(
+        probe.consulted()?.is_empty(),
+        "an offer that does not exist never reaches the House admission"
+    );
+    probe.arm(Some((issuer, buyer)))?;
+    let fenced = prepare(
+        w,
+        ACCEPT,
+        buyer,
+        start + 41,
+        json!({"offer":token(start),"payer":payer.0}),
+    );
+    probe.arm(None)?;
+    let (Err(missing), Err(fenced)) = (missing, fenced) else {
+        return Err("a resold House Pin's buyer passed a refusing admission".into());
+    };
+    let consulted = probe.consulted()?;
+    check!(
+        !consulted.is_empty() && consulted.iter().all(|pair| *pair == (issuer, buyer)),
+        "the fenced Accept asks about the licence's House issuer and its buyer: {consulted:?}"
+    );
+    check_eq!(fenced.to_string(), missing.to_string());
+    check_eq!(format!("{fenced:?}"), format!("{missing:?}"));
+    eprintln!("M7_STORY phase=paidresale.route event=admission_refused");
+    Ok(())
+}
 struct Login<'a> {
     accounts: &'a Accounts,
     actor: ObjId,
@@ -497,6 +597,7 @@ pub(super) fn exercise(
     house: bool,
     funding_system: &str,
     start: u128,
+    admission: Option<(&AdmissionProbe, HouseIssuer)>,
     boot: impl Fn(&Durable) -> TestResult<PlayerWorld>,
 ) -> TestResult {
     eprintln!("M7_STORY phase=paidresale.route event=begin house={house}");
@@ -595,6 +696,11 @@ pub(super) fn exercise(
         json!({"licence":id.get(),"buyer":buyer.0,"price":100,"seller_account":seller_account.0}),
     )?;
     check_eq!(pointer(&w, id)?, old);
+    if let Some((probe, issuer)) = admission {
+        refused_admission(&mut w, probe, issuer, buyer, payer, start)?;
+        check_eq!(pointer(&w, id)?, old);
+        check_eq!(balance(&w, payer)?, payer_before);
+    }
     let accepted = start + 1;
     perform(
         &mut w,
@@ -603,6 +709,14 @@ pub(super) fn exercise(
         accepted,
         json!({"offer":token(start),"payer":payer.0}),
     )?;
+    if let Some((probe, issuer)) = admission {
+        // The admitted Accept asked the same question, and was answered yes.
+        let consulted = probe.consulted()?;
+        check!(
+            consulted.len() >= 2 && consulted.iter().all(|pair| *pair == (issuer, buyer)),
+            "the admitted Accept asks about the same issuer and buyer: {consulted:?}"
+        );
+    }
     let actual = paired(&w, accepted)?;
     check_eq!(actual.binding().term(), &predecessor);
     let transferred = pointer(&w, id)?;

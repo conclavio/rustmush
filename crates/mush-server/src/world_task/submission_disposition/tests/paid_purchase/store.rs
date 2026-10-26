@@ -56,7 +56,7 @@ struct State {
     events: Vec<Event>,
 }
 
-pub(super) struct PurchaseFaultStore {
+pub(in crate::world_task::submission_disposition::tests) struct PurchaseFaultStore {
     inner: InMemoryStore,
     state: Mutex<State>,
     released: AtomicBool,
@@ -65,7 +65,7 @@ pub(super) struct PurchaseFaultStore {
 }
 
 impl PurchaseFaultStore {
-    pub(super) fn new() -> Self {
+    pub(in crate::world_task::submission_disposition::tests) fn new() -> Self {
         Self {
             inner: InMemoryStore::new(),
             state: Mutex::new(State::default()),

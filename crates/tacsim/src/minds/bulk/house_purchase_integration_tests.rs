@@ -23,11 +23,14 @@ mod renewal;
 mod resale;
 type ResaleShared = Arc<Mutex<Option<mush_market::mind_paid_resale::PaidResaleConfig>>>;
 type RenewalShared = Arc<Mutex<Option<mush_market::mind_house_renewal::RenewalConfig>>>;
+/// 17g C1a: the optional House buyer admission the paid resale writer repeats.
+type Admission = Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>;
 
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;
 struct Roll {
     paid_resales: bool,
+    admission: Admission,
     resale: ResaleShared,
     renewals: bool,
     shared: Shared,
@@ -122,7 +125,7 @@ impl GameModule for Roll {
             commerce
         };
         let commerce = if self.paid_resales {
-            let r = resale_configuration(config.participants().clone())?;
+            let r = resale_configuration(config.participants().clone(), self.admission.clone())?;
             let next = commerce.with_paid_mind_resale(r.writer(), r.participants().clone(), GOD)?;
             *self.resale.lock().map_err(module_error)? = Some(r);
             next
@@ -331,13 +334,14 @@ fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
     boot_options(registry, saved, false)
 }
 fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResult<PlayerWorld> {
-    boot_resale_options(registry, saved, renewals, false)
+    boot_resale_options(registry, saved, renewals, false, None)
 }
 fn boot_resale_options(
     registry: &Fixture,
     saved: &Durable,
     renewals: bool,
     paid_resales: bool,
+    admission: Admission,
 ) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
@@ -366,6 +370,7 @@ fn boot_resale_options(
         }),
         Box::new(Roll {
             paid_resales,
+            admission,
             resale: resale.clone(),
             renewals,
             renewal: renewal.clone(),

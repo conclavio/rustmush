@@ -38,17 +38,47 @@ struct Registration {
 pub struct PaidResaleWriter(
     Arc<OnceLock<Registration>>,
     Arc<OnceLock<Arc<dyn super::PaidResaleMarketWriter>>>,
+    // 17g C1a: the House buyer admission a resold House-born licence's buyer
+    // must pass. `None` unless the host configures one before registration.
+    Option<Arc<dyn crate::commerce::house_purchase::HouseBuyerAdmission>>,
 );
 impl std::fmt::Debug for PaidResaleWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PaidResaleWriter")
             .field("registered", &self.0.get().is_some())
+            .field("buyer_admission", &self.2.is_some())
             .finish()
     }
 }
 impl PaidResaleWriter {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// 17g C1a: trusted host configuration only, the shape of
+    /// `HousePurchaseWriter::with_buyer_admission`. The buyer's Accept and Fund
+    /// of a House-born licence then repeat the House's own acquisition
+    /// condition under Root custody (17f §2.1, the Coprates ruling). It adds no
+    /// authority, refuses nothing on a personal-born licence, and leaves the
+    /// seller's Offer and the service steps unchanged. Configure it once,
+    /// before any clone is registered.
+    ///
+    /// # Errors
+    /// A second policy, or a writer already registered.
+    pub fn with_buyer_admission(
+        mut self,
+        policy: Arc<dyn crate::commerce::house_purchase::HouseBuyerAdmission>,
+    ) -> Result<Self, ModError> {
+        if self.0.get().is_some() || self.2.is_some() {
+            return Err(ModError::msg(
+                "paid resale buyer policy must be configured once before registration",
+            ));
+        }
+        self.2 = Some(policy);
+        Ok(self)
+    }
+    /// 17g C1a: whether a House buyer admission is configured.
+    pub fn has_buyer_admission(&self) -> bool {
+        self.2.is_some()
     }
     pub fn install_market(
         &self,
@@ -515,7 +545,7 @@ impl RegisteredPaidResaleWriter {
                 commit: ctx.commit_token(),
                 at_ic: observation.state.at_ic.clone(),
                 at_utc: observation.state.at_utc,
-                mode: Mode::Admission(Box::new(facts.clone())),
+                mode: Mode::Admission(Box::new(facts.clone()), self.registration.2.clone()),
             },
         };
         txn.insert(&f.paid_resales, &row.key(), row.clone())

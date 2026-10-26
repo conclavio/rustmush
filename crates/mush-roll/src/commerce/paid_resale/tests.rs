@@ -131,3 +131,31 @@ fn exact_new_family_keys_and_private_root_spellings_are_bounded() -> Result {
     }
     Ok(())
 }
+/// 17g C1a: the House buyer admission is optional, explicit and configured once.
+/// The refusal it adds is exercised end to end by the House resale fixture.
+#[test]
+fn resale_buyer_admission_is_optional_and_configured_once() -> Result {
+    #[derive(Debug)]
+    struct Admit;
+    impl crate::commerce::house_purchase::HouseBuyerAdmission for Admit {
+        fn check(
+            &self,
+            _: &mush_core::World,
+            _: crate::commerce::house_catalogue::HouseIssuer,
+            _: mush_core::ObjId,
+        ) -> std::result::Result<(), crate::commerce::records::PublicationError> {
+            Ok(())
+        }
+    }
+    let plain = writer::PaidResaleWriter::new();
+    check!(!plain.has_buyer_admission());
+    let fenced = plain.with_buyer_admission(std::sync::Arc::new(Admit))?;
+    check!(fenced.has_buyer_admission());
+    check!(fenced.clone().has_buyer_admission());
+    check!(
+        fenced
+            .with_buyer_admission(std::sync::Arc::new(Admit))
+            .is_err()
+    );
+    Ok(())
+}

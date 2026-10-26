@@ -1870,6 +1870,32 @@ historical cut records below remain unchanged. M5r and M6 are separate gates.
   reviewed together before this entry is marked landed. M5r, M6 and M7 are not
   claimed by this amendment.
 
+**17g C1 (M7: the player market composed in production) — built 2026-10-26
+(`af096dbf`, `823ca9c4`, `9002169e`; PR #14, not merged; not deployed).** A
+format-2 named launch in Active mode now composes the personal market beside the
+House chain. Where that composition departs from §20's decisions is recorded here;
+the full record is [17g §7](17g-m7-completion-plan.md#7-ledger).
+
+- **D-UM-40 (the author's non-transferable mark)**: not built. The launch composes
+  personal licences transferable policy-wide (`EntitlementPolicy.transferable`,
+  set by `tacsim::launch::market::policies`), and the v3 list parameters
+  (`owner_licence`, `form`, `royalty_permille`) carry no per-listing mark, so an
+  author cannot yet mark a listing non-transferable. The price is policy-wide too
+  (`MarketTerms.price_minor`), where §16's `@mind/publish … price=…` lets the author
+  set it. Both are flagged for 17g C2 and need owner changes to the policies.
+- **D-UM-40 and §10 (`[tacsim.minds].transfer_settle_ic_days`)**: no such config
+  key exists. The PendingTransfer deadline is the launch deployment's
+  `MarketTerms.charter_settle_ic_seconds` (format 2, in IC seconds, provisionally
+  259,200, Q-UM-18's 3 IC days), and mush-economy's
+  `MAX_CHARTER_SETTLEMENT_IC_SECONDS` caps it at that same 259,200, so a deployment
+  can shorten the deadline but not lengthen it. Q-UM-18 is composed as its written
+  default, not as an owner ruling.
+- **D-UM-39 (renewal is a fresh E4 contract per term)**: only a licence born of an
+  entitlement sale renews (`renewal/reader.rs` offers nothing for any other
+  birth). A Pin bought from a `market-original-mind-offer` listing, the v2
+  protocol the launch composes because forks need its source forms, does not
+  renew, and `@mind/launch`'s market line says so.
+
 Historical landed amendments follow unchanged.
 
 - **§4 "The motor" and D-UM-3 (the motor extracted, the reflex kept whole)**: as built (17b cut M1a.1, 2026-10-03, `10a5a0ec`): `arena/motor.rs` holds `MotorRow { goal, route, searched_ms, searched_from, avoid, refused, waypoint, from_waypoint, hold_retry_ms }` with `MotorRow::age_avoid` (the avoid TTL sweep lifted from the head of `decide` and called where it stood) and `MotorTable` (the rows, the path budget window and spent, the A\* scratch) as `Arena.motors` for every controller; `follow(&self, id, t_ms, motors, row, here, policy: Fallback::{Waypoint, Notice}, counters, plan) -> MotorOutcome { arrived, unreachable }` reads `arena_cfg.reflex`, and `decide` performs the B-41/Z.2/E.4 give-ups from the outcome in their old order; `step_is_drivable`, `first_step_is_open`, `line_is_open`, `walk_is_open`, `entry_cell`, `far_entry_cell`, `stand_off_cell`, `patrol_step`, `hold_arrived` and `fall_back_to_waypoint` are `pub` as the audited surface (the five audits: hold the plot and move the truth; the pickers read the ground and the own pose; the walks read terrain and the avoid list and never the index; a stop is learned at the `blocked` event; a pilot row ages its stops). Departures from D-UM-3 as written: `DueKind::ReflexTick` is **not** renamed and stripped of `decide` — it stays as T0's cadence until M4, and `DueKind::MotorTick` (M1a.4) is a new kind beside it for a hull no reflex tick drives; `ReflexCounters` is not renamed `MotorCounters` until M4, so the harness baseline keys do not move; `ReflexUnit` keeps the whole decision half (`state, target, no_line, stand_until_ms, quiet_since_ms, rallied, order, last_plot, unheld_since_ms, hunt`), and `reflex.rs` loses only the driving fields (7,042 → 3,981 lines; 4,138 after M1a.6). `set_controller(Pilot)` releases the machine row and the motor row through `Arena::release_reflex` (§2's table says `reflex.release`, which was `e30b9491`'s code), and the controller guard on the motor's readers (`hold_routeless`, `note_blocked`, `refresh_held_avoid`) is replaced by the row: every transition away from a controller releases its row (M1a.5 made that hold for `Mind` too). The hash fold reads the table in the same byte order, two constants read at HEAD before the move pin it (the 1,000 ms replay's first and last hash, the shipped duel's final hash, re-asserted by M1a.4, M1a.5 and M1a.6), and a per-row section folds motor rows with no reflex row; `SNAPSHOT_FORMAT` 2 → 3 with a `motors` section. §2's and §4's `reflex.rs:` anchors (`:845`, `:1247`, `:1464`, `:2862`, `:3118`, `:3616`, `:4567-4640`, `:5911`) point at moved code and are left as they were at `e30b9491`.

@@ -64,6 +64,14 @@ struct MindCommerceState {
     house_renewals: Option<mush_market::mind_house_renewal::RenewalConfig>,
     house_renewal_actions: Option<[DefinitionRef; 5]>,
     house_renewal_service: Option<DefinitionRef>,
+    // 17g C1a: the House chain's buyer admission, kept so a later paid resale
+    // writer repeats it for a resold House Pin.
+    house_admission:
+        Option<std::sync::Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>,
+    // 17g C1a: personal (entitlement-born) renewals and their bounded service.
+    renewals: Option<mush_market::mind_renewal::RenewalConfig>,
+    renewal_actions: Option<[DefinitionRef; 5]>,
+    renewal_service: Option<DefinitionRef>,
     dependent_filing_action: Option<DefinitionRef>,
     purchases: Option<OriginalPurchaseConfig>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
@@ -145,6 +153,10 @@ impl MindCommerce {
                 house_renewals: None,
                 house_renewal_actions: None,
                 house_renewal_service: None,
+                house_admission: None,
+                renewals: None,
+                renewal_actions: None,
+                renewal_service: None,
                 dependent_filing_action: None,
                 purchases: None,
                 entitlements: None,
@@ -207,6 +219,110 @@ impl MindCommerce {
             .with_house_mind_renewal_service(action.clone())?;
         self.state.house_renewal_service = Some(action);
         self.state.house_renewals = Some(config);
+        Ok(self)
+    }
+
+    /// 17g C1a: explicit personal Pin renewal offers, the pair of
+    /// [`Self::with_house_mind_renewals`] for entitlement-born licences. Prices
+    /// and terms come from each licence's immutable acquired template; this
+    /// policy carries only the Registry and venue cuts and the offer window.
+    /// It needs the Active entitlement composition and the personal purchase
+    /// participants it shares. No offer is accepted or paid for a holder.
+    ///
+    /// # Errors
+    /// Initialize, a second call, no entitlements or personal purchases yet,
+    /// or the Market/Roll owners' own refusal of the policy or references.
+    pub fn with_mind_renewals(
+        mut self,
+        policy: mush_market::mind_renewal::RenewalPolicy,
+    ) -> Result<Self, ModError> {
+        if self.state.mode != CommerceMode::Active
+            || self.state.renewals.is_some()
+            || self.state.entitlements.is_none()
+        {
+            return Err(ModError::msg(
+                "personal renewals require one Active entitlement composition",
+            ));
+        }
+        let participants = self
+            .state
+            .purchases
+            .as_ref()
+            .map(|p| p.participants().clone())
+            .ok_or_else(|| {
+                ModError::msg("personal renewals require one Active entitlement composition")
+            })?;
+        let config = mush_market::mind_renewal::RenewalConfig::new(
+            self.manifest().clone(),
+            participants,
+            mush_roll::commerce::renewal::writer::RenewalWriter::new(),
+            policy,
+        )?;
+        let actions = config.actions()?;
+        self.state.roll = self.state.roll.with_mind_renewals(
+            config.writer(),
+            config.participants().clone(),
+            actions.clone(),
+        )?;
+        self.state.renewal_actions = Some(actions);
+        self.state.renewals = Some(config);
+        Ok(self)
+    }
+    /// 17g C1a: the personal renewals' source-free close of an unavailable
+    /// unfunded offer, the shape of [`Self::with_house_mind_renewal_service`].
+    /// Its service actor is fixed by the as-built protocol.
+    ///
+    /// # Errors
+    /// A second call, no personal renewals, or the owners' own refusal.
+    pub fn with_mind_renewal_service(mut self) -> Result<Self, ModError> {
+        if self.state.renewal_service.is_some() {
+            return Err(ModError::msg("personal renewal service already configured"));
+        }
+        let config = self
+            .state
+            .renewals
+            .take()
+            .ok_or_else(|| ModError::msg("personal renewal service requires renewals"))?
+            .with_service()?;
+        let action = config
+            .service_action()?
+            .ok_or_else(|| ModError::msg("personal renewal service action"))?;
+        self.state.roll = self.state.roll.with_mind_renewal_service(action.clone())?;
+        self.state.renewal_service = Some(action);
+        self.state.renewals = Some(config);
+        Ok(self)
+    }
+
+    /// 17g C1a: personal initial-author withdrawal (stop fresh offers for a
+    /// filed revision). The Roll owner's guards are the refusals: Active, once.
+    /// No source, House, transferred-holder or Registry recall authority.
+    ///
+    /// # Errors
+    /// Initialize, or a second call.
+    pub fn with_author_withdrawal(mut self) -> Result<Self, ModError> {
+        self.state.roll = self.state.roll.with_author_withdrawal()?;
+        Ok(self)
+    }
+
+    /// 17g C1a: free personal owner-licence generation transitions. The Roll
+    /// owner's guards are the refusals: Active, once. No monetary participant
+    /// or paid-customer row is enabled.
+    ///
+    /// # Errors
+    /// Initialize, or a second call.
+    pub fn with_owner_attestations(mut self) -> Result<Self, ModError> {
+        self.state.roll = self.state.roll.with_owner_attestations()?;
+        Ok(self)
+    }
+
+    /// 17g C1a: replace a personal dependent owner's current qualifying parent
+    /// (Q-UM-17). The Roll owner's guards are the refusals: Active, once, and
+    /// after [`Self::with_dependent_owner_filings`]. No term is issued.
+    ///
+    /// # Errors
+    /// Initialize, a second call, or no dependent owners yet.
+    pub fn with_owner_parent_qualification(mut self) -> Result<Self, ModError> {
+        self.state.roll = self.state.roll.with_owner_parent_qualification()?;
         Ok(self)
     }
 
@@ -501,6 +617,9 @@ impl MindCommerce {
         self.with_house_minds_and_admission(policy, None)
     }
     /// Trusted refusal-only launch policy; all owner authority remains unchanged.
+    /// 17g C1a: the admission is also kept for a later
+    /// [`Self::with_paid_mind_resales`], whose writer then holds a resold House
+    /// Pin's buyer to it. So an admission must come before paid resale.
     pub fn with_house_minds_and_admission(
         mut self,
         policy: mush_market::mind_house::HousePolicy,
@@ -514,6 +633,13 @@ impl MindCommerce {
         {
             return Err(ModError::msg(
                 "house purchases require one Active house filing composition",
+            ));
+        }
+        // 17g C1a: a paid resale writer composed earlier would sell a House
+        // Pin without the House's condition. The order is a real guard.
+        if admission.is_some() && self.state.paid_resales.is_some() {
+            return Err(ModError::msg(
+                "house buyer admission must precede paid resale",
             ));
         }
         let economy = DefinitionRegistryBuilder::new()
@@ -536,8 +662,8 @@ impl MindCommerce {
             .map_err(error)?;
         let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
         let writer = mush_roll::commerce::house_purchase::writer::HousePurchaseWriter::new();
-        let writer = match admission {
-            Some(policy) => writer.with_buyer_admission(policy)?,
+        let writer = match &admission {
+            Some(policy) => writer.with_buyer_admission(policy.clone())?,
             None => writer,
         };
         let config = mush_market::mind_house::HouseConfig::new(
@@ -555,6 +681,7 @@ impl MindCommerce {
             config.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?,
         );
         self.state.house_purchases = Some(config);
+        self.state.house_admission = admission;
         Ok(self)
     }
 
@@ -655,6 +782,13 @@ impl MindCommerce {
             })
             .ok_or_else(|| ModError::msg("paid resale requires an actual purchase composition"))?;
         let writer = mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new();
+        // 17g C1a: a House chain's buyer admission (the launch's Coprates
+        // membership) also binds the buyer of a resold House Pin. The one
+        // writer reaches Roll and Market both, so their fences agree.
+        let writer = match &self.state.house_admission {
+            Some(policy) => writer.with_buyer_admission(policy.clone())?,
+            None => writer,
+        };
         let config = mush_market::mind_paid_resale::PaidResaleConfig::new(
             self.state.filing.issuer().clone(),
             service,
@@ -911,6 +1045,25 @@ impl MindCommerce {
             Some(action) => module.with_house_mind_renewal_service(action.clone())?,
             None => module,
         };
+        // 17g C1a: personal renewals, in the House branch's shape.
+        let module = match (&self.state.renewals, &self.state.renewal_actions) {
+            (Some(config), Some(actions)) => module.with_mind_renewals(
+                config.manifest().clone(),
+                [
+                    config.participants().economy().clone(),
+                    config.participants().retention().clone(),
+                ],
+                actions.clone(),
+            ),
+            _ => module,
+        };
+        let module = match &self.state.renewal_service {
+            // This private option is produced only by the checked Market/Roll
+            // builder. The preceding branch installs those same immutable
+            // participants and manifest afresh, with no service yet attached.
+            Some(action) => module.with_mind_renewal_service(action.clone())?,
+            None => module,
+        };
         let module = match &self.state.paid_resales {
             Some(config) => module.with_paid_mind_resale(config.economy()?),
             None => module,
@@ -939,6 +1092,11 @@ impl MindCommerce {
         };
         let module = match &self.state.house_renewals {
             Some(config) => module.with_house_mind_renewals(config.clone()),
+            None => module,
+        };
+        // 17g C1a: personal renewals; the config carries its own service.
+        let module = match &self.state.renewals {
+            Some(config) => module.with_mind_renewals(config.clone()),
             None => module,
         };
         match &self.state.paid_resales {

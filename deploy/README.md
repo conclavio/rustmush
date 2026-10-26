@@ -621,3 +621,159 @@ manual PHC-string generation or `accounts.json` edit is needed. At the welcome
 screen, `connect keeper <password>` attaches God. Normal players register with
 `create <name> <password>` afterward. The legacy import remains supported, but
 bootstrap never replaces an existing account or password.
+
+## Named launch and the player market (17g C1)
+
+**Until `[tacsim.minds].launch_path` is live for an instance, that world
+composes no mind commerce at all**: no House chain (17g C0's 365-day owner
+term included) and no player market. The templates ship the key commented
+(`instance/mushd.toml.tmpl`), because a live path on a fresh store refuses the
+boot: the document names organizations, accounts, rooms and characters that only
+a booted world can create, and a named identity that does not exist is a boot
+refusal. Making the path live per instance is an owner decision this cut does
+not make: either an empty value meaning unset, or a per-instance overlay.
+`instance.env` cannot say "unset" today, because an empty path is the boot
+refusal `launch deployment path is empty`.
+
+**What format 2 adds.** A format-1 document (`"format": 1`) composes the House
+chain alone, exactly as before C1. A format-2 document adds a `market` block
+(`instance/launch.json.example`): the clerk, the live character that runs
+pending-charter settlement and paid-resale terminal steps; the Registry's
+`registry_authority` (its organization, its `review` scope and 1 to 32
+operators, in ascending order); and the `terms`: the personal Pin's price and
+renewal price, the quote window, the personal renewal offer window (IC
+seconds), the paid-resale offer window (real seconds) and the pending-charter
+settlement window (IC seconds). The Active boot then composes the player market
+after the House chain: personal filing and listing (v2 and v3), forks,
+dependent filing, entitlements and their renewals, line updates, charter
+transfers and pending charters, paid resale, Registry recall and revocation,
+withdrawal, owner attestation and parent re-qualification. The boot checks that
+the Registry organization exists, that its scope belongs to it, and that the
+clerk and every operator are characters; it does not check their status or
+their grants.
+
+**Bring-up, from a fresh store** (C0 already requires one at the next deploy).
+Every id below is the one your world printed; replace every id in the example.
+
+1. Boot with no `launch_path`.
+2. As #1, create the Republic and three system accounts: the Registry's, the
+   counter's, and a faucet that only funds the House treasuries in step 3:
+
+   ```
+   @faction/create Republic
+   @account/system launch.registry=tacsim.credit
+   @account/system launch.venue=tacsim.credit
+   @account/system launch.faucet=tacsim.credit
+   ```
+
+3. Create the three Houses (`Meridiani`, `Coprates`, `Tycho`). For each, with
+   the publisher's character as `#<publisher>` (the tests use #1):
+
+   ```
+   @org/create Meridiani
+   @org/scope create Meridiani=publication
+   @account/open org:Meridiani/<publication scope>=tacsim.credit
+   @org/grant #<publisher>=Meridiani roll.mind.publish scope=#<publication scope>
+   @org/grant #<publisher>=Meridiani asset.title.transfer scope=#<publication scope>
+   @org/grant #<publisher>=Meridiani economy.account.post scope=#<publication scope>
+   ```
+
+   `roll.mind.publish` is the House publication capability
+   (`mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY`). Each
+   treasury pays its House's filing fee (100cr) when the House files; the tests
+   mint exactly one fee into each from the faucet of step 2, naming both by
+   the account numbers the world printed
+   (`@econ/mint <faucet account>=<treasury account> 10000`).
+4. Create the Basin importer the hardware coordinates name, and the counter
+   room, as `crates/tacsim/src/hardware/flow/launch.rs` (`setup_with`) and
+   `crates/mush-server/src/world_task/submission_disposition/tests/player_market.rs`
+   (`launch_world`) do:
+
+   ```
+   @dig Named launch counter
+   @create Basin fitting shop
+   @create Basin completed work
+   @create Basin die depot
+   @create Basin agent stock one
+   @create Basin agent stock two
+   @org/create Basin
+   @org/scope create Basin=die-stock
+   @org/scope create Basin=factory
+   @vault/create HardwareStock0=container:#<die depot> owner=org:Basin scope=<die-stock scope>
+   @vault/create HardwareStock1=container:#<agent stock one> owner=org:Basin scope=<die-stock scope>
+   @vault/create HardwareStock2=container:#<agent stock two> owner=org:Basin scope=<die-stock scope>
+   @account/open org:Basin/<die-stock scope>=tacsim.credit
+   @account/open org:Basin/<factory scope>=tacsim.credit
+   @facility/open <fitting shop>=2 core_integration core_refit
+   @facility/owner <fitting shop>=org:Basin
+   @asset/title #<fitting shop>=org:Basin scope=<factory scope>
+   ```
+
+   The second origin agent is the first character of a second login, which
+   is not #1's (`keeper`): at the welcome screen,
+   `create LaunchAgent <password>` makes that login and its character
+   `LaunchAgent`. Then, as #1, for each of the two origin agents (#1 and
+   `LaunchAgent`):
+   `industry.core_die.issue`, `vault.deposit` and `vault.withdraw` with
+   `scope=#<die-stock scope>`, and `industry.core.integrate` and
+   `industry.core.refit` with `scope=#<factory scope>`, each by
+   `@org/grant #<agent>=Basin <capability> scope=#<scope>`.
+5. `@org/create Registry` and `@org/scope create Registry=review`.
+6. Connected as `LaunchAgent` on that second login, create the clerk and the
+   operator with `@newchar MarketClerk` and `@newchar RegistryOperator`
+   (`@newchar` adds a character to the caller's own login, and a character
+   name is letters, digits, `_` and `-` only, so no spaces). This keeps the
+   clerk and the operator off #1's login, exactly as the tests place them
+   (`launch_world`); the boot checks only that each is a character.
+7. Write `launch.json` from `instance/launch.json.example` with
+   `"mode": "initialize"` and the real ids. `registry_issuer` names the system
+   principal the launch issues under (the example's `hardware.factory`); choose
+   it once per world.
+8. Make `launch_path` live for that instance (the owner's choice, above) and
+   boot. It boots Initialize.
+9. For each operator, as #1:
+
+   ```
+   @org/grant #<operator>=Registry roll.registry.recall scope=#<review scope>
+   @org/grant #<operator>=Registry roll.registry.revoke scope=#<review scope>
+   ```
+
+10. As #1, `+act roll-initialize-commerce with {}`, then the three industry
+    initialize actions the same way: `initialize-core-die-stock`,
+    `initialize-core-factory` and `initialize-core-refit`.
+11. Set `"mode": "active"` and restart.
+12. As #1, read `@mind/launch`. After the launch help (several lines), one line
+    beginning `Player market:` states the player market's prices and windows.
+    The last line names every operator in ascending order, in one line:
+    `Registry operators: #<op> ready.`, or with two operators
+    `Registry operators: #<a> ready, #<b> ready.`. An operator shown with
+    `lacks recall`, `lacks revocation` or `lacks recall and revocation` is
+    missing that step-9 grant (re-run the `@org/grant` it names), or the
+    Registry is suspended or its scope retired.
+
+**Also:**
+
+- The operators default to one, the owner's staff character: step 6's
+  `RegistryOperator`, or any other character the owner names except #0. The
+  clerk is a character of its own and never #1 (the document refuses #0 and
+  #1 as the clerk).
+- Retiring the Registry's `review` scope (`@org/scope retire Registry=#<scope>`)
+  or suspending the Registry organization is the kill switch for recall and
+  revocation: both stop being offered at once, and the world still boots.
+- Destroying an operator or the clerk object refuses the next boot, as a
+  destroyed House publisher does, so edit `launch.json` first.
+- Every price and window in the example is a provisional default (17g §1
+  ruling 6). Personal term and Grace (90 and 3 IC days), the Registry levy (5%)
+  and the filing fee (100cr) are doc 17's and are not in the document.
+- A terms change reboots: with the market still empty, an initialized world
+  whose `launch.json` changes `price_minor` and `renewal_offer_ic_seconds`
+  boots Active on the new terms, `@mind/launch` prints them, and every offer
+  is listed as before (`named_launch_market_terms_change_across_a_reboot`).
+  A change after filings, listings, quotes or licences exist is untested:
+  those records pin the exact policies they were made under, so treat a
+  terms change on a world in play as needing a fresh store until it is
+  measured.
+- A world initialized under format 1 is not promised to boot under format 2:
+  start the market on a fresh store. A reset removes the world the ids name, so
+  take `launch_path` out of the live config before a reset and bring the
+  launch up again from step 1.

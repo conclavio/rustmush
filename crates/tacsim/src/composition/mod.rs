@@ -976,6 +976,16 @@ pub fn market_title_issuer() -> mush_org::SystemPrincipalId {
         .expect("a built-in system principal id is well-formed")
 }
 
+/// 17g C1b: the capabilities the named launch's governed hardware authorizes
+/// (`mush_industry::core_production`'s die issue on the importer's stock scope,
+/// and integration and refit on its factory scope). Part of
+/// [`org_capability_vocabulary`].
+pub const NAMED_LAUNCH_HARDWARE_CAPABILITIES: [&str; 3] = [
+    mush_industry::core_production::IMPORT_CAPABILITY,
+    "industry.core.integrate",
+    "industry.core.refit",
+];
+
 /// The capability vocabulary this server recognizes (E3b2 §4.8.4 / §4.10): every
 /// capability the economy asks org about (`mush_economy::CAPABILITIES`) plus the two
 /// org-administrative ones the org module's own doctrine names.
@@ -1010,6 +1020,13 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
         .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
+        // 17g C1b (a stop-rule fix, older than C1): the named launch's governed
+        // hardware asks org about these three (`mush-industry`'s die issue,
+        // integration and refit authorities), and its operator grants them with
+        // `@org/grant` on the importer's scopes. Without them the first boot of
+        // the named launch through `game_modules` cannot be set up at all.
+        // Vocabulary only: nothing is granted.
+        .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES)
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
 }

@@ -5,6 +5,7 @@ use crate::commerce::records::PublicationError;
 use crate::commerce::roots::RequiredRoot;
 use mush_core::participant::OwnerPrepareContext;
 use mush_core::{ClockStamp, CommitToken, DefinitionRef};
+use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct ResaleFence {
     pub(super) action: DefinitionRef,
@@ -19,7 +20,13 @@ pub(super) enum Mode {
         ready: super::Readiness,
         fence: Box<crate::commerce::registry_revocation::RevocationFence>,
     },
-    Admission(Box<PaidResaleFacts>),
+    /// The buyer's Accept or Fund. 17g C1a: the writer's optional House buyer
+    /// admission rides beside the facts, so the fence that holds the Root
+    /// custody also repeats the House's acquisition condition.
+    Admission(
+        Box<PaidResaleFacts>,
+        Option<Arc<dyn crate::commerce::house_purchase::HouseBuyerAdmission>>,
+    ),
     Service {
         runtime: Box<super::service::Runtime>,
         ready: super::Readiness,
@@ -44,14 +51,24 @@ impl ResaleFence {
                 ready.check()?;
                 fence.check(ctx)
             }
-            Mode::Admission(admission) => {
+            Mode::Admission(admission, house) => {
                 if ctx.invocation().actor() != admission.buyer()
                     || ![super::protocol::action(1)?, super::protocol::action(2)?]
                         .contains(&self.action)
                 {
                     return Err(PublicationError::Mismatch);
                 }
-                admission.check_fresh(ctx)
+                admission.check_fresh(ctx)?;
+                // 17g C1a, the conservative reading of the owner's 2026-10-18
+                // Coprates ruling (17f §2.1): a resold House Pin's buyer passes
+                // the same House buyer admission a fresh purchase does. Personal
+                // births carry no issuer and are untouched. A refusal is an
+                // ordinary publication error, so the provider answers with its
+                // one uniform refusal and no new sentence.
+                if let (Some(policy), Some(issuer)) = (house, admission.house_issuer()) {
+                    policy.check(ctx.world(), issuer, admission.buyer())?;
+                }
+                Ok(())
             }
             Mode::Service {
                 runtime,

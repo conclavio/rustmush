@@ -1,8 +1,10 @@
 //! Required expensive actual-server custody gate. All business evidence is
 //! created through live public commands/offers and the genuine Registry worker.
 //! No direct provider preparation, manual ACK, or test certificate is used.
-mod runtime;
-mod store;
+// 17g C1a: the player-market roster test (`player_market.rs`) boots through
+// this same harness and store; only visibility is widened, no behaviour.
+pub(super) mod runtime;
+pub(super) mod store;
 
 use mush_config::config::Config;
 use mush_core::{CommitToken, GOD, ObjId};
@@ -87,7 +89,7 @@ fn composition(config: &Config, mode: CommerceMode, sink: WalletId) -> TestResul
     )?)?)
 }
 
-async fn auth_account(
+pub(in crate::world_task::submission_disposition::tests) async fn auth_account(
     store: &PurchaseFaultStore,
     name: &str,
     character: Option<ObjId>,
@@ -120,7 +122,7 @@ async fn wallet(store: &PurchaseFaultStore, id: WalletId) -> TestResult<Account>
         .ok_or("actual economic wallet")?;
     Ok(serde_json::from_value(row)?)
 }
-async fn open_wallet(
+pub(in crate::world_task::submission_disposition::tests) async fn open_wallet(
     server: &Running,
     store: &PurchaseFaultStore,
     owner: PrincipalId,

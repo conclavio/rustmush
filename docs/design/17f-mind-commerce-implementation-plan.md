@@ -1067,7 +1067,10 @@ The next candidate fixes those exports and adds the reviewed Core IC capacity
 prerequisite: one fixed Roll claim target with Tacsim metadata, immutable Open
 fingerprint, reserved complete Close capacity, exact four-owner preparation and
 all binds before any apply. Current optional commerce needs 60 participant
-requests; IC adds eight, so the declaration ceiling becomes 128. Eight adapters
+requests; IC adds eight, so the declaration ceiling becomes 128 (17g C1c,
+`9002169e`, later raised `MAX_OWNER_PARTICIPANT_REQUESTS` to 256, which also
+bounds each registration's `allowed_actions`: the format-2 named launch in
+Active mode declares 156; the boundary tests are now 256/257). Eight adapters
 cover the seven IC/commerce slots plus optional hardware. Same-owner adapters
 may share a state slot only with disjoint exact actions; each invocation still
 refuses duplicate slots. Ordinary transactions retain their three-image/two-module

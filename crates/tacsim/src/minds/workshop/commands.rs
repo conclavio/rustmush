@@ -128,6 +128,18 @@ impl WorkshopCommands {
         };
         if switch == "launch" && ctx.args.raw().trim().is_empty() {
             ctx.out.info(ctx.actor, crate::launch::HELP);
+            // 17g C1c: on a format-2 launch (the `LaunchService` slot is this
+            // crate's own and its deployment names a market), any actor reads
+            // the market's terms; God alone then reads whether each configured
+            // Registry operator's grants are effective now. Both are read-only.
+            // On format 1, or with no launch, the output is `HELP` alone.
+            let (market, readiness) = launch_market_lines(ctx.w, ctx.actor);
+            if let Some(market) = market {
+                ctx.out.info(ctx.actor, market);
+            }
+            if let Some(readiness) = readiness {
+                ctx.out.info(ctx.actor, readiness);
+            }
             return Ok(());
         }
         if switch == "doctrine" {
@@ -671,6 +683,31 @@ pub(super) fn sources<'a>(ctx: &'a Ctx<'_>) -> Result<&'a TacsimStore, RollError
 }
 fn command_error(error: RollError) -> CmdError {
     CmdError::msg(error.to_string())
+}
+
+/// 17g C1c: bare `@mind/launch`'s extra lines. The market line, for any actor,
+/// when the `LaunchService` slot is owned by this crate and its deployment
+/// names a player market (format 2); then, for God only, the Registry
+/// operators' readiness. Both `None` on format 1 or with no launch.
+fn launch_market_lines(world: &World, actor: ObjId) -> (Option<String>, Option<String>) {
+    if world
+        .module_state_owner(std::any::TypeId::of::<
+            crate::launch::registration::LaunchService,
+        >())
+        .map(|o| o.as_str())
+        != Some(crate::NS)
+    {
+        return (None, None);
+    }
+    let Some(market) = world
+        .module_state::<crate::launch::registration::LaunchService>()
+        .and_then(|launch| launch.0.deployment().market.as_ref())
+    else {
+        return (None, None);
+    };
+    let readiness =
+        (actor == mush_core::GOD).then(|| crate::launch::registry_readiness(world, market));
+    (Some(crate::launch::market_help(market)), readiness)
 }
 
 fn diagnostic_words(diagnostic: &super::executor::Diagnostic) -> String {

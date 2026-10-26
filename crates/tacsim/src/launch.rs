@@ -3,12 +3,15 @@
 mod admission;
 mod content;
 mod deployment;
+// 17g C1b: format 2's typed player-market policies; C1c composes them in the
+// Active branch of `LaunchComposition::prepare`.
+mod market;
 pub(crate) mod registration;
 mod venue;
 pub use content::LaunchRecipe;
 pub use deployment::{
     HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
-    MAX_DEPLOYMENT_BYTES, NamedHouses,
+    MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, RegistryAuthority,
 };
 pub(crate) use registration::Registration;
 
@@ -74,6 +77,9 @@ impl LaunchComposition {
         prepared_layer.loaded = layer.loaded.clone();
         let prepared_layer = hardware.configure_tacsim(prepared_layer)?;
         let admission = admission::CopratesAdmission::new(&deployment)?;
+        // 17g C1c: format 2's typed player-market policies, built before the
+        // deployment moves into its registration; `None` for format 1.
+        let market = market::policies(&deployment)?;
         let mut commerce = crate::composition::mind_commerce::MindCommerce::prepare(
             &prepared_layer,
             mode,
@@ -125,6 +131,52 @@ impl LaunchComposition {
                     offer_ic_seconds: content::OFFER_SECONDS,
                 })?
                 .with_house_mind_renewal_service()?;
+            // 17g C1c (§3 C1c, §6 risk 2): a format-2 deployment composes the
+            // player market after the House chain, in the order C1a proved on
+            // the production roster (C1 plan §2.2). The order is forced by the
+            // builder's own guards:
+            // - v2 source forms (`with_original_source_purchases`) before
+            //   forks, because forks need source forms;
+            // - forks, then the marked Registry, then dependent filing, all
+            //   before entitlements;
+            // - renewals after entitlements;
+            // - pending charters after charter transfers;
+            // - re-qualification after dependent owners;
+            // - the House admission before paid resale (C1a: an admission
+            //   given after paid resale refuses).
+            // Two placements are conventions, not guards (C1 plan §2.3):
+            // - revocation before pending charters and paid resale:
+            //   `with_registry_revocation` would rebuild both anyway, so this
+            //   order only means each is built once;
+            // - paid resale after the personal purchases, so it takes their
+            //   participants rather than falling back to the House ones.
+            // The paid-resale writer inherits `CopratesAdmission` from
+            // `with_house_minds_and_admission` above (C1a), so a resold
+            // Coprates Pin's buyer needs Republic membership, as a new
+            // buyer does. IC claims, hull cover and paid Follow are not
+            // composed (17g §4). `Initialize` composes none of this, because
+            // every owner here is Active-only, and a format-1 deployment
+            // composes exactly the House chain it did before C1.
+            if let Some(p) = market {
+                commerce = commerce
+                    .with_original_source_purchases(p.quote)?
+                    .with_authored_forks()?
+                    .with_marked_registry()?
+                    .with_dependent_owner_filings()?
+                    .with_mind_entitlements(p.entitlement)?
+                    .with_compatible_updates()?
+                    .with_derived_updates()?
+                    .with_charter_transfers()?
+                    .with_registry_revocation(p.revocation)?
+                    .with_pending_charter_transfers(p.pending)?
+                    .with_paid_mind_resales(p.clerk, p.resale_offer_seconds)?
+                    .with_registry_recall(p.recall)?
+                    .with_mind_renewals(p.renewal)?
+                    .with_mind_renewal_service()?
+                    .with_author_withdrawal()?
+                    .with_owner_attestations()?
+                    .with_owner_parent_qualification()?;
+            }
         }
         let venue = deployment.venue.clone();
         let registration = Registration::new(deployment, admission)?;
@@ -158,4 +210,113 @@ impl LaunchComposition {
         layer.launch = Some(Box::new(self.registration.clone()));
         Ok(layer)
     }
+}
+
+/// 17g C1c (C1 plan §4.2): the player market's line for bare `@mind/launch` on
+/// a format-2 launch, rendered from the deployment's terms and doc 17's
+/// constants. Read-only and source-free; it names no holder and no mind.
+/// - "the charter owner gets the rest" and "pays the seller the rest" follow
+///   17f §2.2's payees: a sale's remainder goes to the charter-title owner, a
+///   resale's to its seller.
+/// - "does not renew": personal renewal reads only entitlement-born licences
+///   (`Birth::Entitlement`), and the v2 quote policy has no renewal terms.
+/// - "wait for those commands": `paid-mind-resale` and the two
+///   `market-original-mind-*` verbs each name several offers, which the
+///   gateway's `+act` refuses as ambiguous until 17g C2 splits them. The
+///   sentence is C1c's brief, verbatim; it does not name
+///   `roll-retire-authored-draft` (from `with_authored_forks`), which also
+///   projects two offers to every player and so is refused by `+act` too.
+///   Naming it is the lead's call; C2's split covers it either way.
+pub(crate) fn market_help(market: &PlayerMarket) -> String {
+    let terms = &market.terms;
+    format!(
+        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-offer listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Until the market commands exist, use +actions and +act <verb> with <JSON object>; paid-mind-resale and the market-original-mind offers wait for those commands.",
+        filing = credits(content::FILING_MINOR),
+        price = credits(terms.price_minor),
+        term = content::TERM_SECONDS / 86_400,
+        grace = content::GRACE_SECONDS / 86_400,
+        levy = content::LEVY_PERMILLE / 10,
+        renewal = credits(terms.renewal_price_minor),
+        renewal_window = window(terms.renewal_offer_ic_seconds, "IC "),
+        resale_window = window(terms.resale_offer_seconds, ""),
+        settle_window = window(terms.charter_settle_ic_seconds, "IC "),
+    )
+}
+
+/// 17g C1c (C1 plan §1 item 4): God's read-only check that the runbook's
+/// `@org/grant` lines took effect. Each configured operator, in ascending
+/// order, is `#<n> ready` when `mush_org::authorize_in_world` allows it both
+/// Registry capabilities in the configured scope now, and otherwise names what
+/// it lacks. The authorizer weighs the grant's limit and validity window and
+/// the org's and scope's status, so a limited, expired, not-yet-valid or
+/// suspended grant, or a retired scope, reads as "lacks". It writes nothing
+/// and reaches no state slot mutably.
+pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket) -> String {
+    let authority = &market.registry_authority;
+    let allows = |actor: mush_core::ObjId, capability: &str| {
+        mush_org::CapabilityId::new(capability).is_some_and(|capability| {
+            mush_org::authorize_in_world(
+                world,
+                &mush_org::AuthRequest {
+                    actor,
+                    capability,
+                    scope: authority.scope,
+                    now: world.now(),
+                    amount: None,
+                },
+            )
+            .is_allow()
+        })
+    };
+    let mut operators = authority.operators.clone();
+    operators.sort_unstable();
+    let items = operators
+        .into_iter()
+        .map(|operator| {
+            let state = match (
+                allows(
+                    operator,
+                    mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY,
+                ),
+                allows(
+                    operator,
+                    mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY,
+                ),
+            ) {
+                (true, true) => "ready",
+                (false, true) => "lacks recall",
+                (true, false) => "lacks revocation",
+                (false, false) => "lacks recall and revocation",
+            };
+            format!("#{} {state}", operator.0)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Registry operators: {items}.")
+}
+
+/// Whole credits when the minor amount divides by 100 (`400cr`), otherwise two
+/// decimals (`400.50cr`). Decode bounds every market price to at least 1.
+fn credits(minor: i64) -> String {
+    let (whole, cents) = (minor.div_euclid(100), minor.rem_euclid(100));
+    if cents == 0 {
+        format!("{whole}cr")
+    } else {
+        format!("{whole}.{cents:02}cr")
+    }
+}
+
+/// A window in days when it divides by 86,400 (`1 IC day`, `3 IC days`), else
+/// in hours when it divides by 3,600, else in seconds. `ic` is `"IC "` for an
+/// IC-clock window and empty for a real-time one.
+fn window(seconds: i64, ic: &str) -> String {
+    let (count, unit) = if seconds % 86_400 == 0 {
+        (seconds / 86_400, "day")
+    } else if seconds % 3_600 == 0 {
+        (seconds / 3_600, "hour")
+    } else {
+        (seconds, "second")
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {ic}{unit}{plural}")
 }

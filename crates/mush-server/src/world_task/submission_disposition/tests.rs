@@ -6,6 +6,7 @@ use super::super::{
 use super::*;
 
 mod paid_purchase;
+mod player_market;
 mod retry;
 use mush_core::{
     ArgShape, CmdError, CommandCompatibility, CommandSpec, Ctx, DefinitionDescriptor, DefinitionId,

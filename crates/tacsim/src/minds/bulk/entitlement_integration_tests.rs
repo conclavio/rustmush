@@ -749,6 +749,7 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
         false,
         "purchase.fixture",
         63_000_000,
+        None,
         |saved| PlayerWorld::boot_paid_resales(f, saved),
     )?;
     Ok(())
@@ -954,6 +955,7 @@ pub(super) async fn exercise(
         false,
         "purchase.fixture",
         64_000_000,
+        None,
         |saved| PlayerWorld::boot_paid_resales(f, saved),
     )?;
     story_phase("derived.compatible_update", || {
