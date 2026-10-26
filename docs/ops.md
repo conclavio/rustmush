@@ -1846,7 +1846,7 @@ files included, to `gate/<branch>` (never to the branch itself; the index and
 the tree are not touched) and dispatches on that ref, which is what a gate
 runner does between the fixer and the judge. Without it the script pushes the
 current branch. Either way it waits for the run, downloads the reports to
-`target/gate/<run id>/` (`gate-junit.xml`: one `<testcase>` a test with its
+`target/gate/<run id>/` (`gate-junit-<n>.xml`, one per nextest invocation: one `<testcase>` a test with its
 time, a `<failure>` per failed test, a `<flakyFailure>` per pass on retry;
 `harness*.json` or `cost-lane.json` for the other kinds), prints each failed
 test's binary and name, and exits with the run's status. A dispatch needs

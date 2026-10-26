@@ -20,13 +20,15 @@
 #     its own rustup (toolchain pinned by the checkout's rust-toolchain.toml,
 #     pre-installed here) and cargo-nextest at .config/nextest.toml's version
 #     under /home/ghrunner/.cargo/bin, which the runner puts on every job's
-#     PATH through its .path file;
+#     PATH through its .path file (written after registration, which writes
+#     that file itself);
 #   * the runner itself at /home/ghrunner/actions-runner, registered to the
 #     repository with the label `vps` and the name `conclav-vps`, as the
 #     systemd service actions.runner.conclavio-rustmush.conclav-vps.service,
 #     with runner-override.conf beside it (Nice=10, best-effort I/O at the
-#     lowest priority, a memory ceiling): the game servers and the production
-#     Redis on this box win under contention;
+#     lowest priority, a memory ceiling, the hosted runners' file-descriptor
+#     limit): the game servers and the production Redis on this box win
+#     under contention;
 #   * a private Redis for the jobs, redis-gate.service on 127.0.0.1:6799
 #     (redis-gate.conf: the four modules, appendonly with appendfsync always
 #     as CI's disposable Redis runs), wiped by every sweep; the instances on
@@ -76,10 +78,15 @@ if [ ! -x "$runner_dir/run.sh" ]; then
   echo "${RUNNER_SHA256}  ${tarball}" | sha256sum -c -
   as_runner tar xzf "$tarball" -C "$runner_dir"
   rm -f "$tarball"
-  # libicu and the rest of the runner's .NET dependencies (apt, as root).
-  "$runner_dir/bin/installdependencies.sh"
   echo "installed the runner ${RUNNER_VERSION}"
 fi
+# libicu and the rest of the runner's .NET dependencies (apt, as root). The
+# script fails when ANY apt source on the box is stale (2026-10-26: a
+# speedtest-cli repository answering 404 failed `apt-get update`), so it is
+# not fatal here; what is fatal is the runner not starting, checked next.
+"$runner_dir/bin/installdependencies.sh" > /tmp/runner-installdependencies.log 2>&1 \
+  || echo "installdependencies.sh failed (apt; see /tmp/runner-installdependencies.log): checking the runner runs anyway"
+as_runner "$runner_dir/bin/Runner.Listener" --version
 
 # 3. Rust and nextest for the runner's user: its own rustup, the pinned
 #    toolchain with the two components rust-toolchain.toml lists, nextest's
@@ -94,7 +101,7 @@ if [ ! -x "$home/.cargo/bin/cargo-nextest" ]; then
   as_runner bash -c "curl -LsSf https://get.nexte.st/${NEXTEST_VERSION}/linux | tar zxf - -C '$home/.cargo/bin'"
   echo "installed cargo-nextest ${NEXTEST_VERSION}"
 fi
-as_runner bash -c "echo '$home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' > '$runner_dir/.path'"
+job_path="$home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # 4. The jobs' private Redis.
 install -m 0644 "$here/redis-gate.conf" /etc/redis/redis-gate.conf
@@ -109,9 +116,13 @@ if [ ! -f "$runner_dir/.runner" ]; then
     echo "RUNNER_TOKEN is unset: gh api -X POST repos/conclavio/rustmush/actions/runners/registration-token --jq .token" >&2
     exit 2
   fi
-  as_runner env RUNNER_TOKEN="$RUNNER_TOKEN" bash -c "cd '$runner_dir' && ./config.sh --unattended --url '$REPO_URL' --token \"\$RUNNER_TOKEN\" --name '$RUNNER_NAME' --labels '$RUNNER_LABELS' --work _work --replace"
+  as_runner env RUNNER_TOKEN="$RUNNER_TOKEN" PATH="$job_path" bash -c "cd '$runner_dir' && ./config.sh --unattended --url '$REPO_URL' --token \"\$RUNNER_TOKEN\" --name '$RUNNER_NAME' --labels '$RUNNER_LABELS' --work _work --replace"
   echo "registered $RUNNER_NAME"
 fi
+# The jobs' PATH: the runner's service exports .path at start. Written AFTER
+# registration, because config.sh writes .path itself from its own PATH
+# (2026-10-26: the first provisioning wrote it before and lost cargo's bin).
+as_runner bash -c "echo '$job_path' > '$runner_dir/.path'"
 
 # 6. The service, niced, and started.
 cd "$runner_dir"

@@ -115,7 +115,20 @@ jobs:
             if [ "$p" = mush-bot ]; then bot=1; else engine+=(-p "$p"); fi
           done
           status=0
-          run() { echo "::group::$*"; "$@" || status=1; echo "::endgroup::"; }
+          # Each nextest invocation writes THE junit.xml of the ci profile
+          # (under the store directory, which follows CARGO_TARGET_DIR), so
+          # each one is kept under its own name for the artifact.
+          reports=0
+          keep_junit() {
+            for f in target/nextest/ci/junit.xml "$CARGO_TARGET_DIR/nextest/ci/junit.xml"; do
+              if [ -f "$f" ]; then
+                reports=$((reports + 1))
+                mv -f "$f" "gate-junit-$reports.xml"
+                break
+              fi
+            done
+          }
+          run() { echo "::group::$*"; "$@" || status=1; echo "::endgroup::"; keep_junit; }
           if [ -z "$PACKAGES" ]; then
             # The whole workspace: the engine's crates as one invocation (the
             # servers' dev-dependencies unify the debug-checks and
@@ -143,19 +156,16 @@ jobs:
       - name: Collect the reports
         if: always()
         run: |
-          # nextest's JUnit report (one <testcase> a test with its time; a
-          # <flakyFailure> for a pass on retry) lands under the store directory,
-          # which follows the target directory when CARGO_TARGET_DIR is set.
-          for f in target/nextest/ci/junit.xml "$CARGO_TARGET_DIR/nextest/ci/junit.xml"; do
-            if [ -f "$f" ]; then cp -f "$f" gate-junit.xml; break; fi
-          done
-          ls -la gate-junit.xml harness*.json cost-lane.json 2>/dev/null || true
+          # nextest's JUnit reports (one <testcase> a test with its time; a
+          # <flakyFailure> for a pass on retry), one per nextest invocation,
+          # moved out of the store by the sweep step; the scripts' JSON.
+          ls -la gate-junit-*.xml harness*.json cost-lane.json 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gate-${{ inputs.kind }}
           path: |
-            gate-junit.xml
+            gate-junit-*.xml
             harness*.json
             cost-lane.json
           if-no-files-found: ignore

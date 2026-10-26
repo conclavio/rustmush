@@ -26,7 +26,7 @@
 # The cut loop's gate runner calls `scripts/vps-gate.sh --wip` for the
 # workspace sweep, after its targeted commands, instead of running the sweep on
 # the box (the owner's test-once rule of 2026-10-26). The run's reports land
-# under target/gate/<run id>/ (gate-junit.xml: one <testcase> a test with its
+# under target/gate/<run id>/ (gate-junit-<n>.xml, one per nextest invocation: one <testcase> a test with its
 # time, a <failure> for each failed test, a <flakyFailure> for a pass on
 # retry); the exit status is the run's.
 set -euo pipefail
@@ -79,8 +79,13 @@ elif [ -z "$ref" ]; then
 fi
 
 since="$(date -u +%s)"
-gh workflow run gate.yml --repo "$repo" --ref "$ref" \
-  -f "kind=$kind" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis"
+# GitHub finds a workflow to dispatch by its file on the DEFAULT branch (the
+# ref's copy is what runs); until gate.yml is on main the dispatch is a 404.
+if ! gh workflow run gate.yml --repo "$repo" --ref "$ref" \
+  -f "kind=$kind" -f "packages=$packages" -f "extra=$extra" -f "redis=$redis"; then
+  echo "the dispatch failed: if gate.yml is not on the default branch yet, nothing can dispatch it (a 404 above); otherwise see the error" >&2
+  exit 1
+fi
 
 # The dispatch returns no run id: the newest gate run on the ref created
 # since the dispatch is it (a few seconds, usually).
@@ -113,19 +118,24 @@ conclusion="$(gh run view "$id" --repo "$repo" --json conclusion --jq .conclusio
 out="target/gate/$id"
 mkdir -p "$out"
 gh run download "$id" --repo "$repo" -D "$out" 2>/dev/null || true
-junit="$(find "$out" -name gate-junit.xml | head -n 1 || true)"
-if [ -n "$junit" ]; then
+# One JUnit per nextest invocation (the engine sweep, the bot), each a whole
+# <testsuites>; totals over all of them, then each failed and flaky test.
+junits="$(find "$out" -name 'gate-junit-*.xml' | sort || true)"
+if [ -n "$junits" ]; then
   py=python3
   command -v python3 > /dev/null 2>&1 || py=python
-  "$py" -X utf8 - "$junit" <<'EOF'
+  # shellcheck disable=SC2086
+  "$py" -X utf8 - $junits <<'EOF'
 import sys
 import xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
-suites = root.findall("testsuite")
+suites = []
+for path in sys.argv[1:]:
+    suites += ET.parse(path).getroot().findall("testsuite")
 tests = sum(int(s.get("tests", 0)) for s in suites)
 failures = sum(int(s.get("failures", 0)) for s in suites)
 errors = sum(int(s.get("errors", 0)) for s in suites)
-print(f"junit: {tests} tests, {failures} failed, {errors} errors, {len(suites)} binaries")
+seconds = sum(float(c.get("time", 0)) for s in suites for c in s.findall("testcase"))
+print(f"junit: {tests} tests, {failures} failed, {errors} errors, {len(suites)} binaries, {seconds:.0f} s of test time")
 for s in suites:
     for case in s.findall("testcase"):
         if case.find("failure") is not None or case.find("error") is not None:
