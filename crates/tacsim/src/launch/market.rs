@@ -37,10 +37,8 @@ use mush_roll::commerce::{
 /// checked by its owner's own constructor. `entitlement` is the exception: its
 /// validation is private to mush-market and runs in `EntitlementConfig::new` at
 /// Active composition. Decode bounds its numeric fields
-/// (`LaunchDeployment::validate`) but does not prove it.
-// C1b builds these only to prove them at decode; C1c's Active composition is
-// their first reader, and this allowance goes with it.
-#[cfg_attr(not(test), allow(dead_code))]
+/// (`LaunchDeployment::validate`) but does not prove it. 17g C1c's Active
+/// branch of `LaunchComposition::prepare` composes the market from them.
 pub(crate) struct MarketPolicies {
     /// The v2 original quote policy (`with_original_source_purchases`).
     pub(crate) quote: OriginalQuotePolicy,

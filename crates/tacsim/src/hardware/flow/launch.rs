@@ -36,12 +36,25 @@ impl AccountIdentity for Logins {
             .distinct_pair(a, self.account_of(a)?, b, self.account_of(b)?)
     }
 }
-fn logins(r: &mut Rig) -> Result {
+/// The login accounts: God's, the buyer's and, on format 2, one staff login
+/// holding the clerk and every Registry operator (17g C1c, as the runbook and
+/// mush-server's `launch_world` place them). A paid-resale Offer names its
+/// buyer, and the writer requires seller and buyer on distinct logins.
+fn logins(r: &mut Rig, d: &LaunchDeployment) -> Result {
+    let mut values = BTreeMap::from([
+        (GOD, mush_core::AccountId::mint("launch-publisher", 1)?),
+        (r.buyer, mush_core::AccountId::mint("launch-buyer", 2)?),
+    ]);
+    if let Some(market) = &d.market {
+        let staff = mush_core::AccountId::mint("launch-staff-two", 3)?;
+        for actor in
+            std::iter::once(market.clerk).chain(market.registry_authority.operators.clone())
+        {
+            values.insert(actor, staff);
+        }
+    }
     let accounts: Arc<dyn AccountIdentity> = Arc::new(Logins {
-        values: BTreeMap::from([
-            (GOD, mush_core::AccountId::mint("launch-publisher", 1)?),
-            (r.buyer, mush_core::AccountId::mint("launch-buyer", 2)?),
-        ]),
+        values,
         epoch: AccountIdentityEpoch::default(),
     });
     r.world_mut()
@@ -53,9 +66,11 @@ fn logins(r: &mut Rig) -> Result {
         .ok_or("actual Sim account slot")? = mush_sim::AccountOracle::new(accounts);
     Ok(())
 }
-/// The format-1 (House-only) named launch. C1c moves it to format 2.
+/// The named launch on the production format: format 2, with the player
+/// market's identities (17g C1c; C1b's interim pinned format 1 here).
+/// `setup_with(1)` is the House-only format.
 fn setup() -> Result<(Rig, LaunchDeployment)> {
-    setup_with(1)
+    setup_with(2)
 }
 /// The named launch's identities, made by ordinary operator commands. Format 2
 /// (17g C1b) adds the player market's: a `Registry` org with a `review` scope,
@@ -302,7 +317,7 @@ fn reboot(r: &mut Rig, d: &LaunchDeployment) -> Result {
         a.tasks().signal_stop_all();
     }
     r.restart(modules(d)?)?;
-    logins(r)?;
+    logins(r, d)?;
     r.flush();
     Ok(())
 }
@@ -317,6 +332,159 @@ fn names(r: &Rig) -> Result<Vec<String>> {
         .collect())
 }
 
+/// 17g C1c: one action of each player-market owner the launch's Active branch
+/// composes on format 2 (C1a's SURFACE), in the builder order:
+/// - the v2 source-form purchase (`with_original_source_purchases`), an
+///   authored fork, a dependent filing (which needs the marked Registry; that
+///   step is a flag with no action of its own), a v3 entitlement step, the
+///   compatible and derived line updates, the immediate charter Accept;
+/// - Registry revocation, the pending-charter Fund and Settle
+///   (`offer_mind_charter_transfer` is shared with the immediate charter
+///   transfer, so it proves nothing alone), paid resale's Offer, Registry
+///   recall;
+/// - a personal renewal step and the personal renewal service's close
+///   (`close_mind_renewal_service`, not the House one), author withdrawal,
+///   owner attestation and parent re-qualification.
+const MARKET_ACTIONS: [(&str, &str); 17] = [
+    ("market", "purchase_original_mind"),
+    ("roll", "fork_paid_mind"),
+    ("roll", "dependent_initial_filing"),
+    ("market", "list_derived_mind"),
+    ("roll", "update_original_mind"),
+    ("roll", "update_derived_mind"),
+    ("roll", "accept_mind_charter_transfer"),
+    ("roll", "registry_term_revocation"),
+    ("roll", "fund_mind_charter_transfer"),
+    ("roll", "settle_mind_charter_transfer"),
+    ("market", mush_roll::commerce::paid_resale::protocol::OFFER),
+    ("roll", "registry_revision_recall"),
+    ("market", "draft_mind_renewal"),
+    (
+        "market",
+        mush_economy::managed_renewal::SERVICE_CLOSE_ACTION,
+    ),
+    ("roll", "withdraw_authored_mind"),
+    ("roll", "attest_owner_mind"),
+    ("roll", "replace_owner_parent_qualification"),
+];
+/// 17g C1c: the player market's class-E verbs (C1 plan §7), offered to every
+/// live player wherever it stands once their owners are composed: so one
+/// player's projection shows whether any of these owners is composed.
+/// Registry recall and revocation (class A) and the service verbs (class B)
+/// are not here; `MARKET_ACTIONS` covers their owners.
+const GENERIC_MARKET_VERBS: [&str; 22] = [
+    "original-refund-v3",
+    "derived-refund-v1",
+    "market-original-mind-offer",
+    "market-original-mind-purchase",
+    "roll-file-dependent-mind",
+    "roll-update-original-mind",
+    "roll-update-derived-mind",
+    "roll-fork-paid-mind",
+    "roll-retire-authored-draft",
+    "roll-offer-charter-transfer",
+    "roll-accept-charter-transfer",
+    "roll-offer-pending-charter",
+    "roll-fund-pending-charter",
+    "paid-mind-resale",
+    "mind-renewal-draft",
+    "mind-renewal-fund",
+    "mind-renewal-grant",
+    "mind-renewal-refund",
+    "mind-renewal-close",
+    "roll-withdraw-authored-mind",
+    "roll-attest-owner-mind",
+    "roll-replace-owner-parent",
+];
+/// The verbs of `GENERIC_MARKET_VERBS` projected to `actor`, sorted.
+fn generic_market_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
+    let mut verbs: Vec<String> = projected(r, actor)?
+        .iter()
+        .map(|offer| offer.presentation().verb.clone())
+        .filter(|verb| GENERIC_MARKET_VERBS.contains(&verb.as_str()))
+        .collect();
+    verbs.sort();
+    verbs.dedup();
+    Ok(verbs)
+}
+/// The launch's three industry initialize actions, beside Roll's.
+const INDUSTRY_INITIALIZE: [&str; 3] = [
+    "initialize_core_origin",
+    "initialize_core_production",
+    "initialize_core_refit",
+];
+/// The runbook's bring-up on a rig: an Initialize boot, the Registry grants
+/// when `grant` is set (format 2), the commerce and industry initialize
+/// actions, then a cold Active boot.
+fn activate(r: &mut Rig, d: &mut LaunchDeployment, grant: bool) -> Result {
+    d.mode = LaunchMode::Initialize;
+    reboot(r, d)?;
+    r.initialize_roll()?;
+    for action in INDUSTRY_INITIALIZE {
+        r.perform("industry", action, GOD, json!({}))?;
+    }
+    if grant {
+        grant_registry(r, d)?;
+    }
+    d.mode = LaunchMode::Active;
+    reboot(r, d)
+}
+/// The offers `+actions` lists to `actor`: `Engine::legal_action_query` for the
+/// actor as its own principal and subject, then `Engine::project_legal_actions`.
+fn projected(r: &mut Rig, actor: ObjId) -> Result<Vec<mush_core::ProjectedLegalAction>> {
+    let e = r.world_mut().engine_mut();
+    e.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x46; 32])?,
+        [],
+    )?);
+    let query = e.legal_action_query(
+        mush_core::PrincipalId::Object { id: actor },
+        actor,
+        mush_core::PerceivedRef::SelfActor,
+    )?;
+    Ok(e.project_legal_actions(&query)?.projected())
+}
+/// The Registry verbs (`roll-registry-recall`, `roll-registry-revocation`)
+/// projected to `actor`.
+fn registry_verbs(r: &mut Rig, actor: ObjId) -> Result<Vec<String>> {
+    Ok(projected(r, actor)?
+        .iter()
+        .map(|offer| offer.presentation().verb.clone())
+        .filter(|verb| {
+            matches!(
+                verb.as_str(),
+                "roll-registry-recall" | "roll-registry-revocation"
+            )
+        })
+        .collect())
+}
+/// Every line bare `@mind/launch` sends `actor`, in order.
+fn launch_lines(r: &mut Rig, actor: ObjId) -> Vec<String> {
+    r.world_mut()
+        .run(actor, "@mind/launch")
+        .iter()
+        .filter(|(audience, _)| *audience == mush_core::Audience::Actor(actor))
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect()
+}
+/// God's readiness line for one operator.
+fn readiness(operator: ObjId, state: &str) -> String {
+    format!("Registry operators: #{} {state}.", operator.0)
+}
+/// 17g C1c: the market line with `MarketTerms::PROVISIONAL`, byte for byte.
+const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-offer listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Until the market commands exist, use +actions and +act <verb> with <JSON object>; paid-mind-resale and the market-original-mind offers wait for those commands.";
+/// The deployment's one Registry operator.
+fn operator(d: &LaunchDeployment) -> Result<ObjId> {
+    Ok(d.market
+        .as_ref()
+        .ok_or("a format-2 market")?
+        .registry_authority
+        .operators
+        .first()
+        .copied()
+        .ok_or("one operator")?)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn named_launch_real_initialization_cold_activation_and_private_import() -> Result {
     let (mut r, mut d) = setup()?;
@@ -328,12 +496,12 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
         json!({"class":"i"})
     ))?);
     check!(r.action("market", "purchase_house_mind").is_err());
+    // 17g C1c: Initialize composes no market owner; every one is Active-only.
+    for (owner, id) in MARKET_ACTIONS {
+        check!(r.action(owner, id).is_err(), "{owner}/{id} at Initialize");
+    }
     r.initialize_roll()?;
-    for action in [
-        "initialize_core_origin",
-        "initialize_core_production",
-        "initialize_core_refit",
-    ] {
+    for action in INDUSTRY_INITIALIZE {
         r.perform("industry", action, GOD, json!({}))?;
     }
     let image = r.boot.clone();
@@ -346,6 +514,11 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     );
     check!(r.action("market", "purchase_house_mind").is_ok());
     check!(r.action("roll", "conduct_trial_admit").is_ok());
+    // 17g C1c: the production format composes every player-market owner
+    // after the House chain.
+    for (owner, id) in MARKET_ACTIONS {
+        check!(r.action(owner, id).is_ok(), "{owner}/{id} is composed");
+    }
     check!(names(&r)?.is_empty());
     let before = r.boot.clone();
     command(
@@ -740,35 +913,240 @@ async fn named_launch_format_two_checks_market_identities_at_boot() -> Result {
     Ok(())
 }
 
-/// 17g C1b, INTERIM: C1c deletes this test. A format-2 deployment initializes
-/// and activates with its market identities checked, but composes only the
-/// House chain until C1c composes the market from `launch::market::policies`.
-/// This pins that interim state, so that no player-market owner is reachable
-/// through the launch before C1c's census and privacy proofs land with it.
+/// 17g C1c: C1b's interim pin (format 2 composed no market owner) moves to
+/// format 1, where it is permanent. A format-1 deployment initializes and
+/// activates the House chain exactly as before C1: the House actions are
+/// registered and no player-market action is, and bare `@mind/launch` prints
+/// `HELP` and nothing else, for God and for a player.
 #[tokio::test(flavor = "current_thread")]
-async fn named_launch_format_two_composes_no_market_owner_yet() -> Result {
-    let (mut r, mut d) = setup_with(2)?;
-    reboot(&mut r, &d)?;
-    // The runbook's grants, made at Initialize by the baseline command.
-    grant_registry(&mut r, &d)?;
-    r.initialize_roll()?;
-    for action in [
-        "initialize_core_origin",
-        "initialize_core_production",
-        "initialize_core_refit",
-    ] {
-        r.perform("industry", action, GOD, json!({}))?;
-    }
-    d.mode = LaunchMode::Active;
-    reboot(&mut r, &d)?;
+async fn named_launch_format_one_stays_house_only() -> Result {
+    let (mut r, mut d) = setup_with(1)?;
+    activate(&mut r, &mut d, false)?;
     check!(r.action("market", "purchase_house_mind").is_ok());
     check!(r.action("roll", "conduct_trial_admit").is_ok());
-    check!(r.action("roll", "registry_revision_recall").is_err());
-    check!(r.action("roll", "registry_term_revocation").is_err());
-    // One v3 entitlement action and one personal renewal action.
-    check!(r.action("market", "list_derived_mind").is_err());
-    check!(r.action("market", "draft_mind_renewal").is_err());
+    for (owner, id) in MARKET_ACTIONS {
+        check!(r.action(owner, id).is_err(), "{owner}/{id} on format 1");
+    }
+    let buyer = r.buyer;
+    // No market verb is projected to anyone: a class-E verb would reach both,
+    // so this covers every generic owner, and the Registry verbs besides.
+    // `named_launch_market_help_states_the_deployment_terms` is the positive
+    // control on format 2.
+    for actor in [GOD, buyer] {
+        check_eq!(
+            generic_market_verbs(&mut r, actor)?,
+            Vec::<String>::new(),
+            "format 1 offers #{} no market verb",
+            actor.0
+        );
+        check!(registry_verbs(&mut r, actor)?.is_empty());
+    }
+    for actor in [GOD, buyer] {
+        check_eq!(
+            launch_lines(&mut r, actor),
+            vec![crate::launch::HELP.to_owned()],
+            "format 1 prints HELP alone for #{}",
+            actor.0
+        );
+    }
     reboot(&mut r, &d)?;
+    Ok(())
+}
+
+/// 17g C1c (C1 plan §1 item 4, §7 class A): Registry recall and revocation are
+/// offered only to a configured operator whose `@org/grant`s are effective
+/// now, read through the projection `+actions` lists. God's readiness line
+/// follows the same authorizer. Retiring the Registry scope is the kill
+/// switch: both offers vanish and the world still reboots.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let market = d.market.clone().ok_or("a format-2 market")?;
+    let operator = operator(&d)?;
+    let principals = [GOD, operator, market.clerk, r.buyer];
+    let both = vec![
+        "roll-registry-recall".to_owned(),
+        "roll-registry-revocation".to_owned(),
+    ];
+    let lacks = readiness(operator, "lacks recall and revocation");
+    // Before the grants: no one, and God reads what the operator lacks.
+    for actor in principals {
+        check!(
+            registry_verbs(&mut r, actor)?.is_empty(),
+            "#{} before the grants",
+            actor.0
+        );
+    }
+    check_eq!(launch_lines(&mut r, GOD).last(), Some(&lacks));
+    // The runbook's grants: the operator alone, and God reads it ready.
+    grant_registry(&mut r, &d)?;
+    for actor in principals {
+        let mut verbs = registry_verbs(&mut r, actor)?;
+        verbs.sort();
+        let expected = if actor == operator {
+            both.clone()
+        } else {
+            Vec::new()
+        };
+        check_eq!(verbs, expected, "#{} after the grants", actor.0);
+    }
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&readiness(operator, "ready"))
+    );
+    // The kill switch: retire the Registry's scope (named by id).
+    command(
+        r.world_mut(),
+        GOD,
+        &format!(
+            "@org/scope retire Registry=#{}",
+            market.registry_authority.scope.0
+        ),
+    )?;
+    r.flush();
+    for actor in principals {
+        check!(
+            registry_verbs(&mut r, actor)?.is_empty(),
+            "#{} once the scope is retired",
+            actor.0
+        );
+    }
+    check_eq!(launch_lines(&mut r, GOD).last(), Some(&lacks));
+    // A retired scope is a runtime state, so the world reboots, and still
+    // no one is offered either action.
+    reboot(&mut r, &d)?;
+    for actor in principals {
+        check!(
+            registry_verbs(&mut r, actor)?.is_empty(),
+            "#{} after the reboot",
+            actor.0
+        );
+    }
+    // The positive control: the operator's projection is read, not empty.
+    check!(
+        projected(&mut r, operator)?
+            .iter()
+            .any(|offer| offer.presentation().verb == "paid-mind-resale"),
+        "the operator is still offered the generic market actions"
+    );
+    check_eq!(launch_lines(&mut r, GOD).last(), Some(&lacks));
+    Ok(())
+}
+
+/// 17g C1c (C1 plan §1 item 4): God's readiness line names, for each operator
+/// in ascending order and in one line joined by ", ", exactly the capability
+/// it lacks, so the runbook's reader re-runs the right `@org/grant`. Two
+/// operators each hold one of the two grants, and each is projected only the
+/// verb its grant opens; once both hold both, both read ready.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_readiness_names_what_each_operator_lacks() -> Result {
+    let (mut r, mut d) = setup()?;
+    // A second operator, spawned after the clerk, so the configured list
+    // stays ascending as the document requires.
+    let second = r.world_mut().spawn_player("Second operator");
+    let first = operator(&d)?;
+    check!(first.0 < second.0, "the operators are configured ascending");
+    let market = d.market.as_mut().ok_or("a format-2 market")?;
+    market.registry_authority.operators.push(second);
+    let scope = market.registry_authority.scope;
+    activate(&mut r, &mut d, false)?;
+    let line = |items: [(ObjId, &str); 2]| {
+        let items: Vec<String> = items
+            .iter()
+            .map(|(op, state)| format!("#{} {state}", op.0))
+            .collect();
+        format!("Registry operators: {}.", items.join(", "))
+    };
+    let grant = |r: &mut Rig, op: ObjId, capability: &str| -> Result {
+        command(
+            r.world_mut(),
+            GOD,
+            &format!(
+                "@org/grant #{}=Registry {capability} scope=#{}",
+                op.0, scope.0
+            ),
+        )?;
+        r.flush();
+        Ok(())
+    };
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks recall and revocation"),
+            (second, "lacks recall and revocation"),
+        ]))
+    );
+    // One grant each, a different one: each reads what it still lacks.
+    grant(&mut r, first, "roll.registry.recall")?;
+    grant(&mut r, second, "roll.registry.revoke")?;
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([
+            (first, "lacks revocation"),
+            (second, "lacks recall")
+        ]))
+    );
+    check_eq!(
+        registry_verbs(&mut r, first)?,
+        vec!["roll-registry-recall".to_owned()]
+    );
+    check_eq!(
+        registry_verbs(&mut r, second)?,
+        vec!["roll-registry-revocation".to_owned()]
+    );
+    // The missing grants: both ready.
+    grant(&mut r, first, "roll.registry.revoke")?;
+    grant(&mut r, second, "roll.registry.recall")?;
+    check_eq!(
+        launch_lines(&mut r, GOD).last(),
+        Some(&line([(first, "ready"), (second, "ready")]))
+    );
+    Ok(())
+}
+
+/// 17g C1c (C1 plan §4.2): bare `@mind/launch` on format 2 prints `HELP`, then
+/// the market line rendered from the deployment's terms, to any actor, and
+/// then God's readiness line to God alone.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_market_help_states_the_deployment_terms() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let buyer = r.buyer;
+    // The positive control of `named_launch_format_one_stays_house_only`:
+    // on format 2 the buyer is projected every class-E market verb.
+    let mut every: Vec<String> = GENERIC_MARKET_VERBS.map(str::to_owned).to_vec();
+    every.sort();
+    check_eq!(generic_market_verbs(&mut r, buyer)?, every);
+    let help = crate::launch::HELP.to_owned();
+    let line = PROVISIONAL_MARKET_LINE.to_owned();
+    check_eq!(
+        launch_lines(&mut r, buyer),
+        vec![help.clone(), line.clone()]
+    );
+    check_eq!(
+        launch_lines(&mut r, GOD),
+        vec![
+            help,
+            line,
+            readiness(operator(&d)?, "lacks recall and revocation")
+        ]
+    );
+    // Terms that do not divide into whole credits or days: the price renders
+    // with two decimals, an IC window in IC hours, the resale window in hours.
+    let mut tuned = d.clone();
+    let market = tuned.market.as_mut().ok_or("a format-2 market")?;
+    market.terms.price_minor = 12_350;
+    market.terms.renewal_offer_ic_seconds = 7_200;
+    market.terms.resale_offer_seconds = 3_600;
+    let tuned = LaunchDeployment::decode(&serde_json::to_vec(&tuned)?)?;
+    check_eq!(
+        crate::launch::market_help(tuned.market.as_ref().ok_or("a format-2 market")?),
+        PROVISIONAL_MARKET_LINE
+            .replacen("sells for 400cr", "sells for 123.50cr", 1)
+            .replacen("open 3 IC days;", "open 2 IC hours;", 1)
+            .replacen("stays open 1 day ", "stays open 1 hour ", 1)
+    );
     Ok(())
 }
 

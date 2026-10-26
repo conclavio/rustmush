@@ -182,10 +182,9 @@ impl Registration {
         }
         Ok(())
     }
-    /// 17g C1b: the decoded deployment this launch registered. C1c reads its
-    /// format-2 market to compose the player market.
-    // C1c is the first non-test reader; this allowance goes with it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// 17g C1b: the decoded deployment this launch registered. 17g C1c's bare
+    /// `@mind/launch` reads its format-2 market for the market and readiness
+    /// lines.
     pub(crate) fn deployment(&self) -> &LaunchDeployment {
         &self.deployment
     }

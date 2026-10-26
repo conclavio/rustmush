@@ -29,11 +29,22 @@ pub const MAX_OWNER_PARTICIPANTS: usize = 16;
 pub const MAX_OWNER_PARTICIPANT_IMAGES: usize = 3;
 pub const MAX_OWNER_PARTICIPANT_MODULES: usize = 2;
 /// Registration requests are bounded independently of each invocation's images.
-/// The full optional commerce roster uses 60 exact grants and IC adds eight.
-/// This declaration ceiling leaves bounded room for later owner actions; ordinary
-/// invocations remain three slots/two modules, and only the validated fixed IC
-/// protocol may prepare its exact four slots/four modules.
-pub const MAX_OWNER_PARTICIPANT_REQUESTS: usize = 128;
+/// The same ceiling bounds two things at composition: the number of
+/// participant requests declared (`ParticipantRegistryBuilder::request`) and
+/// the size of each registration's `allowed_actions` set
+/// (`ParticipantRegistryBuilder::register`).
+/// - 17f set it at 128, when the full optional commerce roster used 60 exact
+///   grants and IC added eight.
+/// - 17g C1c raised it to 256: the named launch's format-2 Active composition
+///   (the House chain, Conduct, governed hardware and the whole player market)
+///   overran 128. It declared 156 requests when C1c landed (format 1: 91), a
+///   measurement no test pins, so a later owner moves that margin silently
+///   until a boot hits the ceiling.
+///
+/// This declaration ceiling leaves bounded room for later owner actions;
+/// ordinary invocations remain three slots/two modules, and only the validated
+/// fixed IC protocol may prepare its exact four slots/four modules.
+pub const MAX_OWNER_PARTICIPANT_REQUESTS: usize = 256;
 
 /// A refusal before publication, or an integrity failure at post-receipt bind.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -1326,8 +1337,8 @@ mod tests {
     }
 
     #[test]
-    fn composition_accepts_128_distinct_requests_and_refuses_129() {
-        assert_eq!(MAX_OWNER_PARTICIPANT_REQUESTS, 128);
+    fn composition_accepts_256_distinct_requests_and_refuses_257() {
+        assert_eq!(MAX_OWNER_PARTICIPANT_REQUESTS, 256);
         let caller = OwnerId::new("writer").unwrap();
         let mut definitions = DefinitionRegistryBuilder::new();
         let mut builder = ParticipantRegistryBuilder::default();
@@ -1352,6 +1363,50 @@ mod tests {
             }
         }
         assert_eq!(builder.requests.len(), MAX_OWNER_PARTICIPANT_REQUESTS);
+    }
+
+    /// 17g C1c: the ceiling also bounds one registration's `allowed_actions`.
+    /// A set of 257 refuses by the limit; the same participant with 256 of
+    /// them registers.
+    #[test]
+    fn registration_accepts_256_allowed_actions_and_refuses_257() {
+        let caller = OwnerId::new("writer").unwrap();
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let mut define = |owner: OwnerId, kind: &str, id: String| {
+            definitions
+                .register(
+                    owner,
+                    DefinitionDescriptor::new(
+                        DefinitionKind::new(kind).unwrap(),
+                        DefinitionId::new(id).unwrap(),
+                        1,
+                        json!({}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+        };
+        let participant = define(owner::<1>(), "participant", "images".into());
+        let actions: Vec<DefinitionRef> = (0..=MAX_OWNER_PARTICIPANT_REQUESTS)
+            .map(|index| define(caller.clone(), "action", format!("action_{index}")))
+            .collect();
+        let over: BTreeSet<DefinitionRef> = actions.iter().cloned().collect();
+        assert_eq!(over.len(), MAX_OWNER_PARTICIPANT_REQUESTS + 1);
+        let mut builder = ParticipantRegistryBuilder::default();
+        assert!(matches!(
+            builder.register(owner::<1>(), participant.clone(), over, Adapter::<1>),
+            Err(ParticipantError::RegistrationLimit)
+        ));
+        let at: BTreeSet<DefinitionRef> = actions
+            .into_iter()
+            .take(MAX_OWNER_PARTICIPANT_REQUESTS)
+            .collect();
+        assert!(
+            builder
+                .register(owner::<1>(), participant, at, Adapter::<1>)
+                .is_ok()
+        );
+        assert_eq!(builder.registrations.len(), 1);
     }
     struct Fixture {
         registry: ParticipantRegistry,

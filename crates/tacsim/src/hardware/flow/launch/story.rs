@@ -300,6 +300,88 @@ fn fence(r: &mut Rig, name: &str, parameters: Value) -> Result {
     Ok(())
 }
 
+/// 17g C1c's three resale checks on the settled House Pin `licence`, while its
+/// buyer is a Republic member (C1 plan §4.4 test 5, §5):
+/// - (a) `paid-mind-resale`'s projected actions are byte-identical for the
+///   holder, God and the Registry operator, as JSON with their per-actor
+///   `offer` ids removed: offered to every live player, revealing no holding;
+/// - (b) the holder's paid-resale Offer naming the clerk prepares. It is
+///   planned only, never staged, so no later step of the story moves;
+/// - (c) God's identical Offer refuses, with the same bytes as God's Offer on
+///   a licence that does not exist: the invocation reveals no holding either.
+fn resale_privacy(r: &mut Rig, d: &LaunchDeployment, licence: u64) -> Result {
+    let market = d.market.clone().ok_or("a format-2 market")?;
+    let operator = operator(d)?;
+    let buyer = r.buyer;
+    let resale = |r: &mut Rig, actor: ObjId| -> Result<Vec<Value>> {
+        let mut offers = Vec::new();
+        for offer in projected(r, actor)? {
+            if offer.presentation().verb != "paid-mind-resale" {
+                continue;
+            }
+            let mut value = serde_json::to_value(&offer)?;
+            value
+                .as_object_mut()
+                .ok_or("a projected action is an object")?
+                .remove("offer")
+                .ok_or("a projected action names its offer")?;
+            offers.push(value);
+        }
+        Ok(offers)
+    };
+    let held = resale(r, buyer)?;
+    check!(!held.is_empty(), "the holder is offered paid-mind-resale");
+    check_eq!(&held, &resale(r, GOD)?, "the holder and God");
+    check_eq!(&held, &resale(r, operator)?, "the holder and the operator");
+    eprintln!(
+        "NAMED_LAUNCH_RESALE projected={} entries={}",
+        held.len(),
+        serde_json::to_string(&held)?
+    );
+    // The holder's own personal account takes the remainder.
+    let seller_account = r.payer;
+    let offer = |licence: u64| json!({"licence":licence,"buyer":market.clerk.0,"price":40000,"seller_account":seller_account});
+    let (held_offer, absent_offer) = (offer(licence), offer(licence + 1_000_000));
+    r.plan(
+        "market",
+        mush_roll::commerce::paid_resale::protocol::OFFER,
+        buyer,
+        held_offer.clone(),
+    )?;
+    let refusal = |result: Result<driver::Planned>| -> Result<String> {
+        match result {
+            Ok(_) => Err("God's paid-resale Offer prepared".into()),
+            Err(error)
+                if error
+                    .downcast_ref::<crate::test_checks::CheckFailed>()
+                    .is_some() =>
+            {
+                Err(error)
+            }
+            Err(error) => Ok(error.to_string()),
+        }
+    };
+    let on_the_holding = refusal(r.plan(
+        "market",
+        mush_roll::commerce::paid_resale::protocol::OFFER,
+        GOD,
+        held_offer,
+    ))?;
+    let on_nothing = refusal(r.plan(
+        "market",
+        mush_roll::commerce::paid_resale::protocol::OFFER,
+        GOD,
+        absent_offer,
+    ))?;
+    eprintln!("NAMED_LAUNCH_RESALE refusal={on_the_holding:?}");
+    check_eq!(
+        on_the_holding,
+        on_nothing,
+        "God's refusal on the buyer's Pin equals a missing licence's"
+    );
+    Ok(())
+}
+
 async fn other_named_house(
     r: &mut Rig,
     d: &LaunchDeployment,
@@ -406,6 +488,8 @@ async fn other_named_house(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "full three-source Registry measurement; run the exact named launch acceptance gate"]
 async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Result {
+    // 17g C1c: the production format (2), with the player market composed
+    // after the House chain, and the runbook's Registry grants at Initialize.
     let (mut r, mut d) = setup()?;
     reboot(&mut r, &d)?;
     r.initialize_roll()?;
@@ -416,6 +500,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     ] {
         r.perform("industry", action, GOD, json!({}))?;
     }
+    grant_registry(&mut r, &d)?;
     d.mode = LaunchMode::Active;
     reboot(&mut r, &d)?;
     connected(&mut r)?;
@@ -496,6 +581,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         "the paid House Pin's term"
     );
     check_eq!(before.0 - r.money(r.payer)?.0, 40000);
+    resale_privacy(&mut r, &d, accepted.id().get())?;
     member(&mut r, false)?;
     reboot(&mut r, &d)?;
     check_eq!(paid(&r)?, accepted);

@@ -9,7 +9,10 @@
 //! and reads the offers it projects in an empty Active world against the
 //! five classes of plan §7. C1b extends this file with the launch path
 //! (deployment format 2, `launch_world`): the first boot of the named launch
-//! through `game_modules`, House-only until C1c composes the launch market.
+//! through `game_modules`. C1c composes the player market in the launch's
+//! Active branch and proves C1's gate here (plan §5): the census of the
+//! composed launch, a restart, split parity through `build_engine`, and a
+//! terms change across a reboot.
 use super::paid_purchase::{
     auth_account, open_wallet,
     runtime::{Running, STEP},
@@ -1088,66 +1091,185 @@ fn write_launch(path: &std::path::Path, deployment: &LaunchDeployment) -> TestRe
     Ok(())
 }
 
+/// The census logins of the named launch: an author and a buyer, each its own
+/// player account (C1 plan §4.4 test 6).
+const LAUNCH_AUTHOR: &str = "launch-author";
+const LAUNCH_BUYER: &str = "launch-buyer";
+/// The four initialize offers of the named launch, all GOD's.
+const LAUNCH_INITIALIZE: [&str; 4] = [
+    "roll-initialize-commerce",
+    "initialize-core-die-stock",
+    "initialize-core-factory",
+    "initialize-core-refit",
+];
+/// A fresh scratch directory for one test's data dir.
+fn scratch(prefix: &str) -> TestResult<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+/// A named launch brought up by the runbook, ready for its Active boots.
+struct Launch {
+    /// `[tacsim.minds].launch_path` names `path`.
+    config: Config,
+    store: Arc<PurchaseFaultStore>,
+    path: std::path::PathBuf,
+    /// The document at `path`, in Active mode.
+    deployment: LaunchDeployment,
+    /// The census principals. The counter is the deployment's venue room.
+    principals: Principals,
+}
+/// The runbook's bring-up through `game_modules` (`Running::boot(.., None)`
+/// reads `[tacsim.minds].launch_path`):
+/// - a plain boot: `launch_world`'s identities, then the census principals
+///   (an author and a buyer on two more login accounts with their wallets,
+///   and an accountless character, standing in the deployment's counter room;
+///   God, the clerk and the operator in Limbo);
+/// - an Initialize boot: the operators' two `@org/grant`s, then the four
+///   initialize offers through the public offer path;
+/// - the document rewritten in Active mode. Nothing is booted Active here.
+async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
+    let mut config = config();
+    config.server.data_dir = data_dir.to_path_buf();
+    let store = Arc::new(PurchaseFaultStore::new());
+    auth_account(&store, LAUNCH_STAFF, Some(GOD)).await?;
+    auth_account(&store, LAUNCH_STAFF_TWO, None).await?;
+    let author_account = auth_account(&store, LAUNCH_AUTHOR, None).await?;
+    let buyer_account = auth_account(&store, LAUNCH_BUYER, None).await?;
+    let mut server = Running::boot(&config, store.clone(), None).await?;
+    server.connect(GOD).await?;
+    let mut deployment = launch_world(&server, &store).await?;
+    let market = deployment.market.clone().ok_or("a format-2 market")?;
+    let author = character(
+        &server,
+        &store,
+        (LAUNCH_AUTHOR, author_account),
+        "LaunchAuthor",
+    )
+    .await?;
+    let buyer = character(
+        &server,
+        &store,
+        (LAUNCH_BUYER, buyer_account),
+        "LaunchBuyer",
+    )
+    .await?;
+    let accountless = create(&server, "LaunchDrifter", None).await?;
+    for actor in [author, buyer] {
+        open_wallet(&server, &store, PrincipalId::Object(actor)).await?;
+    }
+    let operator = market
+        .registry_authority
+        .operators
+        .first()
+        .copied()
+        .ok_or("one Registry operator")?;
+    // The census's class C assertion proves these placements took.
+    for actor in [author, buyer, accountless] {
+        server
+            .command(
+                GOD,
+                format!("@teleport #{}=#{}", actor.0, deployment.venue.room.0),
+            )
+            .await?;
+    }
+    for actor in [GOD, market.clerk, operator] {
+        server
+            .command(GOD, format!("@teleport #{}=#0", actor.0))
+            .await?;
+    }
+    server.stop().await?;
+    let path = data_dir.join("launch.json");
+    write_launch(&path, &deployment)?;
+    config.tacsim.minds.launch_path = Some(path.display().to_string());
+    // Initialize, through `game_modules`: the runbook's grants, then the
+    // initialize offers.
+    let mut server = Running::boot(&config, store.clone(), None).await?;
+    server.connect(GOD).await?;
+    let authority = &market.registry_authority;
+    for operator in &authority.operators {
+        for capability in ["roll.registry.recall", "roll.registry.revoke"] {
+            grant(&server, *operator, "Registry", capability, authority.scope).await?;
+        }
+    }
+    for verb in LAUNCH_INITIALIZE {
+        submit_initialize(&server, verb).await?;
+    }
+    server.stop().await?;
+    deployment.mode = LaunchMode::Active;
+    write_launch(&path, &deployment)?;
+    Ok(Launch {
+        config,
+        store,
+        path,
+        deployment,
+        principals: Principals {
+            god: GOD,
+            author,
+            buyer,
+            clerk: market.clerk,
+            operator,
+            accountless,
+        },
+    })
+}
+/// One Active boot of the launch through `game_modules`, every census
+/// principal connected. Each boot composes its owners afresh.
+async fn launch_active(launch: &Launch) -> TestResult<Running> {
+    let server = Running::boot(&launch.config, launch.store.clone(), None).await?;
+    for (_, actor) in launch.principals.all() {
+        server.connect(actor).await?;
+    }
+    Ok(server)
+}
+/// The route of every C1 offer projected to each census principal.
+async fn census_routes(
+    server: &Running,
+    principals: &Principals,
+) -> TestResult<Vec<(String, mush_core::OfferRouteId)>> {
+    let mut routes = Vec::new();
+    for (_, actor) in principals.all() {
+        for offer in legal(server, actor).await? {
+            let verb = offer.presentation().verb.as_str();
+            if C1_VERBS.contains(&verb) {
+                routes.push((verb.to_owned(), offer.offer().route_id()));
+            }
+        }
+    }
+    Ok(routes)
+}
+
 /// 17g C1b test 5: the first boot of the named launch through `game_modules`,
 /// the production composition (`Running::boot(.., None)` reads
 /// `[tacsim.minds].launch_path`). A format-2 deployment, its identities made
 /// by `launch_world`, boots Initialize. The operator's two runbook grants are
 /// made, and `roll-initialize-commerce` and the three industry initialize
 /// offers commit through the public offer path. Then Active boots, stops and
-/// boots again. Format 2 composes the House chain only until C1c.
+/// boots again. Since 17g C1c the Active launch composes the player market, so
+/// the granted operator is offered both Registry actions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_launch_format_two_initializes_and_activates_through_game_modules() -> TestResult {
-    let data_dir = std::env::temp_dir().join(format!(
-        "mush-named-launch-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&data_dir)?;
+    let data_dir = scratch("mush-named-launch")?;
     let result = timeout(STEP * 10, async {
-        let mut config = config();
-        config.server.data_dir = data_dir.clone();
-        let store = Arc::new(PurchaseFaultStore::new());
-        auth_account(&store, LAUNCH_STAFF, Some(GOD)).await?;
-        auth_account(&store, LAUNCH_STAFF_TWO, None).await?;
-        let mut server = Running::boot(&config, store.clone(), None).await?;
-        server.connect(GOD).await?;
-        let mut deployment = launch_world(&server, &store).await?;
-        server.stop().await?;
+        let launch = initialized_launch(&data_dir).await?;
+        let deployment = &launch.deployment;
         check_eq!(deployment.format, 2);
         let market = deployment.market.clone().ok_or("a format-2 market")?;
         check_eq!(&market.terms, &MarketTerms::PROVISIONAL);
         eprintln!(
             "NAMED_LAUNCH_DEPLOYMENT {}",
-            serde_json::to_string(&deployment)?
+            serde_json::to_string(deployment)?
         );
-        let path = data_dir.join("launch.json");
-        write_launch(&path, &deployment)?;
-        config.tacsim.minds.launch_path = Some(path.display().to_string());
-        // Initialize, through `game_modules`.
-        let mut server = Running::boot(&config, store.clone(), None).await?;
-        server.connect(GOD).await?;
         let authority = &market.registry_authority;
-        for operator in &authority.operators {
-            for capability in ["roll.registry.recall", "roll.registry.revoke"] {
-                grant(&server, *operator, "Registry", capability, authority.scope).await?;
-            }
-        }
-        for verb in [
-            "roll-initialize-commerce",
-            "initialize-core-die-stock",
-            "initialize-core-factory",
-            "initialize-core-refit",
-        ] {
-            submit_initialize(&server, verb).await?;
-        }
-        server.stop().await?;
         // Active, and a restart of Active: each a fresh composition.
-        deployment.mode = LaunchMode::Active;
-        write_launch(&path, &deployment)?;
         for _ in 0..2 {
-            let mut server = Running::boot(&config, store.clone(), None).await?;
+            let mut server = Running::boot(&launch.config, launch.store.clone(), None).await?;
             server.connect(GOD).await?;
             // The Active launch composed its industry hardware, and the four
             // Initialize commits survived the restart: GOD, an origin agent
@@ -1163,40 +1285,160 @@ async fn named_launch_format_two_initializes_and_activates_through_game_modules(
                 verbs.iter().any(|verb| verb == "issue-core-die"),
                 "the Active launch offers GOD issue-core-die: {verbs:?}"
             );
-            for initialize in [
-                "roll-initialize-commerce",
-                "initialize-core-die-stock",
-                "initialize-core-factory",
-                "initialize-core-refit",
-            ] {
+            for initialize in LAUNCH_INITIALIZE {
                 check!(
                     !verbs.iter().any(|verb| verb == initialize),
                     "the Active launch still offers {initialize}: {verbs:?}"
                 );
             }
-            // INTERIM (C1c replaces this): the granted operator is offered no
-            // Registry action, because format 2 composes no market owner yet.
+            // 17g C1c (replacing C1b's interim pin): the Active launch
+            // composes the player market, so each granted operator is offered
+            // both Registry actions.
             for operator in &authority.operators {
                 server.connect(*operator).await?;
                 let offered = legal(&server, *operator).await?;
-                // The positive control: the operator's offer read works on this
-                // boot, so the absence below is not an empty read.
-                check!(
-                    !offered.is_empty(),
-                    "the connected operator is offered the launch's generic actions"
-                );
-                check!(
-                    !offered
-                        .iter()
-                        .any(|offer| OPERATOR_GATED.contains(&offer.presentation().verb.as_str())),
-                    "no Registry action before C1c composes the market"
-                );
+                for gated in OPERATOR_GATED {
+                    check!(
+                        offered
+                            .iter()
+                            .any(|offer| offer.presentation().verb == gated),
+                        "the granted operator is offered {gated}"
+                    );
+                }
             }
             server.stop().await?;
         }
         Ok(())
     })
     .await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+    result?
+}
+
+/// 17g C1c test 6, C1's gate (plan §5). The launch's player market, composed
+/// by the production format-2 deployment through `launch_path`, with the
+/// operator granted at Initialize by `@org/grant`:
+/// - **the census.** C1a's census of the C1 verbs for God, an author and a
+///   buyer on two login accounts, the clerk, the operator and an accountless
+///   character, the counter being the deployment's venue room, holds the five
+///   classes of plan §7 and the privacy assertion (`projection_rules`);
+/// - **a restart.** A second Active boot projects the identical census;
+/// - **split and all-in-one parity.** The value is a real Active boot through
+///   `boot::build_engine`, the split root, over the same store, with its own
+///   durable key rings in a scratch data dir. Its offer route table has the
+///   census server's length, and every census offer's route resolves to the
+///   same `DefinitionRef` in both (a route id derives unkeyed from the
+///   action's `DefinitionRef`, so this holds across key rings). mushd's
+///   all-in-one delegates to that same root
+///   (`crates/mushd/tests/boot_composition.rs`,
+///   `mushd_delegates_the_composition_root`), which is how the parity covers
+///   both halves.
+///
+/// The market is empty here: no filing, listing, licence, charter or service
+/// intent. Per-step restart of the new owners is C4's (plan §5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_launch_composes_the_player_market_with_parity_and_restart() -> TestResult {
+    let data_dir = scratch("mush-launch-market")?;
+    let result = timeout(STEP * 10, async {
+        let launch = initialized_launch(&data_dir).await?;
+        let mut server = launch_active(&launch).await?;
+        let first = census(&server, &launch.principals).await?;
+        projection_rules(&first)?;
+        let offered = census_routes(&server, &launch.principals).await?;
+        check!(!offered.is_empty(), "the census offers C1 verbs");
+        server.stop().await?;
+        // A restart composes the same market and projects the same offers.
+        let mut server = launch_active(&launch).await?;
+        let again = census(&server, &launch.principals).await?;
+        check_eq!(
+            first,
+            again,
+            "the restarted launch projects the same offers"
+        );
+        server.stop().await?;
+        // The split root over the same store, with its own key rings.
+        let mut split = launch.config.clone();
+        split.server.data_dir = data_dir.join("split");
+        std::fs::create_dir_all(&split.server.data_dir)?;
+        let store: Arc<dyn ObjectStore> = launch.store.clone();
+        let booted = crate::boot::build_engine(
+            &split,
+            &store,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+        )
+        .await?;
+        let routes = booted
+            .engine
+            .registry
+            .action_providers()
+            .ok_or("the split root's authoritative providers")?
+            .offer_route_table();
+        check_eq!(
+            routes.len(),
+            server.routes().len(),
+            "the split root routes as many actions"
+        );
+        for (verb, route) in &offered {
+            let ours = server
+                .routes()
+                .get(*route)
+                .ok_or_else(|| format!("{verb} routes in the census server"))?;
+            check_eq!(
+                routes.get(*route),
+                Some(ours),
+                "{verb} routes to the same action in the split root"
+            );
+        }
+        drop(booted);
+        Ok(())
+    })
+    .await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+    result?
+}
+
+/// 17g C1c test 7 (C1 plan §4.4, §8): what a terms change does to an
+/// initialized format-2 world. After the census, the document's
+/// `price_minor` becomes 45,000 and its `renewal_offer_ic_seconds` 172,800,
+/// and the launch boots Active again. This records current behaviour; it is
+/// not a defect to fix in C1, and no owner changes to make the reboot pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_launch_market_terms_change_across_a_reboot() -> TestResult {
+    let data_dir = scratch("mush-launch-terms")?;
+    let result =
+        timeout(STEP * 10, async {
+            let mut launch = initialized_launch(&data_dir).await?;
+            let mut server = launch_active(&launch).await?;
+            projection_rules(&census(&server, &launch.principals).await?)?;
+            server.stop().await?;
+            let market = launch
+                .deployment
+                .market
+                .as_mut()
+                .ok_or("a format-2 market")?;
+            market.terms.price_minor = 45_000;
+            market.terms.renewal_offer_ic_seconds = 172_800;
+            write_launch(&launch.path, &launch.deployment)?;
+            match launch_active(&launch).await {
+                Ok(mut server) => {
+                    eprintln!("NAMED_LAUNCH_TERMS_CHANGE booted");
+                    let lines = server.command(GOD, "@mind/launch".into()).await?;
+                    check!(
+                        lines.iter().any(|line| line.contains("sells for 450cr")
+                            && line.contains("open 2 IC days;")),
+                        "the changed terms are the market line's: {lines:?}"
+                    );
+                    projection_rules(&census(&server, &launch.principals).await?)?;
+                    server.stop().await?;
+                }
+                Err(error) => {
+                    eprintln!("NAMED_LAUNCH_TERMS_CHANGE refused {error}");
+                    return Err(error);
+                }
+            }
+            Ok(())
+        })
+        .await;
     let _ = std::fs::remove_dir_all(&data_dir);
     result?
 }

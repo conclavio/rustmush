@@ -27,3 +27,8 @@ is not a failed action or permission to retry with a new identity. Old quotes,
 changed terms or a different character's offer can be refused. The former
 ambiguous `market-mind-entitlement` and `market-mind-renewal` names are no longer
 selectable actions. Products appear only when their actual services are enabled.
+
+On the named launch, `@mind/launch` prints the player market's current prices, terms and offer
+windows; they are the deployment's and may change between worlds. Registry recall and revocation
+(`roll-registry-recall`, `roll-registry-revocation`) are offered only to the Registry operators the
+deployment names, once staff grant them those capabilities.
