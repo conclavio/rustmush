@@ -555,6 +555,19 @@ fn designator_of(listing: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The designator of the first contact row whose class column (the word after
+/// the designator: `unknown`, then the resolved side) reads `class`.
+fn designator_classed(listing: &str, class: &str) -> Option<String> {
+    listing
+        .lines()
+        .filter(|line| line.contains("bearing ") && line.contains("(rel "))
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            let id = words.next()?;
+            (words.next()? == class).then(|| id.to_owned())
+        })
+}
+
 /// The cannon's rounds, off a `WEAPONSTATUS` listing.
 fn cannon_rounds(listing: &str) -> Option<i64> {
     let needle = format!(" of {LOAD} round(s)");
@@ -689,12 +702,15 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // an already-classified row. Every sentence about the target's hull
     // is gated on classification, so the assertions below have to be against the
     // classified spelling or they would be about the wrong half of the match.
+    // The row's own class column must read `blue`: the classification notice
+    // (`Contact X1 identified: BA, blue.`) can land inside a `CONTACTS` answer
+    // whose row is still the frame before it, `X1  unknown …`, so `blue`
+    // anywhere in the answer named the provisional row (main's run
+    // 40251385032 looked for `Hit on X1: ` against `Hit on BA: hull.`).
     let mut classified = String::new();
     for _ in 0..RETRY_BUDGET {
         let seen = ada.ask_whole("CONTACTS").await;
-        if seen.contains("blue")
-            && let Some(id) = designator_of(&seen)
-        {
+        if let Some(id) = designator_classed(&seen, "blue") {
             classified = id;
             break;
         }
