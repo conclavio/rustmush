@@ -3,22 +3,26 @@
 # `scripts/ci-tacsim-shard.sh N` runs line N as `cargo nextest run -P ci -p tacsim
 # --test ...` (nextest since cut T.1, 2026-10-26: the shard's binaries in one pool).
 #
-# Four shards since 2026-10-26 (cut T.0), balanced longest-first by each
-# binary's mean execution time over main's green runs 40259028915, 40266288970
-# and 40278097329: 14.4, 14.5, 15.9 and 15.9 min of test run per shard, 16 or
-# 17 binaries each, against 57.7 min as one. The three shards before ran 11-20,
-# 17 and 18-30 min, the third swinging with the runner. cost_lane joined after
-# those runs and is placed at an estimated 180 s. The named #[ignore]d
-# mind-hash steps follow their targets (minds_rhai and twin in shard 2,
-# minds_pool in shard 1), and each shard's placement counts them.
+# Since test-strategy cut T.3 (2026-10-26) the targets are the four group
+# binaries shard_1..shard_4 — tests/shard_N.rs, one `mod` line per former
+# tests/<name>.rs, which now lives at tests/shard_N/<name>.rs — plus harness
+# and cost_lane, which stay targets of their own (a crate-root-only
+# `#![recursion_limit]`; an exclusive timing lock and a script-parity test).
+# Each group IS its shard. The 2026-10-26 balance was made per binary, before
+# the merge: 14.4, 14.5, 15.9 and 15.9 min of test run per shard, longest-first
+# by each binary's mean execution time over main's green runs 40259028915,
+# 40266288970 and 40278097329, against 57.7 min as one (cost_lane placed at an
+# estimated 180 s). The named #[ignore]d mind-hash steps follow their modules
+# (minds_rhai and twin in shard_2, minds_pool in shard_1).
 #
 # Every target must appear on exactly one line:
 # crates/mush-contract-tests/tests/ci_tacsim_shards.rs fails on a missing,
-# doubled or unknown target, so a new test file cannot silently go unrun.
-# Rebalance from a fresh run's timings when a shard drifts far from the others
-# (per-binary times: each shard log's `Running tests/<target>.rs` line and the
-# `finished in` of the `test result:` line that follows it).
-1: claims coop driving harness hulls landing minds_pool mining passage perception price replay s9_corridor sale sheet shipped_scale stations
-2: content cost_lane deposits e7r1 e7r2 extensions minds minds_rhai moon_ports plans plumbing reflex sight twin unloading voyage weapons
-3: capacity commerce composition_edges definitions deliberation drones e7c1 ephemeris knowing mill motor orders port_tick ports report reset
-4: arena arena_task chart cockpit conditions core_replacement economy excursions geology lane match_lifecycle quarry resolution sites sky vehicles
+# doubled or unknown target, so a new top-level test file cannot silently go
+# unrun. A new test MODULE is a `mod` line in one of the four shard roots and
+# runs with that shard. Rebalance by moving a `mod` line between two shard
+# roots when a shard drifts far from the others (per-module times: the JUnit
+# report's testcases, whose names carry the `<module>::` prefix).
+1: shard_1 harness
+2: shard_2 cost_lane
+3: shard_3
+4: shard_4

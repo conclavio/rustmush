@@ -254,7 +254,7 @@ owner = "sim"
 reason = "E7 residue 2: seeds the sim's journey book to stage a recovery case."
 
 [[site]]
-path = "crates/tacsim/tests/s9_corridor.rs"
+path = "crates/tacsim/tests/shard_1/s9_corridor.rs"
 accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"
@@ -282,7 +282,7 @@ owner = "sim"
 reason = "E7 cut 11: wires the sim's account oracle for a propagation case."
 
 [[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
+path = "crates/tacsim/tests/shard_4/match_lifecycle.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -295,7 +295,7 @@ that makes every claim in the file a claim about accounts.
 """
 
 [[site]]
-path = "crates/tacsim/tests/coop.rs"
+path = "crates/tacsim/tests/shard_1/coop.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -308,7 +308,7 @@ fail-closed. The oracle is boot-hydrated by the host from the store, which a
 """
 
 [[site]]
-path = "crates/tacsim/tests/commerce.rs"
+path = "crates/tacsim/tests/shard_3/commerce.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -321,7 +321,7 @@ which a `TestWorld` has none of, so the rig installs the fixed account map — t
 """
 
 [[site]]
-path = "crates/tacsim/tests/voyage.rs"
+path = "crates/tacsim/tests/shard_2/voyage.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -334,7 +334,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/sites.rs"
+path = "crates/tacsim/tests/shard_4/sites.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -347,7 +347,7 @@ rig installs the fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/vehicles.rs"
+path = "crates/tacsim/tests/shard_4/vehicles.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -361,7 +361,7 @@ precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/excursions.rs"
+path = "crates/tacsim/tests/shard_4/excursions.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -375,7 +375,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/knowing.rs"
+path = "crates/tacsim/tests/shard_3/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -389,7 +389,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/driving.rs"
+path = "crates/tacsim/tests/shard_1/driving.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -403,7 +403,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/mining.rs"
+path = "crates/tacsim/tests/shard_1/mining.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -419,7 +419,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/unloading.rs"
+path = "crates/tacsim/tests/shard_2/unloading.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -437,7 +437,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/plans.rs"
+path = "crates/tacsim/tests/shard_2/plans.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -455,7 +455,7 @@ fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/drones.rs"
+path = "crates/tacsim/tests/shard_3/drones.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -469,7 +469,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/drones.rs"
+path = "crates/tacsim/tests/shard_3/drones.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"
 owner = "economy"
@@ -481,7 +481,7 @@ economy module's own path (the `port/licence.rs` row's precedent).
 """
 
 [[site]]
-path = "crates/tacsim/tests/quarry.rs"
+path = "crates/tacsim/tests/shard_4/quarry.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -518,7 +518,7 @@ precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/deposits.rs"
+path = "crates/tacsim/tests/shard_2/deposits.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -532,7 +532,7 @@ fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/plumbing.rs"
+path = "crates/tacsim/tests/shard_2/plumbing.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -546,7 +546,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/plumbing.rs"
+path = "crates/tacsim/tests/shard_2/plumbing.rs"
 accessor = "World::module_state_mut"
 slot = "IndustryStore"
 owner = "industry"
@@ -560,7 +560,7 @@ the composed value. Test-only; production never writes the slot from tacsim.
 """
 
 [[site]]
-path = "crates/tacsim/tests/sale.rs"
+path = "crates/tacsim/tests/shard_1/sale.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -573,7 +573,7 @@ which a `TestWorld` has none of, so the rig installs the fixed account map — t
 """
 
 [[site]]
-path = "crates/tacsim/tests/orders.rs"
+path = "crates/tacsim/tests/shard_3/orders.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -586,7 +586,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/deliberation.rs"
+path = "crates/tacsim/tests/shard_3/deliberation.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -600,7 +600,7 @@ which a `TestWorld` has none of, so this harness installs the same map
 """
 
 [[site]]
-path = "crates/tacsim/tests/resolution.rs"
+path = "crates/tacsim/tests/shard_4/resolution.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -614,7 +614,7 @@ exactly the same reason.
 """
 
 [[site]]
-path = "crates/tacsim/tests/cockpit.rs"
+path = "crates/tacsim/tests/shard_4/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -626,7 +626,7 @@ oracle would prove nothing but that the oracle is unwired.
 """
 
 [[site]]
-path = "crates/tacsim/tests/cockpit.rs"
+path = "crates/tacsim/tests/shard_4/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"
 owner = "sim"
@@ -641,7 +641,7 @@ registers a fresh production composition, so it no longer writes this slot.
 """
 
 [[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
+path = "crates/tacsim/tests/shard_4/match_lifecycle.rs"
 accessor = "World::module_state_mut"
 slot = "UnitStore"
 owner = "tactics"
@@ -820,7 +820,7 @@ that.
 """
 
 [[site]]
-path = "crates/tacsim/tests/reset.rs"
+path = "crates/tacsim/tests/shard_3/reset.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -834,7 +834,7 @@ is unwired.
 """
 
 [[site]]
-path = "crates/tacsim/tests/definitions.rs"
+path = "crates/tacsim/tests/shard_3/definitions.rs"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -847,7 +847,7 @@ applies the shipped pack through `mush_content::apply` and asserts the refusal.
 """
 
 [[site]]
-path = "crates/tacsim/tests/geology.rs"
+path = "crates/tacsim/tests/shard_4/geology.rs"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -861,7 +861,7 @@ world rather than on a hand-made `Records`.
 """
 
 [[site]]
-path = "crates/tacsim/tests/knowing.rs"
+path = "crates/tacsim/tests/shard_3/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"
@@ -1368,7 +1368,7 @@ owner = "tacsim"
 reason = "Test-only R14: seeds notice watches through the existing public integration seam, then renders actual egress-produced lapse events through the bot reader. No native order, match authority, or persistent state is created."
 
 [[site]]
-path = "crates/tacsim/tests/match_lifecycle/resume_watch.rs"
+path = "crates/tacsim/tests/shard_4/match_lifecycle/resume_watch.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
