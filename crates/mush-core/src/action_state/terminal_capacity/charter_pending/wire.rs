@@ -121,7 +121,9 @@ fn native_term(v: &Value) -> Result<Value, ActionStateError> {
     let grace = signed(w, "grace_end")?;
     // Match the actual immutable Roll TermWindow: an issue may occur before
     // eligibility or during Grace. Current transfer admission is checked
-    // separately; structural history must not invent a narrower term.
+    // separately; structural history must not invent a narrower term. The 90-day
+    // bound is the personal owner term's: Roll's TermWindow admits a House
+    // owner's 365 days (17g C0), but a House charter never transfers.
     let term = i128::from(end) - i128::from(start);
     let grace_duration = i128::from(grace) - i128::from(end);
     if num(w, "format")? != 1

@@ -30,6 +30,10 @@ The server rechecks current authority when resolving and preparing the chosen
 offer. Old quotes, a different character's offer or changed terms may be refused.
 The old ambiguous `market-mind-house` name is no longer a selectable action.
 
+A house's own licence to a mind it filed runs 365 game days, then 3 days of
+Grace; its catalogue sells through both and stops when the Grace ends. A paid
+House licence runs 90 game days and renews for another 90.
+
 House renewals use `house-renewal-draft`, `house-renewal-fund`,
 `house-renewal-grant`, `house-renewal-refund`, and `house-renewal-close`.
 Draft takes a `licence` or a `previous_operation` for a permitted retry. The

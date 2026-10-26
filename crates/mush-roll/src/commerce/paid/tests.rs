@@ -303,6 +303,20 @@ fn terms_retain_full_identity_width_and_existing_temporal_bounds() -> TestResult
         serde_json::to_value(term(&value)?)? == value,
         "wide identities narrowed",
     )?;
+    // 17g C0: `TermWindow` admits a 365-day owner window, so the 90-day paid
+    // bound is the paid record's own: exactly 90 decodes, a second more refuses.
+    let mut value = term_value();
+    set(
+        nested(&mut value, "window")?,
+        "term_end",
+        json!(100 + MAX_TERM_SECONDS),
+    )?;
+    set(
+        nested(&mut value, "window")?,
+        "grace_end",
+        json!(100 + MAX_TERM_SECONDS),
+    )?;
+    term(&value)?;
     let mut value = term_value();
     set(
         nested(&mut value, "window")?,

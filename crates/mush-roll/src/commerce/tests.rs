@@ -311,13 +311,14 @@ fn grace_issue_preserves_actual_issue_and_original_eligibility_origin() -> TestR
     check_eq!(term.phase_at(at(9)?), TermPhase::NotEffective);
     check_eq!(term.phase_at(at(10)?), TermPhase::NotEffective);
     check_eq!(term.phase_at(at(11)?), TermPhase::Grace);
-    // Late issue must not hide an original term exceeding the audit limit.
+    // Late issue must not hide an original term exceeding the audit limit (the
+    // owner bound, 17g C0: a window type carries owner and paid terms alike).
     check!(
         TermWindow::new(
             at(0)?,
-            at(MAX_TERM_SECONDS + 2)?,
-            at(MAX_TERM_SECONDS + 1)?,
-            at(MAX_TERM_SECONDS + 3)?
+            at(MAX_OWNER_TERM_SECONDS + 2)?,
+            at(MAX_OWNER_TERM_SECONDS + 1)?,
+            at(MAX_OWNER_TERM_SECONDS + 3)?
         )
         .is_err()
     );
@@ -337,11 +338,13 @@ fn a_future_interval_and_an_unissued_interval_are_both_ineffective() -> TestResu
 
 #[test]
 fn term_and_grace_limits_have_no_extra_second_or_empty_eligible_tail() -> TestResult {
-    let end = MAX_TERM_SECONDS;
+    // The window's own bound is the owner bound (17g C0); a paid record holds
+    // its window to `MAX_TERM_SECONDS` itself (`paid/tests.rs`).
+    let end = MAX_OWNER_TERM_SECONDS;
     let grace = end + MAX_GRACE_SECONDS;
     check!(TermWindow::new(at(0)?, at(0)?, at(end)?, at(grace)?).is_ok());
     for (start, issue, end, grace) in [
-        (0, 0, MAX_TERM_SECONDS + 1, MAX_TERM_SECONDS + 1),
+        (0, 0, MAX_OWNER_TERM_SECONDS + 1, MAX_OWNER_TERM_SECONDS + 1),
         (0, 0, 1, 1 + MAX_GRACE_SECONDS + 1),
         (1, 1, 1, 2),
         (2, 2, 1, 3),

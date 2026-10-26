@@ -27,13 +27,15 @@ use super::rating::{RatingCompatibility, RatingFamilies, RatingReceipt, RatingRe
 use super::records::*;
 use super::roots::InitialRoots;
 use super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS,
+    CharterId, FiledRevisionId, LicenceId, LineId, MAX_GRACE_SECONDS, MAX_OWNER_TERM_SECONDS,
     RevisionIdentity, TermGeneration, TermWindow, WorldIcSeconds,
 };
 use crate::{Revision, RevisionRef, RollStore};
 
 /// Only actual composition supplies these frozen product terms. A client's
 /// request cannot select its term length, fee, issuer, class or compatibility.
+/// The bound is the owner bound: a House owner term may run to 365 days (17g C0),
+/// while composition keeps personal and dependent owner terms at 90.
 #[derive(Clone, Debug)]
 pub struct InitialFilingTerms {
     term_seconds: i64,
@@ -41,7 +43,7 @@ pub struct InitialFilingTerms {
 }
 impl InitialFilingTerms {
     pub fn new(term_seconds: i64, grace_seconds: i64) -> Result<Self, PublicationError> {
-        if !(1..=MAX_TERM_SECONDS).contains(&term_seconds)
+        if !(1..=MAX_OWNER_TERM_SECONDS).contains(&term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&grace_seconds)
         {
             return Err(PublicationError::Invalid);
