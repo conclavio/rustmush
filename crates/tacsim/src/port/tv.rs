@@ -1124,8 +1124,10 @@ pub enum TvLeaseState {
 /// `Ok` at the world's IC now — in force, or in its grace. Doc 20 §8's rule stands:
 /// among the rig's acts only mining, staking and renewal read the licence; **the
 /// lease is the one non-mining act that does**, and launch, recover and dump never
-/// call this. It sits at check 6 of `plan_take`, before the slot and before the term
-/// settle, so a preview or a `go` without a licence refuses before any write.
+/// call this. It sits at check 6 of `plan_take`, before the slot, so a preview or a
+/// `go` without a licence takes no rig; since doc 20b RK-1 the refusal still runs (a
+/// `go`) or shows (a preview) the term settle first, so a lapsed pilot's past-term rig
+/// is re-debited or forfeited at their next lease act like anyone's.
 ///
 /// # Errors
 ///
@@ -3161,6 +3163,29 @@ struct TakePlan {
     settle: Vec<Settle>,
 }
 
+/// **Why the take refused** (doc 20b RK-1): a line, or the licence's refusal with the
+/// term settle it must not block — the steps and the pilot's account, `None` when the
+/// account does not read — and the lessor that settle posts to.
+enum TakeRefusal {
+    /// Every refusal but the licence's.
+    Line(String),
+    /// Check 6: the licence does not authorize.
+    Licence(Box<LicenceRefusal>),
+}
+
+/// [`TakeRefusal::Licence`]'s fields.
+struct LicenceRefusal {
+    line: String,
+    settle: Option<(Vec<Settle>, AccountId)>,
+    lessor: Lessor,
+}
+
+impl From<String> for TakeRefusal {
+    fn from(line: String) -> Self {
+        TakeRefusal::Line(line)
+    }
+}
+
 /// The pilot's credit account and its available funds.
 fn funds(w: &World, actor: ObjId) -> Option<(AccountId, i64)> {
     let account = crate::port::credit::own_account(w, actor)?;
@@ -3175,7 +3200,7 @@ fn minor(w: &World, major: u64) -> Option<i64> {
 /// **The take's checks, in order** (the `plan_buyout` order), read-only. `Err`
 /// carries the refusal.
 #[allow(clippy::too_many_lines)] // one ordered check list
-fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
+fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> {
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let port = programme_port(w).ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
@@ -3198,43 +3223,63 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
             hull = hull.0,
             "tacsim: +tv/lease: the hull's unit record is held"
         );
-        return Err(TV_DARK.replace("{name}", &name));
+        return Err(TakeRefusal::from(TV_DARK.replace("{name}", &name)));
     }
     if !view.is_prospector() {
         let (_, office, port_label) = office_of(w, &port);
-        return Err(NO_BAY
-            .replace("{name}", &name)
-            .replace("{office}", &office)
-            .replace("{port}", &port_label));
+        return Err(TakeRefusal::from(
+            NO_BAY
+                .replace("{name}", &name)
+                .replace("{office}", &office)
+                .replace("{port}", &port_label),
+        ));
     }
     let lessor = lessor_of(w, &port).ok_or_else(|| failed("the rig lessor"))?;
     // 3. The berth.
     match berth_of(w, hull) {
         Berth::UnderWay => {
-            return Err(LEASE_UNDER_WAY
-                .replace("{name}", &name)
-                .replace("{port}", &lessor.port));
+            return Err(TakeRefusal::from(
+                LEASE_UNDER_WAY
+                    .replace("{name}", &name)
+                    .replace("{port}", &lessor.port),
+            ));
         }
         Berth::Docked { map, .. } if map.entry == port.entry => {}
         Berth::Docked { .. } | Berth::Elsewhere => {
-            return Err(LEASE_NOT_HERE.replace("{port}", &lessor.port));
+            return Err(TakeRefusal::from(
+                LEASE_NOT_HERE.replace("{port}", &lessor.port),
+            ));
         }
     }
     // 4. Nothing in flight.
     if let Some((_, line)) = crate::port::buyout::in_flight(w, &e) {
-        return Err(line);
+        return Err(TakeRefusal::from(line));
     }
     // 5. At the counter.
     let here = w.get(actor).and_then(|o| o.location);
     if lessor.counter.is_none() || here != lessor.counter {
-        return Err(where_line(LEASE_WHERE, &lessor));
+        return Err(TakeRefusal::from(where_line(LEASE_WHERE, &lessor)));
     }
-    // 6. The licence (doc 20 cut SM.5): in force or in grace, read at the act.
-    licence_check(w, actor)?;
+    // 6. The licence (doc 20 cut SM.5): in force or in grace, read at the act. Doc 20b
+    // RK-1: the refusal carries the term settle, which a lapsed licence never blocks.
+    if let Err(line) = licence_check(w, actor) {
+        let settle = funds(w, actor).map(|(pilot_account, available)| {
+            let now = w.world_ic_now().at;
+            (
+                plan_settle(w, actor, &lessor.principal, now, available).0,
+                pilot_account,
+            )
+        });
+        return Err(TakeRefusal::Licence(Box::new(LicenceRefusal {
+            line,
+            settle,
+            lessor,
+        })));
+    }
     // 7. The slot.
     let (bay, bay_room) = view.bay().ok_or_else(|| failed("the hull's bay"))?;
     if !crate::port::hull::bay_laid_up(w, view.row, bay) {
-        return Err(failed("the bay is not laid up"));
+        return Err(TakeRefusal::from(failed("the bay is not laid up")));
     }
     let bay_slot =
         mush_sim::SlotId::new(bay.slot.id.as_str()).ok_or_else(|| failed("the bay slot"))?;
@@ -3245,14 +3290,18 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
         .collect();
     let slot = match named {
         Some(n) if n > max => {
-            return Err(NO_RIG
-                .replace("{n}", &n.to_string())
-                .replace("{name}", &name));
+            return Err(TakeRefusal::from(
+                NO_RIG
+                    .replace("{n}", &n.to_string())
+                    .replace("{name}", &name),
+            ));
         }
         Some(n) if taken.contains(&n) => {
-            return Err(SLOT_TAKEN
-                .replace("{n}", &n.to_string())
-                .replace("{name}", &name));
+            return Err(TakeRefusal::from(
+                SLOT_TAKEN
+                    .replace("{n}", &n.to_string())
+                    .replace("{name}", &name),
+            ));
         }
         Some(n) => n,
         None => (1..=max)
@@ -3263,7 +3312,7 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
         .module_state::<SpatialState>()
         .map_or(0, |st| st.occupants(bay_room, Some(&bay_slot)));
     if occupied >= usize::try_from(bay.slot.maximum_items).unwrap_or(usize::MAX) {
-        return Err(BAY_FULL.replace("{name}", &name));
+        return Err(TakeRefusal::from(BAY_FULL.replace("{name}", &name)));
     }
     // 8. A free rig: the lowest-numbered rig in the shed, live, titled to Occator,
     // with no live lease from it and no live record.
@@ -3302,29 +3351,31 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
         .checked_add(deposit_minor)
         .ok_or_else(|| failed("the total"))?;
     if left < total {
-        return Err(LEASE_FUNDS
-            .replace("{total}", &money(ctx, total))
-            .replace("{fee}", &money(ctx, fee_minor))
-            .replace("{deposit}", &money(ctx, deposit_minor))
-            .replace("{available}", &money(ctx, left)));
+        return Err(TakeRefusal::from(
+            LEASE_FUNDS
+                .replace("{total}", &money(ctx, total))
+                .replace("{fee}", &money(ctx, fee_minor))
+                .replace("{deposit}", &money(ctx, deposit_minor))
+                .replace("{available}", &money(ctx, left)),
+        ));
     }
     // 10. The economy, Occator's account and scope, the hopper vault.
     let economy = w
         .module_state::<EconomyStore>()
         .ok_or_else(|| failed("the economy"))?;
     if economy.is_frozen() {
-        return Err(failed("the economy is frozen"));
+        return Err(TakeRefusal::from(failed("the economy is frozen")));
     }
     let lessor_account = lessor.account.ok_or_else(|| failed("Occator's account"))?;
     if economy.snapshot().account(lessor_account).is_none() {
-        return Err(failed("Occator's account"));
+        return Err(TakeRefusal::from(failed("Occator's account")));
     }
     let tv = ObjId(rig.tv);
     if rig
         .vault
         .is_none_or(|vault| economy.snapshot().vault(VaultId(vault)).is_none())
     {
-        return Err(failed("the rig's hopper vault"));
+        return Err(TakeRefusal::from(failed("the rig's hopper vault")));
     }
     let term_secs = i64::from(lessor.pool.term_ic_days)
         .checked_mul(DAY)
@@ -3382,8 +3433,39 @@ fn unwind_lease(ctx: &mut Ctx<'_>, lease: ContractId, lessor: &PrincipalId, tv: 
 /// **`+tv[/n]/lease [go]`** — the take (doc 20 §4.3).
 #[allow(clippy::too_many_lines)] // one ordered write list with each step's residue
 fn take(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdError> {
-    let plan = plan_take(ctx, named).map_err(CmdError::msg)?;
     let now = ctx.w.world_ic_now().at;
+    let plan = match plan_take(ctx, named) {
+        Ok(plan) => plan,
+        Err(TakeRefusal::Line(line)) => return Err(CmdError::msg(line)),
+        // Doc 20b RK-1: a lapsed licence refuses the lease, never the term settle (D8's
+        // "at the pilot's next `+tv/lease` act"), so a past-term rig is re-debited or
+        // forfeited like anyone's. With a settle due, a preview says it and a `go` runs
+        // it, and the licence's line closes the reply instead of refusing it: a refusal
+        // would withdraw the settle's own lines (dispatch keeps no success line of a
+        // handler that errs). With none due, it is the plain refusal it always was.
+        Err(TakeRefusal::Licence(refusal)) => {
+            let LicenceRefusal {
+                line,
+                settle,
+                lessor,
+            } = *refusal;
+            let Some((steps, pilot_account)) = settle.filter(|(steps, _)| !steps.is_empty()) else {
+                return Err(CmdError::msg(line));
+            };
+            if go {
+                if !run_settle(ctx, &steps, pilot_account, &lessor) {
+                    return Err(CmdError::msg(line));
+                }
+            } else {
+                for step in &steps {
+                    let said = settle_line(ctx, step, now);
+                    say(ctx, said);
+                }
+            }
+            say(ctx, line);
+            return Ok(());
+        }
+    };
     if !go {
         for step in &plan.settle {
             let line = settle_line(ctx, step, now);

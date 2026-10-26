@@ -66,10 +66,12 @@ any 64-TV month (doc 20 §15, `20-surface-mining.md:2602-2614`).
   case; (c) an exact per-block heard log versus the 512-row scan (doc 20:2499-2506).
 - The site pad's passage home: `+chart/ground` from a site's pad reads "no passage from <site>"; show the Freeport
   leg, or route site to site (doc 20:2475-2479).
-- Q-20-10 Rheasilvia: reachable only throttled and in season (0 of 365 days at full throttle, the first fit 123 IC
-  days from the epoch); a cheaper reserve or a changed site is the owner's (doc 20:2665-2670).
-- Q-20-12: whether the production box's protected backups include the geology-key directory — losing the key
-  disables mining for the world's life (doc 20:2682-2688).
+- ~~Q-20-10 Rheasilvia~~ **ruled 2026-10-26:** reachable only throttled and in season (0 of 365 days at full
+  throttle, the first fit 123 IC days from the epoch) is a feature; the reserve and the site stay, and new, better,
+  faster and bigger ships will open it more often when they come (doc 20 §15).
+- ~~Q-20-12~~ **ruled 2026-10-26:** the geology-key directory is backed up, but no instance takes backups today,
+  so backup and restore is addressed for the whole instance as doc 16c's `T-112` (the store, the ledger archive,
+  the quarantine spool and the four key families), the geology key one of its named items (doc 20 §15).
 - SM.11r's N5 (with bulky cargo the site map's hold line, by mass, and the plan's preview, by family, disagree) and
   N6 (`PLAN_ENDED`'s wording once volume binds): raised in the cut note, never put in §15 (20-cut-notes.md:3914,
   3917).
@@ -78,7 +80,8 @@ any 64-TV month (doc 20 §15, `20-surface-mining.md:2602-2614`).
 - AP's default that debug planning timings never gate the push shard reads as the lead's (doc 20:2453), though the
   owner's provisional O-25 took the same shape for the cost lane.
 
-**OD-3 — the owner's provisional rulings of 2026-10-24, to revisit when the economy asks:** O-1 (mills 20 t a
+**OD-3 — the owner's provisional rulings of 2026-10-24, continued by the owner on 2026-10-26:** they stand as
+ruled, and economy balancing waits until the major gameplay systems are built. They are: O-1 (mills 20 t a
 batch, 40 t an IC day), O-5 (a mill's ratio fixed for its ledger's life), O-7b (milled matter enters by credit, no
 lineage — the expensive one to reverse), O-8 (the yard's names, two rigs, the Dray-P), O-9 (F and G worked; F 271 t,
 G 256 t, J 252 t, K 252 t of fair ice), O-10 (drones share the mill's rate), O-14 (the house re-arms), O-19 (content
@@ -133,17 +136,30 @@ v16 owner's-numbers cut.
 
 ## 6. Known defects and risks
 
-**RK-1 — defects worth a small cut:**
-- `crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance included, to
-  "That purchase needs an approval your account rule has not granted yet." (doc 20:2823-2825).
-- Doc 18's planner prices the passage as laden at departure: a mining captain who bunkers to the planner's line is a
-  crew-day short for the way home (SM.8; doc 20:2946-2953).
-- A lapsed pilot's past-term rig is neither re-debited nor forfeited until they relicense (SM.5 decision 21 with
-  SM.3a's unbuilt R1).
-- `mush-bot`'s `bid_for` takes the first wanted row of the ore whether or not it is buying (SM.12c-bot F7/T11).
-- `mush-atlas`'s `octile_floor` lacks the `.min()` that caps `Cost::MAX` saturation (AP).
-- SM.5's R5: the port applier and the drip still disagree in two arms, and `wanted_spec`'s doc is stale; the owed
-  `drip_zero_warning` world test was never written.
+**RK-1 — defects worth a small cut. Fixed 2026-10-26 by the RK-1 cut** (its record is the last section of
+[20-cut-notes.md](20-cut-notes.md); doc 20 Draft 0.15's "As built (RK-1)" notes):
+- ~~`crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance included, to
+  "That purchase needs an approval your account rule has not granted yet."~~ An unfundable escrow now reads
+  `CANNOT_COVER`, any other own-accept error `BUY_NOT_AGREED` (the sale's twin, `SELL_NOT_AGREED`), and only a real
+  approval the approval line.
+- ~~Doc 18's planner prices the passage as laden at departure: a mining captain who bunkers to the planner's line is
+  a crew-day short for the way home.~~ The crew-day was the pad stay's charge against the story's own margin, which
+  the leg-home floor caps; the cargo mass binds the propellant instead (from Rheasilvia a full Dray-P burns 49 t home
+  against the 37 t held back). `+ship/plan` now prints the leg home with a full hold as advice; the filing's reserve
+  is unchanged.
+- ~~A lapsed pilot's past-term rig is neither re-debited nor forfeited until they relicense.~~ The licence refusal
+  now runs (or previews) the term settle first. A pilot who never types `+tv/lease` again is still never settled:
+  that is SM.3a's at-dock R1, a feature (DF-2).
+- ~~`mush-bot`'s `bid_for` takes the first wanted row of the ore whether or not it is buying.~~ It takes the first
+  buying one, else the first.
+- ~~`mush-atlas`'s `octile_floor` lacks the `.min()` that caps `Cost::MAX` saturation.~~ Capped, with a test.
+- ~~SM.5's R5: the port applier and the drip still disagree in two arms, and `wanted_spec`'s doc is stale; the owed
+  `drip_zero_warning` world test was never written.~~ The applier's revision of a refresh row reads the drip's rule
+  within the house's funds, an unfunded lapsed row records a changed price, the doc is corrected, and the world test
+  is written. Kept, with the reason now in the code: the first post of an unrecorded row is the full intake, because a
+  world's first apply runs before its houses' capital settles (a sale's funds check and the drip's first boundary
+  bound it). Left as it was: the preflight counts a lapsed row an unfunded house will not re-post toward
+  `MAX_LISTINGS_PER_VENDOR` (stricter, never looser).
 
 **RK-2 — risks the record accepts:** the ops rule "staff must never `@account/unfreeze` a Frozen entitlement with
 no record" has no guard (doc 20:1753); a kept world's relay latch stays at its old version, which a future
@@ -187,10 +203,10 @@ by design: its O-9 blanks and its 2026-10-24 snapshot stand, and the later rulin
 
 ## 9. Suggested order, if the owner wants a tail
 
-1. **Rule**: OD-1 (the contract cap), SM.10's (b), the passage line, the geology-key backups; then accept or amend
-   the lead defaults of OD-4 as a body.
-2. **A small fix cut**: `trade.rs:812`'s refusal, the staff close/home verb with a hopper empty at a port (DF-1),
-   doc 18's planner cargo mass, `bid_for`, the octile cap.
+1. **Rule**: OD-1 (the contract cap), SM.10's (b), the passage line; then accept or amend the lead defaults of
+   OD-4 as a body. (The geology-key backups were ruled on 2026-10-26 and became 16c's `T-112`.)
+2. **A small fix cut**: the staff close/home verb with a hopper empty at a port (DF-1). (RK-1's six landed on
+   2026-10-26.)
 3. **A deploy and a rate-24 smoke** on a dev box, with the owner, including the real lane v13 → shipped upgrade.
 4. **CI**: schedule the month and cohort or accept their staleness; split `drones` and `cost_lane` to their budgets.
 5. **The §18 fold** into docs 10, 10b, 11, 14, 16, 17, 18 and 19.

@@ -68,24 +68,6 @@ const AHUNA: &str = "ahuna_port";
 const HULL: &str = "Salt Moth";
 /// The most mining runs the story makes before it fails, naming what it got.
 const MAX_RUNS: usize = 4;
-/// **The propellant the story bunkers past the planner's own figures** (whole tonnes, as the plan
-/// prints them; the SM.8 lead's pre-commit round, item 2): doc 18's bunker planner (`+ship/plan`)
-/// prices the passage out and the leg home as laden at the departure — an empty hold — so the
-/// leg home with the hopper's 12 t of ore aboard is outside its figures. Step 7 measures the gap
-/// exactly (what the passage out and the pad burnt, plus what `+ship/plan ceres` prices the laden
-/// leg home at, less the planner's bare `burn + leg home` figures) and asserts it equals this
-/// constant: **measured 0** — at whole tonnes the laden leg home burns what the planner held back
-/// (1 t), so the story bunkers no extra propellant (the build's `+ 2` was a fudge). A doc 18
-/// change that opens a burn gap fails that assertion, naming the figures.
-const STORY_EXTRA_BURN_T: u64 = 0;
-/// **The crew-days the story bunkers past the planner's own figures** (the lead's pre-commit
-/// round, item 2): the crew's days on Ahuna's pad (the scan, the sounding, the drives, the runs,
-/// the recover and its unload) and the laden leg home are outside the planner's passage-out and
-/// leg-home figures. Measured exactly at step 7 as [`STORY_EXTRA_BURN_T`] is: **1 crew-day** —
-/// the leg home is priced at 2 crew-days from the pad against the planner's 1, so bunkering to the
-/// bare figures alone leaves the hull a crew-day short on the pad (`SITE_STORES_SHORT`'s case).
-/// This is a measured doc 18 residual, not a fudge (the build's `+ 3` held 2 more than needed).
-const STORY_EXTRA_CREW_DAYS: u64 = 1;
 /// **The real second each arm's story starts at** (unix seconds, later than any boot): the IC
 /// clock is a pure function of the real one (`[game].ic_epoch` is the IC datetime at unix 0), so
 /// two arms booted seconds apart read the same IC instants only from a shared real start.
@@ -804,9 +786,23 @@ fn plan_numbers(plan: &str, head: &str, open: &str) -> Option<(u64, u64)> {
     Some((first, second))
 }
 
-/// `Leg home from {port}: burn {b} t, {d} crew-days at …` → `(b, d)`.
+/// `Leg home from {port}: burn {b} t, {d} crew-days at …` → `(b, d)`: the leg home the filing
+/// holds back (`SITE_HOME`, the plan's first leg-home line).
 fn leg_home(plan: &str) -> Option<(u64, u64)> {
     let line = plan.lines().find(|l| l.starts_with("Leg home from "))?;
+    leg_home_figures(line)
+}
+
+/// The same for the leg home with a full hold (`SITE_HOME_LADEN`, doc 20b RK-1).
+fn leg_home_full(plan: &str) -> Option<(u64, u64)> {
+    let line = plan
+        .lines()
+        .find(|l| l.starts_with("Leg home from ") && l.contains(" with a full hold ("))?;
+    leg_home_figures(line)
+}
+
+/// A leg-home line's `: burn {b} t, {d} crew-days` → `(b, d)`.
+fn leg_home_figures(line: &str) -> Option<(u64, u64)> {
     let rest = line.split(": burn ").nth(1)?;
     let burn = rest.split_whitespace().next()?.parse().ok()?;
     let days = rest
@@ -1193,7 +1189,8 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         base,
         "the fees stayed inside the set"
     );
-    // 3. The chandlery: bunker to the planner's own figures for Ahuna, the leg home held back.
+    // 3. The chandlery: bunker to the planner's own figures for Ahuna, the leg home with a full
+    // hold (doc 20b RK-1: the leg home the filing holds back is priced with no ore aboard).
     walk(rig, pilot, "chandlery", c08).await;
     let fuel_ask = listing_of(&rig.tw, "ceres_port", "occator", "propellant");
     let food_ask = listing_of(&rig.tw, "ceres_port", "coop", "provisions");
@@ -1201,13 +1198,8 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         let plan = run(rig, pilot, "+ship/plan ahuna").await;
         let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
         let (days, locker) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
-        let (home_burn, home_days) = leg_home(&plan).expect(&plan);
-        // The leg home with the hopper's ore aboard, and the crew's days on the pad: outside the
-        // planner's figures (measured at step 7).
-        let (want_tank, want_locker) = (
-            burn + home_burn + STORY_EXTRA_BURN_T,
-            days + home_days + STORY_EXTRA_CREW_DAYS,
-        );
+        let (home_burn, home_days) = leg_home_full(&plan).expect(&plan);
+        let (want_tank, want_locker) = (burn + home_burn, days + home_days);
         if tank >= want_tank && locker >= want_locker {
             break;
         }
@@ -1238,6 +1230,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
     let (burn_out, tank_at_lift) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
     let (days_out, locker_at_lift) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
     let (home_burn, home_days) = leg_home(&plan).expect(&plan);
+    let (full_burn, full_days) = leg_home_full(&plan).expect(&plan);
     let _ = fly(rig, pilot, hull, "+ship/lift ahuna").await;
     assert!(
         matches!(
@@ -1359,8 +1352,11 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         !plan.contains("hopper holds") && !plan.contains("is out on"),
         "{plan}"
     );
-    // The bunker margins, measured: what the passage out and the pad days spent, plus what the
-    // leg home burns and eats with the 12 t of ore aboard, against the planner's bare figures.
+    // What the way home needed, measured: what the passage out and the pad days spent, plus what
+    // the leg home burns and eats with the 12 t of ore aboard; the leg home with a full hold, which
+    // the story bunkered to, covers it (doc 20b RK-1). SM.8 measured a crew-day past the bare
+    // figures when the story bunkered a margin: that was the pad stay's charge, which stops at the
+    // leg home's crew-days (`landed_charge`), so bunkered to the figures there is none.
     let (laden_burn, tank_on_pad) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
     let (laden_days, locker_on_pad) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
     let burn_need = tank_at_lift - tank_on_pad + laden_burn;
@@ -1368,21 +1364,19 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
     let (bare_burn, bare_days) = (burn_out + home_burn, days_out + home_days);
     let figures = format!(
         "the planner's bare figures: burn {burn_out} + {home_burn} t, stores {days_out} + \
-         {home_days} crew-days; at the lift: tank {tank_at_lift} t, locker {locker_at_lift}; on \
-         the pad: tank {tank_on_pad} t, locker {locker_on_pad}; the laden leg home: burn \
-         {laden_burn} t, stores {laden_days} crew-days\n{plan}"
-    );
-    assert!(
-        days_need > bare_days,
-        "the bare figures do not fall short: {figures}"
+         {home_days} crew-days; with a full hold: burn {burn_out} + {full_burn} t, stores \
+         {days_out} + {full_days} crew-days; at the lift: tank {tank_at_lift} t, locker \
+         {locker_at_lift}; on the pad: tank {tank_on_pad} t, locker {locker_on_pad}; the laden \
+         leg home: burn {laden_burn} t, stores {laden_days} crew-days\n{plan}"
     );
     assert_eq!(
-        (
-            burn_need.saturating_sub(bare_burn),
-            days_need.saturating_sub(bare_days)
-        ),
-        (STORY_EXTRA_BURN_T, STORY_EXTRA_CREW_DAYS),
-        "the bunker margins are the measured gaps: {figures}"
+        (burn_need, days_need),
+        (bare_burn, bare_days),
+        "bunkered to the figures, the pad stay costs nothing: {figures}"
+    );
+    assert!(
+        burn_need <= burn_out + full_burn && days_need <= days_out + full_days,
+        "the full-hold figures do not cover the way home: {figures}"
     );
     let _ = fly(rig, pilot, hull, "+ship/lift ceres").await;
     let ashore = run(rig, pilot, "+ship/leave").await;

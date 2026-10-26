@@ -718,6 +718,27 @@ fn org_account(tw: &TestWorld, org: &str) -> mush_economy::AccountId {
     )
 }
 
+/// Pay `org`'s account down to `left` minor units available, into the port's treasury.
+fn pay_house_down_to(rig: &mut Rig, org: &str, left: i64) {
+    let account = org_account(&rig.tw, org);
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let (posted, held) = balances(&rig.tw, account);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@econ/pay #{}=#{treasury} {}",
+            account.0,
+            posted - held - left
+        ),
+    );
+    assert!(out.contains("Paid: transaction #"), "{out}");
+    let (posted, held) = balances(&rig.tw, account);
+    assert_eq!(posted - held, left);
+}
+
 /// The pilot's gateway account.
 fn gateway(rig: &Rig, pilot: ObjId) -> AccountId {
     rig.oracle
@@ -1397,6 +1418,58 @@ fn sm5_the_licence_show_lines() {
     assert!(LICENCE_HELP.contains(&format!("for {} IC days", block.term_ic_days)));
     assert!(LICENCE_HELP.contains(&format!("then {} IC days' grace", block.grace_ic_days)));
     assert!(!LICENCE_HELP.contains("2,500"));
+}
+
+/// **A lapsed licence refuses the lease, never the term settle** (doc 20b RK-1; SM.5's
+/// decision 21 beside SM.3a's D8): a rig leased in the licence's grace runs past its term
+/// while the licence lapses; at the pilot's next `+tv/lease` the preview shows the re-debit
+/// before the licence's line and writes nothing, the `go` re-debits the term and closes with
+/// the licence's line, nothing more leased, and a second `go` re-debits nothing (the plain
+/// refusal).
+#[test]
+fn rk1_a_lapsed_licence_still_settles_a_past_term_rig() {
+    let mut rig = stocked();
+    let (pilot, _) = dray_p(&mut rig, "Pilot", 1, "Salt Moth");
+    buy(&mut rig, pilot);
+    skip_days(&mut rig, 170);
+    let out = at_occator(&mut rig, pilot, "+tv/lease go");
+    assert!(
+        out.contains("Occator Water & Propellant leases you "),
+        "{out}"
+    );
+    let leased = store(&rig.tw)
+        .tv_leases_of(pilot)
+        .next()
+        .expect("the lease")
+        .clone();
+    // A day past the term; the licence lapsed at day 171.
+    skip_days(&mut rig, 169);
+    assert!(ic_now(&rig.tw) > leased.term_ends_ic);
+    let account = credit_of(&rig.tw, pilot);
+    let before = balances(&rig.tw, account);
+    let preview = at_occator(&mut rig, pilot, "+tv/lease");
+    assert!(preview.contains("Occator re-debits "), "{preview}");
+    assert!(preview.ends_with(LEASE_LICENCE), "{preview}");
+    assert_eq!(
+        balances(&rig.tw, account),
+        before,
+        "a preview writes nothing"
+    );
+    let out = at_occator(&mut rig, pilot, "+tv/lease go");
+    assert!(out.contains("Occator re-debits "), "{out}");
+    assert!(out.ends_with(LEASE_LICENCE), "{out}");
+    let renewed = store(&rig.tw)
+        .tv_leases_of(pilot)
+        .next()
+        .expect("the lease")
+        .clone();
+    assert_eq!(renewed.terms_paid, leased.terms_paid + 1);
+    assert_eq!(renewed.term_ends_ic, leased.term_ends_ic + leased.term_secs);
+    assert_eq!(balances(&rig.tw, account).0, before.0 - leased.fee_minor);
+    assert_eq!(store(&rig.tw).tv_leases_of(pilot).count(), 1);
+    let again = at_occator(&mut rig, pilot, "+tv/lease go");
+    assert_eq!(again, LEASE_LICENCE, "settled: nothing more is due");
+    assert_eq!(balances(&rig.tw, account).0, before.0 - leased.fee_minor);
 }
 
 /// **A4: a lease needs a licence** (§4.3, §9.1; lead ruling 6): `+tv/lease go` at Occator's
@@ -2474,6 +2547,181 @@ fn sm5_a_pack_apply_brings_a_lapsed_intake_back_at_one_drip() {
     }
     assert_eq!(bid_row(&rig.tw, "freeport_exchange", "metal_ore"), back);
     assert_eq!(quantity(&rig.tw, back.listing), Some(40));
+}
+
+/// The lane edited to bid `price` major units for `good` at the Freeport Exchange.
+fn exchange_bid_priced(doc: &mut Value, good: &str, price: u64) {
+    let vendors = doc["entries"]["ceres_port"]["def"]["vendors"]
+        .as_array_mut()
+        .expect("the port's vendors");
+    let bid = vendors
+        .iter_mut()
+        .find(|v| v["org"] == "freeport_exchange")
+        .and_then(|v| v["bids"].as_array_mut())
+        .and_then(|bids| bids.iter_mut().find(|b| b["good"] == good))
+        .expect("the Exchange bids for the good");
+    bid["price_major"] = serde_json::json!(price);
+}
+
+/// **An apply revises a refresh row within the house's funds** (doc 20b RK-1; SM.5's R5
+/// (ii)): staff apply a later version that re-prices the Exchange's metal ore bid 70.00cr →
+/// 80.00cr while the Exchange can fund only 50 t at that price. Part (e).8's revise arm
+/// re-prices the standing 240 t bid at 50 t, as the drip's case 3 would. An unrecorded row
+/// (the carbon ore row, its listing and row removed by hand) still posts its full 120 t
+/// intake, as every first apply does before its houses' capital settles (R5 (i), kept).
+#[test]
+fn rk1_an_apply_revises_a_refresh_row_within_the_houses_funds() {
+    let later = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |doc| {
+        exchange_bid_priced(doc, "metal_ore", 80);
+    }))
+    .expect("the later variant verifies");
+    let mut rig = boot(Roster {
+        seed_lane: None,
+        shelf: Some(vec![later]),
+    });
+    stock(&mut rig);
+    set_rate(&mut rig.tw, 1);
+    let metal = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    assert_eq!(quantity(&rig.tw, metal.listing), Some(240));
+    let carbon = bid_row(&rig.tw, "freeport_exchange", "carbon_ore");
+    let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
+    let mut map = stored(&mut rig, &key).expect("the port map is stored");
+    let removed = map["vendors"]["freeport_exchange"]["bids"]
+        .as_object_mut()
+        .and_then(|bids| bids.remove("carbon_ore"));
+    assert!(removed.is_some(), "the row was recorded");
+    damage(&mut rig, &key, map);
+    let mut rig = reboot(rig);
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_market::withdraw_listing(ctx, ListingId(carbon.listing))
+    })
+    .expect("the carbon ore listing is withdrawn");
+    // 50 t at 80.00cr; 80 t at 50.00cr.
+    pay_house_down_to(&mut rig, "freeport_exchange", 50 * 8_000);
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
+        "{plan}\n{apply}"
+    );
+    let revised = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    assert_eq!(revised.listing, metal.listing, "revised in place");
+    assert_eq!(revised.price_major, 80);
+    assert_eq!(
+        quantity(&rig.tw, revised.listing),
+        Some(50),
+        "never more than the house can pay"
+    );
+    let opened = bid_row(&rig.tw, "freeport_exchange", "carbon_ore");
+    assert_eq!(
+        (opened.price_major, opened.intake),
+        (50, 120),
+        "the row records the authored terms"
+    );
+    assert_eq!(
+        quantity(&rig.tw, opened.listing),
+        Some(120),
+        "an unrecorded row posts its full intake"
+    );
+}
+
+/// **A lapsed refresh row an unfunded house cannot re-post keeps the new price** (doc 20b
+/// RK-1; SM.5's R5 (iii)): the metal ore intake lapses, the Exchange is drained below a
+/// tonne, and staff apply a version re-pricing it 70.00cr → 80.00cr. Part (e).8 posts
+/// nothing (the drip owns it, and warns) but records the authored price, so the row and the
+/// lane agree and the next apply reads no change.
+#[test]
+fn rk1_an_unfunded_lapsed_row_records_the_new_price() {
+    let later = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |doc| {
+        exchange_bid_priced(doc, "metal_ore", 80);
+    }))
+    .expect("the later variant verifies");
+    let mut rig = boot(Roster {
+        seed_lane: None,
+        shelf: Some(vec![later]),
+    });
+    stock(&mut rig);
+    set_rate(&mut rig.tw, 1);
+    let first = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    rig.tw.set_now(first.expires + 60);
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_market::withdraw_listing(ctx, ListingId(first.listing))
+    })
+    .expect("the listing is removed");
+    pay_house_down_to(&mut rig, "freeport_exchange", 7_999);
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
+        "{plan}\n{apply}"
+    );
+    let row = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    assert_eq!(row.listing, first.listing, "nothing was posted");
+    assert!(quantity(&rig.tw, row.listing).is_none());
+    assert_eq!(
+        (row.price_major, row.intake, row.expires),
+        (80, first.intake, first.expires),
+        "the new price is recorded; the lapse stands"
+    );
+}
+
+/// **A zero drip warns only when the house cannot fund a tonne** (doc 20b RK-1; SM.5's R4,
+/// the world test owed beside `drip_zero_warning`'s unit test): the metal ore intake is sold
+/// out, and its row is damaged to read a renewal due with no IC-day boundary since its post
+/// (a world clock never does this within the market's 90-day listing life; the store does).
+/// Three fires with the Exchange funded post nothing and warn nothing; drained below a
+/// tonne, three more fires warn exactly once.
+#[test]
+fn rk1_a_zero_drip_warns_only_when_the_house_cannot_fund_a_tonne() {
+    let mut rig = stocked();
+    let (pilot, row) = dray_p(&mut rig, "Pilot", 1, "Salt Moth");
+    let hold = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, hold, "metal_ore", 240, LotId(901));
+    sell(&mut rig, pilot, "freeport_exchange", "metal_ore", "all");
+    settle_last(&mut rig, pilot);
+    let exhausted = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    assert_eq!(quantity(&rig.tw, exhausted.listing), Some(0));
+    let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
+    let mut map = stored(&mut rig, &key).expect("the port map is stored");
+    let now = rig.tw.world().now();
+    let ic = ic_now(&rig.tw);
+    map["vendors"]["freeport_exchange"]["bids"]["metal_ore"]["expires"] =
+        serde_json::json!(now + 3_600);
+    map["vendors"]["freeport_exchange"]["bids"]["metal_ore"]["posted_ic"] = serde_json::json!(ic);
+    damage(&mut rig, &key, map);
+    let mut rig = reboot(rig);
+    let warned = |capture: &Capture| {
+        capture
+            .text()
+            .lines()
+            .filter(|l| {
+                l.contains("cannot fund a unit of its ore intake") && l.contains("good=metal_ore")
+            })
+            .count()
+    };
+    let funded = Capture::default();
+    tracing::dispatcher::with_default(&capture_dispatch(funded.clone()), || {
+        for _ in 0..3 {
+            fire_quietly(&mut rig);
+        }
+    });
+    assert_eq!(warned(&funded), 0, "funded:\n{}", funded.text());
+    let row = bid_row(&rig.tw, "freeport_exchange", "metal_ore");
+    assert_eq!(
+        row.listing, exhausted.listing,
+        "a zero target posts nothing"
+    );
+    pay_house_down_to(&mut rig, "freeport_exchange", 6_999);
+    let drained = Capture::default();
+    tracing::dispatcher::with_default(&capture_dispatch(drained.clone()), || {
+        for _ in 0..3 {
+            fire_quietly(&mut rig);
+        }
+    });
+    assert_eq!(warned(&drained), 1, "drained, once:\n{}", drained.text());
+    assert_eq!(
+        ic_now(&rig.tw).div_euclid(DAY),
+        ic.div_euclid(DAY),
+        "one IC day"
+    );
 }
 
 /// **A sale on the apply's own IC day drips nothing before the boundary** (§7.3; the lead's

@@ -1,7 +1,7 @@
 # 20. Surface mining — the quarry loop: a terrain vehicle on a body's ground
 
-**Draft 0.14 — "as built" through SM.12c-lane (the whole of SM.12: the train complete)
-(2026-10-26).** Nineteen build cuts have landed on
+**Draft 0.15 — "as built" through SM.12c-lane (the whole of SM.12: the train complete) and
+the post-train RK-1 defect cut (2026-10-26).** Nineteen build cuts have landed on
 `main` after SM.0 (the document, `11c50e84` and `f3df3205`): SM.1 `61324cba` (with its follow-up
 `6f797974`), SM.2 `bd718fb2`, SM.3a `96cc7303`, SM.3b `eb99c9be`, SM.5 `64cd1f8e`, SM.4a
 `354832bf`, SM.6 `70c2cd12`, SM.4b `d367bf3b`, SM.7 `dd48ed45`, AP `74c5801f` (the atlas path
@@ -21,7 +21,9 @@ and the note says what the tree does, or a stale label (a lane or goods version,
 corrected in place. Draft 0.5 folded the first four cuts, Draft 0.6 SM.5's and SM.4a's, Draft 0.7
 SM.6's and SM.4b's, Draft 0.8 SM.7's, Draft 0.9 AP's and SM.8's, Draft 0.10 SM.9's, Draft 0.11
 SM.10's, Draft 0.12 SM.11's (SM.11r's own commit added its notes), Draft 0.13 SM.12a's, SM.12b's
-and SM.12c-bot's, and Draft 0.14 folds SM.12c-lane's; where
+and SM.12c-bot's, Draft 0.14 SM.12c-lane's, and Draft 0.15 folds the RK-1 cut's (doc 20b §6, its
+record the cut notes' last section, as **"As built (RK-1):"**) and the owner's rulings of
+2026-10-26 on Q-20-10, Q-20-12 and the provisional rulings (§15); where
 a cut's fix round changed what its judge's amendment said, the note carries the round's truth and
 says the round did it. A note that
 records a lead ruling or an owner-critical default says so, and each such default stands as the
@@ -845,6 +847,13 @@ check 6 of `plan_take`, before the slot and before the term settle — refused `
 licence therefore refuses the lease before SM.3a's R1 term settle, so a lapsed pilot's past-term rig
 is neither re-debited nor forfeited until they relicense or R1's at-dock hook lands (SM.5's decision
 21, an owner-critical default the lead took, standing until the owner rules).
+**As built (RK-1):** the licence no longer blocks the settle. Check 6's refusal carries the term
+settle `plan_settle` makes, and `+tv/lease` runs it (`go`) or shows it (preview) before the
+licence's line, so a lapsed pilot's past-term rig is re-debited or forfeited at their next lease
+act like anyone's; with a settle due the licence's line closes the reply rather than refusing it
+(dispatch keeps no success line of a handler that errs), and with none due it is the plain refusal.
+The at-dock hook (SM.3a's R1) is still not built: a pilot who never types `+tv/lease` again is not
+settled, licensed or not (doc 20b DF-2).
 
 **As built (SM.3a, SM.3b): a charter's end with rigs aboard.** `+coop/buyout` refuses with
 `BUYOUT_BAY` and `+coop/release` with `RECALL_BAY`, both failing closed when the hull's bay cannot be
@@ -1349,7 +1358,11 @@ re-post it also renews a standing intake at its standing quantity once its deadl
 real day (`DRIP_RENEW_SECS`), so an untouched intake never ages to the 90-day TTL; holds at most one
 banked drip for a row that waited at its cap (`posted_ic` not advanced); re-posts smaller when the
 house's funds bind and leaves the listing alone at a target of 0; brings a lapsed row back at one
-drip — a pack apply's re-post too, through the same `lapsed_drip` rule, since the lead's fix round;
+drip — a pack apply's re-post too, through the same `lapsed_drip` rule, since the lead's fix round
+(and since RK-1 the apply's revision of a standing row, through `drip_target` within the house's
+funds; an unfunded house's lapsed row it cannot re-post records a changed authored price; the
+apply's first post of an unrecorded row stays the full intake, since a world's first apply runs
+before its houses' capital settles);
 waits for the recorded deadline of a row withdrawn by hand; marks its own withdraw-then-refused post
 lapsed; and passes a row refused having moved nothing over for the rest of its IC day, so one
 house's standing refusal never stalls the other intakes. Every re-post churns the bid's listing id
@@ -2531,7 +2544,9 @@ rulings, not the lead's defaults**: each stands as ruled until the owner tunes i
 reversal doc 20a §8 names (a lane-data change after its cut has landed rides the next lane version
 or a lane cut of its own; O-7b, the expensive one, rewrites the batch bundle and the never-mints
 probes). O-19 and O-25 to O-28 are SM.12c-lane's, built as ruled (below); O-28 default (i) was
-built first by SM.12c-bot (below).
+built first by SM.12c-bot (below). **Continued 2026-10-26** (doc 20b OD-3): the owner keeps every
+provisional ruling as it stands; economy balancing waits until the major gameplay systems are
+built, and no economy number is tuned before then.
 
 **As built (SM.12a):** O-1 (5 : 2, 20 t a batch, 40 t of ore an IC day, both mills; its consequence,
 that the drip and the capital, not the mill, size the intakes, §7.3's note), O-5 (a mill's ratio and
@@ -2670,6 +2685,9 @@ owner's to make before any 64-TV month.
   the owner's (SM.2's decision 7, the lead's default until then).
   **As built (SM.4b):** nothing new for the question; the Vesta commons (Rheasilvia) passed the
   drive-freeze census like the Ceres sites, 64 of 64.
+  **Owner's ruling (2026-10-26):** Rheasilvia being only occasionally reachable is a feature. The
+  reserve and the site stay as built (SM.2's decision 7 stands); new, better, faster and bigger
+  ships will open it more often when they are introduced.
 - **Q-20-11 Prices, the drip and its caps.** Default: `metal_ore` 70, `ice_ore` 35, `carbon_ore` 50,
   `strategic_ore` 600; drips 40 / 40 / 20 / 2 t a good an IC day to standing caps of 240 / 240 / 120 /
   12 t. Lane data.
@@ -2686,6 +2704,10 @@ owner's to make before any 64-TV month.
   The shipped template and both dev1 deploy scripts provision `__DATA_DIR__/geology-keys` at mode
   0700, and `docs/ops.md` tells the operator to back it up with the store (the lead's default; whether
   the production box's protected backups include the directory is the owner's operational call).
+  **Owner's ruling (2026-10-26):** the geology-key directory is backed up, but no instance takes any
+  backups today, the store included. Backup and restore is addressed for the whole instance at once
+  as doc 16c's `T-112` (the store, the ledger archive, the quarantine spool and the four key
+  families), with the geology key one of its named items.
 - **Q-20-13 Cut notes.** Default: `docs/design/20-cut-notes.md`, its own file.
 
 ---
@@ -2820,9 +2842,11 @@ live, Occator has room for two sale contracts settling at once, and a third ice 
 holds until resumed (three holds in the month; the script resumes them as a player would). The
 month's "stuck" reads progress now (a phase change, or a queued plan's cursor, cycles, trips or
 sailing plan moving), not phase age: a plan still mining a day on leaner, contended ground is not
-stuck. A lead item, not fixed:
+stuck. A lead item, not fixed here:
 `crates/mush-market/src/trade.rs:812` maps any `accept_contract` error, an insufficient balance
-included, to "That purchase needs an approval your account rule has not granted yet." Still open:
+included, to "That purchase needs an approval your account rule has not granted yet." (**Fixed by
+RK-1:** an escrow the account cannot fund reads `CANNOT_COVER`, any other own-accept error
+`BUY_NOT_AGREED` or `SELL_NOT_AGREED`, and only a real approval the approval line.) Still open:
 the per-party contract cap (O-19c, §15); the double A* (measured, not built, §8); the staff
 ring-clear verb (O-22); a committed cost-lane baseline and delta step (D-H-8); and CI's cost —
 `cost_lane` joined shard 2, its debug wall 105–162 s at default threads and 175 s at two against the
@@ -2951,6 +2975,16 @@ doc 20a's "Executed" paragraph with the train complete. It closed no item below.
   at 2 crew-days against the planner's 1; the lead's fix round replaced the build's +2 t and +3
   crew-days). The planner should take an expected cargo mass — an amendment owed to doc 18's
   planner, not to this document.
+  **As built (RK-1):** the crew-day was not the ore. A pad stay's charge stops at the leg home's
+  crew-days (`landed_charge`, Q-20-7), so the story's measured day was the stay charged against its
+  own margin; bunkered to the planner's figures the story needs exactly them, and on Ceres a full
+  86 t hold costs Ahuna's leg home nothing more. The propellant is where the cargo mass binds: from
+  Rheasilvia a Dray-P's full hold burns 49 t home against the 37 t the filing holds back. `+ship/plan`
+  for a site now adds, for a hold that takes ore, the leg home with the hold's unreserved ore room
+  aboard (`SITE_HOME_LADEN`, or `SITE_HOME_LADEN_GROUNDED` when no route lifts it). It is advice:
+  the filing still holds back the empty-hold reserve (SM.2's decision 7, which Q-20-10's ruling
+  keeps). `sm_story` bunkers to it and its `STORY_EXTRA_*` margins are gone; `mush-bot` reads it.
+  Doc 18's planner text is still owed.
   **As built (SM.11):** `await tv` landed in code as one closed kind of the captain's queue beside
   its sell, buy, depart and stop (`What::AwaitTv`, wire `await_tv`; `NOT_ORDERABLE` now names it),
   and Q-18-22 is extended as written: a fill plan is one fill of one hold, never re-armed (§8,

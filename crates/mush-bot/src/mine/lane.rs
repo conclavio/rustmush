@@ -107,8 +107,10 @@ pub const MAX_BUNKER_ROUNDS: usize = 6;
 pub const MAX_REFUSED_STAKES: u32 = 3;
 /// `sm_story`'s measured 0, plus one (the brief's D9).
 pub const EXTRA_BURN_T: u64 = 1;
-/// `sm_story`'s measured 1, plus one (the brief's D9).
-pub const EXTRA_CREW_DAYS: u64 = 2;
+/// `sm_story`'s measured 0, plus one (the brief's D9). SM.8's measured 1 was
+/// the pad stay's charge on the story's own margin, which the leg-home floor
+/// caps (doc 20b RK-1); the one kept pays a pad day's stay.
+pub const EXTRA_CREW_DAYS: u64 = 1;
 /// One IC hour at the play rate 24: outside the per-(sounder, site) heard
 /// budget, so the second sounding is heard.
 pub const SECOND_SOUNDING_AFTER_MS: u64 = 150_000;
@@ -2514,7 +2516,10 @@ mod tests {
         assert!(lines::heard_line_is_bare(&report.heard[0].line));
         let plan = report.plan.expect("the bunker plan");
         assert_eq!((plan.home_burn_t, plan.home_days), (Some(2), Some(1)));
-        assert!(plan.tank_t >= 6 && plan.locker >= 4, "{plan:?}");
+        assert!(
+            plan.tank_t >= 3 + 2 + EXTRA_BURN_T && plan.locker >= 1 + 1 + EXTRA_CREW_DAYS,
+            "{plan:?}"
+        );
         let rows = lines::listings(&report.listings);
         assert_eq!(lines::bid_for(&rows, Family::Metals), Some(7));
         assert_eq!(report.lines_sent, sent.len() as u64);

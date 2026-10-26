@@ -5662,3 +5662,63 @@ The fixes surfaced one more real effect: **the per-party contract cap binds in p
 | Ore mined | 25,739 t | 32,302 t |
 
 **Verified:** `rustfmt --check --edition 2024` on the four changed files; `cargo clippy -p tacsim --all-targets -j 8 -- -D warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tacsim --no-deps --document-private-items -j 8` clean; `cargo test -j 8 -p tacsim --lib` 1,761 passed; `--test plans` 28, `--test drones` 22, `--test claims` 35, `--test cost_lane` 12 (the month ignored), `--test orders` 34, `--test sale` 18; `cargo test -j 8 -p mush-server --test ic_slice_loop --test sm_story` 12 and 2; `cargo test -j 8 -p mush-contract-tests` 33 runs ok; the month by hand as above. Doc 20 §8, §15 (O-19c) and §16 carry the as-built notes.
+
+## RK-1 — the close-out's defect cut (2026-10-26)
+
+The owner asked, on reading doc 20b, to "knock out the RK-1 defect list": the six defects doc 20b §6 lists. The lead built them by hand in one commit, each with a test that fails without its fix. The owner's rulings of the same day landed with it: Q-20-10 a feature (doc 20 §15), Q-20-12 the backups line item (doc 16c's `T-112`, with a pointer from `docs/ops.md`'s "Backups"), and the provisional rulings continued.
+
+### What landed
+
+1. **The purchase's own-accept refusal** (`crates/mush-market/src/trade.rs`). The buyer's `accept_contract` and the seller's own accept in a sale into a bid each split `NeedsApproval` from `Err`. `NeedsApproval` keeps its approval line, now the const `BUY_NEEDS_APPROVAL` (same text). An `Err` goes through `own_accept_refusal`: `ContractError::Refused(InsufficientAvailable | CreditViolation)` reads the new `CANNOT_COVER`; anything else reads `BUY_NOT_AGREED` or `SELL_NOT_AGREED`, with the economy's error logged at INFO. The house's and the vendor's accepts keep their lines, which the executor matches (`HOUSE_CANNOT_PAY`). IC14 row 66's comment said the party cap refused at the house's accept; the cap is checked at the offer (`check_offer_structure`), so the comment now says so. Test: `mush-market/tests/ic0.rs` `rk1_a_buyer_short_of_the_price_hears_it_cannot_be_covered`.
+2. **The leg home with a full hold** (`crates/tacsim/src/port/voyage.rs`). The investigation changed the finding. The crew-day SM.8 measured was the pad stay's charge against the story's own margin, not the ore: `landed_charge` stops at the leg home's crew-days, so a captain bunkered to the planner's figures is never short of stores. Bunkered exactly, the story needs exactly the planner's figures, and on Ceres a full 86 t hold costs Ahuna's leg home nothing more (1 t, 1 crew-day either way). The cargo mass binds the propellant on a long leg instead: from Rheasilvia a Dray-P's full hold burns 49 t home against the 37 t the filing holds back. Built:
+   - `site_reserve_on` takes `cargo_kg`. It is 0 for the filing's reserve and the throttle hint, both unchanged.
+   - `+ship/plan` for a site adds `SITE_HOME_LADEN` after `SITE_HOME` when the hold takes ore and has a tonne of room. The cargo is `hold_unreserved_kg`, by mass, the most any fill weighs. It prints `SITE_HOME_LADEN_GROUNDED` when no route lifts the load.
+   - It is advice only. The filing's reserve is SM.2's decision 7, which the owner's Q-20-10 ruling keeps.
+   - `sm_story` bunkers to the new line. Its `STORY_EXTRA_*` constants are gone; step 7 asserts the bare figures equal the need and the full-hold figures cover it.
+   - `mush-bot`'s `plan_figures` prefers the full-hold line, and `EXTRA_CREW_DAYS` goes 2 → 1 (the story's 0, plus D9's one).
+
+   Test: `vehicles.rs` `rk1_the_site_plan_prices_the_leg_home_with_a_full_hold` pins both lines for Rheasilvia and Ahuna.
+3. **The lapsed pilot's past-term rig** (`crates/tacsim/src/port/tv.rs`). `plan_take` returns `TakeRefusal`: a line, or `Licence(Box<LicenceRefusal>)`, which carries the settle `plan_settle` makes and the lessor. `take` runs the settle on a `go` and says it on a preview. With a settle due, the licence's line then closes the reply instead of refusing it, because dispatch keeps no success line of a handler that errs (`retain_abort_since`), so a refusal would hide the settle's own line. With none due, it is the plain `LEASE_LICENCE` refusal as before (`sm5_the_licence_lapses_after_its_grace_at_the_next_act` and `sm5_a_lease_needs_a_licence` unchanged). Test: `plumbing.rs` `rk1_a_lapsed_licence_still_settles_a_past_term_rig` covers lease in grace, a day past the term, the preview showing the re-debit and writing nothing, the `go` re-debiting one term, and a second `go` the plain refusal.
+4. **`bid_for`/`bid_row`** (`crates/mush-bot/src/mine/lines.rs`) take the first buying row of the ore, else the first row, so a board whose only bid is not buying still names it. Test: the `lines` vocabulary test gains a not-buying row listed before a buying one.
+5. **`octile_floor`** (`crates/mush-atlas/src/physics.rs`) caps the diagonal at `Cost::MAX`, where `price_step` saturates. Test: `rk1_the_diagonal_floor_is_capped_at_a_saturated_step`.
+6. **SM.5's R5 and R4** (`crates/tacsim/src/port/vendor.rs`).
+   - The revise arm bounds a refresh row's revision by `drip_target(cap, 0, remaining, fundable)` at the new price.
+   - The lapsed arm's unfunded skip records a changed authored price.
+   - `wanted_spec`'s doc names the caller's intake.
+   - A private `house_fundable` replaces the inline funds read.
+   - **Kept, R5 (i):** the `(None, _)` arm still posts an unrecorded refresh row's full intake, now with the reason in its comment. Bounding it by the house's funds, as the drip's case 1 does, was built first. It failed `coop.rs`'s `ic8_the_desk_stays_closed_until_the_ports_are_stocked`, because a world's first apply runs before its houses' capital settles: every fresh world's ore bids would have waited for the drip and held the desk's readiness on four more pending lines. A sale's own funds check refuses what an unfunded house cannot pay, and the drip's case 3 trims the bid at its first boundary.
+
+   Tests (`plumbing.rs`):
+   - `rk1_an_apply_revises_a_refresh_row_within_the_houses_funds`: a re-price 70 → 80 with 50 t fundable revises the 240 t bid to 50; a removed carbon row still opens at its full 120 t (R5 (i), kept).
+   - `rk1_an_unfunded_lapsed_row_records_the_new_price`.
+   - `rk1_a_zero_drip_warns_only_when_the_house_cannot_fund_a_tonne`, R4's owed world test. A same-IC-day renewal needs a damaged row, since a world clock at rate ≥ 1 never makes one within the 90-day listing life. It asserts no warning funded, then exactly one once drained.
+
+### Deferred, and why
+
+- **The preflight's listing count** still counts a lapsed refresh row an unfunded house will not re-post toward `MAX_LISTINGS_PER_VENDOR`. It is stricter, never looser.
+- **SM.3a's R1, the at-dock term settle**, is not built. A pilot who never types `+tv/lease` again is never settled, licensed or not. That is a feature (doc 20b DF-2), not this defect.
+- **The filing holding back the full-hold leg home** is not built. It would change SM.2's decision 7 and Rheasilvia's reach, which the owner ruled a feature on the same day. It is the owner's call if the advice line is not enough.
+- **Doc 18's planner text** for the full-hold line is still owed (doc 20 §18).
+
+### How it was verified
+
+- `rustfmt --check --edition 2024` on every changed Rust file.
+- `cargo clippy -j 8 -p mush-atlas -p mush-market -p mush-bot -p tacsim -p mush-server --all-targets -- -D warnings`: clean. Clippy's `large_enum_variant` boxed the licence refusal.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items` over the four library crates: clean.
+- Tests, all green on the final tree:
+  - `cargo test -p tacsim --no-fail-fast`: 68 binaries, 3,618 passed, 17 ignored.
+  - `-p mush-market`, all of it.
+  - `-p mush-atlas`, all of it.
+  - `-p mush-bot`: the lib's 475 and every integration binary; `mining_cohort`, the canary, was re-run on the final tree.
+  - `-p mush-server --test ic_slice_loop --test sm_story`.
+- The first gate ran with R5 (i) built and caught it twice: `coop.rs`'s desk test, and the bot canary, which reads both buying ore bids off the boards at kit-up. Both pass with the arm kept.
+
+### New player-facing texts (the lead's defaults, for the owner's review)
+
+- `CANNOT_COVER`: "Your account does not have enough available to cover that. Nothing was agreed."
+- `BUY_NOT_AGREED`: "That purchase cannot be agreed right now. Nothing was agreed."
+- `SELL_NOT_AGREED`: "That sale cannot be agreed right now. Nothing was agreed."
+- `SITE_HOME_LADEN`: "Leg home from {port} with a full hold ({cargo} t of ore): burn {burn} t, {days} crew-days at throttle={throttle}, the most in the next 30 IC days; bunker for this to come home full."
+- `SITE_HOME_LADEN_GROUNDED`: "With a full hold ({cargo} t of ore) the {name} could not lift from {port} for home; come home lighter."
+- `help ships`: two sentences, one on the full-hold leg home and one on the settle at a lapsed lease act.
+- The lapsed lease act's reply shape: a settle line, then `LEASE_LICENCE` as an ordinary line rather than a refusal.

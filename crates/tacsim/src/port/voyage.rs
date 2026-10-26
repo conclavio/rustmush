@@ -392,6 +392,13 @@ pub const SITE_STORES_SHORT: &str = "The passage to {port} and the leg home need
 /// `+ship/plan`'s leg-home line for a site destination: `{port}`, `{burn}`, `{days}`,
 /// `{throttle}`.
 pub const SITE_HOME: &str = "Leg home from {port}: burn {burn} t, {days} crew-days at throttle={throttle}, the most in the next 30 IC days; the filing holds both back.";
+/// `+ship/plan`'s leg home for a site destination with the hold full of ore (doc 20b RK-1;
+/// SM.8's owed planner cargo mass): `{port}`, `{cargo}` (whole tonnes of the hold's ore room),
+/// `{burn}`, `{days}`, `{throttle}`. Advice: the filing holds back [`SITE_HOME`]'s figures.
+pub const SITE_HOME_LADEN: &str = "Leg home from {port} with a full hold ({cargo} t of ore): burn {burn} t, {days} crew-days at throttle={throttle}, the most in the next 30 IC days; bunker for this to come home full.";
+/// The same when a full hold could not lift from the site for home: `{cargo}`, `{name}`,
+/// `{port}`.
+pub const SITE_HOME_LADEN_GROUNDED: &str = "With a full hold ({cargo} t of ore) the {name} could not lift from {port} for home; come home lighter.";
 /// The crew hear a lift from a pad: `{name}`.
 pub const LIFT_SEALS: &str = "The {name}'s lock seals. The pad drops away under the drive.";
 /// `+ship/lift` with no destination.
@@ -1554,15 +1561,27 @@ pub(crate) fn site_reserve(
     window_days: i64,
 ) -> Result<Reserve, PlanError> {
     let (sky, pack) = lane_sky_of(w, basis.version)?;
-    site_reserve_on(w, (&sky, pack), basis, out, site, from_venue, window_days)
+    site_reserve_on(
+        w,
+        (&sky, pack),
+        basis,
+        out,
+        site,
+        from_venue,
+        window_days,
+        0,
+    )
 }
 
 /// [`site_reserve`] over a sky and lane the caller built once ([`lane_sky_of`]; the SM.2
-/// fixer, SM2-FX-2): `lane` is `(sky, pack)` for the basis's latched version.
+/// fixer, SM2-FX-2): `lane` is `(sky, pack)` for the basis's latched version. `cargo_kg` is
+/// ore the leg home carries beyond what is aboard at the departure: 0 for the reserve the
+/// filing holds back, the hold's ore room for [`SITE_HOME_LADEN`] (doc 20b RK-1).
 ///
 /// # Errors
 ///
 /// [`site_reserve`]'s.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn site_reserve_on(
     w: &World,
     lane: (&Sky, &crate::pack::RulesPack),
@@ -1571,6 +1590,7 @@ pub(crate) fn site_reserve_on(
     site: &PortDef,
     from_venue: &CanonicalId,
     window_days: i64,
+    cargo_kg: u64,
 ) -> Result<Reserve, PlanError> {
     let (sky, pack) = lane;
     let routes = site
@@ -1608,6 +1628,7 @@ pub(crate) fn site_reserve_on(
         .and_then(|p| p.checked_sub(basis.locker.checked_mul(locker_kg)?))
         .and_then(|p| p.checked_add(tank_left.checked_mul(tank_kg)?))
         .and_then(|p| p.checked_add(locker_left.checked_mul(locker_kg)?))
+        .and_then(|p| p.checked_add(cargo_kg))
         .ok_or(PlanError::Overflow)?;
     let arrive = basis
         .depart_ic
@@ -1624,6 +1645,70 @@ pub(crate) fn site_reserve_on(
         arrive,
         window_days,
     )
+}
+
+/// **The leg home with the hold full of ore** (doc 20b RK-1; SM.8's owed "the planner's
+/// cargo mass"): [`site_reserve_on`] over the plan's window with the hold's unreserved ore room
+/// aboard ([`ship::hold_unreserved_kg`], by mass: volume binds first for bulky ore, so this is
+/// the most any fill weighs), as [`SITE_HOME_LADEN`], or [`SITE_HOME_LADEN_GROUNDED`] when no
+/// route lifts that load. The stores need no such line (a pad stay's charge stops at the leg
+/// home's crew-days, `crate::port::site::landed_charge`), but the propellant does: from
+/// Rheasilvia a Dray-P's full hold (86 t) burns 49 t home against the 37 t the filing holds
+/// back. Advice only: the filing still holds back [`SITE_HOME`]'s reserve (SM.2's decision 7).
+/// `None` for a hold that takes no ore or under a tonne of room, or when a read or the plan
+/// fails (logged).
+fn laden_home_line(
+    ctx: &Ctx<'_>,
+    view: &HullView<'_>,
+    basis: &Basis,
+    out: &PassagePlan,
+    site: &PortDef,
+    from_venue: &CanonicalId,
+    port: &str,
+) -> Option<String> {
+    let w: &World = ctx.w;
+    let read = |endpoint: EndpointRef, good: &CanonicalId| read_pool(ctx, endpoint, good);
+    let read_rig = |tv: ObjId| crate::port::site_map::SurfaceReads::rig(ctx, tv);
+    let rigs: Vec<ObjId> = crate::port::tv::live_on_hull(w, view.hull())
+        .iter()
+        .map(|lease| lease.tv)
+        .collect();
+    let cargo_kg = ship::hold_unreserved_kg(w, view, &rigs, &read, &read_rig)?;
+    let cargo = (cargo_kg / 1_000).to_string();
+    if cargo_kg < 1_000 {
+        return None;
+    }
+    let (sky, pack) = lane_sky_of(w, basis.version).ok()?;
+    let reserve = site_reserve_on(
+        w,
+        (&sky, pack),
+        basis,
+        out,
+        site,
+        from_venue,
+        PLAN_WINDOW_DAYS,
+        cargo_kg,
+    );
+    match reserve {
+        Ok(reserve) => Some(
+            SITE_HOME_LADEN
+                .replace("{port}", port)
+                .replace("{cargo}", &cargo)
+                .replace("{burn}", &reserve.burn_t.to_string())
+                .replace("{days}", &reserve.crew_days.to_string())
+                .replace("{throttle}", &reserve.throttle.to_string()),
+        ),
+        Err(PlanError::Landing { .. }) => Some(
+            SITE_HOME_LADEN_GROUNDED
+                .replace("{cargo}", &cargo)
+                .replace("{name}", &name_of(w, view.hull()))
+                .replace("{port}", port),
+        ),
+        Err(error) => {
+            tracing::warn!(hull = view.hull().0, %error, "tacsim: +ship/plan could not plan a site's laden leg home");
+            None
+        }
+    }
 }
 
 /// **The stay's charge on a plan from a site berth** (Q-20-7; lead ruling 5): at a site
@@ -2081,13 +2166,20 @@ fn plan_block(
         && let Berth::Docked { def: here, .. } = berth_of(w, view.hull())
     {
         match site_reserve(w, basis, &plan, site, &here.venue, PLAN_WINDOW_DAYS) {
-            Ok(reserve) => lines.push(
-                SITE_HOME
-                    .replace("{port}", &dest.port)
-                    .replace("{burn}", &reserve.burn_t.to_string())
-                    .replace("{days}", &reserve.crew_days.to_string())
-                    .replace("{throttle}", &reserve.throttle.to_string()),
-            ),
+            Ok(reserve) => {
+                lines.push(
+                    SITE_HOME
+                        .replace("{port}", &dest.port)
+                        .replace("{burn}", &reserve.burn_t.to_string())
+                        .replace("{days}", &reserve.crew_days.to_string())
+                        .replace("{throttle}", &reserve.throttle.to_string()),
+                );
+                if let Some(line) =
+                    laden_home_line(ctx, view, basis, &plan, site, &here.venue, &dest.port)
+                {
+                    lines.push(line);
+                }
+            }
             Err(PlanError::Landing {
                 place,
                 body,
@@ -2222,11 +2314,11 @@ pub(crate) fn throttle_hint(
             Some((def, from)) if plan.burn_t <= tank_cap => {
                 // The arrival day's leg home first: the window's worst is at least it, so
                 // a reading that overruns on it is refused without the window's plans.
-                let first = site_reserve_on(w, lane, &b, &plan, def, from, 0).ok()?;
+                let first = site_reserve_on(w, lane, &b, &plan, def, from, 0, 0).ok()?;
                 if plan.burn_t.saturating_add(first.burn_t) > tank_cap {
                     Some(first)
                 } else {
-                    Some(site_reserve_on(w, lane, &b, &plan, def, from, PLAN_WINDOW_DAYS).ok()?)
+                    Some(site_reserve_on(w, lane, &b, &plan, def, from, PLAN_WINDOW_DAYS, 0).ok()?)
                 }
             }
             Some(_) | None => None,

@@ -701,6 +701,18 @@ pub(crate) fn put(
                                 bid.good
                             )
                         })?;
+                    // Doc 20b RK-1 (SM.5's R5): a REFRESH row's revision never promises
+                    // more than its cap or what the house can pay at the new price, the
+                    // drip's case 3 rule; it may stand at 0, as an exhausted bid does.
+                    let remaining = match bid.refresh {
+                        Some(refresh) => crate::port::stock::drip_target(
+                            refresh.cap,
+                            0,
+                            remaining,
+                            house_fundable(ctx.w, vendor_id, price),
+                        ),
+                        None => remaining,
+                    };
                     mush_market::revise_wanted(ctx, listing.id, price, remaining)
                         .map_err(|e| format!("{id}: vendor {org} bid {}: {e:?}", bid.good))?;
                     if let Some(row) = map.vendors.get_mut(org) {
@@ -726,18 +738,29 @@ pub(crate) fn put(
                         // full authored intake — and an unfunded house's is left for the
                         // drip, which warns. Every other bid re-posts its full intake.
                         let quantity = match bid.refresh {
-                            Some(refresh) => {
-                                let fundable = ctx.w.module_state::<MarketStore>().map_or(0, |m| {
-                                    crate::port::board::vendor_fundable_units(
-                                        ctx.w, m, vendor_id, price,
-                                    )
-                                });
-                                crate::port::stock::lapsed_drip(refresh, fundable)
-                            }
+                            Some(refresh) => crate::port::stock::lapsed_drip(
+                                refresh,
+                                house_fundable(ctx.w, vendor_id, price),
+                            ),
                             None => bid.intake,
                         };
                         if quantity > 0 {
                             post_bid(ctx, id, map, org, vendor_id, vault, bid, price, quantity)?;
+                        } else if r.price_major != bid.price_major {
+                            // Doc 20b RK-1 (SM.5's R5): nothing posted, but a changed
+                            // authored price is recorded (the intake is unchanged, or
+                            // `posts_afresh` would not hold), so the drip's post at that
+                            // price is not read as a change by the next apply.
+                            if let Some(row) = map.vendors.get_mut(org) {
+                                row.bids.insert(
+                                    bid.good.clone(),
+                                    BidRow {
+                                        price_major: bid.price_major,
+                                        ..r
+                                    },
+                                );
+                            }
+                            put_port_map(ctx, map);
                         }
                         continue;
                     }
@@ -761,6 +784,13 @@ pub(crate) fn put(
                     }
                 }
                 (None, _) => {
+                    // The full authored intake, a refresh row's too, unlike the drip's
+                    // case 1 (`bid.intake.min(fundable)`): a world's first apply runs
+                    // before its houses' capital settles, so bounding it by funds would
+                    // leave every fresh world's ore bids to the drip (doc 20b RK-1 kept
+                    // this arm). A sale's own funds check refuses what an unfunded house
+                    // cannot pay, and the drip's case 3 trims the bid at its first
+                    // boundary.
                     post_bid(ctx, id, map, org, vendor_id, vault, bid, price, bid.intake)?;
                 }
             }
@@ -792,8 +822,9 @@ pub(crate) fn put(
 
 /// **The one `WantedSpec` a port bid posts with** (doc 18 cut IC8's part (e).8,
 /// factored by cut IC10 so the applier and the stock clerk's re-post build it one
-/// way): the authored good, price and full intake, into the storefront, no grade
-/// floor, for the market's longest listing life.
+/// way): `bid`'s good and intake at `price`, into the storefront, no grade floor, for
+/// the market's longest listing life. The intake is the caller's: the authored one,
+/// or for a refresh row the drip's quantity written into it (doc 20 cut SM.5).
 pub(crate) fn wanted_spec(
     vendor: VendorId,
     vault: VaultId,
@@ -809,6 +840,14 @@ pub(crate) fn wanted_spec(
         min_grade: 0,
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
     }
+}
+
+/// How many units of a bid at `price` the vendor's house can fund now: the drip's own
+/// figure ([`crate::port::board::vendor_fundable_units`]), 0 with no market.
+fn house_fundable(w: &World, vendor: VendorId, price: Amount) -> u64 {
+    w.module_state::<MarketStore>().map_or(0, |m| {
+        crate::port::board::vendor_fundable_units(w, m, vendor, price)
+    })
 }
 
 /// Post one standing bid of `quantity` and record it at its authored terms (the row's

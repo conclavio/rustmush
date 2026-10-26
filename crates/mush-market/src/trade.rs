@@ -806,12 +806,17 @@ pub fn accept_at(
     // places their consideration hold, under their own account's debit authority.
     match mush_economy::accept_contract(ctx, contract) {
         Ok(AcceptOutcome::Accepted { .. }) => {}
-        Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
+        Ok(AcceptOutcome::NeedsApproval(_)) => {
             let _ = mush_economy::cancel_contract(ctx, contract);
-            return Err(MarketError::bad(
-                "That purchase needs an approval your account rule has not granted yet. Nothing \
-                 was agreed.",
-            ));
+            return Err(MarketError::bad(BUY_NEEDS_APPROVAL));
+        }
+        Err(e) => {
+            let _ = mush_economy::cancel_contract(ctx, contract);
+            return Err(MarketError::bad(own_accept_refusal(
+                &e,
+                contract,
+                BUY_NOT_AGREED,
+            )));
         }
     }
     // The **vendor organization accepts programmatically** through E6b's
@@ -1560,6 +1565,44 @@ pub const SELL_SHORT: &str =
 /// The seller's own acceptance needs an approval (cut IC10).
 pub const SELL_NEEDS_APPROVAL: &str =
     "That sale needs an approval your account rule has not granted yet. Nothing was agreed.";
+/// The buyer's own acceptance needs an approval (cut IC7's text, a const since doc 20b
+/// RK-1).
+pub const BUY_NEEDS_APPROVAL: &str =
+    "That purchase needs an approval your account rule has not granted yet. Nothing was agreed.";
+/// A party's own acceptance could not place its escrow: the account has too little
+/// available, posted or already held (doc 20b RK-1; the buyer's usual refusal, which
+/// read as [`BUY_NEEDS_APPROVAL`] before).
+pub const CANNOT_COVER: &str =
+    "Your account does not have enough available to cover that. Nothing was agreed.";
+/// The buyer's own acceptance failed for any other reason (doc 20b RK-1).
+pub const BUY_NOT_AGREED: &str = "That purchase cannot be agreed right now. Nothing was agreed.";
+/// The seller's own acceptance failed for any other reason (doc 20b RK-1).
+pub const SELL_NOT_AGREED: &str = "That sale cannot be agreed right now. Nothing was agreed.";
+
+/// **The line a party hears when their own acceptance is refused** (doc 20b RK-1):
+/// an escrow the account cannot fund is [`CANNOT_COVER`]; anything else is `other`,
+/// with the economy's own refusal logged for the operator. A `NeedsApproval` outcome
+/// is not a refusal and never reaches here.
+fn own_accept_refusal(
+    e: &mush_economy::ContractError,
+    contract: ContractId,
+    other: &'static str,
+) -> &'static str {
+    use mush_economy::{ContractError, EconomyError};
+    match e {
+        ContractError::Refused(
+            EconomyError::InsufficientAvailable(_) | EconomyError::CreditViolation(_),
+        ) => CANNOT_COVER,
+        _ => {
+            tracing::info!(
+                contract = contract.0,
+                error = %e,
+                "market: a party's own acceptance was refused"
+            );
+            other
+        }
+    }
+}
 /// The house's acceptance (its escrow) failed (cut IC10).
 pub const HOUSE_CANNOT_PAY: &str = "That house cannot pay for that right now. Nothing was agreed.";
 /// The lot arm named a listing that is an ask, not a bid (cut IC10).
@@ -2240,19 +2283,28 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     // included (doc 18 §4.3's "no seller accept" is no step asked of the seller).
     match mush_economy::accept_contract(ctx, contract) {
         Ok(AcceptOutcome::Accepted { .. }) => {}
-        Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
+        Ok(AcceptOutcome::NeedsApproval(_)) => {
             let _ = mush_economy::cancel_contract(ctx, contract);
             return Err(MarketError::bad(SELL_NEEDS_APPROVAL));
+        }
+        Err(e) => {
+            let _ = mush_economy::cancel_contract(ctx, contract);
+            return Err(MarketError::bad(own_accept_refusal(
+                &e,
+                contract,
+                SELL_NOT_AGREED,
+            )));
         }
     }
     // 19. The house accepts programmatically: its escrow, and the activation.
     //
     // Doc 18 cut IC14 row 66 (documented, no behaviour change): the house is a party
     // to every sale into its bid, and the economy's `MAX_LIVE_CONTRACTS_PER_PARTY`
-    // (32) counts a settled sale as one of its live contracts while the trade tape
-    // keeps it (up to the projection window, an hour), so 32 bounds a house's
-    // concurrent sales; past it this accept refuses and the seller hears
-    // `HOUSE_CANNOT_PAY` with nothing agreed.
+    // (32) counts a sale as one of its live contracts while it is `Active` or
+    // `ReadyToSettle`, so 32 bounds a house's concurrent sales. The cap is checked
+    // when the contract is offered (step 16's `offer_contract`), not here: past it
+    // the seller hears the economy's own cap refusal and nothing is drafted (doc 20b
+    // RK-1 corrected this note, which said the accept below refused).
     match mush_economy::accept_contract_as(ctx, contract, &house) {
         Ok(AcceptOutcome::Accepted { .. }) => {}
         Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {

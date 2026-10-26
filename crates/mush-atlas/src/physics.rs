@@ -761,9 +761,11 @@ const NEIGHBOURS: [(i32, i32); 8] = [
 ];
 
 /// The octile distance from `from` to `to` priced at `orth` a straight step and
-/// `⌊orth × 141 / 100⌋` a diagonal one (cut AP): [`path`]'s heuristic.
+/// `⌊orth × 141 / 100⌋` a diagonal one (cut AP): [`path`]'s heuristic. The diagonal is
+/// capped at [`Cost::MAX`], where [`price_step`] saturates a step, so a row whose cheapest
+/// class costs more than about 3.05e9 cannot make the floor overestimate (doc 20b RK-1).
 fn octile_floor(orth: u64, from: (u16, u16), to: (u16, u16)) -> u64 {
-    let diag = orth * u64::from(DIAGONAL_PCT) / 100;
+    let diag = (orth * u64::from(DIAGONAL_PCT) / 100).min(u64::from(Cost::MAX));
     let dx = u64::from(from.0.abs_diff(to.0));
     let dy = u64::from(from.1.abs_diff(to.1));
     let (lo, hi) = (dx.min(dy), dx.max(dy));
@@ -1440,6 +1442,18 @@ mod tests {
             reference_least(&s, t, (0, 0), (0, 0), "tracked", &[]),
             Some(0)
         );
+    }
+
+    /// **The diagonal floor never exceeds a saturated step** (doc 20b RK-1): at an `orth` past
+    /// `Cost::MAX × 100 / 141`, where [`price_step`] saturates every diagonal step at `Cost::MAX`,
+    /// one diagonal step's floor is `Cost::MAX`, not `⌊orth × 141 / 100⌋`.
+    #[test]
+    fn rk1_the_diagonal_floor_is_capped_at_a_saturated_step() {
+        let orth = u64::from(Cost::MAX);
+        assert_eq!(octile_floor(orth, (0, 0), (1, 1)), u64::from(Cost::MAX));
+        assert_eq!(octile_floor(orth, (0, 0), (2, 1)), 2 * u64::from(Cost::MAX));
+        // Below the edge nothing changes.
+        assert_eq!(octile_floor(1_000, (0, 0), (3, 1)), 1_410 + 2 * 1_000);
     }
 
     /// **A3 — the heuristic never overestimates and is consistent** (cut AP): on A2's grids, for

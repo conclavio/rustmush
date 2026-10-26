@@ -91,6 +91,16 @@ The configured receipt promise makes that distinction executable:
 
 ## Backups
 
+> **Not yet in place (2026-10-26).** No instance takes scheduled backups today: the
+> offsite layer below is an example, and no deploy installs it. A restore also needs
+> the directories under `[server].data_dir` that must match the store: the ledger
+> archive, the quarantine spool, the SSH host keys and the four key families
+> (`offer-keys/`, `resolution-keys/`, `decision-keys/`, `geology-keys/`). Each has
+> its own "back it up" note further down. One whole-instance backup and rehearsed
+> restore is open as `T-112` in
+> [the simulator backlog](design/16c-simulator-backlog.md); until it lands, copy all of
+> `[server].data_dir` together with a fresh `dump.rdb` before any redeploy or wipe.
+
 Three layers, cheapest first:
 
 1. **AOF** (`appendonlydir/`) — continuous, already on. Crash recovery, not

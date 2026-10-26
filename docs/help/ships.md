@@ -133,7 +133,11 @@ Nothing sells reaction mass or provisions on a pad, so a departure for a site
 holds back the leg home: `+ship/undock` (and a sailing plan's departure) refuses
 unless the tank and the locker cover the passage out and the worst passage home
 in the next thirty IC days, and `+ship/plan` prints that leg home with the
-throttle it is held at — the least that lifts her. For a site the Throttle: line
+throttle it is held at — the least that lifts her. For a hull whose hold takes
+ore it prints a second leg home, with the hold full of ore: the departure does
+not hold that one back, but it is what to bunker for if you mean to come home
+full (from Rheasilvia a full Dray-P burns twelve tonnes more on the way home).
+For a site the Throttle: line
 counts that leg home too: it names the highest throttle from the site's landing
 floor at which the passage out and the leg home together fit the tank, or, when
 none does today, the first day in the next IC year (the 365 days `+chart
@@ -167,8 +171,8 @@ prospecting licence (`+licence/buy`; `help coop`), in force or in its grace.
 
 `+tv` reads each slot anywhere: the rig, how long its lease has left and what
 its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
-at your next `+tv/lease` act; if your account cannot pay it, Occator keeps the
-deposit and the rig must go back.
+at your next `+tv/lease` act, even one your lapsed licence refuses; if your
+account cannot pay it, Occator keeps the deposit and the rig must go back.
 
 `+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
 the bay and its hopper empty, and your deposit is released. Without go it says

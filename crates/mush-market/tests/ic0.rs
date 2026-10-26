@@ -37,7 +37,10 @@ use mush_inventory::{
     InventoryModule, LotId, RESERVATION_TTL_SECS,
 };
 use mush_market::interface::{MARKET_INTERFACE, MarketInterface};
-use mush_market::{CatalogEntry, CatalogSource, ListingId, MarketStore, QuoteId, STALE_QUOTE};
+use mush_market::{
+    BUY_NEEDS_APPROVAL, CANNOT_COVER, CatalogEntry, CatalogSource, ListingId, MarketStore, QuoteId,
+    STALE_QUOTE,
+};
 use mush_org::{OrgId, PrincipalId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
@@ -681,6 +684,57 @@ fn ic0_a_quote_against_a_lapsed_hold_is_refused_before_money_moves() {
     // A fresh quote reads the same hold and refuses the same way.
     let refused = err(&mut tw, pat, &format!("+market/quote {listing}=10"));
     assert!(refused.contains(STALE_QUOTE), "{refused}");
+}
+
+/// **A buyer who cannot cover the price hears so, not that an approval is missing**
+/// (doc 20b RK-1). The buyer's escrow is the economy's own `InsufficientAvailable` at
+/// `accept_contract`; the market used to answer every accept error with the approval
+/// line. Nothing is charged and the vendor's hold is untouched.
+#[test]
+fn rk1_a_buyer_short_of_the_price_hears_it_cannot_be_covered() {
+    let Rig {
+        mut tw,
+        families,
+        pat,
+        pat_account,
+        pat_hold,
+        shop_endpoint,
+        vendor_account,
+        listing,
+    } = rig();
+    // Pat pays most of the 1,000.00cr away, leaving 50.00cr against a 70.00cr price.
+    ok(
+        &mut tw,
+        pat,
+        &format!("@econ/pay {pat_account}={vendor_account} 95000 rent"),
+    );
+    assert_eq!(posted(&tw, pat_account), 5_000);
+    ok(&mut tw, pat, &format!("+market/quote {listing}=10"));
+    let refused = err(
+        &mut tw,
+        pat,
+        &format!("+market/accept 0={}", pat_hold.vault().0),
+    );
+    assert!(refused.contains(CANNOT_COVER), "{refused}");
+    assert!(!refused.contains(BUY_NEEDS_APPROVAL), "{refused}");
+    assert_eq!(posted(&tw, pat_account), 5_000, "nothing was charged");
+    assert!(
+        economy(&tw)
+            .snapshot()
+            .contracts()
+            .all(|c| !c.state.is_live()),
+        "the contract drafted before the buyer's escrow refused was cancelled"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "no matter leg was staged"
+    );
+    assert!(refused_settlements(&tw).is_empty());
+    assert_eq!(
+        pool(&mut tw, &families, shop_endpoint, "iron"),
+        (100, 90),
+        "the listing's hold is untouched"
+    );
 }
 
 // ---- item 4: major units on every price line -------------------------------

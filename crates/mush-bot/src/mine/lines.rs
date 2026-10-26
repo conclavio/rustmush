@@ -368,13 +368,19 @@ fn head_pair(lines: &[String], head: &str, open: &str) -> Option<(u64, u64)> {
 /// (its first number, then the number after `(tank `), the first starting
 /// `Stores ` with `(locker `, and `Leg home from ` (after `: burn `, the burn
 /// and the crew-days) — `home_*` `None` for a plan to Ceres. `None` without
-/// `Burn ` and `Stores `.
+/// `Burn ` and `Stores `. The leg home read is the one `with a full hold`
+/// when the plan prices it (`voyage::SITE_HOME_LADEN`, doc 20b RK-1), the
+/// figure a captain who means to fill the hold bunkers to; else the leg home
+/// the filing holds back.
 pub fn plan_figures(lines: &[String]) -> Option<PlanFigures> {
     let (burn_t, tank_t) = head_pair(lines, "Burn ", "(tank ")?;
     let (crew_days, locker) = head_pair(lines, "Stores ", "(locker ")?;
+    let leg_home = |line: &&String| line.starts_with("Leg home from ");
     let home = lines
         .iter()
-        .find(|line| line.starts_with("Leg home from "))
+        .filter(leg_home)
+        .find(|line| line.contains(" with a full hold ("))
+        .or_else(|| lines.iter().find(leg_home))
         .and_then(|line| {
             let rest = line.split(": burn ").nth(1)?;
             let burn = first_number(rest)?;
@@ -436,8 +442,10 @@ pub fn ask_for(rows: &[Listing], label: &str) -> Option<u64> {
 }
 
 /// The bid (`wanted`) whose row holds `family.ore_label()`
-/// (case-insensitive). The first such row, buying or not: the caller reads
-/// [`Listing::not_buying`] off [`bid_row`].
+/// (case-insensitive): the first such row that is buying, else the first
+/// such row, so a board whose only bid is not buying still names it and the
+/// caller reads [`Listing::not_buying`] off [`bid_row`] (doc 20b RK-1: it
+/// used to take the first row, buying or not, past a buying one).
 pub fn bid_for(rows: &[Listing], family: Family) -> Option<u64> {
     bid_row(rows, family).map(|row| row.number)
 }
@@ -445,8 +453,11 @@ pub fn bid_for(rows: &[Listing], family: Family) -> Option<u64> {
 /// The row [`bid_for`] names.
 pub fn bid_row(rows: &[Listing], family: Family) -> Option<&Listing> {
     let label = family.ore_label();
-    rows.iter()
-        .find(|row| row.wanted && row.text.to_lowercase().contains(label))
+    let mut bids = rows
+        .iter()
+        .filter(|row| row.wanted && row.text.to_lowercase().contains(label));
+    let first = bids.clone().next();
+    bids.find(|row| !row.not_buying).or(first)
 }
 
 /// "Quote #N" → N.
@@ -1041,6 +1052,16 @@ mod tests {
         assert_eq!(bid_for(&rows, Family::Volatiles), Some(8));
         assert!(bid_row(&rows, Family::Volatiles).is_some_and(|row| row.not_buying));
         assert!(!bid_row(&rows, Family::Metals).is_some_and(|row| row.not_buying));
+        // A buying bid listed after one that is not is the one taken (doc 20b RK-1).
+        let two: Vec<String> = [
+            "#5 ice ore, run-of-mine — wanted 0 × 35.00cr [exchange] by Freeport Exchange — not buying",
+            "#8 ice ore, run-of-mine — wanted 120 × 35.00cr [exchange] by Occator Water & Propellant",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let two = listings(&two);
+        assert_eq!(bid_for(&two, Family::Volatiles), Some(8));
+        assert!(!bid_row(&two, Family::Volatiles).is_some_and(|row| row.not_buying));
         assert_eq!(quote_number("Quote #42: 5 × 40.00cr = 200.00cr"), Some(42));
 
         // The plan, in `voyage.rs`'s shapes, with the leg home.
@@ -1068,6 +1089,20 @@ mod tests {
         );
         assert_eq!(plan_figures(&plan[..3]).and_then(|p| p.home_burn_t), None);
         assert_eq!(plan_figures(&plan[..2]), None);
+        // With the full-hold line too, its figures are the leg home read (doc 20b RK-1).
+        let mut laden = plan.clone();
+        laden.push(
+            voyage::SITE_HOME_LADEN
+                .replace("{port}", "Ahuna Flank")
+                .replace("{cargo}", "40")
+                .replace("{burn}", "3")
+                .replace("{days}", "2")
+                .replace("{throttle}", "0.5"),
+        );
+        assert_eq!(
+            plan_figures(&laden).map(|p| (p.home_burn_t, p.home_days)),
+            Some((Some(3), Some(2)))
+        );
 
         // The site map, received through the assembler as the lane receives it.
         assert_eq!(SITE_LEGEND, site_map::SITE_LEGEND);

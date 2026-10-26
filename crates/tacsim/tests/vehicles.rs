@@ -56,7 +56,7 @@ use tacsim::port::tv::{
     TERM_FORFEIT, TERM_RENEWED, TV_DARK, TV_USAGE, TvLease, TvLeaseState, TvLeaseStatus, WHERE_BAY,
     WHICH_RIG,
 };
-use tacsim::port::voyage::{Voyage, VoyageState};
+use tacsim::port::voyage::{SITE_HOME, SITE_HOME_LADEN, Voyage, VoyageState};
 use tacsim::port::{
     Binding, HullRow, LineState, PortDef, PortHandles, PortMap, PortMapState, RigRow, Ticket,
     TicketId, room_key,
@@ -3906,4 +3906,49 @@ fn sm12b_a_yard_rig_reads_a_stored_lease_first() {
     assert_eq!(stored.pilot, pilot);
     assert!(!stored.is_house());
     no_refused_writes(&rig.tw);
+}
+
+/// **The site plan prices the leg home with a full hold** (doc 20b RK-1; SM.8's owed planner
+/// cargo mass): a Dray-P with a full tank and locker plans Rheasilvia and reads, beside the leg
+/// home the filing holds back (37 t), the leg home with its 86 t of ore room aboard (49 t): the
+/// propellant a captain who means to fill the hold there bunkers for. On Ceres, Ahuna's laden
+/// leg home costs what the empty one does.
+#[test]
+fn rk1_the_site_plan_prices_the_leg_home_with_a_full_hold() {
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Ann", 1, "Salt Moth");
+    load(&mut rig, &row, 0, 80, 120, 9_500);
+    board(&mut rig, pilot);
+    let line = |port: &str, template: &str, burn: u64, days: u64, throttle: u32| {
+        template
+            .replace("{port}", port)
+            .replace("{cargo}", "86")
+            .replace("{burn}", &burn.to_string())
+            .replace("{days}", &days.to_string())
+            .replace("{throttle}", &throttle.to_string())
+    };
+    let plan = run(&mut rig.tw, pilot, "+ship/plan rheasilvia");
+    let lines: Vec<&str> = plan.lines().collect();
+    for want in [
+        line("Rheasilvia Commons", SITE_HOME, 37, 36, 365),
+        line("Rheasilvia Commons", SITE_HOME_LADEN, 49, 36, 487),
+    ] {
+        assert!(
+            lines.contains(&want.as_str()),
+            "{want}
+{plan}"
+        );
+    }
+    let plan = run(&mut rig.tw, pilot, "+ship/plan ahuna");
+    let lines: Vec<&str> = plan.lines().collect();
+    for want in [
+        line("Ahuna Flank", SITE_HOME, 1, 1, 511),
+        line("Ahuna Flank", SITE_HOME_LADEN, 1, 1, 648),
+    ] {
+        assert!(
+            lines.contains(&want.as_str()),
+            "{want}
+{plan}"
+        );
+    }
 }
