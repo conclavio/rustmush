@@ -541,7 +541,8 @@ jobs:
         run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
         if: matrix.shard == 'rest-mushd'
-        run: cargo test -p mushd --test durable_process world_panic_exit::
+        run: |
+          cargo test -p mushd --test durable_process world_panic_exit::
       - name: TS bindings drift check
         if: matrix.shard == 'rest-libs'
         run: |
@@ -646,7 +647,8 @@ jobs:
       # `[store].store` overridden to "memory", the one deviation) to an enabled
       # `[tacsim]` block and a hello manifest advertising the game's sheet.
       - name: Render, preflight and boot the shipped instances
-        run: cargo test -p mush-server --test split_boundary provisioning_smoke::
+        run: |
+          cargo test -p mush-server --test split_boundary provisioning_smoke::
       - name: Build the three binaries a deploy installs
         run: cargo build -p mushd -p mush-server -p mush-gateway
       # The SHELL half of the same claim. The Rust test above mirrors the
