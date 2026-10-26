@@ -3,8 +3,10 @@
 # harness-weekly.sh — the TacSim scale harness by hand, the way the CI
 # `tacsim-harness` job runs it (16b cut U.3; 16c T-37 and Q29; D-16-19).
 #
-# GitHub CI is billing-blocked, so the box that actually runs the weekly harness
-# is the owner's. This is that run as one command, from anywhere in the tree:
+# The CI job runs daily on a shared runner, where the timing gate is dormant
+# (the baseline is blessed on the VPS, 16c T-109), so the run that measures is
+# the owner's, on that box. This is that run as one command, from anywhere in
+# the tree:
 #
 #   scripts/harness-weekly.sh
 #

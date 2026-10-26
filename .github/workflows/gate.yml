@@ -1,0 +1,161 @@
+name: Gate (VPS)
+
+# Test-strategy cut T.2 (2026-10-26): the gate on the owner's VPS.
+#
+# conclav.io is a self-hosted runner (label `vps`; deploy/vps-runner/ is how it
+# is provisioned): 8 cores, 31 GB, a warm target directory, Rust pinned by
+# rust-toolchain.toml and cargo-nextest at the version .config/nextest.toml
+# names. The cut loop's gate runs HERE instead of on the owner's Windows box
+# (scripts/vps-gate.sh pushes the tree, dispatches this workflow and waits), so
+# the box stays free for the sessions that need it, and a sweep compiles only
+# what changed instead of the from-scratch compile every hosted shard pays.
+#
+# THE RULES OF A SELF-HOSTED RUNNER ON A PUBLIC REPOSITORY:
+#   * this workflow runs on `workflow_dispatch` ONLY — never on push, never on
+#     pull_request, never on a schedule. A fork's pull request must never
+#     reach the production box; a dispatch needs write access to this
+#     repository, which is the owner. Do not add a trigger here.
+#   * the runner is its own user (`ghrunner`, no sudo) with its own Rust and
+#     cargo home, under a systemd service niced below the dev1/dev2 game
+#     servers and the production Redis it shares the box with
+#     (deploy/vps-runner/runner-override.conf), and the jobs talk to a private
+#     Redis of their own on 127.0.0.1:6799 (deploy/vps-runner/redis-gate.conf),
+#     wiped before every sweep; the instances on 6379, 6788, 6791 and 6798 are
+#     never touched.
+#   * one job at a time (the `concurrency` group queues, never cancels): one
+#     runner, one target directory.
+#
+# Three kinds. `sweep` is the gate: the workspace's tests under nextest's `ci`
+# profile with REDIS_URL set (so every REDIS_URL-reading test takes its Redis
+# branch, serialized by .config/nextest.toml's `redis` group), the bot on its
+# own feature set, then the doc-tests; or only the packages the dispatch names.
+# `harness` and `cost-lane` run scripts/harness-weekly.sh and
+# scripts/cost-lane.sh by their own rules: this is the host whose host name
+# blessed the harness baseline (16c T-109), so the timing gate is LIVE here
+# where it is dormant on a hosted runner; the owner dispatches them on a box
+# not serving players (pre-launch: dev1 and dev2 are the owner's own smokes).
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "sweep (the gate), harness (scripts/harness-weekly.sh) or cost-lane (scripts/cost-lane.sh)"
+        type: choice
+        options: [sweep, harness, cost-lane]
+        default: sweep
+      packages:
+        description: "sweep: the packages to run, space-separated (`-p` each; mush-bot runs on its own); empty = the whole workspace"
+        type: string
+        default: ""
+      extra:
+        description: "sweep: extra `cargo nextest run` arguments, e.g. -E 'test(name)' or --run-ignored only"
+        type: string
+        default: ""
+      redis:
+        description: "sweep: REDIS_URL at the gate's private Redis (127.0.0.1:6799), wiped first"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: ${{ inputs.kind }} on conclav.io
+    runs-on: [self-hosted, linux, vps]
+    timeout-minutes: 300
+    env:
+      CARGO_TERM_COLOR: always
+      # The warm target directory: beside the checkout, not inside it, because
+      # actions/checkout cleans the checkout (git clean -ffdx) on every run.
+      # The runner's work tree is _work/rustmush/rustmush, so this is
+      # _work/rustmush/target, kept across runs; the owner may `rm -rf` it on
+      # the box to start cold.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+      # Six of the eight cores for the compile; the service's Nice=10 yields
+      # the rest to the game servers under contention.
+      CARGO_BUILD_JOBS: "6"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo nextest --version
+      - name: The box before the run
+        run: |
+          nproc; free -m; df -h /; cat /proc/loadavg
+          du -sh "$CARGO_TARGET_DIR" 2>/dev/null || echo "cold target directory"
+      - name: The gate's private Redis, wiped
+        if: inputs.kind == 'sweep' && inputs.redis
+        run: |
+          redis-cli -p 6799 ping
+          redis-cli -p 6799 flushall
+      - name: Sweep
+        if: inputs.kind == 'sweep'
+        env:
+          GATE_REDIS_URL: ${{ inputs.redis && 'redis://127.0.0.1:6799' || '' }}
+          PACKAGES: ${{ inputs.packages }}
+          EXTRA: ${{ inputs.extra }}
+        run: |
+          set -uo pipefail
+          # REDIS_URL set only when asked: an empty one is not "unset" to
+          # every gate in the tree.
+          if [ -n "$GATE_REDIS_URL" ]; then export REDIS_URL="$GATE_REDIS_URL"; fi
+          # The dispatch's extra arguments, shell-split as typed (a dispatch
+          # needs write access, so this is the owner's own command line).
+          eval "extra_args=($EXTRA)"
+          engine=()
+          bot=0
+          for p in $PACKAGES; do
+            if [ "$p" = mush-bot ]; then bot=1; else engine+=(-p "$p"); fi
+          done
+          status=0
+          run() { echo "::group::$*"; "$@" || status=1; echo "::endgroup::"; }
+          if [ -z "$PACKAGES" ]; then
+            # The whole workspace: the engine's crates as one invocation (the
+            # servers' dev-dependencies unify the debug-checks and
+            # fault-injection features on, as the hosted rest-libs line names
+            # them), the bot on its own feature set, then the doc-tests.
+            run cargo nextest run -P ci --workspace --exclude mush-bot "${extra_args[@]}"
+            run cargo nextest run -P ci -p mush-bot "${extra_args[@]}"
+            run cargo test --doc --workspace --exclude mush-bot --no-fail-fast
+          else
+            if [ "${#engine[@]}" -gt 0 ]; then
+              run cargo nextest run -P ci "${engine[@]}" "${extra_args[@]}"
+              run cargo test --doc "${engine[@]}" --no-fail-fast
+            fi
+            if [ "$bot" = 1 ]; then
+              run cargo nextest run -P ci -p mush-bot "${extra_args[@]}"
+            fi
+          fi
+          exit "$status"
+      - name: Harness (scripts/harness-weekly.sh; the timing gate is live on this host)
+        if: inputs.kind == 'harness'
+        run: scripts/harness-weekly.sh
+      - name: Cost lane (scripts/cost-lane.sh)
+        if: inputs.kind == 'cost-lane'
+        run: scripts/cost-lane.sh
+      - name: Collect the reports
+        if: always()
+        run: |
+          # nextest's JUnit report (one <testcase> a test with its time; a
+          # <flakyFailure> for a pass on retry) lands under the store directory,
+          # which follows the target directory when CARGO_TARGET_DIR is set.
+          for f in target/nextest/ci/junit.xml "$CARGO_TARGET_DIR/nextest/ci/junit.xml"; do
+            if [ -f "$f" ]; then cp -f "$f" gate-junit.xml; break; fi
+          done
+          ls -la gate-junit.xml harness*.json cost-lane.json 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-${{ inputs.kind }}
+          path: |
+            gate-junit.xml
+            harness*.json
+            cost-lane.json
+          if-no-files-found: ignore

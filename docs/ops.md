@@ -1387,7 +1387,7 @@ filling their top bucket (a bundle at the cap). `@stats` renders the same lane
 as one line. Every number is an aggregate; no token, hash, owner or key is
 exposed. The scale harness that exercises this lane on demand
 (`crates/mush-contract-tests/tests/scale_harness.rs`) runs in the CI `scale`
-job on `workflow_dispatch` or the weekly schedule, never on push. The same
+job on `workflow_dispatch` or the daily schedule, never on push. The same
 harness reports the economy's cold journal replay phase by phase
 (`scale_cold_journal_replay_phases`, scales from `SCALE_PROFILE_SCALES`,
 default `25000,50000,100000`) over a journal it synthesizes in milliseconds;
@@ -1533,8 +1533,13 @@ Two operational tradeoffs of the file appender are **deliberate**:
 ## The weekly harness by hand
 
 The TacSim scale harness (`crates/tacsim/tests/harness.rs`, 16b cut H through
-cut U) is meant to run weekly in the CI `tacsim-harness` job, and GitHub CI is
-billing-blocked, so the run that actually happens is the owner's. It is one
+cut U) runs daily in the CI `tacsim-harness` job (on the schedule and on
+dispatch; the repository has been public since 2026-10-20, so hosted minutes
+are free — the billing block this note used to cite dates from the private
+repository of the project's first weeks), but a hosted runner is a shared
+runner: its delta gates the deterministic block alone, and the timing gate is
+live only on the host that blessed the baseline, the VPS (16c T-109). So the
+run that measures is still the owner's, by hand, on that box. It is one
 command from the repository root, under bash (Linux, or Git Bash on Windows):
 
 ```sh
@@ -1817,6 +1822,85 @@ bit: `bash scripts/harness-weekly.sh` runs it the same way.
 
 **Never run it on a host that is serving players.** It competes with the game
 server for every core, and a pulse past `stall_ms` voids a live match.
+
+## The VPS gate: a self-hosted runner for the sweep and the long runs
+
+Since test-strategy cut T.2 (2026-10-26) conclav.io is a **self-hosted GitHub
+Actions runner** (label `vps`, name `conclav-vps`) for one workflow,
+`.github/workflows/gate.yml`, which runs on `workflow_dispatch` **only**. The
+cut loop's gate (the workspace sweep that used to tie up the owner's Windows
+box for an hour a sub-cut) runs there, and so do the two by-hand scripts whose
+timing gates are live on this host and nowhere else. From the box, under bash:
+
+```sh
+scripts/vps-gate.sh                         # the sweep of the pushed branch
+scripts/vps-gate.sh --wip                   # the sweep of the WORKING TREE
+scripts/vps-gate.sh --packages "tacsim mush-server"
+scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
+scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on the VPS
+scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on the VPS
+```
+
+`--wip` pushes a commit of the working tree, uncommitted work and untracked
+files included, to `gate/<branch>` (never to the branch itself; the index and
+the tree are not touched) and dispatches on that ref, which is what a gate
+runner does between the fixer and the judge. Without it the script pushes the
+current branch. Either way it waits for the run, downloads the reports to
+`target/gate/<run id>/` (`gate-junit.xml`: one `<testcase>` a test with its
+time, a `<failure>` per failed test, a `<flakyFailure>` per pass on retry;
+`harness*.json` or `cost-lane.json` for the other kinds), prints each failed
+test's binary and name, and exits with the run's status. A dispatch needs
+write access to the repository, which is the owner.
+
+**What the sweep runs.** `cargo nextest run -P ci --workspace --exclude
+mush-bot` with `REDIS_URL` at the gate's private Redis, so every
+`REDIS_URL`-reading test takes its Redis branch (`.config/nextest.toml`'s
+`redis` group runs them one at a time), then the bot on its own feature set,
+then `cargo test --doc`; or only the packages the dispatch names. The target
+directory is kept across runs beside the checkout (`_work/rustmush/target` under
+the runner's work tree), so a sweep compiles what changed and nothing else; the
+owner may `rm -rf` it on the box to start cold.
+
+**The rules the runner lives under** (the repository is public):
+
+- `gate.yml` triggers on `workflow_dispatch` alone: never on push, never on
+  pull_request, never on a schedule. A fork's pull request must never reach
+  the production box. Do not add a trigger.
+- The runner is its own user, `ghrunner`, without sudo, with its own rustup
+  (the toolchain `rust-toolchain.toml` pins, installed at provisioning and
+  again by every job's `rustup toolchain install`) and cargo-nextest at the
+  version `.config/nextest.toml` names, on every job's PATH through the
+  runner's `.path` file.
+- Its service, `actions.runner.conclavio-rustmush.conclav-vps.service`, runs
+  under `deploy/vps-runner/runner-override.conf`: `Nice=10`, best-effort I/O
+  at the lowest priority and a 22 GB memory ceiling, so dev1, dev2 and the
+  production Redis win the cores and the disk under contention. One job at a
+  time (`gate.yml`'s `concurrency` group queues, never cancels).
+- The jobs' Redis is `redis-gate.service` on 127.0.0.1:6799
+  (`deploy/vps-runner/redis-gate.conf`: the four modules, `appendonly yes`
+  with `appendfsync always`, as CI's disposable Redis runs), wiped with
+  `FLUSHALL` before every sweep. The instances on 6379 (production), 6788
+  (dev1), 6791 (dev2) and 6798 (dev1 trade) are never touched.
+- `harness` and `cost-lane` are the owner's to dispatch: they compete with
+  everything on the box for its cores, and their rules (the harness section
+  above, and never beside each other) stand; the `concurrency` group keeps
+  them apart from each other and from a sweep.
+
+**Provisioning** is `deploy/vps-runner/provision.sh`, run as root on the box
+with a one-hour registration token:
+
+```sh
+gh api -X POST repos/conclavio/rustmush/actions/runners/registration-token --jq .token
+RUNNER_TOKEN=<that token> bash deploy/vps-runner/provision.sh
+```
+
+It is idempotent: the user, the runner (its tarball checked against the
+release's digest), rustup, the pinned toolchain, nextest, the Redis config
+and unit, the registration (once) and the service with its override. Rerun it
+after editing the files beside it. `gh api repos/conclavio/rustmush/actions/runners`
+shows the runner and whether it is online; `systemctl status
+actions.runner.conclavio-rustmush.conclav-vps` on the box says the same. The
+script's header says how to retire it.
 
 ## Discord bot (D1–D5): `[discord]`
 
