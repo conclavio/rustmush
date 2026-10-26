@@ -2359,11 +2359,14 @@ mod tests {
         // E7 cut 9 (OPEN 5): `mush_campaign::CAPABILITIES` joins them. A `force.*`
         // id missing here fails at REGISTRATION — `@org/grant` refuses it — rather
         // than silently at use, which is the whole point of the typo catcher.
+        // 17g C1b: the named launch's governed hardware capabilities join them,
+        // so the launch operator's `@org/grant`s on the importer's scopes land.
         for c in mush_economy::CAPABILITIES
             .iter()
             .chain(mush_housing::CAPABILITIES)
             .chain(mush_campaign::CAPABILITIES)
             .chain(registry_capabilities.iter())
+            .chain(NAMED_LAUNCH_HARDWARE_CAPABILITIES.iter())
         {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
@@ -2390,6 +2393,7 @@ mod tests {
                 + mush_housing::CAPABILITIES.len()
                 + mush_campaign::CAPABILITIES.len()
                 + registry_capabilities.len()
+                + NAMED_LAUNCH_HARDWARE_CAPABILITIES.len()
                 + administrative.len()
         );
         // …and a `force.*` id that is NOT declared is absent, so a typo'd grant

@@ -156,7 +156,38 @@ impl Registration {
         {
             return Err(bad("launch venue missing"));
         }
+        // 17g C1b: format 2's market identities, in the House check's shape:
+        // existence, ownership and kind only. Status is deliberately NOT
+        // checked here: the org's `OrgStatus`, the scope's `ScopeStatus`, an
+        // operator's GOING flag and the operators' grants are runtime states,
+        // re-checked by the recall and revocation providers on every offer and
+        // invocation (`registry_recall/authority.rs::observe`,
+        // `registry_revocation/authority.rs`). Suspending the Registry or
+        // retiring its scope is the designed kill switch, and a boot refusal
+        // would turn it into an outage. A destroyed clerk or operator does
+        // refuse, as a destroyed House publisher does: edit the deployment.
+        if let Some(market) = &self.deployment.market {
+            let authority = &market.registry_authority;
+            let player = |id: ObjId| world.get(id).is_some_and(|o| o.kind == ObjKind::Player);
+            if orgs.state().org(authority.organization).is_none()
+                || orgs
+                    .state()
+                    .scope(authority.scope)
+                    .is_none_or(|s| s.org != authority.organization)
+                || !player(market.clerk)
+                || !authority.operators.iter().all(|operator| player(*operator))
+            {
+                return Err(bad("named launch market identities disagree"));
+            }
+        }
         Ok(())
+    }
+    /// 17g C1b: the decoded deployment this launch registered. C1c reads its
+    /// format-2 market to compose the player market.
+    // C1c is the first non-test reader; this allowance goes with it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn deployment(&self) -> &LaunchDeployment {
+        &self.deployment
     }
     #[cfg(test)]
     pub(crate) fn check_buyer(

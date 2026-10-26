@@ -8,7 +8,8 @@
 //! 17g C1a builds the roster C1c will compose (plan §2.2, the order of §2.3)
 //! and reads the offers it projects in an empty Active world against the
 //! five classes of plan §7. C1b extends this file with the launch path
-//! (deployment format 2), and C1c with the composed launch market.
+//! (deployment format 2, `launch_world`): the first boot of the named launch
+//! through `game_modules`, House-only until C1c composes the launch market.
 use super::paid_purchase::{
     auth_account, open_wallet,
     runtime::{Running, STEP},
@@ -17,9 +18,12 @@ use super::paid_purchase::{
 use mush_config::config::Config;
 use mush_core::{GOD, ObjId, PerceivedRef};
 use mush_economy::{
-    AccountId as WalletId, Amount, CatalogRef, InstrumentId,
+    AccountId as WalletId, Amount, CatalogRef, InstrumentId, VaultId,
+    core_integration::ScopedCoreAccount,
     managed_entitlement::{GrossRecipientCut, Recipient},
 };
+use mush_industry::core_production::OriginAgent;
+use mush_inventory::Grade;
 use mush_market::{
     MarketId,
     mind_trade::{OriginalDuration, OriginalPrice, OriginalQuotePolicy, records::QuoteVenue},
@@ -30,7 +34,14 @@ use mush_store::ObjectStore;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use tacsim::{TacsimRuleset, composition::mind_commerce::MindCommerce};
+use tacsim::{
+    TacsimRuleset,
+    composition::mind_commerce::MindCommerce,
+    launch::{
+        HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
+        MarketTerms, NamedHouses, PlayerMarket, RegistryAuthority,
+    },
+};
 use tokio::time::timeout;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -216,13 +227,18 @@ async fn create(
         }
     }
 }
-/// The one `#<n>` a staff command's acknowledgement names after `marker`.
+/// The one number a staff command's acknowledgement names right after
+/// `marker` (`Created org #5.`, `Created: Depot(#12).`, `(id 3).`).
 fn created(lines: &[String], marker: &str) -> TestResult<u64> {
     let ids = lines
         .iter()
         .filter_map(|line| line.split_once(marker))
-        .filter_map(|(_, tail)| tail.split_whitespace().next())
-        .map(|id| id.trim_end_matches([';', '.']).parse::<u64>())
+        .map(|(_, tail)| {
+            tail.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse::<u64>()
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let [id]: [u64; 1] = ids
         .try_into()
@@ -723,15 +739,19 @@ async fn initialized_active(
             .any(|offer| offer.presentation().verb == "roll-initialize-commerce"),
         "GOD is offered the commerce initialization"
     );
-    // A `busy` disposition is the world refusing before custody (another
-    // action awaits its receipt); the offer is resubmitted within the guard.
+    submit_initialize(&server, "roll-initialize-commerce").await?;
+    server.stop().await?;
+    let server = active(config, store, &seeded).await?;
+    Ok((server, seeded))
+}
+/// GOD submits one parameterless initialize offer through the public path. A
+/// `busy` disposition is the world refusing before custody (another action
+/// awaits its receipt); the offer is resubmitted within the guard.
+async fn submit_initialize(server: &Running, verb: &str) -> TestResult {
     let end = tokio::time::Instant::now() + STEP;
     loop {
-        match server
-            .offer(GOD, "roll-initialize-commerce", json!({}))
-            .await
-        {
-            Ok(_) => break,
+        match server.offer(GOD, verb, json!({})).await {
+            Ok(_) => return Ok(()),
             Err(error)
                 if error.to_string().ends_with("disposition=busy")
                     && tokio::time::Instant::now() < end =>
@@ -741,9 +761,6 @@ async fn initialized_active(
             Err(error) => return Err(error),
         }
     }
-    server.stop().await?;
-    let server = active(config, store, &seeded).await?;
-    Ok((server, seeded))
 }
 /// One Active boot of the full roster, every principal connected. A restart
 /// composes its owners afresh, as a new process does.
@@ -793,4 +810,393 @@ async fn player_market_offers_follow_the_projection_rules() -> TestResult {
         Ok(())
     })
     .await?
+}
+
+// ---- 17g C1b: the named launch through `game_modules` ----------------------
+
+/// The named launch's two staff login accounts: GOD's, and the one holding the
+/// stock agent, the market clerk and the Registry operator.
+const LAUNCH_STAFF: &str = "launch-staff";
+const LAUNCH_STAFF_TWO: &str = "launch-staff-two";
+/// The named Houses: organization name and configured source name.
+const LAUNCH_HOUSES: [(&str, &str); 3] = [
+    ("Meridiani", "Meridiani Field Series"),
+    ("Coprates", "Coprates Drill"),
+    ("Tycho", "Safe Conduct"),
+];
+
+/// A staff command whose acknowledgement must contain `expect`. Legacy
+/// commands answer a refusal in text too, so the acknowledgement is read.
+async fn acknowledged(server: &Running, line: String, expect: &str) -> TestResult<Vec<String>> {
+    let lines = staff(server, line.clone()).await?;
+    check!(
+        lines.iter().any(|text| text.contains(expect)),
+        "{line} is acknowledged with {expect:?}: {lines:?}"
+    );
+    Ok(lines)
+}
+/// One `@create`d thing, carried by GOD.
+async fn made(server: &Running, name: &str) -> TestResult<ObjId> {
+    let lines = acknowledged(server, format!("@create {name}"), "Created: ").await?;
+    Ok(ObjId(u32::try_from(created(&lines, "(#")?)?))
+}
+/// One `@org/create`d organization.
+async fn organization(server: &Running, name: &str) -> TestResult<OrgId> {
+    let lines = acknowledged(server, format!("@org/create {name}"), "Created org #").await?;
+    Ok(OrgId(created(&lines, "Created org #")?))
+}
+/// One `@org/scope create`d scope of `org`.
+async fn org_scope(server: &Running, org: &str, name: &str) -> TestResult<OrgScopeId> {
+    let lines = acknowledged(
+        server,
+        format!("@org/scope create {org}={name}"),
+        "Created scope #",
+    )
+    .await?;
+    Ok(OrgScopeId(created(&lines, "Created scope #")?))
+}
+/// One acknowledged scoped org account.
+async fn org_account(server: &Running, org: &str, scope: OrgScopeId) -> TestResult<WalletId> {
+    let lines = acknowledged(
+        server,
+        format!("@account/open org:{org}/{}={CREDIT}", scope.0),
+        "Opened account #",
+    )
+    .await?;
+    Ok(WalletId(created(&lines, "Opened account #")?))
+}
+/// One `@org/grant` as GOD, acknowledged.
+async fn grant(
+    server: &Running,
+    actor: ObjId,
+    org: &str,
+    capability: &str,
+    scope: OrgScopeId,
+) -> TestResult {
+    acknowledged(
+        server,
+        format!(
+            "@org/grant #{}={org} {capability} scope=#{}",
+            actor.0, scope.0
+        ),
+        "Granted",
+    )
+    .await?;
+    Ok(())
+}
+
+/// 17g C1b: every named-launch identity, made in a plain boot (no launch
+/// path) by production paths only. These are the identities `setup_with(2)`
+/// and `Rig::provision` make in tacsim's launch suite:
+/// - characters through `create_player` and `link_character`. GOD, the House
+///   publisher and first stock agent, is on the `launch-staff` login; the
+///   caller creates both staff logins before the boot;
+/// - the counter room by `@dig`; the factory, the output container and the
+///   three stock containers by `@create`;
+/// - the Republic, the Registry and venue wallets, and a mint faucet;
+/// - each House's org, `publication` scope, treasury, three publisher grants,
+///   and one filing fee minted into the treasury;
+/// - the Basin importer's scopes, stock vaults, accounts, facility, title and
+///   agent grants;
+/// - the `Registry` org with its `review` scope, a clerk and an operator.
+///
+/// No `@instrument/register` (production already has `tacsim.credit`) and no
+/// direct world call. Nothing is granted to the operator: that is the
+/// Initialize step's. Returns the format-2 deployment in Initialize mode with
+/// the provisional terms. `deploy/instance/launch.json.example` follows its
+/// shape.
+async fn launch_world(
+    server: &Running,
+    store: &PurchaseFaultStore,
+) -> TestResult<LaunchDeployment> {
+    let staff_two = store
+        .list_accounts()
+        .await?
+        .into_iter()
+        .find(|account| account.name == LAUNCH_STAFF_TWO)
+        .and_then(|account| account.id)
+        .ok_or("the second staff login")?;
+    let login = (LAUNCH_STAFF_TWO, staff_two);
+    let agent = character(server, store, login, "LaunchAgent").await?;
+    let clerk = character(server, store, login, "MarketClerk").await?;
+    let operator = character(server, store, login, "RegistryOperator").await?;
+    let dug = acknowledged(server, "@dig Named launch counter".into(), "room number").await?;
+    let room = ObjId(u32::try_from(created(&dug, "room number #")?)?);
+    let factory = made(server, "Basin fitting shop").await?;
+    let output = made(server, "Basin completed work").await?;
+    let mut containers = Vec::new();
+    for name in [
+        "Basin die depot",
+        "Basin agent stock one",
+        "Basin agent stock two",
+    ] {
+        containers.push(made(server, name).await?);
+    }
+    let faction =
+        acknowledged(server, "@faction/create Republic".into(), "Created faction").await?;
+    let republic = mush_faction::FactionId(created(&faction, "(id ")?);
+    let registry = open_wallet(
+        server,
+        store,
+        PrincipalId::System(system("launch.registry")?),
+    )
+    .await?;
+    let venue = open_wallet(server, store, PrincipalId::System(system(VENUE)?)).await?;
+    let faucet = open_wallet(server, store, PrincipalId::System(system("launch.faucet")?)).await?;
+    let mut houses = Vec::new();
+    for (org, source_name) in LAUNCH_HOUSES {
+        let id = organization(server, org).await?;
+        let scope = org_scope(server, org, "publication").await?;
+        let treasury = org_account(server, org, scope).await?;
+        for capability in [
+            mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
+            "asset.title.transfer",
+            "economy.account.post",
+        ] {
+            grant(server, GOD, org, capability, scope).await?;
+        }
+        // Exactly one launch filing fee (100cr, in minor units).
+        acknowledged(
+            server,
+            format!("@econ/mint {}={} 10000", faucet.0, treasury.0),
+            "Minted",
+        )
+        .await?;
+        houses.push(HouseDeployment {
+            organization: id,
+            scope,
+            treasury,
+            publisher: GOD,
+            source_name: source_name.into(),
+        });
+    }
+    let [meridiani, coprates, tycho]: [HouseDeployment; 3] =
+        houses.try_into().map_err(|_| "three named houses")?;
+    // The Basin importer, as `Rig::provision` builds it.
+    let importer = organization(server, "Basin").await?;
+    let stock_scope = org_scope(server, "Basin", "die-stock").await?;
+    let factory_scope = org_scope(server, "Basin", "factory").await?;
+    let mut vaults = Vec::new();
+    for (i, container) in containers.iter().enumerate() {
+        let lines = acknowledged(
+            server,
+            format!(
+                "@vault/create HardwareStock{i}=container:#{} owner=org:Basin scope={}",
+                container.0, stock_scope.0
+            ),
+            "Created vault #",
+        )
+        .await?;
+        vaults.push(VaultId(created(&lines, "Created vault #")?));
+    }
+    let [depot, stock_one, stock_two]: [VaultId; 3] =
+        vaults.try_into().map_err(|_| "three stock vaults")?;
+    let supplier = org_account(server, "Basin", stock_scope).await?;
+    let integrator = org_account(server, "Basin", factory_scope).await?;
+    acknowledged(
+        server,
+        format!("@facility/open {}=2 core_integration core_refit", factory.0),
+        "opened with",
+    )
+    .await?;
+    acknowledged(
+        server,
+        format!("@facility/owner {}=org:Basin", factory.0),
+        "re-assigned",
+    )
+    .await?;
+    acknowledged(
+        server,
+        format!(
+            "@asset/title #{}=org:Basin scope={}",
+            factory.0, factory_scope.0
+        ),
+        "Title recorded",
+    )
+    .await?;
+    for actor in [GOD, agent] {
+        for capability in ["industry.core_die.issue", "vault.deposit", "vault.withdraw"] {
+            grant(server, actor, "Basin", capability, stock_scope).await?;
+        }
+        for capability in ["industry.core.integrate", "industry.core.refit"] {
+            grant(server, actor, "Basin", capability, factory_scope).await?;
+        }
+    }
+    // The player market's Registry, as `setup_with(2)` makes it.
+    let registry_org = organization(server, "Registry").await?;
+    let review = org_scope(server, "Registry", "review").await?;
+    let recipient = |owner: &str, account: WalletId| -> TestResult<Recipient> {
+        Ok(Recipient {
+            account,
+            owner: PrincipalId::System(system(owner)?),
+        })
+    };
+    Ok(LaunchDeployment {
+        format: 2,
+        mode: LaunchMode::Initialize,
+        registry_issuer: system("hardware.factory")?,
+        registry: recipient("launch.registry", registry)?,
+        venue: LaunchVenue {
+            name: MarketId::new("launch.counter").ok_or("counter venue")?,
+            room,
+            recipient: recipient(VENUE, venue)?,
+        },
+        houses: NamedHouses {
+            meridiani,
+            coprates,
+            tycho,
+        },
+        republic,
+        hardware: HardwareCoordinates {
+            importer,
+            stock_scope,
+            depot,
+            agents: [
+                OriginAgent {
+                    actor: GOD,
+                    stock: stock_one,
+                },
+                OriginAgent {
+                    actor: agent,
+                    stock: stock_two,
+                },
+            ],
+            grades: [Grade::new(10)?, Grade::new(20)?, Grade::new(30)?],
+            supplier_account: supplier,
+            integrator: ScopedCoreAccount {
+                account: integrator,
+                organization: importer,
+                scope: factory_scope,
+            },
+            factory,
+            output_container: output,
+        },
+        market: Some(PlayerMarket {
+            clerk,
+            registry_authority: RegistryAuthority {
+                organization: registry_org,
+                scope: review,
+                operators: vec![operator],
+            },
+            terms: MarketTerms::PROVISIONAL,
+        }),
+    })
+}
+/// Write the deployment where `[tacsim.minds].launch_path` names it.
+fn write_launch(path: &std::path::Path, deployment: &LaunchDeployment) -> TestResult {
+    std::fs::write(path, serde_json::to_vec_pretty(deployment)?)?;
+    Ok(())
+}
+
+/// 17g C1b test 5: the first boot of the named launch through `game_modules`,
+/// the production composition (`Running::boot(.., None)` reads
+/// `[tacsim.minds].launch_path`). A format-2 deployment, its identities made
+/// by `launch_world`, boots Initialize. The operator's two runbook grants are
+/// made, and `roll-initialize-commerce` and the three industry initialize
+/// offers commit through the public offer path. Then Active boots, stops and
+/// boots again. Format 2 composes the House chain only until C1c.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_launch_format_two_initializes_and_activates_through_game_modules() -> TestResult {
+    let data_dir = std::env::temp_dir().join(format!(
+        "mush-named-launch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&data_dir)?;
+    let result = timeout(STEP * 10, async {
+        let mut config = config();
+        config.server.data_dir = data_dir.clone();
+        let store = Arc::new(PurchaseFaultStore::new());
+        auth_account(&store, LAUNCH_STAFF, Some(GOD)).await?;
+        auth_account(&store, LAUNCH_STAFF_TWO, None).await?;
+        let mut server = Running::boot(&config, store.clone(), None).await?;
+        server.connect(GOD).await?;
+        let mut deployment = launch_world(&server, &store).await?;
+        server.stop().await?;
+        check_eq!(deployment.format, 2);
+        let market = deployment.market.clone().ok_or("a format-2 market")?;
+        check_eq!(&market.terms, &MarketTerms::PROVISIONAL);
+        eprintln!(
+            "NAMED_LAUNCH_DEPLOYMENT {}",
+            serde_json::to_string(&deployment)?
+        );
+        let path = data_dir.join("launch.json");
+        write_launch(&path, &deployment)?;
+        config.tacsim.minds.launch_path = Some(path.display().to_string());
+        // Initialize, through `game_modules`.
+        let mut server = Running::boot(&config, store.clone(), None).await?;
+        server.connect(GOD).await?;
+        let authority = &market.registry_authority;
+        for operator in &authority.operators {
+            for capability in ["roll.registry.recall", "roll.registry.revoke"] {
+                grant(&server, *operator, "Registry", capability, authority.scope).await?;
+            }
+        }
+        for verb in [
+            "roll-initialize-commerce",
+            "initialize-core-die-stock",
+            "initialize-core-factory",
+            "initialize-core-refit",
+        ] {
+            submit_initialize(&server, verb).await?;
+        }
+        server.stop().await?;
+        // Active, and a restart of Active: each a fresh composition.
+        deployment.mode = LaunchMode::Active;
+        write_launch(&path, &deployment)?;
+        for _ in 0..2 {
+            let mut server = Running::boot(&config, store.clone(), None).await?;
+            server.connect(GOD).await?;
+            // The Active launch composed its industry hardware, and the four
+            // Initialize commits survived the restart: GOD, an origin agent
+            // with the importer's grants, is offered the Active issue verb and
+            // no initialize verb (`core_production/provider.rs` offers Issue
+            // only to an Active, initialized origin).
+            let verbs: Vec<String> = legal(&server, GOD)
+                .await?
+                .iter()
+                .map(|offer| offer.presentation().verb.as_str().to_owned())
+                .collect();
+            check!(
+                verbs.iter().any(|verb| verb == "issue-core-die"),
+                "the Active launch offers GOD issue-core-die: {verbs:?}"
+            );
+            for initialize in [
+                "roll-initialize-commerce",
+                "initialize-core-die-stock",
+                "initialize-core-factory",
+                "initialize-core-refit",
+            ] {
+                check!(
+                    !verbs.iter().any(|verb| verb == initialize),
+                    "the Active launch still offers {initialize}: {verbs:?}"
+                );
+            }
+            // INTERIM (C1c replaces this): the granted operator is offered no
+            // Registry action, because format 2 composes no market owner yet.
+            for operator in &authority.operators {
+                server.connect(*operator).await?;
+                let offered = legal(&server, *operator).await?;
+                // The positive control: the operator's offer read works on this
+                // boot, so the absence below is not an empty read.
+                check!(
+                    !offered.is_empty(),
+                    "the connected operator is offered the launch's generic actions"
+                );
+                check!(
+                    !offered
+                        .iter()
+                        .any(|offer| OPERATOR_GATED.contains(&offer.presentation().verb.as_str())),
+                    "no Registry action before C1c composes the market"
+                );
+            }
+            server.stop().await?;
+        }
+        Ok(())
+    })
+    .await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+    result?
 }

@@ -1,0 +1,91 @@
+{
+  "format": 2,
+  "mode": "initialize",
+  "registry_issuer": "hardware.factory",
+  "registry": {
+    "account": 25,
+    "owner": {
+      "System": "launch.registry"
+    }
+  },
+  "venue": {
+    "name": "launch.counter",
+    "room": 751,
+    "recipient": {
+      "account": 26,
+      "owner": {
+        "System": "launch.venue"
+      }
+    }
+  },
+  "houses": {
+    "meridiani": {
+      "organization": 24,
+      "scope": 25,
+      "treasury": 28,
+      "publisher": 1,
+      "source_name": "Meridiani Field Series"
+    },
+    "coprates": {
+      "organization": 25,
+      "scope": 27,
+      "treasury": 29,
+      "publisher": 1,
+      "source_name": "Coprates Drill"
+    },
+    "tycho": {
+      "organization": 26,
+      "scope": 29,
+      "treasury": 30,
+      "publisher": 1,
+      "source_name": "Safe Conduct"
+    }
+  },
+  "republic": 2,
+  "hardware": {
+    "importer": 27,
+    "stock_scope": 31,
+    "depot": 130,
+    "agents": [
+      {
+        "actor": 1,
+        "stock": 131
+      },
+      {
+        "actor": 748,
+        "stock": 132
+      }
+    ],
+    "grades": [
+      10,
+      20,
+      30
+    ],
+    "supplier_account": 31,
+    "integrator": {
+      "account": 32,
+      "organization": 27,
+      "scope": 32
+    },
+    "factory": 752,
+    "output_container": 753
+  },
+  "market": {
+    "clerk": 749,
+    "registry_authority": {
+      "organization": 28,
+      "scope": 34,
+      "operators": [
+        750
+      ]
+    },
+    "terms": {
+      "price_minor": 40000,
+      "renewal_price_minor": 40000,
+      "quote_seconds": 300,
+      "renewal_offer_ic_seconds": 259200,
+      "resale_offer_seconds": 86400,
+      "charter_settle_ic_seconds": 259200
+    }
+  }
+}

@@ -3,12 +3,14 @@
 mod admission;
 mod content;
 mod deployment;
+// 17g C1b: format 2's typed player-market policies; C1c composes them.
+mod market;
 pub(crate) mod registration;
 mod venue;
 pub use content::LaunchRecipe;
 pub use deployment::{
     HardwareCoordinates, HouseDeployment, LaunchDeployment, LaunchMode, LaunchVenue,
-    MAX_DEPLOYMENT_BYTES, NamedHouses,
+    MAX_DEPLOYMENT_BYTES, MarketTerms, NamedHouses, PlayerMarket, RegistryAuthority,
 };
 pub(crate) use registration::Registration;
 
