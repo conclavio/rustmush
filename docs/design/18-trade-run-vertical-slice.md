@@ -3551,6 +3551,13 @@ every open ruling in this document and in 16c §5; recorded here, binding):
   both is no longer refused by it; a ring of 128 young markers refuses the next move from that endpoint.
   **Ratified as built (IC14 O7)**; the un-pruned rings of endpoints that stop writing (IC14 O10) stay
   the remaining bound of §9 risk 19.
+  **As built (doc 20 cut SM.12c-lane, `389383f1`, 2026-10-26; O-22):** one exception. A ring entry
+  may carry its own horizon (`RingEntry.keep_s`, never longer than the day), and the surface
+  unload's hopper markers keep one real hour (`UNLOAD_MARKER_KEEP_S` = 3,600 real seconds), since
+  that act's durable replay guard once it lands is the rig record's ordinal in the same bundle;
+  every other marker keeps the day, and E7c2's D1 holds inside each marker's own horizon. The floor
+  of the newest 32 and the cap of 128 are unchanged. O-22 is the lead's default, standing until the
+  owner rules (doc 20 §15, §16).
 - **Q-18-42 to Q-18-70 — every default as the tree took it is ratified**, including the three IC14
   changed: a seller cannot dispute their own sale into a bid (Q-18-64, O2); an explicit consumable buy
   holds under `HELD_SHORT_FOR_DEPART` only when the later consumable orders before the next depart would

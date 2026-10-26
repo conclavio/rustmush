@@ -1156,6 +1156,34 @@ remedy. No staff close or bring-in verb exists yet (O-17):
   as the dispatcher (+tv/{n} unload go) to start it again." — a stalled rig; the
   bare `+tv/{n} unload` only previews (the text names `go` since `f171b36c`).
 
+### The cost lane by hand (surface mining, doc 20 cut SM.12c-lane)
+
+No CI job runs the surface-mining cost lane (the owner's O-28 default (i),
+provisional); the `ci.yml` comment block "Doc 20 cut SM.12c-lane" names it. Run
+it by hand, from anywhere in the tree, under bash:
+
+```sh
+scripts/cost-lane.sh
+```
+
+Run it **after `scripts/harness-weekly.sh`, never beside it, and never on a host
+serving players**: the month competes with everything else on the box for its
+cores, and its timing figures are the box's own. It runs two release tests in
+order — the surface tick's gate at ten TVs, then the `#[ignore]`d IC month — with
+`TACSIM_ASSERT=1`, and writes **`cost-lane.json` at the repository root**
+(ignored by `.gitignore`'s `/cost-lane*.json`). `TACSIM_COHORT_TVS` is **30 by
+default** (the script sets it when unset): the test's own default, 64, STOPs at
+the kit-up, because the economy's per-party cap of 32 live contracts
+(`mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY`) binds Occator, the Co-op and the
+Registry past 30 TVs — an engine cap, the owner's (O-19c), never raised by the
+lane. `TACSIM_COHORT_IC_DAYS` (1 to 30, default 30) shortens the month; 5 is the
+smoke. The month at 30 TVs took about 7.5 minutes on the build box.
+
+**Rollback.** The cut's decision (c) keeps the surface unload's hopper markers one
+real hour (`RingEntry.keep_s`; every other marker keeps the day). A build from
+before SM.12c-lane cannot decode a hopper ring that carries `keep_s`, so a
+rollback past this cut fails to read those rings; harmless pre-launch.
+
 ### Held launches: `@tacsim/port clear #<hull>`
 
 A filed passage whose launch cannot happen (the destination domain paused, the
