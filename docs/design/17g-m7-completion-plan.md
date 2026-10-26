@@ -343,3 +343,144 @@ As built, against §3 C0:
   the 365/3 and 90-day terms.
 - **Deploy note.** The House filing action's definition digest moves with its
   term, so the next deploy of a launch world takes a fresh store (§6).
+
+### C1 — plan (2026-10-25, branch `claude/m7-c1-player-market`)
+
+As planned against §3 C1 in three sub-cuts, revised after two review lenses (plan:
+plan-data/m7-completion/cuts/C1/plan.md, §10 dispositions). **C1a, builder
+completeness, the resale fence and the first act.** `MindCommerce` gains
+`with_mind_renewals(RenewalPolicy)`, `with_mind_renewal_service`,
+`with_author_withdrawal`, `with_owner_attestations` and
+`with_owner_parent_qualification`. They are shaped like the House renewal pair and
+threaded through `configure_economy` and `configure_market`; the Roll config carries
+the flags. Composing paid resale beside the launch's transferable Coprates Pin would
+let a Republic member resell it to a non-member, because the resale reader never
+consults `HouseBuyerAdmission`. So C1a adds `PaidResaleWriter::with_buyer_admission`,
+checked at the buyer's Accept and Fund for House-born licences.
+`with_house_minds_and_admission` stores the admission and `with_paid_mind_resales`
+installs it. This is the conservative reading of the 2026-10-18 ruling, proven in the
+House resale fixture inside the original-purchase CI story and sent to the owner. 17g
+§6 risk 1's test lands here: a mush-server lib test boots the whole roster through
+`boot::game_modules_with_mind_commerce`, through Initialize, the real
+`roll-initialize-commerce` receipt, Active and a restart. The order follows the real
+guards: v2 source purchases before forks; forks, the marked Registry and dependent
+filing before entitlements; renewals after entitlements; pending charters after
+charter transfers; re-qualification after dependent owners; the House admission before
+paid resale. Revocation-first and resale-after-personal-purchases are conventions, not
+guards: `with_registry_revocation` rebuilds both configs anyway.
+
+**The census reads the as-built projection rules, which are the no-oracle design.**
+Most player-market offers go to every live player, or to every player at the counter,
+never only to holders. So the census has five classes. Recall and revocation go to
+granted operators only. The service steps appear only with a live intent, so they are
+absent in an empty world (a vacuous check, stated as such). The non-refund v3/derived
+and v2 list and quote steps are counter-gated. The v2 Expire step is God-only.
+Everything else is generic. The privacy property is byte-identity: projected actions,
+minus their offer ids, are identical across same-room principals. The story adds the
+invocation side: God's resale plan on the buyer's House Pin refuses with the same
+bytes as for a nonexistent licence. **C1b, format 2.** `LaunchDeployment` gains an
+optional
+`market: PlayerMarket { clerk, registry_authority: { organization, scope, operators ≤ 32 }, terms: MarketTerms }`.
+Format 1 forbids it and serializes byte-identically, so its `launch_deployment`
+identity does not move and it keeps booting House-only. The terms carry tuning only.
+Doc 17's 90-day term, 3-day Grace and 50‰ levy stay content constants; the personal
+venue cut is 0, and licences are transferable policy-wide.
+`tacsim::launch::market::policies` builds the typed policies; the entitlement policy's
+own validation still runs at Active composition. Finalize checks existence, ownership
+and kind only, like the House check. The providers re-check org and scope status,
+GOING and grants on every offer, so the Registry's kill switch (a suspended org, a
+retired scope) never becomes a boot refusal. C1b adds no command: the review replaced
+`@mind/launch registry` with the baseline `@org/grant`, which already makes the
+exact-scope, non-delegable grant through `mush_org::api::submit`. A new tacsim writer
+of org authority would have broken legacy-handler rule 1. The first production boot of
+the named launch through `game_modules` uses production commands only, under a stop
+rule.
+
+**C1c** composes the market after the House chain in the Active branch. Bare
+`@mind/launch` prints a deployment-rendered market line, which pays the remainder to
+the charter owner (to the seller on resale), says v2 Pins do not renew, and says the
+shared verbs wait for C2. For God only, a read-only readiness line asks
+`authorize_in_world`, so an ineffective grant reads as lacking. C1c moves the named
+launch story to format 2 with the grant at Initialize, proves parity by a real Active
+`build_engine` boot on the same store with equal offer route tables, and measures a
+reboot with changed terms, pinning whichever outcome it finds.
+**Provisional defaults (ruling 6):** a personal Pin and its renewal at 400cr (one
+policy-wide price, as built); a 300 s quote; a 3 IC-day renewal offer; a one-real-day
+resale offer; 3 IC days to settle a pending charter; the clerk a deployment-named
+character, never #1; one operator, the owner's staff character, granted with
+`@org/grant`. **Departures:** the boot test and the resale fence land in C1a.
+`launch_path` is documented rather than live in the templates, because bring-up is
+two-phase by construction (finalize needs identities only a booted world can create,
+and `instance.env` cannot say unset). That departure needs the lead's OK before C1c,
+and the runbook opens by saying the dev worlds compose no mind commerce until an owner
+decision makes the path live. **Gate reading:** C1 proves boot, restart and listing
+with an empty market. Per-step restart and unknown-acknowledgement recovery for the
+new owners belong to C4. **For C2:** split `paid-mind-resale` and the
+`market-original-mind-*` shared verbs, and note that the web legal-action form already
+reaches them. Two personal listing protocols are live. The price and transferability
+are policy-wide, so `@mind/publish … price=…` and an author's non-transferable mark
+need owner changes. **Owner questions** (to 17g §5): a live `launch_path` mechanism,
+and whether a resale counts as a new purchase for Coprates.
+
+Sub-cuts:
+- **C1a** MindCommerce builder completeness, the Coprates fence on paid resale, and the
+  production-roster boot test
+- **C1b** LaunchDeployment format 2 and its market identities
+- **C1c** Compose the player market in the launch Active branch, and C1's gate
+
+Provisional defaults (17g section 1 ruling 6):
+- Personal Pin price 400cr (40,000 minor), one policy-wide price as built for original
+  v2, original v3 and derived v1 listings (MarketTerms.price_minor)
+- Personal renewal price 400cr (MarketTerms.renewal_price_minor)
+- Personal quote window 300 real seconds, as the House quote (MarketTerms.quote_seconds)
+- Personal renewal offer window 3 IC days, 259,200 s (17f §2.3;
+  MarketTerms.renewal_offer_ic_seconds)
+- Paid-resale offer window 86,400 real seconds, the MAX_OFFER_SECONDS ceiling
+  (MarketTerms.resale_offer_seconds)
+- Pending-charter settlement window 3 IC days, 259,200 s (D-UM-40
+  transfer_settle_ic_days, Q-UM-18 written default; MarketTerms.charter_settle_ic_seconds)
+- Personal term 90 IC days and Grace 3 IC days, from content::TERM_SECONDS /
+  GRACE_SECONDS (doc 17 limits), not deployment fields
+- Registry levy 50 permille on personal sales and renewals to the deployment's Registry
+  recipient, from content::LEVY_PERMILLE (doc 17's Compact levy), not a deployment field
+- Venue cut 0 on personal listings and renewals (17f §2.3 direct author listing); venue
+  name the launch counter's
+- Personal licences transferable, policy-wide (D-UM-40 default); the author's
+  per-listing non-transferable mark is not built and is flagged for C2
+- Filing fee 100cr unchanged (content::FILING_MINOR), personal and House
+- Aggregate parent royalty cap 300 permille unchanged (code constant
+  MAX_ROYALTY_PERMILLE), not configurable in C1
+- Service actor for pending charters and paid resale: a deployment-named live character
+  (runbook name Market Clerk, created with @newchar on the staff account), never #1
+  (refused at decode)
+- Personal and House renewal services act as #1 by their fixed as-built protocols
+  (service_actor 1); not configurable in C1
+- Registry operators: deployment-named, 1 to 32, strictly ascending; runbook default one
+  operator, the owner's staff character (#1 on a fresh store)
+- Registry authority: a Registry org with a review scope, distinct from the three Houses
+  and the hardware importer
+- Operator grants: roll.registry.recall and roll.registry.revoke, exact scope,
+  non-delegable, no limit, no validity window, made with the existing @org/grant by #1
+  at Initialize (runbook step; no new command)
+- God-only read-only readiness line under bare @mind/launch reports each operator as
+  ready or lacking, through mush_org::authorize_in_world
+- Coprates fence on resale: a resold House Pin's buyer must pass that House's buyer
+  admission (Coprates: current Republic membership) at Accept and Fund; conservative
+  reading of the 2026-10-18 ruling, owner question queued for 17g §5
+- Finalize checks the market identities for existence, ownership and kind only;
+  org/scope status, GOING and grants are runtime states the providers check, so the
+  Registry kill switch never refuses a boot
+- Deployment price ceiling at decode: 100,000,000 minor (1,000,000cr) for price_minor
+  and renewal_price_minor
+- Format-2 deployments require the Registry recipient to be a system principal (the
+  personal price policy's recipient type)
+- Market help line wording: remainder to the charter owner (to the seller on resale), v2
+  market-original-mind-offer Pins do not renew, shared verbs wait for the C2 commands
+- launch_path is documented and commented in deploy/instance/mushd.toml.tmpl (under the
+  commented [tacsim.minds] header), with deploy/instance/launch.json.example and a
+  deploy/README.md runbook; not set live (needs the lead's OK and an owner decision);
+  dev worlds compose no mind commerce until it is live
+- A terms change on an initialized format-2 world: behaviour measured by C1c test 7 and
+  recorded as found; a change after licences exist is untested
+- A world initialized under format 1 is not promised to boot under format 2; the market
+  starts on a fresh store
