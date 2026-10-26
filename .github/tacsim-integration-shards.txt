@@ -1,6 +1,7 @@
 # tacsim's integration test targets (one per crates/tacsim/tests/*.rs), split
 # across the `test` job's `tacsim-integration-N` shards in .github/workflows/ci.yml.
-# `scripts/ci-tacsim-shard.sh N` runs line N as `cargo test -p tacsim --test ...`.
+# `scripts/ci-tacsim-shard.sh N` runs line N as `cargo nextest run -P ci -p tacsim
+# --test ...` (nextest since cut T.1, 2026-10-26: the shard's binaries in one pool).
 #
 # Four shards since 2026-10-26 (cut T.0), balanced longest-first by each
 # binary's mean execution time over main's green runs 40259028915, 40266288970

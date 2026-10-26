@@ -31,6 +31,10 @@
 //!   twin's name as the filter, so its Redis branch ran in no job at all.)
 //!   A unit test under `src/` must be named verbatim: `-p <pkg> --lib` with a
 //!   filter proves nothing about a *different* gated test in the same crate.
+//!   A `cargo nextest run` line reads the same way (test-strategy cut T.1):
+//!   its filterset (`-E 'test(=name)'`, `--filterset`) is a filter, and its
+//!   own value-taking options (`--build-jobs 2`, `--run-ignored only`,
+//!   `-P ci`) are not.
 //!
 //! Tests whose names merely end in `_gated` in the English sense
 //! (`chown_is_power_gated`, `harm_is_staff_gated`) are not backend-gated: they
@@ -249,9 +253,10 @@ fn discovered_tests(root: &Path) -> Vec<DiscoveredTest> {
     tests
 }
 
-/// Cargo's own options (before `--`) that take a value as the next word, so
-/// the value is not read as a test-name filter.
-const CARGO_VALUE_OPTIONS: [&str; 14] = [
+/// Cargo's and nextest's own options (before `--`) that take a value as the
+/// next word, so the value is not read as a test-name filter. `-j` is cargo's
+/// build jobs and nextest's test threads: a value either way.
+const VALUE_OPTIONS: [&str; 22] = [
     "-p",
     "--package",
     "--test",
@@ -266,7 +271,21 @@ const CARGO_VALUE_OPTIONS: [&str; 14] = [
     "--bench",
     "--manifest-path",
     "--color",
+    // nextest's.
+    "-P",
+    "--build-jobs",
+    "--test-threads",
+    "--run-ignored",
+    "--partition",
+    "--cargo-profile",
+    "--config-file",
+    "--tool-config-file",
 ];
+
+/// nextest's filterset options: the expression they take is a test filter,
+/// however it is spelled (`-E 'test(=name)'`, `-E'test(name)'`,
+/// `--filterset=...`).
+const FILTERSET_OPTIONS: [&str; 2] = ["-E", "--filterset"];
 
 /// **Whether `workflow` invokes the integration target** `<target>` of
 /// `<package>` (17b cut M2.7): some line holds `-p <package> --test
@@ -282,7 +301,9 @@ const CARGO_VALUE_OPTIONS: [&str; 14] = [
 /// that needs the backend runs only under a job that sets `REDIS_URL` — where
 /// a filtered step is as blind to the file's other tests as it is for an
 /// `#[ignore]`d one. (`whole = false` answers only whether the target is
-/// named at all; the unit test below pins the difference.)
+/// named at all; the unit test below pins the difference.) A `cargo nextest
+/// run` line is read the same way: a filterset is a filter, and nextest's
+/// value-taking options are skipped with their values.
 fn invokes_target(workflow: &str, package: &str, target: &str, whole: bool) -> bool {
     let needle = format!("-p {package} --test {target}");
     workflow.lines().any(|line| {
@@ -300,7 +321,13 @@ fn invokes_target(workflow: &str, package: &str, target: &str, whole: bool) -> b
                     break;
                 }
                 if word.starts_with('-') {
-                    if CARGO_VALUE_OPTIONS.contains(&word) {
+                    if FILTERSET_OPTIONS
+                        .iter()
+                        .any(|option| word.starts_with(option))
+                    {
+                        return false;
+                    }
+                    if VALUE_OPTIONS.contains(&word) {
                         let _ = words.next();
                     }
                     continue;
@@ -344,6 +371,29 @@ fn a_gated_test_is_covered_only_by_an_unfiltered_invocation_of_its_target() {
         "arena_win_rate",
         true
     ));
+    // nextest's spelling: its value-taking options are not filters, and a
+    // filterset is one, with or without a space before the expression.
+    assert!(invokes_target(
+        "cargo nextest run -P ci -p mushd --test persistence --build-jobs 2 --run-ignored only",
+        "mushd",
+        "persistence",
+        true
+    ));
+    for filtered in [
+        "cargo nextest run -p tacsim --test twin -E 'test(=m2_one)' --run-ignored only",
+        "cargo nextest run -p tacsim --test twin -E'test(m2_one)'",
+        "cargo nextest run -p tacsim --test twin --filterset 'test(/m2_/)'",
+        "cargo nextest run -p tacsim --test twin m2_one --build-jobs 2 -- --ignored --exact",
+    ] {
+        assert!(
+            !invokes_target(filtered, "tacsim", "twin", true),
+            "{filtered}"
+        );
+        assert!(
+            invokes_target(filtered, "tacsim", "twin", false),
+            "{filtered}"
+        );
+    }
 }
 
 #[test]

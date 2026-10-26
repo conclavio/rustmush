@@ -1,0 +1,110 @@
+# cargo-nextest's configuration (test-strategy cut T.1, 2026-10-26).
+#
+# nextest runs every test in a process of its own and schedules the whole
+# invocation's tests into one pool, across binaries, where `cargo test` runs
+# one binary at a time with the harness's threads inside it. That is where the
+# shards' idle tail goes (a binary with one slow test held its shard while the
+# other threads sat empty), and it is also why the serialization the tree
+# does with in-binary mutexes has to be restated here: a `static Mutex` in a
+# test file serializes the tests of one process, and under nextest each test
+# is its own process. The locks the tree holds, and what each becomes:
+#
+#   mush-store/tests/redis_suite.rs            REDIS_LOCK   db 0, wipes namespaces
+#   mush-gateway/tests/authoritative_process_kill.rs  PROCESS_LOCK  db 0, kills children
+#   mushd/tests/durability_e2e.rs              CHILD_LOCK   BGSAVE is instance-wide
+#   mush-bot/tests/arena_e2e.rs                ARENA        one arena world at a time
+#   tacsim/tests/cost_lane.rs                  LANE_LOCK    timing that feeds a gate
+#
+# Under `cargo test` each of those binaries ran its tests one at a time with
+# nothing else running (cargo runs binaries one after another, and the
+# binary's other threads waited on the lock), so each of them ran ALONE. The
+# `threads-required = "num-test-threads"` override below keeps exactly that:
+# a test of those binaries takes the whole pool while it runs. A later cut
+# can relax one with the JUnit timings this cut starts collecting.
+#
+# Every binary that reads REDIS_URL is in the `redis` group (one at a time):
+# they share the instance (logical dbs 0-15, wiped per test; BGSAVE is
+# instance-wide), which is what `redis-faults` runs with `--test-threads=1`.
+# The group only bites when REDIS_URL is set; without it those tests take
+# their in-memory or skip branch.
+#
+# The load-sensitive suites (the 16b doc's list: the ones that flaked under a
+# loaded box and passed alone) are the `load-sensitive` group, two at a time,
+# with one retry: a pass on retry is reported FLAKY, in the run's final
+# status and in the JUnit report, never silently.
+#
+# Profiles: `default` is the local run (eight test threads on the owner's
+# sixteen-thread box, nothing terminated, every slow test named at 60 s);
+# `ci` (`-P ci`) is the test job's: no fail-fast, a hung test terminated at
+# 20 min instead of holding the job to its 120-minute timeout, and the JUnit
+# report at target/nextest/ci/junit.xml, which each shard uploads. Doc-tests
+# are not nextest's: every `cargo nextest run` sweep in CI has a
+# `cargo test --doc` beside it.
+#
+# `cargo nextest show-config test-groups -p <pkg>` lists the groups and their
+# members; `cargo nextest run -p <pkg>` is the local sweep (`-E 'test(name)'`
+# filters, `--run-ignored only` for the #[ignore]d).
+
+nextest-version = "0.9.148"
+
+[test-groups]
+# Everything that reads REDIS_URL: one live Redis, shared.
+redis = { max-threads = 1 }
+# The suites that flake under load: two at a time, the rest of the pool
+# filled by other binaries' tests.
+load-sensitive = { max-threads = 2 }
+
+[profile.default]
+# The local run. Half the owner's sixteen logical threads: the box is shared
+# with other sessions and a compile (cargo's own `jobs` stays what
+# ~/.cargo/config.toml says). `-j N` on the command line overrides.
+test-threads = 8
+# The whole picture, as `cargo test --no-fail-fast`.
+fail-fast = false
+# Name every test slower than a minute; terminate nothing locally.
+slow-timeout = { period = "60s" }
+# Slow tests and flaky passes listed at the end, beside failures.
+final-status-level = "slow"
+
+# The in-binary locks, as they ran under cargo test: alone.
+[[profile.default.overrides]]
+filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-gateway::authoritative_process_kill) | binary_id(mushd::durability_e2e) | binary_id(mush-bot::arena_e2e) | binary_id(tacsim::cost_lane)'
+threads-required = "num-test-threads"
+
+# Every REDIS_URL reader (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs
+# is the census of the integration ones; the two lib proofs are mush-server's
+# persist and timeline tests, #[ignore]d, both named `redis`).
+[[profile.default.overrides]]
+filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suite) | binary_id(mushd::persistence) | binary_id(mushd::durability_e2e) | binary_id(mushd::m10c_e2e) | binary_id(mush-server::authoritative_boot) | binary_id(mush-gateway::authoritative_process_kill) | binary_id(mush-contract-tests::scale_harness) | (binary_id(mush-server) & test(~redis))'
+test-group = 'redis'
+
+# The load-sensitive suites (16b: "passed alone twice" was the flake rule),
+# two at a time and one retry. A pass on retry is FLAKY in the final status
+# and a <flakyFailure> in the JUnit report, never a silent pass; a broken
+# test fails twice. (An override's filter cannot name a group, so the retry
+# rides on this one override rather than on a `ci`-only twin of this list.)
+[[profile.default.overrides]]
+filter = 'binary_id(mushd::scripting_e2e) | binary_id(mushd::sim_reflex) | binary_id(mushd::load_soak) | binary_id(mushd::world_fault) | binary_id(mushd::observer_rule) | binary_id(mushd::arena_story) | binary_id(mush-gateway::two_process_e2e) | binary_id(mush-gateway::supervision_abandoned) | binary_id(mush-gateway::server_panic_relaunch) | binary_id(mush-gateway::restart_survival) | binary_id(mush-gateway::arena_story_split) | binary_id(mush-server::ipc_authoritative_action) | binary_id(mush-server::ipc_teardown) | binary_id(mush-worldgen::plan) | binary_id(mush-worldgen::review_plan) | binary_id(mush-worldgen::s8_authority) | (binary_id(mush-sim) & test(~e7c6_b2)) | (binary_id(mush-server) & test(~what_still_waits))'
+test-group = 'load-sensitive'
+retries = 1
+
+[profile.ci]
+# The hosted runner's four threads, all of them (`num-cpus` is nextest's
+# default; named so the local eight above is read as the exception).
+test-threads = "num-cpus"
+# A shard runs to the end and reports every failure, as `--no-fail-fast`.
+fail-fast = false
+# A test past a minute is named as it runs; past twenty, it is terminated
+# (SIGTERM, then SIGKILL after the 10 s grace) and fails, where `cargo test`
+# held the job to its 120-minute timeout and took the shard's log with it.
+slow-timeout = { period = "60s", terminate-after = 20 }
+# Failures and flaky passes at the end; slow tests are in the JUnit times.
+final-status-level = "flaky"
+
+[profile.ci.junit]
+# target/nextest/ci/junit.xml: one <testsuite> a binary, one <testcase> a
+# test with its time, <flakyFailure> for a pass on retry. Each shard uploads
+# it as `nextest-junit-<shard>`; the per-test times are what the next
+# rebalance of .github/tacsim-integration-shards.txt reads.
+path = "junit.xml"
+report-name = "rustmush-ci"

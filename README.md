@@ -52,10 +52,20 @@ Getting a dev Redis, in order of preference:
   `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 ```bash
-cargo test --workspace --exclude mush-bot
+cargo nextest run --workspace --exclude mush-bot
+cargo test --doc --workspace --exclude mush-bot
 ```
 
-Run `cargo test -p mush-bot` separately: its JSON feature set must not unify into
+[cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked`) is the test
+runner, CI's and the box's: one process a test, every binary's tests in one pool, and
+[.config/nextest.toml](.config/nextest.toml) restating the tree's in-binary locks (the
+Redis suites one at a time, the load-sensitive suites two at a time, the five locked
+binaries alone) so a sweep at eight threads is honest. `cargo nextest run -p <pkg>` is
+the one-crate sweep, `-E 'test(name)'` the filter, `--run-ignored only` the
+`#[ignore]`d. nextest runs no doc-tests: `cargo test --doc` beside it, as above.
+`cargo test` still works as it always did, one binary at a time.
+
+Run `cargo nextest run -p mush-bot` separately: its JSON feature set must not unify into
 the engine tests. Everything runs against the in-memory store by default; the Redis-backed integration tests
 (store behavior suite, boot round trip, the kill-9 durability test) run only when `REDIS_URL`
 is set, and skip with a note otherwise. The store behavior suite is also ignored

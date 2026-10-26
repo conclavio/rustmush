@@ -168,6 +168,24 @@ jobs:
     # four shards of 14-16 min by those runs' per-binary means, and the
     # memory-size clippy, which ran in every shard for one answer, runs in
     # lint. The whole run was about 265 runner-minutes a push.
+    #
+    # 2026-10-26 (cut T.1): NEXTEST for the sweeps. Every shard's test sweep
+    # is `cargo nextest run -P ci` (.config/nextest.toml), which runs each
+    # test in its own process and schedules a shard's binaries into one pool
+    # of four, where `cargo test` ran the binaries one after another and a
+    # binary with one slow test held the shard with three threads idle. The
+    # in-binary locks (redis_suite, authoritative_process_kill,
+    # durability_e2e, arena_e2e, cost_lane) are restated there as "alone", the
+    # REDIS_URL readers as one group of one, and the load-sensitive suites as
+    # a group of two with one retry reported FLAKY. A hung test is terminated
+    # at 20 min instead of holding the job to its timeout, and each shard
+    # uploads nextest's JUnit report (per-test times: the next rebalance of
+    # the tacsim shards reads those, not the log). nextest runs no doc-tests,
+    # so each sweep has its `cargo test --doc` beside it. The named
+    # single-test steps and every other job keep `cargo test`: a filtered
+    # run of one test gains nothing from a pool, and the guards that read
+    # their lines (ci_gated_test_inventory, harness.rs's parity check, cost
+    # lane's C5) stay as they are. Measured on the cut's own PR run.
     strategy:
       fail-fast: false
       matrix:
@@ -301,6 +319,13 @@ jobs:
           # the workspace, bot has its own features) and keeps its own key, for
           # the subset reason above.
           key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || matrix.shard }}
+      # 2026-10-26 (cut T.1): the runner, pinned to the version the box and
+      # the VPS have (one tarball, one binary into cargo's bin; ~2 s). The
+      # version is also .config/nextest.toml's `nextest-version`, which fails
+      # an older one at startup rather than mid-run.
+      - name: cargo-nextest 0.9.148
+        if: matrix.shard != 'lint'
+        run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       # 2026-10-20: Format and Clippy run once each. Both are workspace-wide
       # (12 s and 3 min 18 s at 96cc7303), so once is the whole answer; since
       # 2026-10-25 they are shard (c), so a format or clippy failure fails
@@ -433,10 +458,16 @@ jobs:
               echo "[monitor $t] $(free -m | awk '/^Mem:/ {m="mem used " $3 "M avail " $7 "M"} /^Swap:/ {s="swap used " $3 "M"} END {print m " " s}') | thr $(ps -eo nlwp= | awk '{s+=$1} END {print s}') proc $(ps -e --no-headers | wc -l) | runner thr $(ps -eo nlwp=,user= | awk '$2 == "runner" {s+=$1} END {print s+0}')/$ulimit_u | cargo $(pgrep -c -x cargo) rustc $(pgrep -c -x rustc) target/debug $(pgrep -c -f '^[^ ]*/target/debug/') | load $(cut -d' ' -f1-3 /proc/loadavg) | psi io $(awk '/^some/ {print substr($2, 7)}' /proc/pressure/io 2>/dev/null) mem $(awk '/^some/ {print substr($2, 7)}' /proc/pressure/memory 2>/dev/null) | root $(df -m / | awk 'NR==2 {print $4}')M ws $(df -m "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')M tmp $(du -sm /tmp 2>/dev/null | cut -f1)M"
               echo "[monitor $t] top rss: $(ps -eo rss=,comm= --sort=-rss | head -n 3 | awk '{printf "%s %dM; ", $2, $1/1024}')"
             done ) &
+          # 2026-10-26 (cut T.1): the sweeps are `cargo nextest run -P ci`
+          # (.config/nextest.toml: no fail-fast, a hung test terminated at 20
+          # min, the JUnit report). `--build-jobs 2` is the link cap `-j 2`
+          # was (under nextest `-j` is test threads). nextest runs no
+          # doc-tests, so each sweep's `cargo test --doc` follows it, on the
+          # same build: both are `cargo test --no-run`'s artifacts.
           case "$SHARD" in
             tacsim-lib)
               # Two test threads, where the default is four.
-              RUST_TEST_THREADS=2 cargo test -p tacsim --lib -j 2
+              cargo nextest run -P ci -p tacsim --lib --test-threads 2 --build-jobs 2
               # tacsim's doc-tests, once: rest-libs' `--exclude tacsim` drops
               # them with the lib.
               cargo test -p tacsim --doc -j 2
@@ -456,8 +487,10 @@ jobs:
               # here: every package resolves as it did in that run (checked
               # with `cargo tree -e normal,build,dev -f '{p} [{f}]'` on
               # 2026-10-25), and the drift assertions keep running under the
-              # libs' own tests.
-              cargo test --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast -j 2
+              # libs' own tests. The doc-test line selects the same packages
+              # with the same features, so it rebuilds nothing.
+              cargo nextest run -P ci --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --build-jobs 2
+              cargo test --doc --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast -j 2
               ;;
             rest-mushd|rest-server|rest-gateway)
               # One server package a shard (2026-10-26, cut T.0; one line for
@@ -475,7 +508,8 @@ jobs:
                 rest-server) pkg=mush-server ;;
                 rest-gateway) pkg=mush-gateway ;;
               esac
-              cargo test -p "$pkg" --no-fail-fast -j 2
+              cargo nextest run -P ci -p "$pkg" --build-jobs 2
+              cargo test -p "$pkg" --doc --no-fail-fast -j 2
               ;;
             *)
               echo "no test line for shard $SHARD" >&2
@@ -484,7 +518,21 @@ jobs:
           esac
       - name: Test the bot on its own feature set
         if: matrix.shard == 'bot'
-        run: cargo test -p mush-bot -j 2
+        run: |
+          cargo nextest run -P ci -p mush-bot --build-jobs 2
+          cargo test -p mush-bot --doc -j 2
+      # 2026-10-26 (cut T.1): the sweep's JUnit report, one <testcase> a test
+      # with its time (.config/nextest.toml's `ci` profile writes it). The
+      # per-test and per-binary times a rebalance of the tacsim shards needs
+      # are read from these, not from the log. lint runs no sweep; a shard
+      # whose sweep never started has no file, and that is not a failure.
+      - name: Per-test times (nextest JUnit)
+        if: always() && matrix.shard != 'lint'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
       # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
       # dev-dependencies enable; naming it here is what lets the feature census (the
       # `feature_matrix_inventory` gate) see that a job compiles it.
