@@ -937,7 +937,7 @@ jobs:
   # two at Ahuna Flank and two at Kerwan Floor (crates/mush-bot/tests/
   # mining_cohort.rs). About 8 minutes of world readiness and 25-35 of play, so
   # it is run by hand and no job runs it: not on push, not on a dispatch, not on
-  # the weekly schedule. Naming it here is what the gated-test inventory asks of
+  # the daily schedule. Naming it here is what the gated-test inventory asks of
   # an ignored test. Its canary, the_mining_root_runs_under_the_bots_serde, is
   # not ignored and runs in the test job's `cargo test -p mush-bot` step above.
   # By hand:
