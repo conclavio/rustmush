@@ -6998,7 +6998,7 @@ fn apply_update(record: &mut RigRecord, binding: &PlanFixed, now: i64) -> Result
 }
 
 /// The family's record, cloned; `None` when absent.
-fn read_record(
+pub(super) fn read_record(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<RigKey, RigRecord>,
     tv: ObjId,
@@ -7025,7 +7025,7 @@ fn read_record(
 }
 
 /// Write `record` under its own key (insert or replace).
-fn write_record(
+pub(super) fn write_record(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<RigKey, RigRecord>,
     record: RigRecord,
@@ -7422,6 +7422,17 @@ impl ActionProvider for SurfaceActProvider {
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
         let word = act_param(parameters)?;
+        if read_record(txn, &self.excursions, tv)?.is_some_and(|record| {
+            record
+                .recovery
+                .as_ref()
+                .is_some_and(|receipt| receipt.pending)
+        }) {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                "staff recovery is pending; wait for the rig to reach its bay",
+            ));
+        }
         // Doc 20 cut SM.8 (decision R15): `how` and `qty` belong to an unload's start alone.
         let unloading = matches!(
             word,
@@ -7878,7 +7889,7 @@ impl ActionProvider for SurfaceActProvider {
 }
 
 /// A pocket cursor read in the transaction, its key re-checked (the families rule).
-fn read_cursor(
+pub(super) fn read_cursor(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     deposit: mush_industry::OreDepositId,
@@ -7905,7 +7916,7 @@ fn read_cursor(
 
 /// **Stage a cursor's new state** (insert, replace or remove; `before` is whether one stood):
 /// `None` removes it (an emptied cursor), and nothing is staged when none stood and none is due.
-fn write_cursor(
+pub(super) fn write_cursor(
     txn: &mut ActionTxn<'_>,
     family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     deposit: mush_industry::OreDepositId,

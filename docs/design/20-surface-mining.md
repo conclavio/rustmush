@@ -2799,6 +2799,17 @@ cannot lift with the pilot ashore), and one whose author is ashore past the dead
 rather than with its parking reason; and a restart while a ring is still full tells
 `WHY_MARKERS_QUEUED` once more. No lane, pack or digest moved.
 
+**Staff recovery follow-up (DF-1):** `@tacsim/tv close|home|unload #<rig>` supplies the
+staff remedies missing from the SM.8 and SM.11 notes above. Close cancels work and
+releases mining locks in place; home persists a request before returning the rig
+to its assigned bay; unload transfers the complete hopper into the docked hull's
+hold with the inventory owner's capacity and conservation checks. They can clear
+another pilot's plan and an orphaned unload without that pilot's helm or licence.
+The authoritative record retains a bounded recovery receipt and its monotonic
+ordinal, preventing stale work from completing. Home blocks new work and departure
+until its durable finish, including across restart. Leases, deposits and ore are
+preserved; marker-ring clearing remains separate. See [ops](../ops.md#staff-rig-recovery).
+
 **As built (SM.12a, SM.12b, SM.12c-bot):** one standing cost, one residual closed and the CI cost.
 **The relay seed follows the lane.** Relay R10's `tacsim.relay.luna_ceres` pins the lane at an exact
 version (`mush_content::PackRequirement` takes no ranges), so every lane bump must re-sign it at its

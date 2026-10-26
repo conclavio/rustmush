@@ -363,6 +363,7 @@ fn ledger_identity(submit: &AuthoritativeSubmit) -> String {
 struct Resolved {
     action: mush_core::DefinitionRef,
     resolved: mush_core::ResolvedActionInvocation,
+    guards: mush_core::GuardSet,
     token: [u8; 16],
 }
 
@@ -370,7 +371,7 @@ struct Resolved {
 fn resolve(rig: &Rig, submit: &AuthoritativeSubmit) -> Result<Resolved, String> {
     let token = next_token();
     let tw = &rig.tw;
-    let (action, resolved) = {
+    let (action, resolved, guards) = {
         let engine = tw.engine();
         let query = engine
             .legal_action_query(
@@ -411,12 +412,12 @@ fn resolve(rig: &Rig, submit: &AuthoritativeSubmit) -> Result<Resolved, String> 
         let resolved = engine
             .resolve_legal_action(&offers, execution, submission)
             .map_err(|error| format!("{error:?}"))?;
-        let (action, resolved, _guards) = resolved.into_authoritative_parts();
-        (action, resolved)
+        resolved.into_authoritative_parts()
     };
     Ok(Resolved {
         action,
         resolved,
+        guards,
         token,
     })
 }
@@ -425,6 +426,30 @@ fn resolve(rig: &Rig, submit: &AuthoritativeSubmit) -> Result<Resolved, String> 
 /// bundle installed and its typed post-images kept; the action outcome's JSON. The error carries
 /// the prepare's own message.
 fn prepare(rig: &mut Rig, resolved: &Resolved) -> Result<Value, String> {
+    prepare_with_guards(rig, resolved, false)
+}
+
+/// Keep the production driver's pre-prepare and pre-commit guard checks for a race
+/// involving world facts, which the provider's typed transaction cannot read again.
+fn prepare_guarded(rig: &mut Rig, resolved: &Resolved) -> Result<Value, String> {
+    prepare_with_guards(rig, resolved, true)
+}
+
+fn prepare_with_guards(rig: &mut Rig, resolved: &Resolved, guarded: bool) -> Result<Value, String> {
+    let check = |rig: &Rig| {
+        if guarded
+            && !rig
+                .tw
+                .engine()
+                .revalidate_guards(&resolved.guards)
+                .map_err(|error| format!("{error:?}"))?
+                .is_current()
+        {
+            return Err("the action's guards changed".to_owned());
+        }
+        Ok(())
+    };
+    check(rig)?;
     let (prepared, output) = rig
         .tw
         .engine_mut()
@@ -436,6 +461,7 @@ fn prepare(rig: &mut Rig, resolved: &Resolved) -> Result<Value, String> {
         .map_err(|error| format!("{error:?}"))?;
     let outcome = output.outcome().data().clone();
     let (ops, install) = prepared.into_parts();
+    check(rig)?;
     rig.tw
         .engine_mut()
         .install_prepared_action(install)
@@ -3336,5 +3362,348 @@ fn sm8_the_unload_finish_counts_its_writes() {
     );
     assert_eq!(pool(&mut rig.tw, hop2, "metal_ore"), 0);
     assert_eq!(pool(&mut rig.tw, hop2, "ice_ore"), 0);
+    no_refused_writes(&rig.tw);
+}
+
+/// A SIM_ADMIN without Royalty exercises the other half of the shared staff gate.
+fn recovery_staff(tw: &mut TestWorld) -> ObjId {
+    let staff = tw.spawn_player("Recovery staff");
+    tw.world_mut()
+        .get_mut(staff)
+        .expect("the staff character")
+        .powers
+        .insert(mush_core::Powers::SIM_ADMIN);
+    staff
+}
+
+fn recovery_unload(rig: &mut Rig, staff: ObjId, tv: ObjId) -> AuthoritativeSubmit {
+    let (out, mut queued) = command(rig, staff, &format!("@tacsim/tv unload #{}", tv.0));
+    assert_eq!(queued.len(), 1, "the staff unload is filed: {out}");
+    let submit = queued.remove(0);
+    assert_eq!(submit.actor, staff, "staff own the repair's audit identity");
+    assert_eq!(submit.action.key().id.as_str(), "tacsim_surface_recovery");
+    submit
+}
+
+/// This is the port dead end named by HOPPER_LOADED_AWAY: player unloading refuses,
+/// while staff transfer the complete hopper into the hold, once, without selling it.
+#[test]
+fn staff_unload_at_a_port_conserves_every_good_across_retry_and_restart() {
+    let mut rig = stocked();
+    let (pilot, row, tv) = at_ceres(&mut rig, "Pilot", 1, HULL);
+    let staff = recovery_staff(&mut rig.tw);
+    let hop = hopper(&rig.tw, tv);
+    let hold = hold_vault(&rig.tw, &row);
+    fill(&mut rig, tv, "metal_ore", 3, 98_201);
+    fill(&mut rig, tv, "ice_ore", 2, 98_202);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned();
+    let before = [
+        pool(&mut rig.tw, hold, "metal_ore"),
+        pool(&mut rig.tw, hold, "ice_ore"),
+    ];
+    let (out, queued) = command(&mut rig, pilot, "+tv/1 unload go");
+    assert_eq!(
+        out.trim(),
+        UNLOAD_NOT_SITE.replace("{name}", HULL).replace("{n}", "1")
+    );
+    assert!(queued.is_empty());
+
+    let submit = recovery_unload(&mut rig, staff, tv);
+    let mut denied = submit.clone();
+    denied.actor = pilot;
+    assert!(
+        resolve(&rig, &denied).is_err(),
+        "the authoritative provider also refuses a non-staff caller"
+    );
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    assert_eq!(pool(&mut rig.tw, hop, "ice_ore"), 2);
+    land(&mut rig, &submit).expect("the staff unload lands");
+    assert_eq!(land(&mut rig, &submit), Err(HIT.to_owned()));
+    assert!(
+        land_past_the_ledger(&mut rig, &submit).is_err(),
+        "the already-completed repair cannot transfer again even without the ledger HIT"
+    );
+    for (good, initial, moved) in [("metal_ore", before[0], 3), ("ice_ore", before[1], 2)] {
+        assert_eq!(pool(&mut rig.tw, hop, good), 0);
+        assert_eq!(pool(&mut rig.tw, hold, good), initial + moved);
+    }
+    let repaired = record_of(&mut rig.tw, tv).expect("the recovery record");
+    assert!(repaired.act.is_none() && repaired.run.is_none() && repaired.queued.is_none());
+    assert!(repaired.plan.is_none());
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+
+    let mut rig = reboot(rig, &[pilot, staff]);
+    for (good, initial, moved) in [("metal_ore", before[0], 3), ("ice_ore", before[1], 2)] {
+        assert_eq!(pool(&mut rig.tw, hop, good), 0);
+        assert_eq!(pool(&mut rig.tw, hold, good), initial + moved);
+    }
+    assert_eq!(record_of(&mut rig.tw, tv), Some(repaired));
+    no_refused_writes(&rig.tw);
+}
+
+/// A partly fitting hopper must not silently lose or partially move ore. The same
+/// capacity check runs again at prepare if the hold filled after the staff command.
+#[test]
+fn staff_unload_is_all_or_nothing_when_hold_capacity_changes() {
+    let mut rig = stocked();
+    let (_, row, tv) = at_ceres(&mut rig, "Pilot", 1, HULL);
+    let staff = recovery_staff(&mut rig.tw);
+    let hop = hopper(&rig.tw, tv);
+    let hold = hold_vault(&rig.tw, &row);
+    fill(&mut rig, tv, "metal_ore", 2, 98_211);
+    fill(&mut rig, tv, "ice_ore", 2, 98_212);
+    let submit = recovery_unload(&mut rig, staff, tv);
+    let resolved = resolve(&rig, &submit).expect("the empty hold offers the repair");
+    let limit = ore_limit_t(&rig.tw);
+    seed_pool(&mut rig, hold, "metal_ore", limit - 3, LotId(98_213));
+    let before = record_of(&mut rig.tw, tv);
+    assert!(
+        prepare(&mut rig, &resolved).is_err(),
+        "four tonnes no longer fit in three"
+    );
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 2);
+    assert_eq!(pool(&mut rig.tw, hop, "ice_ore"), 2);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), limit - 3);
+    assert_eq!(pool(&mut rig.tw, hold, "ice_ore"), 0);
+    assert_eq!(
+        record_of(&mut rig.tw, tv),
+        before,
+        "a failed prepare writes no repair"
+    );
+
+    let (_, queued) = command(&mut rig, staff, &format!("@tacsim/tv unload #{}", tv.0));
+    for submit in queued {
+        assert!(
+            land(&mut rig, &submit).is_err(),
+            "the command cannot bypass capacity"
+        );
+    }
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 2);
+    assert_eq!(pool(&mut rig.tw, hop, "ice_ore"), 2);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), limit - 3);
+    assert_eq!(pool(&mut rig.tw, hold, "ice_ore"), 0);
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    no_refused_writes(&rig.tw);
+}
+
+/// A queue whose pilot lost the helm remains repairable by staff, and stays cancelled
+/// after reboot rather than asking the unavailable pilot to unload on every fire.
+#[test]
+fn staff_close_clears_an_orphaned_unload_after_the_operator_loses_the_helm() {
+    let mut rig = stocked();
+    let (pilot, row, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let hop = hopper(&rig.tw, tv);
+    let hold = hold_vault(&rig.tw, &row);
+    launched(&mut rig, pilot, 1, tv);
+    fill(&mut rig, tv, "metal_ore", 3, 98_221);
+    let _ = recover_landed(&mut rig, pilot, 1, tv);
+    assert!(record_of(&mut rig.tw, tv).is_some_and(|record| record.queued.is_some()));
+    let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("the charter");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@contract/cancel #{}", charter.contract.0),
+    );
+    assert!(
+        tacsim::port::live_charter(rig.tw.world(), pilot).is_none(),
+        "the helm is gone: {out}"
+    );
+    let (out, queued) = command(&mut rig, staff, &format!("@tacsim/tv close #{}", tv.0));
+    assert_eq!(
+        queued.len(),
+        1,
+        "staff can clear another pilot's queue: {out}"
+    );
+    land_all(&mut rig, &queued);
+    let mut rig = reboot(rig, &[pilot, staff]);
+    for _ in 0..3 {
+        let (_, queued) = fire(&mut rig);
+        assert!(
+            starts(&rig.tw, &queued).is_empty(),
+            "no orphaned unload retries"
+        );
+        land_all(&mut rig, &queued);
+    }
+    assert!(record_of(&mut rig.tw, tv).is_some_and(|record| record.queued.is_none()));
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 0);
+    no_refused_writes(&rig.tw);
+}
+
+/// Closing a real mining run releases precisely its pocket lock and fences the due
+/// cycle out before it can create ore. This checks the industry-side consequence too.
+#[test]
+fn staff_close_releases_a_running_mines_lock_without_yielding_ore() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let all = picks(&mut rig.tw);
+    let fair = fair7(&all);
+    launched(&mut rig, pilot, 1, tv);
+    sounded_at(&mut rig, pilot, 1, tv, &fair);
+    let _ = act_go(
+        &mut rig,
+        pilot,
+        &format!("+tv/1 plan {} family=metal_ore go", fair.addr),
+    );
+    assert!(record_of(&mut rig.tw, tv).is_some_and(|record| record.plan.is_some()));
+    for _ in 0..4 {
+        if run_of(&mut rig.tw, tv).is_some() {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_all(&mut rig, &queued);
+    }
+    let _ = cycle(&mut rig, tv, pilot);
+    let mining = run_of(&mut rig.tw, tv).expect("the real mining run continues");
+    let pockets = handles(&rig.tw).families.pockets;
+    let cursor = typed(&mut rig.tw, &pockets, &mining.deposit).expect("the pocket cursor");
+    let before = cursor
+        .row(mining.number)
+        .cloned()
+        .expect("the locked pocket");
+    assert_eq!(before.lock.as_ref().map(|lock| lock.tv), Some(tv));
+    let hop = hopper(&rig.tw, tv);
+    let held = pool(&mut rig.tw, hop, "metal_ore");
+    let (_, due) = advance_to(&mut rig, mining.due_ic);
+    let finishes = finishes(&rig.tw, &due);
+    assert_eq!(finishes.len(), 1, "one mining cycle waiting to land");
+
+    let (out, queued) = command(&mut rig, staff, &format!("@tacsim/tv close #{}", tv.0));
+    assert_eq!(queued.len(), 1, "staff close the running mine: {out}");
+    land_all(&mut rig, &queued);
+    assert!(record_of(&mut rig.tw, tv).is_some_and(|record| record.plan.is_none()));
+    assert!(
+        land(&mut rig, finishes[0]).is_err(),
+        "the cancelled cycle is stale"
+    );
+    let cursor = typed(&mut rig.tw, &pockets, &mining.deposit);
+    let after = cursor.as_ref().and_then(|cursor| cursor.row(mining.number));
+    assert!(
+        after.is_none_or(|row| row.lock.is_none()),
+        "the cancelled rig releases its lock"
+    );
+    assert_eq!(after.map_or(0, |row| row.drawn_t), before.drawn_t);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), held);
+    let mut rig = reboot(rig, &[pilot, staff]);
+    assert!(run_of(&mut rig.tw, tv).is_none());
+    let pockets = handles(&rig.tw).families.pockets;
+    let cursor = typed(&mut rig.tw, &pockets, &mining.deposit);
+    let after = cursor.as_ref().and_then(|cursor| cursor.row(mining.number));
+    assert!(
+        after.is_none_or(|row| row.lock.is_none()),
+        "the released lock stays released after reboot"
+    );
+    assert_eq!(after.map_or(0, |row| row.drawn_t), before.drawn_t);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), held);
+    no_refused_writes(&rig.tw);
+}
+
+/// An offered staff repair carries no enduring permission to start: demotion before
+/// prepare refuses it. Moving the rig out of its bay invalidates an offered unload too.
+#[test]
+fn staff_unload_rechecks_authority_and_bay_at_prepare() {
+    let mut rig = stocked();
+    let (_, row, tv) = at_ceres(&mut rig, "Pilot", 1, HULL);
+    let staff = recovery_staff(&mut rig.tw);
+    let hop = hopper(&rig.tw, tv);
+    let hold = hold_vault(&rig.tw, &row);
+    fill(&mut rig, tv, "metal_ore", 3, 98_231);
+    let before = record_of(&mut rig.tw, tv);
+    let submit = recovery_unload(&mut rig, staff, tv);
+    let resolved = resolve(&rig, &submit).expect("staff may offer the unload");
+    rig.tw
+        .world_mut()
+        .get_mut(staff)
+        .expect("staff")
+        .powers
+        .remove(mush_core::Powers::SIM_ADMIN);
+    assert!(
+        prepare_guarded(&mut rig, &resolved).is_err(),
+        "a demoted staffer cannot start the repair"
+    );
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 0);
+
+    rig.tw
+        .world_mut()
+        .get_mut(staff)
+        .expect("staff")
+        .powers
+        .insert(mush_core::Powers::SIM_ADMIN);
+    let submit = recovery_unload(&mut rig, staff, tv);
+    let resolved = resolve(&rig, &submit).expect("the staff role is restored");
+    to_cell(&mut rig, tv, RAMP_CELL);
+    assert!(
+        prepare_guarded(&mut rig, &resolved).is_err(),
+        "a rig moved out of its bay cannot be unloaded"
+    );
+    assert_eq!(record_of(&mut rig.tw, tv), before);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 3);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 0);
+    no_refused_writes(&rig.tw);
+}
+
+/// A mining cycle changes charge, its cursor and inventory without incrementing the
+/// run's ordinal. A previously resolved close must conflict, not restore that old image.
+#[test]
+fn staff_close_conflicts_after_a_same_ordinal_mining_cycle() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let staff = recovery_staff(&mut rig.tw);
+    let all = picks(&mut rig.tw);
+    let fair = fair7(&all);
+    launched(&mut rig, pilot, 1, tv);
+    sounded_at(&mut rig, pilot, 1, tv, &fair);
+    let _ = act_go(&mut rig, pilot, "+tv/1 mine go");
+    let before = record_of(&mut rig.tw, tv).expect("the started run");
+    let mining = before.run.as_ref().expect("the running mine");
+    assert!(
+        mining.cycles > 1,
+        "the cycle must leave the run in progress"
+    );
+    let source = VaultId(mining.source.expect("a real ore deposit"));
+    let hop = hopper(&rig.tw, tv);
+    let source_before = pool(&mut rig.tw, source, "metal_ore");
+    let hopper_before = pool(&mut rig.tw, hop, "metal_ore");
+    let (out, queued) = command(&mut rig, staff, &format!("@tacsim/tv close #{}", tv.0));
+    assert_eq!(queued.len(), 1, "the close is offered: {out}");
+    let resolved = resolve(&rig, &queued[0]).expect("the close resolves before the cycle");
+
+    let _ = cycle(&mut rig, tv, pilot);
+    let after = record_of(&mut rig.tw, tv).expect("the next cycle is running");
+    assert_eq!(
+        after.ordinal, before.ordinal,
+        "cycles keep their run's ordinal"
+    );
+    assert_eq!(after.run.as_ref().map(|run| run.k), Some(mining.k + 1));
+    assert!(
+        after.charge.value_cu < before.charge.value_cu,
+        "the cycle spent charge"
+    );
+    let hopper_after = pool(&mut rig.tw, hop, "metal_ore");
+    let source_after = pool(&mut rig.tw, source, "metal_ore");
+    assert!(hopper_after > hopper_before, "the real cycle yielded ore");
+    assert_eq!(hopper_after + source_after, hopper_before + source_before);
+    let pockets = handles(&rig.tw).families.pockets;
+    let cursor = typed(&mut rig.tw, &pockets, &mining.deposit);
+
+    assert!(
+        prepare(&mut rig, &resolved).is_err(),
+        "the old same-ordinal recovery is stale"
+    );
+    assert_eq!(
+        record_of(&mut rig.tw, tv),
+        Some(after),
+        "no charge or cycle rollback"
+    );
+    assert_eq!(typed(&mut rig.tw, &pockets, &mining.deposit), cursor);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), hopper_after);
+    assert_eq!(pool(&mut rig.tw, source, "metal_ore"), source_after);
     no_refused_writes(&rig.tw);
 }

@@ -858,6 +858,7 @@ mod tests {
             }),
             plan: None,
             plans: 0,
+            recovery: None,
         }
     }
 

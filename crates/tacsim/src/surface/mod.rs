@@ -153,6 +153,7 @@ pub mod mined;
 pub mod opening;
 pub mod plan;
 pub mod reading;
+pub mod recovery;
 pub mod tenure;
 pub mod tick;
 pub mod unload;

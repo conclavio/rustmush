@@ -154,6 +154,13 @@ pub(crate) fn register_with_coverage(
     coverage: Option<&crate::underwriting::registration::Registration>,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
+    reg.revision_validator(
+        crate::surface::recovery::revision_kind()
+            .map_err(|error| ModError::msg(error.to_string()))?,
+        crate::surface::recovery::RecoveryRevisionValidator {
+            excursions: port_families.excursions.clone(),
+        },
+    )?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
             families::family_descriptor(
@@ -210,6 +217,10 @@ pub(crate) fn register_with_coverage(
         .get(crate::surface::act::SURFACE_DONE_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the surface finish's outcome did not register"))?;
+    let recovery_outcome = outcome_refs
+        .get(crate::surface::recovery::RECOVERY_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the staff recovery outcome did not register"))?;
     let chart_forget_outcome = outcome_refs
         .get(crate::surface::chart::CHART_FORGET_OUTCOME)
         .cloned()
@@ -236,6 +247,18 @@ pub(crate) fn register_with_coverage(
         (&site_work_outcome, &dispatch_outcome),
         probe_outcome.as_ref(),
     )?;
+    actions.push(
+        descriptor(
+            "action",
+            crate::surface::recovery::RECOVERY_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::excursion::EXCURSION_FAMILY,
+            }),
+        )?
+        .with_references(vec![recovery_outcome.clone()]),
+    );
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -361,8 +384,29 @@ pub(crate) fn register_with_coverage(
         }
         _ => (None, None),
     };
-    // Doc 20 cut SM.4a (D9): `tacsim_chart_forget`, `+tv/forget`'s own action — registered on
-    // every roster, since it needs only the chart family.
+    // Staff recovery is a separate capability from the player's surface acts.
+    let surface_recovery = match (
+        action_refs
+            .get(crate::surface::recovery::RECOVERY_ACTION)
+            .cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::surface::recovery::RecoveryProvider {
+                    action: action.clone(),
+                    outcome: recovery_outcome,
+                    excursions: port_families.excursions.clone(),
+                    pockets: port_families.pockets.clone(),
+                    inventory,
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
+    // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
         .get(crate::surface::chart::CHART_FORGET_ACTION)
         .cloned()
@@ -473,6 +517,7 @@ pub(crate) fn register_with_coverage(
         burn: burn_registered,
         surface_act,
         surface_done,
+        surface_recovery,
         surface_tools,
         chart_forget,
         site_work,
@@ -551,6 +596,11 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             "outcome",
             crate::surface::act::SURFACE_DONE_OUTCOME,
             json!({ "fields": ["actor", "ordinal", "result", "tv"] }),
+        )?,
+        descriptor(
+            "outcome",
+            crate::surface::recovery::RECOVERY_OUTCOME,
+            json!({ "fields": ["actor", "tv", "ordinal", "operation", "pending", "moved"] }),
         )?,
         // Doc 20 cut SM.4a (D9): `+tv/forget`'s own action.
         descriptor(
