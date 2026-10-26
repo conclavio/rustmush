@@ -36,10 +36,11 @@ use mush_core::{
     Audience, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError,
     AuthoritativeKey, AuthoritativeSemanticEvent, CanonicalHash, CanonicalId, CommitToken,
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    GOD, IdempotencyKey, IdempotencyScope, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    Effect, GOD, IdempotencyKey, IdempotencyScope, MAX_AUTHORITATIVE_BUNDLE_BYTES,
     MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ModuleBootData, ModuleOp,
     ModuleWrite, Obj, ObjId, ObjKind, OwnerId, PreparedCausalRef, PrincipalId, ReplayWrite,
-    RequestUid, RulesValue, ScopedIdempotencyKey, canonical_json_bytes,
+    RequestUid, RulesValue, ScopedIdempotencyKey, StoreReadResult, WorldCommand,
+    canonical_json_bytes,
 };
 use mush_core::{Ledger, LedgerChunk, LedgerDoc, LedgerEntry, typed_entries};
 use mush_economy::{
@@ -173,11 +174,9 @@ fn fold_economy_ops(kv: &mut HashMap<SmolStr, Value>, tw: &mut TestWorld) {
     }
 }
 
-/// Seed `entries` minted transactions round-robin across `accounts` player
-/// accounts through the real command surface, returning the economy
-/// namespace as a cold store would hold it.
-fn seed_journal(entries: usize, accounts: usize) -> Vec<(SmolStr, Value)> {
-    let accounts = accounts.max(1);
+/// The economy world `seed_journal` mints into — the instrument, the faucet and
+/// `accounts` player accounts — and the namespace as a cold store holds it.
+fn econ_accounts(accounts: usize) -> (TestWorld, HashMap<SmolStr, Value>) {
     let mut tw = econ_world();
     let mut kv = HashMap::new();
     let ev = tw.run(GOD, "@instrument/register gold=2");
@@ -190,17 +189,86 @@ fn seed_journal(entries: usize, accounts: usize) -> Vec<(SmolStr, Value)> {
         assert!(!has_error(&ev), "account {n}: {}", texts(&ev));
     }
     fold_economy_ops(&mut kv, &mut tw);
+    (tw, kv)
+}
+
+/// Run `line` as God the way a caller that retries drives it, and return the
+/// last attempt's events and whether a key read was answered on the way.
+///
+/// A fresh economy decides keys through its window (doc 13 §2.4): a key the
+/// RAM window does not hold is asked of the key filter, and the filter is
+/// wrong about ~1 key in 10 000 at its design load — five of the 100 000
+/// mints the cold replay seeds, `cmd:59233` the first, every run, because the
+/// filter's hashes are deterministic. That post is refused as transient, "try
+/// again shortly", and asks the store for the key's `idem:` document off the
+/// loop (W-D1). The world task would perform that read; here it is served from
+/// `kv`, the same documents the posts wrote, and the line is run once more, as
+/// the retry.
+fn run_answering_key_reads(
+    tw: &mut TestWorld,
+    kv: &mut HashMap<SmolStr, Value>,
+    line: &str,
+) -> (Vec<(Audience, OutputEvent)>, bool) {
+    let (ev, effects) = tw.run_with_effects(GOD, line);
+    let reads: Vec<_> = effects
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::StoreRead {
+                module,
+                actor,
+                correlation,
+                keys,
+            } if module == ECON_NS && keys.iter().all(|k| mush_economy::is_idem_key(k)) => {
+                Some((actor, correlation, keys))
+            }
+            _ => None,
+        })
+        .collect();
+    if !has_error(&ev) || reads.is_empty() {
+        return (ev, false);
+    }
+    // The cold store holds every document a post has written so far.
+    fold_economy_ops(kv, tw);
+    for (actor, correlation, keys) in reads {
+        let mut docs = Vec::new();
+        let mut absent = Vec::new();
+        for key in keys {
+            match kv.get(&key) {
+                Some(doc) => docs.push((key, doc.clone())),
+                None => absent.push(key),
+            }
+        }
+        tw.apply(WorldCommand::StoreReadDone {
+            module: SmolStr::new(ECON_NS),
+            actor,
+            correlation,
+            payload: StoreReadResult::Docs { docs, absent }.to_payload(),
+        });
+    }
+    (tw.run(GOD, line), true)
+}
+
+/// Seed `entries` minted transactions round-robin across `accounts` player
+/// accounts through the real command surface, returning the economy
+/// namespace as a cold store would hold it and how many mints took the slow
+/// key lookup ([`run_answering_key_reads`]).
+fn seed_journal(entries: usize, accounts: usize) -> (Vec<(SmolStr, Value)>, usize) {
+    let accounts = accounts.max(1);
+    let (mut tw, mut kv) = econ_accounts(accounts);
+    let mut key_reads = 0;
     for i in 0..entries {
         let to = 1 + (i % accounts);
-        let ev = tw.run(GOD, &format!("@econ/mint 0={to} 1"));
+        let (ev, answered) =
+            run_answering_key_reads(&mut tw, &mut kv, &format!("@econ/mint 0={to} 1"));
         assert!(!has_error(&ev), "mint {i}: {}", texts(&ev));
+        key_reads += usize::from(answered);
         // Fold as we go so the pending op log stays small at 100 000 entries.
         if i % 1_000 == 999 {
             fold_economy_ops(&mut kv, &mut tw);
         }
     }
     fold_economy_ops(&mut kv, &mut tw);
-    kv.into_iter().collect()
+    (kv.into_iter().collect(), key_reads)
 }
 
 /// Boot a fresh economy from `kv` alone (ledger chunks may ride in it as
@@ -610,12 +678,13 @@ fn scale_cold_journal_replay_reports_time() {
     let entries = env_usize("SCALE_JOURNAL_ENTRIES", 100_000);
     let accounts = env_usize("SCALE_ACCOUNTS", 100);
     let seeded_at = Instant::now();
-    let kv = seed_journal(entries, accounts);
+    let (kv, key_reads) = seed_journal(entries, accounts);
     let seed_ms = ms(seeded_at.elapsed());
     let stats = replay_journal(kv);
     println!(
         "scale_cold_journal_replay: entries={} accounts={accounts} seed_ms={seed_ms} \
-         replay_ms={} review_at={CHECKPOINT_REVIEW_SECS}s/{CHECKPOINT_REVIEW_ENTRIES} entries",
+         key_reads={key_reads} replay_ms={} \
+         review_at={CHECKPOINT_REVIEW_SECS}s/{CHECKPOINT_REVIEW_ENTRIES} entries",
         stats.entries, stats.elapsed_ms
     );
     assert_eq!(
@@ -636,11 +705,21 @@ fn scale_cold_journal_replay_reports_time() {
 
 // ---- 2. the world boot ---------------------------------------------------------
 
+/// Objects per batch the world boot writes. A `RedisStore` batch is one
+/// MULTI/EXEC, and the EXEC must answer inside the client's per-command
+/// timeout (`mush_store::redis::COMMAND_TIMEOUT`, 5 s); all 50 000 objects as
+/// one EXEC against the CI job's `appendfsync always` Redis did not. The write
+/// is setup, not the measurement — only the boot after it is timed — so the
+/// split changes no reported number.
+const WORLD_BATCH_OBJECTS: usize = 1_000;
+
 /// `objects` rooms, exits and players (round-robin) at ids `2..2+objects`,
-/// as one ordinary batch after the minimal seed.
-fn world_batch(objects: usize) -> WriteBatch {
+/// as ordinary batches of `per_batch` objects after the minimal seed, each
+/// advancing `next_id` past what it holds.
+fn world_batches(objects: usize, per_batch: usize) -> Vec<WriteBatch> {
     let first = 2u32;
-    let mut upserts = Vec::with_capacity(objects);
+    let mut batches = Vec::new();
+    let mut upserts = Vec::with_capacity(per_batch);
     let mut last_room = ObjId(0);
     for n in 0..objects {
         let id = ObjId(first + u32::try_from(n).expect("object count fits u32"));
@@ -663,26 +742,37 @@ fn world_batch(objects: usize) -> WriteBatch {
             }
         };
         upserts.push(obj);
+        if upserts.len() == per_batch.max(1) || n + 1 == objects {
+            batches.push(WriteBatch {
+                serial: u64::try_from(batches.len() + 1).expect("batch count fits u64"),
+                upserts: std::mem::take(&mut upserts),
+                next_id: Some(id.0 + 1),
+                durable: true,
+                ..WriteBatch::default()
+            });
+        }
     }
-    WriteBatch {
-        serial: 1,
-        upserts,
-        next_id: Some(first + u32::try_from(objects).expect("object count fits u32")),
-        durable: true,
-        ..WriteBatch::default()
-    }
+    batches
 }
 
-/// Seed, write `objects` objects, then time a boot from the store alone.
-/// Returns the booted object count (seed included) and the boot time.
-async fn boot_world(store: &dyn ObjectStore, objects: usize) -> (usize, Duration) {
+/// Seed, write `objects` objects `per_batch` at a time, then time a boot from
+/// the store alone. Returns the booted object count (seed included) and the
+/// boot time.
+async fn boot_world(
+    store: &dyn ObjectStore,
+    objects: usize,
+    per_batch: usize,
+) -> (usize, Duration) {
     load_or_seed_world(store)
         .await
         .expect("seed the minimal world");
-    store
-        .write(world_batch(objects))
-        .await
-        .expect("write the scale batch");
+    for batch in world_batches(objects, per_batch) {
+        let serial = batch.serial;
+        store
+            .write(batch)
+            .await
+            .unwrap_or_else(|e| panic!("write scale batch {serial}: {e:?}"));
+    }
     let started = Instant::now();
     let world = load_or_seed_world(store)
         .await
@@ -707,7 +797,7 @@ fn report_world_boot(label: &str, objects: usize, booted: usize, took: Duration)
 async fn scale_world_boot_reports_time() {
     let objects = env_usize("SCALE_OBJECTS", 50_000);
     let store = InMemoryStore::new();
-    let (booted, took) = boot_world(&store, objects).await;
+    let (booted, took) = boot_world(&store, objects, WORLD_BATCH_OBJECTS).await;
     report_world_boot("memory", objects, booted, took);
 }
 
@@ -718,7 +808,7 @@ async fn scale_world_boot_redis_gated() {
         return;
     };
     let objects = env_usize("SCALE_OBJECTS", 50_000);
-    let (booted, took) = boot_world(&store, objects).await;
+    let (booted, took) = boot_world(&store, objects, WORLD_BATCH_OBJECTS).await;
     report_world_boot("redis", objects, booted, took);
 }
 
@@ -1145,10 +1235,41 @@ fn scale_tick_shaped_bundle_measures_caps() {
 
 #[test]
 fn h3_journal_seeder_yields_its_stated_count() {
-    let stats = replay_journal(seed_journal(10, 3));
+    let (kv, key_reads) = seed_journal(10, 3);
+    assert_eq!(key_reads, 0, "the filter is right about the first ten keys");
+    let stats = replay_journal(kv);
     assert_eq!(stats.entries, 10);
     // Before any boot there is nothing to report.
     assert!(EconomyStore::default().boot_replay().is_none());
+}
+
+/// What the key filter does to the cold replay's seeder at mint 59 233, made
+/// to happen at the first mint: the next mint's key reads as maybe-posted, the
+/// post is refused as transient, and the seeder answers the key read from the
+/// documents it holds and posts on the retry.
+#[test]
+fn h3_journal_seeder_answers_a_key_filter_false_positive() {
+    let (mut tw, mut kv) = econ_accounts(1);
+    let store = tw
+        .world_mut()
+        .module_state_mut::<EconomyStore>()
+        .expect("economy store");
+    let before = store.journal_len();
+    // `@econ/mint` posts under `cmd:{the next transaction id}`.
+    let next = mush_economy::IdempotencyKey::new("cmd", store.peek_next_transaction().to_string());
+    store.key_filter_mut_for_tests().insert(&next);
+    let (ev, answered) = run_answering_key_reads(&mut tw, &mut kv, "@econ/mint 0=1 1");
+    assert!(answered, "the mint took the slow key lookup");
+    assert!(!has_error(&ev), "the retry posted: {}", texts(&ev));
+    let store = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .expect("economy store");
+    assert_eq!(
+        store.journal_len(),
+        before + 1,
+        "one mint, one journal transaction"
+    );
 }
 
 #[test]
@@ -1180,7 +1301,8 @@ fn h3_synthetic_journal_seeder_yields_its_stated_count_and_replays_clean() {
 #[tokio::test(flavor = "multi_thread")]
 async fn h3_world_seeder_yields_its_stated_count() {
     let store = InMemoryStore::new();
-    let (booted, took) = boot_world(&store, 10).await;
+    // Four a batch, so the tiny boot also writes in several batches (4, 4, 2).
+    let (booted, took) = boot_world(&store, 10, 4).await;
     report_world_boot("memory/tiny", 10, booted, took);
 }
 
