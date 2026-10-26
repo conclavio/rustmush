@@ -157,6 +157,17 @@ jobs:
     # keep their command lines and only moved shard; the integration binaries
     # are named per shard, and the libs line names the four features the
     # servers' dev-dependencies used to unify on for it (see the Test step).
+    #
+    # 2026-10-26 (cut T.0): TEN SHARDS, and the M7 memory-size clippy once.
+    # Over the three green runs 40259028915, 40266288970 and 40278097329 the
+    # job's wall was 38-46 min and its long pole `test (rest-servers)` at
+    # 44-49 (37-39 of it the Test step); the three tacsim-integration shards
+    # ran 11-20, 17 and 18-30 min of tests, the third swinging with the
+    # runner. The servers are now one shard each (mushd and mush-server about
+    # 12 min of tests apiece, mush-gateway under 3), tacsim's 66 binaries are
+    # four shards of 14-16 min by those runs' per-binary means, and the
+    # memory-size clippy, which ran in every shard for one answer, runs in
+    # lint. The whole run was about 265 runner-minutes a push.
     strategy:
       fail-fast: false
       matrix:
@@ -165,21 +176,29 @@ jobs:
           # threads, where the default is four, then tacsim's doc-tests,
           # which rest-libs' `--exclude tacsim` drops with the lib.
           - tacsim-lib
-          # (b) tacsim's integration test binaries, one third each by measured
-          # time (lines 1, 2 and 3 of .github/tacsim-integration-shards.txt),
-          # and the three #[ignore]d mind-hash steps beside the target each
-          # runs by name.
+          # (b) tacsim's integration test binaries, a quarter each by measured
+          # time (lines 1 to 4 of .github/tacsim-integration-shards.txt; four
+          # since 2026-10-26, cut T.0, when the third of three swung between
+          # 18 and 30 min of execution run to run), and the three #[ignore]d
+          # mind-hash steps beside the target each runs by name.
           - tacsim-integration-1
           - tacsim-integration-2
           - tacsim-integration-3
+          - tacsim-integration-4
           # (c) Format and Clippy, once each, workspace-wide.
           - lint
           # (d) the rest of the workspace's crates but the three servers and
           # the bot, with the toy ruleset and the TS bindings drift check.
           - rest-libs
-          # (e) mushd, mush-server and mush-gateway, whose integration
-          # binaries are most of the old rest shard, and the panic hook.
-          - rest-servers
+          # (e) the three servers, one shard each (2026-10-26, cut T.0): as
+          # one shard they were the job's long pole at 44-49 min, 37-39 of it
+          # the Test step, with mushd's 44 integration binaries the largest
+          # share. Each shard compiles its own package's test targets only,
+          # so each is nearer still to that server's production build (see
+          # the Test step). The panic hook rides with mushd.
+          - rest-mushd
+          - rest-server
+          - rest-gateway
           # (f) the bot on its own feature set.
           - bot
     steps:
@@ -278,9 +297,9 @@ jobs:
           # tests, so the same dependencies with the same features: they share
           # the key `tacsim`, the first to finish saves it whole, and a new
           # integration shard starts warm. Every other shard builds a different
-          # set (lint only checks, rest-libs and rest-servers split the
-          # workspace, bot has its own features) and keeps its own key, for the
-          # subset reason above.
+          # set (lint only checks, rest-libs and the three server shards split
+          # the workspace, bot has its own features) and keeps its own key, for
+          # the subset reason above.
           key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || matrix.shard }}
       # 2026-10-20: Format and Clippy run once each. Both are workspace-wide
       # (12 s and 3 min 18 s at 96cc7303), so once is the whole answer; since
@@ -294,7 +313,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Keep memory-size enforcement scoped to the M7 owners, including
       # standalone integration-test targets as well as library fixtures.
+      # 2026-10-26 (cut T.0): once, in the lint shard. The step had no `if:`
+      # and so ran in all eight shards, 1.4-2.3 min each (about 15 runner-min
+      # a push) for one answer; it is a lint, so it belongs with Format and
+      # Clippy, and a memory-size failure now fails `test (lint)` alone.
       - name: M7 memory-size limits
+        if: matrix.shard == 'lint'
         # Its own clippy config (the root's plus the M7 thresholds and
         # avoid-breaking-exported-api = false), so exported-API naming lints
         # are not switched on for every crate the step above lints.
@@ -435,12 +459,23 @@ jobs:
               # libs' own tests.
               cargo test --workspace --exclude mush-bot --exclude tacsim --exclude mushd --exclude mush-server --exclude mush-gateway --features mush-sim/debug-checks,mush-housing/debug-checks,mush-server/fault-injection,tacsim/fault-injection --no-fail-fast -j 2
               ;;
-            rest-servers)
-              # Unified across the three servers only: what the libs' own
-              # dev-dependencies add (mush-sim/testkit's seat helpers, wider
-              # hyper and regex feature sets) is off, which is nearer the
-              # production build of the same three binaries.
-              cargo test -p mushd -p mush-server -p mush-gateway --no-fail-fast -j 2
+            rest-mushd|rest-server|rest-gateway)
+              # One server package a shard (2026-10-26, cut T.0; one line for
+              # all three until then). What the libs' own dev-dependencies add
+              # (mush-sim/testkit's seat helpers, wider hyper and regex feature
+              # sets) is off, and so now is what the OTHER two servers' dev-
+              # dependencies added when the three were one invocation
+              # (mush-server's debug-checks on mush-sim and mush-housing in
+              # mushd's and mush-gateway's binaries; the fault-injection
+              # features in mush-server's), which is nearer still to the
+              # production build of each server. Those features are still
+              # compiled under their owners' and rest-libs' tests.
+              case "$SHARD" in
+                rest-mushd) pkg=mushd ;;
+                rest-server) pkg=mush-server ;;
+                rest-gateway) pkg=mush-gateway ;;
+              esac
+              cargo test -p "$pkg" --no-fail-fast -j 2
               ;;
             *)
               echo "no test line for shard $SHARD" >&2
@@ -457,7 +492,7 @@ jobs:
         if: matrix.shard == 'rest-libs'
         run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
-        if: matrix.shard == 'rest-servers'
+        if: matrix.shard == 'rest-mushd'
         run: cargo test -p mushd --test world_panic_exit
       - name: TS bindings drift check
         if: matrix.shard == 'rest-libs'
