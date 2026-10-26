@@ -5,7 +5,7 @@
 //! Game-crate imports here belong to the server under test and nothing else,
 //! exactly as `tests/e2e.rs`'s fixture's do: the bot's parser, picture and
 //! decisions never see a game type. It is modelled on
-//! `crates/mushd/tests/sim_solo.rs` (`boot_on`, `tacsim_config`) and on
+//! `crates/mushd/tests/sim_lenses/sim_solo.rs` (`boot_on`, `tacsim_config`) and on
 //! `tests/e2e.rs`'s `Fixture` (the scratch directory, the host-key pin read off
 //! the listener's own `ssh_host_ed25519`).
 //!

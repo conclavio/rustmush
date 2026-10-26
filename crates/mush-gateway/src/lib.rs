@@ -1746,12 +1746,12 @@ struct BoundaryEnv {
 
 /// The fixed marker an operator greps the gateway log for when the halves were
 /// built at different [`IPC_VERSION`]s. Stable text, quoted by the proof in
-/// `tests/server_panic_relaunch.rs`; do not reword it.
+/// `tests/split_halves/server_panic_relaunch.rs`; do not reword it.
 pub const IPC_VERSION_SKEW_MARKER: &str = "IPC-VERSION-SKEW";
 
 /// The fixed marker an operator (or an alert rule) greps the gateway log
 /// for when the supervisor has GIVEN UP on the server half (WS22-S17).
-/// Stable text, quoted by the proof in `tests/supervision_abandoned.rs`; do
+/// Stable text, quoted by the proof in `tests/split_halves/supervision_abandoned.rs`; do
 /// not reword it.
 pub const SUPERVISION_ABANDONED_MARKER: &str = "SUPERVISION-ABANDONED";
 

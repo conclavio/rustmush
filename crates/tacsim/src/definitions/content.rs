@@ -826,8 +826,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
-/// relay digest in `mush-server/tests/relay_registry.rs`, the relay version in
-/// `tests/stations.rs` and `mush-server/tests/boot_parity.rs`, the lane requirement in
+/// relay digest in `mush-server/tests/split_boundary/relay_registry.rs`, the relay version in
+/// `tests/stations.rs` and `mush-server/tests/split_boundary/boot_parity.rs`, the lane requirement in
 /// `tests/stations.rs`, and the kept-world upgrade test in `relay_registry.rs`
 /// (`sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v4` since doc 20 cut SM.12b), whose
 /// `lane_v13` rebuilds the

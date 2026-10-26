@@ -10,8 +10,8 @@
 # is its own process. The locks the tree holds, and what each becomes:
 #
 #   mush-store/tests/redis_suite.rs            REDIS_LOCK   db 0, wipes namespaces
-#   mush-gateway/tests/authoritative_process_kill.rs  PROCESS_LOCK  db 0, kills children
-#   mushd/tests/durability_e2e.rs              CHILD_LOCK   BGSAVE is instance-wide
+#   mush-gateway/tests/split_halves/authoritative_process_kill.rs  PROCESS_LOCK  db 0, kills children
+#   mushd/tests/durable_process/durability_e2e.rs              CHILD_LOCK   BGSAVE is instance-wide
 #   mush-bot/tests/arena_e2e.rs                ARENA        one arena world at a time
 #   tacsim/tests/cost_lane.rs                  LANE_LOCK    timing that feeds a gate
 #
@@ -68,14 +68,14 @@ final-status-level = "slow"
 
 # The in-binary locks, as they ran under cargo test: alone.
 [[profile.default.overrides]]
-filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-gateway::authoritative_process_kill) | binary_id(mushd::durability_e2e) | binary_id(mush-bot::arena_e2e) | binary_id(tacsim::cost_lane)'
+filter = 'binary_id(mush-store::redis_suite) | (binary_id(mush-gateway::split_halves) & test(/^authoritative_process_kill::/)) | (binary_id(mushd::durable_process) & test(/^durability_e2e::/)) | binary_id(mush-bot::arena_e2e) | binary_id(tacsim::cost_lane)'
 threads-required = "num-test-threads"
 
 # Every REDIS_URL reader (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs
 # is the census of the integration ones; the two lib proofs are mush-server's
 # persist and timeline tests, #[ignore]d, both named `redis`).
 [[profile.default.overrides]]
-filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suite) | binary_id(mushd::persistence) | binary_id(mushd::durability_e2e) | binary_id(mushd::m10c_e2e) | binary_id(mush-server::authoritative_boot) | binary_id(mush-gateway::authoritative_process_kill) | binary_id(mush-contract-tests::scale_harness) | (binary_id(mush-server) & test(~redis))'
+filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suite) | (binary_id(mushd::durable_process) & test(/^persistence::/)) | (binary_id(mushd::durable_process) & test(/^durability_e2e::/)) | (binary_id(mushd::durable_process) & test(/^m10c_e2e::/)) | (binary_id(mush-server::split_boundary) & test(/^authoritative_boot::/)) | (binary_id(mush-gateway::split_halves) & test(/^authoritative_process_kill::/)) | binary_id(mush-contract-tests::scale_harness) | (binary_id(mush-server) & test(~redis))'
 test-group = 'redis'
 
 # The load-sensitive suites (16b: "passed alone twice" was the flake rule),
@@ -84,7 +84,7 @@ test-group = 'redis'
 # test fails twice. (An override's filter cannot name a group, so the retry
 # rides on this one override rather than on a `ci`-only twin of this list.)
 [[profile.default.overrides]]
-filter = 'binary_id(mushd::scripting_e2e) | binary_id(mushd::sim_reflex) | binary_id(mushd::load_soak) | binary_id(mushd::world_fault) | binary_id(mushd::observer_rule) | binary_id(mushd::arena_story) | binary_id(mush-gateway::two_process_e2e) | binary_id(mush-gateway::supervision_abandoned) | binary_id(mush-gateway::server_panic_relaunch) | binary_id(mush-gateway::restart_survival) | binary_id(mush-gateway::arena_story_split) | binary_id(mush-server::ipc_authoritative_action) | binary_id(mush-server::ipc_teardown) | binary_id(mush-worldgen::plan) | binary_id(mush-worldgen::review_plan) | binary_id(mush-worldgen::s8_authority) | (binary_id(mush-sim) & test(~e7c6_b2)) | (binary_id(mush-server) & test(~what_still_waits))'
+filter = '(binary_id(mushd::world_journeys) & test(/^scripting_e2e::/)) | (binary_id(mushd::sim_lenses) & test(/^sim_reflex::/)) | (binary_id(mushd::durable_process) & test(/^load_soak::/)) | (binary_id(mushd::durable_process) & test(/^world_fault::/)) | (binary_id(mushd::sim_lenses) & test(/^observer_rule::/)) | (binary_id(mushd::sim_lenses) & test(/^arena_story::/)) | (binary_id(mush-gateway::split_halves) & test(/^two_process_e2e::/)) | (binary_id(mush-gateway::split_halves) & test(/^supervision_abandoned::/)) | (binary_id(mush-gateway::split_halves) & test(/^server_panic_relaunch::/)) | (binary_id(mush-gateway::split_halves) & test(/^restart_survival::/)) | (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/)) | (binary_id(mush-server::split_boundary) & test(/^ipc_authoritative_action::/)) | (binary_id(mush-server::split_boundary) & test(/^ipc_teardown::/)) | binary_id(mush-worldgen::plan) | binary_id(mush-worldgen::review_plan) | binary_id(mush-worldgen::s8_authority) | (binary_id(mush-sim) & test(~e7c6_b2)) | (binary_id(mush-server) & test(~what_still_waits))'
 test-group = 'load-sensitive'
 retries = 1
 

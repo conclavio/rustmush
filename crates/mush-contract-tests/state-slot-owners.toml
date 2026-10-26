@@ -679,7 +679,7 @@ the same boot-hydrated map `mush_server::boot` installs.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_lobby.rs"
+path = "crates/mushd/tests/sim_lenses/sim_lobby.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -691,7 +691,7 @@ to be installed here or every `SIM TEAM` in the file refuses.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_cockpit.rs"
+path = "crates/mushd/tests/sim_lenses/sim_cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -702,7 +702,7 @@ account and so does the focus the cockpit seat takes.
 """
 
 [[site]]
-path = "crates/mushd/tests/observer_rule.rs"
+path = "crates/mushd/tests/sim_lenses/observer_rule.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -713,7 +713,7 @@ assertions need two pilots seated, and a slot belongs to an account.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_net.rs"
+path = "crates/mushd/tests/sim_lenses/sim_net.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -725,7 +725,7 @@ accounts have to hold slots and board before anybody is on a net.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_weapons.rs"
+path = "crates/mushd/tests/sim_lenses/sim_weapons.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -736,7 +736,7 @@ and take their stations before either of them can lock anything and fire.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_reflex.rs"
+path = "crates/mushd/tests/sim_lenses/sim_reflex.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -750,7 +750,7 @@ ACCOUNT.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_solo.rs"
+path = "crates/mushd/tests/sim_lenses/sim_solo.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -777,7 +777,7 @@ this is its one site, and the bot's runtime graph carries no game crate.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_units.rs"
+path = "crates/mushd/tests/sim_lenses/sim_units.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -791,7 +791,7 @@ the write is at `SIM START`.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_range.rs"
+path = "crates/mushd/tests/sim_lenses/sim_range.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -804,7 +804,7 @@ human starting a match with the fill off, which only a range allows.
 """
 
 [[site]]
-path = "crates/mushd/tests/arena_story.rs"
+path = "crates/mushd/tests/sim_lenses/arena_story.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -876,7 +876,7 @@ warning.
 """
 
 [[site]]
-path = "crates/mushd/tests/sim_rematch.rs"
+path = "crates/mushd/tests/sim_lenses/sim_rematch.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -920,14 +920,14 @@ owner = "sim"
 reason = "E7 cut 7: places emitters and observers in the sim's spatial index."
 
 [[site]]
-path = "crates/mush-server/tests/e4c_bridge.rs"
+path = "crates/mush-server/tests/commerce_composition/e4c_bridge.rs"
 accessor = "World::module_state_mut"
 slot = "CanonState"
 owner = "canon"
 reason = "E4c: seeds canon records the bridge case asserts on."
 
 [[site]]
-path = "crates/mush-server/tests/arena_bridge.rs"
+path = "crates/mush-server/tests/world_task/arena_bridge.rs"
 accessor = "World::module_state_mut"
 slot = "ArenaRegistry"
 owner = "tacsim"
@@ -945,7 +945,7 @@ follows whatever that production reach does; retire it with that reach.
 """
 
 [[site]]
-path = "crates/mushd/tests/m10c_e2e.rs"
+path = "crates/mushd/tests/durable_process/m10c_e2e.rs"
 accessor = "World::module_state_mut"
 slot = "WeatherState"
 owner = "weather"
@@ -1047,7 +1047,7 @@ above.
 """
 
 [[site]]
-path = "crates/mushd/tests/front_door.rs"
+path = "crates/mushd/tests/sim_lenses/front_door.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -1241,7 +1241,7 @@ guard. The published refusal carries no character, revision or source detail.
 
 
 [[site]]
-path = "crates/mush-server/tests/mind_commerce_composition.rs"
+path = "crates/mush-server/tests/commerce_composition/mind_commerce_composition.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"

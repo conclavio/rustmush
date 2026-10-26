@@ -576,7 +576,7 @@ the console, SIGTERM (what `systemctl stop` sends):
 you lose at most the in-flight command (or the independently bounded writer lanes if Redis
 was stalled at that instant — see "The durability model" above), plus up to
 the AOF window on a host crash. The kill-9 path is CI-tested against a live
-Redis (`crates/mushd/tests/durability_e2e.rs`).
+Redis (`crates/mushd/tests/durable_process/durability_e2e.rs`).
 
 A clean shutdown started **while Redis is down** still exits within a
 bounded time: the writer drain is capped at 15s and each remaining store
@@ -713,7 +713,7 @@ The RNG behind `+roll` is OS-seeded in production and seeded for tests.
 it is a single `sheet:tacsim` JSON attribute on the character's `obj:*` document
 (treaty ruling 7), so it rides the ordinary object write-through and **reloads
 with the world**; the reboot round trip is CI-tested against Redis
-(`crates/mushd/tests/persistence.rs::sheet_persistence_round_trip_redis_gated`).
+(`crates/mushd/tests/durable_process/persistence.rs::sheet_persistence_round_trip_redis_gated`).
 The only sheet-owned persisted document is the approval queue, under the jobs
 module's `mod:jobs:*` namespace like any other queue. Do not hand-edit a
 `sheet:tacsim` attribute while the server runs (the rule for any `obj:*` write).
@@ -807,7 +807,7 @@ survive a restart; accept them afterward). It registers no migrations. **Zone
 themes are not module docs** — a theme is a plain `worldgen.theme` attribute on
 the zone/room/`#0` object, so it rides `obj:*` write-through and reloads with the
 world. All are CI-tested for the reboot round trip
-(`crates/mushd/tests/persistence.rs::worldgen_persistence_round_trip_*` and
+(`crates/mushd/tests/durable_process/persistence.rs::worldgen_persistence_round_trip_*` and
 `m10c_e2e.rs::m10c_persistence_twin_*`). Nothing the LLM produces is ever
 auto-committed: `@gen` and `@gen/building` yield drafts the builder reviews and
 `@gen/accept`s through the ordinary attribute path. One M10 knob:
@@ -1022,7 +1022,7 @@ module op and reloaded at boot. The profile (`agent:profile`) and rolling
 summary (`agent:memory:summary`) are plain attributes on the NPC object, so they
 ride `obj:*` write-through and reload with the world. The reboot round trip is
 CI-tested against a live Redis
-(`crates/mushd/tests/persistence.rs::npc_agent_persistence_round_trip`).
+(`crates/mushd/tests/durable_process/persistence.rs::npc_agent_persistence_round_trip`).
 
 ## The trade run (doc 18): the port tick, readiness and the play rate
 
@@ -1341,9 +1341,9 @@ Persistence: the sheet is a `sheet:tacsim` **attribute on the player's object**,
 it rides `obj:*` write-through; the approval job is a `mod:jobs:*` document. Both
 a submitted-but-Pending sheet **and** its later Approved stamp survive a reboot —
 CI-tested in memory and against a live Redis
-(`crates/mushd/tests/persistence.rs::onboarding_persistence_round_trip*`). The
+(`crates/mushd/tests/durable_process/persistence.rs::onboarding_persistence_round_trip*`). The
 full new-player→chargen→submit→gate→approve→play journey over real SSH is
-`crates/mushd/tests/onboarding_e2e.rs`.
+`crates/mushd/tests/world_journeys/onboarding_e2e.rs`.
 
 ## Observability (M9): metrics, health, structured logging
 
@@ -1379,7 +1379,7 @@ store writer stamps write-queue depth and last-ack age. Staff **`@stats`** reads
 the same live registry (connected split ssh/web, loop-lag p99, store write-queue
 depth, NPC active/thinking, today's LLM spend by feature). That `/metrics` +
 `/healthz` + `@stats` all reflect real state is CI-tested end-to-end in
-`crates/mushd/tests/web_e2e.rs::metrics_healthz_and_stats_reflect_real_state`.
+`crates/mushd/tests/world_journeys/web_e2e.rs::metrics_healthz_and_stats_reflect_real_state`.
 
 **The authoritative lane** (H3) is measured event-by-event by the store writer,
 not sampled: every settled authoritative commit feeds
@@ -1933,8 +1933,18 @@ CPU-minutes of relinking after a change to a core crate. The crates merged so
 far: tacsim (T.3a; its 64 files are `shard_1`..`shard_4`, one per line of
 `.github/tacsim-integration-shards.txt`, while `harness` and `cost_lane` stay
 targets of their own — a crate-root-only `#![recursion_limit]`; an exclusive
-timing lock and a script-parity test). A test's name is `<module>::<fn>`, and
-every run line translates as `--test <name>` → `--test <group> <name>::`:
+timing lock and a script-parity test); and since T.3b the three servers:
+mushd (44 files: `durable_process`, `sim_lenses`, `world_journeys`),
+mush-server (31: `commerce_composition`, `split_boundary`, `world_task`) and
+mush-gateway (13: `split_halves`, the one group with an allowed exception to
+the suffix rule below — `restart_survival` is a suffix of
+`web_restart_survival`, so under `cargo test` the filter `restart_survival::`
+selects both modules and nextest's anchored `test(/^restart_survival::/)` is
+the line to use). The tests that re-exec their own binary for a child half
+(mushd's `world_panic_exit`, mush-gateway's `authoritative_process_kill` and
+`server_panic_relaunch`) name it by the full `<module>::<fn>` id. A test's
+name is `<module>::<fn>`, and every run line translates as `--test <name>` →
+`--test <group> <name>::`:
 
 ```sh
 cargo nextest run -p tacsim --test shard_4 -E 'test(/^cockpit::/)'   # one module
@@ -2365,10 +2375,10 @@ extra undocumented argument will now fail to start, loudly.
 
 The all-in-one `mushd` service (`deploy/README.md`) remains the default deploy;
 the split adds the **hot restart** below, and is proven by
-`crates/mush-gateway/tests/two_process_e2e.rs` +
-`crates/mush-gateway/tests/restart_survival.rs` (SSH), plus
-`crates/mush-gateway/tests/web_split_e2e.rs` +
-`crates/mush-gateway/tests/web_restart_survival.rs` (web).
+`crates/mush-gateway/tests/split_halves/two_process_e2e.rs` +
+`crates/mush-gateway/tests/split_halves/restart_survival.rs` (SSH), plus
+`crates/mush-gateway/tests/split_halves/web_split_e2e.rs` +
+`crates/mush-gateway/tests/split_halves/web_restart_survival.rs` (web).
 
 ## Hot-restart (split) deployment: restart the game, hold the connections
 
@@ -2466,7 +2476,7 @@ transport-agnostic session manager an SSH session does, **the connection-holding
 hot restart covers web players too**: a WS connection is never sent a Close frame
 across a restart — it receives the "restarting" → "Reconnected" system lines and
 a fresh room render as ordinary envelopes, with the world intact from Redis, and
-keeps playing. Proven by `crates/mush-gateway/tests/web_restart_survival.rs`.
+keeps playing. Proven by `crates/mush-gateway/tests/split_halves/web_restart_survival.rs`.
 
 A web **bind/serve failure is non-fatal**: the gateway logs it and keeps serving
 SSH (and supervising the server child), so a bad `[web]` config never takes the

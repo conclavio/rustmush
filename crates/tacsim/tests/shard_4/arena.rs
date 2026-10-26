@@ -6164,7 +6164,7 @@ fn af1_the_snapshot_shape_is_pinned() {
 /// 3 }` by both the head read and the decode, before a field of its state is
 /// read: 16b cut AF.3's boot reads the head first (`match_::resume`'s `check`)
 /// and voids a match whose snapshot it refuses by name, through the same
-/// `ResumeRefusal::Snapshot` arm `crates/mushd/tests/arena_custody.rs`'
+/// `ResumeRefusal::Snapshot` arm `crates/mushd/tests/sim_lenses/arena_custody.rs`'
 /// `a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong` pins for a
 /// refused decode.
 ///

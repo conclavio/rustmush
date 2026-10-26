@@ -44,7 +44,7 @@ boundary. Crucially, a **WS connection survives a server restart exactly like an
 SSH one**: it is never sent a Close frame — it receives "restarting" →
 "Reconnected" → a fresh room render as ordinary envelopes, with the world intact
 from Redis, and keeps playing (proven by
-`crates/mush-gateway/tests/web_restart_survival.rs`). So switching dev1 to the
+`crates/mush-gateway/tests/split_halves/web_restart_survival.rs`). So switching dev1 to the
 split no longer takes the web client offline, and web players get the same
 connection-holding hot-restart payoff SSH players do.
 

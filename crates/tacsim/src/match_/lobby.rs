@@ -5440,7 +5440,7 @@ pub fn unattended_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 /// `B-33`).
 ///
 /// A function rather than a `format!` at the one call site so the observer rule's
-/// own lens (`crates/mushd/tests/observer_rule.rs`) can sweep the **production**
+/// own lens (`crates/mushd/tests/sim_lenses/observer_rule.rs`) can sweep the **production**
 /// sentence for a unit, a position or a contact instead of a copy of it kept in a
 /// test file, which is a copy that can silently stop matching what the centre
 /// really says. Doc 16 §1: it is built from the match id and nothing else, and

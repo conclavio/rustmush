@@ -333,7 +333,7 @@ impl Rig {
     /// Built as one plan and applied through `mush_tactics::module::apply_plan`,
     /// which is the production write path a match's own check-in takes. The same
     /// state is produced by a real kill over real SSH in
-    /// `crates/mushd/tests/sim_rematch.rs`; this is the unit-level statement of
+    /// `crates/mushd/tests/sim_lenses/sim_rematch.rs`; this is the unit-level statement of
     /// what the reset has to undo.
     fn wreck(&mut self, unit: ObjId) {
         let pristine = self.pristine(unit);
@@ -529,7 +529,7 @@ fn a_wrecked_stock_tank_is_back_at_spec_and_at_muster_and_a_second_reset_says_no
 ///   every roster tank's record *and its placement*, so a copy of it running a
 ///   second later would undo whatever staff had done in that second (through the
 ///   gateway the arena story's opening line is a `@spatial/place` of the two
-///   slot-1 tanks nose to nose). `crates/mushd/tests/sim_rematch.rs`'s restart
+///   slot-1 tanks nose to nose). `crates/mushd/tests/sim_lenses/sim_rematch.rs`'s restart
 ///   test is the end-to-end proof of it.
 /// * the **pod sweep**, which needs the pods, which resolve through the content
 ///   latch the content module fills after tacsim's own load. Cut F.1 had to arm
@@ -1143,7 +1143,7 @@ fn an_arena_reset_on_an_already_idle_centre_sweeps_a_stranded_body_and_billet() 
     // **A restart, exactly**: the match book is RAM (D-16-3), so a reboot starts
     // from a fresh slot and the centre comes back `Idle` — while the body inside
     // the pod and the cockpit billet on the tank are both durable world state.
-    // `crates/mushd/tests/arena_custody.rs` does this with a real server stop; one
+    // `crates/mushd/tests/sim_lenses/arena_custody.rs` does this with a real server stop; one
     // line is the whole of what the restart does to the book.
     *rig.tw
         .world_mut()
@@ -1214,7 +1214,7 @@ fn finished_result(id: u64, pilot: ObjId, unit: u32) -> serde_json::Value {
 /// every row the ring holds, and every row `SIM HISTORY` prints, was READ.
 ///
 /// The live proof, across a real reboot over SSH with one restart abort and one
-/// finished match in the store, is `crates/mushd/tests/sim_rematch.rs`'s restart
+/// finished match in the store, is `crates/mushd/tests/sim_lenses/sim_rematch.rs`'s restart
 /// test; this one is the ordering and the filter, which that test's two rows
 /// cannot reach.
 #[test]

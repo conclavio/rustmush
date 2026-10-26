@@ -86,7 +86,7 @@ mush-org.workspace = true
 mush-roll.workspace = true
 # R6b: exercise the shipping Discord bridge with its controlled REST adapter.
 mush-net-discord.workspace = true
-# WS01-S7: `tests/world_fault.rs` runs the real `mushd` binary with ONE world
+# WS01-S7: `tests/durable_process/world_fault.rs` runs the real `mushd` binary with ONE world
 # turn armed to panic, so it can prove the process exits non-zero and skips the
 # shutdown BGSAVE. Arming lives behind `mush-server`'s `fault-injection`
 # feature, and this `[dev-dependencies]` edge is the only thing that turns it on
@@ -101,7 +101,7 @@ mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 # transcription of the world boot, and with it the only `src/` reference to
 # these types — the post-composition state upgrades (the account oracle, the
 # pulse cadence) now happen once, in `mush_server::boot`. What is left here is
-# `tests/boot_composition.rs` reading the pulse slot back out of the booted
+# `tests/durable_process/boot_composition.rs` reading the pulse slot back out of the booted
 # world, so the edge is a TEST edge and says so.
 mush-sim.workspace = true
 # start_paused tests (virtual clock) need tokio's test-util.
@@ -114,7 +114,7 @@ mush-ruleset.workspace = true
 # edge only: `src/` reaches the composition root through `mush_server::modules`,
 # which re-exports `tacsim::composition::*`, and never names this crate.
 tacsim = { workspace = true, features = ["fault-injection"] }
-# 16b cut T.3: the custody lens (tests/arena_custody.rs) composes the production
+# 16b cut T.3: the custody lens (tests/sim_lenses/arena_custody.rs) composes the production
 # module list with the tactics module re-wired to a one-spec catalog, because
 # `TacticsModule::new()` ships an EMPTY one until cut C authors
 # `content/units/line_tank.json` and `@unit/create` can name no schema at all.
@@ -127,7 +127,7 @@ fred.workspace = true
 # that forces a deterministic glitch on the first roll (rand itself is already a
 # runtime dep).
 rand_chacha.workspace = true
-# The M4 web e2e (tests/web_e2e.rs) drives the real HTTP/WS surface:
+# The M4 web e2e (tests/world_journeys/web_e2e.rs) drives the real HTTP/WS surface:
 # axum serves mush-net-web's router on an ephemeral port exactly the way
 # serve_with_shutdown does, reqwest is the REST client, tokio-tungstenite
 # the WebSocket client.

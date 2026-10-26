@@ -549,7 +549,7 @@ impl Rig {
 
     /// **What the engine does to a module on a session transition**, by hand: the
     /// kernel's own dispatcher, on the point cut K.2 added. A `TestWorld` has no
-    /// connections to drop, and the SSH lens (`mushd/tests/sim_cockpit.rs`) is
+    /// connections to drop, and the SSH lens (`mushd/tests/sim_lenses/sim_cockpit.rs`) is
     /// where a real line is really cut; this is the unit-level proof that the
     /// hook is wired to the arena at all.
     ///

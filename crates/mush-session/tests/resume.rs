@@ -558,7 +558,7 @@ fn backlog_matching_reports_evicted_once_the_ring_rolls() {
 /// value were renamed — while `tacsim`, which has no dependency on this crate
 /// and spells the same string in `match_::cockpit`, went on sending the old one
 /// and the ring quietly stopped coalescing. The literal is the contract;
-/// `crates/mushd/tests/observer_rule.rs` is where the two constants are held to
+/// `crates/mushd/tests/sim_lenses/observer_rule.rs` is where the two constants are held to
 /// each other.
 const LATEST: &str = "latest";
 

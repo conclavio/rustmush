@@ -207,7 +207,7 @@ fn the_feature_is_off_by_default_and_on_only_for_the_kill_proofs() {
     assert!(
         activates_fault_injection(&gateway, "dev-dependencies"),
         "no `[dev-dependencies]` edge activates `mush-server/fault-injection`, so \
-         `crates/mush-gateway/tests/authoritative_process_kill.rs` can no longer stop the \
+         `crates/mush-gateway/tests/split_halves/authoritative_process_kill.rs` can no longer stop the \
          server at a durability cut and the K8 kill matrix proves nothing"
     );
 

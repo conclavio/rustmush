@@ -495,7 +495,7 @@ fn account_id_of(rec: &AccountRec) -> Option<mush_core::AccountId> {
 mod commit_retry_tests {
     //! **The creation flow waits out a commit** (16b cut F.4 follow-up).
     //!
-    //! The lens for it is `crates/mush-gateway/tests/front_door_split.rs`, where
+    //! The lens for it is `crates/mush-gateway/tests/split_halves/front_door_split.rs`, where
     //! the world is genuinely mid-commit on the layers it has just booted while
     //! the first `create` lands. These are the same thing in the small, with a
     //! link that answers a chosen number of `Busy`s first — and on tokio's paused

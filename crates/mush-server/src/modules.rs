@@ -1397,12 +1397,12 @@ mod tests {
     //
     // The roster below now comes from `boot::game_modules` — the one root both
     // halves call — so the gate reads what a server composes. It is the claim
-    // `tests/boot_parity.rs` makes from the integration side; this is the
+    // `tests/split_boundary/boot_parity.rs` makes from the integration side; this is the
     // `--lib` copy, because a `--lib` test is what CI names.
 
     /// A memory-backed config on a scratch data dir, with the corridor fixture
     /// written out as the two pack FILES a host configures — the path an operator's
-    /// own pack takes, digests and all (`tests/boot_parity.rs`'s `enable_tacsim`
+    /// own pack takes, digests and all (`tests/split_boundary/boot_parity.rs`'s `enable_tacsim`
     /// shape).
     ///
     /// 16b cut R-b: no `[rulesets].enabled` id is set, because nothing reads one —
@@ -1494,7 +1494,7 @@ mod tests {
     ///
     /// Drift becomes a named failure rather than a silent re-certification: a
     /// module added, dropped or reordered in `boot::game_modules` fails this
-    /// assert with `boot.rs` in the message. (`tests/boot_parity.rs`'s
+    /// assert with `boot.rs` in the message. (`tests/split_boundary/boot_parity.rs`'s
     /// `expected_roster` states the same golden from the integration side; the
     /// two must agree, and this is the copy the `--lib` gate can see.)
     ///
