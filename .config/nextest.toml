@@ -108,3 +108,21 @@ final-status-level = "flaky"
 # rebalance of .github/tacsim-integration-shards.txt reads.
 path = "junit.xml"
 report-name = "rustmush-ci"
+
+# `ci-bot` (`-P ci-bot`) is `ci` again, for the VPS gate's mush-bot
+# invocation, which .github/workflows/gate.yml runs in the background under
+# the engine's sweep (2026-10-27: the bot's nine-minute mining canary was the
+# sweep's tail; now it runs while the engine's crates compile and test). A
+# profile of its own so its store directory, and so its JUnit report, lands
+# at target/nextest/ci-bot/ apart from the engine's at target/nextest/ci/.
+# Profiles inherit `default`, not each other, so the ci settings are
+# restated; keep the two in step.
+[profile.ci-bot]
+test-threads = "num-cpus"
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 20 }
+final-status-level = "flaky"
+
+[profile.ci-bot.junit]
+path = "junit.xml"
+report-name = "rustmush-ci-bot"

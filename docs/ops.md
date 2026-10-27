@@ -1834,22 +1834,29 @@ bit: `bash scripts/harness-weekly.sh` runs it the same way.
 **Never run it on a host that is serving players.** It competes with the game
 server for every core, and a pulse past `stall_ms` voids a live match.
 
-## The VPS gate: a self-hosted runner for the sweep and the long runs
+## The VPS gate: self-hosted runners for the sweep and the long runs
 
-Since test-strategy cut T.2 (2026-10-26) conclav.io is a **self-hosted GitHub
-Actions runner** (label `vps`, name `conclav-vps`) for one workflow,
-`.github/workflows/gate.yml`, which runs on `workflow_dispatch` **only**. The
-cut loop's gate (the workspace sweep that used to tie up the owner's Windows
+Since test-strategy cut T.2 (2026-10-26) the owner's VPS boxes are
+**self-hosted GitHub Actions runners** for one workflow,
+`.github/workflows/gate.yml`, which runs on `workflow_dispatch` **only**:
+
+| box | runner | labels | cores / memory | shares the box with |
+|---|---|---|---|---|
+| conclav.io | `conclav-vps` | `vps`, `conclav-io` | 8 / 31 GB | dev1, dev2 and the production Redis; the harness's blessing host |
+| conclav.dev | `conclav-dev` | `vps`, `conclav-dev` | 32 / 62 GB | nothing (added 2026-10-27) |
+
+The cut loop's gate (the workspace sweep that used to tie up the owner's Windows
 box for an hour a sub-cut) runs there, and so do the two by-hand scripts whose
-timing gates are live on this host and nowhere else. From the box, under bash:
+timing gates are live on conclav.io and nowhere else. From the box, under bash:
 
 ```sh
-scripts/vps-gate.sh                         # the sweep of the pushed branch
+scripts/vps-gate.sh                         # the sweep of the pushed branch, on whichever box is idle
 scripts/vps-gate.sh --wip                   # the sweep of the WORKING TREE
+scripts/vps-gate.sh --runner conclav-dev    # pinned to a box: vps, conclav-dev or conclav-io
 scripts/vps-gate.sh --packages "tacsim mush-server"
 scripts/vps-gate.sh --extra "-E 'test(sm12c)'"
-scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on the VPS
-scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on the VPS
+scripts/vps-gate.sh --kind harness          # scripts/harness-weekly.sh, on conclav.io
+scripts/vps-gate.sh --kind cost-lane        # scripts/cost-lane.sh, on conclav.io
 ```
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
@@ -1863,62 +1870,119 @@ time, a `<failure>` per failed test, a `<flakyFailure>` per pass on retry;
 test's binary and name, and exits with the run's status. A dispatch needs
 write access to the repository, which is the owner.
 
+**Which box.** `gate.yml`'s `runner` input is a label: `vps` (the default) is
+the one both boxes carry, so GitHub hands the job to whichever is idle;
+`conclav-dev` and `conclav-io` pin it. The `concurrency` group is per label
+(`vps-gate-<runner>`), so the boxes work in parallel and each label's
+dispatches serialise among themselves; a runner takes one job at a time
+regardless, so two jobs never share a target directory. GitHub keeps one
+running and one pending run per group: a third dispatch while one runs and one
+waits replaces the waiting one. `harness` and `cost-lane` go to `conclav-io`
+unless the dispatch says otherwise (`vps-gate.sh` defaults them there): the
+timing gate is live on the host that blessed the baseline and dormant
+elsewhere. Each job sizes itself by the runner's name (the "Sized for the box"
+step): conclav.io compiles with six jobs and tests with nextest's `num-cpus`
+(eight), conclav.dev with 24 jobs and 32 test threads (`NEXTEST_TEST_THREADS`;
+its first sweep ran 16 at a load average of five, the tests waiting on clocks
+more than computing, and the load-sensitive group is held to two by its own
+group whatever the pool); a box the workflow does not know compiles on three
+quarters of its cores.
+
 **What the sweep runs.** `cargo nextest run -P ci --workspace --exclude
 mush-bot` with `REDIS_URL` at the gate's private Redis, so every
 `REDIS_URL`-reading test takes its Redis branch (`.config/nextest.toml`'s
-`redis` group runs them one at a time), then the bot on its own feature set,
-then `cargo test --doc`; or only the packages the dispatch names. The target
-directory is kept across runs beside the checkout (`_work/rustmush/target` under
-the runner's work tree), so a sweep compiles what changed and nothing else; the
-owner may `rm -rf` it on the box to start cold: a cold sweep of the whole
-workspace built 128 GB of it on 2026-10-26 (`debug/deps` 106, `debug/incremental`
-21) on a 387 GB disk.
+`redis` group runs them one at a time), then `cargo test --doc`, with the bot
+on its own feature set running **in the background under both** (`-P ci-bot`,
+a twin of the `ci` profile so its JUnit lands apart; four test threads; its
+log is printed whole once the engine's sweep is done); or only the packages
+the dispatch names, the same way. The bot runs under the engine's sweep
+because its mining canary (`the_mining_root_runs_under_the_bots_serde`) is
+nine minutes of game clock on one thread, and after the engine's crates it
+was the sweep's tail: on conclav.dev's cold sweep of 2026-10-27 the bot's
+invocation was 15 of the 40 minutes, the canary alone at the end. cargo's
+build lock serialises the two builds, so nothing compiles twice or at once.
+The target directory is kept across runs beside the checkout
+(`_work/rustmush/target` under the runner's work tree), so a sweep compiles
+what changed and nothing else; the owner may `rm -rf` it on the box to start
+cold. The sweeps measured so far (every one 11,072 tests, 0 failed, 0 flaky):
+
+| box, run | sweep | engine build / tests | bot | doc-tests | target dir after |
+|---|---|---|---|---|---|
+| conclav.io cold, 2026-10-26 (6 jobs, 8 threads; the bot after the engine) | 103 min | | | | 128 GB (`debug/deps` 106, `incremental` 21) of a 387 GB disk |
+| conclav.dev cold, 2026-10-27 (24 jobs, 16 threads; the bot after the engine) | 40 min 21 s | 3 min 14 s / 21 min 21 s (10,345 tests, 10,010 s of test time, 340 binaries) | after: build 2 min 30 s, tests 12 min 48 s (727 tests, 1,213 s; the canary 528 s) | 23 s | 100 GB (`debug/deps` 81, `incremental` 20) of a 436 GB disk, 332 GB free |
+| conclav.dev warm, 2026-10-27 (24 jobs, 16 threads; the bot in the background) | 22 min 34 s | 38 s / 21 min 34 s | under the engine's: 13 min 19 s, done 8 minutes before the engine's tests | 20 s | |
+| conclav.dev warm, 2026-10-27 (24 jobs, **32 threads**; the bot in the background) | 18 min 54 s | 35 s / 17 min 57 s | under the engine's: 13 min 51 s | 20 s | 102 GB; disk 106 GB used, 331 GB free |
+
+On conclav.dev the sweep is test-bound, not build-bound: a cold build of the
+engine's 340 test binaries took three minutes, and 10,010 s of test time took
+21 minutes on 16 threads and 18 on 32, at a fifteen-minute load average under
+ten on a 32-core box, because the `redis` group runs one test at a time and
+the five exclusive binaries (`threads-required = "num-test-threads"`) take the
+whole pool while they run: about seven minutes of the phase is one process on
+the box (`tacsim::cost_lane` 214 s over 12 tests, the gateway's process-kill
+suite 181 s over 3). The next cut there is in `.config/nextest.toml`'s groups
+and overrides, not in the box.
 
 **The rules the runner lives under** (the repository is public):
 
 - `gate.yml` triggers on `workflow_dispatch` alone: never on push, never on
   pull_request, never on a schedule. A fork's pull request must never reach
-  the production box. Do not add a trigger.
+  the owner's boxes. Do not add a trigger.
 - The runner is its own user, `ghrunner`, without sudo, with its own rustup
   (the toolchain `rust-toolchain.toml` pins, installed at provisioning and
   again by every job's `rustup toolchain install`) and cargo-nextest at the
   version `.config/nextest.toml` names, on every job's PATH through the
   runner's `.path` file.
-- Its service, `actions.runner.conclavio-rustmush.conclav-vps.service`, runs
-  under `deploy/vps-runner/runner-override.conf`: `Nice=10`, best-effort I/O
-  at the lowest priority and a 22 GB memory ceiling, so dev1, dev2 and the
-  production Redis win the cores and the disk under contention. One job at a
-  time (`gate.yml`'s `concurrency` group queues, never cancels).
+- Its service, `actions.runner.conclavio-rustmush.<runner name>.service`,
+  runs under `deploy/vps-runner/runner-override.conf`: `Nice=10`, best-effort
+  I/O at the lowest priority and a memory ceiling (22 GB on conclav.io, so
+  dev1, dev2 and the production Redis win the cores and the disk under
+  contention; 56 GB on conclav.dev, which has nothing to yield to). One job
+  at a time per box (`gate.yml`'s `concurrency` group queues, never cancels).
 - The jobs' Redis is `redis-gate.service` on 127.0.0.1:6799
   (`deploy/vps-runner/redis-gate.conf`: the four modules, `appendonly yes`
   with `appendfsync always`, as CI's disposable Redis runs), wiped with
-  `FLUSHALL` before every sweep. The instances on 6379 (production), 6788
-  (dev1), 6791 (dev2) and 6798 (dev1 trade) are never touched.
+  `FLUSHALL` before every sweep. conclav.io's instances on 6379 (production),
+  6788 (dev1), 6791 (dev2) and 6798 (dev1 trade) are never touched;
+  conclav.dev has only the package's default instance on 6379 beside it.
 - Every job has its own temporary directory (`TMPDIR` is the runner's
-  per-job temp, wiped between jobs): `/tmp` on the box holds root-owned
+  per-job temp, wiped between jobs): `/tmp` on conclav.io holds root-owned
   leftovers of by-hand harness runs (`tacsim-lance-smoke`,
   `tacsim-minds-smoke`), which the runner's user cannot write, and two
-  harness tests write their report there.
+  harness tests write their report there; on conclav.dev `/tmp` is a 32 GB
+  tmpfs. A by-hand run as `ghrunner` sets `TMPDIR=/home/ghrunner/tmp`.
 - `harness` and `cost-lane` are the owner's to dispatch: they compete with
   everything on the box for its cores, and their rules (the harness section
   above, and never beside each other) stand; the `concurrency` group keeps
   them apart from each other and from a sweep.
 
 **Provisioning** is `deploy/vps-runner/provision.sh`, run as root on the box
-with a one-hour registration token:
+with a one-hour registration token. Its defaults are conclav.io's; the
+environment knobs its header lists are what made conclav.dev from a bare
+Ubuntu 26.04 image:
 
 ```sh
 gh api -X POST repos/conclavio/rustmush/actions/runners/registration-token --jq .token
-RUNNER_TOKEN=<that token> bash deploy/vps-runner/provision.sh
+RUNNER_TOKEN=<that token> bash deploy/vps-runner/provision.sh             # conclav.io
+RUNNER_TOKEN=<that token> RUNNER_NAME=conclav-dev RUNNER_LABELS=vps,conclav-dev \
+  RUNNER_MEMORY_HIGH=56G WITH_MOLD=1 bash deploy/vps-runner/provision.sh  # conclav.dev
 ```
 
-It is idempotent: the user, the runner (its tarball checked against the
-release's digest), rustup, the pinned toolchain, nextest, the Redis config
-and unit, the registration (once) and the service with its override. Rerun it
-after editing the files beside it. `gh api repos/conclavio/rustmush/actions/runners`
-shows the runner and whether it is online; `systemctl status
-actions.runner.conclavio-rustmush.conclav-vps` on the box says the same. The
-script's header says how to retire it.
+It is idempotent: the build packages from apt (and Redis Open Source with its
+modules from packages.redis.io when the box has none), the user, the runner
+(its tarball checked against the release's digest), rustup, the pinned
+toolchain, nextest, the Redis config and unit, the registration (once), the
+service with its override, and with `WITH_MOLD=1` mold 3.0.0 under `/usr`
+(the owner's recipe: a clone of rui314/mold at its release tag, `cargo build
+--release`, `PREFIX=/usr ./install-mold.sh`; for linker experiments only,
+nothing links with it unless a dispatch says so). Rerun it after editing the
+files beside it. `gh api repos/conclavio/rustmush/actions/runners` shows both
+runners, their labels and whether they are online; `systemctl status
+actions.runner.conclavio-rustmush.<runner name>` on a box says the same. A
+second label on an existing registration is an API call, not a
+re-registration (`gh api -X POST repos/conclavio/rustmush/actions/runners/<id>/labels
+-f 'labels[]=conclav-io'` is how conclav.io got its own). The script's header
+says how to retire a runner.
 
 ## Test targets since T.3: the group binaries
 
