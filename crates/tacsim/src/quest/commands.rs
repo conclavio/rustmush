@@ -8,15 +8,15 @@ use mush_core::{
 use serde_json::{Value, json};
 
 use super::{
-    close, definition, detail,
-    model::{self, CheckEvidence, QuestDef, QuestKey, QuestRecord, Stamp},
+    available, close, definition, detail,
+    model::{self, CheckEvidence, Objective, Prerequisite, QuestDef, QuestKey, QuestRecord, Stamp},
     paid, store,
 };
 use crate::port::passenger::store as passengers;
 
-const UNAVAILABLE: &str = "No follow-up favor is available for you here.";
+const UNAVAILABLE: &str = "No optional quest is available for you here right now.";
 const OFFER_SECONDS: i64 = 600;
-const HELP: &str = "+quest [<giver>] -- your private quest journal.\n+quest/offer <giver> -- ask a present acquaintance about a favor.\n+quest/accept <giver>=<token> -- explicitly accept the offered favor.\n+quest/check <giver> -- record the next local observation while at its named location.\n+quest/finish <giver> -- return to the giver to compare notes.\nConversation can explain an offer; only these commands advance your journal. Offers expire after ten minutes.";
+const HELP: &str = "+quest [<giver>] -- your private quest journal.\n+quest/offer <giver> -- ask a present acquaintance about a favor.\n+quest/accept <giver>=<token> -- explicitly accept the offered favor.\n+quest/check <giver> -- verify the next objective at its named location.\n+quest/finish <giver> -- return to the giver to compare notes.\nConversation can explain an offer; only these commands advance your journal. Offers expire after ten minutes.";
 
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.interface_provider("quest", Arc::new(QuestInterface))?;
@@ -46,7 +46,9 @@ enum Read {
 fn rows(ctx: &Ctx<'_>, read: Read) -> Result<Vec<QuestRecord>, String> {
     match read {
         Read::Current => store::list(ctx),
-        Read::Conversation if store::projection_ready(ctx.w) => Ok(store::list_world(ctx.w)),
+        Read::Conversation if store::projection_ready_for(ctx.w, ctx.actor) => {
+            Ok(store::list_world(ctx.w))
+        }
         Read::Conversation => Err("My journal is still loading. Please ask again shortly.".into()),
     }
 }
@@ -63,7 +65,11 @@ fn active(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<Option<QuestRecord>, 
         .cloned())
 }
 
-fn basis(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<(QuestDef, passengers::Booking), String> {
+fn basis(
+    ctx: &Ctx<'_>,
+    npc: ObjId,
+    read: Read,
+) -> Result<(QuestDef, Option<passengers::Booking>), String> {
     if !close(ctx, npc) {
         return Err(UNAVAILABLE.into());
     }
@@ -71,24 +77,35 @@ fn basis(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<(QuestDef, passengers:
     if !crate::port::passenger::at_station(ctx.w, npc, &def.destination) {
         return Err(UNAVAILABLE.into());
     }
-    let bookings = match read {
-        Read::Current => passengers::list(ctx)?,
-        Read::Conversation if passengers::projection_ready(ctx.w) => passengers::list_world(ctx.w),
-        Read::Conversation => {
-            return Err("My passage record is still loading. Please ask again shortly.".into());
-        }
+    let booking = if def.prerequisite == Prerequisite::PaidPassage {
+        let bookings = match read {
+            Read::Current => passengers::list(ctx)?,
+            Read::Conversation if passengers::projection_ready(ctx.w) => {
+                passengers::list_world(ctx.w)
+            }
+            Read::Conversation => {
+                return Err("My passage record is still loading. Please ask again shortly.".into());
+            }
+        };
+        Some(
+            bookings
+                .into_iter()
+                .find(|b| paid(ctx.w, b, ctx.actor, npc, &def))
+                .ok_or(UNAVAILABLE)?,
+        )
+    } else {
+        None
     };
-    let booking = bookings
-        .into_iter()
-        .find(|b| paid(ctx.w, b, ctx.actor, npc, &def))
-        .ok_or(UNAVAILABLE)?;
-    if rows(ctx, read)?
-        .iter()
-        .any(|r| r.key.source == def.key && r.key.booking == booking.id)
-    {
+    if rows(ctx, read)?.iter().any(|r| {
+        r.key.source == def.key
+            && match &booking {
+                Some(booking) => r.key.booking == Some(booking.id),
+                None => r.key.actor == Some(ctx.actor),
+            }
+    }) {
         return Err("You already accepted this favor. Use +quest to read your journal.".into());
     }
-    if def.checkpoints.iter().any(|c| detail(ctx.w, c).is_none()) {
+    if !available(ctx.w, &def) {
         return Err(UNAVAILABLE.into());
     }
     Ok((def, booking))
@@ -96,7 +113,7 @@ fn basis(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<(QuestDef, passengers:
 
 fn digest(
     def: &QuestDef,
-    passage: &passengers::Booking,
+    passage: &Option<passengers::Booking>,
     actor: ObjId,
     until: i64,
 ) -> Result<String, String> {
@@ -121,7 +138,7 @@ fn offer(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(format!(
-        "{}\n{}\n{}\nReturn to me afterward to compare notes. This is a favor, with no credit payment.\nTo accept explicitly:\n+quest/accept #{}={until}.{hash}",
+        "{}\n{}\n{}\nReturn to me afterward to compare notes. Completion bonus: +10 trust and +5 disposition with me, once per quest; no credit payment. All activities are available without accepting this optional quest.\nTo accept explicitly:\n+quest/accept #{}={until}.{hash}",
         def.title, def.introduction, steps, npc.0
     ))
 }
@@ -188,7 +205,12 @@ fn accept(ctx: &mut Ctx<'_>, npc: ObjId, token: &str) -> Result<String, String> 
         schema: 1,
         key: QuestKey {
             source: def.key.clone(),
-            booking: passage.id,
+            booking: passage.as_ref().map(|passage| passage.id),
+            actor: if passage.is_none() {
+                Some(ctx.actor)
+            } else {
+                None
+            },
         },
         revision: 1,
         actor: ctx.actor,
@@ -200,7 +222,11 @@ fn accept(ctx: &mut Ctx<'_>, npc: ObjId, token: &str) -> Result<String, String> 
         completed: None,
     };
     let title = row.definition.title.clone();
-    store::stage_accept(ctx, row)?;
+    store::stage_accept(ctx, row.clone())?;
+    // Prepare capture before the next market event. This watch grants nothing;
+    // both evidence and the typed accepted row must match before any progress.
+    // The tick retries after interrupted acceptance or a cold owner service.
+    let _ = super::evidence::watch(ctx, &row);
     Ok(format!(
         "Acceptance of {title} submitted. Use +quest to read the committed journal and next objective."
     ))
@@ -223,6 +249,14 @@ fn check(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
             checkpoint.title, checkpoint.instructions
         ));
     }
+    if !matches!(checkpoint.objective, Objective::Observation) {
+        let evidence = super::evidence::capture(ctx, &row, checkpoint)?;
+        let text = evidence.detail_text.clone();
+        store::stage_check(ctx, &row, evidence)?;
+        return Ok(format!(
+            "Verified: {text}\nObjective submitted; use +quest for the next step."
+        ));
+    }
     let text = detail(ctx.w, checkpoint)
         .ok_or("The reference detail is unavailable; no observation was recorded.")?;
     let evidence = CheckEvidence {
@@ -231,6 +265,7 @@ fn check(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
         detail_hash: model::detail_hash(&text)?,
         detail_text: text.clone(),
         at: Stamp::now(ctx.w),
+        proof: None,
     };
     store::stage_check(ctx, &row, evidence)?;
     Ok(format!(
@@ -251,6 +286,9 @@ fn finish(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
         return Err(
             "There are still observations to make. Use +quest for the next objective.".into(),
         );
+    }
+    if !super::evidence::completion_ready(ctx.w, &row) {
+        return Err("The original trade payments are unavailable or were reversed. Ask again after the receipts finish loading.".into());
     }
     store::stage_finish(ctx, &row)?;
     Ok(format!(
@@ -291,7 +329,7 @@ fn resolve(ctx: &Ctx<'_>, name: &str) -> Result<ObjId, String> {
 }
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    passengers::refresh(ctx).map_err(CmdError::msg)?;
+    let _ = passengers::refresh(ctx); // Paid prerequisites perform their own fallible read.
     store::refresh(ctx).map_err(CmdError::msg)?;
     let lhs = ctx.args.lhs().trim().to_owned();
     let rhs = ctx.args.rhs().map(str::to_owned);
@@ -372,6 +410,6 @@ impl InterfaceAbilityProvider for QuestInterface {
 
     fn npc_context(&self, w: &World, npc: ObjId) -> Option<String> {
         definition(w, npc)?;
-        Some("You may have an authored follow-up favor. Only the quest service knows whether the current asker is eligible. After a familiar greeting, use quest.status or quest.offer to discover what you can truthfully discuss. Let the conversation lead into the favor; do not repeat offers after refusal. Quest replies are private. Never infer acceptance, observations, payment or completion from dialogue. Only returned +quest commands advance it; no other quest or reward is promised.".into())
+        Some("You may offer an optional authored quest. Use quest.status or quest.offer for the current asker's verified availability, instructions and bonus. Let conversation lead into it and respect refusal. The ordinary services work without any quest or prescribed order; explain those commands when useful. Replies are private. Never infer acceptance, work, payment or completion from dialogue. Only returned +quest commands advance the journal; no other quest or reward is promised.".into())
     }
 }

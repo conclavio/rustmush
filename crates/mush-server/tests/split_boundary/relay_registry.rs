@@ -4104,7 +4104,14 @@ impl Rig {
         let mut rig = Self::new(false).await;
         let mut packs = tacsim::composition::boot_pack_list(false, true).unwrap();
         // This historical Ceres world predates passengers and their Ceres v4 dependency.
-        packs.retain(|p| p.manifest().id().as_str() != tacsim::port::passenger::content::PACK);
+        packs.retain(|p| {
+            !matches!(
+                p.manifest().id().as_str(),
+                "tacsim.passengers.stickney"
+                    | "tacsim.passengers.ceres"
+                    | "tacsim.quests.first_steps"
+            )
+        });
         let new_ids: Vec<_> = tacsim::relay_content::packs()
             .unwrap()
             .iter()
@@ -4301,7 +4308,14 @@ impl Rig {
     async fn v13_star() -> Self {
         let mut rig = Self::new(false).await;
         let mut packs = tacsim::composition::boot_pack_list(false, true).unwrap();
-        packs.retain(|p| p.manifest().id().as_str() != tacsim::port::passenger::content::PACK);
+        packs.retain(|p| {
+            !matches!(
+                p.manifest().id().as_str(),
+                "tacsim.passengers.stickney"
+                    | "tacsim.passengers.ceres"
+                    | "tacsim.quests.first_steps"
+            )
+        });
         for pack in &mut packs {
             match pack.manifest().id().as_str() {
                 tacsim::definitions::content::LANE_PACK => *pack = lane_v13(),
@@ -4544,7 +4558,12 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     let relay = "tacsim.relay.luna_ceres";
     let mut rig = Rig::new(false).await;
     let mut packs = tacsim::composition::boot_pack_list(false, true).unwrap();
-    packs.retain(|p| p.manifest().id().as_str() != tacsim::port::passenger::content::PACK);
+    packs.retain(|p| {
+        !matches!(
+            p.manifest().id().as_str(),
+            "tacsim.passengers.stickney" | "tacsim.passengers.ceres" | "tacsim.quests.first_steps"
+        )
+    });
     for pack in &mut packs {
         match pack.manifest().id().as_str() {
             tacsim::definitions::content::CERES_PACK => *pack = ceres_v2(),

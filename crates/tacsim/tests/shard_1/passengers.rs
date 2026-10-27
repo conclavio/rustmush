@@ -45,7 +45,7 @@ fn pump(rig: &mut Rig, count: usize) {
     }
 }
 
-fn charter(rig: &mut Rig, name: &str, seed: i64, ship: &str) -> (ObjId, HullRow) {
+pub(super) fn charter(rig: &mut Rig, name: &str, seed: i64, ship: &str) -> (ObjId, HullRow) {
     let captain = pilot(rig, name, seed);
     let out = run(&mut rig.tw, captain, &format!("+coop/enrol {ship}"));
     assert!(out.contains(&format!("now the {ship}")), "{out}");
@@ -60,7 +60,7 @@ fn charter(rig: &mut Rig, name: &str, seed: i64, ship: &str) -> (ObjId, HullRow)
     (captain, row)
 }
 
-fn arrive(rig: &mut Rig, ticket: &Ticket, expected: &str) {
+pub(super) fn arrive(rig: &mut Rig, ticket: &Ticket, expected: &str) {
     let _ = to_ic(rig, ticket.plan.depart_ic + ticket.plan.total_s);
     pump(rig, 3);
     assert!(
@@ -129,7 +129,7 @@ pub(super) fn book(rig: &mut Rig, captain: ObjId, npc: ObjId, fare: &str) -> (u6
     (before, row)
 }
 
-fn invite(rig: &mut Rig, captain: ObjId, npc: ObjId, contract: u64) {
+pub(super) fn invite(rig: &mut Rig, captain: ObjId, npc: ObjId, contract: u64) {
     let (out, queued) = command(rig, captain, &format!("+passage/board #{}", npc.0));
     assert_eq!(queued.len(), 1, "boarding queues its durable phase: {out}");
     land_all(rig, &queued);

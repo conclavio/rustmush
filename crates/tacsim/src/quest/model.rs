@@ -37,8 +37,69 @@ pub struct QuestDef {
     pub title: String,
     pub introduction: String,
     pub destination: String,
+    #[serde(default, skip_serializing_if = "Prerequisite::is_paid_passage")]
+    pub prerequisite: Prerequisite,
     pub checkpoints: Vec<Checkpoint>,
     pub completion: String,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Prerequisite {
+    #[default]
+    PaidPassage,
+    Open,
+}
+impl Prerequisite {
+    fn is_paid_passage(&self) -> bool {
+        *self == Self::PaidPassage
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Objective {
+    #[default]
+    Observation,
+    CoopEnrolment,
+    Trade {
+        origin: String,
+        destination: String,
+        commodity: String,
+        quantity: u64,
+    },
+    Passenger {
+        npc: ObjId,
+    },
+    Survey {
+        mode: String,
+    },
+}
+impl Objective {
+    fn is_observation(&self) -> bool {
+        *self == Self::Observation
+    }
+    pub fn check(&self) -> Result<(), String> {
+        let valid = match self {
+            Self::Observation | Self::CoopEnrolment => true,
+            Self::Trade {
+                origin,
+                destination,
+                commodity,
+                quantity,
+            } => {
+                canonical(origin, 64)
+                    && canonical(destination, 64)
+                    && origin != destination
+                    && canonical(commodity, 64)
+                    && *quantity > 0
+                    && *quantity <= i64::MAX as u64
+            }
+            Self::Passenger { npc } => npc.0 != 0,
+            Self::Survey { mode } => matches!(mode.as_str(), "scan" | "sound"),
+        };
+        valid
+            .then_some(())
+            .ok_or_else(|| "invalid quest objective".into())
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,16 +110,21 @@ pub struct Checkpoint {
     pub room_entry: String,
     pub room: ObjId,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Objective::is_observation")]
+    pub objective: Objective,
     pub instructions: String,
 }
 impl Checkpoint {
     pub fn check(&self) -> Result<(), String> {
+        self.objective.check()?;
         if !canonical(&self.id, 64)
             || !text(&self.title, 128)
             || !canonical(&self.room_pack, 160)
             || !canonical(&self.room_entry, 160)
             || self.room.0 == 0
-            || !text(&self.detail, 128)
+            || self.detail.len() > 128
+            || self.detail.contains('\0')
+            || (self.objective.is_observation() && !text(&self.detail, 128))
             || !text(&self.instructions, 1024)
         {
             Err("invalid quest checkpoint".into())
@@ -98,18 +164,73 @@ impl QuestDef {
 #[serde(deny_unknown_fields)]
 pub struct QuestKey {
     pub source: String,
-    pub booking: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booking: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<ObjId>,
 }
 impl QuestKey {
     pub fn check(&self) -> Result<(), String> {
-        if source(&self.source) && self.booking <= i64::MAX as u64 {
+        if source(&self.source)
+            && matches!(
+                (self.booking, self.actor),
+                (Some(0..=0x7fff_ffff_ffff_ffff), None) | (None, Some(ObjId(1..)))
+            )
+        {
             Ok(())
         } else {
             Err("invalid quest key".into())
         }
     }
     pub fn key_text(&self) -> String {
-        format!("{}/{}", self.source, self.booking)
+        match (self.booking, self.actor) {
+            (Some(booking), None) => format!("{}/{booking}", self.source),
+            (None, Some(actor)) => format!("{}/actor/{}/open", self.source, actor.0),
+            _ => String::new(),
+        }
+    }
+}
+
+/// The original global index keeps its canonical key and serialized key value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum QuestIndexKey {
+    Legacy,
+    Actor(ObjId),
+}
+impl QuestIndexKey {
+    pub fn for_quest(key: &QuestKey) -> Self {
+        key.actor.map(Self::Actor).unwrap_or(Self::Legacy)
+    }
+    pub fn key_text(&self) -> Result<String, String> {
+        match self {
+            Self::Legacy => Ok("0".into()),
+            Self::Actor(actor) if actor.0 != 0 => Ok(format!("actor/{}", actor.0)),
+            Self::Actor(_) => Err("invalid quest index actor".into()),
+        }
+    }
+}
+impl Serialize for QuestIndexKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Legacy => serializer.serialize_u8(0),
+            Self::Actor(actor) => serializer.serialize_str(&format!("actor/{}", actor.0)),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for QuestIndexKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.as_u64() == Some(0) {
+            return Ok(Self::Legacy);
+        }
+        if let Some(raw) = value.as_str().and_then(|text| text.strip_prefix("actor/"))
+            && let Ok(id) = raw.parse::<u32>()
+            && id != 0
+            && raw == id.to_string()
+        {
+            return Ok(Self::Actor(ObjId(id)));
+        }
+        Err(serde::de::Error::custom("invalid quest index key"))
     }
 }
 
@@ -153,6 +274,8 @@ pub struct CheckEvidence {
     pub detail_hash: String,
     pub detail_text: String,
     pub at: Stamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<super::evidence::ObjectiveProof>,
 }
 impl CheckEvidence {
     pub fn check(&self) -> Result<(), String> {
@@ -174,7 +297,8 @@ pub struct QuestRecord {
     pub revision: u64,
     pub actor: ObjId,
     pub npc: ObjId,
-    pub passage: Booking,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passage: Option<Booking>,
     pub definition: QuestDef,
     pub accepted: Stamp,
     pub checks: Vec<CheckEvidence>,
@@ -184,24 +308,34 @@ impl QuestRecord {
     pub fn check(&self) -> Result<(), String> {
         self.key.check()?;
         self.definition.check()?;
-        self.passage.check()?;
-        let delivered = self
-            .passage
-            .delivered
-            .as_ref()
-            .ok_or("quest passage has not arrived")?;
+        match (&self.definition.prerequisite, &self.passage) {
+            (Prerequisite::PaidPassage, Some(passage)) => {
+                passage.check()?;
+                let delivered = passage
+                    .delivered
+                    .as_ref()
+                    .ok_or("quest passage has not arrived")?;
+                if self.actor != passage.captain
+                    || self.npc != passage.npc
+                    || passage.phase != Phase::Delivered
+                    || self.key.booking != Some(passage.id)
+                    || self.key.actor.is_some()
+                    || self.definition.destination != passage.destination
+                    || self.accepted.at_ic < delivered.at_ic
+                    || self.accepted.at_utc < delivered.at_utc
+                {
+                    return Err("quest passage does not match its receipt".into());
+                }
+            }
+            (Prerequisite::Open, None)
+                if self.key.actor == Some(self.actor) && self.key.booking.is_none() => {}
+            _ => return Err("quest prerequisite does not match its identity".into()),
+        }
         if self.schema != SCHEMA
             || self.actor.0 == 0
             || self.npc.0 == 0
             || self.actor == self.npc
-            || self.actor != self.passage.captain
-            || self.npc != self.passage.npc
-            || self.passage.phase != Phase::Delivered
-            || self.key.booking != self.passage.id
             || self.key.source != self.definition.key
-            || self.definition.destination != self.passage.destination
-            || self.accepted.at_ic < delivered.at_ic
-            || self.accepted.at_utc < delivered.at_utc
             || self.checks.len() > self.definition.checkpoints.len()
             || self.revision != 1 + self.checks.len() as u64 + u64::from(self.completed.is_some())
             || (self.completed.is_some() && self.checks.len() != self.definition.checkpoints.len())
@@ -211,6 +345,15 @@ impl QuestRecord {
         let mut previous = &self.accepted;
         for (evidence, checkpoint) in self.checks.iter().zip(&self.definition.checkpoints) {
             evidence.check()?;
+            match (&checkpoint.objective, &evidence.proof) {
+                (Objective::Observation, None) => {}
+                (Objective::Observation, Some(_)) | (_, None) => {
+                    return Err("quest evidence has the wrong proof kind".into());
+                }
+                (objective, Some(proof)) => {
+                    proof.check_for(objective, self.actor, &self.accepted, &evidence.at)?
+                }
+            }
             if evidence.checkpoint != checkpoint.id
                 || evidence.room != checkpoint.room
                 || !evidence.at.follows(previous)
@@ -248,6 +391,18 @@ impl Default for QuestIndex {
     }
 }
 impl QuestIndex {
+    pub fn check_for(&self, key: QuestIndexKey) -> Result<(), String> {
+        self.check()?;
+        key.key_text()?;
+        if self
+            .keys
+            .iter()
+            .any(|quest| QuestIndexKey::for_quest(quest) != key)
+        {
+            return Err("quest index contains another character's receipts".into());
+        }
+        Ok(())
+    }
     pub fn check(&self) -> Result<(), String> {
         if self.schema != SCHEMA
             || self.keys.len() > MAX_QUESTS
@@ -276,12 +431,13 @@ pub(super) mod tests {
             schema: 1,
             key: QuestKey {
                 source: "pack/quest.leila".into(),
-                booking: 0,
+                booking: Some(0),
+                actor: None,
             },
             revision: 1,
             actor,
             npc,
-            passage: Booking {
+            passage: Some(Booking {
                 schema: 1,
                 id: 0,
                 revision: 3,
@@ -308,13 +464,14 @@ pub(super) mod tests {
                     at_utc: 50,
                 }),
                 cancelled: None,
-            },
+            }),
             definition: QuestDef {
                 schema: 1,
                 key: "pack/quest.leila".into(),
                 title: "Calibration".into(),
                 introduction: "Check the bench.".into(),
                 destination: "ceres".into(),
+                prerequisite: Prerequisite::PaidPassage,
                 checkpoints: vec![Checkpoint {
                     id: "bench".into(),
                     title: "Check bench".into(),
@@ -322,6 +479,7 @@ pub(super) mod tests {
                     room_entry: "room.workshop".into(),
                     room: ObjId(20),
                     detail: "bench".into(),
+                    objective: Objective::Observation,
                     instructions: "Read the public scale.".into(),
                 }],
                 completion: "Completed the calibration checks together.".into(),
@@ -347,6 +505,7 @@ pub(super) mod tests {
                 at_ic: 70,
                 at_utc: 70,
             },
+            proof: None,
         });
         row.revision = 2;
         row.check()?;
@@ -396,6 +555,110 @@ pub(super) mod tests {
             serde_json::from_value::<QuestIndex>(
                 serde_json::json!({"schema":1,"keys":[],"reset":true})
             )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_json_and_canonical_keys_keep_their_original_shape() -> TestResult {
+        let row = record();
+        let original = serde_json::to_value(&row)?;
+        check_eq!(original["key"]["booking"], serde_json::json!(0));
+        check!(original["key"].get("actor").is_none());
+        check!(original["definition"].get("prerequisite").is_none());
+        check!(
+            original["definition"]["checkpoints"][0]
+                .get("objective")
+                .is_none()
+        );
+        check!(original["passage"].is_object());
+        check_eq!(row.key.key_text(), "pack/quest.leila/0");
+        let decoded: QuestRecord = serde_json::from_value(original.clone())?;
+        decoded.check()?;
+        check_eq!(decoded, row);
+        let mut explicit = original.clone();
+        explicit["definition"]["prerequisite"] = serde_json::json!("paid_passage");
+        explicit["definition"]["checkpoints"][0]["objective"] =
+            serde_json::json!({"kind":"observation"});
+        let decoded: QuestRecord = serde_json::from_value(explicit)?;
+        check_eq!(serde_json::to_value(decoded)?, original);
+        check_eq!(
+            serde_json::to_value(QuestIndexKey::Legacy)?,
+            serde_json::json!(0)
+        );
+        check_eq!(
+            serde_json::from_value::<QuestIndexKey>(serde_json::json!(0))?,
+            QuestIndexKey::Legacy
+        );
+        check_eq!(QuestIndexKey::Legacy.key_text()?, "0");
+        check_eq!(QuestIndexKey::Actor(ObjId(11)).key_text()?, "actor/11");
+        check!(serde_json::from_value::<QuestIndexKey>(serde_json::json!("actor/011")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn open_quests_bind_one_character_without_a_passage_and_require_typed_objective_proof()
+    -> TestResult {
+        let mut row = record();
+        row.definition.prerequisite = Prerequisite::Open;
+        row.key.booking = None;
+        row.key.actor = Some(row.actor);
+        row.passage = None;
+        row.check()?;
+        check_eq!(row.key.key_text(), "pack/quest.leila/actor/11/open");
+        let old_collision = QuestKey {
+            source: "pack/quest.leila/actor".into(),
+            booking: Some(11),
+            actor: None,
+        };
+        check!(old_collision.key_text() != row.key.key_text());
+        let mut bad = row.clone();
+        bad.key.actor = Some(ObjId(12));
+        check!(bad.check().is_err());
+        bad = row.clone();
+        bad.key.booking = Some(0);
+        check!(bad.check().is_err());
+        bad = row.clone();
+        bad.key.actor = None;
+        check!(bad.check().is_err());
+        bad = row.clone();
+        bad.passage = record().passage;
+        check!(bad.check().is_err());
+        let checkpoint = row.definition.checkpoints.first_mut().ok_or("checkpoint")?;
+        checkpoint.objective = Objective::Survey {
+            mode: "scan".into(),
+        };
+        checkpoint.detail.clear();
+        row.check()?;
+        row.checks.push(CheckEvidence {
+            checkpoint: "bench".into(),
+            room: ObjId(20),
+            detail_hash: detail_hash("Completed a scan.")?,
+            detail_text: "Completed a scan.".into(),
+            at: Stamp {
+                at_ic: 70,
+                at_utc: 70,
+            },
+            proof: None,
+        });
+        row.revision = 2;
+        check!(row.check().is_err());
+        check!(
+            Objective::Survey {
+                mode: "invented".into()
+            }
+            .check()
+            .is_err()
+        );
+        check!(
+            Objective::Trade {
+                origin: "ceres".into(),
+                destination: "ceres".into(),
+                commodity: "parts".into(),
+                quantity: 1
+            }
+            .check()
             .is_err()
         );
         Ok(())

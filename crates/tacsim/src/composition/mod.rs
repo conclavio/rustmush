@@ -1232,6 +1232,10 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "passenger shelf pack refused"),
     }
+    match crate::quest::packs::packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "starter quest shelf packs refused"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -1290,6 +1294,7 @@ pub fn boot_pack_list(
         packs.extend(crate::definitions::content::lane_packs()?);
         packs.extend(crate::relay_content::packs()?);
         packs.extend(crate::port::passenger::content::packs()?);
+        packs.extend(crate::quest::packs::packs()?);
     }
     Ok(packs)
 }
@@ -1349,6 +1354,9 @@ pub fn content_module_with(
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
         for pack in crate::port::passenger::content::packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
+        for pack in crate::quest::packs::packs()? {
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
     }
