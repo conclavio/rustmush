@@ -289,6 +289,14 @@ jobs:
       # about 53 GB of them) -- and the build runs on it directly: no LVM, no loop
       # file, no swap.
       #
+      # 2026-10-27: that step runs in the background. It was 0.8-3.0 min a
+      # cell on main's run 40428411078 (`docker image prune` and the
+      # unlinking), ahead of everything else; now its body,
+      # scripts/ci-free-root-disk.sh, is started detached right after
+      # checkout, the toolchain install and the cache restore run meanwhile,
+      # and the "Root disk freed" step waits for it, prints its log and
+      # fails on its failure before the first cargo build.
+      #
       # This job runs on Linux only (owner, 2026-10-18): development happens on
       # the owner's Windows box, so a Windows-only break is seen first-hand
       # before any push, and production is Linux; the Windows leg of the matrix
@@ -296,36 +304,10 @@ jobs:
       # binaries under full debuginfo. The cross-platform mind-hash gates below
       # still hold: their pins are blessed on Windows, so the Linux run is the
       # cross-platform comparison.
-      - name: Free the root disk
-        run: |
-          df -h /
-          free_mb() { df -m / | awk 'NR==2 {print $4}'; }
-          before=$(free_mb)
-          drop() {
-            if [ -d "$1" ]; then
-              local was
-              was=$(free_mb)
-              sudo rm -rf "$1"
-              echo "removed $1: $(( $(free_mb) - was )) MB freed"
-            fi
-          }
-          # What easimon/maximize-build-space removed (dotnet, android,
-          # haskell, CodeQL, the docker images), then the other large
-          # preinstalls the image may carry.
-          drop /usr/share/dotnet
-          drop /usr/local/lib/android
-          drop /opt/ghc
-          drop /usr/local/.ghcup
-          drop /opt/hostedtoolcache/CodeQL
-          before_prune=$(free_mb)
-          docker image prune -af > /dev/null 2>&1 || true
-          echo "docker image prune: $(( $(free_mb) - before_prune )) MB freed"
-          drop /usr/local/share/boost
-          drop /usr/share/swift
-          for julia in /usr/local/julia*; do drop "$julia"; done
-          df -h /
-          echo "freed in total: $(( $(free_mb) - before )) MB"
       - uses: actions/checkout@v4
+      - name: Free the root disk (in the background)
+        run: |
+          nohup bash -c 'scripts/ci-free-root-disk.sh; echo $? > "$RUNNER_TEMP/free-root-disk.status"' > "$RUNNER_TEMP/free-root-disk.log" 2>&1 &
       # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
       # this repo that names a Rust version. `rustup toolchain install` with no
       # argument installs the toolchain that file pins, with the `clippy` and
@@ -361,6 +343,16 @@ jobs:
       - name: cargo-nextest 0.9.148
         if: matrix.shard != 'lint'
         run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+      # 2026-10-27: the background step above, waited for before anything
+      # builds (the lint cell's Clippy, the minds cell's named steps, the
+      # Test step and the bot cells' steps all come after this).
+      - name: Root disk freed
+        run: |
+          t0=$SECONDS
+          until [ -f "$RUNNER_TEMP/free-root-disk.status" ]; do sleep 2; done
+          echo "waited $(( SECONDS - t0 )) s for scripts/ci-free-root-disk.sh"
+          cat "$RUNNER_TEMP/free-root-disk.log"
+          exit "$(cat "$RUNNER_TEMP/free-root-disk.status")"
       # 2026-10-20: Format and Clippy run once each. Both are workspace-wide
       # (12 s and 3 min 18 s at 96cc7303), so once is the whole answer; since
       # 2026-10-25 they are shard (c), so a format or clippy failure fails
