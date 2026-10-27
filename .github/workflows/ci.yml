@@ -194,6 +194,17 @@ jobs:
     # run of one test gains nothing from a pool, and the guards that read
     # their lines (ci_gated_test_inventory, harness.rs's parity check, cost
     # lane's C5) stay as they are. Measured on the cut's own PR run.
+    #
+    # 2026-10-27: FIFTEEN CELLS, the pull-request wall. After T.3a and T.3b
+    # main's run 40428411078 took 26 min, its wall the four tacsim-integration
+    # shards at 23-26 min (six since the same day, with the mind-hash steps
+    # in a cell of their own: about 16-19 each); behind them the bot at 21.6
+    # (4.3 of build, 14.8 of tests, the 8.8-min mining-root canary scheduled
+    # six minutes in and finishing last) and the release job at 16.4. So the
+    # bot's two long stories are a cell of their own, the release job no
+    # longer runs on pull requests, and the root-disk step (0.8-3.0 min a
+    # cell) runs in the background of checkout, the toolchain install and
+    # the cache restore. Measured on the cut's own PR run.
     strategy:
       fail-fast: false
       matrix:
@@ -232,8 +243,17 @@ jobs:
           - rest-mushd
           - rest-server
           - rest-gateway
-          # (f) the bot on its own feature set.
+          # (f) the bot on its own feature set: two cells since 2026-10-27.
+          # In main's run 40428411078 the one cell was 21.6 min, 4.3 of build
+          # and 14.8 of tests, with the 8.8-min mining-root canary
+          # (mining_cohort::the_mining_root_runs_under_the_bots_serde)
+          # scheduled six minutes in and finishing last. bot-stories builds
+          # and runs the two long stories, that canary and arena_mind_isolation
+          # (4.7 min), side by side; bot runs the rest (12 summed minutes,
+          # arena_e2e alone among them) and the doc-tests. Both cells share
+          # the `bot` cache key.
           - bot
+          - bot-stories
     steps:
       # 2026-10-18: the workspace builds 392 test binaries (157 MB each at
       # opt-level 0 with line-table debuginfo), more than the ~25 GB a hosted
@@ -331,9 +351,9 @@ jobs:
           # the key `tacsim`, the first to finish saves it whole, and a new
           # integration shard starts warm. Every other shard builds a different
           # set (lint only checks, rest-libs and the three server shards split
-          # the workspace, bot has its own features) and keeps its own key, for
-          # the subset reason above.
-          key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || matrix.shard }}
+          # the workspace) and keeps its own key, for the subset reason above;
+          # the two bot cells build the bot's own feature set and share `bot`.
+          key: ${{ startsWith(matrix.shard, 'tacsim') && 'tacsim' || startsWith(matrix.shard, 'bot') && 'bot' || matrix.shard }}
       # 2026-10-26 (cut T.1): the runner, pinned to the version the box and
       # the VPS have (one tarball, one binary into cargo's bin; ~2 s). The
       # version is also .config/nextest.toml's `nextest-version`, which fails
@@ -465,8 +485,8 @@ jobs:
       # (1.2 GB of memory, 81 GB free), which is why the counts and the
       # pressure gauges are here. The shard's own cargo line follows.
       - name: Test
-        # lint runs no tests; bot's one test line is its own named step below.
-        if: matrix.shard != 'lint' && matrix.shard != 'bot'
+        # lint runs no tests; the bot cells' lines are their own named steps below.
+        if: matrix.shard != 'lint' && !startsWith(matrix.shard, 'bot')
         env:
           SHARD: ${{ matrix.shard }}
         run: |
@@ -540,8 +560,13 @@ jobs:
       - name: Test the bot on its own feature set
         if: matrix.shard == 'bot'
         run: |
-          cargo nextest run -P ci -p mush-bot --build-jobs 2
+          cargo nextest run -P ci -p mush-bot -E 'not (binary_id(mush-bot::mining_cohort) | binary_id(mush-bot::arena_mind_isolation))' --build-jobs 2
           cargo test -p mush-bot --doc -j 2
+      # The two long stories, their two binaries built and run on their own
+      # (matrix (f) above).
+      - name: The bot's two long stories
+        if: matrix.shard == 'bot-stories'
+        run: cargo nextest run -P ci -p mush-bot --test mining_cohort --test arena_mind_isolation --build-jobs 2
       # 2026-10-26 (cut T.1): the sweep's JUnit report, one <testcase> a test
       # with its time (.config/nextest.toml's `ci` profile writes it). The
       # per-test and per-binary times a rebalance of the tacsim shards needs
