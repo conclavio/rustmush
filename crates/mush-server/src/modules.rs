@@ -1592,9 +1592,11 @@ mod tests {
                 registrations.iter().any(|(spec, owner, class)| {
                     spec.name == "@tacsim"
                         && *owner == Some("tacsim")
-                        && *class == mush_core::CommandCompatibility::LegacyPostImage
+                        // /tv submits staff recovery, so the primary verb takes
+                        // the authoritative ceiling of its switches.
+                        && *class == mush_core::CommandCompatibility::Authoritative
                 }),
-                "the TacSim layer must publish its compatibility lane"
+                "the TacSim staff recovery surface must publish `Authoritative`"
             );
             // E7 residue pass 1, R2: `@corridor` is a SECOND registration group in the
             // same module, declared `ReadOnly` before its own `reg.command` and with
