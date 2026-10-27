@@ -618,6 +618,13 @@ jobs:
 
   release:
     name: Deployable release binaries
+    # 2026-10-27: pushes to main, the nightly and dispatches, not pull
+    # requests. The build step is 16 min of a hosted runner (15.8 at main's
+    # run 40428411078), the next-longest job behind the test cells on a PR
+    # run, for a release-profile build of the three binaries whose code the
+    # PR's test cells compile in the test profile anyway; the embed guard,
+    # thin LTO and native TLS are proven on main's own run after the merge.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
