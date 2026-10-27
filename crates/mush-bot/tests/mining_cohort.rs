@@ -67,10 +67,11 @@ const MINERS: [Miner; 4] = [
 /// **The mining root runs under the bot's serde** (doc 20a §5.3.12's canary;
 /// every build): God reads the rate and geology lines `[ready]`, then the
 /// bot's lane, in-process over the bot's own SSH session, plays from Limbo
-/// through its first scan at Ahuna Flank. With `MINE_RATE` set (the
-/// testing-rate trial, `docs/testing-rate.md`; [`mine::rate_lift`]) God lifts
-/// the world rate to it once the pilot has enrolled, lead ruling L1's pattern;
-/// unset, the world runs at 24 throughout, as it always has.
+/// through its first scan at Ahuna Flank. Once the pilot has enrolled God lifts
+/// the world rate to [`mine::LIFTED_RATE`] 168 (lead ruling L1's pattern; the
+/// testing-rate trial, `docs/testing-rate.md`: the hop, the launch and the scan
+/// at a seventh of their rate-24 walls, 363 s against 528); `MINE_RATE`
+/// overrides it ([`mine::rate_lift`]), and `MINE_RATE=24` is the rate-24 run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_mining_root_runs_under_the_bots_serde() {
     tokio::time::timeout(Duration::from_secs(20 * 60), canary())
@@ -108,10 +109,10 @@ async fn canary() {
         },
         miner.character.to_owned(),
     );
-    // The drive, in two phases around the one staff act a trial may ask for. Phase
-    // one runs from Limbo to the enrolment — the lane's next line is the refit once
-    // `+coop/enrol` is answered — under the boot rate the Rate line gates on.
-    let lift = mine::rate_lift();
+    // The drive, in two phases around the one staff act. Phase one runs from Limbo
+    // to the enrolment — the lane's next line is the refit once `+coop/enrol` is
+    // answered — under the boot rate the Rate line gates on.
+    let lift = mine::rate_lift(mine::LIFTED_RATE);
     let drive_started = std::time::Instant::now();
     let bound = Duration::from_secs(19 * 60);
     let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
@@ -124,10 +125,11 @@ async fn canary() {
     )
     .await;
     let enrolled = enrolled_now(&lane).then(|| started.elapsed().as_secs());
-    // The staff act (`MINE_RATE`): God opens a new world-time generation at the
-    // lifted rate after the enrolment and before the refit — lead ruling L1's
-    // pattern, as `ic_slice_loop.rs` sets 3600. The lane's own cadences stay the
-    // shipped ones, sized to 24; what the lift buys is game clock.
+    // The staff act: God opens a new world-time generation at the lifted rate
+    // (`LIFTED_RATE`, or `MINE_RATE`; none at 24) after the enrolment and before
+    // the refit — lead ruling L1's pattern, as `ic_slice_loop.rs` sets 3600. The
+    // lane's own cadences stay the shipped ones, sized to 24; what the lift buys
+    // is game clock.
     if let (Some(rate), Some(_)) = (lift, enrolled) {
         let reply = mine::lift_rate(&mut god, rate).await;
         println!(

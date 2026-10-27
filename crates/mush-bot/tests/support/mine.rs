@@ -22,10 +22,14 @@
 //! at the play rate because the production Rate line gates `+coop/enrol` at exactly
 //! `PLAY_RATE` (`readiness.rs:37`, `coop.rs:880`); once a pilot has enrolled nothing
 //! on the mining loop reads that line again (a departure to a site asks
-//! `port_ready`, the site's own lines), so a trial may have God open a faster
+//! `port_ready`, the site's own lines), so a rig may have God open a faster
 //! world-time generation — `ic_slice_loop.rs`'s pattern (lead ruling L1) — through
-//! [`rate_lift`] (the `MINE_RATE` environment variable) and [`lift_rate`]. Unset,
-//! the rig plays at 24 throughout, as it always has.
+//! [`rate_lift`] and [`lift_rate`]. Each rig names its own default rate: the canary
+//! lifts to [`LIFTED_RATE`] 168 (the owner's call of 2026-10-27: 165 s off its 528-s
+//! wall, the game clock being the only thing the lift buys); the cohort plays at
+//! [`BOOT_RATE`] 24 throughout, its four pilots enrolling at different times. The
+//! `MINE_RATE` environment variable overrides any rig's default — `MINE_RATE=24` is
+//! the rate-24 run, the world as the deploy envs seed it.
 #![allow(dead_code)]
 
 use std::{
@@ -66,6 +70,11 @@ pub const RATE_READY: &str = "world rate: 24 IC seconds per real second. [ready]
 /// line reads `[ready]` at on a world that is not a test world, so `+coop/enrol` is
 /// open (`readiness.rs:384`).
 pub const BOOT_RATE: u32 = 24;
+/// The world rate the canary lifts to after the pilot's enrolment: an IC week per
+/// real hour, the owner's figure. The hop, the launch and the scan run at a seventh
+/// of their rate-24 walls; the per-fire budgets, the market's sweep and the lane's
+/// own cadences do not move (`docs/testing-rate.md` §4).
+pub const LIFTED_RATE: u32 = 168;
 
 /// One miner: its gateway account, its character and the site its bot mines.
 #[derive(Clone, Copy, Debug)]
@@ -325,26 +334,29 @@ pub async fn await_ready(god: &mut arena::Client, bound: Duration) -> u64 {
     );
 }
 
-/// **The world rate a trial lifts to after the pilot's enrolment** (the testing-rate
-/// trial, `docs/testing-rate.md`), from the `MINE_RATE` environment variable: unset,
-/// empty or [`BOOT_RATE`] is today's behaviour — the rig plays at 24 throughout and no
-/// staff act runs; any other rate inside the kernel's band
+/// **The world rate a rig lifts to after the pilot's enrolment** (the testing-rate
+/// trial, `docs/testing-rate.md`): the `MINE_RATE` environment variable when it is set
+/// and not empty, else the rig's own `default` ([`LIFTED_RATE`] for the canary,
+/// [`BOOT_RATE`] for the cohort). [`BOOT_RATE`] means no lift — the rig plays at 24
+/// throughout and no staff act runs — so `MINE_RATE=24` is the rate-24 run of any rig;
+/// any other rate inside the kernel's band
 /// (`mush_core::MIN_WORLD_TIME_RATE..=MAX_WORLD_TIME_RATE`) is the one God opens with
-/// [`lift_rate`] once the pilot has enrolled. A value that is not such a rate panics:
-/// a mistyped trial must not run quietly as the default.
+/// [`lift_rate`] once the pilot has enrolled. A `MINE_RATE` that is not such a rate
+/// panics: a mistyped run must not play quietly at the default.
 #[must_use]
-pub fn rate_lift() -> Option<u32> {
-    let raw = std::env::var("MINE_RATE").ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let rate: u32 = raw.parse().unwrap_or_else(|_| {
-        panic!("MINE_RATE is not a rate in IC seconds per real second: {raw:?}")
-    });
+pub fn rate_lift(default: u32) -> Option<u32> {
+    let rate: u32 = match std::env::var("MINE_RATE") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let raw = raw.trim();
+            raw.parse().unwrap_or_else(|_| {
+                panic!("MINE_RATE is not a rate in IC seconds per real second: {raw:?}")
+            })
+        }
+        _ => default,
+    };
     assert!(
         (mush_core::MIN_WORLD_TIME_RATE..=mush_core::MAX_WORLD_TIME_RATE).contains(&rate),
-        "MINE_RATE {rate} is outside the kernel's band {}..={}",
+        "the lifted rate {rate} is outside the kernel's band {}..={}",
         mush_core::MIN_WORLD_TIME_RATE,
         mush_core::MAX_WORLD_TIME_RATE
     );

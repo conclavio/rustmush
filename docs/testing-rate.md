@@ -36,8 +36,9 @@ the bot's mining rig (§4).*
   own retry cadences, which no rate shrinks. The lift is safe after the enrolment (nothing on the
   mining loop reads the Rate line again), and the lane's own cadences, sized to 24, are upper bounds
   that hold at any rate at or above about 6.
-- **Recommendation (§5).** Lift the bot rigs to 168 after enrolment behind `MINE_RATE` (built here,
-  default off) and nothing else; the per-fire budgets (b) survive 168 by arithmetic but the
+- **Recommendation (§5).** Lift the canary to 168 after enrolment — built here as the canary's
+  default, the owner's call of 2026-10-27, `MINE_RATE` overriding it (24 is the rate-24 run) —
+  and nothing else; the per-fire budgets (b) survive 168 by arithmetic but the
   dispatcher's one slot, the emergency reading's real hour and the marker rings need the owner's
   word before any world runs there for long; the real-time windows (c) are design decisions whose
   IC meaning shifts 7× and want a ruling, not a code change; and `PLAY_RATE` should become
@@ -124,25 +125,32 @@ the grep found it, and because it is what makes (b) and (c) survivable).
 
 **Method.** Lead ruling L1's pattern, as `ic_slice_loop.rs` plays it: the rig boots at 24 (the Rate
 line gates `+coop/enrol`), the pilot enrols, then God opens a new generation with `@tacsim/time
-rate=168`, and the lane plays on. Built in this branch, default off: `MINE_RATE` (unset, empty or 24
-is today's behaviour) read by `mine::rate_lift`, the staff act `mine::lift_rate` asserted on the
-verb's own reply, the drive split in two phases around it (`mine::drive_lane_since`, one clock, one
-budget), in `crates/mush-bot/tests/support/mine.rs` and `tests/mining_cohort.rs`. The lane's own
+rate=168`, and the lane plays on. Built in this branch: `mine::rate_lift` takes the rig's own
+default rate — `LIFTED_RATE` 168 for the canary since the owner's call of 2026-10-27, `BOOT_RATE`
+24 (no lift) for the cohort — and `MINE_RATE` overrides it (unset or empty leaves the default; 24
+is the rate-24 run), the staff act `mine::lift_rate` asserted on the verb's own reply, the drive
+split in two phases around it (`mine::drive_lane_since`, one clock, one budget), in
+`crates/mush-bot/tests/support/mine.rs` and `tests/mining_cohort.rs`. The lane's own
 cadences (`crates/mush-bot/src/mine/lane.rs`) are untouched. Both runs on conclav.dev (32 cores),
 the one pushed tree (`77d2f56c`), the ci profile, Redis on, `--success-output immediate` so the
 `canary:` lines reach the job log; the 168 run carried `MINE_RATE=168` through a temporary `env`
 dispatch input on gate.yml that is NOT in this branch (the measurement patch is in the session's
-notes folder, beside the pending conclav-dev runner PR, which owns gate.yml).
+notes folder; PR #23, the conclav-dev runner change that owns gate.yml, merged since without it).
 
 **The two runs** (conclav.dev, the `vps-gate-conclav-dev` queue, one after the other):
 
-| | 24 throughout (today) | 24, then 168 after the enrolment |
+| | 24 throughout (the default then; `MINE_RATE=24` now) | 24, then 168 after the enrolment (`MINE_RATE=168` then; the default now) |
 |---|---|---|
 | Gate run | 40431777853 | 40431814456 |
 | The canary (JUnit) | **528.0 s**, PASS | **363.0 s**, PASS |
 | The lane's drive (its own clock) | 524 s | 359 s |
 | Reached `Scanned` | yes (ArrivedSite, Launched, Scanned) | yes (the same three) |
 | The job, checkout to artifact | 10 min 16 s (a warm relink of the bot's test binary) | 6 min 21 s |
+
+**The flipped default, re-measured** (no `MINE_RATE`; the canary lifting to `LIFTED_RATE` on its
+own; the tree merged with main at PR #23): gate run 40435825559, PASS, the canary **363.2 s**
+(JUnit), the lift at +61 s, `ArrivedSite` at +346 s, `Scanned` at +358 s, the job 6 min 21 s — the
+168 column of the trial, to the second.
 
 **Where the wall goes**, beat by beat, from the `canary: +N s send …` lines (the lane's clock
 starts at its first line, about three seconds after the boot):
@@ -181,9 +189,13 @@ trial lifts after enrolment: the fake clock's fire loops are shorter in IC terms
 
 1. **Lift the bot rigs to 168 after enrolment; lift nothing else.** The canary and the cohort are the
    only always-wall-bound tests whose wall is game clock, and nothing on the mining loop after
-   `+coop/enrol` reads the Rate line. `MINE_RATE` is built, default off; the owner decides whether
-   the canary's default flips to 168 — 165 s off every sweep's longest bot test, the floor of 330 s
-   staying (§4); one literal in `mine.rs` once the owner rules. The sweep's tail on conclav.dev was
+   `+coop/enrol` reads the Rate line. The owner ruled on 2026-10-27: the canary's default is 168
+   after enrolment (`LIFTED_RATE`), 165 s off every sweep's longest bot test, the floor of 330 s
+   staying (§4); `MINE_RATE` overrides it, so `MINE_RATE=24` is the rate-24 run when a change to
+   the enrolment or the passage wants the world as the deploy envs seed it. The cohort stays at 24:
+   its four pilots enrol at different times (each site's second launches after the first's scan),
+   so there is no one point after which the Rate line is behind every pilot — a lift there waits
+   for `PLAY_RATE` as configuration (item 4) or a per-pilot gate. The sweep's tail on conclav.dev was
    the canary (the conclav-dev runner note), so the saving is wall off the gate, not test time. The mush-server stories and the tacsim suites gain nothing from any
    rate: their clock is `set_now`. The real-server tests (`paid_purchase`, the arena stories) wait on
    real-time things the rate does not touch.
@@ -215,7 +227,9 @@ trial lifts after enrolment: the fake clock's fire loops are shorter in IC terms
 
 ## 6. What this branch changes
 
-`crates/mush-bot/tests/support/mine.rs` (`BOOT_RATE`, `rate_lift`, `lift_rate`, `drive_lane_since`;
-`config` reads `BOOT_RATE`), `crates/mush-bot/tests/mining_cohort.rs` (the canary's drive in two
-phases around the optional lift; the summary line names the rate), this note. No game code, no
-constant, no gate file.
+`crates/mush-bot/tests/support/mine.rs` (`BOOT_RATE`, `LIFTED_RATE`, `rate_lift` with the rig's
+default, `lift_rate`, `drive_lane_since`; `config` reads `BOOT_RATE`),
+`crates/mush-bot/tests/mining_cohort.rs` (the canary's drive in two phases around the lift, 168 by
+default; the summary line names the rate), this note. No game code, no constant, no gate file. The
+one behaviour change: the canary's world runs at 168 from the enrolment on; `MINE_RATE=24` restores
+the rate-24 run.
