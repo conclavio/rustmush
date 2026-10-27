@@ -1918,6 +1918,8 @@ and membership loss after an eligible preview, not merely catalogue visibility.
 * Filing and listing are separate. Filing gives a public Roll entry with forms
   `none` and a free, non-transferable owner's licence. `/publish` may file first
   and then list through an explicit combined service; it cannot charge twice.
+  (As built, 17g C2c: `@mind/publish <filed>` lists an already filed mind and
+  never files; `@mind/file` is the filing act, after `@mind/rate`.)
   Private filing never makes a mind eligible for future NPC procurement.
 * Terms are at most 90 IC days; Grace is at most 3. One exception (17g C0, owner
   ruling 2026-10-25): a House-filed mind's free owner licence runs 365 IC days
@@ -2815,6 +2817,18 @@ the existing command grammar in this cut, then expose the same typed actions
 in web/TUI without requiring clients to synthesize command text. Reuse
 connection/actor freshness and exact draft EditBase where source is involved;
 commercial operations bind their own record/terms generations.
+
+As built (17g C2, 2026-10-27, line mode; the record is 17g §7 "C2 — as built"):
+the spellings are 17g §3 C2's approved table, not the `<owned>@<rev>` forms
+above: `@mind/rate <name>@<rev>`, `@mind/file <name>@<rev>[=<charter name>]`,
+`@mind/publish <filed> form=… [royalty=…] [transfer=no]`, `@mind/update`,
+`@mind/withdraw <filed>`, `@mind/attest <filed>`, `@mind/fork <licence>=<name>`;
+`+minds`, `+minds <code>`, `/next`, `/holdings`, `/buy`, `/renew`, `/resell`,
+`/charter` and the accepts; `@registry/recall <filed>` and
+`@registry/revoke <licence>`. The `+minds` forms, `@mind/publish`, the renewal
+front and the title trades are held at `NOT_OPEN` until the owner-read cap raise,
+the index sub-cut and the renewal seam land; pin/follow is Pin only; the typed
+web and TUI actions are 17g C3.
 
 Gate: end-user right revoked between quote/accept/settle; direct title/service
 bypass; scope/issuer failures; prices and lawful rounding; real hardware story;

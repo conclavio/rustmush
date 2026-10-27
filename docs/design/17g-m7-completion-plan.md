@@ -46,7 +46,9 @@ integration stories:
 
 Production composed none of this before C1. Since C1c (`9002169e`) a format-2 named
 launch in Active mode composes all of it except IC claims and hull cover; no instance
-runs one yet (§7, C1 as built).
+runs one yet (§7, C1 as built). Since C2 (`bfc1b34e`–`3e4f7668`, PR #30, §7, C2 as
+built) the same launch composes the line-mode command slot; the table says which
+commands reach each owner and which are held.
 
 **What production composes.** `mushd` boots through `mush_server::boot::game_modules`,
 which composes mind commerce only through the launch path. `game_modules_with_mind_commerce`
@@ -65,30 +67,40 @@ has no production caller, and boot refuses it beside a launch path
   - for a format-2 deployment only (C1c), the player market after the House chain:
     the seventeen builder steps of §7's C1 entry, paid resale under the House buyer
     admission; IC claims, hull cover and paid Follow are not composed
+  - since C2 (§7, C2 as built), with the player market: the `MindCommandService` slot
+    (`TacsimRuleset.mind_commands`), Roll's command kinds folded into the
+    `original_owner_holding` v2 read, and the market's `mind_market_commands` read,
+    registered but ungranted while the owner-read caps stay at 32/32, so every `+minds`
+    form and `@mind/publish` answer `NOT_OPEN`
 
-**What players can reach.** Only the gateway's generic `+actions` /
+**What players can reach.** Before C2, only the gateway's generic `+actions` /
 `+act <verb> with <JSON>` (`crates/mush-gateway/src/bridge_common.rs:532-727`), and the
-web client's legal-action form, which submits by offer id and so also reaches a shared
-verb that `+act` refuses as ambiguous; only for registered providers:
+web client's legal-action form, which submits by offer id and so also reached the four
+shared verbs that `+act` refused as ambiguous until C2a split them one per kind; only
+for registered providers:
 - Filing by hand needs eleven internal parameters (`mush-roll/src/commerce/filing.rs:731-751`).
-- `@mind/publish` refuses ("not available yet", `tacsim/src/minds/workshop/commands.rs:435`).
-- `@mind/fork` is the local draft copy, not the paid fork.
+  Since C2a `@mind/rate <name>@<rev>` and `@mind/file <name>@<rev>` build them from the
+  actor's own state.
+- `@mind/publish <filed>` (C2c) lists a filed mind, but it and every `+minds` form answer
+  `NOT_OPEN` until the lead raises the owner-read caps (§7, C2 as built).
+- `@mind/fork <licence>=<name>` is the paid fork since C2a; `/localcopy` is the local
+  draft copy.
 - `SIM MIND /filed` lists owner licences only.
 - The typed protocol (`mush-proto` `MindRequest`) covers authoring only.
   `Query::MarketOriginalMinds` exists, but no client sends it.
 
 | Feature | Owner code | `MindCommerce` builder | Production | Player entry today | This plan |
 |---|---|---|---|---|---|
-| Personal filing and owner licence | yes | in `prepare` | launch only | `+act` with 11 ids | C1, C2 |
-| Personal original sale and listings | yes | `with_original_purchases` / `_source_purchases` | format-2 launch (C1c: v2 source and v3 entitlement) | `+act` at the counter for v3 and derived; v2 `market-original-mind-*` by the web form only | C1, C2 |
-| Paid licence resale | yes | `with_paid_mind_resales` | format-2 launch (C1c), House Pins fenced by the House admission (C1a) | web form only (`+act` refuses the shared `paid-mind-resale`) | C1, C2 |
-| Charter transfer and PendingTransfer | yes | `with_charter_transfers`, `with_pending_charter_transfers` | format-2 launch (C1c) | `+act` with JSON | C1, C2 |
-| Forks, derived minds, royalties | yes | `with_authored_forks`, `with_dependent_owner_filings`, `with_derived_updates` | format-2 launch (C1c) | `+act` with JSON | C1, C2 |
-| Personal renewal and Grace | yes | `with_mind_renewals`, `with_mind_renewal_service` (C1a) | format-2 launch (C1c) | `+act` with JSON (v2 Pins do not renew) | C1, C2 |
-| Owner attestation (personal) | yes | `with_owner_attestations` (C1a) | format-2 launch (C1c) | `+act` with JSON | C1, C2 |
-| Withdrawal | yes | `with_author_withdrawal` (C1a) | format-2 launch (C1c) | `+act` with JSON | C1, C2 |
+| Personal filing and owner licence | yes | in `prepare` | launch only | `@mind/rate`, `@mind/file` (C2a); `+act` with 11 ids | C1, C2 |
+| Personal original sale and listings | yes | `with_original_purchases` / `_source_purchases` | format-2 launch (C1c: v2 source and v3 entitlement); the `+minds` slot and the ungranted market read (C2c) | `@mind/publish <filed>` and `+minds` (C2c), `NOT_OPEN` until the cap raise (§7); `+act` at the counter for v3 and derived; v2 `market-original-mind-list`, `-quote` and `-fund` by `+act` since the C2a split | C1, C2 |
+| Paid licence resale | yes | `with_paid_mind_resales` | format-2 launch (C1c), House Pins fenced by the House admission (C1a) | `+act` with the split `paid-mind-resale-offer`, `-accept` and `-fund` (C2a); `+minds/resell` and `/resell/accept` held `NOT_OPEN` (C2d) | C1, C2 |
+| Charter transfer and PendingTransfer | yes | `with_charter_transfers`, `with_pending_charter_transfers` | format-2 launch (C1c) | `+act` with JSON; `+minds/charter` and `/charter/accept` held `NOT_OPEN` (C2d) | C1, C2 |
+| Forks, derived minds, royalties | yes | `with_authored_forks`, `with_dependent_owner_filings`, `with_derived_updates` | format-2 launch (C1c) | `@mind/fork <licence>=<name>`, `@mind/update <filed> <name>@<rev>` (C2a); `+act` with JSON | C1, C2 |
+| Personal renewal and Grace | yes | `with_mind_renewals`, `with_mind_renewal_service` (C1a) | format-2 launch (C1c) | `+act` with JSON (v2 Pins do not renew); `+minds/renew`, `/pay`, `/decline` held `NOT_OPEN` (C2d) | C1, C2 |
+| Owner attestation (personal) | yes | `with_owner_attestations` (C1a) | format-2 launch (C1c) | `@mind/attest <filed>` (C2a); `+act` with JSON | C1, C2 |
+| Withdrawal | yes | `with_author_withdrawal` (C1a) | format-2 launch (C1c) | `@mind/withdraw <filed>` (C2a); `+act` with JSON | C1, C2 |
 | Parent re-qualification | yes | `with_owner_parent_qualification` (C1a) | format-2 launch (C1c) | `+act` with JSON | C1 |
-| Registry recall and revocation | yes | `with_registry_recall`, `with_registry_revocation` | format-2 launch (C1c); offered to granted operators only | `+act`, for an operator granted with `@org/grant` | C1, C2 |
+| Registry recall and revocation | yes | `with_registry_recall`, `with_registry_revocation` | format-2 launch (C1c); offered to granted operators only | `@registry/recall <filed>`, `@registry/revoke <licence>` (C2d) and `+act`, for an operator granted with `@org/grant` | C1, C2 |
 | House owner attestation | **not built** | — | — | — | deferred; C0 stopgap |
 | Paid Follow licences | **not built** (paid is Pin only) | — | — | — | deferred (§4) |
 | IC claims, hull cover | yes | `with_ic_minds`, `with_hull_coverage` | no | none | conditional (§4) |
@@ -199,7 +211,7 @@ Gate:
 - The four CI stories, still green.
 - Every new offer listed by `+actions` to the right principal and to no one else.
 
-### C2 — Operator commands, line mode (large; three sub-cuts)
+### C2 — Operator commands, line mode (large; planned as three sub-cuts, built as four, §7)
 
 Each command wraps an existing legal action. The server builds the internal
 parameters (shell request, revision and rating digests, charter name, payer) from
@@ -225,6 +237,15 @@ owner; the proposal follows the existing `@mind` switch grammar (`MindRef::parse
 | `+minds/resell <licence> price=…` | `paid-mind-resale`. Split its shared verb into offer and fund so `+act` never meets the ambiguity guard. | paid holder |
 | `+minds/charter <filed>=<buyer> price=…` and `/accept` | `roll-offer-charter-transfer` / `roll-accept-charter-transfer` and the pending-charter verbs | charter owner and buyer |
 | `@registry/recall <filed>=<reason>`, `@registry/revoke <licence>=<reason>` | `roll-registry-recall` / `roll-registry-revocation` | Registry operators only |
+
+As built (§7, C2 as built): the table's spellings with the plan's departures.
+`@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no]`
+takes `price=`, `seats=` and `term=` only at the market's values; `+minds` reads the v3
+and derived listings through the market's own `MarketCommandReader`, not v2's
+`Query::MarketOriginalMinds`; the four shared verbs are split one per kind; recall and
+revocation take no reason. `+minds/buy` and its steps, the paid half of `/holdings`,
+`/renew`, `/resell`, `/charter` and both accepts are built and held at `NOT_OPEN` until
+the owner-read cap raise, the index sub-cut and the renewal seam land.
 
 Contracts every new verb meets:
 - `legacy-handlers.toml`: the `@mind` stanza's "Publish remains closed until M7"
@@ -1091,3 +1112,924 @@ Provisional defaults (17g section 1 ruling 6):
 - C1's provisional defaults are unchanged: 400cr Pin and renewal, 300 s quote, 3 IC-day
   renewal window, one-day resale window, 3 IC-day charter settlement, the
   deployment-named clerk, one operator
+
+### C2 — as built (2026-10-27, branch `claude/m7-c2-operator-commands`, PR #30)
+
+As built, against §3 C2 and the plan above: four sub-cuts, each one commit pushed to the
+branch, then one close sweep with one repair commit (`3e4f7668`). PR #30 is open, not a
+draft and not merged; the four M7 stories and the fifth, the command story, run on the
+CI dispatch before the merge (below). The cut's landed shape is narrower than the
+plan's: the author's `@mind` commands and the Registry pair work on a format-2 launch,
+every `+minds` form and `@mind/publish` answer `NOT_OPEN` until the lead raises the
+owner-read caps, and the four owner indexes of C2b wait for a mush-core ruling, with the
+renewal front and the named-offer accepts held behind them.
+
+**Landed.**
+
+- **C2a** (`bfc1b34e`): C2a — as built (2026-10-26, branch
+  `claude/m7-c2-operator-commands`, uncommitted on `09b9dcdb`; gate 2 green on 21
+  commands, VPS sweep run 40458491284 on conclav-dev 11,180 tests 0 failed). **The split
+  (plan §2.3)**: `mind_paid_resale::actions::presentation(Kind)` gives
+  `paid-mind-resale-offer|-accept|-fund`; `mind_trade::provider::verb(Kind)` gives
+  `market-original-mind-list|-quote|-retire-listing|-retire-quote|-expire`;
+  `mind_trade::purchase_provider::verb(action_id)` gives
+  `market-original-mind-fund|-grant|-refund`;
+  `authored_retirement::provider::verb(&DefinitionRef)` gives
+  `roll-retire-authored-draft-v1` for version 1 and keeps `roll-retire-authored-draft`
+  for version 2; labels, help and every digest unchanged; `Kind` enums widened to
+  `pub(crate)`; tests `shared_verbs_are_split_one_per_kind` (eleven distinct verbs plus
+  a real v2 projection carrying no old verb) and
+  `retirement_versions_project_distinct_verbs`. Pinned strings moved in
+  `player_market.rs` (`C1_VERBS` 36→45, `SPLIT_BY_KIND` and `fn action` removed,
+  `COUNTER_KINDS`/`GOD_KIND`/`GENERIC_KINDS` by verb, new `SPLIT_AWAY` census error),
+  `paid_purchase.rs` (list, quote, fund), `launch/story.rs` `resale_privacy` and the
+  `launch.rs` positive control (the three-verb set), `GENERIC_MARKET_VERBS` 22→26,
+  `PROVISIONAL_MARKET_LINE` and `crate::launch::market_help` (`a
+  market-original-mind-list listing`; `Until the +minds commands exist, use +actions and
+  +act <verb> with <JSON object>.`). **mush-core**:
+  `ShellReservations::open_request(&self, &OwnerReadContext) ->
+  Result<Option<RequestUid>, OwnerReadError>` (own `open` row via `action_state`, format
+  and requester checked, `Integrity` on mismatch); `Registry::owner_read_counts() ->
+  Option<(usize, usize)>` over `OwnerReadRegistry::counts()`; test-only
+  `OwnerReadContext::for_test`; test `open_request_reads_only_the_callers_open_shell`;
+  caps still 32/32. **The Roll read, folded (plan §2.4 fallback 1)**:
+  `mush_roll::commerce::command_reader` holds `RollCommandReadRequest::{open_shell(),
+  own_filed(FiledRevisionId)}`, `RollCommandReadResult::{OpenShell{request:
+  Option<RequestUid>}, OwnFiled(OwnFiledView)}` (`open_shell()`, `into_own_filed()`),
+  `OwnFiledView` getters `filed, charter, line, owner_licence, dependent, name,
+  owner_phase`, `OwnerPhase::{Active{days_left}, Grace{days_left}, Lapsed}` (whole IC
+  days rounded up, NotEffective reads Active), `pub(super) MAXIMUM_ROWS = 64` and
+  `pub(super) fn read(ctx, roll, families, shells: Option<&ShellReservations>, request)`
+  (every kind `Unavailable` without `shells`; `own_filed` keys the filed→charter→birth
+  operation→owner licence chain on `charter_transfer::history::current` for the actor
+  and `owner_attestation::history::current` for the term, every failure `Refused`); no
+  service, descriptor or grant of its own. `holding_reader::OriginalOwnerReader` carries
+  it: `ReadKind::Command`, `OriginalReadRequest::command(..)`,
+  `OriginalReadResult.command` (`skip_serializing_if` none, old encodings
+  byte-identical) with `into_command()`, field `commands: Option<ShellReservations>`,
+  `register(.., expected, commands)`, descriptor `original_owner_holding` **version 2**
+  with config member
+  `"commands":{"own_only":true,"maximum_rows":64,"account_ids":false}`.
+  `CommerceConfig.mind_commands` set by `with_mind_entitlements` through crate-private
+  `with_mind_commands()`; `holding_reader::register` moved from
+  `register_active_readers` into `register` after `register_filing_declarations`
+  (Active-only as before) passing `config.mind_commands.then(|| shells.clone())`.
+  `command_actions::RollCommandActions::capture(&DefinitionRegistry)` with `reserve()`,
+  `file(dependent)`, `update(derived)`, `withdraw()`, `attest()`, `fork()` matching
+  owner `roll` kind `action` ids `reserve_initial_filing_shell`, `initial_filing`,
+  `dependent_initial_filing`, `update_original_mind`, `update_derived_mind`,
+  `withdraw_authored_mind`, `attest_owner_mind`, `fork_paid_mind` at version 1 (unique
+  match or `None`). Tests
+  `command_reader_answers_only_for_the_actors_own_shell_and_filed_minds` (real second
+  Player; own shell present, absent for another, consumed after the real filing; exact
+  `OwnFiledView` JSON; forbidden words; foreign and missing both `Refused`),
+  `command_kinds_are_closed_without_the_player_market`,
+  `owner_phase_rounds_whole_ic_days_up_and_reads_grace_and_lapse`,
+  `command_actions_capture_only_registered_actions`; `filing_tests` gained
+  `TacsimReads`, `Fixture::new_with_reads(credit, reads, commands)`,
+  `try_engine`/`engine_with`, widened `Fixture`, `config`, `token`, `request`.
+  **tacsim**: `minds::market_commands::{mod, words, author, tests}`; `MindCommandService
+  { roll: OwnerReadHandle<OriginalOwnerReader>, attempts: Arc<Mutex<(i64,u64)>> }`
+  registered by `market_commands::register(reg, handle)` from `TacsimRuleset::register`
+  when `TacsimRuleset.mind_commands` is set (by `MindCommerce::configure_tacsim` only
+  when `mode == Active && state.entitlements.is_some()`), refusing without a Registry, a
+  differing manifest or the entitlement holdings;
+  `match_::original_access::register_entitlements` now returns its
+  `OwnerReadHandle<OriginalOwnerReader>`; `service(ctx)` refuses `NOT_OPEN` unless
+  tacsim owns the slot; `next_key` → `mind.{verb}.{subject}.{at:x}.{ordinal:x}`;
+  `submit(ctx, verb, subject, action, parameters, request)` (principal, then `BUSY`,
+  then the key, then the request line, then one `submit_authoritative`);
+  `personal_account` (unique Active unscoped `tacsim.credit` account of
+  `PrincipalId::Object(actor)`, else `ACCOUNT`). `author`: `SWITCHES`
+  rate/file/update/withdraw/attest/fork, `USAGE_RATE_FILE`/`USAGE_FILED`/`USAGE_FORK`
+  (the HELP lines), parsers `number`, `revision_reference`, `charter_name`,
+  `file_arguments`, `update_arguments`, `fork_arguments`, builders `reserve_parameters`,
+  `file_parameters`, `update_parameters`, `withdraw_parameters` (decimal string),
+  `attest_parameters` (number), `fork_parameters` (decimal string licence, canonical
+  name), `rate_refusal(&BulkError, held)`; subjects `reserve`/`file` `<mind>.<rev>`,
+  `update` `<filed>.<mind>.<rev>`, `withdraw`/`attest` `<filed>`, `fork` `<licence>`.
+  `words` verbatim per the brief plus `RATING_UNAVAILABLE` and `fill()`.
+  `workshop::commands`: `SWITCHES` +5, `HELP` +3 lines after `/localcopy`, the six
+  switches dispatch to `author::author` after the principal check, the arm is
+  `"localcopy"` alone; `workshop::{MindRef::name, saved_revision}`. `registry_service`:
+  `start_revision(ctx, mind, number)` factored from `start`, `completed_rating(ctx,
+  &Revision) -> Result<Option<RatingRef>, BulkError>`, `holds_rating(&Runtime, ObjId)`
+  (pub(super)) and `rating_held(&World, ObjId)` (pub(in crate::minds));
+  `bulk::world::Preparing.kind: WorkKind` set at the Proving, Conduct, Registry and
+  reconformance sites. `lib.rs` `TacsimRuleset.mind_commands: Option<DefinitionRef>`;
+  `composition/mind_commerce.rs` sets it. Tests `author_arguments_parse_strictly`,
+  `command_keys_differ_per_retype_and_fit_the_key_grammar`,
+  `rate_refuses_busy_only_for_the_characters_own_registry_job`,
+  `holds_rating_is_only_the_characters_own_registry_job`,
+  `the_command_service_is_composed_only_with_the_player_market` (slot and no read of its
+  own: (true,false); holdings v2; prints 18 services / 17 grants for the
+  composition-only chain),
+  `hardware::flow::launch::author_parameters_satisfy_the_registered_providers` (all 8
+  parameter objects resolve through
+  `legal_action_query`/`project_legal_actions`/`resolve_legal_action` and pass
+  `validate_invocation`; prints the format-2 launch at **31 services / 32 grants of
+  32/32**), the two `@mind` help pins. **mush-server tests**: `tests.rs` declares
+  `player_market_commands` and `player_market_story`; `paid_purchase/runtime.rs`
+  `Recorder` keeps `SendTarget`, `Seen { own, others, to }` with `extend` and
+  `reaching(ObjId)`, `Running::{command_seen, take_seen}`, private `legal_actions`
+  retrying typed `Busy` (50 tries, 20 ms) used by `offer`; `player_market_commands.rs`
+  helpers `same_refusal`, `assert_private`, `Known`, `World`, `world`,
+  `world_with_terms`, `active`, `saved`, `await_own`, `until_own`, `open_shells`,
+  `QUEUED`, and tests `author_commands_refuse_alike_for_foreign_and_missing_targets`
+  (buyer, alt, author; exact /fork pin with `Queued.`),
+  `author_command_replies_reach_only_the_actor_and_name_no_digest` (positive `say`
+  control, per-recipient checks, settle windows, the Registry's later line),
+  `file_reserves_a_shell_then_waits_for_a_rating_across_a_restart`,
+  `file_and_rate_read_only_the_actors_own_revision_and_shell`,
+  `rate_queues_and_cancels_a_genuine_registry_preparation`,
+  `author_commands_are_not_open_on_a_house_only_launch` (format 1),
+  `comparison_rule_masks_only_the_typed_number`; `player_market.rs` gained
+  `initialized_launch_format` and `initialized_launch_with(dir, format, MarketTerms)`
+  and widened its helpers; `player_market_story.rs` holds the `#[ignore]`d part 1 (mint,
+  save, reserve, NOT_RATED, rate with the typed `rated()` wait, file with exact pins,
+  one filing row, one owner licence, no open shell, the 100cr fee, a refused attest, the
+  buyer's and alt's foreign-versus-missing probes for all four commands, `durable()`
+  across a restart) with the `// C2c:` and `// C2d:` markers. **Contracts, help, CI**:
+  the `@mind` legacy note's C2a sentence; `docs/help/personal-minds.md` "Filing a mind";
+  the fifth `mind-commerce-acceptance` entry `player market commands`; `#![cfg(test)]`
+  fences on the three new external test modules for the I13 census.
+- **C2b** (`337915c4`): C2b landed partially: the author's per-listing transfer mark
+  (D-UM-40, C2 plan §2.5, 17g §1 ruling 6's default "transferable unless marked, the
+  mark only narrows") and the paid-resale reader's transferability gate; no owner index,
+  family, writer or money path moved. mush-market `mind_entitlement`: `offers::List` is
+  `pub(super)` and gains a private `transferable: bool` with `#[serde(default =
+  "transferable_unless_marked")]` (`true`) under `deny_unknown_fields`, so the List
+  request of both entitlement protocols (`OriginalV3` `market-original-mind-list`,
+  `DerivedV1`) accepts an optional `"transferable": <bool>` and every existing caller is
+  byte-identical; `List::choice(&self) -> ProductChoice` (`pub(super) const fn`);
+  `Form::paid` is `const fn`; new `config::ProductChoice { form: PaidForm,
+  royalty_permille: u16, transferable: bool }` (`pub(super)`, Copy, Eq) with
+  `ProductChoice::frozen(&EntitlementProductV1)` reading a listed product's form,
+  downstream royalty (0 when sealed) and own transferability; new
+  `EntitlementConfig::terms(minimum, form, transferable) -> Result<PaidTerms, String>`
+  returning `personal_terms(minimum, form, self.policy.transferable && transferable)`;
+  `EntitlementConfig::product(&self, f: &EntitlementSaleFacts, choice: ProductChoice)`
+  now delegates to new `product_for(protocol, &EntitlementSubjectV1,
+  &FiledRoyaltyTermsV1, choice)` with `f.protocol()`, `EntitlementSubjectV1::capture(f)`
+  and `f.royalty()`, the same inputs as before; the List branch builds
+  `self.config.product(facts, request.choice())`; `current_listing` recomputes with
+  `ProductChoice::frozen(&l.product)`, so a marked listing stays current under a
+  transferable policy and an unmarked one still lapses when the policy closes
+  (`policy_ref` still lapses every listing on a policy change); new
+  `offers::parameters(kind: Kind) -> Result<Vec<ProjectedParameter>, String>` (the
+  mind_renewal idiom) used by `project_offer`, whose List schema is `owner_licence`
+  (Text 20), `form` (Choice sealed|open|open_resale), `royalty_permille` (Integer
+  0–300), all required, plus `transferable` (Boolean, `required: false`) via new
+  `actions::optional(id, kind)`; Quote stays the single required `listing` (Text 32).
+  The mark is frozen in the listing row's product, carried by the quote's product and
+  digest, handed to the grant by `publication::terms`, and equals the renewal template
+  (`EntitlementProductV1::validate`), so a marked licence renews non-transferable; no
+  record format, definition, policy payload or digest pin moved. mush-roll:
+  `commerce::paid_resale::reader::require_transferable(&PaidTermRecord) -> Result<(),
+  PublicationError>` (`pub(crate)`) is the extracted gate `observe` calls after
+  `acquired::current`, `Unavailable` on a non-transferable term, behaviour unchanged;
+  `commerce::renewal::tests::birth()` delegates to new `birth_with(terms: PaidTerms)`
+  with identical terms. Tests:
+  `mind_entitlement::tests::the_transfer_mark_narrows_and_never_widens` (test 6: the
+  serde default and refusals of `"no"`, `0`, `null` and an unknown field; the List and
+  Quote schema shapes and core's supplied/required rule for the marked and unmarked
+  request; `product_for` over the fixture subject for all three forms: the mark gives
+  non-transferable terms and renewal template, changes the product digest, `frozen`
+  reproduces each listed product exactly, a `false` policy gives `false` for either mark
+  and the unmarked product no longer recomputes to itself; a quote over the marked
+  product validates with its frozen digest and `publication::terms` is non-transferable;
+  a half-widened product and a product swapped under the frozen digest both fail
+  validation; three mutants killed: `frozen` or `choice` returning `true`, and the
+  optional parameter dropped) and
+  `commerce::renewal::tests::the_marked_licence_cannot_be_offered_for_resale` (test 12:
+  `personal_terms(.., false)` terms through `birth_with`, the renewed generation 2 keeps
+  them, `require_transferable` returns `Unavailable` and the `PaidResaleBinding`
+  `observe` builds returns `Mismatch` for both generations, the unmarked control passes
+  both gates, and a renewal binding over widened predecessor terms is refused). Gate
+  green: fmt, workspace clippy, strict rustdoc, `mush-market --lib` 106, `mush-roll
+  --lib` 290, tacsim `composition::mind_commerce` 43, `registry_integration_tests` 14 (2
+  ignored), mush-server `player_market` 12 (the story ignored), `commerce_composition`
+  4, the three contract tests, and the conclav-dev sweep run 40465337439 on tree
+  bf006b46: 11182 tests, 0 failed. No existing assertion changed; no command, tacsim,
+  IPC, proto, TS, gateway, web, shard, state-slot, family or panic-budget move.
+- **C2c** (`e54604ba`): **mush-market**: new `pub mod mind_commands`
+  (`crates/mush-market/src/mind_commands.rs`): `MarketCommandReader:
+  OwnerReadService<State = MarketStore>` over the entitlement listing family, descriptor
+  `owner_read` `mind_market_commands` v1 (payload `format 1, listings_per_page 20,
+  code_characters 8, code_rows 2, scan_rows 64, scans 8, seller false, account_ids
+  false, digests false, manifest`, referencing the manifest; allowed and dependencies
+  `{tacsim}`; an `owner_read` definition validator), registered by `module.rs` inside
+  the entitlements branch right after `register_with_house_definitions`
+  (`mind_commands::register(reg, families.clone(), config, gate)`);
+  `MarketCommandReader::request(reg, manifest)` is TacSim's grant call and has no
+  caller; request kinds `at_counter()`, `listings(Option<CommitToken>)`,
+  `listing_by_code(&str)`, `listings_after(&str)` (Serialize only), results `AtCounter {
+  here }`, `Listings(ListingsPage { rows, next })`,
+  `ListingByCode(CodeLookup::{One(view), Ambiguous})`; `answer(source, here, config,
+  request)` holds the counter rule and the `current_policy` filter and `read` delegates
+  to it over the `Lens` (`scan_action_state` with the key-equals-publication Integrity
+  check); `listings` scans at most 8 x 64 rows and, when the budget ends before the
+  family, hands back the last scanned key as `next` (a page may be empty and still
+  continue); `listings_after` resolves a `MORE` code to the first key starting with it,
+  current or not, in one 2-row scan then pages with 7 scans; `by_code` is one 2-row
+  scan: none or one non-current `Refused`, one current `One`, two `Ambiguous`; `is_code`
+  (exactly 8 of `0-9a-f`); `MarketCommandActions::capture(&DefinitionRegistry)` and
+  `entitlement(Protocol::{Original, Derived}, Step::{List, Quote, Fund, Grant, Refund})
+  -> Option<DefinitionRef>` matching owner `market`, kind `action`, id
+  `{list|quote|purchase|settle|refund}_{original|derived}_mind` at version 3 / 1;
+  `PublicListingView` (13 fields with const getters and `code()`), `ListingForm`, consts
+  `LISTINGS_PER_PAGE`, `CODE_CHARACTERS`, `CODE_ROWS`. Crate-private seams:
+  `Families::listings()`, `EntitlementGuard::current` and `current_policy` (the policy
+  half of `current_listing`, factored; `current_listing`'s refusal unchanged)
+  `pub(crate)`, `EntitlementListingV1::command_view()`, `mind_entitlement::tests`
+  `pub(crate)` with `listing_fixture`, `command_config(price_minor)`,
+  `current_listing_fixture`. **mush-roll `commerce::command_reader`**: kinds
+  `OwnHoldings { section: HoldingSection::{Owner, Paid}, after: Option<u64> }` and
+  `CharterNames { charters }` on the folded `original_owner_holding` v2 read;
+  `RollCommandReadRequest::{own_holdings, charter_names}`;
+  `RollCommandReadResult::{OwnerHoldings(OwnerHoldingsPage), CharterNames { names }}`
+  with `into_owner_holdings()`, `into_charter_names()`; `OwnerHoldingView { filed,
+  charter, owner_licence, dependent, name, owner_phase, selling }` (filed =
+  `LineRecord::head`, `selling` = a `Funded` `charter_pending_heads` state only),
+  `OwnerHoldingsPage::{rows, next}` (asset-id cursor), `CharterName::{charter, name}`;
+  `OWNER_ROWS_PER_READ` 3, `OWN_ASSETS_PER_READ` 16, `MAX_CHARTER_NAMES` 20 (more is
+  `Limit`, unknown charters left out); `Paid` is `Unavailable`; private `owner_holdings`
+  over `assets_of_after(PrincipalId::Object(actor))`, `page`, `pending_sale`, `funded`,
+  `charter_names`. **tacsim**: `MindCommandService.market:
+  Option<OwnerReadHandle<MarketCommandReader>>`, `None` everywhere;
+  `minds::market_commands::market` (`+minds` registered unconditionally in
+  `arena_bridge::register` right after `workshop.register` under the Authoritative
+  class, `ArgShape::Raw`, `SWITCHES = [next, holdings, buy, pay, complete, refund]`,
+  `HELP` the brief's two lines; dispatch by the sorted switch set: `[]` list or detail,
+  `["next"]`, `["holdings"]`, `["buy"]` and `["buy","pay"|"complete"|"refund"]` parse
+  the code then `handles` then `NOT_OPEN`, else `HELP`; `handles` requires the slot and
+  the market handle; `list`, `next`, `show`/`page_lines` (`EMPTY` only at the true end,
+  else `HEAD`, rows, `FOOT`, `MORE`), `detail`/`detail_lines`, `buy` built but held
+  under `#[allow(dead_code)]`, `publish` (parse, `NOT_OPEN`, `COUNTER`, `TERMS` against
+  the launch deployment's `market.terms.price_minor` and `personal_term_days()` 90,
+  `NO_FILED` through `author::own_filed`, protocol Derived when dependent, `PUBLISHING`,
+  `submit` with `list_parameters(owner_licence, form, royalty, transferable)`),
+  `publish_arguments`/`PublishArguments`/`PublishRefusal`, `credits_minor` (0.01 to
+  1,000,000), `terms_match`, `quote_parameters`, `Shown`, `row_text`, `detail_text`,
+  `percent`, `days`, `form_word`, `class_word`, `row_flags`, `USAGE_PUBLISH`);
+  `market_commands::holdings` (`Holdings::{All, Owner(u64), Paid(u64)}`,
+  `holdings_arguments`, `holdings`: `All` and `Paid` refuse `NOT_OPEN`, `Owner(cursor)`
+  aggregates up to 12 Roll reads into 20 rows, `owner_lines` prints `HOLD_HEAD`, rows
+  and `HOLD_MORE owner <cursor>` and never `HOLD_EMPTY`, `owner_line`, `owner_row`,
+  `phase_words`); `words`: the brief's words verbatim (`COUNTER`, `EMPTY`, `HEAD`,
+  `ROW`, `FOOT`, `MORE`, `NO_LISTING`, `AMBIGUOUS`, `DETAIL`, `TERMS_LINE`, `SPLIT`,
+  `QUOTING`, `PUBLISHING`, `TERMS`, `BAD_FORM`, `BAD_ROYALTY`, `BAD_TRANSFER`,
+  `HOLD_HEAD`, `HOLD_OWNER`, `HOLD_MORE`) and `words::pending` (`HOLD_EMPTY`,
+  `YOUR_QUOTE`, `QUOTE_EXPIRED`, `YOUR_ESCROW`, `ASK`, `NO_QUOTE`, `PAYING`,
+  `NO_PURCHASE`, `COMPLETING`, `REFUNDING`, `HOLD_PAID`, `HOLD_WAIT_HEAD`, `HOLD_WAIT`);
+  `fill` gains `{key:<n}`/`{key:>n}` padding and `cut`; `author::own_filed`
+  `pub(super)`; `@mind` `HELP` gains `@mind/publish <filed> form=sealed|open|open-resale
+  [royalty=<per mille>] [transfer=no] (at a counter)` after the fork line and the old
+  publish refusal is removed, `/publish` dispatching to `market::publish` after the
+  principal check; `launch::credits` `pub(crate)`, `launch::personal_term_days()`;
+  `market_help`'s last sentence is `Read the listings here with +minds and your licences
+  with +minds/holdings; help personal-minds lists every market command.`;
+  `market_commands::mod` declares `#[cfg(test)] mod tests` last. Widths pinned: `ROW`
+  106, `DETAIL` 86, `TERMS_LINE` 76, `SPLIT` under 100, `HOLD_OWNER` 80, `HOLD_PAID`
+  114, `HOLD_WAIT` 96. Owner-read counts on the format-2 Active launch: services 32,
+  grants 32 (pinned). **Contracts and help**: the `+minds` stanza in
+  `legacy-handlers.toml` (verbatim, between `+market` and `+move`), the `@mind` note's
+  C2c sentence in place of "Publish remains closed until M7.",
+  `docs/help/personal-minds.md`'s "Listing and buying" section verbatim. **Tests**:
+  `market_command_reader_is_bounded_and_seller_free` (paging 20/20/5, scans of 64, the
+  2-row lookup, Ambiguous, Refused, malformed codes, a 600-stale-row run with the cursor
+  at the 512th key and `listings_after` past it, the exact key set and privacy words),
+  `market_command_actions_capture_the_entitlement_steps`,
+  `market_command_read_answers_the_counter_rule_and_the_policy` (AtCounter, Refused away
+  from the counter before any scan, the older-price listing hidden and refused by code
+  but usable as a cursor), `command_reader_pages_own_holdings_of_every_kind` (one owner
+  row, the cursor, another player's empty page, Paid Unavailable, names as exact JSON,
+  the head moved so the charter drops), `a_funded_pending_head_is_a_sale`,
+  `own_holdings_page_cuts_at_three_rows_and_sixteen_assets`,
+  `market_rows_fit_one_hundred_and_twenty_columns`, `fill_pads_to_the_named_width`,
+  `publish_arguments_parse_strictly`, `an_empty_page_that_goes_on_prints_its_cursor`,
+  `market_parameters_satisfy_the_registered_providers` (in `hardware/flow/launch.rs`:
+  (32, 32), the read registered, the slot's market None, List with and without the mark,
+  Quote, Fund, Grant and Refund of both protocols resolved and validated),
+  `market_commands_are_not_open_on_a_house_only_launch` (test 10),
+  `market_replies_reach_only_the_actor` (test 9 on format 2: room speech as the positive
+  control, no line reaches another principal, `assert_private` against every account id,
+  the `NOT_OPEN`/`BAD_FORM`/help replies pinned for re-blessing), the two
+  `@mind/publish` help pins. The `// C2c:` story marker is untouched. Gate round 1
+  green: 19 steps, the conclav-dev sweep 11195 tests, 0 failed.
+- **C2d** (`b3ce5a4f`): **C2d — as built (2026-10-27, branch
+  `claude/m7-c2-operator-commands`, uncommitted on `e54604ba` until this commit).**
+  mush-market: both renewal services factor the player branch of `command` into a
+  private `step(ctx, &Service, LicenceId, Switches)` and expose `pub fn player_step(ctx:
+  &mut Ctx<'_>, licence: LicenceId, step_kind: RenewalPlayerStep) ->
+  Result<RenewalPlayerOutcome, CmdError>` from `mind_renewal` and `mind_house_renewal`
+  over one set of types in the new `mind_renewal::player` (`RenewalPlayerStep::{Status,
+  Request, Accept, Decline}` where `Request` sets both the request and retry switches;
+  `RenewalPlayerOutcome::{Status(RenewalStatusView), Queued, Unresolved}`;
+  `RenewalState::{None, Drafted, Funded, Granted, Closed}`; `RenewalStatusView` with
+  `state()`, `term_end_ic()` and `Option` getters `price_minor`, `instrument`,
+  `offer_expires_ic`, `term_seconds`, `grace_seconds`, `registry_permille`,
+  `venue_permille`, `parent_royalty_permille`; crate-private `Switches::{of,
+  of_command}`, `personal_status_line`, `house_status_line`, `outcome_line`,
+  `QUEUED_LINE`, `UNRESOLVED_LINE`); `@mindrenewal` and `@housemindrenewal` call `step`
+  with `Switches::of_command(&ctx.switches)` and print through `command_line(outcome)`,
+  byte-identical to the pre-C2d sentences by test 1's oracle
+  (`renewal_player_step_keeps_the_service_commands_byte_identical`, every state of a
+  real operation row for both services, the queued and unresolved lines, the switch
+  mapping, and the view's frozen price, instrument, expiry and term);
+  `status_view(term_end_ic, Option<&MindRenewalOperationV1>)` builds the view (the House
+  one with parent royalty 0); the service's admission, retained entry, key, submission
+  and continuation are unchanged; `mind_commands` gains `pub enum ResaleKind { Offer,
+  Accept, Fund }` and `MarketCommandActions::resale(ResaleKind) ->
+  Option<DefinitionRef>` (owner `market`, kind `action`, ids
+  `offer_`/`accept_`/`fund_paid_mind_resale`, version 1; test 3
+  `market_command_actions_capture_the_resale_kinds`). mush-roll: the folded
+  `original_owner_holding` v2 read gains `RollCommandReadRequest::own_paid(LicenceId)`
+  answering `RollCommandReadResult::OwnPaid(PaidHoldingView)` (`into_own_paid()`;
+  getters `licence`, `charter`, `house`, `name`, `form() -> PaidForm`, `transferable`,
+  `phase() -> OwnerPhase`, `revoked`, `selling` (a Funded resale head), `renewal() ->
+  Option<RenewalMark>` with `pub enum RenewalMark { Offered, Paid }` serialized
+  snake_case) by point reads of the licence's own rows (`paid_licences` pointer named by
+  the actor, else `Refused`; `paid_terms`; `charters`; `house_allocations` by the birth
+  operation; `revoked_terms`; `paid_resale_heads`; the personal or House renewal head's
+  pending operation), every failure `Refused` so a foreign licence reads like a missing
+  one; `pub(super) const fn renewal_mark(drafted, funded)`; `read`'s signature is
+  unchanged; `RollCommandActions` gains `pending_charter_offer()`
+  (`offer_mind_charter_transfer` v2; v1 is the immediate protocol and is not captured),
+  `pending_charter_fund()` (`fund_mind_charter_transfer` v1), `recall()`
+  (`registry_revision_recall` v1) and `revocation()` (`registry_term_revocation` v1);
+  test 4 `command_reader_trade_kinds_answer_only_their_own_party` (own, foreign and
+  missing over a written pointer and term; the renewal mark `Offered` then `Paid`
+  through real `renewal_heads` and `renewal_operations` rows; no digest, account,
+  contract, consent or operation text) and test 5
+  `command_actions_capture_charter_and_registry_actions`. tacsim: `market::SWITCHES`
+  grows to 11 (`renew`, `decline`, `resell`, `charter`, `accept`), `HELP` gains the
+  brief's three lines, and `command` dispatches `["renew"]`, `["pay","renew"]`,
+  `["decline","renew"]` to `renew::renew(ctx, text, Renew::{Status, Pay, Decline})`,
+  `["resell"]` to `trade::resell`, `["charter"]` to `trade::charter`,
+  `["accept","charter"] | ["accept","resell"]` to `trade::accept`; `renew` (new):
+  `pub(super) own_paid(ctx, u64) -> Result<PaidHoldingView, CmdError>` (`NO_LICENCE`,
+  `NOT_OPEN` without the slot), `renew` checks the number (help), `own_paid`, then
+  refuses `NOT_OPEN` at `pub(crate) const RENEWALS_OPEN: bool = false`; behind it the
+  full flow is built (House flag picks the service; `RENEW_NOT_DUE` by
+  `world_ic_now().at < term_end_ic` with `days` left; `RENEWING` printed only on
+  `Queued`; `RENEW_OFFER`+`RENEW_HOW` via `offer_lines`/`offer_text(licence,
+  price_minor, term_seconds, grace_seconds, expires_ic, now_ic) -> [String; 2]` and
+  `hours_left` rounded up never below 0; `RENEW_FUNDED`; `/pay` and `/decline` need
+  `Drafted` (`NO_RENEWAL`), `RENEW_PAYING` with the frozen price, `RENEW_DECLINING`;
+  `Unresolved` is `BUSY`); `trade` (new): `TradeArguments { subject, player, price_minor
+  }`, `AcceptArguments { subject, price_minor: Option<i64> }`, `TradeRefusal::{Usage,
+  Price}`, strict `trade_arguments` (`<n>=<player> price=<credits>`, names may hold
+  spaces, `price=` last) and `accept_arguments`, `amount(minor)` in the `price=`
+  spelling, `player()` resolving `me`, `#<dbref>`, `*name` or a name to a live non-GOING
+  Player (`NO_PLAYER`); `resell` and `charter` check shape and price (help,
+  `BAD_PRICE`), the slot (`NOT_OPEN`), the player, then `own_paid` (`NO_LICENCE`) or
+  `author::own_filed` (`NO_FILED`), then refuse `NOT_OPEN` at `pub(crate) const
+  NAMED_OFFERS_OPEN: bool = false`; behind it they capture `resale(Offer)` /
+  `pending_charter_offer()`, the personal account, print `RESELLING`+`RESELL_TELL` /
+  `CHARTERING`+`CHARTER_TELL` and submit `resale_offer_parameters(LicenceId, ObjId, i64,
+  AccountId)` = `{"licence": u64, "buyer": u32, "price": i64, "seller_account": u64}` or
+  `charter_offer_parameters(CharterId, ObjId, AccountId, i64)` = decimal strings with
+  `"valid_for_seconds": "86400"` (`CHARTER_OFFER_SECONDS`); `accept` parses then refuses
+  `NOT_OPEN`; the buyer's plan is built and tested but uncalled: `NamedOffer { offer,
+  price_minor, expires_at_utc }`, `Named::{Resale, Charter}`, `AcceptPlan::{Show,
+  Refuse, Submit(NamedOffer, String)}`, `accept_plan(named, subject, &[NamedOffer],
+  Option<price>, now_utc)` (expired dropped, (price, expiry) order, an offer line plus
+  its confirming line each, `NO_OFFER`/`NO_CHARTER_OFFER`,
+  `NO_OFFER_AT`/`NO_CHARTER_OFFER_AT` then the listing, an equal-price tie submits the
+  one expiring last, `ACCEPTING`/`FUNDING_CHARTER`), `offer_lines`, `minutes_left`,
+  `resale_accept_parameters(CommitToken, AccountId)` = `{"offer", "payer": u64}`,
+  `charter_fund_parameters` = `{"offer", "payer": "<decimal>"}`; `registry` (new):
+  `RegistryCommand::{Recall, Revoke}`, `registry(ctx, which, usage)` checks the number
+  (`@registry` help), the slot and the captured action (`REGISTRY_OFF`), then prints
+  `RECALLING`/`REVOKING` and submits `recall_parameters(u64)` = `{"filed": "<decimal>"}`
+  or `revocation_parameters(u64)` = `{"licence": "<decimal>"}` with no operator
+  pre-check (the projection offers the actions only to granted operators, so a
+  non-operator reads the driver's line like a missing number); `bulk::registry_service`
+  adds `recall` and `revoke` to both switch lists, dispatches them first in `command`,
+  and `pub(crate) const HELP` is the brief's line split in two at its second clause;
+  `holdings::{paid_flags(transferable, revoked, selling, renewal), paid_row,
+  paid_line(&PaidHoldingView)}` build the paid row with `; no resale`, `; revoked`, `;
+  selling`, `; renewal offered`/`; renewal paid` but nothing prints them (the paid
+  section is still `Unavailable`); `words` carries the brief's 18 verbatim words and
+  `words::named` the 10 accept-side ones; tests 6 `trade_arguments_parse_strictly`, 7
+  `accept_selects_the_offer_the_buyer_confirms`, 8
+  `trade_lines_fit_one_hundred_and_twenty_columns` (`CHARTER_OFFER` widest at 109; paid
+  rows at most 114 with `; no resale; renewal offered`; both help texts),
+  `renewal_offer_lines_round_hours_up` (pins `!RENEWALS_OPEN`), and 9
+  `trade_parameters_satisfy_the_registered_providers` in `hardware::flow::launch` (all
+  seven parameter objects resolve against the projection and pass `validate_invocation`;
+  the buyer is offered neither Registry action). mush-server
+  (`player_market_commands.rs`): `known_accounts`, `REGISTRY_HELP`, `REGISTRY_OFF`,
+  `MINDS_HELP` re-blessed with the three lines; tests 10
+  `registry_commands_refuse_alike_for_every_principal_on_unknown_targets` (buyer, God
+  and operator all read `[request, Queued., driver]`; `1` and `999` alike under
+  `same_refusal`; a malformed number is the help), 11
+  `trade_commands_refuse_without_own_records` (`NO_LICENCE`, `NO_FILED`, `NO_PLAYER`,
+  `BAD_PRICE`; the accepts `NOT_OPEN`), 12 `trade_replies_reach_only_the_actor`
+  (bystander and `assert_private`, `LaunchAlt` exempt on seller lines only), 13
+  `trade_commands_are_not_open_on_a_house_only_launch` (`NOT_OPEN`; `REGISTRY_OFF`); the
+  story's `// C2d:` marker carries a comment that part 3 waits. Contracts and docs: the
+  `+minds` legacy note carries the brief's sentence plus a sentence recording that every
+  C2d form refuses `NOT_OPEN` until the seam and the indexes land;
+  `docs/help/personal-minds.md` has the brief's "Renewing and trading" section, operator
+  and `+act` paragraphs and the "Purchases, resales and transfers" sentence;
+  `docs/help/house-minds.md` has the brief's paragraph plus a closing paragraph naming
+  the `house-renewal-*` actions where `+minds/renew` is not open; `deploy/README.md` has
+  the brief's operator paragraph; the operator sentence was checked against 17f's recall
+  and revocation effects and holds. No family, IPC, proto, TS, gateway, web, shard,
+  state-slot or panic-budget change; `@mindrenewal` and `@housemindrenewal` sentences
+  unchanged; the bot reads none of these lines. Gate: fmt, workspace clippy, strict
+  rustdoc and every focused run green first time; the conclav-dev sweep (run
+  40490994233, 11,208 tests) had one unrelated mushd relay_bridge Busy flake that passed
+  alone.
+- **The close repair** (`3e4f7668`): CI's "M7 memory-size limits" step
+  (`clippy::large_stack_frames`, 64 KiB under `.github/clippy-m7`) refused two C2d test
+  functions: mush-roll
+  `command_reader::tests::command_reader_trade_kinds_answer_only_their_own_party`
+  (69,262 bytes) moves its drafted and funded `RenewalOperationV1` construction into a
+  `renewal_rows` helper that takes `filed` and `revision` from the pinned
+  `RevisionPolicy` the test now builds once; mush-market
+  `mind_renewal::tests::renewal_player_step_keeps_the_service_commands_byte_identical`
+  (142,944 bytes) splits into `personal_status_is_byte_identical` and
+  `house_status_is_byte_identical`, their seven-row tables from `personal_rows` and
+  `house_rows` as a `Vec`, the personal table building one funded row and reusing it.
+  Every assertion is unchanged. The mush-server `paid_purchase` harness's `offer` helper
+  retries the typed `ActionSend::Busy` (refused before durable ownership; a fresh
+  request sequence per call, so the retry is exact) up to 50 tries 50 ms apart, each
+  under `STEP`, logging `event=busy_retry`; every other disposition fails as before.
+
+**Evidence.**
+
+- **The loop.** The plan was revised once after a feasibility lens and an adversarial
+  lens (23 findings, plan §11) and refreshed read-only at `ecc26f0e` (plan §12, the test
+  targets since T.3). Each sub-cut then ran §3's loop: a builder, three review lenses, a
+  fixer, a gate runner and an independent judge, then one commit and one push. The
+  judge's verdict was ship-with-notes all four times. The judge's texts give no must-fix
+  counts. They name the review fixes they carried: in C2a, the owner-read fold (the
+  builder stopped at 32 services and 33 grants against the 32/32 caps, as the brief
+  required; the repairer applied plan §2.4's pre-decided fallback 1), the `RATING_BUSY`
+  narrowing to the character's own Registry job (reviewer F2) and the file-level
+  `#![cfg(test)]` fences after the I13 census (`action_state_republish`) read a
+  test-side `install_composed_action` as production code; in C2b, the builder stopped on
+  the four indexes (mush-core's terminal-key and `exact_puts` checks refuse every
+  same-transaction index write) and the reviewers' must-fix for a mush-market lib test
+  pinning the List-to-product wiring and `current_listing`'s frozen recompute; in C2c,
+  the fix round held `+minds/buy` with its steps (C2C-3), widened the listing cursor and
+  added `ListingsAfter` (F4) and kept `HOLD_EMPTY` off a paged owner section (F3,
+  C2C-4); in C2d, the fix round held the renewal front at `RENEWALS_OPEN` (C2D-R1, F1,
+  T1), removed Roll's `ResaleStep` oracle (C2D-R2, C2D-R3), recorded the over-width paid
+  row (C2D-R4) and restored house-minds.md's `house-renewal-*` paragraph (C2D-R5, F3,
+  T6).
+- **C2a's gate** (gate 1 failed on the owner-read capacity the plan had counted as
+  tight: `hardware::flow::launch` 5 of 10 and mush-server `player_market` 7 of 12 with
+  "owner read exceeded its bounded envelope", every rerun identical, and
+  `action_state_republish` on the census; gate 2 after the fold and the fences, green on
+  21 commands): fmt for mush-core, tacsim,
+  mush-roll, mush-market and mush-server; workspace clippy with `-D warnings`; strict
+  rustdoc for the five; mush-core `reserved_shell` 11/0; tacsim `minds::market_commands`
+  3, `composition::mind_commerce` 43, `hardware::flow::launch` 10/0/1, `minds::workshop`
+  27, `minds::bulk::registry_service` 9, `arena_bridge::tests::m1b5` 1 and `--test
+  shard_6` `cockpit::m1b5_mind_set_reads_sets_and_refuses_by_name` 1; mush-roll lib
+  289/0; mush-market lib 105/0; mush-server `player_market` 12/0/1 (the story ignored)
+  and `--test commerce_composition` 4/0; the five contract targets 28/0; and the
+  conclav-dev sweep, run 40458491284: 11,180 tests, 0 failed, 279 binaries.
+- **C2b's gate**: fmt for mush-roll, mush-market and mush-server; workspace clippy;
+  strict rustdoc for mush-roll and mush-market; mush-market lib 106/0; mush-roll lib
+  290/0; tacsim `composition::mind_commerce` 43 and `registry_integration_tests` 14/0/2
+  (the table's three `minds::bulk::{entitlement_integration_tests, paid_resale,
+  charter_pending}` filters matched no test and passed vacuously; C2c's and C2d's gates
+  dropped them); mush-server `player_market` 12/0/1 and `commerce_composition` 4/0; the
+  three contract targets 17/0; the sweep, run 40465337439: 11,182 tests, 0 failed.
+- **C2c's gate** (19 steps, green first time): fmt for tacsim, mush-roll, mush-market
+  and mush-server; workspace clippy; strict rustdoc for the four; mush-market
+  `mind_commands` 3 and `mind_entitlement` 10; mush-roll `commerce::command_` 7; tacsim
+  `minds::market_commands` 7, `composition::mind_commerce` 43, `hardware::flow::launch`
+  11/0/1, `minds::workshop` 27, `m1b5` 1 and the `shard_6` cockpit test 1; mush-server
+  `player_market` 14/0/1 and `commerce_composition` 4/0; the four contract targets 23/0;
+  the sweep, run 40477037205: 11,195 tests, 0 failed.
+- **C2d's gate** (green first time locally): fmt for the same four crates; workspace
+  clippy; strict rustdoc; mush-market `mind_renewal` 22, `mind_house_renewal` 9,
+  `mind_commands` 4 and `mind_paid_resale` 3; mush-roll `commerce::command_` 9,
+  `commerce::charter_pending` 2 and `commerce::paid_resale` 4; tacsim
+  `minds::market_commands` 11, `composition::mind_commerce` 43,
+  `minds::bulk::registry_service` 9 and `hardware::flow::launch` 12/0/1; mush-server
+  `player_market` 18/0/1 and `commerce_composition` 4/0; the four contract targets 23/0;
+  the sweep, run 40490994233, 11,208 tests with one failure, mushd `--test
+  durable_process`
+  `relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries`,
+  a Busy-while-CommitPending flake at the test's first relay line on the 32-thread
+  runner (no mushd, gateway, comsys or relay file changed in C2); it passed alone on the
+  first rerun.
+- **The close sweep**, round 1 at `b3ce5a4f`: the local steps were green (fmt for the
+  six crates changed since `origin/main`, workspace clippy, strict rustdoc,
+  mush-contract-tests), but the PR's CI run 40495069512 failed: `test (lint)`'s "M7
+  memory-size limits" step (`clippy::large_stack_frames` at 65,536 bytes under
+  `.github/clippy-m7`) refused the two C2d test functions above, and `test
+  (rest-server)` failed
+  `world_task::submission_disposition::tests::paid_purchase::public_commerce_setup_accepts_generic_committed_receipts`
+  with `disposition=busy` on its first attempt (the job's re-run passed 591/0/4). The
+  repair commit `3e4f7668` followed; the six-crate memory-size step re-run locally with
+  `--keep-going` exits 0, and all 31 `submission_disposition` tests pass (2 ignored).
+  Round 2 at `3e4f7668`, green: `cargo fmt -p <crate> -- --check` for
+  mush-contract-tests, mush-core, mush-market, mush-roll, mush-server and tacsim; `cargo
+  clippy --workspace --all-targets -j 8 -- -D warnings` (6.18 s warm); `RUSTDOCFLAGS="-D
+  warnings" cargo doc --workspace --no-deps --document-private-items -j 8` (5 m 01 s, 48
+  crate docs); `cargo test -p mush-contract-tests -j 8 --no-fail-fast`, 139 passed, 0
+  failed, 8 ignored across 33 binaries. The only warning in the clippy and doc logs is
+  mush-net-web's known build-script note (no `web/dist/index.html`).
+- **The PR's CI.** PR #30 ("M7 C2: Operator commands, line mode") was opened with the
+  design note and was already not a draft. Its run 40501574368 on `3e4f7668` ran from
+  12:09:34Z to 12:31:56Z and concluded success: all 24 gating jobs passed and the 8
+  dispatch-only jobs were skipped. `main`'s own last three runs (40484066481,
+  40450170234, 40440474128) are success too. C2 changes nothing under `crates/mushd`,
+  `crates/mush-gateway`, `crates/mush-net-web`, `crates/mush-proto` or `web/`.
+- **Not run.** The four M7 stories and the fifth cell,
+  `player_market_story::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart`,
+  on the CI dispatch before the merge: the PR run skips the `M7` matrix job, and the
+  command story is compiled (clippy all-targets) but has never run, holds only its part
+  1 (C2a), and its `// C2c:` and `// C2d:` markers carry no part 2 or part 3. The plan's
+  dispatch after C2b was not made: C2b moved no writer, family or balance, so there was
+  nothing money-path to exercise. There was no hand-played session on this build and no
+  deploy; `launch_path` is live on no instance. `cargo test -p mush-bot` was in no gate;
+  the bot reads none of the changed sentences.
+
+**Deviations and residuals.**
+
+- **From §3 C2 and the plan above (plan §10, the hand-off).**
+  - Four sub-cuts, not §3's three: the plan split the owner indexes and the transfer
+    mark out as C2b, a money-path change with no command.
+  - The command table is the approved one (ruling 4) with the plan's nine departures,
+    and every command is the one mechanism of the design note; but the Roll read is not
+    a service of its own: plan §2.4's fallback 1 folded its kinds into
+    `holding_reader::OriginalOwnerReader` (`original_owner_holding` v2), so there is no
+    `RollCommandReader`, no `mind_commands` descriptor and no second Roll grant. The
+    format-2 Active launch measured 31 services and 32 of 32 grants after C2a (the
+    plan's static count said 24–29), and C2c's `MarketCommandReader` took the 32nd and
+    last service slot without a grant. No cap was raised, as the briefs required.
+  - The owner indexes (plan §2.5) are not built. mush-core's typed-state checks refuse
+    every same-transaction index write the plan assumed, so C2b landed only the transfer
+    mark and the resale transferability gate, and C2c and C2d built every form that
+    needs an own-record lookup up to the point where it would read one, then held it:
+    `+minds/buy` and its steps, bare `+minds/holdings` and the paid section,
+    `/resell/accept` and `/charter/accept` all answer `NOT_OPEN`; `+minds/resell` and
+    `+minds/charter` also, by C2c's rule that no command makes an offer no command can
+    take.
+  - The renewal front (plan §2.1) is held at `renew::RENEWALS_OPEN = false`: the renewal
+    services' `RenewalReader` handle and market-owned families refuse a tacsim dispatch
+    context, so `player_step` cannot be a plain cross-module call. `@mindrenewal`,
+    `@housemindrenewal` and `+act` remain the renewal path.
+  - The gate story has part 1 only and is unrun; the alt pair, the stale quote, the tiny
+    resale and the restarts of parts 2 and 3 wait for the grant and the index sub-cut.
+  - `@mind/publish` lists an already filed mind (`NO_FILED` otherwise) and never files
+    first; `@mind/file` is reserve-then-file with the actor's own completed rating from
+    `@mind/rate`.
+  - The `@mind/launch` market line's last sentence is C2c's (`Read the listings here
+    with +minds and your licences with +minds/holdings; help personal-minds lists every
+    market command.`), moved in its pinned places; the verb it names for a non-renewing
+    Pin is now `market-original-mind-list`.
+- **C2a.** (1) Capacity: the brief said stop and report on an owner-read refusal and
+  never raise a cap; the builder stopped (32 services / 33 grants against 32/32, the
+  "WHAT THE EARLIER SUB-CUTS LEFT" section carrying the lead's decision was missing from
+  the brief), and the repairer applied plan §2.4's pre-decided fallback 1 rather than
+  wait: Roll's command kinds are folded into `holding_reader::OriginalOwnerReader`
+  (`original_owner_holding` v2 with a `commands` config member; per the common rules a
+  changed definition is a new version, and no test pins its digest or version), so
+  `RollCommandReader`, its `mind_commands` v1 descriptor and its grant do not exist,
+  tacsim's slot reads through the grant `register_entitlements` already holds,
+  `holding_reader::register` moved into `register` after the filing declarations
+  (Active-only as before), and the kinds are gated at read time by `with_mind_commands`
+  (`Unavailable` otherwise, test `command_kinds_are_closed_without_the_player_market`);
+  no cap was raised, the launch is at 31 services / 32 of 32 grants, and the consequence
+  for C2c (its `MarketCommandReader` cannot compose without the lead's cap raise or a
+  fold) is the lead's decision before C2c. (2) Test 4 lives on the launch rig
+  (`hardware/flow/launch.rs`), not `composition/mind_commerce/tests.rs`, because
+  providers project nothing in an unbooted composition; test 3's counts are the
+  composition-only chain's (18/17), test 4 prints the launch's. (3)
+  `MindCommandService.attempts` is `Arc<Mutex<..>>` because `Registrar::state` requires
+  `Clone`. (4) `submit` takes a sixth argument, the request line, printed after every
+  check so a refusal never follows a request line. (5) mush-core gained
+  `Registry::owner_read_counts` and `OwnerReadRegistry::counts` (read-only counts for
+  tests 3 and 4) and a test-only `OwnerReadContext::for_test`, beyond the one accessor
+  the brief named. (6) Test 6 omits the dependent line and the charter transfer the
+  brief required (mush-roll has no dependent-filing or E4 transfer fixture; tacsim's
+  live inside the ignored genuine-Registry flows); the foreign caller is a real second
+  Player; a residual the lead owns (the C2d story's charter step, the dependent route at
+  C2d or C4). (7) Test 9 in the fast suite compares two missing numbers (a filing needs
+  a genuine rating), re-documented as the missing-path and masking check; the foreign
+  half for /update, /withdraw, /attest and /fork by the buyer and the alt is in the
+  unrun story. (8) Story part 1 runs reserve, NOT_RATED, rate, file instead of plan §5's
+  NOT_RATED, rate, reserve, file, because §6's algorithm reserves whenever no shell is
+  open; every pin includes the engine's best-effort `Queued.` line between the request
+  line and `Done.`/the driver's line (C2c and C2d pins must too). (9) RATING_BUSY is
+  narrowed to the character's own Registry job (reviewer F2): `Preparing.kind:
+  WorkKind`, `holds_rating`, `rating_held`, `rate_refusal`; every other Busy and error
+  prints the unavailable line. (10) `@mind/fork` requires the slot (NOT_OPEN on format
+  1), consistent with the brief's test 13. (11) `initialized_launch` gained
+  `initialized_launch_format` and `initialized_launch_with` for test 13 and the story's
+  `quote_seconds: 30`. (12) The three new external test modules carry a file-level
+  `#![cfg(test)]` fence after the I13 census (`action_state_republish`) read a test-side
+  `install_composed_action` as production code. (13) `Seen` gained `to`, `extend` and
+  `reaching` beyond the brief's `{own, others}` so test 10 checks observers by
+  recipient. (14) `legal`, `submit_initialize` and `initialized_active` are unchanged,
+  as the brief predicted. (15) The brief's `#[cfg(test)] mod tests;` sits at line 30 of
+  `market_commands/mod.rs`, before the production code (as `workshop/mod.rs` does); move
+  it to the end in C2c. (16) Not done by any builder, since nothing under docs/design is
+  theirs: 17g line 75 ("`@mind/fork` is the local draft copy") is now false, doc 17
+  ~1895 and 17g lines ~84, 487, 563-564, 798, 921 name the old shared verbs, and the
+  §2.4 estimate of 24-29 services is replaced by the measured 31/32; for the record
+  writer.
+- **C2b.** (1) Brief items 1–4 (the four owner indexes `market_mind_entitlement_actors`,
+  `roll_mind_paid_holdings`, `market_mind_paid_resale_buyer_offers`,
+  `roll_mind_charter_pending_buyer_offers`, their writers, audits,
+  `paid_holdings::page`, the delegations and the four family registrations) and tests
+  1–5 and 7–11 are not built, because mush-core's typed-state checks refuse every
+  same-transaction index write the brief and plan §2.5 require:
+  `terminal_capacity::prepare`'s terminal branch (`terminal_capacity.rs:744-765`)
+  refuses any key outside the reservation's targets ("unreserved terminal key"), which
+  covers the entitlement Grant and Refund removals, the three grant inserts and the
+  resale service settlement; `paid_resale/transition.rs` `exact_puts` (lines 13–31,
+  called at Offer :133 and Accept/Fund/terminals :276) and
+  `charter_pending/transition.rs` `exact_puts` (:82, called at :155 and :187) require
+  the transaction's whole mutation set to equal a fixed list of puts, which covers items
+  3 and 4 at every step and item 2's immediate-Accept swap; the plan's premise that the
+  indexes copy v2's `ActorOffers` missed that v2's index is written only at Quote and
+  Fund, never in a terminal or exact-set transition; mush-core is outside C2b's files
+  and the common rules forbid improvising a design, so the builder stopped and reported,
+  and the lead must rule between admitting a closed index-family list in the terminal
+  branch and both `exact_puts` callers, reserving the holding row at funding (which
+  alone reaches only item 2's grant inserts), or taking the indexes off the money
+  transactions (against 17g's same-transaction rule); the Quote and Fund writes of item
+  1 were deliberately not built alone because the index audit ("indexed operation ⇒
+  Funded") would refuse every boot after the first grant without the terminal removal.
+  (2) Consequently no family-set or definition pin moved and `cargo test -p mush-roll
+  --lib commerce::paid_holdings` matches nothing; C2c and C2d have no bounded own-record
+  read until the indexes land, and the plan's dispatch of the five M7 stories after C2b
+  has no money-path change to exercise, so the gating dispatch should follow the index
+  sub-cut. (3) `EntitlementConfig::product` takes a `ProductChoice` rather than the
+  brief's `(f, form, rate, transferable)` positional signature, and the product body is
+  split into `product_for` over a captured subject and royalty chain, because
+  `EntitlementSaleFacts` has no constructor outside Roll and the reviewers' must-fix
+  required a mush-market lib test to pin the List-to-product wiring and
+  `current_listing`'s frozen recompute; `product` passes the same inputs as before, so
+  no production behaviour changed. (4) Test 12 lives in `commerce::renewal::tests`
+  (where the birth → draft → fund → grant helpers are), not under
+  `commerce::paid_resale`, and exercises the extracted `require_transferable` and the
+  resale binding rather than a full `observe`, which needs a granted licence and its
+  proofs in a real-engine harness; the end-to-end marked sale and refused resale are
+  C2c's and C2d's story legs. (5) The List and Quote parameter vectors were factored
+  into `offers::parameters(kind)` and `actions::optional` was added, small seams the
+  brief does not name, so the projected schema is pinned (dropping the optional
+  parameter would make core refuse every supplied mark). (6) Stale design text is left
+  for the record writer, since builders may not edit docs/design: doc 17 §24 (about line
+  1879) and 17g §2 (lines 457–458) say the per-listing mark is not built; 17g §3's C2
+  paragraph (line 1021) and plan §2.5/§3.2 say C2 adds four families in the same
+  transaction with no mush-core file; `crates/tacsim/src/launch/market.rs:17-18` says
+  the mark is not built (C2c, which touches tacsim, should amend it). (7) The gate
+  table's three tacsim filters for `minds::bulk::{entitlement_integration_tests,
+  paid_resale, charter_pending}` match no test and passed vacuously; the files are
+  `#[path]` helpers driven by the ignored original-purchase story, and the table needs
+  correcting.
+- **C2c.** (1) TacSim does not request the market read: the format-2 Active launch holds
+  31 services and 32 grants before C2c, so the registration takes the 32nd service and a
+  request reproduces `OwnerReadError::Limit`; the brief's Gates section says to stop and
+  report and never raise a cap, so `MindCommandService.market` is `None` in every
+  composition and every `+minds` form and `@mind/publish` refuse `NOT_OPEN` until the
+  lead raises `MAX_OWNER_READ_SERVICES` and `MAX_OWNER_READ_GRANTS` (plan 2.4 fallback
+  2) and one `MarketCommandReader::request(reg, manifest)` in `TacsimRuleset::register`
+  stores the handle; tests 7 and 8 and story part 2 cannot pass and are not written (the
+  `// C2c:` marker stands), and 17g 7's and plan 2.4's "two services, two grants" counts
+  should read services 32, grants 32 with TacSim's market grant held back. (2)
+  `OwnPurchase` and `OwnOpen`, Roll's `Paid` section (`Unavailable`) and
+  `PaidHoldingView`, `+minds/buy/pay`, `/buy/complete`, `/buy/refund`, the own-purchase
+  line under `+minds <code>`, the paid and waiting rows and bare `+minds/holdings` are
+  not built because C2b's WHAT-LEFT section (which outranks the brief) says the
+  per-buyer entitlement index and the per-holder paid index do not exist; bare
+  `+minds/holdings` and `paid <cursor>` refuse `NOT_OPEN` rather than print a list that
+  leaves the paid licences out, and `HOLD_EMPTY` and the other index words wait in
+  `words::pending`. (3) `+minds/buy <code>` is held with the steps above (the built
+  `buy` under `#[allow(dead_code)]`) because `QUOTING` promises that `+minds <code>`
+  shows the quote, which only the own-purchase line can, and a quote no command can pay
+  only expires (fix round, C2C-3). (4) Roll answers at most 3 owner rows and examines 16
+  assets per `OwnHoldings` read, inside the folded read's declared `maximum_rows` 64
+  (each row costs `own_filed`'s point reads), and TacSim aggregates up to 12 reads into
+  the brief's 20 rows. (5) `selling` on an owner row means only a `Funded`
+  pending-charter head, not an open unfunded offer, because `CharterOffer` is keyed by
+  operation and no bounded per-charter lookup exists (C2b's planned index is keyed by
+  buyer and charter, so it would not provide one either). (6) `ListingsPage::next`
+  widened and `ListingsAfter` added (fix round, F4): when the 8-scan budget ends on
+  insert-only listings a policy change left stale, the cursor is the last scanned key
+  and `+minds/next` resolves it current or not, so a page can be empty and still print
+  `HEAD` then `MORE`; `EMPTY` only at the true end. (7) A paged owner section never
+  prints `HOLD_EMPTY` (fix round, F3 and C2C-4): `HOLD_HEAD`, the rows and `HOLD_MORE`
+  while the reads continue; `HOLD_EMPTY` is the bare form's, which waits for the paid
+  index. (8) Test 6 lives in `hardware/flow/launch.rs` beside C2a's test 4, not in
+  `composition/mind_commerce/tests.rs`, because the providers project only in a booted
+  launch; it still runs under the gate's `hardware::flow::launch` filter. (9) `+minds
+  <code>` omits the own-purchase line rather than always printing `ASK`, which would be
+  false for an actor with a quote. (10) `price=0`, `seats=0`, `term=0` and malformed
+  values print the usage line rather than `TERMS` (`number` and `credits_minor` reject
+  0); a well-formed non-matching value gets `TERMS`. (11) The help page, the market line
+  and the legacy `+minds` note are the brief's verbatim texts and so describe commands
+  that refuse `NOT_OPEN` today, and the old `+act` purchase table is gone from
+  `personal-minds.md`; whether these land ahead of the grant is the lead's call with
+  (1). (12) Test 1 lacks the `OwnPurchase`/`OwnOpen` cases and test 3 the dependent,
+  paid, House Pin, revoked and neighbour-holds-rows cases (no fixture or not built); the
+  read-path seam is tested through `answer` over an in-memory source with the real
+  `current_policy`, while `Lens::scan` and the real venue gate wait for a granted
+  composition. (13) `by_code` answers `Ambiguous` for two matching rows whether or not
+  both are current (the brief's literal "two"), where plan 2.7 says two current
+  listings. (14) The unrequested service keeps the 32nd and last service slot, which the
+  builder flagged as unsure; nothing else in C2 adds a service.
+- **C2d.** (1) `ResaleOffers` (market) and `CharterOffers` (Roll), the live
+  `/resell/accept` and `/charter/accept`, test 2
+  `market_command_reader_lists_only_the_actors_resale_offers` and story part 3 are not
+  built: C2b's per-(buyer, licence) and per-(buyer, charter) offer indexes do not exist
+  and no composition grants tacsim the market read, and C2b's WHAT-LEFT section outranks
+  the brief; both accepts parse then refuse `NOT_OPEN`, so test 11 asserts `NOT_OPEN`
+  for `/resell/accept 999` and `/charter/accept 999` in place of `NO_OFFER` and
+  `NO_CHARTER_OFFER`. (2) The seller forms `+minds/resell` and `+minds/charter` run
+  every check and then refuse `NOT_OPEN` at `trade::NAMED_OFFERS_OPEN = false` instead
+  of submitting, by C2c's rule (reviewer C2C-3) that no command makes an offer no
+  command can take; test 12's seller-line exemption is therefore never exercised and the
+  constant is unpinned. (3) `+minds/renew`, `/renew/pay` and `/renew/decline` are held
+  at `renew::RENEWALS_OPEN = false` after `own_paid` (fix round, reviewers C2D-R1, F1,
+  T1): `player_step` reads through the market's own `RenewalReader` handle (requester
+  `market`) and market-owned families, which mush-core refuses to a tacsim dispatch
+  context (`OwnerReadError::Authority`, `require_owner`), so every held licence would
+  read the service's uniform refusal; the owner-read caps are 32/32, so tacsim cannot
+  take its own read; a seam that runs the step under the market's identity is the lead's
+  ruling, and the dispatched test that reaches `RENEW_NOT_DUE` waits with it. (4) Roll's
+  `ResaleStep` kind was built then removed in the fix round (reviewers C2D-R2, C2D-R3):
+  `paid_resale::reader::observe` checks no offer naming the buyer, so the kind was an
+  existence and open-claim oracle on any transferable licence rather than own-only as
+  the folded read's descriptor promises, and no mush-roll fixture reaches a granted
+  transferable licence for a positive test; the index sub-cut rebuilds it with the
+  offer's committed (buyer, licence) binding as evidence, and `holding_reader.rs` and
+  `observe`'s visibility are back to base. (5) `@mindrenewal` and `@housemindrenewal`
+  call the private `step` with `Switches::of_command` rather than the public
+  `player_step`, so the commands keep their own switch semantics (`/request` alone never
+  retries); byte-identity is proven by test 1's oracle. (6) The seller forms check shape
+  and price, then the slot, then the player, then the actor's own record, where the
+  brief ordered own record, player, price: the only order in which test 11 can show
+  `NO_PLAYER` and `BAD_PRICE` without own records (a player's existence is public); on a
+  format-1 launch a bad price now answers `BAD_PRICE` before `NOT_OPEN`. (7)
+  `@registry`'s help is the brief's one line split at its second clause into two lines
+  (`…; @registry/cancel` newline `@registry/recall <filed> and …`), dropping the `; `
+  after `@registry/cancel`, to keep the 120-column floor; the brief's line is 147
+  columns, not the 136 the code comment says. (8) `docs/help/house-minds.md` keeps the
+  brief's paragraph and adds a closing paragraph naming the `house-renewal-*` actions
+  for launches where `+minds/renew` is not open (fix round, reviewers C2D-R5, F3, T6),
+  because the brief's text removed the only House renewal path that works on a
+  House-only launch; `personal-minds.md`, `deploy/README.md` and the brief's legacy-note
+  sentence still describe `/renew`, `/resell`, `/charter` and the accepts as working
+  while they answer `NOT_OPEN`, and the legacy note gained a final sentence recording
+  the hold. (9) Test 9 `trade_parameters_satisfy_the_registered_providers` lives in
+  `tacsim::hardware::flow::launch` beside C2a's and C2c's, not in
+  `composition/mind_commerce/tests.rs`, because the providers project nothing in an
+  unbooted composition; the gate list runs it. (10) Tests 10 and 11 compare two missing
+  numbers (`1` and `999`) rather than a real filed number or a licence another character
+  holds, because the fast suite has no genuine rating; the real-target `same_refusal`
+  checks are owed to story part 3. (11) `+minds/holdings` paid rows with the renewal
+  suffix are built (`paid_line`) but not printed, the paid section being `Unavailable`
+  until the per-holder index; the reachable `; no resale; revoked; renewal offered` row
+  (a revocation admits a matching pending renewal) is 121–122 columns in Grace and is
+  left out of test 8's legality filter, owed a ruling on the flag words or the
+  `HOLD_PAID` layout (reviewer C2D-R4). (12) Test 1 proves the sentences through
+  `command_line` over `status_view` and the switch mapping, never through a dispatched
+  `player_step` or the `@…renewal` commands; dispatch-level proof rests on the long
+  renewal stories' substring checks. (13) Test 4 proves the House, revoked and selling
+  flags only negatively (no House catalogue, revocation or funded-resale fixture in the
+  module); the renewal mark is proven through real rows. (14) `OwnPaid` was built
+  although C2b's WHAT-LEFT listed it among the kinds without a bounded read: it is point
+  reads keyed by the licence the player typed, so it needs no index. (15) Small doc
+  inaccuracies left standing: `words::named`'s doc names a nonexistent `trade::select`
+  (it is `accept_plan`); `personal-minds.md` line 34 is not rewrapped;
+  `command_kinds_are_closed_without_the_player_market` was not extended to `OwnPaid`.
+- **Residuals still open** (the four sub-cuts' lists merged; closed items dropped: C2a's
+  `#[cfg(test)] mod tests;` placement, which C2c moved to the end of
+  `market_commands/mod.rs`; C2b's three vacuous gate filters, which the later gates
+  dropped; the `tacsim/src/launch/market.rs` comment on the mark, which C2c amended; the
+  stale design text the judges listed for the record writer, folded by this entry and
+  its §2, §3, 17f and doc 17 §24 edits).
+  - **The owner-read caps.** The format-2 Active launch is at 32 services and 32 grants
+    of 32/32 (pinned by
+    `hardware::flow::launch::market_parameters_satisfy_the_registered_providers`), with
+    the `mind_market_commands` read registered and ungranted, so
+    `MindCommandService.market` is `None` in every composition and every `+minds` form
+    and `@mind/publish` answer `NOT_OPEN`. The lead raises `MAX_OWNER_READ_SERVICES` and
+    `MAX_OWNER_READ_GRANTS` in `mush_core::read_service` (plan §2.4 fallback 2) as their
+    own commit recorded here, then one `MarketCommandReader::request(reg, manifest)` in
+    `TacsimRuleset::register` stores the handle and the (32, 32) pin is re-blessed.
+    Until then `Lens::scan`'s key check, the real `EntitlementGuard` and `next_after`
+    against the live store run in no test. C3 and C4 add no owner read without the count
+    being redone.
+  - **The index sub-cut.** The four indexes (`market_mind_entitlement_actors`,
+    `roll_mind_paid_holdings`, `market_mind_paid_resale_buyer_offers`,
+    `roll_mind_charter_pending_buyer_offers`), their audits and `paid_holdings::page`
+    are refused by mush-core's terminal-key check (`terminal_capacity.rs:744-765`) and
+    both `exact_puts` checks (`paid_resale/transition.rs`,
+    `charter_pending/transition.rs`). The lead rules between (a) admitting a closed list
+    of index families, puts and deletes, in the terminal branch and both `exact_puts`
+    callers; (b) reserving the holding row at funding, which alone reaches only the
+    grant inserts; or (c) taking the indexes off the money transactions, against 17g's
+    same-transaction rule. Any ruling changes both `exact_puts` functions and the resale
+    swap, and mush-core's capacity and transition tests then join the money-path review.
+    Waiting on it: `OwnPurchase` and `OwnOpen`, Roll's `Paid` section and
+    `PaidHoldingView`'s rows, `+minds/buy`, `/buy/pay`, `/buy/complete`, `/buy/refund`,
+    the own-purchase line under `+minds <code>`, `HOLD_WAIT` and bare `+minds/holdings`
+    (`HOLD_EMPTY` waits in `words::pending`); `ResaleOffers` (market) and
+    `CharterOffers` (Roll), a rebuilt `ResaleStep` bound to the offer's committed
+    (buyer, licence) evidence, the live accepts and the flip of
+    `trade::NAMED_OFFERS_OPEN` (unpinned: flipping it by accident leaves the suite
+    green); the brief's missing test cases (C2c test 1's `OwnPurchase`/`OwnOpen`, test
+    3's dependent, paid, House Pin, revoked and neighbour-with-rows cases; C2d test 2
+    and test 11's `NO_OFFER` and `NO_CHARTER_OFFER`); and story parts 2 and 3. The
+    gating dispatch of the five M7 stories should follow the index sub-cut, not C2b.
+  - **The renewal seam.** Before `RENEWALS_OPEN` can flip the lead rules how
+    `+minds/renew` reaches `player_step` under the market's identity: a
+    market-registered command or continuation the handler hands the step to, a mush-core
+    delegated read, or a cap raise plus a tacsim renewal read. Until then
+    `+minds/renew`, `/pay` and `/decline` print `NO_LICENCE` or `NOT_OPEN` only, and no
+    test reaches `player_step` through a dispatched `Ctx`.
+  - **Text ahead of code.** `docs/help/personal-minds.md` ("Listing and buying",
+    "Renewing and trading"), the `@mind/launch` market line, the `+minds` legacy note's
+    brief sentence and `deploy/README.md`'s operator paragraph describe commands that
+    answer `The mind market is not open here.`, and the old `+act` purchase table is
+    gone from the help page; only the legacy note's last sentence and house-minds.md's
+    restored `house-renewal-*` paragraph record the hold. Harmless pre-launch and
+    undeployed, but the branch must not reach `main` or dev1 before the grant and the
+    index sub-cut land, or the lead gates the prose until then.
+  - **The command story.** Its first dispatch must confirm that the filing row
+    serializes `filed` and `licence` as the `number` helper reads them, that the
+    filing's commit-bound line is the generic `Done.`, that the launch world holds
+    exactly one `rating_jobs` row after `@mind/rate`, that `Registry work finished.`
+    reaches the author within `STEP` of Roll's Completed row, and that the buyer's and
+    alt's foreign probes read alike under `same_refusal`. The fast suites compare two
+    missing numbers only (C2a test 9; C2d tests 10 and 11 with `1` and `999`): the real
+    foreign-versus-missing proofs for `/update`, `/withdraw`, `/attest`, `/fork`, the
+    buyer's recall of a real filed number and the buyer naming the author's licence are
+    owed to the story. So are the dependent line (`update_derived_mind`) and the owner
+    licence following the title after an E4 charter transfer (after
+    `+minds/charter/accept` the new holder's `@mind/attest <filed>` reaches the driver's
+    line and the old owner reads `NO_FILED`), at C2d's story step or C4.
+  - **The transfer mark's coverage.** No non-ignored real-engine test drives a marked
+    List → Quote → Fund → Grant or a full `observe` refusal of a granted marked licence;
+    the lib tests pin `product_for`, `frozen`, the schema and both reader gates, and
+    dropping the `require_transferable(term)?` call in `observe` while the binding gate
+    stays would leave test 12 green (`Mismatch` instead of `Unavailable`). Under a
+    policy of `transferable: false` a List with `"transferable": true` is accepted and
+    silently narrowed; the `@mind/publish` reply should print the listing row's frozen
+    transferability, not the request's.
+  - **Widths.** A revocation admits a pending renewal whose binding matches the birth,
+    so a `transfer=no` licence in Grace can carry `; no resale; revoked; renewal
+    offered` at 121–122 columns; C2d test 8's legality filter leaves that combination
+    out, and it and C2c's `market_rows_fit_one_hundred_and_twenty_columns` disagree on
+    whether selling plus a renewal mark is legal. A ruling on the flag words or the
+    `HOLD_PAID` layout is owed before any paid row prints.
+  - **Reader and command edges.** `by_code` answers `Ambiguous` when the two rows
+    sharing a code include a stale one (plan §2.7 says two current listings), so `+minds
+    <code>` refuses a current listing and reveals that a stale one existed; `selling` on
+    an owner row means only a `Funded` pending-charter head, never an open unfunded
+    offer (offers are keyed by operation); `price=0`, `seats=0`, `term=0` and malformed
+    values print the `@mind/publish` usage line rather than `TERMS`; `CharterNames`
+    answers any charter's public name for any actor while the folded read's descriptor
+    says `own_only: true` (no leak; names are public), and nothing enforces its
+    `maximum_rows` 64 (an `OwnHoldings` read charges per examined asset within the 512
+    context budget); `trade::player()` accepts `me`, the seller's own name or dbref as
+    the buyer, which once `NAMED_OFFERS_OPEN` flips would read `RESELLING`/`CHARTERING`
+    then the driver's line (refuse `NO_PLAYER` locally before the request line);
+    `@registry/recall` and `/revoke` route through `market_commands::submit`, whose
+    principal check answers `NOT_OPEN` for a non-player or unconnected actor; `BUSY` is
+    checked after the handler's own-state reads, so a pending request may print
+    `NO_FILED`, `NOT_RATED` or `ACCOUNT` first (messages only); the idempotency ordinal
+    is RAM-only and keys carry the IC second, so a stopped IC clock could regenerate a
+    pre-restart key after a restart and read `(already done)`;
+    `mind_trade::purchase_provider::verb` projects any action id but FUND and REFUND as
+    `market-original-mind-grant` and `authored_retirement::provider::verb` any version
+    but 2 as `-v1`, so a fourth purchase kind or a version 3 would silently share a verb
+    (match GRANT and version 1 explicitly; C4).
+  - **Coverage notes.** `command_kinds_are_closed_without_the_player_market` was not
+    extended to `OwnHoldings`, `CharterNames` or `OwnPaid` (`read`'s early return covers
+    them; a refactor moving it would go unnoticed); C2d test 4 proves the House, revoked
+    and selling flags only negatively, and test 1 never drives `player_step` or the
+    `@…renewal` commands through a `Ctx` (dispatch-level proof rests on the long renewal
+    stories' substring checks); the `+minds` read forms skip plan §2.1's principal check
+    (public or actor-scoped data only); whether the gateway, TUI or web client renders
+    an optional Boolean offer parameter is unverified (C3 owns typed clients).
+  - **Hygiene.** `market_help`'s doc comment still explains the replaced C2a sentence;
+    `words::named`'s module doc names a nonexistent `trade::select` (it is
+    `trade::accept_plan`); `registry_service::HELP`'s comment says the brief's one line
+    is 136 columns (it is 147) and the two-line split dropped the brief's `; ` after
+    `@registry/cancel`; `personal-minds.md` line 34 is not rewrapped; the `@mind` legacy
+    note's M6 sentence still lists `/fork` among the local-copy switches while its C2a
+    sentence makes it the paid fork.
+  - **The sweep flake.** mushd `durable_process`
+    `relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries`
+    is in neither common-m7.md's load-sensitive list nor nextest's retry override; add
+    it to one or teach the test to retry Busy.
+- **For §5 (not yet folded there):** the plan's owner questions: per-listing prices,
+  seats and terms; a recall and revocation reason; House catalogue purchases by command;
+  an offers-to-you list; the gate's sim half moving to C4. The lead's three decisions
+  above (the cap raise, the index ruling, the renewal seam) and whether to gate the help
+  prose are the lead's, not the owner's.
