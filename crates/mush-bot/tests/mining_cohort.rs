@@ -67,7 +67,10 @@ const MINERS: [Miner; 4] = [
 /// **The mining root runs under the bot's serde** (doc 20a §5.3.12's canary;
 /// every build): God reads the rate and geology lines `[ready]`, then the
 /// bot's lane, in-process over the bot's own SSH session, plays from Limbo
-/// through its first scan at Ahuna Flank.
+/// through its first scan at Ahuna Flank. With `MINE_RATE` set (the
+/// testing-rate trial, `docs/testing-rate.md`; [`mine::rate_lift`]) God lifts
+/// the world rate to it once the pilot has enrolled, lead ruling L1's pattern;
+/// unset, the world runs at 24 throughout, as it always has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_mining_root_runs_under_the_bots_serde() {
     tokio::time::timeout(Duration::from_secs(20 * 60), canary())
@@ -105,19 +108,44 @@ async fn canary() {
         },
         miner.character.to_owned(),
     );
-    let enrolled = std::cell::Cell::new(None::<u64>);
-    let (wall, sent) = mine::drive_lane(
+    // The drive, in two phases around the one staff act a trial may ask for. Phase
+    // one runs from Limbo to the enrolment — the lane's next line is the refit once
+    // `+coop/enrol` is answered — under the boot rate the Rate line gates on.
+    let lift = mine::rate_lift();
+    let drive_started = std::time::Instant::now();
+    let bound = Duration::from_secs(19 * 60);
+    let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
+    let (_, mut sent) = mine::drive_lane_since(
         &mut client,
         &mut lane,
-        |lane| {
-            if enrolled.get().is_none() && lane.step_line() == Some("+coop/refit prospector") {
-                enrolled.set(Some(started.elapsed().as_secs()));
-            }
-            lane.reached(Milestone::Scanned)
-        },
-        Duration::from_secs(19 * 60),
+        drive_started,
+        |lane| enrolled_now(lane) || lane.reached(Milestone::Scanned),
+        bound,
     )
     .await;
+    let enrolled = enrolled_now(&lane).then(|| started.elapsed().as_secs());
+    // The staff act (`MINE_RATE`): God opens a new world-time generation at the
+    // lifted rate after the enrolment and before the refit — lead ruling L1's
+    // pattern, as `ic_slice_loop.rs` sets 3600. The lane's own cadences stay the
+    // shipped ones, sized to 24; what the lift buys is game clock.
+    if let (Some(rate), Some(_)) = (lift, enrolled) {
+        let reply = mine::lift_rate(&mut god, rate).await;
+        println!(
+            "canary: +{} s the world rate lifted to {rate} after the enrolment:\n{}",
+            drive_started.elapsed().as_secs(),
+            reply.trim_end()
+        );
+    }
+    // Phase two: the refit through the first scan.
+    let (wall, rest) = mine::drive_lane_since(
+        &mut client,
+        &mut lane,
+        drive_started,
+        |lane| lane.reached(Milestone::Scanned),
+        bound,
+    )
+    .await;
+    sent.extend(rest);
     let report = lane.report();
     let seen = client.seen.clone();
     let beat = lane.beat().as_str();
@@ -204,11 +232,13 @@ async fn canary() {
         .milestone(Milestone::ArrivedSite)
         .map_or(0, |at| at.lane_ms / 1_000);
     println!(
-        "canary: wall {} s, enrolment open after {} s, arrived after {arrived} s, lines {}, bytes {}",
+        "canary: wall {} s at world rate {}, enrolment open after {} s, arrived after {arrived} s, lines {}, bytes {}",
         started.elapsed().as_secs(),
-        enrolled
-            .get()
-            .map_or_else(|| "?".to_owned(), |s| s.to_string()),
+        lift.map_or_else(
+            || mine::BOOT_RATE.to_string(),
+            |rate| format!("{} then {rate} after the enrolment", mine::BOOT_RATE)
+        ),
+        enrolled.map_or_else(|| "?".to_owned(), |s| s.to_string()),
         report.lines_sent,
         report.bytes_received
     );

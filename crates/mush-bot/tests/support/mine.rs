@@ -17,6 +17,15 @@
 //! `sm_story`'s `pilot` links one (`crates/mush-server/tests/commerce_composition/sm_story.rs:562`).
 //! Nothing here reaches a module-state slot, so the bot rig adds no
 //! `state-slot-owners.toml` row.
+//!
+//! **The rate lift** (the testing-rate trial, `docs/testing-rate.md`): the rig boots
+//! at the play rate because the production Rate line gates `+coop/enrol` at exactly
+//! `PLAY_RATE` (`readiness.rs:37`, `coop.rs:880`); once a pilot has enrolled nothing
+//! on the mining loop reads that line again (a departure to a site asks
+//! `port_ready`, the site's own lines), so a trial may have God open a faster
+//! world-time generation — `ic_slice_loop.rs`'s pattern (lead ruling L1) — through
+//! [`rate_lift`] (the `MINE_RATE` environment variable) and [`lift_rate`]. Unset,
+//! the rig plays at 24 throughout, as it always has.
 #![allow(dead_code)]
 
 use std::{
@@ -53,6 +62,10 @@ pub const READY: &str = "Ready: every binding above is in place.";
 pub const NOT_READY: &str = "Not ready: ";
 /// The rate line, ready (`readiness.rs:388`, at `PLAY_RATE` 24).
 pub const RATE_READY: &str = "world rate: 24 IC seconds per real second. [ready]";
+/// The world rate the rig boots at: `PLAY_RATE`, the one rate the production Rate
+/// line reads `[ready]` at on a world that is not a test world, so `+coop/enrol` is
+/// open (`readiness.rs:384`).
+pub const BOOT_RATE: u32 = 24;
 
 /// One miner: its gateway account, its character and the site its bot mines.
 #[derive(Clone, Copy, Debug)]
@@ -112,7 +125,7 @@ pub fn config(data_dir: &Path, key_dir: &Path) -> Config {
     cfg.tacsim.enabled = true;
     cfg.tacsim.pack_paths = Vec::new();
     cfg.tacsim.seed_paths = Vec::new();
-    cfg.game.ic_ratio = 24;
+    cfg.game.ic_ratio = BOOT_RATE;
     cfg.tacsim.time.ephemeris.rate = 0;
     cfg.tacsim.geology.key_dir = Some(key_dir.to_path_buf());
     cfg
@@ -312,6 +325,59 @@ pub async fn await_ready(god: &mut arena::Client, bound: Duration) -> u64 {
     );
 }
 
+/// **The world rate a trial lifts to after the pilot's enrolment** (the testing-rate
+/// trial, `docs/testing-rate.md`), from the `MINE_RATE` environment variable: unset,
+/// empty or [`BOOT_RATE`] is today's behaviour — the rig plays at 24 throughout and no
+/// staff act runs; any other rate inside the kernel's band
+/// (`mush_core::MIN_WORLD_TIME_RATE..=MAX_WORLD_TIME_RATE`) is the one God opens with
+/// [`lift_rate`] once the pilot has enrolled. A value that is not such a rate panics:
+/// a mistyped trial must not run quietly as the default.
+#[must_use]
+pub fn rate_lift() -> Option<u32> {
+    let raw = std::env::var("MINE_RATE").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let rate: u32 = raw.parse().unwrap_or_else(|_| {
+        panic!("MINE_RATE is not a rate in IC seconds per real second: {raw:?}")
+    });
+    assert!(
+        (mush_core::MIN_WORLD_TIME_RATE..=mush_core::MAX_WORLD_TIME_RATE).contains(&rate),
+        "MINE_RATE {rate} is outside the kernel's band {}..={}",
+        mush_core::MIN_WORLD_TIME_RATE,
+        mush_core::MAX_WORLD_TIME_RATE
+    );
+    (rate != BOOT_RATE).then_some(rate)
+}
+
+/// **Staff: open a new world-time generation at `rate`** — `@tacsim/time rate=<n>` as
+/// God, `ic_slice_loop.rs`'s `set_rate` over SSH — asserted on the verb's own reply,
+/// so a refused rate (outside the band, the live rate re-typed, a non-staff actor)
+/// fails here, named, and not three beats later as a hop that never arrives. Returns
+/// the reply, the subsystems' declared catch-up policies included.
+pub async fn lift_rate(god: &mut arena::Client, rate: u32) -> String {
+    let opened = format!("opens at {rate} IC seconds per real second");
+    let (index, reply) = god
+        .answer(
+            &format!("@tacsim/time rate={rate}"),
+            &[
+                opened.as_str(),
+                "The world time rate must be between",
+                "The world already runs at",
+                "Only staff change",
+                "The rate was not changed",
+            ],
+        )
+        .await;
+    assert_eq!(
+        index,
+        Some(0),
+        "God opens a world-time generation at {rate} IC seconds per real second:\n{reply}"
+    );
+    reply
+}
+
 /// **The bot's config, one file a miner** (D22):
 /// `arena::bot_config_agent_at` at `bot/{account}.toml`, the username
 /// `{account}+{character}`, `[agent] max_seconds`, settle 100 ms and an
@@ -367,7 +433,19 @@ pub async fn drive_lane(
     until: impl Fn(&Lane) -> bool,
     bound: Duration,
 ) -> (u64, Vec<mush_bot::mine::Send>) {
-    let started = Instant::now();
+    drive_lane_since(client, lane, Instant::now(), until, bound).await
+}
+
+/// [`drive_lane`] on a clock the caller holds: `bound` and the `canary: +N s` stamps
+/// count from `started`, so a drive split around a staff act ([`lift_rate`]) prints
+/// one run of stamps and keeps one budget. Returns the seconds since `started`.
+pub async fn drive_lane_since(
+    client: &mut arena::Client,
+    lane: &mut Lane,
+    started: Instant,
+    until: impl Fn(&Lane) -> bool,
+    bound: Duration,
+) -> (u64, Vec<mush_bot::mine::Send>) {
     let mut sent = Vec::new();
     let epoch = lane.settings().epoch_unix_ms;
     while started.elapsed() < bound && lane.result().is_none() && !until(lane) {
