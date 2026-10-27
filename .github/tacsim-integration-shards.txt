@@ -11,7 +11,13 @@
 # Each group IS its shard. Six since 2026-10-27, balanced on the per-module
 # test times of main's run 40428411078 (the JUnit testcases' `<module>::`
 # prefix): 46.4, 47.4, 46.7, 47.7, 48.7 and 45.0 summed minutes per shard,
-# harness (0.9) and cost_lane (6.4) counted with theirs, against 65-74 as four.
+# harness (0.9) and cost_lane (6.4) counted with theirs, against 65-74 as four;
+# then, the same day, cost_lane weighted FOURFOLD, because it runs alone
+# (.config/nextest.toml: threads-required = the whole pool, so its minutes
+# are serial, and shard_2 ran at parallelism 2.4 against 3.5-4 elsewhere, the
+# wall of both PR runs): unloading (9.5) to shard_6 and deposits (7.2) to
+# shard_3, for 46.4, 30.7 (49.9 with cost_lane's three idle threads), 53.9,
+# 47.7, 48.7 and 54.5. A run-alone binary's minutes count once per thread.
 # The three named #[ignore]d mind-hash tests (minds_pool, minds_rhai, twin) sit
 # together in shard_2 and run in the `tacsim-minds` matrix cell, not here.
 #

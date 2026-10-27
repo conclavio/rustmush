@@ -26,3 +26,5 @@ mod support;
 mod cockpit;
 #[path = "shard_6/plans.rs"]
 mod plans;
+#[path = "shard_6/unloading.rs"]
+mod unloading;
