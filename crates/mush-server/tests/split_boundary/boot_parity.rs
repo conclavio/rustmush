@@ -913,10 +913,11 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
     assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(6));
+    assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
-        35,
-        "five, ten station packs, twelve site packs, the lane and seven R10 relay/geography packs"
+        36,
+        "five, ten station packs, twelve site packs, the lane, seven R10 relay/geography packs and the passenger pack"
     );
     lane_resolves(&on.engine);
     let atlas = on

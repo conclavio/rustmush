@@ -66,7 +66,7 @@ use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 /// `MarketCommandReader::request` over the same composed manifest the
 /// entitlement holdings' grants take, in the branch that registers this slot,
 /// so it is `Some` exactly where the slot exists (the format-2 Active launch:
-/// 32 services and 33 grants). The `Option` stays so that every form keeps
+/// 33 services and 35 grants). The `Option` stays so that every form keeps
 /// its `NOT_OPEN` refusal for a composition without it.
 #[derive(Clone)]
 pub(crate) struct MindCommandService {

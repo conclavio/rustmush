@@ -229,6 +229,136 @@ fn the_block_validates_clean_and_the_schema_rules_refuse_what_does_not_parse() {
     );
 }
 
+fn visiting_npc_doc() -> Value {
+    json!({
+        "manifest": { "id": "visitors.town", "version": 1, "kind": "campaign_seed", "digest": "",
+                      "requires": [{ "id": "neighborhood.block", "version": 1 }] },
+        "entries": {
+            "npc.visitor": { "kind": "npc", "def": {
+                "name": "Visitor", "room_pack": "neighborhood.block", "room": "room.green"
+            } }
+        }
+    })
+}
+
+#[test]
+fn npc_room_pack_resolves_declared_external_rooms_outside_the_geometry_scope() {
+    let tw = town();
+    let pack = signed(visiting_npc_doc());
+    let cx = context(&tw, &pack);
+    assert!(matches!(cx.scope, Some(ValidateScope::World)));
+    assert!(
+        cx.rooms.is_empty(),
+        "campaign validation carries no regional room geometry"
+    );
+    let findings = validate(&pack, &cx);
+    assert_eq!(blocking(&findings), 0, "{findings:#?}");
+}
+
+#[test]
+fn npc_room_pack_requires_the_exact_declared_pack_and_applied_room_entry() {
+    let tw = town();
+    for (name, room_pack, room, requires) in [
+        (
+            "missing dependency",
+            json!("neighborhood.block"),
+            "room.green",
+            json!([]),
+        ),
+        (
+            "wrong declared pack",
+            json!("region.town"),
+            "room.green",
+            json!([{ "id": "neighborhood.block", "version": 1 }, { "id": "region.town", "version": 1 }]),
+        ),
+        (
+            "missing room",
+            json!("neighborhood.block"),
+            "room.missing",
+            json!([{ "id": "neighborhood.block", "version": 1 }]),
+        ),
+        (
+            "not a room",
+            json!("neighborhood.block"),
+            "site.house",
+            json!([{ "id": "neighborhood.block", "version": 1 }]),
+        ),
+        (
+            "prefixed instead of exact entry",
+            json!("neighborhood.block"),
+            "neighborhood.block.room.green",
+            json!([{ "id": "neighborhood.block", "version": 1 }]),
+        ),
+        (
+            "wrong dependency version",
+            json!("neighborhood.block"),
+            "room.green",
+            json!([{ "id": "neighborhood.block", "version": 2 }]),
+        ),
+        (
+            "not a pack string",
+            json!(42),
+            "room.green",
+            json!([{ "id": "neighborhood.block", "version": 1 }]),
+        ),
+    ] {
+        let mut doc = visiting_npc_doc();
+        doc["manifest"]["requires"] = requires;
+        doc["entries"]["npc.visitor"]["def"]["room_pack"] = room_pack;
+        doc["entries"]["npc.visitor"]["def"]["room"] = json!(room);
+        let pack = signed(doc);
+        let findings = validate(&pack, &context(&tw, &pack));
+        assert!(
+            findings.iter().any(|f| f.blocks()
+                && f.entry.as_deref() == Some("npc.visitor")
+                && matches!(f.code.as_str(), "schema.reference" | "schema.decode")),
+            "{name}: {findings:#?}"
+        );
+    }
+
+    let pack = signed(visiting_npc_doc());
+    for retired in [false, true] {
+        let mut cx = context(&tw, &pack);
+        let latch = cx
+            .latches
+            .get_mut("neighborhood.block")
+            .expect("the applied block");
+        if retired {
+            latch.retired = true;
+        } else {
+            latch
+                .entries
+                .get_mut("room.green")
+                .expect("the green")
+                .object = None;
+        }
+        let findings = validate(&pack, &cx);
+        assert!(
+            findings.iter().any(|f| f.blocks()
+                && f.code == "schema.reference"
+                && f.entry.as_deref() == Some("npc.visitor")),
+            "retired={retired}: {findings:#?}"
+        );
+    }
+}
+
+#[test]
+fn room_pack_does_not_bypass_non_npc_definition_schemas() {
+    let tw = town();
+    let mut doc = visiting_npc_doc();
+    doc["entries"] = json!({ "item.bag": { "kind": "item", "def": {
+        "name": "Bag", "room_pack": "neighborhood.block", "room": "room.green"
+    } } });
+    let pack = signed(doc);
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert!(
+        findings.iter().any(|f| f.blocks()
+            && f.code == "schema.decode"
+            && f.entry.as_deref() == Some("item.bag")),
+        "{findings:#?}"
+    );
+}
+
 #[test]
 fn geometry_refuses_footprints_that_leave_overlap_or_do_not_touch() {
     let tw = town();

@@ -583,7 +583,13 @@ thread_local! {
 ///        none" rule applied inside the unit's row. The whole default is the
 ///        condition — index `0` AND no stamp — so a switch back to the first
 ///        profile, which keeps its stamp, still folds. Both fields decide a
-///        later card and a refusal (the seat window's reason, sub-item 17).
+///        later card and a refusal (the seat window's reason, sub-item 17);
+///    21. **the master gate** (doc 21 cut G.12a, §7.3):
+///        [`crate::arena::state::UnitState::weapons_hold`] — `[1]` when the
+///        seat holds its weapons and **nothing at all for weapons free**, the
+///        default, by sub-item 20's rule, so every match that never holds
+///        folds the bytes it folded before the cut. It decides whether a
+///        standing fire rule fires, which no ledger line says until it does.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -1195,6 +1201,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
                     .unwrap_or(i64::MIN)
                     .to_le_bytes(),
             );
+        }
+        // **Doc 21 cut G.12a** (sub-item 21): the seat's master gate, only
+        // when held — no byte for weapons free, so a match that never holds
+        // hashes as it did.
+        if unit.weapons_hold {
+            fold.bytes(&[1_u8]);
         }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
@@ -2502,6 +2514,40 @@ mod tests {
             unit.ecm_on = true;
         }
         assert_eq!(state_hash(&silent), base);
+    }
+
+    /// **Doc 21 cut G.12a: the master gate folds only when held** (item 1's
+    /// sub-item 21): two arenas differing only in one hull's gate hash apart,
+    /// and weapons free — every unit at check-out — folds no byte (the M6
+    /// pin in the test below is unmoved), so freeing the gate again hashes as
+    /// the base did.
+    #[test]
+    fn g12a_the_hash_folds_the_master_gate_only_when_held() {
+        let base_arena = two_tanks();
+        let base = state_hash(&base_arena);
+        assert!(
+            base_arena.units.iter().all(|unit| !unit.weapons_hold),
+            "every unit checks out weapons free"
+        );
+        let mut held = two_tanks();
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.weapons_hold = true;
+        }
+        assert_ne!(state_hash(&held), base, "the gate went unhashed");
+        let mut other = two_tanks();
+        if let Some(unit) = other.unit_mut(ObjId(4)) {
+            unit.weapons_hold = true;
+        }
+        assert_ne!(state_hash(&other), base);
+        assert_ne!(
+            state_hash(&other),
+            state_hash(&held),
+            "whose gate it is folds too"
+        );
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.weapons_hold = false;
+        }
+        assert_eq!(state_hash(&held), base, "free folds no byte");
     }
 
     /// **17b cut M5.2: the active profile folds only off its default** (item

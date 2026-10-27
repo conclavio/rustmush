@@ -72,12 +72,12 @@
 //! No own view carries the seller, an account, a digest or another buyer.
 //!
 //! **Capacity and the grant.** This is a second market-side owner-read
-//! service: on the format-2 Active named launch it is the 32nd service. 17g
+//! service: on the format-2 Active named launch it is one of its 33 services. 17g
 //! C2e raised both owner-read caps to 48 (the lead's ruling R1) and TacSim
 //! requests the read through `MarketCommandReader::request` in its
 //! `register`, beside the entitlement holdings' grants, whenever it composes
 //! the line-mode mind commands (the format-2 Active launch only); the launch
-//! then holds 32 services and 33 grants. A House-only launch requests
+//! then holds 33 services and 35 grants (with the scoped passenger facts). A House-only launch requests
 //! nothing.
 
 use crate::mind_entitlement::{

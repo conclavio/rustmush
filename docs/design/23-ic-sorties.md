@@ -1,0 +1,514 @@
+# 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
+
+**Draft 0.4, 2026-10-27 — S.0 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
+Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
+same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
+close of the top-level passage), risk 1 ruled (a match is a simulator concept, not an IC one), and
+the narrowing of D-23-3 the Q-23-6 ruling implies. Nothing in the tree changed. This note
+answers one question the owner asked on 2026-10-27 — *what do we need for IC sorties?* — and the
+sharper one that followed it: a player might buy goods at Phobos, fly to a body and mine it for a
+while, fly to an asteroid field and run drones, land on a second surface and shoot another
+faction's miners, load back up and fight a ship on the way in, then dock at Ceres to sell and set
+up milling orders. **Is that all one sortie?** It is not, and the reason it is not is the whole
+design: doc 17's sortie is the custody epoch of **one hull** between two hangars, not the player's
+trip. Everything below follows from taking that seriously.
+
+Doc 17 §22 gates M8 (contraband and procurement) on "IC sorties exist", and 17g §4 adds House owner
+attestation as an M8 prerequisite. This note says what "exist" has to mean for that gate, which
+code already does the work, and the smallest cuts that make the first IC sortie real. It decides
+nothing about fights on real ground: that is 16c H1's conversation and doc 20 §17's promotion, named
+in §8 and left there.
+
+The lead's proposals here are D-23-*n*; the owner's questions are Q-23-*n* with a default each. Per
+the owner's standing word on provisional defaults, a default stands until ruled and never holds a
+build.
+
+## 1. Where the word came from, and why it looks simple
+
+The arena is where "sortie" was first built, and there it coincides with a mission: the pod is the
+hangar, `BOARD` then `STARTUP` is the hangar exit, the match fills the sortie, and custody returning
+to the pod closes it (doc 17 §12; 17b cut M3.3). The arena is a proving ground for developing ground
+combat while the rest of the world is built, so that shape was enough for it.
+
+Doc 17's rewrite R-B already generalised the word past the arena (D-UM-45): the seal is per sortie,
+"from the startup that takes a unit out of a hangar or base to its power-down in a hangar or base
+(the same or another), or its destruction or recovery. A power-down in the field does not end it; a
+pilot's exit and a licence lapse never do, and an engagement or a match on an IC map never ends it."
+Three things in that sentence are what this note pins down: it is **per unit**; it is bounded by
+**hangars**, which doc 17 never defines; and it is a **custody and record boundary**, not a thing a
+player does. The arena hid all three because a match has one hangar, one unit per seat and one
+reason to be out.
+
+## 2. Terms
+
+- **Seal epoch** — the engine's "sortie": one hull's custody epoch from its dispatch out of a
+  hangar to its arrival back in one, its destruction, or its recovery. The seal (`MindSeal`, 21
+  fields, 17b cut M3.3) is computed once at the dispatch and holds for the epoch; the black box
+  opens it with `MindSealed` and closes it with `SortieClosed`
+  (`crates/tacsim/src/arena/ledger.rs:579,607`); its id is a `SortieId`
+  (`crates/tacsim/src/arena/mind.rs:293`). "Sortie" stays the code's word; this note says *epoch*
+  where the distinction from the player's trip matters.
+- **Voyage** — the player's trip: Phobos to Ceres with everything in between. Many epochs, on
+  several hulls, carried on a ship. Not an engine object in this note; it is the shape a contract,
+  a cover policy and a player's screen will want, and §8 names it as a later design.
+- **Engagement** — a fight inside an epoch. It never opens or closes one (D-UM-45). In the arena the
+  match lies inside the sortie and `MatchRecord.minds` carries the seal of the sortie it lies within
+  (D-UM-46); on IC ground, doc 20 §17's promotion of a site into an arena is the same relation.
+- **Hangar** — one of two placements, the only two in which a hull is "in": a vehicle or drone
+  placed `Interior` to a bay compartment of its carrier (`SpatialParent::Interior`,
+  `crates/mush-sim/src/data.rs:697-724`), or a carrier hull berthed at a **hangar port**
+  (`Berth::Docked` at one of the corridor's five ports — Ceres Freeport, Stickney Yards, Aitken
+  Highport, Voltaire Anchorage, Ligeia Terminal — as `port::ship::berth_of` decides over
+  `mush_sim::pose_of`; a docked or settled hull is `Direct` on the port map's domain, so no
+  container test can find it, and the port entry's declared kind decides). Content declares the
+  bays and which port entries are hangars, and the set grows: the five ports and the bays are the
+  hangars **today**, and player-built hangars and bases and further ports join it as content
+  declares them (the owner, 2026-10-27). A mining or field site is a port entry for the port
+  map's sake (doc 20) but **not a hangar**: a Dray-P settled on its pad is a hull landed in the
+  field, and D-UM-45's "a power-down in the field does not end it" applies to it.
+- **The field** — anywhere else: a lane leg, a site's ground and the carrier settled on its pad, a
+  rock in a field, a landed hull's own ramp. A power-down there is a pause, not a close.
+- **Recovery** — a hull brought into a hangar by other means than its own drive: towed, carried,
+  salvaged, or walked home by staff (`surface::recovery`'s `Home`).
+- **Abandonment** — a hull in the field whose hangar is gone: its carrier destroyed, or its
+  excursion closed by staff with the rig left out. A state inside the epoch, never a close (§4).
+
+## 3. The rule — D-23-1
+
+**A hull's seal epoch is open exactly while the hull is in neither hangar placement.** So:
+
+- The epoch **opens** when the hull leaves its hangar, not when the order is given. For a vehicle
+  that is the end of the launch (`LAUNCH_S`, 300 IC s, `crates/tacsim/src/surface/excursion.rs:72`)
+  when the rig is placed `Direct` on the site's domain; an excursion that ends `NeverLeft` opens no
+  epoch, and a scan, sounding or drive typed from the bay that implies a launch
+  (`ActParams::launches`) opens one exactly as `+tv/launch` does. For a ship it is the port tick's
+  launch arm calling `mush_sim::depart` (`crates/tacsim/src/port/voyage.rs`), not `+ship/undock`,
+  which only burns and files the plan; a burn whose launch never lands lapses after
+  `LAUNCH_GRACE_FIRES` and opens nothing. For a drone it is the drone bay's launch (doc 20 §17).
+  The seal is computed there, ahead of the first startup (doc 17 §12), and the pool admission
+  happens there (D-UM-36; §6).
+- The epoch **closes** on arrival in a hangar, destruction, or recovery. The close kinds are the
+  ones the IC claim protocol already defines (`IcCloseKind`,
+  `crates/mush-roll/src/commerce/ic_claims/owner_protocol.rs:16-21`): `ReturnedToBase { base }`,
+  `PoweredDownInBase { base }`, `Destroyed`, `RecoveredToBase { base }`. The arena's
+  `SortieClosed.word` is `match_end` or `destroyed` today (`ledger.rs:601-613`); on an IC host the
+  word is the close kind's. **This amends D-UM-45 in one respect**: a hull's epoch closes when it
+  is *back in* the hangar (`ReturnedToBase`), not at a later power-down; `PoweredDownInBase` is
+  kept for a hull that powers down where it already is. S.0 carries the amendment.
+- Nothing else closes it. Not a pilot leaving the seat, not a licence lapsing, not an engagement, not
+  a landing in the field, not a staff `Close` of an excursion that leaves the rig out
+  (`surface/recovery.rs`), not the IC-return rule putting a player in the OOC area
+  (`crates/tacsim/src/ic_return.rs`: a player who steps out leaves their hull where it is).
+
+**Nesting is a record, not an object — D-23-2.** The engine keeps no tree of epochs. A `MindSealed`
+line records the hangar the hull left (the bay's or the berth's id) and, when that hangar is a hull,
+that hull's **open** `SortieId`; the close records the base it closed in, which the claim
+protocol's `base` field already carries. A voyage can be reconstructed from the lines; the engine
+never needs it. The carrier's epoch is open while its vehicles are out because a site is the field
+(D-23-3), which is also what lets a lapsed licence hold across excursions (D-23-9).
+
+**The declared hangars — today the corridor's five ports and every bay — are hangars; a site is
+the field, and a ship landed in the field never ends its passage — D-23-3** (Draft 0.2 made every
+port entry's berth a hangar; the owner's Q-23-6 ruling narrows it and the owner confirmed the
+narrowing, §16; player-built hangars and bases and further ports join the declared set later). The five
+ports (`ic_return.rs`) are hangars. The mining sites (doc 20: "a vendor-less port entry over a
+2.56 km atlas region"; the Dray-P settles on its pad as `Berth::Docked`, and `+tv/launch` is legal
+only while it is settled) and doc 20 §17's field sites are port entries for the port map's sake
+and the field for the epoch's. So a vehicle's epoch is short — one excursion, from the launch to
+the recover, bounded by SM.11's idle return (`IDLE_PARK_IC_SECS`, 24 IC h) unless the rig is
+`Parked` and waits for staff (doc 20 §8) — and a drone's is bay to bay, while **a ship's epoch is
+its whole passage between hangar ports**: one leg is under a day at the constant sky by doc 18 R3
+and up to about 65 h on the coasting law (doc 18 §3 Q(5), D-18-50), and a Belt voyage strings
+several legs and several sites into one epoch of IC weeks. A body with no port entry is the field
+too, and today a hull cannot arrive at one anyway (doc 20 §2: "a hull arriving anywhere without a
+port map is stranded").
+
+## 4. The owner's trip, by epoch
+
+| Leg of the trip | Hull | Epoch | Opens | Closes |
+|---|---|---|---|---|
+| Buy goods at Phobos | — | none | | |
+| Fly to a body and settle on its site | Dray-P | 1 | `depart` from Stickney's berth | stays open: the site is the field |
+| Surface-mine "for a while" | TV | 2, 3, … one per excursion | the rig leaves the bay | `+tv/recover` into the bay |
+| Fly to an asteroid field | Dray-P | 1, still | — | — |
+| Drone-mine in space | each drone | one per launch | the drone bay | the drone bay, or `Destroyed` |
+| Land on a second surface, shoot the other faction's miners | Dray-P; then the TV | 1; then the next TV epoch | —; bay | —; bay — the fight is an engagement inside the TV's epoch |
+| Load up, fight a ship on the way to Ceres | Dray-P | 1 | — | `ReturnedToBase` at Ceres — the fight is an engagement inside epoch 1 |
+| Sell at Ceres, set milling orders | — | none | | |
+
+The trip is one ship epoch and one epoch per excursion or drone launch — ten or more on three
+kinds of hull — and one voyage. For a vehicle or a drone every bound in doc 17 that assumed "hours"
+(§23 Long sorties: a lapsed licence holds for the rest of the sortie, memory grows to its cap, a
+fault-dropped hull stays on the ROM until a base) is bounded by one excursion. For the ship they are
+bounded by the voyage, which is what the owner ruled for the licence (D-23-9) and is harmless for
+the Dray, which fits no core; a cored ship on a multi-week voyage would carry a fault-dropped mind
+on the ROM until its next hangar port, which §13 names. The IC resume rule (§13) keeps the sortie
+across a `MIND_ABI` change and strands nothing at all; what lasts until the next hangar is the drop
+to the ROM. The epoch count is also why the black box, not the engine, carries the voyage: a
+contract that pays on "the run" reads lines, it does not hold an open object across days.
+
+**Abandonment — D-23-4.** Today a carrier cannot leave with a rig out: `TV_OUT`, `TV_BUSY` and
+`HOPPER_LOADED` refuse `+ship/plan`, `+ship/undock`, `+ship/lift` and a queued `depart` (doc 20 §4,
+D-20-7; SM.11). This note keeps that rule. Abandonment therefore arises only when the hangar is
+destroyed or when staff `Close` an excursion with the rig out; the rig's epoch stays open, is
+flagged `abandoned` with the instant, and still closes only by the four kinds of §3. The owner is
+told once. Lifting D-20-7 so that "a TV left out is a choice" is doc 20 §17's fight-phase
+consequence and needs an owner ruling and a cut of its own; Q-23-2 asks whether to take it now.
+
+## 5. What an epoch fixes, and what it does not
+
+An epoch is bookkeeping. For its length it fixes:
+
+- **the seal** — the mind, its card and profiles, the core, the licence class and state, the warrant
+  principal and the station channels (doc 17 §13). A mind cannot be updated mid-epoch; a profile can
+  be switched (§12). A pilot who boards a hull already out takes it under the seal it carries.
+- **the pool admission** — counted at the dispatch, never refused mid-epoch (D-UM-36; §6).
+- **the black box pair** — `MindSealed` … `SortieClosed`, with every engagement, haul and shift
+  recorded between them and citing the sortie (doc 17 §13).
+- **the custody claim, for a hull flying a held mind** — the four-owner IC Open at the start and
+  Close at the end (`crates/tacsim/src/minds/ic_sortie/`, §7). The Open needs a licence and a filed
+  holding (`IcHost::enqueue_start(permit, licence, profiles)`, `host.rs:273-277`;
+  `Execution::capture` resolves `FiledExecutable` from a `PersonalFiledHolding`,
+  `execution.rs:89`, `participant.rs:265-272`), so a coreless hull — the Dray and the TV, "no core:
+  Class 0" — has no claim, only a seal and a pair. Hull cover's claim window and M8's custody
+  inspection read the claim where there is one and the pair everywhere.
+- **the law's touch points** — the two ends are where an inspection, a renewal attestation and a
+  seizure happen (M8's five evidence channels, D-UM-42). A short epoch means the law can touch a hull
+  at every berth, which is what the Republic's pickets at Kirkwood need (doc 11 §6, Customs
+  Assertion).
+
+It fixes nothing about money, cargo, contracts or orders: those are the voyage's and the economy's,
+and they already run on the IC clock without it.
+
+**The principal — D-23-5.** The seal's warrant principal is the actor of the plan the hull leaves
+under: whoever filed the passage (`+ship/undock`, `+ship/lift`, or IC11's queued `depart`), whoever
+typed `+tv/launch` or the act that implied it, or the dispatcher principal for a house's rigs
+(SM.12b). A captain change mid-passage does not move it; who may *order* the hull is the `ORDER`
+path's own rule (doc 17 D-UM-2, 17b cut L), and who may *board* it is the station's. The seal
+records who sent the hull out; that is all a seal should say.
+
+**The lapse hold — D-23-9 (the owner's ruling on Q-23-6).** A licence that lapses mid-epoch is in
+grace until the **top-level hull reaches a hangar port**: for a ship, the close of its own epoch;
+for a vehicle or a drone, the close of its carrier's open epoch, not of its own excursion. Inside
+that passage every launch from the bay seals under the held licence, and the fall to doctrine —
+doc 17 §22 M7's gate says "a lapse falls to doctrine at the next seal" — happens at the first seal
+after the hangar. Mechanically the seal at a bay launch reads the licence as lapsed-and-held under
+the carrier's open `SortieId`, which the seal line names anyway (D-23-2), so the hold needs no
+object of its own. S.0 amends doc 17 §22 M7 and §23 "Long sorties" to say "the next seal after a
+hangar port".
+
+## 6. The host: what opens and closes an epoch
+
+Doc 17 §22 ("After M8") imagines **a region sim task** — one per-millisecond simulation over an IC
+region map, with region-map `SortieClosed`, startup admission, long-sortie snapshots and the IC
+resume rule; 17f §10 names "the IC region sortie driver" a missing dependency and 17g §4 calls it
+"an IC region host". Doc 20 §2 (D-20-1) explains why the arena cannot be that task as it stands:
+it integrates wall time, its domain is hidden from every world view, and its snapshot resume rewinds
+the tail against IC minting.
+
+**This note splits that task in two — D-23-6.** Its *custody half* (the seal at dispatch, the pool
+count, the black box pair, the claim Open and Close where a mind flies, the resume rule) needs no
+per-millisecond simulation and lands on the IC-clock pull ticks that already move hulls. Its
+*simulation half* (contacts, line of sight, fire, the tempo) is the arena, promoted onto a site's
+ground inside an epoch (doc 20 §17), and is not built here. The existing IC host's `resume` and
+`IcRetainedExecution::install(world, &mut Arena)` (`host.rs:172-230`) are arena-shaped — they
+install a retained execution into a match — and the custody hosts below do not call them. There
+are three such hosts in the tree:
+
+| Host | Tick | What it already has | What it lacks for an epoch |
+|---|---|---|---|
+| **The surface excursion** (doc 20; `crates/tacsim/src/surface/excursion.rs`) | `tacsim.surface`, 1 s Coarse pull on the IC clock | `ExcursionId (tv, launch_ic)`, which doc 20 §4.3 mints *as* the sortie identity "the bay being the hangar"; launch and recover from the Dray-P's bay; `TvState::{Bay, Out, Held, Parked}`; staff `Close` and `Home`; the 24 IC h idle return; a 32-per-site cap | the seal at the launch's end, the black box pair in a durable home, a `SortieId` |
+| **The port voyage** (doc 18 cut IC9; `crates/tacsim/src/port/voyage.rs`) | `tacsim.port`, 5 s | the filed plan, `+ship/undock`, the launch arm's `mush_sim::depart`, arrival as a placement, the docked/departing/underway/approach lifecycle, `Berth::Docked` | the same three, plus the Dray's own black box |
+| **The drone phase** (doc 20 §17, reserved; D-UM-47's cut) | the surface tick | the shape only | everything — and it is the first host where a mind thinks IC, so the first where the claim, the pool and the resume rule are exercised |
+
+**The first IC sortie is a surface excursion — D-23-7.** It is the closest host: a bay that is a
+hangar, a launch and a recover, staff `Close` and `Home`, an identity already named for the purpose,
+a cost lane that measured the tick (SM.12c), and hulls that fit no core, so the seal is the ROM seal
+the arena already computes for a coreless hull (`fallback: "no core: the ROM"`, 17b cut M3.3). No
+mind thinks, so no pool is spent, no claim opens and no resume rule is exercised: the epoch is seal
+and record. That is the first tier of the M8 gate (§10), not the whole of it. M8's own tests — an
+ungoverned core learned only through the five evidence channels, a quirk claim confirmed only by an
+inspection reading a seal line (doc 17 §22) — need a hull with a core and a mind, and so does M7's
+deferred clause, "flying a bought mind on an IC hull's sortie" (doc 17 §22 M7). Those come with the
+drone phase, the second tier. The ship's epoch follows the excursion on the voyage. Q-23-3 asks the
+owner to confirm the order.
+
+**What the host does at each end.** At the dispatch, after the pool count: compute the seal, mint
+the `SortieId` (§7), and write `MindSealed` to the hull's black box; for a hull flying a held mind,
+also produce the `StartPermit` and enqueue the four-owner Open, whose prepare computes the seal
+itself (`Execution::capture` → `seal_with_policy(…, SortieId(sortie), …)`,
+`crates/tacsim/src/minds/ic_sortie/execution.rs:102-123`). At the close: write `SortieClosed` with
+the close kind; for a held mind, produce the `CloseEvent` with the kind, the hull's physical state
+(`conditions: UnitMutationPlan`) and enqueue the Close. **The idempotency lives in the host's own
+durable record**, on the journey tick's pattern ("the cursor is the idempotency key",
+`journey.rs:1282-1290`): the excursion and the voyage each already move a cursor once per boundary,
+and the epoch's open and close ride those moves, so a re-run tick or a reboot mints nothing twice.
+It cannot live in `IcHost`, whose inbox is in RAM with random request ids (`host.rs:283,307`); the
+claim book's one-active-open-per-unit (`state.active`) is the guard against a second Open.
+
+**The pool at an IC dispatch — D-23-8.** Until a mind thinks on an IC host, admission is recorded
+(the class, the host, the count) and never refused. When the drone phase lands, the region's pool
+and its split — by owner, by organisation, by traffic authority — become real, and doc 17 §12
+leaves that split to "the corridor's design". Q-23-4 asks who rations it.
+
+## 7. Records
+
+- **`SortieId` outside a match.** `SortieId::in_match(match_id, unit)` packs the match id in the
+  high 32 bits and the object number in the low (`arena/mind.rs:299`), and doc 17 §13 says "a region
+  map mints its own later". The IC claim path already mints one: `IcSorties::next_transition`, a
+  global ordinal from 1 in the owner-local book (`participant.rs:265-272`; `state.rs`). It collides
+  with the arena today — ordinal 4 is `in_match(0, ObjId(4))`, and match 0 is used
+  (`arena/mind.rs:5134`). **The owner ruled (§16) that a match is a simulator concept, not an IC
+  one — D-23-10**: an IC epoch's id is not a match-shaped number and never shares the arena's
+  packing. S.1 keeps one mint for every IC epoch, claim or not (the claim book's ordinal), and gives
+  `SortieId` a kind — the arena's packed `(match, unit)` and the IC ordinal — as a tagged value or a
+  struct, the lead's call at the cut; the top-bit packing of Draft 0.2 is withdrawn. If the struct
+  is chosen the arena's pinned tapes move once; the collision test runs the ordinal against
+  `in_match(0, _)` until the kind lands.
+- **The seal for a coreless hull.** `seal_with_policy` takes the holding's facts; `seal_for`
+  (`crates/tacsim/src/match_/seal.rs:450`) takes an arena `CustodyUnit`, which needs a team, a pose
+  and a pod slot. Neither fits a TV leaving a bay. S.1 adds the ROM seal over a `TacticalUnit` with
+  no custody and no holding: the same bytes the arena writes for a coreless hull, minus the pod.
+- **The black box.** Doc 17 §13 and doc 16 W16 ("a battle's canon is reconstructed from black
+  boxes") want one per hull. Proposed: a per-hull `mush_core::Ledger` (the match ledger's own
+  machinery) keyed by the hull, opened on the first `MindSealed` and bounded like the match ledger
+  (`ledger.max_bytes`); engagements, hauls and shifts cite the open sortie as doc 17 says. It must be
+  durable from S.1 on: doc 20 §8's trip-level lines are the 32-line `tacsim:notice` ring, which
+  never queues a launch or a recover and cannot be read by an inspection.
+- **The claim records.** `ic_sortie/records.rs` already keeps "durable execution and transition
+  order"; `ic_sortie/state.rs` keeps "one owner-local bounded book" that "never treats absence as a
+  close event". Nothing here changes them; a host supplies the transition they wait for when a mind
+  flies, and the fixture boundary in `participant.rs` goes then.
+- **The resume rule** (doc 17 §13): a resume across a `MIND_ABI` or rhai change keeps the epoch, its
+  seal and its memory bytes, drops every mind hull on it to the ROM and journals `MindDropped`
+  with the cause `abi`. It is built only when a mind flies IC (the drone phase) and is sized by one
+  leg, not by hours.
+
+## 8. What this note does not decide
+
+- **The fight on real ground.** 16c §3.1 H1 refuses it before the owner settles whether a destroyed
+  unit is lost or a repair bill, who may start a fight, and whether owned units go to a proving
+  ground first; doc 20 §17 reserves the mechanism (a hostile arrival promotes the site's ground into
+  an arena by digest, behind an IC-crossing ruling that succeeds D-16-3 and D-UM-50; the excursion
+  `Holds` while the arena holds the TV). The only thing this note adds is the frame: the match lies
+  inside the hull's open epoch and cites it, as the arena's does (D-UM-46). The arena's wall-time
+  tempo against the world's rate 24 is that conversation's problem, and the faction system's scenes
+  with timestop are the one existing primitive shaped for it.
+- **Hull cover on an IC epoch.** Cover's close evidence (`CoverageCloseEvidence`) exists only for
+  an Open enqueued through `IcHost::enqueue_withheld` with a `WithheldDeparture` and a zone
+  (`host/coverage.rs`); `enqueue_start` sets `withheld: None` (`host.rs:294`). No cut here builds
+  the withheld departure or its zone source; a covered hull's epoch is a cut after the drone phase.
+- **The voyage as an object.** Contracts that pay on a run, cover priced per passage, and the
+  player's screen all want it; the black box lines are enough to build it from, later.
+- **The region sim task as doc 17 drew it.** Not needed for the first IC sorties (§6). If a
+  per-millisecond region ever is, it inherits this note's epochs unchanged.
+- **Lifting D-20-7**, who holds an abandoned hull, salvage, seizure, the Registry's reading of a
+  stale seal: M8 and doc 20 §17.
+- **The Ceres Simulation Center** (D-UM-51): an IC venue on arena machinery, not an epoch host.
+
+## 9. Cuts
+
+Each through the established cut loop (builder, lenses, fixer, gate, judge; one commit and PR per
+cut off `main`), ledger here in §14. Sizes are the lead's estimates.
+
+- **S.0 — Terms and amendments (small).** Doc 17: D-UM-45's "hangar or base" becomes §2's two
+  hangar placements and the close moves to the arrival (D-23-1), nesting and abandonment are stated
+  (D-23-2, -4), §22's M8 gate is restated as §10 below, §22's "After M8" region sim task is
+  split per D-23-6, and §22 M7's "a lapse falls to doctrine at the next seal" and §23 "Long
+  sorties" gain "after a hangar port" (D-23-9). The port entries' hangar kind is declared in
+  content (the five ports yes, every site no; *moved to S.1 and S.2, §14*). Doc 20 §4.3 and §17 gain the cross-reference. Doc 16 §11 "Before IC play"
+  notes that per-pulse durability is the arena's and that an IC epoch's durability is its host's.
+  The player-facing words (Q-23-5) are audited here and renamed in S.0b. *As built: §14.*
+- **S.0b — The word on the surfaces (small; code).** The seven player sentences and six help lines
+  that print "sortie" today (the inventory in §14) are renamed — in the arena "sealed for this
+  match", elsewhere "out" or "running" — with their pinned tests moved; a tacsim gate, through the
+  cut loop.
+- **S.1 — The first IC sortie, on the surface excursion (medium).** One `SortieId` mint for IC
+  epochs (§7) with the collision test; the ROM seal over a `TacticalUnit` (§7); the per-hull black
+  box ledger; `MindSealed` at the launch's end (and for an implied launch), `SortieClosed` with
+  `ReturnedToBase` at `+tv/recover` and at staff `Home`, `RecoveredToBase` when a second carrier or
+  staff bring a `Parked` rig in, the `abandoned` flag at staff `Close`; a `NeverLeft` excursion
+  writes nothing; the pool count recorded (D-23-8); the open and close keyed to the excursion's own
+  cursor. `Destroyed` is reserved: the surface has no destruction path (`TvState` is `Bay`, `Out`,
+  `Held`, `Parked`; `Stranded` is a plan end with the rig `Parked`). Tests: one excursion opens and
+  closes with a restart between; a `Parked` rig leaves it open through the idle return; a re-run tick
+  mints nothing; the seal line names the Dray-P and its open sortie (D-23-2); the SM.12c cost
+  lane re-run with the two writes per excursion inside its budget.
+- **S.2 — The ship's epoch on the port voyage (medium).** The same on `tacsim.port`: the seal and
+  `MindSealed` when the launch arm's `depart` moves the hull, nothing for a lapsed burn, the close
+  `ReturnedToBase` at `docked` at a hangar port — a settle on a site's pad writes nothing (D-23-3)
+  — `Destroyed` reserved (no wreck path today), the Dray's own black box,
+  the principal per D-23-5 for a filed, queued or `lift` departure. The IC-return stamp is untouched.
+  Tests: Stickney to Ceres opens and closes; a passage across a server restart keeps the epoch; a
+  lapsed launch writes nothing.
+- **S.3 — Abandonment and recovery (small).** The `abandoned` flag's lifetime and the owner's one
+  notice; `RecoveredToBase` when a second carrier recovers another's rig and the black box names
+  the recoverer; a carrier destroyed with rigs out (reserved until a destruction path exists).
+- **S.4 — The first IC mind: the claim, the pool and the resume rule, with the drone phase
+  (medium; lands inside D-UM-47's cut, not before).** The `StartPermit`/`CloseEvent` producer on
+  the surface tick for a drone flying a held mind, replacing `participant.rs`'s fixture boundary and
+  `ic_integration_tests`' `fixture_start`/`fixture_close` with a production-host twin of its stories;
+  admission against a site's pool at the drone's launch; the `abi` drop on resume; long-leg
+  snapshots on the surface tick.
+- **S.5 — The M8 gate check (small).** §10's two tiers as dispatch-only CI stories.
+
+## 10. The M8 gate, restated
+
+"IC sorties exist" has two tiers, and M8 needs both:
+
+**Tier 1 — the epoch (S.1–S.3).** On a production-shaped launch and under a restart:
+
+1. a vehicle's epoch opens when the rig leaves the bay and closes at `+tv/recover` with a
+   `SortieId` and a `MindSealed`/`SortieClosed` pair in a durable black box that an inspection can
+   read;
+2. a ship's epoch does the same from `depart` at one hangar port to `docked` at the next, staying
+   open across every site between, and the vehicle's `MindSealed` names the ship and its open
+   `SortieId` as its hangar;
+3. a rig whose excursion staff closed with it out stays open and flagged, and a re-run tick mints
+   nothing.
+
+**Tier 2 — the first IC mind (S.4).** A drone flying a held mind opens with a real four-owner Open
+and closes with a real Close, its seal line carries the mind, the core and the licence state, and
+M8's own leak and quirk-claim tests have a seal line to read.
+
+No fight and no region simulation is required by either tier. M8's own cuts (the governed bit,
+inspection verbs, seizure) then have a real epoch to read at each end.
+
+## 11. Decisions proposed here
+
+| # | Decision | Status |
+|---|---|---|
+| D-23-1 | A hull's seal epoch is open exactly while it is in neither hangar placement (`Interior` to a bay; `Berth::Docked` at a hangar port); opens when the hull leaves, closes on arrival in a hangar, destruction or recovery with the `IcCloseKind` words; nothing else closes it. Amends D-UM-45's close from the power-down to the arrival | lead's proposal; S.0 amends doc 17 |
+| D-23-2 | Epochs nest by record, not by object: `MindSealed` names the hangar left and, when it is a hull, that hull's open `SortieId`; the close names the base | lead's proposal |
+| D-23-3 | The declared hangars — today the corridor's five ports and every bay; player-built hangars and bases and further ports later — are hangars; a mining or field site is the field and a ship landed there never ends its passage; so a vehicle's epoch is an excursion and a ship's is its whole passage between hangars | **confirmed by the owner, 2026-10-27**; Q-23-1 |
+| D-23-4 | D-20-7's refusal to depart with a rig out stands; abandonment arises only from a destroyed hangar or a staff `Close`, flags the rig and never closes its epoch; the owner is told once | lead's proposal, Q-23-2 |
+| D-23-5 | The seal's warrant principal is the actor of the plan the hull leaves under; it does not move with the crew | lead's proposal |
+| D-23-6 | Doc 17 §22's region sim task splits: its custody half lands on the IC-clock pull-tick hosts; its simulation half is the arena promoted onto a site (doc 20 §17), not built here | lead's proposal |
+| D-23-7 | The first IC sortie is a surface excursion (ROM seal, no mind, no claim, no pool spent) — tier 1 of the gate; the drone phase brings the first IC mind and tier 2; the ship's epoch follows on the voyage | lead's proposal, Q-23-3 |
+| D-23-8 | Until a mind thinks on an IC host, pool admission is recorded and never refused | lead's proposal, Q-23-4 |
+| D-23-9 | A licence that lapses mid-epoch is in grace until the top-level hull reaches a hangar port; a hosted hull's launches inside that passage seal under the held licence; the fall to doctrine is at the first seal after the hangar | **the owner's ruling, 2026-10-27** (Q-23-6) |
+| D-23-10 | A match is a simulator concept, not an IC one: an IC epoch's id never shares the arena's `(match, unit)` packing; `SortieId` gains a kind | **the owner's ruling, 2026-10-27** (risk 1) |
+
+## 12. Questions for the owner
+
+| # | Question | Default |
+|---|---|---|
+| Q-23-1 | Is every port entry's berth a hangar, so that a ship's epoch is one passage? | **Accepted 2026-10-27**, as narrowed by the Q-23-6 ruling: the five hangar ports are hangars and a site is the field, so a ship's epoch is its passage between hangar ports and a Belt voyage is one epoch of IC weeks (the "hours" assumptions are bounded by the voyage for the ship, D-23-9; §13). The owner confirmed the narrowing (§16). |
+| Q-23-2 | Lift D-20-7 now, so a carrier may leave with a rig out and "a TV left out is a choice"? | No, not yet: D-20-7 stands until the fight phase that doc 20 §17 ties it to. Abandonment is reachable only through a destroyed hangar or staff action, which S.3 covers. **Accepted 2026-10-27.** |
+| Q-23-3 | First host order: surface excursion, then the ship, then drones? | Yes. The excursion is the closest to an epoch today and gives tier 1 soonest; tier 2 waits on the drone phase either way. **Accepted 2026-10-27.** |
+| Q-23-4 | Who rations an IC site's compute pool once minds fly IC? | The region's de facto holder (doc 11 §5), published as an allotment; recorded, never refused, until the drone phase. **Accepted 2026-10-27.** |
+| Q-23-5 | The player's words. | No word for the epoch: a hull is "out" or "docked". The black box is "the log". "Sortie" never prints. **Accepted 2026-10-27.** |
+| Q-23-6 | Does a licence that lapses mid-epoch still hold to the close (doc 17 §23)? | **Ruled 2026-10-27**: it holds to the close of the top-level passage, not each excursion — the licence is in grace until the hull reaches the next hangar. D-23-9. |
+
+## 13. Risks
+
+- **The id collision is live.** The IC book's ordinal and `in_match(0, _)` already overlap; S.1's
+  first test is that pin. The owner's ruling (D-23-10) takes the top-bit packing off the table, so
+  the kind is a tagged value or a struct, and the struct moves the arena's pinned tapes once.
+- **A ship's epoch can be IC weeks.** With a site as the field, the Dray's epoch runs from hangar
+  port to hangar port across every site between. For the coreless Dray that costs nothing; a cored
+  ship later carries a lapsed licence (by D-23-9), a memory at its cap and a fault-dropped mind on
+  the ROM until its next hangar port. The owner has ruled the first; the other two are the price of
+  the same rule and are named here so no one is surprised.
+- **Two writes per excursion on the surface tick.** SM.12c's cost lane budgeted the tick (it ran at
+  30 TVs under the per-party contract cap, O-19c); S.1 re-runs it with the black box writes.
+- **The ROM seal on a mindless hull** makes a "mind" record for hulls that have none. It is the
+  arena's existing behaviour for a coreless hull and the cheapest honest seal; the alternative, no
+  seal for Class 0, would leave the Dray and the TV outside M8's evidence channels.
+- **Tier 2 is further away than tier 1 looks.** The claim needs a filed, licensed mind on a cored
+  hull; no such hull flies IC until the drone phase, and the drone phase is D-UM-47's own cut.
+  Nothing in tier 1 should be presented as a passed claim story.
+- **The ship's opening instant.** `depart` fires on the port tick after the burn; an epoch keyed
+  to it, not to the player's verb, is right but will surprise a test that expects `MindSealed` on
+  `+ship/undock`.
+- **Doc 17's "After M8" ordering.** Doc 17 §22 puts the region sim task after M8 and gates M8 on
+  IC sorties. D-23-6 resolves the circle by making the custody half an M8 prerequisite and leaving
+  the simulation half after it; S.0 writes that into doc 17 so the ledger stops contradicting itself.
+
+## 14. Ledger
+
+### S.0 — terms and amendments, as built (2026-10-27, branch `claude/ic-sorties-s0`)
+
+Docs only; no code and no pinned sentence moved. Built from `main` at `6f8b9d16` (PR #35, which
+merged Draft 0.2 before the Draft 0.3 commit `88a7e9ce` reached its branch; S.0's branch carries
+that commit first, so Draft 0.3's rulings land with this cut) by the lead in the session that wrote
+the note, with the owner's rulings of the day already in hand (§16), so no planner or lens ran; the
+diff is the review.
+
+- **Doc 17.** §1 R-B, §12 "The flow" (the sortie and the dispatch), §13 "Records, the seal and
+  replay" (the black box pair) and D-UM-45 carry the two declared hangar placements, the close on
+  arrival, the four `IcCloseKind` words and the site-is-the-field rule (D-23-1, D-23-3), with the
+  nesting record (D-23-2); §22 M7's "a lapse falls to doctrine at the next seal" reads "the next seal
+  after a hangar" (D-23-9); §22 M8's note carries the two-tier gate of §10; "After M8" says the
+  region sim task is split (D-23-6) and its custody half lands as S.1–S.4 before M8; §23 "Long
+  sorties" carries the passage-bounded reading; §24 gains the amendment entry.
+- **Doc 20.** §2 (D-20-1's "two L cuts"), §4.3 (the excursion as the first IC sortie: the epoch
+  opens at the launch's end, closes at the recover or staff `Home`, names the carrier's open sortie)
+  and §17 (the promotion stays out of doc 23; D-20-7 stands) gain the cross-references.
+- **Doc 16.** §11 "Before IC play" says an IC sortie's durability is its host's and the arena is the
+  fight's host inside a hull's open sortie.
+- **The Q-23-5 audit.** "Sortie" prints today in seven player sentences — `match_/cockpit.rs`
+  "Mind: …, sealed for this sortie" and "Sealed for this sortie: …", `match_/lobby.rs` "Sealed for
+  this sortie", `minds/doctrine_library.rs` "running sortie", `mush-net-ssh`'s `mind_workshop.rs`
+  "sortie seals", and `match_/mod.rs`' "held by IC sortie {sortie}" error — and six help lines
+  (`cockpit.md`, `doctrine.md`, `mindcraft.md`, `minds.md` twice, `personal-minds.md` twice). All are
+  the OOC arena's or M7's and each is pinned by a test, so they move in S.0b with a tacsim gate, not
+  in a docs cut.
+- **Lead rulings.** (1) S.0 is docs-only; the renames are S.0b (above). (2) "The port entries'
+  hangar kind is declared in content" is not built here: the first reader of that declaration is
+  S.1's seal at the launch and S.2's close at `docked`, so the declaration lands with S.1 and S.2.
+  (3) The arena's wording after S.0b is "sealed for this match", which is true there (the match
+  fills the sortie) and prints no engine term.
+- **Not done.** No cargo ran (the C2e–C2h completion may own the workspace build); nothing under
+  `crates/` or `docs/help/` changed.
+
+## 15. The review of Draft 0.1, and what it changed
+
+An independent read-only review on 2026-10-27 (one Opus lens over doc 17, doc 20, 17f, doc 18 and
+`crates/tacsim/src/minds/ic_sortie`) found eight must-fix errors in Draft 0.1, every one a place
+where the tree is further along than the draft assumed. Draft 0.2 carries them:
+
+1. The close words: the arena's are `match_end`/`destroyed`, and `IcCloseKind` already defines the
+   IC set with a `base` field (§3; D-23-1 now amends D-UM-45 explicitly).
+2. A coreless hull cannot take the four-owner Open (it needs a licence and a filed holding), so the
+   claim is tier 2's, not tier 1's (§5, §6, §10).
+3. The claim path already seals (`seal_with_policy` inside `Execution::capture`) and mints
+   (`next_transition`), and the mint collides with `in_match(0, _)` today (§6, §7).
+4. A docked ship is `Direct` on the port map, so "Interior to a hangar" never closed a ship's epoch;
+   the hangar is now two placements (§2, D-23-1).
+5. A settled carrier is docked whenever its rigs are out, so nesting records the carrier's most
+   recent sortie, not an open one (D-23-2, §10). *Superseded in Draft 0.3: with a site the field
+   (D-23-3 narrowed), the carrier's epoch is open while its rigs are out and D-23-2 names it.*
+6. D-20-7 already refuses a departure with a rig out; abandonment is narrowed to a destroyed
+   hangar or staff action and Q-23-2 defaults to keeping D-20-7 (§4).
+7. Cover's close evidence needs a withheld departure and a zone that no cut here builds; cover
+   leaves the gate (§8).
+8. Doc 20 §8's trip-level lines are a 32-line notice ring, not a record; the black box must be
+   durable from S.1 (§7).
+
+Its should-fixes (the excursion's own cases — `NeverLeft`, implied launches, staff `Close` and
+`Home`, `Parked`; the ship's `depart` versus `+ship/undock` and the lapsed burn; the corrected bounds
+— the 24 IC h idle return, the 65 h coast; the misread resume rule; the arena-shaped `resume`/`install`
+and the RAM inbox; `ic_integration_tests` not being ignored; three mis-cited sources) are folded
+where they apply, and its nits (`SpatialParent`, `MindDropped.cause`, three kinds of hull, the
+pool split's wording, the Customs Assertion front, the 30-TV lane) likewise.
+
+## 16. The owner's rulings of 2026-10-27, and what they changed
+
+On reading Draft 0.2 the owner ruled, in their words:
+
+- **Q-23-6**: "the license that lapse mid-epoch holds to the close of the top-level passage, not
+  each individual excursion .. the license is in a grace period until the hull reaches the next
+  hangar." → D-23-9. For this to mean anything a carrier settled on a mining site must still be on
+  its passage, so Draft 0.3 narrows D-23-3: a site is the field, the hangars are the corridor's five
+  ports and the bays, the carrier's epoch is open while its rigs are out, and D-23-2 names that
+  open sortie again. **The owner confirmed the narrowing the same day**: "hangars are the
+  corridor's five ports and bays today, but player-built hangars/bases, and additional ports will
+  come online .. but the point is exactly correct, a ship that is landed in the field does NOT end
+  its passage." D-23-3 says so, and the hangar set is a declared one that grows.
+- **Risk 1**: "the 'match' concept is a simulator/arena concept, not an IC concept." → D-23-10.
+  The IC epoch's id is its own kind; the top-bit packing into the arena's `(match, unit)` number is
+  withdrawn.
+- **Q-23-1 to Q-23-5**: "all other questions defaults accepted as proposed." Q-23-1 is accepted as
+  narrowed above.

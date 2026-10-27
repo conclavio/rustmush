@@ -704,7 +704,7 @@ fn j2_reverse_reaches_past_the_tail_through_the_journal() {
 // J3: the checkpoint (doc 12 §5.2–§5.5, §7 J3)
 // ----------------------------------------------------------------------
 
-/// A test-only module with one command, `@testpost <key> <amount>`: a mint
+/// A test-only module with `@testpost <key> <amount>` and a receipt reader: a mint
 /// from the faucet to account 1 under an idempotency key the test chooses —
 /// the way to re-post a pre-checkpoint key after a checkpoint boot (lens I).
 struct TestPostMod;
@@ -758,6 +758,25 @@ impl GameModule for TestPostMod {
                     Err(e) => format!("refused {e}"),
                 };
                 ctx.out.sys_to_actor(actor, "test", line);
+                Ok(())
+            }),
+        )?;
+        reg.command(
+            CommandSpec {
+                name: "@testreceipt".into(),
+                shape: ArgShape::Raw,
+                help: "@testreceipt <key>   test: resolve one receipt without posting".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let key = IdempotencyKey::new("t", ctx.args.raw().trim());
+                let receipt = mush_economy::resolve_idempotency(ctx, &key)
+                    .map_err(|error| CmdError::msg(error.to_string()))?;
+                let text = receipt.map_or_else(
+                    || "absent".into(),
+                    |r| format!("receipt #{}", r.transaction),
+                );
+                ctx.out.sys_to_actor(ctx.actor, "test", text);
                 Ok(())
             }),
         )?;
@@ -1090,6 +1109,45 @@ fn w2_the_sweep_evicts_the_window_by_count_and_age() {
     assert_eq!(s.window_len(), 1, "only the post inside the window stays");
     assert!(s.snapshot().idempotency(&tkey("e")).is_some());
     assert!(s.snapshot().idempotency(&tkey("d")).is_none());
+}
+
+#[test]
+fn w2_receipt_lookup_survives_eviction_and_reboot_without_posting() {
+    let mut tw = boot_w2(1, 0, 1, 1_000);
+    setup_mint(&mut tw, 1);
+    let posted = texts(&tw.run(GOD, "@testpost alpha 1"));
+    assert!(posted.contains("posted #1"), "{posted}");
+    let (known, effects) = tw.run_with_effects(GOD, "@testreceipt alpha");
+    assert!(texts(&known).contains("receipt #1"));
+    assert!(effects.is_empty());
+    tw.run(GOD, "@testpost beta 1");
+    sweep_at(&mut tw, 100);
+    let kv = fold_into(Vec::new(), &mut tw);
+    for _ in 0..2 {
+        assert!(store(&tw).transaction(TransactionId(1)).is_none());
+        assert!(store(&tw).transaction_ref(TransactionId(1)).is_none());
+        assert!(store(&tw).snapshot().idempotency(&tkey("alpha")).is_none());
+        let before = (bal(&tw, 0), bal(&tw, 1), store(&tw).journal_len());
+        let (waiting, effects) = tw.run_with_effects(GOD, "@testreceipt alpha");
+        assert!(has_error(&waiting) && texts(&waiting).contains("try again shortly"));
+        let (correlation, keys) = one_read(&effects);
+        assert_eq!(keys, vec![idem_key(&tkey("alpha"))]);
+        let (_, duplicate) = tw.run_with_effects(GOD, "@testreceipt alpha");
+        assert!(duplicate.is_empty(), "one in-flight read per key");
+        complete(&mut tw, correlation, serve(&kv, keys));
+        let (known, effects) = tw.run_with_effects(GOD, "@testreceipt alpha");
+        assert!(texts(&known).contains("receipt #1"), "{}", texts(&known));
+        assert!(effects.is_empty());
+        assert!(
+            store(&tw).transaction_ref(TransactionId(1)).is_none(),
+            "cold proof does not require a retained transaction index row"
+        );
+        let (absent, effects) = tw.run_with_effects(GOD, "@testreceipt never");
+        assert!(texts(&absent).contains("absent"));
+        assert!(effects.is_empty());
+        assert_eq!((bal(&tw, 0), bal(&tw, 1), store(&tw).journal_len()), before);
+        tw = reboot_w2(kv.clone(), 1, 0, 1, 1_000);
+    }
 }
 
 /// Doc 13 W2 (W-D5): a journal older than the cut is not evicted until its

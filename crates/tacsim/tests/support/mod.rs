@@ -2605,6 +2605,9 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         tacsim::definitions::content::LANE_PACK
     );
     let mut packs = tacsim::composition::boot_pack_list(true, true).expect("the boot list");
+    // Passenger jobs were introduced after this published Ceres/relay seed and
+    // require current station profiles. They are absent on the historical world.
+    packs.retain(|pack| pack.manifest().id().as_str() != "tacsim.passengers.stickney");
     let slot = packs
         .iter_mut()
         .find(|p| p.manifest().id() == lane.manifest().id())

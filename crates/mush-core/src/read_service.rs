@@ -22,10 +22,12 @@ use serde::Serialize;
 
 // Declaration capacity for the full composed roster: the lengths of two heap
 // `Vec`s checked at `register`/`request`, outside the `owner_read_services.v1`
-// fingerprint and no memory bound. 48 since 17g C2e (the format-2 Active
-// launch composes 32 services and 33 grants).
-pub const MAX_OWNER_READ_SERVICES: usize = 48;
-pub const MAX_OWNER_READ_GRANTS: usize = 48;
+// fingerprint and no memory bound, independent of each invocation's unchanged
+// read, row and encoding budgets below. 48 since 17g C2e, 64 since the scoped
+// passenger facts (the format-2 Active launch composes 33 services and 35
+// grants: the passenger facts' 34 plus TacSim's grant of the market read).
+pub const MAX_OWNER_READ_SERVICES: usize = 64;
+pub const MAX_OWNER_READ_GRANTS: usize = 64;
 pub const MAX_OWNER_READ_REQUEST_BYTES: usize = 16 * 1024;
 pub const MAX_OWNER_READ_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_OWNER_READS: u16 = 256;

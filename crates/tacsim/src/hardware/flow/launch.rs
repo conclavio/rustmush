@@ -1340,9 +1340,9 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
 /// test 4, for the same reason: the providers project nothing unbooted). The
 /// format-2 Active launch registers the market's command read
-/// (`mind_market_commands` v1) and, since 17g C2e (the caps 48/48), grants it
-/// to TacSim (32 services and 33 grants; the counts and the mechanics
-/// fingerprint are printed, the counts pinned). With the
+/// (`mind_market_commands` v1) and, since 17g C2e, grants it to TacSim (33
+/// services and 35 grants with the scoped passenger facts; the counts and the
+/// mechanics fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
 /// the List offer, with and without the transfer mark, and `+minds/buy`'s
 /// Quote, and the Fund, Grant and Refund wires `+minds/buy/pay`,
@@ -1385,9 +1385,10 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     );
     check_eq!(
         counts,
-        (32, 33),
-        "32 services and 33 grants: C2c's market command read is the 32nd service and 17g \
-         C2e's grant the 33rd grant; the caps are 48/48"
+        (33, 35),
+        "33 services and 35 grants: C2c's market command read and the scoped passenger facts \
+         registered, 17g C2e's grant of the market read on top of the passenger grants; the \
+         caps are 64/64"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(

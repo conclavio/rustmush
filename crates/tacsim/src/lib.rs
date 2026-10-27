@@ -151,6 +151,7 @@ pub mod minds;
 pub mod pack;
 pub mod port;
 pub mod port_tick;
+pub mod quest;
 pub mod record;
 pub mod relay_billing;
 pub mod relay_commerce;
@@ -969,8 +970,8 @@ impl GameModule for TacsimRuleset {
                 // read, granted over the very composed manifest the entitlement
                 // holdings' grants took (`manifest` is `self.original_holdings`,
                 // checked above). It adds a grant and no service: the market's
-                // registration is already the launch's 32nd service, so the
-                // format-2 Active launch composes 32 services and 33 grants. A
+                // registration is already among the launch's services, so the
+                // format-2 Active launch composes 33 services and 35 grants. A
                 // refusal fails TacSim's registration, as those grants' do.
                 let market = Some(mush_market::mind_commands::MarketCommandReader::request(
                     reg, manifest,

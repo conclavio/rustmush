@@ -1,5 +1,15 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.21 — 2026-10-27, G.12: the cockpit's keys and screen 0.** The owner's keyboard for the
+cockpit view, §7.3: `a`/`d` turn, `w`/`s` step the speed, `x` all stop, `q`/`e`/`c` the look, `v`
+first person ↔ overhead (§7.4, a new camera on the replay's scene model, drawn by the TUI and by the
+gateway for the web), `f` weapons free ↔ hold (a new per-hull master gate in the sim, defaulting to
+free — Q-21-9), `g` a volley (bare `FIRE ALL`), `t`/`T` the lock cycle, `F1`–`F6` the chat line
+opened with `ORDER ALL ` / `ORDER n ` (the unit they address is doc 26's detachment), `p` the
+picture off and on. The picture is screen `0`'s own rendering now, not the `^G` modal (`^G` stays
+for the chart's, the doll's and the replay's pictures); the frame carries `weapons_free`,
+`max_speed_kph` and `reverse_kph`; the snapshot format is 17 (cut notes, "G.12").
+
 **Draft 0.20 — 2026-10-23, G.7b: the ground has height.** `arena.map` carries every cell's
 elevation (`elev`, zigzag-LEB128 deltas in base64; a field added, not a version), and the cockpit
 picture draws any map that carries it with the heightfield over its baked colour map — on by
@@ -435,6 +445,73 @@ contacts a frame lists are the contacts the sim detected; a wreck is drawn when 
 `reads_dead`. This is the epistemic rule of doc 02 applied to pixels, and it is why the renderer
 lives on the feeds.
 
+### 7.3 The cockpit's keys — G.12 (2026-10-27)
+
+**The picture is the cockpit screen, not a modal over it.** `^G` was the spike's placeholder. From
+G.12 screen `0` draws the picture whenever the terminal shows pictures and a seated cockpit frame
+is held, and the text cockpit otherwise (or on `p`); the digits switch screens as on every screen
+and the picture hides, and coming back to `0` brings it back with the helm, the lock cycle and the
+look as they were. `^G` stays for the other screens' pictures (the chart's, the doll's, the replay's)
+until each becomes its screen's own rendering the same way. The flight keys below are live only
+while screen `0` shows the picture; on every other screen the letters mean what that screen says
+(`w`, `s`, `e` and `d` are exits in nav mode on the scene). The web picture binds the same letters.
+
+| Key | Does | Line sent |
+|---|---|---|
+| `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg>` |
+| `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph>` |
+| `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0`, and the helm's stop |
+| `q` / `e` (`,` / `.` kept) | the look swings left / right, toggled | none — a look is not an order |
+| `c` | centre the look on the tank's nose | none |
+| space | steady: the turn and the look stop (the speed stands) | the helm's stop |
+| `v` | first person ↔ overhead (§7.4) | none |
+| `f` | weapons free ↔ weapons hold: the master gate over the seat's standing `FIRE … WHEN` rules; the HUD says which | `FIRE FREE` / `FIRE HOLD` |
+| `g` | a volley: every ready weapon with rounds whose band reaches the lock | `FIRE ALL` |
+| `t` / `T` | lock the next / previous contact: hostiles first, then unidentified, nearest first within each; from no lock, the first | `LOCK <designator>` |
+| `F1` | the chat line opened with `ORDER ALL ` ready; Enter sends, Esc drops it | on Enter |
+| `F2` … `F6` | the same with `ORDER 2 ` … `ORDER 6 ` (slot 1 is the pilot's own, doc 26's detachment; in the arena rig the squads' ordinals) | on Enter |
+| `p` | the picture off (the text cockpit, for its notices and panes) and on again | none |
+| `0` … `9` | the screens, as everywhere; the picture hides and the helm stops | the helm's stop |
+| Enter, `"` `:` `;` `\` `/` `?` | the chat line, the modes, the palette and help, as on every screen | |
+| `r`, `u` | the load experiment's two switches, only under `[pixel] diagnostics` (`r` moves behind it) | |
+| Esc | nothing of the picture's (the palette, as everywhere) | |
+| `Ctrl-]` | detach, as everywhere | |
+
+**The sim's half.** Two verbs and three frame fields: bare `FIRE HOLD` / `FIRE FREE` set the seat's
+master gate — while held no `FIRE <weapon> WHEN` rule of the pilot's fires, hold rules and a mind's
+own warranted shots are untouched, a typed `FIRE` or `FIRE ALL` is never gated; the gate is per
+hull for the match, folded into the arena hash, and **defaults to FREE** (today's behaviour,
+provisional: Q-21-9). Bare `FIRE ALL` is one volley — each weapon that is ready, has rounds and
+whose band reaches the lock's range fires as `FIRE <weapon>` would, in the roster's order, told as
+one line a weapon; with no lock or nothing in reach it is refused in the existing words. The frame
+gains `weapons_free` (bool), `max_speed_kph` and `reverse_kph` (the `SPEED` ceilings), so a client
+steps and clamps without a round trip.
+
+**ORDER to a human-flown slot** stays today's refusal; the instruction delivery (an advisory in the
+human's cockpit, acknowledged, never acted on by the sim) is doc 26's.
+
+**As built (2026-10-27; the rulings are in the G.12 cut note).** `a`/`d` and the arrows are held
+where the protocol reports releases and toggled elsewhere: the view pushes `CSI >15u` (flags 1, 2,
+4 and 8) and asks the flags back, and the letters are held only where the terminal's answer has
+flag 8 in it, toggled until then (`W-G12-1`, closed the same day). `p` exists only on a terminal that shows
+pictures; under 120 columns there is no picture; help, the palette, the workshop and a prompt
+draw over the text cockpit and the picture returns when they close. The lock cycle does not skip
+wrecks. Speed orders coalesce 250 ms on the trailing edge; `x` sends at once. The gate binds only
+while a pilot flies the hull (a mind that takes over is never silently held) and `FIRE ALL` names
+every weapon it skipped on its own refusal line, a typed `FIRE` past the bands now refused as out of
+reach, which it never was. The gate is carried state, so the snapshot format is 17.
+
+### 7.4 The overhead — G.12
+
+The cockpit's second camera, bucket B on the same scene model as the replay (G.8): the arena map's
+ground north-up (the colour map; relief as shading where G.7b's heights are held, flat otherwise),
+the pilot's own tank centred with its heading, every contact the frame lists in its scope's colour
+with its heading where known, the lock ringed, the named spots lettered, the frame's range bands as
+faint rings, and the look as a wedge from the nose. It draws only what the frame says (D-21-14: the
+contacts the sim detected, nothing more), at the cockpit picture's own clock and size. The web's
+overhead is the gateway's frame over the socket (the `picture` command carries a `kind`), the browser
+render staying first-person only until the wasm module carries the scene.
+
 ## 8. The heightfield (G.7) — D-21-15
 
 The raycaster draws walls and floor: right for an arena of blocks and a corridor, wrong for a
@@ -479,6 +556,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
 | **G.10 bells and sounds** | **Landed 2026-10-22** (the TUI; kitty gets BEL, the cut notes say why); the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …; 1–64 of `[A-Za-z0-9_-]`); BEL for every terminal; **w11term's OSC 440, wire version 1** — `ESC ] 440 ; 1 ; play ; <name> ST` and `ESC ] 440 ; 1 ; pack ; <pack_version> ST`, four fields, no options, no loop (w11term's `docs/game-client-protocol.md`; mintty's older `440;file` form is NOT this and mintty gets BEL) — only for a terminal whose `XTVERSION` reply names w11term; kitty's OSC 99 with its `s=` sound for kitty; the client plays serially at a 40 ms floor with a 16-deep queue and ≤5 s clips, so an alarm is the server re-sending its name on a cadence, debounced server-side at one sound a kind per two seconds; `@sounds on|off`; **`XTVERSION` joins the `@tui` probe, which first needs the TUI key parser to swallow DCS (`ESC P … ESC \`) the way it swallows APC** — today that reply would decode as F1 plus typed text (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm repeats while the frame says so and stops when it clears; the sound names are the notice kinds; a DCS reply never reaches the input line |
 | **G.11 assets over the player's own connection** | **Landed 2026-10-22** (the pack compiled into the binary rather than a deployed directory, so it ships with the gateway that serves it; sounds only, placeholders; the web Hello's `asset_pack` added 2026-10-23); the gateway's SSH server accepts the `sftp` subsystem (russh-sftp, **protocol v3**) over a READ-ONLY virtual tree rooted at a shipped `assets/` directory — open/read/close/opendir/readdir/stat/lstat/fstat/realpath only, paths canonicalised, a size cap a file and a bytes-a-second cap a connection; if it advertises `limits@openssh.com` its `read_len` is ≥ 16384 (the client reads 16 KiB and refuses larger-than-limit reads); `assets/manifest.json` as w11term's protocol defines it — schema `version` 1, `pack_version` an OSC-grammar token, `files[{name, path, kind, sha256, size}]`, every `size` > 0, names and the pack version 1–64 of `[A-Za-z0-9_-]`, sound names never `system`/`off`, paths of two or more segments with no `.`/`..`, `.wav` lower-case, no unknown fields (the schema is frozen at 1) — and the Hello's `asset_pack {version, pack_version, manifest}` for the web client; the gateway announces the pack once after login and once after a deploy (an announcement during a running sync is dropped by the client, so re-announce on a slow cadence, never per frame); the first pack stays small (sounds only, well under 10 MiB: sequential 16 KiB reads fetch ~25 MiB in the client's 180 s at 100 ms RTT); w11term syncs what changed into its per-host cache and OSC 440 names resolve there first; the sprite sheet, a font with the HUD's glyphs and the help topics ride the same manifest (D-21-25) | M | G.10, deploy.sh shipping `assets/` | w11term fetches the sound pack on first connect and plays G.10's sounds from it; a write, a rename or a `..` is refused; the manifest version in the Hello changes when the pack does |
+| **G.12 the cockpit's keys and screen 0** | §7.3 and §7.4: the picture as screen `0`'s own rendering (the digits switch screens; `p` the text cockpit; `^G` kept for the other pictures only); the full key map — `a`/`d` turn, `w`/`s` speed by steps, `q`/`e` look, `c` centre, `x` all stop, space steady, `v` overhead, `f` weapons free/hold, `g` the volley, `t`/`T` the lock cycle, `F1`–`F6` the `ORDER` prefills; the overhead picture; the web picture on the same keys with the overhead as the socket frame. **Split:** **G.12a** tacsim — `FIRE HOLD`/`FIRE FREE`, bare `FIRE ALL`, the three frame fields, `help cockpit`; **G.12b** the TUI — screen 0, the keys, the speed stepping, the lock cycle, the prefills, the overhead scene in `mush-pixel`, `help tui`; **G.12c** the web — `picture.ts` and `PictureView` on the same keys, the overhead frame | M | G.4, G.7b, G.8 | every key in §7.3 pinned by a TUI test and a web test; `w` from rest orders a tenth of the top speed and the HUD shows it; `f` flips `weapons_free` in the frame and a standing rule does not fire under hold; `g` fires each weapon in reach once; `t` walks the contacts in the stated order; `1` then `0` returns the picture with the helm intact; the overhead fixture golden |
 
 ## 11. Decisions taken here
 
@@ -563,6 +641,8 @@ superseded its default (D-21-23).
   Windows client — kitty and sixel both reach it, so Windows players are not confined to sixel — and
   the help page names it first, WezTerm's software front end second, Windows Terminal (sixel) third.
   The ConPTY finding of §6 stands for every other Windows terminal.
+
+- **Q-21-9** (asked 2026-10-27, G.12) Whether a seat starts **weapons free** or **weapons hold**. *Default:* free, because it is today's behaviour — a `FIRE … WHEN` rule fires the moment it is armed — and every arena story and bot pilot assumes it; `f` then reads as the hold key. The alternative, hold on seat-up so that `f` is the deliberate act before the first shot, is one constant and a sweep of the stories; it stands provisionally until ruled.
 
 ## 13. Risks, and what this document refuses
 

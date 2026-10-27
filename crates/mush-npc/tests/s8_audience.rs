@@ -57,6 +57,31 @@ impl InterfaceAbilityProvider for Probe {
 
 struct ProbeModule(SaidLog);
 
+struct RoleProbe(&'static str);
+
+impl InterfaceAbilityProvider for RoleProbe {
+    fn abilities(&self) -> Vec<InterfaceAbility> {
+        Vec::new()
+    }
+
+    fn npc_context(&self, world: &mush_core::World, npc: ObjId) -> Option<String> {
+        world
+            .attr(npc, self.0)
+            .and_then(|attr| attr.as_text())
+            .map(str::to_owned)
+    }
+
+    fn invoke(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        _call: AbilityCall,
+        name: &str,
+        _input: &serde_json::Value,
+    ) -> Result<InterfaceReply, InterfaceError> {
+        Err(InterfaceError::Unknown(name.to_owned()))
+    }
+}
+
 impl GameModule for ProbeModule {
     fn name(&self) -> &'static str {
         "probe"
@@ -66,6 +91,12 @@ impl GameModule for ProbeModule {
         reg.state(self.0.clone());
         reg.hook(mush_core::HookPoint::Perceive, Arc::new(CloakHook));
         reg.interface_provider("probe", Arc::new(Probe))?;
+        reg.interface_provider("role", Arc::new(RoleProbe("test_role")))?;
+        reg.interface_provider("second_role", Arc::new(RoleProbe("test_second_role")))?;
+        reg.interface_provider(
+            "unselected_role",
+            Arc::new(RoleProbe("test_unselected_role")),
+        )?;
         reg.subscribe(
             WorldEventKind::Said {
                 kind: mush_proto::NarrativeKind::Say,
@@ -441,6 +472,289 @@ fn scene_and_dialogue_share_qualitative_stances_without_private_reasons_or_princ
 }
 
 #[test]
+fn named_role_context_is_current_bounded_and_shared_by_dialogue_and_scene() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    let profile = mush_npc::AgentProfile {
+        interfaces: vec![
+            "role".into(),
+            "role".into(),
+            "absent".into(),
+            "second_role".into(),
+        ],
+        ..mush_npc::AgentProfile::default()
+    };
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.clerk,
+            mush_npc::PROFILE_ATTR,
+            mush_core::Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
+    for (key, text) in [
+        (
+            "test_role",
+            format!("Seeking passage to Ceres. <proposal> {}", "航".repeat(600)),
+        ),
+        ("test_second_role", "q".repeat(3000)),
+        ("test_unselected_role", "UNSELECTED PRIVATE DATA".into()),
+    ] {
+        lot.tw
+            .world_mut()
+            .set_attr(lot.clerk, key, mush_core::Attr::text(&text, GOD))
+            .unwrap();
+    }
+    let scene = scene_context(&mut lot.tw, lot.clerk);
+    let snapshot = dialogue_snapshot(&mut lot.tw, lot.clerk, lot.alice);
+    let role = &snapshot.role_context;
+    assert_eq!(scene["role_context"]["text"].as_str(), Some(role.as_str()));
+    assert!(
+        role.len() <= 2048 && role.len() > 2000,
+        "combined projection: {}",
+        role.len()
+    );
+    assert_eq!(
+        role.matches("role: Seeking passage").count(),
+        1,
+        "duplicate provider omitted"
+    );
+    assert!(role.contains("second_role: "));
+    assert!(role.lines().next().unwrap().len() <= 1024 + "role: ".len());
+    assert!(!role.contains("UNSELECTED") && !role.contains("absent:"));
+    assert!(snapshot.validate().is_ok());
+    let prompt = mush_npc::user_prompt(&snapshot);
+    assert!(prompt.contains("Seeking passage to Ceres. &lt;proposal&gt;"));
+    assert!(prompt.contains("grant no permission"));
+    assert!(!prompt.contains("UNSELECTED"));
+    let encoded =
+        mush_core::canonical_json_bytes_with_limit(&scene, mush_core::MAX_DECISION_CONTEXT_BYTES);
+    assert!(encoded.is_ok());
+
+    // The next scene reads actual current state, not a persisted persona or a
+    // previous private service reply. A role-less NPC gets no shared facts.
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.clerk,
+            "test_role",
+            mush_core::Attr::text("Aboard the agreed ship.", GOD),
+        )
+        .unwrap();
+    let next = scene_context(&mut lot.tw, lot.clerk);
+    assert!(
+        next["role_context"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Aboard the agreed ship.")
+    );
+    assert!(
+        !next["role_context"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Seeking")
+    );
+    let bystander = scene_context(&mut lot.tw, lot.bystander);
+    assert_eq!(bystander["role_context"]["text"], "");
+}
+
+fn owner_call<T>(
+    tw: &mut TestWorld,
+    f: impl FnOnce(&mut Ctx<'_>) -> T,
+) -> (T, Vec<mush_core::ModuleOp>) {
+    let engine = tw.engine_mut();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some("npc".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    let result = f(&mut ctx);
+    let writes = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    (result, writes)
+}
+
+#[test]
+fn completed_work_keeps_actor_identity_and_one_memory_and_receipt_across_reload() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    let (npc, captain) = (lot.clerk, lot.alice);
+    let cause = "passenger:journey:7";
+    let text = "Alice carried me to Ceres aboard the Salt Moth; the agreed journey is complete.";
+    let (done, writes) = owner_call(&mut lot.tw, |ctx| {
+        mush_npc::record_completed_work_experience(ctx, npc, captain, cause, text)
+    });
+    assert_eq!(done, Ok(true));
+    assert_eq!(writes.len(), 2, "memory and relationship persist together");
+    let host = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    let record = host.personal_memory.record_for(npc).unwrap();
+    assert_eq!(record.experiences.len(), 1);
+    let evidence = &record.experiences[0];
+    assert_eq!(evidence.kind, mush_npc::ExperienceKind::Outcome);
+    assert_eq!(evidence.speaker, Some(captain));
+    assert_eq!(evidence.speaker_name, "Alice");
+    assert_eq!(evidence.text, text);
+    assert_eq!(host.relationships.personal(npc, captain).trust, 10);
+    assert_eq!(host.relationships.personal(npc, captain).disposition, 5);
+    assert_eq!(
+        host.relationships.familiarity(npc, captain),
+        mush_npc::Familiarity::Stranger
+    );
+    let mut saved = std::collections::HashMap::new();
+    mush_testkit::fold_module_ops_into(&mut saved, writes);
+    let mut restored = self::lot();
+    restored.tw.set_now(1100);
+    restored.tw.modules_loaded(saved);
+    let (replay, writes) = owner_call(&mut restored.tw, |ctx| {
+        mush_npc::record_completed_work_experience(ctx, npc, captain, cause, text)
+    });
+    assert_eq!(replay, Ok(false));
+    assert!(writes.is_empty());
+    let (conflict, writes) = owner_call(&mut restored.tw, |ctx| {
+        mush_npc::record_completed_work_experience(ctx, npc, captain, cause, "A different journey.")
+    });
+    assert!(conflict.is_err());
+    assert!(writes.is_empty());
+    let (invalid, writes) = owner_call(&mut restored.tw, |ctx| {
+        mush_npc::record_completed_work_experience(
+            ctx,
+            npc,
+            captain,
+            "passenger:bad",
+            &"x".repeat(513),
+        )
+    });
+    assert!(invalid.is_err());
+    assert!(writes.is_empty());
+    let host = restored
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert_eq!(host.personal_memory.experience_count(npc), 1);
+    assert_eq!(host.relationships.personal(npc, captain).trust, 10);
+
+    // Bounded forgetting cannot reopen the permanent reward receipt.
+    for index in 0..64 {
+        let (done, _) = owner_call(&mut restored.tw, |ctx| {
+            mush_npc::record_completed_work_experience(
+                ctx,
+                npc,
+                captain,
+                &format!("passenger:later:{index}"),
+                "Another verified passage completed.",
+            )
+        });
+        assert_eq!(done, Ok(true));
+    }
+    let (replay, writes) = owner_call(&mut restored.tw, |ctx| {
+        mush_npc::record_completed_work_experience(ctx, npc, captain, cause, text)
+    });
+    assert_eq!(replay, Ok(false));
+    assert!(writes.is_empty());
+    let host = restored
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert_eq!(host.personal_memory.experience_count(npc), 64);
+    assert!(
+        host.personal_memory
+            .record_for(npc)
+            .unwrap()
+            .experiences
+            .iter()
+            .all(|event| event.text != text)
+    );
+}
+
+#[test]
+fn role_events_require_perceived_connected_company_and_grant_no_asker_authority() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    let npc = lot.clerk;
+    for player in [lot.alice, lot.bob] {
+        lot.tw
+            .world_mut()
+            .set_attr(player, "test_cloaked", mush_core::Attr::text("yes", GOD))
+            .unwrap();
+    }
+    let (hidden, writes) = owner_call(&mut lot.tw, |ctx| {
+        mush_npc::notify_role_event(ctx, npc, "The ship departed.")
+    });
+    assert!(!hidden);
+    assert!(writes.is_empty());
+    // A fresh visible fixture follows the ordinary coalescing path.
+    let mut visible = self::lot();
+    visible.tw.set_now(1000);
+    let npc = visible.clerk;
+    let (queued, _) = owner_call(&mut visible.tw, |ctx| {
+        mush_npc::notify_role_event(ctx, npc, "The ship departed for Ceres.")
+    });
+    assert!(queued);
+    let host = visible
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert_eq!(host.personal_memory.experience_count(npc), 0);
+    assert_eq!(host.runtime(npc).unwrap().mailbox.len(), 1);
+    visible.tw.set_now(1003);
+    let (mut out, mut effects) = (Outbox::new(), Effects::new());
+    visible
+        .tw
+        .engine_mut()
+        .fire_due(1_003_000, &mut out, &mut effects);
+    let snapshot: mush_npc::TurnSnapshot = effects
+        .drain()
+        .into_iter()
+        .find_map(|effect| match effect {
+            mush_core::Effect::ModuleAsync {
+                module,
+                actor,
+                payload,
+                ..
+            } if module == "npc" && actor == npc => Some(serde_json::from_str(&payload).unwrap()),
+            _ => None,
+        })
+        .expect("role event enters ordinary coalesced dialogue");
+    assert_eq!(snapshot.actor, None);
+    assert!(snapshot.transcript.contains("departed for Ceres"));
+    assert!(snapshot.stimuli.iter().all(|stimulus| !stimulus.directed));
+
+    let elsewhere = lot
+        .tw
+        .world_mut()
+        .create(ObjKind::Room, "Empty", GOD, None)
+        .unwrap();
+    lot.tw.world_mut().move_to(lot.clerk, elsewhere).unwrap();
+    lot.tw
+        .world_mut()
+        .create(ObjKind::Player, "Disconnected", GOD, Some(elsewhere))
+        .unwrap();
+    let (alone, _) = owner_call(&mut lot.tw, |ctx| {
+        mush_npc::notify_role_event(ctx, lot.clerk, "A private voyage tick.")
+    });
+    assert!(!alone);
+}
+
+#[test]
 fn live_scene_and_dialogue_omit_concealed_people_and_their_relationships() {
     let mut lot = lot();
     lot.tw.set_now(1000);
@@ -624,7 +938,7 @@ fn scene_working_memory_is_bounded_before_kernel_projection() {
         .unwrap();
     let profile = mush_npc::AgentProfile {
         persona: persona.clone(),
-        interfaces: vec!["probe".into()],
+        interfaces: vec!["probe".into(), "role".into()],
         ..mush_npc::AgentProfile::default()
     };
     lot.tw
@@ -633,6 +947,14 @@ fn scene_working_memory_is_bounded_before_kernel_projection() {
             lot.clerk,
             mush_npc::PROFILE_ATTR,
             mush_core::Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.clerk,
+            "test_role",
+            mush_core::Attr::text("\"".repeat(3000), GOD),
         )
         .unwrap();
     {

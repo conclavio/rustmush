@@ -790,3 +790,19 @@ file = "mush-worldgen/src/commands.rs"
 function = "llm_toggle_npc"
 guard = "staff"
 note = "@llm/kill and /revive; the verb is Wizard."
+
+# ---------------------------------------------------------------------------
+# tacsim
+# ---------------------------------------------------------------------------
+
+[[site]]
+file = "tacsim/src/port/passenger/commands.rs"
+function = "resolve"
+guard = "perceive"
+note = "+passage and its offer/accept/board/cancel selectors: a matched traveller must be an enabled live NPC in the connected actor's room, with mutual can_perceive, before the match is used. The separate remote lookup reads only bookings whose captain is the actor; unavailable or ambiguous targets share one refusal."
+
+[[site]]
+file = "tacsim/src/quest/commands.rs"
+function = "resolve"
+guard = "perceive"
+note = "+quest resolves a live enabled giver through mutual co-presence and can_perceive before using a general match. Its separate remote lookup is restricted to the actor's own committed journal, permitting a checkpoint command away from the giver without revealing another player's progress. Acceptance and completion recheck the same giver in person."

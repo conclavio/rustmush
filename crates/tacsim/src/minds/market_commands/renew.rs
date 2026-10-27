@@ -35,7 +35,7 @@
 //! family's `require_owner`), and the service maps every refusal to its one
 //! uniform line, so every held licence would read `Renewal is unavailable or
 //! has changed.` The owner-read caps were full when this was held (32/32,
-//! 17g C2a; 48/48 since 17g C2e), so TacSim could not take a renewal read of
+//! 17g C2a; 48/48 since 17g C2e, 64/64 since the passenger facts), so TacSim could not take a renewal read of
 //! its own either. A seam that runs the step
 //! under the market's identity is the lead's ruling. Until it lands, all
 //! three forms check their shape and the actor's own licence (`NO_LICENCE`),

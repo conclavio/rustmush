@@ -1308,7 +1308,7 @@ fn full_player_market_chain_registers_every_owner_in_builder_order() -> TestResu
 /// into `original_owner_holding` (§2.4 fallback 1, because the format-2
 /// Active launch had no grant to spare), whose current version is 2
 /// wherever commerce is Active. The full chain's owner-read service and grant
-/// counts are printed against the caps of 48 each.
+/// counts are printed against the caps of 64 each.
 #[test]
 fn the_command_service_is_composed_only_with_the_player_market() -> TestResult {
     use crate::minds::market_commands::MindCommandService;

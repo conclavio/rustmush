@@ -141,6 +141,41 @@ precedent. The site refuses when the slot is absent.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/passenger/economy.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = "The authored passenger's finite purse takes one account ID from the economy's monotonic allocator before mush_economy::open_account creates its zero-balance account. Its one lifetime seed uses create_system_obligation; this reach never changes balances, escrow, or obligations directly. Existing source-key funding records prevent reseeding."
+
+[[site]]
+path = "crates/tacsim/src/quest/content.rs"
+accessor = "World::module_state_insert"
+slot = "content"
+owner = ""
+reason = "Test-only quest authoring fixture installs a ContentState with an exact dependency latch to validate bound checkpoint rooms. Production quest content reads the content owner's dependency snapshot without seeding its slot."
+
+[[site]]
+path = "crates/tacsim/src/quest/content.rs"
+accessor = "World::module_state_mut"
+slot = "ContentState"
+owner = "content"
+reason = "Test-only quest content cases corrupt dependency latches to verify that retired, wrong-version or anomalous checkpoint placements refuse. Production quest content never changes the content owner's state."
+
+[[site]]
+path = "crates/mush-npc/src/content.rs"
+accessor = "World::module_state_insert"
+slot = "content"
+owner = ""
+reason = "Test-only external-room fixture installs a ContentState with an authored dependency latch. It exercises exact dependency placement and the real apply_pack path; production NPC content never seeds the content owner's slot."
+
+[[site]]
+path = "crates/mush-npc/src/content.rs"
+accessor = "World::module_state_mut"
+slot = "ContentState"
+owner = "content"
+reason = "Test-only external-room cases corrupt the dependency latch to prove refusal of old, retired, missing or anomalous placement, and register NPC appliers for a real apply_pack regression. Production placement only reads the dependency snapshot."
+
+[[site]]
 path = "crates/tacsim/src/port/licence.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"

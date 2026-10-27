@@ -30,6 +30,10 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       arm the weapon: it fires your lock whenever every
                       condition holds, and tells you each time. FIRE
                       <weapon|ALL> OFF clears it. See "Arming a weapon".
+  FIRE ALL            one volley: every ready weapon that reaches your lock
+                      fires once.
+  FIRE HOLD|FREE      the master switch over your armed rules: under HOLD they
+                      stand but none fires. See "Arming a weapon".
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band — and,
                       under an armed weapon, what it is armed to do.
@@ -421,6 +425,15 @@ Without authored overrides, Standard's weapons retain their independent cycles.
 A pilot's rules are live armings, not saved rules in a sealed profile. The cockpit
 shows every slot and action; `MIND RULES` and `WEAPONSTATUS` read the full terms.
 
+**Weapons hold and the volley.** `FIRE HOLD` is the master switch over your fire
+rules: they stay armed, and `MIND RULES` and `WEAPONSTATUS` list them as before
+with a line saying weapons hold, but none fires until `FIRE FREE`. You start
+weapons free. Hold rules, a typed `FIRE` and the volley are never held back.
+`FIRE ALL` alone is one volley: every weapon that is ready, has rounds and
+reaches your lock fires once, in the order `WEAPONSTATUS` lists them, one line
+each; a weapon that cannot fire says why and the rest go on. On the picture `f`
+flips the switch and `g` fires the volley.
+
 `hit within`, `hostiles >=` and `order =` require a thinking mind and are refused
 from the pilot's dormant mind. Authoring those think rules comes with mindcraft.
 
@@ -659,13 +672,17 @@ other channel's, and the notices list does not repeat them.
 
 ## The picture
 
-In `@tui`, `Ctrl-G` opens a first-person picture of the arena from your seat,
+In `@tui`, on a terminal that can show pictures, the cockpit screen (`0`) is a
+first-person picture of the arena from your seat whenever you are seated,
 drawn in the terminal itself across the top two-thirds of the screen. Over the
 picture: a heading tape along the top (your heading read out under it, your
 contacts as coloured marks above it), the reticle in the middle with a box
 around the machine you have locked (its designator, range and your chance
 under it, or an arrow at the edge when it is off to one side), and your speed
-as a bar on the right. `Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still
+as a bar on the right. `p` swaps it for the text cockpit (the panes) and back,
+and the game remembers which you chose until you disconnect. The digits switch
+screens as everywhere: the picture goes, and comes back when you press `0`,
+with your look, your lock cycle and your view as you left them. `Ctrl-]` still
 detaches.
 
 Under the picture, in plain text: your armour as a small picture of your own
@@ -696,25 +713,46 @@ the contacts list does (`friend`), and the lock's box is yellow whoever it is
 on. A machine your scope does not hold is not drawn at all, however close it
 is.
 
-While the picture is open:
+While the picture is showing (the bottom line names the keys):
 
-  Left, Right    turn the tank. Hold the key down and let go to stop, on a
+  a, d or Left, Right
+                 turn the tank. Hold the key down and let go to stop, on a
                  terminal that tells the game when a key is let go (WezTerm,
-                 kitty, Ghostty, Windows Terminal 1.25 and later); elsewhere
-                 press once to start and again to stop
-  a, d           turn the tank too, press to start and again to stop
-  , and .        swing your look left or right without turning the tank;
+                 kitty, Ghostty, Windows Terminal 1.25 and later; the bottom
+                 line reads `hold-turn` for the keys this works for, since a
+                 few terminals report it for the arrows but not the letters);
+                 elsewhere press once to start and again to stop
+  w, s           speed up or slow down a step (a tenth of your machine's top
+                 speed, at least 5 kph), through zero into reverse, stopping
+                 at either ceiling; the line over the picture shows
+                 `spd 20→32` until the tank reaches what you ordered
+  x              all stop: `SPEED 0`, and the turn stopped
+  q, e (or , .)  swing your look left or right without turning the tank;
                  the same key again stops it
   c              look along your tank's heading again
-  space          stop turning, and stop the look swinging
+  space          stop turning, and stop the look swinging (your speed stands)
+  v              the overhead: the arena from above, north up, your tank at
+                 the centre with its heading, your contacts in their team's
+                 colours, your lock ringed, the named spots lettered, your
+                 weapons' ranges and your sight as faint rings and your look
+                 as a wedge; `v` again for the view from the seat
+  f              weapons free or weapons hold (`FIRE FREE` / `FIRE HOLD`);
+                 the line over the picture says which
+  g              a volley (`FIRE ALL`)
+  t, T           lock the next or previous contact: hostiles first, then
+                 unidentified, then your own side, nearest first in each;
+                 with nothing locked, the first
+  F1             the chat line opened with `ORDER ALL ` ready; F2 to F6 with
+                 `ORDER 2 ` to `ORDER 6 `. Enter sends it, Esc drops it
+  p              the text cockpit, and back
   Enter          open the chat line
-  r              a smaller picture (320 pixels wide rather than 640), for a
-                 slow link
-  Esc or q       close the picture
 
-Every other key does nothing while you are at the controls. **The turn keys
-steer the tank**:
-each turn is a `HEADING` order, exactly as if you had typed it, so it needs your
+The digits, `"` `:` `;` `\` `/` `?` and Esc do what they do on every screen
+(the palette and the help show over the text cockpit, and the picture comes
+back when they close); every other key does nothing while you are at the
+controls. Every key above that sends a line sends it exactly as if you had
+typed it, so the arena answers in the comms as it would. **The turn keys steer
+the tank**: each turn is a `HEADING` order, so it needs your
 seat to hold the helm and the power to be online, and you will see the
 `Steering to …` lines in the comms. The tank turns at its own rate
 and the arena moves it on its pulses; between them the picture shows where the
@@ -746,8 +784,8 @@ it here. **tmux is not supported**: it swallows the terminal's answer. Run
 When you enter `@tui` the game asks your terminal, for half a second at most,
 what it can show, and the line over the picture says what it found and what it
 is drawing: `kitty graphics OK, drawing kitty`, `sixel graphics OK, drawing
-sixel`, or `no terminal graphics`. If `Ctrl-G` does nothing, your terminal
-answered no.
+sixel`, or `no terminal graphics`. If your seat shows the text cockpit and
+`p` pulls the panel instead of showing the picture, your terminal answered no.
 
 `@pixel/encoder` says what this connection uses. `@pixel/encoder sixel` (or
 `kitty`) forces one for a terminal that answers wrongly, `@pixel/encoder off`
@@ -758,7 +796,7 @@ terminal. It lasts until you disconnect.
 take the pictures as fast as they are drawn, it skips one, and if that keeps
 happening it drops to a narrower picture ten times a second (the line over the
 picture says `slow link: stepped down`), coming back up once the link has kept
-up for ten seconds. `r` picks the narrower picture yourself.
+up for ten seconds.
 
 **The ground has height.** The picture draws the hills, the crater and the
 valleys as the sim has them, coloured by slope and the light from the
@@ -773,10 +811,33 @@ stops while the tab is hidden or you leave the seat. Your browser draws it
 itself, from what the game already sends you, so it costs the game nothing; the
 button beside it (`drawn here`) switches to a picture drawn by the game
 instead, which is also what you get if your browser cannot draw it. Click the picture to give
-it the keys: the arrows turn the tank (hold), `,` and `.` swing your look (again
-to stop), `c` centres it, space stops both. The map, the panes and the orders
-below it work as before, and the damage pane opens with the same small picture
-of your machine the terminal draws, each part coloured by what is left of it.
+it the keys, the same letters as the terminal's cockpit:
+
+  a, d or Left, Right   turn the tank while held; let go to stop
+  w, s           speed up or slow down a step (a tenth of your machine's top
+                 speed, at least 5 kph), through zero into reverse, stopping
+                 at either ceiling; the header shows `spd 20→32` until the
+                 tank reaches what you ordered
+  x              all stop: `SPEED 0`, and the turn stopped
+  q, e (or , .)  swing your look left or right; the same key again stops it
+  c              look along your tank's heading again
+  space          stop turning, and stop the look swinging
+  v              the overhead: the arena from above, your tank at the
+                 centre, drawn by the game (`overhead: drawn by the server`);
+                 `v` again for the view from the seat
+  f              weapons free or weapons hold (`FIRE FREE` / `FIRE HOLD`);
+                 the header says which
+  g              a volley (`FIRE ALL`)
+  t, T           lock the next or previous contact: hostiles first, then
+                 unidentified, then your own side, nearest first in each
+  F1             the input box opened with `ORDER ALL ` ready; F2 to F6 with
+                 `ORDER 2 ` to `ORDER 6 `. Enter sends it
+
+Each of these sends its line exactly as if you had typed it, so the arena
+answers in the comms as it would; a key held with Ctrl, Alt or Cmd is left to
+the browser. The map, the panes and the orders below it work as before, and
+the damage pane opens with the same small picture of your machine the terminal
+draws, each part coloured by what is left of it.
 
 `@pixel/stats` tells this connection's picture in numbers: what your terminal
 showed and what it draws, the picture's size and clock, what the last frame

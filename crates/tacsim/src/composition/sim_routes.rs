@@ -96,6 +96,7 @@ impl CarrierHooks for TacsimCarrierHooks {
             return false;
         };
         crate::port::voyage::narrate_hull(ctx, hull, &line);
+        crate::port::passenger::voyage_event(ctx, hull, &line);
         let queued = format!("{}{line}", crate::port::voyage::utc_prefix(ctx.w));
         crate::port::voyage::tell_absent_tenant(ctx, hull, &queued);
         REPLACE_GENERIC_ABOARD_LINES
@@ -108,6 +109,7 @@ impl CarrierHooks for TacsimCarrierHooks {
         }
         let (docks, notice) = crate::port::voyage::arrival_lines(ctx.w, journey);
         crate::port::voyage::narrate_hull(ctx, hull, &docks);
+        crate::port::passenger::voyage_event(ctx, hull, &docks);
         let notice = notice.replace("{hhmm}", &crate::port::voyage::utc_hhmm(ctx.w.now()));
         crate::port::voyage::tell_absent_tenant(ctx, hull, &notice);
         // Doc 20 cut SM.4a (lead ruling 6): a hull settled on a site's pad asks for the site's

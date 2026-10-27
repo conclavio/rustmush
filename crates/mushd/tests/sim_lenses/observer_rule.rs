@@ -4540,6 +4540,10 @@ fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::
         odds_floor_permille: 100,
         // 17b cut M5.4: no seal on this hand-built frame.
         mind: None,
+        // Doc 21 cut G.12a: weapons free and the line tank's two ceilings.
+        weapons_free: true,
+        max_speed_cms: 1_500,
+        reverse_cms: 750,
     }
 }
 

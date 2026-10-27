@@ -66,6 +66,11 @@ arguments. At most eight references are accepted. Missing commands are omitted;
 staff-only help never enters conversational guidance, even when staff are asking.
 Advice does not execute a command or bypass its normal eligibility checks.
 
+Travellers can also use the `passenger` service to discuss a real passage and
+quote a fare. The captain accepts the exact quote and arranges boarding;
+conversation alone does neither. See [Passengers](passengers.md) for Leila at
+Stickney's Shift Board and the reusable traveller content template.
+
 The `help` service can look up command names and aliases as well as prose topics.
 Command help is sent privately to the asker and uses that player's permissions.
 
@@ -177,6 +182,11 @@ Reading the relationship does not create an encounter or improve a score.
 Staff can offer the same conversational service by including `npc.relationship`
 in the NPC's interfaces; its `npc.relationship.read` ability takes no parameters
 and always answers the current asker privately.
+
+Authored follow-up work can continue a relationship after a verified event.
+For example, Leila remains at Ceres after her paid passage and can offer a
+small observational errand to the captain who brought her home. Use
+`+quest Leila` and `help quests`; dialogue alone never accepts or completes the work.
 
 NPC dialogue and scene turns use the same qualitative guidance: familiarity
 shapes recognition, trust shapes willingness to rely on you, and disposition
@@ -325,7 +335,7 @@ commands. The principals behind the houses are on record and never wake. See
 ## See also
 
   @agent, @lore, @llm, @sheet, +npc, +standing, +roll, +intel, help intel, help perception,
-  help worldgen, help ports
+  help worldgen, help ports, help passengers, help quests
 
 ## Interface NPCs
 
@@ -341,6 +351,12 @@ your own journey), `market` (what is for sale, a quote), `build` (a brief
 into a proposal, its status, its questions), `rules` (character generation,
 a rules topic), `request` (file a request, your own tickets), `help` (a
 help topic). Talk to the NPC and it answers through them.
+
+An authored traveller may also have `passenger` (passage status and fare offers)
+and `quest` (the current asker's follow-up invitation and progress). The player
+accepts and performs these actions through `+passage` and `+quest`. A quest
+service's private answer is not shared with bystanders or retained as public
+conversation history.
 
 Four rules keep an interface NPC exactly as powerful as the person talking
 to it. It answers with **your** authority: a place you may not see, a

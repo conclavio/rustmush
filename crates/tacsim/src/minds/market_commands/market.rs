@@ -19,7 +19,7 @@
 //! R1 raised the owner-read caps to 48, and `TacsimRuleset::register`
 //! requests `MarketCommandReader` over the same composed manifest the
 //! entitlement holdings' grants take, in the branch that registers the slot
-//! (32 services and 33 grants). So every `+minds` form below and
+//! (33 services and 35 grants). So every `+minds` form below and
 //! `@mind/publish` run through the real reader there.
 //!
 //! **The actor's own purchase (17g C2g, the C2e plan §4.1 item 2),** over

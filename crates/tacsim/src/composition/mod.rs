@@ -548,6 +548,9 @@ fn compose_server_modules<E>(
                     facts.push(Arc::new(
                         crate::surface::survey_facts::SurveyFactProvider::default(),
                     ));
+                    facts.push(Arc::new(
+                        crate::port::passenger::facts::PassengerFactProvider::default(),
+                    ));
                 }
                 facts
             })
@@ -1225,6 +1228,10 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "relay shelf pack refused"),
     }
+    match crate::port::passenger::content::packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "passenger shelf pack refused"),
+    }
     Box::new(mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf))
 }
 
@@ -1282,6 +1289,7 @@ pub fn boot_pack_list(
         packs.extend(crate::definitions::content::station_packs()?);
         packs.extend(crate::definitions::content::lane_packs()?);
         packs.extend(crate::relay_content::packs()?);
+        packs.extend(crate::port::passenger::content::packs()?);
     }
     Ok(packs)
 }
@@ -1338,6 +1346,9 @@ pub fn content_module_with(
     // Ceres v2 before installing the relay seed. Fresh/current worlds seed now.
     if game_content {
         for pack in crate::relay_content::packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
+        for pack in crate::port::passenger::content::packs()? {
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
     }
