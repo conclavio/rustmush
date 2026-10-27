@@ -2089,8 +2089,8 @@ reason is disk and link time, not test time: every integration binary links the
 whole engine (300–730 MB each), and the 373 targets were 110 GB of the VPS
 runner's target dir against 11 GB of compiled dependencies, and some thirty
 CPU-minutes of relinking after a change to a core crate. The crates merged so
-far: tacsim (T.3a; its 64 files are `shard_1`..`shard_4`, one per line of
-`.github/tacsim-integration-shards.txt`, while `harness` and `cost_lane` stay
+far: tacsim (T.3a; its 64 files are `shard_1`..`shard_6`, six since 2026-10-27,
+one per line of `.github/tacsim-integration-shards.txt`, while `harness` and `cost_lane` stay
 targets of their own — a crate-root-only `#![recursion_limit]`; an exclusive
 timing lock and a script-parity test); and since T.3b the three servers:
 mushd (44 files: `durable_process`, `sim_lenses`, `world_journeys`),
@@ -2107,7 +2107,7 @@ name is `<module>::<fn>`, and every run line translates as `--test <name>` →
 
 ```sh
 cargo nextest run -p tacsim --test shard_4 -E 'test(/^cockpit::/)'   # one module
-cargo test -p tacsim --test shard_4 cockpit::                         # the same, cargo's substring filter
+cargo test -p tacsim --test shard_6 cockpit::                         # the same, cargo's substring filter
 cargo test -p tacsim --test shard_1 driving::sm4b_the_site_map_fixtures_are_blessed -- --exact
 ```
 

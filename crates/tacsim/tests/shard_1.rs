@@ -8,13 +8,14 @@
 //!
 //! The grouping is line 1 of .github/tacsim-integration-shards.txt, the CI shard
 //! that runs it (with `harness`, which stays a target of its own: its
-//! `#![recursion_limit]` is crate-root-only), balanced by test time rather than
-//! by theme; a rebalance moves a `mod` line between the four shard roots.
+//! `#![recursion_limit]` is crate-root-only), balanced by test time rather than by theme (six
+//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
+//! a `mod` line between the six shard roots.
 //!
-//! One module: `cargo nextest run -p tacsim --test shard_1 -E 'test(/^claims::/)'`
-//! or `cargo test -p tacsim --test shard_1 claims::` (a substring filter, so no
+//! One module: `cargo nextest run -p tacsim --test shard_1 -E 'test(/^driving::/)'`
+//! or `cargo test -p tacsim --test shard_1 driving::` (a substring filter, so no
 //! module here may be a suffix of another's name — the merge refuses that).
-//! One test: `... --test shard_1 claims::<fn> -- --exact`. Sweeps run under nextest,
+//! One test: `... --test shard_1 driving::<fn> -- --exact`. Sweeps run under nextest,
 //! one process per test; under plain multi-threaded `cargo test` these modules
 //! share one process and its statics (locks, global subscribers).
 
@@ -24,20 +25,16 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
-#[path = "shard_1/claims.rs"]
-mod claims;
 #[path = "shard_1/coop.rs"]
 mod coop;
 #[path = "shard_1/driving.rs"]
 mod driving;
 #[path = "shard_1/hulls.rs"]
 mod hulls;
+#[path = "shard_1/knowing.rs"]
+mod knowing;
 #[path = "shard_1/landing.rs"]
 mod landing;
-#[path = "shard_1/minds_pool.rs"]
-mod minds_pool;
-#[path = "shard_1/mining.rs"]
-mod mining;
 #[path = "shard_1/passage.rs"]
 mod passage;
 #[path = "shard_1/perception.rs"]

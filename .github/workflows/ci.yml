@@ -202,15 +202,22 @@ jobs:
           # threads, where the default is four, then tacsim's doc-tests,
           # which rest-libs' `--exclude tacsim` drops with the lib.
           - tacsim-lib
-          # (b) tacsim's integration test binaries, a quarter each by measured
-          # time (lines 1 to 4 of .github/tacsim-integration-shards.txt; four
+          # (b) tacsim's integration test binaries, a sixth each by measured
+          # time (lines 1 to 6 of .github/tacsim-integration-shards.txt; four
           # since 2026-10-26, cut T.0, when the third of three swung between
-          # 18 and 30 min of execution run to run), and the three #[ignore]d
-          # mind-hash steps beside the target each runs by name.
+          # 18 and 30 min of execution run to run; six since 2026-10-27, on
+          # the JUnit per-module times, when the four were the run's wall at
+          # 23-26 min each with 65-74 summed test-minutes apiece).
           - tacsim-integration-1
           - tacsim-integration-2
           - tacsim-integration-3
           - tacsim-integration-4
+          - tacsim-integration-5
+          - tacsim-integration-6
+          # (b2) the three #[ignore]d mind-hash tests, run by name: a cell of
+          # their own since 2026-10-27, because the serial 5-min pooled-seam
+          # step sat on top of the longest shard and set the run's wall.
+          - tacsim-minds
           # (c) Format and Clippy, once each, workspace-wide.
           - lint
           # (d) the rest of the workspace's crates but the three servers and
@@ -369,9 +376,12 @@ jobs:
       # 2026-10-20: `-j 2` on the three mind-hash steps below. Each links
       # tacsim test binaries, until now with no cap on parallel links (the Test
       # step's `-j 2` never applied to them), and the 55-minute loss fell
-      # inside them. Each runs in the tacsim-integration shard that builds its
-      # target anyway; their `name:` and `run:` lines are the same in every shard's
-      # reading of this file, because the gated-test inventory
+      # inside them. Until 2026-10-27 each ran in the tacsim-integration shard
+      # that built its target anyway, and the 5-min pooled-seam step on top of
+      # the longest shard set the run's wall; since then all three run in the
+      # tacsim-minds cell (one binary, shard_2, holds their three modules), in
+      # parallel with the shards. Their `name:` and `run:` lines are the same
+      # in every cell's reading of this file, because the gated-test inventory
       # (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs) covers
       # each #[ignore]d test by finding its name here.
       # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
@@ -383,7 +393,7 @@ jobs:
       # test is #[ignore]d so the workspace run below does not run it twice;
       # naming it here is what covers it in the gated-test inventory.
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
-        if: matrix.shard == 'tacsim-integration-2'
+        if: matrix.shard == 'tacsim-minds'
         run: cargo test -p tacsim --test shard_2 minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host -j 2 -- --ignored --exact --nocapture
       # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
       # the pooled lane's matches flown by T1 and by the Rhai Standard
@@ -392,7 +402,7 @@ jobs:
       # match plays pass the thirty seconds a lane may spend in the workspace
       # run (17b §1 (iii)), so the test is #[ignore]d and run here by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
-        if: matrix.shard == 'tacsim-integration-2'
+        if: matrix.shard == 'tacsim-minds'
         run: cargo test -p tacsim --test shard_2 twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -j 2 -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
       # gate): the pooled lane's matches through the real arena task on a
@@ -403,8 +413,8 @@ jobs:
       # match-runs pass the thirty seconds a lane may spend in the workspace
       # run, so the test is #[ignore]d and run here, by name.
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
-        if: matrix.shard == 'tacsim-integration-1'
-        run: cargo test -p tacsim --test shard_1 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -j 2 -- --ignored --exact --nocapture
+        if: matrix.shard == 'tacsim-minds'
+        run: cargo test -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -j 2 -- --ignored --exact --nocapture
       # The bot crate is excluded from the workspace test run and tested on its own:
       # its serde_json `arbitrary_precision` feature would otherwise unify into every
       # engine test binary and break untagged number decoding (the worldgen proposal
@@ -486,6 +496,9 @@ jobs:
               # never the 1,275 lib tests again. The lib is built once, as
               # these binaries' dependency. Which line is the shard's number.
               scripts/ci-tacsim-shard.sh "${SHARD##*-}"
+              ;;
+            tacsim-minds)
+              # The three mind-hash steps above are this cell's whole work.
               ;;
             rest-libs)
               # The four features are what the old one-line rest run unified

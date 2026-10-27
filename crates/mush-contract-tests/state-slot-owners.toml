@@ -315,7 +315,7 @@ fail-closed. The oracle is boot-hydrated by the host from the store, which a
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/commerce.rs"
+path = "crates/tacsim/tests/shard_4/commerce.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -341,7 +341,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/sites.rs"
+path = "crates/tacsim/tests/shard_5/sites.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -382,7 +382,7 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/knowing.rs"
+path = "crates/tacsim/tests/shard_1/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -410,7 +410,7 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_1/mining.rs"
+path = "crates/tacsim/tests/shard_5/mining.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -444,7 +444,7 @@ map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_2/plans.rs"
+path = "crates/tacsim/tests/shard_6/plans.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -488,7 +488,7 @@ economy module's own path (the `port/licence.rs` row's precedent).
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/quarry.rs"
+path = "crates/tacsim/tests/shard_2/quarry.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -621,7 +621,7 @@ exactly the same reason.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/cockpit.rs"
+path = "crates/tacsim/tests/shard_6/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
@@ -633,7 +633,7 @@ oracle would prove nothing but that the oracle is unwired.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_4/cockpit.rs"
+path = "crates/tacsim/tests/shard_6/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"
 owner = "sim"
@@ -868,7 +868,7 @@ world rather than on a hand-made `Records`.
 """
 
 [[site]]
-path = "crates/tacsim/tests/shard_3/knowing.rs"
+path = "crates/tacsim/tests/shard_1/knowing.rs"
 accessor = "World::module_state_mut"
 slot = "AtlasState"
 owner = "atlas"

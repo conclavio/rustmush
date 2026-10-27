@@ -111,7 +111,7 @@ named spot is held to:
 Re-bless the first five with `TACSIM_BLESS=1`:
 
 ```
-cargo test -p tacsim   --test shard_4 cockpit::   # the three JSON files and view_brief.txt
+cargo test -p tacsim   --test shard_6 cockpit::   # the three JSON files and view_brief.txt
 cargo test -p mush-ansi --test golden   # view_grid.txt
 ```
 
