@@ -93,6 +93,11 @@ fn family<R: Row + Clone + Send + Sync + 'static>(
     )
 }
 impl Families {
+    /// 17g C2c: the listing family, which `mind_commands`' bounded command
+    /// read scans (read only; every write stays in this module).
+    pub(crate) const fn listings(&self) -> &StateFamilyHandle<CommitToken, EntitlementListingV1> {
+        &self.listings
+    }
     pub(super) fn register(
         reg: &mut Registrar<'_>,
         config: &EntitlementConfig,

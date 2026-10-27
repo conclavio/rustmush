@@ -80,6 +80,17 @@ pub(super) fn parameter(
         kind,
     })
 }
+/// An offer parameter the caller may omit; its provider supplies the default
+/// (17g C2b: the List offer's `transferable` mark, absent = `true`).
+pub(super) fn optional(
+    id: &str,
+    kind: mush_core::ProjectedParameterKind,
+) -> Result<mush_core::ProjectedParameter, String> {
+    Ok(mush_core::ProjectedParameter {
+        required: false,
+        ..parameter(id, kind)?
+    })
+}
 
 // Called only after matching the provider's exact registered action. These
 // names select an offer; its full definition and current guards still authorize it.

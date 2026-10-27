@@ -56,7 +56,7 @@ const PIN_MINOR: i64 = 40_000;
 const LEVY_PERMILLE: u16 = 50;
 const REGISTRY: &str = "roll.registry";
 const VENUE: &str = "launch.venue";
-const CREDIT: &str = "tacsim.credit";
+pub(super) const CREDIT: &str = "tacsim.credit";
 
 /// The C1 offer verbs (plan §7), re-grepped at C1a from every
 /// `ActionPresentation::new` under `mush-roll/src` and `mush-market/src`,
@@ -64,7 +64,20 @@ const CREDIT: &str = "tacsim.credit";
 /// added one: `roll-retire-authored-draft`, which `with_authored_forks`
 /// composes (authored retirement, two offers). The personal filing verbs
 /// (`roll-reserve-mind-charter`, `roll-file-original-mind`) predate C1.
-const C1_VERBS: [&str; 36] = [
+///
+/// 17g C2a (C2 plan §2.3) split the four shared verbs one per kind, so the
+/// census grew from 36 to 45 (three shared verbs out, eleven per-kind verbs
+/// in, one retirement verb added):
+/// - `market-original-mind-offer` became `market-original-mind-list`,
+///   `-quote`, `-retire-listing`, `-retire-quote` and `-expire`;
+/// - `market-original-mind-purchase` became `market-original-mind-fund`,
+///   `-grant` and `-refund`;
+/// - `paid-mind-resale` became `paid-mind-resale-offer`, `-accept` and `-fund`;
+/// - `roll-retire-authored-draft`'s version 1 became
+///   `roll-retire-authored-draft-v1` (version 2 keeps the verb).
+///
+/// The classes and every principal's entry count are unchanged by the split.
+const C1_VERBS: [&str; 45] = [
     "original-list-v3",
     "original-quote-v3",
     "original-fund-v3",
@@ -75,20 +88,29 @@ const C1_VERBS: [&str; 36] = [
     "derived-fund-v1",
     "derived-grant-v1",
     "derived-refund-v1",
-    "market-original-mind-offer",
-    "market-original-mind-purchase",
+    "market-original-mind-list",
+    "market-original-mind-quote",
+    "market-original-mind-retire-listing",
+    "market-original-mind-retire-quote",
+    "market-original-mind-expire",
+    "market-original-mind-fund",
+    "market-original-mind-grant",
+    "market-original-mind-refund",
     "roll-file-dependent-mind",
     "roll-update-original-mind",
     "roll-update-derived-mind",
     "roll-fork-paid-mind",
     "roll-retire-authored-draft",
+    "roll-retire-authored-draft-v1",
     "roll-offer-charter-transfer",
     "roll-accept-charter-transfer",
     "roll-offer-pending-charter",
     "roll-fund-pending-charter",
     "roll-settle-pending-charter",
     "roll-refund-pending-charter",
-    "paid-mind-resale",
+    "paid-mind-resale-offer",
+    "paid-mind-resale-accept",
+    "paid-mind-resale-fund",
     "paid-resale-service",
     "mind-renewal-draft",
     "mind-renewal-fund",
@@ -101,6 +123,13 @@ const C1_VERBS: [&str; 36] = [
     "roll-replace-owner-parent",
     "roll-registry-recall",
     "roll-registry-revocation",
+];
+/// 17g C2a: the three shared verbs the split retired. No projection carries
+/// one (`roll-retire-authored-draft` stays, as version 2's verb).
+const SPLIT_AWAY: [&str; 3] = [
+    "paid-mind-resale",
+    "market-original-mind-offer",
+    "market-original-mind-purchase",
 ];
 /// Class A: offered only to a policy operator holding a live grant.
 const OPERATOR_GATED: [&str; 2] = ["roll-registry-recall", "roll-registry-revocation"];
@@ -123,38 +152,29 @@ const ONLY_AT_THE_COUNTER: [&str; 8] = [
     "derived-fund-v1",
     "derived-grant-v1",
 ];
-/// The two C1 verbs whose kinds are gated differently. One presentation
-/// covers every kind, so the census tells the kinds apart by the action each
-/// offer routes to (`mind_trade/mod.rs`, `mind_trade/purchase_records.rs`):
-/// - `market-original-mind-offer` (`mind_trade/provider.rs`, `project_offer`):
-///   List and Quote need the counter (C), Expire is God's (D), and
-///   RetireListing and RetireQuote go to every live player (E);
-/// - `market-original-mind-purchase` (`mind_trade/purchase_provider.rs`): Fund
-///   and Grant need the counter (C), and Refund goes to every live player (E).
-const SPLIT_BY_KIND: [&str; 2] = [
-    "market-original-mind-offer",
-    "market-original-mind-purchase",
-];
-/// Class C kinds of the two split verbs.
+/// Class C verbs of the v2 market (`mind_trade/provider.rs` List and Quote,
+/// `mind_trade/purchase_provider.rs` Fund and Grant). Before 17g C2a these
+/// were kinds of the two shared verbs, told apart by the action each offer
+/// routes to; since the split each is its own verb.
 const COUNTER_KINDS: [&str; 4] = [
-    "list_original_mind",
-    "quote_original_mind",
-    "purchase_original_mind",
-    "settle_original_mind",
+    "market-original-mind-list",
+    "market-original-mind-quote",
+    "market-original-mind-fund",
+    "market-original-mind-grant",
 ];
-/// Class D kind: the v2 Expire, offered to GOD while an expired quote waits.
-const GOD_KIND: &str = "expire_original_mind_quotes";
-/// Class E kinds of the two split verbs: each principal has exactly one offer
-/// of each, wherever it stands.
+/// Class D: the v2 Expire, offered to GOD while an expired quote waits.
+const GOD_KIND: &str = "market-original-mind-expire";
+/// Class E verbs of the v2 market: each principal has exactly one offer of
+/// each, wherever it stands (RetireListing, RetireQuote and Refund).
 const GENERIC_KINDS: [&str; 3] = [
-    "retire_original_mind_listing",
-    "retire_original_mind_quote",
-    "refund_original_mind",
+    "market-original-mind-retire-listing",
+    "market-original-mind-retire-quote",
+    "market-original-mind-refund",
 ];
 /// Where the census principals stand (`Principals`).
 const AT_THE_COUNTER: [&str; 3] = ["author", "buyer", "accountless"];
 
-fn config() -> Config {
+pub(super) fn config() -> Config {
     let mut config = Config::default();
     config.tacsim.enabled = true;
     config.store.store = "memory".into();
@@ -169,16 +189,16 @@ fn system(name: &str) -> TestResult<SystemPrincipalId> {
 /// in the counter room (the `ceres` exchange); GOD, the clerk and the Registry
 /// operator stand together outside it, in Limbo.
 #[derive(Clone, Copy, Debug)]
-struct Principals {
-    god: ObjId,
-    author: ObjId,
-    buyer: ObjId,
-    clerk: ObjId,
-    operator: ObjId,
-    accountless: ObjId,
+pub(super) struct Principals {
+    pub(super) god: ObjId,
+    pub(super) author: ObjId,
+    pub(super) buyer: ObjId,
+    pub(super) clerk: ObjId,
+    pub(super) operator: ObjId,
+    pub(super) accountless: ObjId,
 }
 impl Principals {
-    fn all(&self) -> [(&'static str, ObjId); 6] {
+    pub(super) fn all(&self) -> [(&'static str, ObjId); 6] {
         [
             ("god", self.god),
             ("author", self.author),
@@ -201,7 +221,7 @@ struct Seeded {
 
 /// One more login account's character, made as the public account boundary
 /// does: `create_player` then `link_character`.
-async fn character(
+pub(super) async fn character(
     server: &Running,
     store: &PurchaseFaultStore,
     account: (&str, mush_core::AccountId),
@@ -214,7 +234,7 @@ async fn character(
 /// `create_player`, retried within the step guard while the world is `Busy`
 /// committing another authoritative action (a boot-time service step). Busy
 /// is a typed refusal before anything is created, so a retry is exact.
-async fn create(
+pub(super) async fn create(
     server: &Running,
     name: &str,
     account: Option<mush_core::AccountId>,
@@ -232,7 +252,7 @@ async fn create(
 }
 /// The one number a staff command's acknowledgement names right after
 /// `marker` (`Created org #5.`, `Created: Depot(#12).`, `(id 3).`).
-fn created(lines: &[String], marker: &str) -> TestResult<u64> {
+pub(super) fn created(lines: &[String], marker: &str) -> TestResult<u64> {
     let ids = lines
         .iter()
         .filter_map(|line| line.split_once(marker))
@@ -248,7 +268,7 @@ fn created(lines: &[String], marker: &str) -> TestResult<u64> {
         .map_err(|_| format!("one acknowledged {marker}"))?;
     Ok(id)
 }
-async fn staff(server: &Running, line: String) -> TestResult<Vec<String>> {
+pub(super) async fn staff(server: &Running, line: String) -> TestResult<Vec<String>> {
     let lines = server.command(GOD, line.clone()).await?;
     if lines.is_empty() {
         return Err(format!("no acknowledgement for {line}").into());
@@ -500,14 +520,17 @@ fn player_market_commerce(
 /// Each principal's projected C1 offers: every `ProjectedLegalAction` whose
 /// verb is a C1 verb, serialized with its `offer` id (the only per-actor
 /// part) removed and the id of the action its route names added as `action`
-/// (the same for every actor; it tells apart the kinds of the two verbs in
-/// `SPLIT_BY_KIND`), sorted. All verbs found are also printed per principal,
+/// (the same for every actor; before 17g C2a's split it told apart the kinds
+/// of the shared verbs, and it still pins each verb's route), sorted. All verbs found are also printed per principal,
 /// for the record of what an empty Active world offers.
 type Census = BTreeMap<&'static str, Vec<Value>>;
 /// One principal's projected legal actions. A read that lands while the world
 /// commits another action (a boot-time service step) answers `Busy`; it is
 /// retried within the step guard, never treated as an empty projection.
-async fn legal(server: &Running, actor: ObjId) -> TestResult<Vec<mush_core::ProjectedLegalAction>> {
+pub(super) async fn legal(
+    server: &Running,
+    actor: ObjId,
+) -> TestResult<Vec<mush_core::ProjectedLegalAction>> {
     let end = tokio::time::Instant::now() + STEP;
     loop {
         match timeout(
@@ -536,6 +559,10 @@ async fn census(server: &Running, principals: &Principals) -> TestResult<Census>
         let mut entries = Vec::new();
         for offer in offers {
             let verb = offer.presentation().verb.clone();
+            // 17g C2a: the shared verbs are split; none is projected again.
+            if SPLIT_AWAY.contains(&verb.as_str()) {
+                return Err(format!("{name} is projected the old verb {verb}").into());
+            }
             *counts.entry(verb.clone()).or_default() += 1;
             if !C1_VERBS.contains(&verb.as_str()) {
                 continue;
@@ -576,27 +603,14 @@ fn verb(entry: &Value) -> &str {
 fn verbs(entries: &[Value]) -> BTreeSet<&str> {
     entries.iter().map(verb).collect()
 }
-/// The id of the action an entry's offer routes to.
-fn action(entry: &Value) -> &str {
-    entry
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-}
-/// The offers of one kind of the two split verbs. Action ids are not unique
-/// across verbs (the v3 original steps reuse the same ids under their own
-/// definitions), so the kind is read only within `SPLIT_BY_KIND`.
+/// The offers of one verb.
 fn kinds<'a>(entries: &'a [Value], kind: &str) -> Vec<&'a Value> {
-    entries
-        .iter()
-        .filter(|entry| SPLIT_BY_KIND.contains(&verb(entry)) && action(entry) == kind)
-        .collect()
+    entries.iter().filter(|entry| verb(entry) == kind).collect()
 }
-/// Whether an entry is class C: a counter-only verb, or a counter kind of a
-/// split verb.
+/// Whether an entry is class C: a counter-only verb of the v3 and derived
+/// purchases, or a counter verb of the v2 market.
 fn counter_gated(entry: &Value) -> bool {
-    ONLY_AT_THE_COUNTER.contains(&verb(entry))
-        || (SPLIT_BY_KIND.contains(&verb(entry)) && COUNTER_KINDS.contains(&action(entry)))
+    ONLY_AT_THE_COUNTER.contains(&verb(entry)) || COUNTER_KINDS.contains(&verb(entry))
 }
 /// `left` minus `right`, as multisets of exact entries.
 fn minus<'a>(left: &'a [Value], right: &[Value]) -> Vec<&'a Value> {
@@ -645,21 +659,6 @@ fn projection_rules(census: &Census) -> TestResult {
             check!(!verbs(entries).contains(service), "{service} for {name}");
         }
     }
-    // Every offer of a split verb is one of its known kinds, so no kind
-    // escapes the classes below unclassified.
-    for (name, entries) in census {
-        for entry in entries
-            .iter()
-            .filter(|entry| SPLIT_BY_KIND.contains(&verb(entry)))
-        {
-            let kind = action(entry);
-            check!(
-                COUNTER_KINDS.contains(&kind) || GENERIC_KINDS.contains(&kind) || kind == GOD_KIND,
-                "a known kind of {} for {name}: {entry}",
-                verb(entry)
-            );
-        }
-    }
     // C, counter-gated: what the counter adds is only counter-gated offers,
     // every counter-gated verb and kind is offered at the counter, and none
     // is offered outside it.
@@ -685,24 +684,25 @@ fn projection_rules(census: &Census) -> TestResult {
         }
     }
     // D, God-only: beside the clerk (the same room, outside the counter) God
-    // gains only the v2 Expire kind of `market-original-mind-offer`, and no
+    // gains only the v2 Expire (`market-original-mind-expire`), and no
     // one else is offered it. Vacuous in an empty world: Expire is projected
     // only while an expired quote waits (`mind_trade/provider.rs`), so here
     // God equals the clerk.
     let god = of(census, "god")?;
     for entry in minus(god, clerk) {
-        check_eq!(action(entry), GOD_KIND, "God's extra {entry}");
+        check_eq!(verb(entry), GOD_KIND, "God's extra {entry}");
     }
     for (name, entries) in census.iter().filter(|(name, _)| **name != "god") {
         check!(kinds(entries, GOD_KIND).is_empty(), "{GOD_KIND} for {name}");
     }
-    // E, generic: every other C1 verb, and each generic kind of the two split
-    // verbs exactly once, offered to every principal wherever it stands.
+    // E, generic: every other C1 verb, and each generic v2 verb exactly
+    // once, offered to every principal wherever it stands.
     for generic in C1_VERBS.iter().filter(|verb| {
         !OPERATOR_GATED.contains(verb)
             && !SERVICE.contains(verb)
             && !ONLY_AT_THE_COUNTER.contains(verb)
-            && !SPLIT_BY_KIND.contains(verb)
+            && !COUNTER_KINDS.contains(verb)
+            && **verb != GOD_KIND
     }) {
         for (name, entries) in census {
             check!(verbs(entries).contains(generic), "{generic} for {name}");
@@ -820,7 +820,7 @@ async fn player_market_offers_follow_the_projection_rules() -> TestResult {
 /// The named launch's two staff login accounts: GOD's, and the one holding the
 /// stock agent, the market clerk and the Registry operator.
 const LAUNCH_STAFF: &str = "launch-staff";
-const LAUNCH_STAFF_TWO: &str = "launch-staff-two";
+pub(super) const LAUNCH_STAFF_TWO: &str = "launch-staff-two";
 /// The named Houses: organization name and configured source name.
 const LAUNCH_HOUSES: [(&str, &str); 3] = [
     ("Meridiani", "Meridiani Field Series"),
@@ -830,7 +830,11 @@ const LAUNCH_HOUSES: [(&str, &str); 3] = [
 
 /// A staff command whose acknowledgement must contain `expect`. Legacy
 /// commands answer a refusal in text too, so the acknowledgement is read.
-async fn acknowledged(server: &Running, line: String, expect: &str) -> TestResult<Vec<String>> {
+pub(super) async fn acknowledged(
+    server: &Running,
+    line: String,
+    expect: &str,
+) -> TestResult<Vec<String>> {
     let lines = staff(server, line.clone()).await?;
     check!(
         lines.iter().any(|text| text.contains(expect)),
@@ -869,7 +873,7 @@ async fn org_account(server: &Running, org: &str, scope: OrgScopeId) -> TestResu
     Ok(WalletId(created(&lines, "Opened account #")?))
 }
 /// One `@org/grant` as GOD, acknowledged.
-async fn grant(
+pub(super) async fn grant(
     server: &Running,
     actor: ObjId,
     org: &str,
@@ -908,7 +912,7 @@ async fn grant(
 /// Initialize step's. Returns the format-2 deployment in Initialize mode with
 /// the provisional terms. `deploy/instance/launch.json.example` follows its
 /// shape.
-async fn launch_world(
+pub(super) async fn launch_world(
     server: &Running,
     store: &PurchaseFaultStore,
 ) -> TestResult<LaunchDeployment> {
@@ -1086,15 +1090,15 @@ async fn launch_world(
     })
 }
 /// Write the deployment where `[tacsim.minds].launch_path` names it.
-fn write_launch(path: &std::path::Path, deployment: &LaunchDeployment) -> TestResult {
+pub(super) fn write_launch(path: &std::path::Path, deployment: &LaunchDeployment) -> TestResult {
     std::fs::write(path, serde_json::to_vec_pretty(deployment)?)?;
     Ok(())
 }
 
 /// The census logins of the named launch: an author and a buyer, each its own
 /// player account (C1 plan §4.4 test 6).
-const LAUNCH_AUTHOR: &str = "launch-author";
-const LAUNCH_BUYER: &str = "launch-buyer";
+pub(super) const LAUNCH_AUTHOR: &str = "launch-author";
+pub(super) const LAUNCH_BUYER: &str = "launch-buyer";
 /// The four initialize offers of the named launch, all GOD's.
 const LAUNCH_INITIALIZE: [&str; 4] = [
     "roll-initialize-commerce",
@@ -1103,7 +1107,7 @@ const LAUNCH_INITIALIZE: [&str; 4] = [
     "initialize-core-refit",
 ];
 /// A fresh scratch directory for one test's data dir.
-fn scratch(prefix: &str) -> TestResult<std::path::PathBuf> {
+pub(super) fn scratch(prefix: &str) -> TestResult<std::path::PathBuf> {
     let dir = std::env::temp_dir().join(format!(
         "{prefix}-{}-{}",
         std::process::id(),
@@ -1115,15 +1119,15 @@ fn scratch(prefix: &str) -> TestResult<std::path::PathBuf> {
     Ok(dir)
 }
 /// A named launch brought up by the runbook, ready for its Active boots.
-struct Launch {
+pub(super) struct Launch {
     /// `[tacsim.minds].launch_path` names `path`.
-    config: Config,
-    store: Arc<PurchaseFaultStore>,
-    path: std::path::PathBuf,
+    pub(super) config: Config,
+    pub(super) store: Arc<PurchaseFaultStore>,
+    pub(super) path: std::path::PathBuf,
     /// The document at `path`, in Active mode.
-    deployment: LaunchDeployment,
+    pub(super) deployment: LaunchDeployment,
     /// The census principals. The counter is the deployment's venue room.
-    principals: Principals,
+    pub(super) principals: Principals,
 }
 /// The runbook's bring-up through `game_modules` (`Running::boot(.., None)`
 /// reads `[tacsim.minds].launch_path`):
@@ -1134,7 +1138,24 @@ struct Launch {
 /// - an Initialize boot: the operators' two `@org/grant`s, then the four
 ///   initialize offers through the public offer path;
 /// - the document rewritten in Active mode. Nothing is booted Active here.
-async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
+pub(super) async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
+    initialized_launch_format(data_dir, 2).await
+}
+/// 17g C2a: the same bring-up on deployment format `format`. Format 1 is the
+/// House-only launch: the document names no player market, so no operator
+/// grant is made; the census principals are created exactly as on format 2.
+pub(super) async fn initialized_launch_format(
+    data_dir: &std::path::Path,
+    format: u16,
+) -> TestResult<Launch> {
+    initialized_launch_with(data_dir, format, MarketTerms::PROVISIONAL).await
+}
+/// 17g C2a: the bring-up with the market's `terms` (the C2 story's 30 s quote).
+pub(super) async fn initialized_launch_with(
+    data_dir: &std::path::Path,
+    format: u16,
+    terms: MarketTerms,
+) -> TestResult<Launch> {
     let mut config = config();
     config.server.data_dir = data_dir.to_path_buf();
     let store = Arc::new(PurchaseFaultStore::new());
@@ -1145,6 +1166,9 @@ async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
     let mut server = Running::boot(&config, store.clone(), None).await?;
     server.connect(GOD).await?;
     let mut deployment = launch_world(&server, &store).await?;
+    if let Some(market) = deployment.market.as_mut() {
+        market.terms = terms;
+    }
     let market = deployment.market.clone().ok_or("a format-2 market")?;
     let author = character(
         &server,
@@ -1185,6 +1209,10 @@ async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
             .await?;
     }
     server.stop().await?;
+    if format == 1 {
+        deployment.format = 1;
+        deployment.market = None;
+    }
     let path = data_dir.join("launch.json");
     write_launch(&path, &deployment)?;
     config.tacsim.minds.launch_path = Some(path.display().to_string());
@@ -1193,7 +1221,7 @@ async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
     let mut server = Running::boot(&config, store.clone(), None).await?;
     server.connect(GOD).await?;
     let authority = &market.registry_authority;
-    for operator in &authority.operators {
+    for operator in authority.operators.iter().filter(|_| format == 2) {
         for capability in ["roll.registry.recall", "roll.registry.revoke"] {
             grant(&server, *operator, "Registry", capability, authority.scope).await?;
         }
@@ -1221,7 +1249,7 @@ async fn initialized_launch(data_dir: &std::path::Path) -> TestResult<Launch> {
 }
 /// One Active boot of the launch through `game_modules`, every census
 /// principal connected. Each boot composes its owners afresh.
-async fn launch_active(launch: &Launch) -> TestResult<Running> {
+pub(super) async fn launch_active(launch: &Launch) -> TestResult<Running> {
     let server = Running::boot(&launch.config, launch.store.clone(), None).await?;
     for (_, actor) in launch.principals.all() {
         server.connect(actor).await?;

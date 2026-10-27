@@ -307,7 +307,7 @@ async fn file_and_list(
     server
         .offer(
             GOD,
-            "market-original-mind-offer",
+            "market-original-mind-list",
             json!({"owner_licence":field(&owner,"id")?}),
         )
         .await?;
@@ -651,7 +651,7 @@ async fn story() -> TestResult {
         server
             .offer(
                 buyer,
-                "market-original-mind-offer",
+                "market-original-mind-quote",
                 json!({"listing":listing}),
             )
             .await?;
@@ -684,7 +684,7 @@ async fn story() -> TestResult {
         server
             .offer(
                 buyer,
-                "market-original-mind-purchase",
+                "market-original-mind-fund",
                 json!({"quote":quote.publication()}),
             )
             .await?;

@@ -777,3 +777,9 @@ Every id below is the one your world printed; replace every id in the example.
   start the market on a fresh store. A reset removes the world the ids name, so
   take `launch_path` out of the live config before a reset and bring the
   launch up again from step 1.
+
+Registry operators recall a filed revision with `@registry/recall <filed>` and revoke a licence
+term with `@registry/revoke <licence>` (17g C2d). Anyone the deployment does not name, or whom staff
+have not granted both capabilities, gets the same refusal as for a number that does not exist; check
+readiness with `@mind/launch` as #1. `@mindrenewal` and `@housemindrenewal` remain the renewal
+service's own commands; players use `+minds/renew`.

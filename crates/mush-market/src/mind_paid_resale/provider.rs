@@ -26,7 +26,7 @@ fn invalid(_: impl std::fmt::Display) -> String {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Offer,
     Accept,
     Fund,

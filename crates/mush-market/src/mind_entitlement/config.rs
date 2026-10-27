@@ -193,23 +193,88 @@ impl EntitlementConfig {
     }
 }
 
+/// The author's product choice a listing is built from, and the same choice
+/// read back from a listing's frozen product. 17g C2b (D-UM-40, C2 plan
+/// §2.5): `transferable` is the author's per-listing mark. The List branch
+/// builds it from the request (`offers::List::choice`); `current_listing`
+/// rebuilds it from the listing's own product (`ProductChoice::frozen`), so a
+/// marked listing recomputes to its own non-transferable terms and stays
+/// current. One type for both sides keeps the two from drifting apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ProductChoice {
+    pub(super) form: mush_roll::commerce::paid::PaidForm,
+    pub(super) royalty_permille: u16,
+    pub(super) transferable: bool,
+}
+impl ProductChoice {
+    /// The choice a frozen listed product was built from: its form, its
+    /// downstream royalty (zero when sealed) and its own transferability.
+    pub(super) fn frozen(p: &super::EntitlementProductV1) -> Self {
+        Self {
+            form: p.terms.form(),
+            royalty_permille: p.grant.downstream().royalty_permille().unwrap_or(0),
+            transferable: p.terms.transferable(),
+        }
+    }
+}
+
 impl EntitlementConfig {
+    /// The listed product's paid terms. 17g C2b (D-UM-40, C2 plan §2.5): the
+    /// author's `transferable` mark only narrows the deployment policy
+    /// (`policy && mark`): a mark of `true` under a `false` policy stays
+    /// `false`. The renewal template carries these same terms
+    /// (`EntitlementProductV1::validate`), so a marked licence renews
+    /// non-transferable, and the paid-resale reader refuses its resale.
+    pub(super) fn terms(
+        &self,
+        minimum: mush_roll::commerce::rating::RatingClass,
+        form: mush_roll::commerce::paid::PaidForm,
+        transferable: bool,
+    ) -> Result<mush_roll::commerce::paid::PaidTerms, String> {
+        mush_roll::commerce::entitlement::writer::EntitlementPurchaseTerms::personal_terms(
+            minimum,
+            form,
+            self.policy.transferable && transferable,
+        )
+        .map_err(|e| e.to_string())
+    }
+    /// The product Roll's actual sale facts admit for `choice`: the subject
+    /// is captured from the facts, so this is `product_for` over exactly what
+    /// the owner observed.
     pub(super) fn product(
         &self,
         f: &mush_roll::commerce::entitlement::reader::EntitlementSaleFacts,
-        form: mush_roll::commerce::paid::PaidForm,
-        rate: u16,
+        choice: ProductChoice,
+    ) -> Result<super::EntitlementProductV1, String> {
+        self.product_for(
+            f.protocol(),
+            &super::EntitlementSubjectV1::capture(f),
+            f.royalty(),
+            choice,
+        )
+    }
+    /// The product body over a captured subject and its royalty chain. 17g
+    /// C2b: split from `product` (whose sale facts have no constructor
+    /// outside Roll) so the transfer mark's path through the product and its
+    /// frozen recompute are pinned by mush-market's own tests; `product`
+    /// passes `EntitlementSubjectV1::capture(f)` and `f.royalty()`, so no
+    /// production input changed.
+    pub(super) fn product_for(
+        &self,
+        protocol: EntitlementProtocol,
+        subject: &super::EntitlementSubjectV1,
+        royalty: &mush_roll::commerce::entitlement::FiledRoyaltyTermsV1,
+        choice: ProductChoice,
     ) -> Result<super::EntitlementProductV1, String> {
         use mush_roll::commerce::entitlement::{
             DownstreamTermsV1, GrantEconomicsV1, RenewalTemplateV1,
         };
-        let terms =
-            mush_roll::commerce::entitlement::writer::EntitlementPurchaseTerms::personal_terms(
-                f.minimum(),
-                form,
-                self.policy.transferable,
-            )
-            .map_err(|e| e.to_string())?;
+        let ProductChoice {
+            form,
+            royalty_permille: rate,
+            transferable,
+        } = choice;
+        let terms = self.terms(subject.minimum, form, transferable)?;
         let downstream = match form {
             mush_roll::commerce::paid::PaidForm::Sealed {} if rate == 0 => {
                 DownstreamTermsV1::Sealed {}
@@ -222,8 +287,8 @@ impl EntitlementConfig {
             },
         };
         let revision = mush_roll::commerce::records::RevisionPolicy::Pin {
-            filed: f.filed(),
-            revision: f.revision(),
+            filed: subject.filed,
+            revision: subject.revision,
         };
         let renewal = RenewalTemplateV1::new(
             self.policy.instrument.clone(),
@@ -236,7 +301,7 @@ impl EntitlementConfig {
         )
         .map_err(|e| e.to_string())?;
         let product = super::EntitlementProductV1 {
-            protocol: f.protocol(),
+            protocol,
             terms,
             revision,
             term_seconds: self.policy.term_seconds,
@@ -244,15 +309,13 @@ impl EntitlementConfig {
             grant: GrantEconomicsV1::new(
                 downstream,
                 renewal,
-                f.royalty().reference().map_err(|e| e.to_string())?,
+                royalty.reference().map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?,
         };
-        product.matches_subject(&super::EntitlementSubjectV1::capture(f))?;
+        product.matches_subject(subject)?;
         if form == (mush_roll::commerce::paid::PaidForm::OpenResale {}) {
-            f.royalty()
-                .check_next_resale(rate)
-                .map_err(|e| e.to_string())?;
+            royalty.check_next_resale(rate).map_err(|e| e.to_string())?;
         }
         Ok(product)
     }

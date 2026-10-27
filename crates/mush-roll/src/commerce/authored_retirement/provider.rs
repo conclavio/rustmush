@@ -170,10 +170,23 @@ impl ActionProvider for Provider {
                 })
             })
             .collect::<Result<Vec<_>, ActionError>>()?;
+        let verb = verb(&self.action);
         Ok(Some(mush_core::ProviderOfferDraft {fixed_parameters:json!({}),parameters:mush_core::ProjectedParameterSchema::new(parameters).map_err(|_|bad())?,
             targets:mush_core::ProjectedTargetSchema::None,required_channels:Vec::new(),expires:None,
-            presentation:mush_core::ActionPresentation::new("roll-retire-authored-draft","Remove an attributed working draft","Remove your working library entry while retaining saved history and existing grants.").map_err(|_|bad())?,
+            presentation:mush_core::ActionPresentation::new(verb,"Remove an attributed working draft","Remove your working library entry while retaining saved history and existing grants.").map_err(|_|bad())?,
             guards:guards.finish().map_err(|_|bad())?}))
+    }
+}
+/// 17g C2a (C2 plan §2.3): the projected verb of each retirement version.
+/// Both versions shared `roll-retire-authored-draft`, which the gateway's
+/// `+act` refuses as ambiguous; version 1 now projects its own verb and
+/// version 2 keeps the original. Only the presentation's verb differs: the
+/// label, help and both definition digests are unchanged.
+pub(super) fn verb(action: &DefinitionRef) -> &'static str {
+    if action.version() == 2 {
+        "roll-retire-authored-draft"
+    } else {
+        "roll-retire-authored-draft-v1"
     }
 }
 pub(crate) fn register(

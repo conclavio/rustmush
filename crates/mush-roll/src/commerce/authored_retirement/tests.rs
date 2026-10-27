@@ -85,3 +85,17 @@ fn captured_retirement_request_requires_exact_stable_mind_and_preserves_v1() -> 
     check!(Request::parse(&invocation(captured)?, &foreign).is_err());
     Ok(())
 }
+
+/// 17g C2a (C2 plan §2.3): the two registered retirement versions project two
+/// verbs, so the gateway's `+act` can name either: version 1 its own
+/// `roll-retire-authored-draft-v1`, version 2 the original verb. The verb is
+/// presentation only; the two definitions are unchanged.
+#[test]
+fn retirement_versions_project_distinct_verbs() -> TestResult {
+    let old = action_reference()?;
+    let new = captured_action_reference()?;
+    check_eq!(super::provider::verb(&old), "roll-retire-authored-draft-v1");
+    check_eq!(super::provider::verb(&new), "roll-retire-authored-draft");
+    check_ne!(super::provider::verb(&old), super::provider::verb(&new));
+    Ok(())
+}

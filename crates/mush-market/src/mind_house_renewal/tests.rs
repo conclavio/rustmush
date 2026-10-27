@@ -27,7 +27,7 @@ use mush_roll::commerce::{
     records::RevisionPolicy,
 };
 use serde_json::{Value, json};
-type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
@@ -63,7 +63,7 @@ fn action(
         protocol::descriptor(transition, manifest, &p)?,
     )?)
 }
-pub(super) fn fixture() -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn fixture() -> TestResult<MindRenewalOperationV1> {
     let manifest = definition("tacsim", "registry_manifest", "combat", 1)?;
     let participants = [
         definition("economy", "owner_participant", "initial_filing", 2)?,
@@ -171,7 +171,7 @@ pub(super) fn fixture() -> TestResult<MindRenewalOperationV1> {
     row.validate()?;
     Ok(row)
 }
-fn funded(row: &MindRenewalOperationV1) -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn funded(row: &MindRenewalOperationV1) -> TestResult<MindRenewalOperationV1> {
     let funding = serde_json::from_value(json!({
         "format":1,"commit":token(11),"action":row.expected_action(Transition::Fund)?,
         "contract":row.contract,"hold":31,"transaction":41,"journal_seq":51,
@@ -184,7 +184,10 @@ fn funded(row: &MindRenewalOperationV1) -> TestResult<MindRenewalOperationV1> {
     row.validate()?;
     Ok(row)
 }
-fn terminal(row: &MindRenewalOperationV1, grant: bool) -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn terminal(
+    row: &MindRenewalOperationV1,
+    grant: bool,
+) -> TestResult<MindRenewalOperationV1> {
     let funding = row.state.funding().ok_or("funding")?.clone();
     let terminal = serde_json::from_value(json!({
         "format":1,"commit":token(12),"action":row.expected_action(if grant{Transition::Grant}else{Transition::Refund})?,
@@ -202,7 +205,10 @@ fn terminal(row: &MindRenewalOperationV1, grant: bool) -> TestResult<MindRenewal
     row.validate()?;
     Ok(row)
 }
-fn closed(row: &MindRenewalOperationV1, expired: bool) -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn closed(
+    row: &MindRenewalOperationV1,
+    expired: bool,
+) -> TestResult<MindRenewalOperationV1> {
     let closure = serde_json::from_value(json!({
         "commit":token(12),"action":row.expected_action(Transition::Close)?,
         "at_ic":stamp(if expired{200}else{120}),"posted_at_utc":1020,

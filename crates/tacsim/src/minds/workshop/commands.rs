@@ -44,6 +44,11 @@ const SWITCHES: &[&str] = &[
     "rule",
     "localcopy",
     "fork",
+    "rate",
+    "file",
+    "update",
+    "withdraw",
+    "attest",
     "diff",
     "publish",
     "prove",
@@ -54,7 +59,7 @@ const SWITCHES: &[&str] = &[
     "forget",
     "trace",
 ];
-const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
+const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)\n@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>\n@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)\n@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
 
 #[derive(Clone)]
 pub(crate) struct WorkshopCommands {
@@ -166,6 +171,17 @@ impl WorkshopCommands {
         let switch = switch.clone();
         let text = ctx.args.raw().to_owned();
         let principal = self.principal(ctx).map_err(command_error)?;
+        // 17g C2a (C2 plan §2.2): `/rate` starts the Registry rating by name;
+        // `/file`, `/update`, `/withdraw`, `/attest` and the paid `/fork`
+        // each submit one existing Roll legal action. Same principal rule.
+        if crate::minds::market_commands::author::SWITCHES.contains(&switch.as_str()) {
+            return crate::minds::market_commands::author::author(ctx, &switch, &text);
+        }
+        // 17g C2c (C2 plan §2.2): `/publish` lists a filed mind the actor owns
+        // at the counter through the market's List action. Same principal rule.
+        if switch == "publish" {
+            return crate::minds::market_commands::market::publish(ctx, &text);
+        }
         self.author(ctx, principal, &switch, &text)
             .map_err(command_error)
     }
@@ -255,7 +271,9 @@ impl WorkshopCommands {
                     "Pruned {revisions} unreferenced owned revisions; retained {retained} candidate source blobs. Named versions, recent history and external references remain protected."
                 ));
             }
-            "localcopy" | "fork" => {
+            // 17g C2a: `/fork` is the paid fork (`market_commands`); the
+            // local draft copy is `/localcopy` alone.
+            "localcopy" => {
                 let (from, name) = pair(text)?;
                 let prepared = super::create(
                     roll(ctx)?,
@@ -443,12 +461,6 @@ impl WorkshopCommands {
                     None,
                 )?;
                 ctx.out.info(actor, "Working card updated.");
-            }
-            "publish" => {
-                return Err(invalid(
-                    "publish",
-                    "commercial mind publication is not available yet",
-                ));
             }
             "prove" | "proves" | "proving" | "report" | "cancel" | "forget" => {
                 crate::minds::bulk::world::command(ctx, switch, text)

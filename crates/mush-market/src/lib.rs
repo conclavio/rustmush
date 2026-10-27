@@ -123,6 +123,7 @@ mod facts;
 mod ids;
 pub mod interface;
 mod lot;
+pub mod mind_commands;
 pub mod mind_entitlement;
 pub mod mind_paid_resale;
 pub mod mind_renewal;

@@ -19,8 +19,21 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
+/// 17g C2a (C2 plan §2.3): one projected verb per kind. Before the split all
+/// five shared `market-original-mind-offer`, which the gateway's `+act`
+/// refuses as ambiguous. Only the presentation's verb changed: the label,
+/// help and every definition digest are as before.
+pub(crate) const fn verb(kind: Kind) -> &'static str {
+    match kind {
+        Kind::List => "market-original-mind-list",
+        Kind::Quote => "market-original-mind-quote",
+        Kind::RetireListing => "market-original-mind-retire-listing",
+        Kind::RetireQuote => "market-original-mind-retire-quote",
+        Kind::Expire => "market-original-mind-expire",
+    }
+}
 #[derive(Clone, Copy)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     List,
     Quote,
     RetireListing,
@@ -532,7 +545,7 @@ impl ActionProvider for Provider {
             required_channels: vec![],
             expires: None,
             presentation: mush_core::ActionPresentation::new(
-                "market-original-mind-offer",
+                verb(self.kind),
                 "Record an original mind offer",
                 "Record listing or quote terms; no payment or licence is created.",
             )

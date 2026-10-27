@@ -1,6 +1,7 @@
 //! Actual listing and quote producers. A listing materializes immutable
 //! royalty evidence through Roll; a quote remains unfunded consent data.
 use super::codec::{Bounded, Row};
+use super::config::ProductChoice;
 use super::families::Families;
 use super::guard::EntitlementGuard;
 use super::records::Cut;
@@ -29,7 +30,7 @@ pub(super) enum Form {
     OpenResale,
 }
 impl Form {
-    fn paid(self) -> PaidForm {
+    const fn paid(self) -> PaidForm {
         match self {
             Self::Sealed => PaidForm::Sealed {},
             Self::Open => PaidForm::Open {},
@@ -37,12 +38,35 @@ impl Form {
         }
     }
 }
+/// The List request. 17g C2b (D-UM-40, C2 plan §2.5; C1's residual): the
+/// author's per-listing transfer mark. An absent `transferable` reads `true`
+/// (the wire before the mark), so every existing caller is unchanged; `false`
+/// only narrows the deployment policy (`EntitlementConfig::product`). The
+/// listing row freezes the product, so no record format moves.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct List {
+pub(super) struct List {
     owner_licence: LicenceId,
     form: Form,
     royalty_permille: u16,
+    #[serde(default = "transferable_unless_marked")]
+    transferable: bool,
+}
+/// The serde default of `List::transferable`: transferable unless the
+/// author marks the listing otherwise (D-UM-40).
+const fn transferable_unless_marked() -> bool {
+    true
+}
+impl List {
+    /// The author's product choice, mark included, exactly as the List
+    /// branch hands it to `EntitlementConfig::product` (17g C2b).
+    pub(super) const fn choice(&self) -> ProductChoice {
+        ProductChoice {
+            form: self.form.paid(),
+            royalty_permille: self.royalty_permille,
+            transferable: self.transferable,
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,11 +156,7 @@ impl Provider {
                     format: 1,
                     publication: commit,
                     subject: EntitlementSubjectV1::capture(facts),
-                    product: self.config.product(
-                        facts,
-                        request.form.paid(),
-                        request.royalty_permille,
-                    )?,
+                    product: self.config.product(facts, request.choice())?,
                     royalty: facts.royalty().clone(),
                     price: self.config.policy.price,
                     instrument: self.config.policy.instrument.clone(),
@@ -249,25 +269,72 @@ pub(super) fn current_listing(
     actor: mush_core::ObjId,
 ) -> Result<(), String> {
     l.validate()?;
-    let expected = config.product(
-        f,
-        l.product.terms.form(),
-        l.product.grant.downstream().royalty_permille().unwrap_or(0),
-    )?;
+    // 17g C2b: recompute with the listing's own frozen choice, mark included
+    // (`ProductChoice::frozen`). A marked listing stays current; an unmarked
+    // one still lapses if the policy turns false (`false && true` differs
+    // from its frozen `true`), as before the mark.
+    let expected = config.product(f, ProductChoice::frozen(&l.product))?;
     if f.requester() != actor
         || f.protocol() != protocol
         || l.subject != EntitlementSubjectV1::capture(f)
         || l.product != expected
         || &l.royalty != f.royalty()
-        || l.price != config.policy.price
+        || current_policy(config, l).is_err()
+    {
+        return Err("listing no longer matches actual current entitlement".into());
+    }
+    Ok(())
+}
+/// The policy half of `current_listing`: the listing's price, instrument,
+/// Registry and venue cuts and policy reference are the deployment's current
+/// ones. 17g C2c: `mind_commands` lists exactly the listings that pass this
+/// test (the C2c brief: "`current_listing`'s policy test only — not
+/// seller-specific"); the Quote branch still runs the whole of
+/// `current_listing` against Roll's current sale facts, so a listing this
+/// shows can still refuse a quote (a withdrawn revision, a lapsed owner).
+pub(crate) fn current_policy(
+    config: &EntitlementConfig,
+    l: &EntitlementListingV1,
+) -> Result<(), String> {
+    l.validate()?;
+    if l.price != config.policy.price
         || l.instrument != config.policy.instrument
         || l.registry.0 != config.policy.registry
         || l.venue != config.policy.venue()
         || l.policy != config.policy_ref().map_err(|e| e.to_string())?
     {
-        return Err("listing no longer matches actual current entitlement".into());
+        return Err("listing no longer matches the current entitlement policy".into());
     }
     Ok(())
+}
+/// The projected parameters of the List and Quote offers. Core refuses any
+/// supplied key the schema does not name, so the List schema is what admits
+/// the author's mark at all. 17g C2b (D-UM-40): `transferable` is optional;
+/// absent is transferable (`List`'s serde default).
+pub(super) fn parameters(kind: Kind) -> Result<Vec<mush_core::ProjectedParameter>, String> {
+    use mush_core::ProjectedParameterKind as K;
+    match kind {
+        Kind::List => vec![
+            actions::parameter("owner_licence", K::Text { maximum_bytes: 20 }),
+            actions::parameter(
+                "form",
+                K::Choice {
+                    choices: vec!["sealed".into(), "open".into(), "open_resale".into()],
+                },
+            ),
+            actions::parameter(
+                "royalty_permille",
+                K::Integer {
+                    minimum: 0,
+                    maximum: 300,
+                },
+            ),
+            actions::optional("transferable", K::Boolean),
+        ],
+        Kind::Quote => vec![actions::parameter("listing", K::Text { maximum_bytes: 32 })],
+    }
+    .into_iter()
+    .collect()
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
@@ -290,29 +357,7 @@ impl ActionProvider for Provider {
         query: &mush_core::LegalActionQuery,
         engine: &mush_core::Engine,
     ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
-        use mush_core::ProjectedParameterKind as K;
-        let params = match self.kind {
-            Kind::List => vec![
-                actions::parameter("owner_licence", K::Text { maximum_bytes: 20 }),
-                actions::parameter(
-                    "form",
-                    K::Choice {
-                        choices: vec!["sealed".into(), "open".into(), "open_resale".into()],
-                    },
-                ),
-                actions::parameter(
-                    "royalty_permille",
-                    K::Integer {
-                        minimum: 0,
-                        maximum: 300,
-                    },
-                ),
-            ],
-            Kind::Quote => vec![actions::parameter("listing", K::Text { maximum_bytes: 32 })],
-        }
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| self.refusal.clone())?;
+        let params = parameters(self.kind).map_err(|_| self.refusal.clone())?;
         actions::offer(
             action,
             &self.action,

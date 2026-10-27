@@ -824,19 +824,22 @@ impl GameModule for MarketModule {
                 .venue_gate
                 .clone()
                 .ok_or_else(|| ModError::msg("entitlements require the actual venue gate"))?;
-            self.state.entitlement_families =
-                Some(crate::mind_entitlement::register_with_house_definitions(
-                    reg,
-                    config,
-                    gate,
-                    lot_registered || self.state.original_mind_quotes.is_some(),
-                    &house_definitions
-                        .iter()
-                        .chain(house_renewal_definitions.iter())
-                        .chain(resale_definitions.iter())
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                )?);
+            let families = crate::mind_entitlement::register_with_house_definitions(
+                reg,
+                config,
+                gate.clone(),
+                lot_registered || self.state.original_mind_quotes.is_some(),
+                &house_definitions
+                    .iter()
+                    .chain(house_renewal_definitions.iter())
+                    .chain(resale_definitions.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )?;
+            // 17g C2c (C2 plan §2.4): the `+minds` commands' bounded read of
+            // these listings, granted to TacSim, beside the families it reads.
+            crate::mind_commands::register(reg, families.clone(), config, gate)?;
+            self.state.entitlement_families = Some(families);
         }
         if let Some(config) = &self.state.house_minds {
             let gate =

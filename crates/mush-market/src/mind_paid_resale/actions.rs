@@ -26,6 +26,19 @@ fn parameters(kind: Kind) -> Result<Vec<ProjectedParameter>, String> {
         ]),
     }
 }
+/// 17g C2a (C2 plan §2.3): each kind's projected verb and label. Before the
+/// split all three shared `paid-mind-resale`, which the gateway's `+act`
+/// refuses as ambiguous; only the verb changed, never a label or digest.
+pub(crate) const fn presentation(kind: Kind) -> (&'static str, &'static str) {
+    match kind {
+        Kind::Offer => ("paid-mind-resale-offer", "Offer a paid licence for resale"),
+        Kind::Accept => ("paid-mind-resale-accept", "Buy an unoccupied paid licence"),
+        Kind::Fund => (
+            "paid-mind-resale-fund",
+            "Fund a pending paid licence resale",
+        ),
+    }
+}
 pub(super) fn offer(
     p: &Provider,
     action: &DefinitionRef,
@@ -55,15 +68,11 @@ pub(super) fn offer(
     ] {
         guards.add_definition(r.clone(), defs).map_err(|_| bad())?;
     }
-    let label = match p.kind {
-        Kind::Offer => "Offer a paid licence for resale",
-        Kind::Accept => "Buy an unoccupied paid licence",
-        Kind::Fund => "Fund a pending paid licence resale",
-    };
+    let (verb, label) = presentation(p.kind);
     Ok(Some(ProviderOfferDraft {
         fixed_parameters: serde_json::json!({}), parameters: mush_core::ProjectedParameterSchema::new(parameters(p.kind).map_err(|_| bad())?).map_err(|_| bad())?,
         targets: mush_core::ProjectedTargetSchema::None, required_channels: vec![], expires: None,
-        presentation: mush_core::ActionPresentation::new("paid-mind-resale", label, "The named offer preserves the licence's existing term and restrictions. Funding does not replace its current holder until settlement.").map_err(|_| bad())?,
+        presentation: mush_core::ActionPresentation::new(verb, label,"The named offer preserves the licence's existing term and restrictions. Funding does not replace its current holder until settlement.").map_err(|_| bad())?,
         guards: guards.finish().map_err(|_| bad())?,
     }))
 }

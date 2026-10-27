@@ -1,6 +1,13 @@
 //! Registered original-owner reads. Inputs name subjects; core supplies the
 //! immutable requester. Results are ephemeral observations, never sortie claims.
+//!
+//! 17g C2a (C2 plan §2.4, fallback 1): this read also carries the line-mode
+//! mind commands' own-actor kinds (`command_reader`), so the commands spend
+//! no owner-read service or grant of their own. `original_owner_holding` is
+//! version 2 for it; the original-holding kinds and their encodings are
+//! unchanged.
 
+use super::command_reader::{RollCommandReadRequest, RollCommandReadResult};
 use super::families::CommerceFamilies;
 use super::owner_holdings::{
     OriginalOwnerHolding, OwnerProjectionError, project_original_owner_for,
@@ -15,6 +22,7 @@ use mush_core::mechanics::{
 use mush_core::read_service::{
     OwnerReadContext, OwnerReadError, OwnerReadHandle, OwnerReadService,
 };
+use mush_core::reserved_shell::ShellReservations;
 use mush_core::{DefinitionRef, ModError, ObjId, Registrar};
 use mush_economy::EconomyStore;
 use mush_org::PrincipalId;
@@ -35,9 +43,18 @@ pub struct OriginalReadRequest {
 }
 #[derive(Serialize)]
 enum ReadKind {
-    Own { licence: LicenceId },
-    OwnPage { after: Option<ObjId> },
-    Admission { holder: ObjId, licence: LicenceId },
+    Own {
+        licence: LicenceId,
+    },
+    OwnPage {
+        after: Option<ObjId>,
+    },
+    Admission {
+        holder: ObjId,
+        licence: LicenceId,
+    },
+    /// 17g C2a: one of the line-mode commands' own-actor kinds.
+    Command(RollCommandReadRequest),
 }
 impl OriginalReadRequest {
     pub fn own(licence: LicenceId) -> Self {
@@ -55,6 +72,14 @@ impl OriginalReadRequest {
             kind: ReadKind::Admission { holder, licence },
         }
     }
+    /// 17g C2a: a line-mode command's own-actor read (`command_reader`),
+    /// answered in `OriginalReadResult::into_command`.
+    #[must_use]
+    pub const fn command(request: RollCommandReadRequest) -> Self {
+        Self {
+            kind: ReadKind::Command(request),
+        }
+    }
 }
 
 /// A page advances only through the requester's current E4 title index. A
@@ -64,6 +89,10 @@ impl OriginalReadRequest {
 pub struct OriginalReadResult {
     holding: Option<OriginalOwnerHolding>,
     next_after: Option<ObjId>,
+    /// 17g C2a: a command kind's answer; absent from every other kind's
+    /// encoding, which stays byte-identical to version 1's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<RollCommandReadResult>,
 }
 impl OriginalReadResult {
     pub fn holding(&self) -> Option<&OriginalOwnerHolding> {
@@ -75,12 +104,22 @@ impl OriginalReadResult {
     pub const fn next_after(&self) -> Option<ObjId> {
         self.next_after
     }
+    /// 17g C2a: the answer to `OriginalReadRequest::command`, `None` for
+    /// every other kind.
+    #[must_use]
+    pub fn into_command(self) -> Option<RollCommandReadResult> {
+        self.command
+    }
 }
 
 pub struct OriginalOwnerReader {
     families: CommerceFamilies,
     ratings: RatingFamilies,
     expected: RatingCompatibility,
+    /// 17g C2a: Roll's own filing-reservation handle, present only when
+    /// Active commerce composes the player market; the command kinds read
+    /// `Unavailable` without it.
+    commands: Option<ShellReservations>,
 }
 impl OriginalOwnerReader {
     /// The requesting game passes its actual frozen manifest reference. The
@@ -105,8 +144,11 @@ pub(crate) fn descriptor(manifest: &DefinitionRef) -> Result<DefinitionDescripto
             "original holdings require the registered combat manifest",
         ));
     }
-    Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_read").map_err(error)?,DefinitionId::new("original_owner_holding").map_err(error)?,1,
-        json!({"format":1,"original_only":true,"own_assets_per_page":OWN_ASSETS_PER_PAGE,"source_bytes":false,"manifest":manifest}))
+    // 17g C2a: version 2 declares the folded command kinds (`command_reader`),
+    // own-actor only, source-free and without account ids.
+    let commands = json!({"own_only":true,"maximum_rows":super::command_reader::MAXIMUM_ROWS,"account_ids":false});
+    Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_read").map_err(error)?,DefinitionId::new("original_owner_holding").map_err(error)?,2,
+        json!({"format":1,"original_only":true,"own_assets_per_page":OWN_ASSETS_PER_PAGE,"source_bytes":false,"manifest":manifest,"commands":commands}))
         .map_err(error)?.with_references(vec![manifest.clone()]))
 }
 fn definition(manifest: &DefinitionRef) -> Result<DefinitionRef, ModError> {
@@ -117,12 +159,15 @@ fn definition(manifest: &DefinitionRef) -> Result<DefinitionRef, ModError> {
         )
         .map_err(error)
 }
+/// `commands` is Roll's own reservation handle when Active commerce composes
+/// the player market (`CommerceConfig::with_mind_commands`), else `None`.
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     families: CommerceFamilies,
     ratings: RatingFamilies,
     manifest: &DefinitionRef,
     expected: RatingCompatibility,
+    commands: Option<ShellReservations>,
 ) -> Result<(), ModError> {
     if reg.module() != crate::NS || manifest.digest() != expected.digest() {
         return Err(ModError::msg(
@@ -140,6 +185,7 @@ pub(crate) fn register(
             families,
             ratings,
             expected,
+            commands,
         },
     )
 }
@@ -171,11 +217,26 @@ impl OwnerReadService for OriginalOwnerReader {
                 (holder, licence)
             }
             ReadKind::OwnPage { after } => return self.page(ctx, after),
+            ReadKind::Command(request) => {
+                let command = super::command_reader::read(
+                    ctx,
+                    roll,
+                    &self.families,
+                    self.commands.as_ref(),
+                    request,
+                )?;
+                return Ok(OriginalReadResult {
+                    holding: None,
+                    next_after: None,
+                    command: Some(command),
+                });
+            }
         };
         let holding = self.project(ctx, holder, licence)?;
         Ok(OriginalReadResult {
             holding: Some(holding),
             next_after: None,
+            command: None,
         })
     }
 }
@@ -250,6 +311,7 @@ impl OriginalOwnerReader {
             return Ok(OriginalReadResult {
                 holding,
                 next_after: (offset + 1 < owned.len()).then_some(asset.object),
+                command: None,
             });
         }
         Ok(OriginalReadResult {
@@ -259,6 +321,7 @@ impl OriginalOwnerReader {
             } else {
                 None
             },
+            command: None,
         })
     }
 }

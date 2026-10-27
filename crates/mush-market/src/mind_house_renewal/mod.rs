@@ -20,7 +20,12 @@ pub use config::{RenewalConfig, RenewalPolicy};
 pub(crate) use families::Families;
 pub use records::{MindRenewalOperationV1, MindRenewalReceiptV1};
 pub(crate) use registration::register;
+pub use service::player_step;
 pub(crate) use service::{enable as enable_service, guard_current as service_guard_current};
 
+// 17g C2d: crate-visible for `mind_renewal`'s player-step test, which
+// checks the House service's sentences against these fixtures.
 #[cfg(test)]
-mod tests;
+pub(crate) use service::{command_line, status_view};
+#[cfg(test)]
+pub(crate) mod tests;

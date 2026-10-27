@@ -302,9 +302,12 @@ fn fence(r: &mut Rig, name: &str, parameters: Value) -> Result {
 
 /// 17g C1c's three resale checks on the settled House Pin `licence`, while its
 /// buyer is a Republic member (C1 plan §4.4 test 5, §5):
-/// - (a) `paid-mind-resale`'s projected actions are byte-identical for the
+/// - (a) the paid-resale projected actions are byte-identical for the
 ///   holder, God and the Registry operator, as JSON with their per-actor
-///   `offer` ids removed: offered to every live player, revealing no holding;
+///   `offer` ids removed: offered to every live player, revealing no holding.
+///   Since 17g C2a each kind has its own verb, so the check reads the set of
+///   all three (`paid-mind-resale-offer`, `-accept`, `-fund`), never Offer
+///   alone;
 /// - (b) the holder's paid-resale Offer naming the clerk prepares. It is
 ///   planned only, never staged, so no later step of the story moves;
 /// - (c) God's identical Offer refuses, with the same bytes as God's Offer on
@@ -316,7 +319,10 @@ fn resale_privacy(r: &mut Rig, d: &LaunchDeployment, licence: u64) -> Result {
     let resale = |r: &mut Rig, actor: ObjId| -> Result<Vec<Value>> {
         let mut offers = Vec::new();
         for offer in projected(r, actor)? {
-            if offer.presentation().verb != "paid-mind-resale" {
+            if !matches!(
+                offer.presentation().verb.as_str(),
+                "paid-mind-resale-offer" | "paid-mind-resale-accept" | "paid-mind-resale-fund"
+            ) {
                 continue;
             }
             let mut value = serde_json::to_value(&offer)?;
@@ -330,7 +336,10 @@ fn resale_privacy(r: &mut Rig, d: &LaunchDeployment, licence: u64) -> Result {
         Ok(offers)
     };
     let held = resale(r, buyer)?;
-    check!(!held.is_empty(), "the holder is offered paid-mind-resale");
+    check!(
+        !held.is_empty(),
+        "the holder is offered the paid-resale verbs"
+    );
     check_eq!(&held, &resale(r, GOD)?, "the holder and God");
     check_eq!(&held, &resale(r, operator)?, "the holder and the operator");
     eprintln!(

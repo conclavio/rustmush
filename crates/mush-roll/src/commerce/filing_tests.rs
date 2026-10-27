@@ -53,7 +53,14 @@ type ReadAnswers = Arc<
     >,
 >;
 
-struct ReadManifest;
+/// 17g C2a: a requester-side registration the fixture's "tacsim" module adds
+/// with its one original-holdings grant (`command_reader`'s tests read the
+/// folded command kinds through it, as TacSim's command slot does).
+pub(super) type TacsimReads = fn(
+    &mut Registrar<'_>,
+    mush_core::read_service::OwnerReadHandle<super::holding_reader::OriginalOwnerReader>,
+) -> Result<(), ModError>;
+struct ReadManifest(Option<TacsimReads>);
 struct HoldingQuery {
     reader: mush_core::read_service::OwnerReadHandle<super::holding_reader::OriginalOwnerReader>,
     answers: ReadAnswers,
@@ -99,6 +106,9 @@ impl GameModule for ReadManifest {
         )?;
         let answers: ReadAnswers = Arc::new(Mutex::new(None));
         reg.state(answers.clone());
+        if let Some(reads) = self.0 {
+            reads(reg, reader.clone())?;
+        }
         reg.query_handler("holding.test", Arc::new(HoldingQuery { reader, answers }))
     }
 }
@@ -127,7 +137,7 @@ fn read_holding(
         .take()
         .unwrap()
 }
-fn token(n: u8) -> CommitToken {
+pub(super) fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
 
@@ -257,7 +267,7 @@ impl GameModule for HydratedRoll {
         self.module.finalize_owner_composition(ctx)
     }
 }
-fn config() -> CommerceConfig {
+pub(super) fn config() -> CommerceConfig {
     let manifest = reference("tacsim", manifest_descriptor());
     CommerceConfig::new(
         CommerceMode::Active,
@@ -271,7 +281,16 @@ fn engine(world: World, sources: Sources) -> (Box<Engine>, Handles) {
     engine_with_market(world, sources, false)
 }
 fn engine_with_market(world: World, sources: Sources, market: bool) -> (Box<Engine>, Handles) {
-    try_engine_with_market(world, sources, market, market).unwrap()
+    engine_with(world, sources, market, None, false)
+}
+fn engine_with(
+    world: World,
+    sources: Sources,
+    market: bool,
+    reads: Option<TacsimReads>,
+    commands: bool,
+) -> (Box<Engine>, Handles) {
+    try_engine(world, sources, market, market, reads, commands).unwrap()
 }
 fn try_engine_with_market(
     world: World,
@@ -279,10 +298,27 @@ fn try_engine_with_market(
     market: bool,
     requester: bool,
 ) -> Result<(Box<Engine>, Handles), ModError> {
+    try_engine(world, sources, market, requester, None, false)
+}
+/// `commands` opens the folded command kinds on Roll's original-holdings
+/// read (`CommerceConfig::with_mind_commands`); `reads` adds the requester.
+fn try_engine(
+    world: World,
+    sources: Sources,
+    market: bool,
+    requester: bool,
+    reads: Option<TacsimReads>,
+    commands: bool,
+) -> Result<(Box<Engine>, Handles), ModError> {
     let config = if market {
         config().with_original_market_quotes()
     } else {
         config()
+    };
+    let config = if commands {
+        config.with_mind_commands()
+    } else {
+        config
     };
     let issuer = SystemPrincipalId::new("roll.registry").unwrap();
     let policy = mush_economy::registry_filing::InitialFilingPolicy::new(
@@ -300,7 +336,7 @@ fn try_engine_with_market(
         .with_initial_filing(policy, config.initial_filing_action().unwrap());
     let handles = Arc::new(Mutex::new(None));
     let mut modules: Vec<Box<dyn GameModule>> = vec![
-        Box::new(ReadManifest),
+        Box::new(ReadManifest(reads)),
         Box::new(HydratedRoll {
             module: RollModule::with_writers(["tacsim"]).with_commerce(config),
             sources,
@@ -412,21 +448,30 @@ fn seed_accounts(disk: &mut Disk, credit: bool) {
         disk.insert(("economy".into(), format!("account:{id}")), json!(account));
     }
 }
-struct Fixture {
-    engine: Box<Engine>,
-    families: CommerceFamilies,
+pub(super) struct Fixture {
+    pub(super) engine: Box<Engine>,
+    pub(super) families: CommerceFamilies,
     ratings: RatingFamilies,
     disk: Disk,
     sources: Sources,
-    revision: Revision,
+    pub(super) revision: Revision,
     rating: super::rating::RatingRef,
-    shell: ObjId,
+    pub(super) shell: ObjId,
 }
 impl Fixture {
     fn new(credit: bool) -> Self {
         Self::new_with_market(credit, false)
     }
     fn new_with_market(credit: bool, market: bool) -> Self {
+        Self::build(credit, market, None, false)
+    }
+    /// 17g C2a: the same filing fixture with `reads` on the fixture's
+    /// "tacsim" module, holding its original-holdings grant; `commands` opens
+    /// the folded command kinds on that read, as the player market does.
+    pub(super) fn new_with_reads(credit: bool, reads: TacsimReads, commands: bool) -> Self {
+        Self::build(credit, false, Some(reads), commands)
+    }
+    fn build(credit: bool, market: bool, reads: Option<TacsimReads>, commands: bool) -> Self {
         let mut disk = Disk::new();
         let mut initialize = setup::engine(CommerceMode::Initialize);
         setup::boot(&mut initialize).unwrap();
@@ -442,8 +487,13 @@ impl Fixture {
         initialize.install_composed_action(install).unwrap();
         let (sources, revision) = saved(&mut disk);
         seed_accounts(&mut disk, credit);
-        let (mut staging, (_, ratings)) =
-            engine_with_market(World::new_minimal(), sources.clone(), market);
+        let (mut staging, (_, ratings)) = engine_with(
+            World::new_minimal(),
+            sources.clone(),
+            market,
+            reads,
+            commands,
+        );
         let identity = RevisionIdentity::capture(&revision).unwrap();
         // Structural subject hashes are exact bounded fixture values. This is
         // an owner-composition test, not the combat definition/worker gate.
@@ -530,8 +580,13 @@ impl Fixture {
             row.validate().unwrap();
             disk.insert((crate::NS.into(), row.key.key()), json!(row));
         }
-        let (mut engine, (families, ratings)) =
-            engine_with_market(World::new_minimal(), sources.clone(), market);
+        let (mut engine, (families, ratings)) = engine_with(
+            World::new_minimal(),
+            sources.clone(),
+            market,
+            reads,
+            commands,
+        );
         load(&mut engine, &disk).unwrap();
         assert!(
             engine
@@ -572,7 +627,7 @@ impl Fixture {
             shell,
         }
     }
-    fn request(&self) -> ActionInvocation {
+    pub(super) fn request(&self) -> ActionInvocation {
         invocation(
             4,
             json!({"shell_request":RequestUid::from_bytes([3;16]), "mind":self.revision.reference().key.mind,

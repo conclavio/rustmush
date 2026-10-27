@@ -68,6 +68,41 @@ impl MindRef {
         }
         Ok(Self { name, revision })
     }
+
+    /// 17g C2a: the canonical library name this reference names.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// 17g C2a (C2 plan §2.7): the actor's own saved revision that `reference`
+/// names, resolved as `@mind/source` resolves a saved selector (a local
+/// revision number, a named version or `sha:<digest>`), without reading any
+/// source bytes. Original and marked minds both resolve: a marked derivative
+/// files as a dependent mind. A reference with no selector names the working
+/// copy, which is no saved revision, so it is `Missing` like an unknown one.
+pub(crate) fn saved_revision<'a>(
+    roll: &'a RollStore,
+    actor: ObjId,
+    reference: &MindRef,
+) -> Result<&'a mush_roll::Revision, RollError> {
+    let selector = reference.revision.as_ref().ok_or(RollError::Missing)?;
+    let mind = roll.mind(actor, &reference.name)?;
+    let key = if let Some(digest) = selector.strip_prefix("sha:") {
+        roll.resolve_digest(actor, &reference.name, digest)?.key
+    } else {
+        RevisionKey {
+            character: actor,
+            mind: mind.id(),
+            number: selector
+                .parse::<u64>()
+                .ok()
+                .filter(|number| *number > 0)
+                .or_else(|| mind.named().get(&selector.to_ascii_lowercase()).copied())
+                .ok_or(RollError::Missing)?,
+        }
+    };
+    roll.revision(actor, key)
 }
 
 /// Original-only source predicate, with no staff bypass or other-character

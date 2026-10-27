@@ -1,6 +1,10 @@
 //! Retained, bounded continuations. The durable owner records are inventory;
 //! missing acknowledgement is never absence, and no path automatically funds.
 use super::{Families, MindRenewalOperationV1, RenewalConfig};
+use crate::mind_renewal::player::{
+    RenewalOfferTerms, RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, RenewalStatusView,
+    Switches, house_status_line, outcome_line,
+};
 use mush_core::action::{AuthorityGuard, AuthorityGuardContext, IdempotencyKeyText, PerceivedRef};
 use mush_core::mechanics::{CanonicalId, OwnerId};
 use mush_core::read_service::OwnerReadHandle;
@@ -616,32 +620,86 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(unavailable());
     }
     let licence = LicenceId::new(n).map_err(|_| unavailable())?;
-    let item = own(ctx, &s, licence)?;
+    // 17g C2d: the player branch is `step`, shared with `player_step`; this
+    // command keeps its own switches and prints exactly its pre-C2d lines.
+    let outcome = step(ctx, &s, licence, Switches::of_command(&ctx.switches))?;
+    ctx.out
+        .sys_to_actor(ctx.actor, "market", command_line(outcome));
+    Ok(())
+}
+
+/// `@housemindrenewal`'s one line for a step's outcome (the 17g C2d test 1 compares it
+/// with the pre-C2d sentences).
+pub(crate) fn command_line(outcome: RenewalPlayerOutcome) -> String {
+    outcome_line(outcome, house_status_line)
+}
+
+/// 17g C2d (C2 plan §2.1's renewal exception): one player step on the
+/// actor's own House Pin renewal, the front `+minds/renew` uses. It is the
+/// `@housemindrenewal` command's own player branch (`step`): the renewal reader's
+/// holder check, the service's admission, retained entry, idempotency key and
+/// submission, unchanged; a funded offer is still granted or refunded by the
+/// service's continuation. Every refusal is the service's one uniform line,
+/// `Renewal is unavailable or has changed.`, for a foreign licence and a
+/// missing one alike.
+pub fn player_step(
+    ctx: &mut Ctx<'_>,
+    licence: LicenceId,
+    step_kind: RenewalPlayerStep,
+) -> Result<RenewalPlayerOutcome, CmdError> {
+    let s = service(ctx)?;
+    step(ctx, &s, licence, Switches::of(step_kind))
+}
+
+/// The status branch's view of the actor's own licence (`own`'s term end and
+/// the checked last operation), read exactly as `@housemindrenewal/status` reads
+/// it.
+pub(crate) fn status_view(
+    term_end_ic: i64,
+    row: Option<&MindRenewalOperationV1>,
+) -> RenewalStatusView {
+    let state = match row.map(|r| r.state()) {
+        None => RenewalState::None,
+        Some(RenewalStateV1::Drafted {}) => RenewalState::Drafted,
+        Some(RenewalStateV1::Funded { .. }) => RenewalState::Funded,
+        Some(RenewalStateV1::Granted { .. }) => RenewalState::Granted,
+        Some(_) => RenewalState::Closed,
+    };
+    let offer = row.map(|row| RenewalOfferTerms {
+        price_minor: row.offer().terms.price.minor(),
+        instrument: row.offer().terms.instrument.to_string(),
+        expires_ic: row.offer().terms.expires_at.at,
+        term_seconds: row.binding().term_seconds(),
+        grace_seconds: row.binding().grace_seconds(),
+        registry_permille: row.offer().terms.registry.permille,
+        venue_permille: row.offer().terms.venue.as_ref().map_or(0, |c| c.permille),
+        // A House Pin's offer carries no parent royalties.
+        parent_permille: 0,
+    });
+    RenewalStatusView::new(state, term_end_ic, offer)
+}
+
+/// The player branch, by the switches `sw` selects (the command's own, or
+/// `player_step`'s): status first, then request, accept, decline and retry
+/// in the command's original order.
+fn step(
+    ctx: &mut Ctx<'_>,
+    s: &Service,
+    licence: LicenceId,
+    sw: Switches,
+) -> Result<RenewalPlayerOutcome, CmdError> {
+    let item = own(ctx, s, licence)?;
     let row = item
         .last_operation()
-        .map(|op| checked(ctx, &s, op))
+        .map(|op| checked(ctx, s, op))
         .transpose()?;
-    if ctx.switches.has("status") || ctx.switches.is_empty() {
-        let label = match row.as_ref().map(|r| r.state()) {
-            None => "No renewal offer has been requested.",
-            Some(RenewalStateV1::Drafted {}) => {
-                "A renewal offer awaits your explicit acceptance or decline."
-            }
-            Some(RenewalStateV1::Funded { .. }) => "Payment is held; completion is pending.",
-            Some(RenewalStateV1::Granted { .. }) => "Renewal completed.",
-            Some(_) => {
-                "The last renewal closed without a new term. You may explicitly request a retry."
-            }
-        };
-        let details=row.as_ref().map(|row| format!(" Price: {} minor units of {}; offer expires at world-IC {}. Term: {} seconds plus {} seconds grace. Registry cut: {} per mille; venue cut: {} per mille.",
-            row.offer().terms.price.minor(),row.offer().terms.instrument,row.offer().terms.expires_at.at,
-            row.binding().term_seconds(),row.binding().grace_seconds(),row.offer().terms.registry.permille,
-            row.offer().terms.venue.as_ref().map_or(0,|c|c.permille))).unwrap_or_default();
-        ctx.out
-            .sys_to_actor(ctx.actor, "market", format!("{label}{details}"));
-        return Ok(());
+    if sw.status {
+        return Ok(RenewalPlayerOutcome::Status(status_view(
+            item.term_end().get(),
+            row.as_ref(),
+        )));
     }
-    let (selection, t, parameters) = if ctx.switches.has("request") && !item.attempted() {
+    let (selection, t, parameters) = if sw.request && !item.attempted() {
         (
             Selection::Due(licence, item.generation(), item.holder_generation()),
             Transition::Draft,
@@ -649,19 +707,19 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )
     } else {
         let row = row.ok_or_else(unavailable)?;
-        if ctx.switches.has("accept") && matches!(row.state(), RenewalStateV1::Drafted {}) {
+        if sw.accept && matches!(row.state(), RenewalStateV1::Drafted {}) {
             (
                 Selection::Pending(row.operation()),
                 Transition::Fund,
                 serde_json::json!({"operation":row.operation()}),
             )
-        } else if ctx.switches.has("decline") && matches!(row.state(), RenewalStateV1::Drafted {}) {
+        } else if sw.decline && matches!(row.state(), RenewalStateV1::Drafted {}) {
             (
                 Selection::Pending(row.operation()),
                 Transition::Close,
                 serde_json::json!({"operation":row.operation(),"reason":"declined"}),
             )
-        } else if ctx.switches.has("retry") && row.state().retryable() {
+        } else if sw.retry && row.state().retryable() {
             (
                 Selection::Retry(licence, item.generation(), row.operation()),
                 Transition::Draft,
@@ -671,25 +729,15 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(unavailable());
         }
     };
-    let mut r = runtime(&s)?.runtime.lock().map_err(|_| unavailable())?;
+    let mut r = runtime(s)?.runtime.lock().map_err(|_| unavailable())?;
     if !r.enabled {
         return Err(unavailable());
     }
     admit(&mut r, selection, ctx.actor)?;
     let e = r.entries.get_mut(&key(selection)).ok_or_else(unavailable)?;
     if e.attempt.is_some() {
-        ctx.out.sys_to_actor(
-            ctx.actor,
-            "market",
-            "A renewal request is still unresolved; inspect status before retrying.",
-        );
-        return Ok(());
+        return Ok(RenewalPlayerOutcome::Unresolved);
     }
-    submit(ctx, &s, e, t, parameters)?;
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "market",
-        "Renewal request queued. Status or its acknowledged receipt establishes completion.",
-    );
-    Ok(())
+    submit(ctx, s, e, t, parameters)?;
+    Ok(RenewalPlayerOutcome::Queued)
 }
