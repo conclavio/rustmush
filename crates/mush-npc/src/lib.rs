@@ -149,8 +149,8 @@ pub use memory::{
     BUFFER_CAP, LongTermStore, MAX_MEMORY_BUFFER_BYTES, MAX_MEMORY_EVENT_CHARS,
     MAX_MEMORY_NOTE_BYTES, MAX_MEMORY_NOTES_PER_SUBJECT, MAX_MEMORY_RECALL_RECORDS,
     MAX_MEMORY_RECORD_BYTES, MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUBJECTS_PER_NPC,
-    MAX_MEMORY_SUMMARY_CHARS, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord,
-    MemoryRecordError, MemoryUpdate, record_key,
+    MAX_MEMORY_SUMMARY_CHARS, MemoryBuffer, MemoryContext, MemoryEvent, MemoryKind, MemoryRecall,
+    MemoryRecord, MemoryRecordError, MemoryUpdate, record_key,
 };
 pub use module::ability_submit_key;
 pub use module::{

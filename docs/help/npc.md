@@ -76,6 +76,19 @@ it knows by virtue of *who and where it is* — a bartender knows the local stre
 the simulator's docent knows the centre — whether or not it has ever met you.
 World knowledge is authored by staff; episodic memory accrues in play.
 
+For an ongoing conversation, address the NPC once by name. Follow-up speech from
+the same player stays directed to it for two minutes, refreshed by each follow-up
+or public reply in that exchange.
+Addressing someone else with a leading name and comma or colon, leaving the room,
+or the NPC moving ends that focus. Recent questions, public replies, and action
+outcomes take priority over background chatter in its working memory.
+
+Raw recent history is kept only for the current server session. Rolling summaries
+and explicit per-subject memories persist across restarts. Failed memory-summary
+calls keep recent events and retry with backoff; the bounded buffer can still
+discard older events during a long outage. Private interface answers are not
+stored in reusable conversation memory.
+
 World knowledge comes from two sources: **per-NPC lore** authored directly on one
 NPC, and shared **lore pools** authored once and drawn on by many NPCs via tags
 (so a whole district of NPCs can share "the streets" without retyping it).

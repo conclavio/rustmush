@@ -358,6 +358,12 @@ pub enum TurnOutcome {
         /// The new rolling summary.
         summary: String,
     },
+    /// The memory fold failed; retain its source events for a later retry.
+    #[serde(rename = "summary_failed")]
+    SummaryFailed {
+        /// The NPC.
+        npc: ObjId,
+    },
     /// Nothing to do (do_nothing, empty, or a no-op) — clear in-flight only.
     Nothing {
         /// The NPC.
@@ -376,6 +382,7 @@ impl TurnOutcome {
             TurnOutcome::Ok { npc, .. }
             | TurnOutcome::Degraded { npc, .. }
             | TurnOutcome::Summary { npc, .. }
+            | TurnOutcome::SummaryFailed { npc }
             | TurnOutcome::Nothing { npc, .. } => *npc,
         }
     }

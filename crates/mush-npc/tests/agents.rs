@@ -94,6 +94,15 @@ impl Rig {
             .expect("room")
     }
 
+    fn exit(&mut self, name: &str, from: ObjId, to: ObjId) {
+        let exit = self
+            .engine
+            .world
+            .create(ObjKind::Exit, name, GOD, Some(from))
+            .expect("exit");
+        self.engine.world.get_mut(exit).unwrap().destination = Some(to);
+    }
+
     fn npc(&mut self, name: &str, room: ObjId, profile: &AgentProfile) -> ObjId {
         let id = self
             .engine
@@ -514,38 +523,42 @@ async fn delayed_completion_cannot_clear_or_act_during_a_newer_turn() {
 
 /// The typed completion is the world task's re-entry seam for a finished
 /// turn, and it may reach an NPC with nothing in flight (nothing fired through
-/// the tick — the persistence round trip re-enters a remember + a summary this
-/// way). Such a completion is applied exactly once: a replay of the same
-/// correlation is dropped, a newer one is applied.
+/// the tick). Ordinary dialogue is applied exactly once: a replay of the same
+/// correlation is dropped, a newer one is applied. Memory summaries separately
+/// require the exact captured fold batch.
 #[tokio::test]
 async fn completion_for_an_idle_npc_is_applied_once() {
     let mut rig = Rig::new();
     let bar = rig.room("Bar");
     let npc = rig.npc("Bartender", bar, &profile(NpcTier::Major));
-    let summary = |rig: &Rig| {
-        rig.engine
-            .world
-            .attr(npc, SUMMARY_ATTR)
-            .and_then(|a| a.as_text())
-            .map(str::to_owned)
-    };
     let outcome = |text: &str| {
-        serde_json::json!({ "status": "summary", "npc": npc, "summary": text }).to_string()
+        serde_json::json!({
+            "status": "ok", "npc": npc,
+            "actions": [{ "action": { "action": "say", "text": text } }]
+        })
+        .to_string()
     };
 
-    rig.complete(npc, 1, &outcome("Alice runs a tab."));
-    assert_eq!(summary(&rig).as_deref(), Some("Alice runs a tab."));
+    let first = rig.complete(npc, 1, &outcome("Alice runs a tab.")).take();
+    assert!(
+        said_lines(&first)
+            .iter()
+            .any(|line| line.contains("Alice runs a tab."))
+    );
     assert!(!rig.host().runtime(npc).unwrap().in_flight);
 
-    rig.complete(npc, 1, &outcome("replayed"));
-    assert_eq!(
-        summary(&rig).as_deref(),
-        Some("Alice runs a tab."),
-        "a replay of an applied completion must not re-apply"
+    let replay = rig.complete(npc, 1, &outcome("replayed")).take();
+    assert!(
+        said_lines(&replay).is_empty(),
+        "a replay must not speak again"
     );
 
-    rig.complete(npc, 2, &outcome("Alice paid up."));
-    assert_eq!(summary(&rig).as_deref(), Some("Alice paid up."));
+    let next = rig.complete(npc, 2, &outcome("Alice paid up.")).take();
+    assert!(
+        said_lines(&next)
+            .iter()
+            .any(|line| line.contains("Alice paid up."))
+    );
 }
 
 #[tokio::test]
@@ -2609,4 +2622,574 @@ async fn the_help_provider_reads_a_topic_verbatim_or_refuses() {
             .iter()
             .any(|l| l.contains("no help topic called"))
     );
+}
+
+#[tokio::test]
+async fn focused_followup_keeps_the_exchange_and_asker_through_room_chatter() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let hall = rig.room("Hall");
+    rig.exit("bar", hall, bar);
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let bob = rig.player("Bob", bar, true);
+    let carol = rig.player("Carol", hall, true);
+    rig.host_mut().config.transcript_chars = 512;
+
+    rig.run(alice, "say Bartender, where is the depot?");
+    rig.set_now(2);
+    let (_, first, payload) = rig.one_turn().expect("first question");
+    let (service, mock) = service();
+    mock.push_response(tool_resp(vec![say_tool(
+        "The depot is beside the east gate.",
+    )]));
+    let answer = run_npc_turn_async(&service, &payload).await;
+    rig.complete(npc, first, &answer);
+
+    rig.set_now(12);
+    rig.run(alice, "say Does it open before dawn?");
+    for _ in 0..12 {
+        rig.run(
+            bob,
+            "say The weather is ordinary and I am discussing unrelated errands.",
+        );
+    }
+    rig.run(carol, "bar");
+    rig.set_now(14);
+    let (_, _, payload) = rig.one_turn().expect("focused follow-up");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        snap.actor,
+        Some(alice),
+        "later chatter and arrivals are not the asker"
+    );
+    assert!(snap.stimuli.iter().any(|line| {
+        line.who == "Alice" && line.directed && line.text == "Does it open before dawn?"
+    }));
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| line.who == "Bob" && !line.directed)
+    );
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| line.who == "Carol" && line.tag == "arrived")
+    );
+    assert!(
+        snap.transcript.contains("where is the depot?"),
+        "{}",
+        snap.transcript
+    );
+    assert!(
+        snap.transcript
+            .contains("The depot is beside the east gate."),
+        "{}",
+        snap.transcript
+    );
+    assert!(
+        snap.transcript.contains("Does it open before dawn?"),
+        "{}",
+        snap.transcript
+    );
+    assert!(snap.transcript.len() <= 512);
+}
+
+#[test]
+fn presence_only_turn_never_borrows_the_arriving_players_authority() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let hall = rig.room("Hall");
+    rig.exit("lobby", hall, lobby);
+    let susie = rig.npc("Susie", lobby, &fronting(&["echo"]));
+    let alice = rig.player("Alice", hall, true);
+    rig.run(alice, "lobby");
+    rig.set_now(2);
+    let (_, correlation, payload) = rig.one_turn().expect("arrival turn");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(snap.actor, None);
+    assert!(snap.stimuli.iter().all(|line| !line.directed));
+    let events = rig
+        .complete(
+            susie,
+            correlation,
+            &ability_payload(
+                susie,
+                snap.actor,
+                "echo.say",
+                serde_json::json!({"text": "unasked"}),
+            ),
+        )
+        .take();
+    assert!(said_lines(&events).is_empty());
+    assert!(rig.host().interface_audit.is_empty());
+}
+
+#[test]
+fn focus_distinguishes_an_explicit_other_addressee_from_a_mention_and_expires() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let _bob = rig.player("Bob", bar, true);
+    rig.run(alice, "say Bartender, can you help?");
+    rig.run(alice, "say Can you tell me whether Bob paid?");
+    let rt = rig.host().runtime(npc).unwrap();
+    assert_eq!(rt.focus_for(bar, 0), Some(alice));
+    assert!(rt.mailbox.last().unwrap().is_direct());
+
+    rig.run(alice, "say Bob, did you pay?");
+    let rt = rig.host().runtime(npc).unwrap();
+    assert_eq!(rt.focus_for(bar, 0), None);
+    assert!(!rt.mailbox.last().unwrap().is_direct());
+    rig.run(alice, "say And did you keep the receipt?");
+    assert!(
+        !rig.host()
+            .runtime(npc)
+            .unwrap()
+            .mailbox
+            .last()
+            .unwrap()
+            .is_direct()
+    );
+
+    rig.set_now(10);
+    rig.run(alice, "say Bartender, one more thing.");
+    assert_eq!(
+        rig.host().runtime(npc).unwrap().focus_for(bar, 10_000),
+        Some(alice)
+    );
+    rig.set_now(131);
+    rig.run(alice, "say Are the doors still open?");
+    let rt = rig.host().runtime(npc).unwrap();
+    assert_eq!(rt.focus_for(bar, 131_000), None);
+    assert!(!rt.mailbox.last().unwrap().is_direct());
+}
+
+#[test]
+fn player_and_npc_departures_clear_focus_before_followups() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let hall = rig.room("Hall");
+    rig.exit("hall", bar, hall);
+    rig.exit("bar", hall, bar);
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let _bob = rig.player("Bob", bar, true);
+    rig.run(alice, "say Bartender, hello.");
+    rig.run(alice, "hall");
+    assert_eq!(rig.host().runtime(npc).unwrap().focus_for(bar, 0), None);
+    rig.run(alice, "bar");
+    rig.run(alice, "say Still here?");
+    assert!(
+        !rig.host()
+            .runtime(npc)
+            .unwrap()
+            .mailbox
+            .last()
+            .unwrap()
+            .is_direct()
+    );
+
+    rig.run(alice, "say Bartender, please come into the hall.");
+    assert_eq!(
+        rig.host().runtime(npc).unwrap().focus_for(bar, 0),
+        Some(alice)
+    );
+    rig.run(npc, "hall");
+    assert_eq!(rig.engine.world.get(npc).unwrap().location, Some(hall));
+    let rt = rig.host().runtime(npc).unwrap();
+    assert!(rt.conversation_focus.is_none());
+    assert!(rt.mailbox.is_empty());
+}
+
+#[test]
+fn failed_folds_retry_without_losing_events_or_blocking_dialogue() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    rig.engine
+        .world
+        .set_attr(npc, SUMMARY_ATTR, Attr::text("Existing memory.", npc))
+        .unwrap();
+    {
+        let rt = rig.host_mut().runtime_mut(npc);
+        for n in 0..54 {
+            rt.memory.push(n, format!("earlier event {n}"));
+        }
+        rt.summarize_pending = true;
+    }
+    let (_, first, payload) = rig.one_turn().expect("initial fold");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(snap.kind, TurnKind::Summarize);
+    assert_eq!(snap.fold_events.len(), 27);
+    assert_eq!(rig.host().runtime(npc).unwrap().memory.events.len(), 54);
+    rig.complete(npc, first, "not JSON");
+    assert_eq!(rig.host().runtime(npc).unwrap().memory.events.len(), 54);
+    assert_eq!(
+        rig.host().runtime(npc).unwrap().summarize_retry_at,
+        Some(30_000)
+    );
+    assert!(rig.one_turn().is_none(), "no immediate failure spin");
+
+    rig.set_now(1);
+    rig.run(alice, "say Bartender, are you still listening?");
+    rig.set_now(3);
+    let (_, dialogue, payload) = rig.one_turn().expect("dialogue during fold backoff");
+    assert_eq!(
+        serde_json::from_str::<TurnSnapshot>(&payload).unwrap().kind,
+        TurnKind::Dialogue
+    );
+    rig.complete(
+        npc,
+        dialogue,
+        &serde_json::json!({"status":"nothing", "npc":npc, "reason":""}).to_string(),
+    );
+
+    for (at, result, retry_at) in [
+        (
+            30,
+            serde_json::json!({"status":"summary_failed", "npc":npc}),
+            90_000,
+        ),
+        (
+            90,
+            serde_json::json!({"status":"summary", "npc":npc, "summary":" \n "}),
+            210_000,
+        ),
+    ] {
+        rig.set_now(at);
+        let (_, correlation, payload) = rig.one_turn().expect("eligible fold retry");
+        assert_eq!(
+            serde_json::from_str::<TurnSnapshot>(&payload).unwrap().kind,
+            TurnKind::Summarize
+        );
+        let before = rig.host().runtime(npc).unwrap().memory.events.clone();
+        rig.complete(npc, correlation, &result.to_string());
+        assert_eq!(rig.host().runtime(npc).unwrap().memory.events, before);
+        assert_eq!(
+            rig.host().runtime(npc).unwrap().summarize_retry_at,
+            Some(retry_at)
+        );
+        assert_eq!(
+            rig.engine
+                .world
+                .attr(npc, SUMMARY_ATTR)
+                .and_then(|a| a.as_text()),
+            Some("Existing memory.")
+        );
+    }
+
+    rig.set_now(210);
+    let (_, final_fold, _) = rig.one_turn().expect("successful retry");
+    let folded = rig
+        .host()
+        .runtime(npc)
+        .unwrap()
+        .pending_fold
+        .as_ref()
+        .unwrap()
+        .events
+        .clone();
+    rig.set_now(211);
+    rig.run(alice, "say Bartender, this arrived during the fold.");
+    let expected: Vec<_> = rig
+        .host()
+        .runtime(npc)
+        .unwrap()
+        .memory
+        .events
+        .iter()
+        .filter(|event| !folded.iter().any(|old| old.sequence == event.sequence))
+        .cloned()
+        .collect();
+    let valid = serde_json::json!({"status":"summary", "npc":npc, "summary":"Earlier events were retained."});
+    rig.complete(npc, final_fold, &valid.to_string());
+    assert_eq!(rig.host().runtime(npc).unwrap().memory.events, expected);
+    assert!(
+        expected
+            .iter()
+            .any(|event| event.text.contains("arrived during the fold"))
+    );
+
+    rig.set_now(230);
+    let (_, current, _) = rig.one_turn().expect("queued dialogue after recovery");
+    let stale = serde_json::json!({"status":"summary", "npc":npc, "summary":"Stale overwrite."})
+        .to_string();
+    rig.complete(npc, first, &stale);
+    rig.complete(npc, final_fold, &stale);
+    assert_eq!(rig.host().runtime(npc).unwrap().correlation, Some(current));
+    assert_eq!(
+        rig.engine
+            .world
+            .attr(npc, SUMMARY_ATTR)
+            .and_then(|a| a.as_text()),
+        Some("Earlier events were retained.")
+    );
+    rig.complete(
+        npc,
+        current,
+        &serde_json::json!({"status":"nothing", "npc":npc, "reason":""}).to_string(),
+    );
+    rig.complete(npc, current + 100, &stale);
+    assert_eq!(
+        rig.engine
+            .world
+            .attr(npc, SUMMARY_ATTR)
+            .and_then(|a| a.as_text()),
+        Some("Earlier events were retained."),
+        "an idle completion still needs its captured fold"
+    );
+}
+
+#[test]
+fn a_busy_mailbox_gets_dialogue_then_a_fold_without_losing_waiting_speech() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let bob = rig.player("Bob", bar, true);
+    {
+        let rt = rig.host_mut().runtime_mut(npc);
+        for n in 0..54 {
+            rt.memory.push(n, format!("earlier event {n}"));
+        }
+        rt.summarize_pending = true;
+    }
+    rig.run(alice, "say Bartender, the first question.");
+    rig.set_now(2);
+    let (_, dialogue, payload) = rig.one_turn().expect("dialogue gets one turn");
+    assert_eq!(
+        serde_json::from_str::<TurnSnapshot>(&payload).unwrap().kind,
+        TurnKind::Dialogue
+    );
+    rig.run(bob, "say Another room conversation.");
+    rig.complete(
+        npc,
+        dialogue,
+        &serde_json::json!({"status":"nothing", "npc":npc, "reason":""}).to_string(),
+    );
+    rig.set_now(3);
+    let (_, fold, payload) = rig
+        .one_turn()
+        .expect("fold takes precedence over queued chatter");
+    assert_eq!(
+        serde_json::from_str::<TurnSnapshot>(&payload).unwrap().kind,
+        TurnKind::Summarize
+    );
+    assert_eq!(rig.host().runtime(npc).unwrap().mailbox.len(), 1);
+    rig.run(alice, "say And the follow-up question.");
+    rig.complete(
+        npc,
+        fold,
+        &serde_json::json!({"status":"summary", "npc":npc, "summary":"The earlier events."})
+            .to_string(),
+    );
+    rig.set_now(20);
+    let (_, _, payload) = rig.one_turn().expect("waiting dialogue resumes");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(snap.kind, TurnKind::Dialogue);
+    assert!(snap.stimuli.iter().any(|line| line.who == "Bob"));
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| line.who == "Alice" && line.directed)
+    );
+}
+
+#[test]
+fn a_failed_move_remembers_the_observed_location() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    rig.run(alice, "say Bartender, use the vanished exit.");
+    rig.set_now(2);
+    let (_, correlation, _) = rig.one_turn().expect("move request");
+    rig.complete(
+        npc,
+        correlation,
+        &serde_json::json!({
+            "status":"ok", "npc":npc, "asker":alice,
+            "actions":[{"action":{"action":"move", "exit":"vanished"}}]
+        })
+        .to_string(),
+    );
+    assert_eq!(rig.engine.world.get(npc).unwrap().location, Some(bar));
+    let last = rig
+        .host()
+        .runtime(npc)
+        .unwrap()
+        .memory
+        .events
+        .last()
+        .unwrap();
+    assert!(last.text.contains("remained in Bar"), "{}", last.text);
+    assert!(!last.text.contains("moved via"), "{}", last.text);
+}
+
+#[test]
+fn a_directed_pose_selects_the_same_partner_for_prompt_and_actor() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let office = rig.room("Office");
+    let npc = rig.npc("Clerk", office, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", office, true);
+    let bob = rig.player("Bob", office, true);
+
+    rig.run(alice, "say Clerk, which survey is mine?");
+    rig.run(bob, "pose asks Clerk about the blue survey folder.");
+    rig.set_now(2);
+    let (actor, _, payload) = rig.one_turn().expect("one mixed-kind batch");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(actor, npc);
+    assert_eq!(
+        snap.actor,
+        Some(bob),
+        "the latest directed speaker owns this turn"
+    );
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| { line.who == "Alice" && line.tag == "say" && line.directed })
+    );
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| { line.who == "Bob" && line.tag == "pose" && line.directed })
+    );
+    let prompt = user_prompt(&snap);
+    assert!(
+        prompt.contains("<conversation_partner>Bob</conversation_partner>"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("<conversation_partner>Alice</conversation_partner>"),
+        "{prompt}"
+    );
+    let last = rig
+        .host()
+        .runtime(npc)
+        .unwrap()
+        .memory
+        .events
+        .last()
+        .unwrap();
+    assert_eq!(last.speaker, Some(bob));
+    assert_eq!(last.kind, mush_npc::MemoryKind::DirectedSpeech);
+}
+
+#[test]
+fn a_delayed_reply_refreshes_its_matching_conversation_even_after_focus_expires() {
+    for reply_at in [119, 121] {
+        let mut rig = Rig::new();
+        rig.set_now(0);
+        let bar = rig.room("Bar");
+        let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+        let alice = rig.player("Alice", bar, true);
+        rig.run(alice, "say Bartender, where is the depot?");
+        rig.set_now(2);
+        let (_, correlation, payload) = rig.one_turn().expect("Alice's question");
+        let initial: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+        assert_eq!(initial.actor, Some(alice));
+
+        rig.set_now(reply_at);
+        assert_eq!(
+            rig.host()
+                .runtime(npc)
+                .unwrap()
+                .focus_for(bar, reply_at * 1000),
+            (reply_at < 120).then_some(alice),
+            "exercise replies on either side of the original focus expiry"
+        );
+        rig.complete(
+            npc,
+            correlation,
+            &serde_json::json!({
+                "status": "ok", "npc": npc, "asker": alice,
+                "actions": [{"action": {"action": "say", "text": "The depot is beside the east gate."}}]
+            }).to_string(),
+        );
+        let focus = rig.host().runtime(npc).unwrap().conversation_focus.unwrap();
+        assert_eq!(focus.participant, alice);
+        assert_eq!(focus.room, bar);
+        assert_eq!(focus.last_at, reply_at * 1000);
+
+        rig.set_now(reply_at + 1);
+        rig.run(alice, "say Does it open before dawn?");
+        rig.set_now(reply_at + 3);
+        let (_, _, payload) = rig.one_turn().expect("the unnamed follow-up");
+        let followup: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+        assert_eq!(followup.actor, Some(alice));
+        assert!(followup.stimuli.iter().any(|line| {
+            line.who == "Alice" && line.directed && line.text == "Does it open before dawn?"
+        }));
+        assert!(
+            followup
+                .transcript
+                .contains("The depot is beside the east gate.")
+        );
+        assert!(
+            user_prompt(&followup).contains("<conversation_partner>Alice</conversation_partner>")
+        );
+    }
+}
+
+#[test]
+fn a_delayed_reply_does_not_steal_a_newer_speakers_conversation() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let bob = rig.player("Bob", bar, true);
+    rig.run(alice, "say Bartender, where is the depot?");
+    rig.set_now(2);
+    let (_, correlation, _) = rig.one_turn().expect("Alice's question is in flight");
+
+    rig.set_now(100);
+    rig.run(bob, "say Bartender, where did you put my parcel?");
+    let newer_focus = rig.host().runtime(npc).unwrap().conversation_focus;
+    assert_eq!(newer_focus.unwrap().participant, bob);
+    rig.set_now(121);
+    rig.complete(
+        npc,
+        correlation,
+        &serde_json::json!({
+            "status": "ok", "npc": npc, "asker": alice,
+            "actions": [{"action": {"action": "say", "text": "Alice, the depot is beside the east gate."}}]
+        }).to_string(),
+    );
+    let rt = rig.host().runtime(npc).unwrap();
+    assert_eq!(
+        rt.conversation_focus, newer_focus,
+        "an old reply cannot replace or refresh Bob's focus"
+    );
+    assert_eq!(rt.focus_for(bar, 121_000), Some(bob));
+    assert_eq!(
+        rt.memory.events.last().unwrap().addressee,
+        Some(alice),
+        "the reply still records its actual addressee"
+    );
+
+    rig.set_now(122);
+    rig.run(bob, "say Which shelf?");
+    rig.set_now(124);
+    let (_, _, payload) = rig.one_turn().expect("Bob's pending conversation");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert_eq!(snap.actor, Some(bob));
+    assert!(
+        snap.stimuli
+            .iter()
+            .any(|line| { line.who == "Bob" && line.directed && line.text == "Which shelf?" })
+    );
+    assert!(user_prompt(&snap).contains("<conversation_partner>Bob</conversation_partner>"));
 }

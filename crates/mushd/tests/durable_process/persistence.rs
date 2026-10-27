@@ -2159,10 +2159,9 @@ async fn dump_announces_and_acks() {
 // 6. M8 NPC agent persistence twin: an NPC's staff profile is an obj attr, its
 // rolling summary is an obj attr, and its durable `remember` memories are
 // `mod:npc:mem:*` module docs. All three must survive a reboot from the store
-// alone. The Remember + Summary are applied through the REAL completion path
-// (an injected `WorldCommand::ModuleAsyncDone` — the same typed re-entry the
-// off-loop turn produces), so the module-op + attr write-through is exercised
-// end to end; no LLM/network is involved.
+// alone. Remember uses a typed completion; Summary uses a captured runtime
+// batch, the real tick and a network-free mock LLM. Both re-enter through the
+// world task, exercising module-op + attr write-through end to end.
 // ---------------------------------------------------------------------------
 
 /// A never-called `npc_dialogue_major` mock service (the twin injects
@@ -2189,6 +2188,27 @@ fn npc_service() -> Arc<LlmService> {
     )
 }
 
+/// Only the middle boot requests a summary. Its provider answers one captured
+/// fold through the ordinary off-loop runner and world completion boundary.
+fn npc_summary_service(mock: &Arc<MockProvider>) -> Arc<LlmService> {
+    Arc::new(
+        LlmService::builder()
+            .route(
+                "npc_summarize",
+                RouteConfig {
+                    model: "mock-model".into(),
+                    max_tokens: 768,
+                    timeout_s: 30,
+                    reasoning: None,
+                    reasoning_max_tokens: None,
+                },
+            )
+            .provider("openrouter", Arc::clone(mock) as Arc<dyn LlmProvider>)
+            .global_enabled(true)
+            .build(),
+    )
+}
+
 /// Boot the full production module set with the `npc` module (grounded by the
 /// game's sheet) and that character ruleset — exactly as `main.rs` assembles
 /// them — plus the service on the world task.
@@ -2196,6 +2216,18 @@ async fn boot_npc_rig(
     store: &Arc<dyn ObjectStore>,
     guard: &Arc<IpGuard>,
     llm: Arc<LlmService>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    boot_npc_rig_with_fold(store, guard, llm, None).await
+}
+
+/// Optionally supply bounded working events for an already persisted NPC before
+/// the world task starts. The production tick, rather than the fixture, captures
+/// the fold correlation and retires its events after a successful completion.
+async fn boot_npc_rig_with_fold(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+    llm: Arc<LlmService>,
+    fold_npc: Option<ObjId>,
 ) -> (Arc<SessionManager>, PersistHandles) {
     let world = load_or_seed_world(&**store).await.expect("boot world");
     let staff = Arc::new(StaffQueue::new());
@@ -2214,6 +2246,24 @@ async fn boot_npc_rig(
     mushd::modules::boot_modules(&mut engine, &**store)
         .await
         .expect("module boot");
+    if let Some(npc) = fold_npc {
+        assert_eq!(
+            engine.world.get(npc).map(|object| object.kind),
+            Some(ObjKind::Npc)
+        );
+        let host = engine
+            .world
+            .module_state_mut::<mush_npc::NpcHostState>()
+            .expect("NPC runtime composed");
+        let runtime = host.runtime_mut(npc);
+        for n in 0..(mush_npc::BUFFER_CAP + 4) {
+            runtime.memory.push(
+                n as i64,
+                format!("Alice discusses her unpaid tab, event {n}."),
+            );
+        }
+        runtime.summarize_pending = true;
+    }
     let sessions = Arc::new(SessionManager::new());
     let handles = world_task::spawn_persist(
         engine,
@@ -2254,8 +2304,8 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
         "Alice has been drinking here all evening and is running a large unpaid tab.";
     let guard = Arc::new(IpGuard::new());
 
-    // --- first boot: create + configure an NPC, then apply a remember + a
-    // summary through the real completion path. --------------------------
+    // --- first boot: create + configure an NPC, then apply Remember through
+    // the real completion path. ------------------------------------------
     let (sessions, handles) = boot_npc_rig(&store, &guard, npc_service()).await;
     let world = handles.handle.clone();
     let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
@@ -2266,8 +2316,7 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world, &format!("@agent/set Bartender/persona={PERSONA}")).await;
     expect_text(&mut god_rx, "Set persona on Bartender").await;
 
-    // A durable memory (a `mod:npc:mem:*` module doc) and a rolling summary
-    // (an `agent:memory:summary` obj attr), both via the typed re-entry.
+    // A durable memory (`mod:npc:mem:*`) via the ordinary typed re-entry.
     npc_complete(
         &world,
         bartender,
@@ -2284,27 +2333,45 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
         },
     )
     .await;
-    npc_complete(
-        &world,
-        bartender,
-        2,
-        &TurnOutcome::Summary {
-            npc: bartender,
-            summary: SUMMARY.into(),
-        },
-    )
-    .await;
-
-    // Apply messages carry transferred semantic custody and may be retained
-    // behind one another. Cross both exact receipts before issuing an ordinary
-    // mutation, which would otherwise be refused while the second is pending.
+    // Cross the exact completion receipt before another mutation or boot reads
+    // the store, so neither can race the authoritative memory delivery.
     assert!(world.barrier().await, "NPC completion commit barrier");
-
-    // Player creation is independently acknowledgement-gated after both
-    // completion batches have landed.
     create_persistence_probe(&world, "Fence").await;
 
-    // --- second boot: rebuild from the store alone. ----------------------
+    // --- middle boot: the real tick captures working memory, the mock runner
+    // summarizes it, and the correlated world-loop result writes the attr. ---
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    mock.push_ok(SUMMARY, Usage::default());
+    let (_fold_sessions, fold_handles) =
+        boot_npc_rig_with_fold(&store, &guard, npc_summary_service(&mock), Some(bartender)).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let persisted = load_or_seed_world(&*store)
+                .await
+                .expect("read fold persistence");
+            if persisted
+                .attr(bartender, mush_npc::SUMMARY_ATTR)
+                .and_then(|attr| attr.as_text())
+                == Some(SUMMARY)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("captured NPC fold must complete through the mock and persist its summary within 10s");
+    assert_eq!(
+        mock.call_count(),
+        1,
+        "one captured fold reached the mock provider"
+    );
+    assert!(
+        fold_handles.handle.barrier().await,
+        "summary completion commit barrier"
+    );
+
+    // --- final boot: rebuild all three kinds of data from the store alone. --
     let (sessions2, handles2) = boot_npc_rig(&store, &guard, npc_service()).await;
     let world2 = handles2.handle.clone();
     let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
