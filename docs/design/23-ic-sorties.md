@@ -1,6 +1,6 @@
 # 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
 
-**Draft 0.3, 2026-10-27.** Written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.4, 2026-10-27 — S.0 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -317,9 +317,13 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   (D-23-2, -4), §22's M8 gate is restated as §10 below, §22's "After M8" region sim task is
   split per D-23-6, and §22 M7's "a lapse falls to doctrine at the next seal" and §23 "Long
   sorties" gain "after a hangar port" (D-23-9). The port entries' hangar kind is declared in
-  content (the five ports yes, every site no). Doc 20 §4.3 and §17 gain the cross-reference. Doc 16 §11 "Before IC play"
+  content (the five ports yes, every site no; *moved to S.1 and S.2, §14*). Doc 20 §4.3 and §17 gain the cross-reference. Doc 16 §11 "Before IC play"
   notes that per-pulse durability is the arena's and that an IC epoch's durability is its host's.
-  The player-facing words (Q-23-5): no surface prints "sortie".
+  The player-facing words (Q-23-5) are audited here and renamed in S.0b. *As built: §14.*
+- **S.0b — The word on the surfaces (small; code).** The seven player sentences and six help lines
+  that print "sortie" today (the inventory in §14) are renamed — in the arena "sealed for this
+  match", elsewhere "out" or "running" — with their pinned tests moved; a tacsim gate, through the
+  cut loop.
 - **S.1 — The first IC sortie, on the surface excursion (medium).** One `SortieId` mint for IC
   epochs (§7) with the collision test; the ROM seal over a `TacticalUnit` (§7); the per-hull black
   box ledger; `MindSealed` at the launch's end (and for an implied launch), `SortieClosed` with
@@ -424,7 +428,40 @@ inspection verbs, seizure) then have a real epoch to read at each end.
 
 ## 14. Ledger
 
-*(Empty. Each cut's record lands here as the 17g and doc 20 ledgers are kept.)*
+### S.0 — terms and amendments, as built (2026-10-27, branch `claude/ic-sorties-s0`)
+
+Docs only; no code and no pinned sentence moved. Built from `main` at `6f8b9d16` (PR #35, which
+merged Draft 0.2 before the Draft 0.3 commit `88a7e9ce` reached its branch; S.0's branch carries
+that commit first, so Draft 0.3's rulings land with this cut) by the lead in the session that wrote
+the note, with the owner's rulings of the day already in hand (§16), so no planner or lens ran; the
+diff is the review.
+
+- **Doc 17.** §1 R-B, §12 "The flow" (the sortie and the dispatch), §13 "Records, the seal and
+  replay" (the black box pair) and D-UM-45 carry the two declared hangar placements, the close on
+  arrival, the four `IcCloseKind` words and the site-is-the-field rule (D-23-1, D-23-3), with the
+  nesting record (D-23-2); §22 M7's "a lapse falls to doctrine at the next seal" reads "the next seal
+  after a hangar" (D-23-9); §22 M8's note carries the two-tier gate of §10; "After M8" says the
+  region sim task is split (D-23-6) and its custody half lands as S.1–S.4 before M8; §23 "Long
+  sorties" carries the passage-bounded reading; §24 gains the amendment entry.
+- **Doc 20.** §2 (D-20-1's "two L cuts"), §4.3 (the excursion as the first IC sortie: the epoch
+  opens at the launch's end, closes at the recover or staff `Home`, names the carrier's open sortie)
+  and §17 (the promotion stays out of doc 23; D-20-7 stands) gain the cross-references.
+- **Doc 16.** §11 "Before IC play" says an IC sortie's durability is its host's and the arena is the
+  fight's host inside a hull's open sortie.
+- **The Q-23-5 audit.** "Sortie" prints today in seven player sentences — `match_/cockpit.rs`
+  "Mind: …, sealed for this sortie" and "Sealed for this sortie: …", `match_/lobby.rs` "Sealed for
+  this sortie", `minds/doctrine_library.rs` "running sortie", `mush-net-ssh`'s `mind_workshop.rs`
+  "sortie seals", and `match_/mod.rs`' "held by IC sortie {sortie}" error — and six help lines
+  (`cockpit.md`, `doctrine.md`, `mindcraft.md`, `minds.md` twice, `personal-minds.md` twice). All are
+  the OOC arena's or M7's and each is pinned by a test, so they move in S.0b with a tacsim gate, not
+  in a docs cut.
+- **Lead rulings.** (1) S.0 is docs-only; the renames are S.0b (above). (2) "The port entries'
+  hangar kind is declared in content" is not built here: the first reader of that declaration is
+  S.1's seal at the launch and S.2's close at `docked`, so the declaration lands with S.1 and S.2.
+  (3) The arena's wording after S.0b is "sealed for this match", which is true there (the match
+  fills the sortie) and prints no engine term.
+- **Not done.** No cargo ran (the C2e–C2h completion may own the workspace build); nothing under
+  `crates/` or `docs/help/` changed.
 
 ## 15. The review of Draft 0.1, and what it changed
 

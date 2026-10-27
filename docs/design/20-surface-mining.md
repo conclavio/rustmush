@@ -273,7 +273,9 @@ integrates wall time (doc 16 §3.1), so at rate 24 a tracked crossing of a 2.56 
 2 m/s would take some twenty real minutes and burn eight IC hours of life support, its Quiet tempo
 lags a seated driver by up to five seconds, its domain is excluded from every world view, its
 snapshot resume rewinds the tail against IC minting, and a non-match sortie lifecycle plus an
-IC-crossing rule are two L cuts (the arena map's gaps). Not an atlas window: windows are eight
+IC-crossing rule are two L cuts (the arena map's gaps; doc 23 takes the first — the non-match
+sortie lifecycle is the seal epoch of D-23-1 on the IC-clock hosts, this tick first, cuts S.1–S.4 —
+and leaves the IC-crossing rule with §17). Not an atlas window: windows are eight
 world-wide and clockless. Not a `DurableSchedule` per excursion for player trips: the schedule driver
 polls at 250 ms, defers behind legacy persistence and discovers one candidate per poll
 (`mush-server/src/world_task.rs:287, 3471-3487`), which is the production source's budget, not a
@@ -882,7 +884,10 @@ that the hold-room gate (§6) keeps from firing on an honest fill. `+tv/dump` mo
 to the site's **spoil** pool, a system vault per site — conserved, unrecoverable, a decision with a
 preview. An **excursion** runs from launch to park and is identified by `ExcursionId (tv,
 launch_ic)`: the sortie identity doc 17 needs (D-UM-45, a hangar to a hangar), the bay being the
-hangar.
+hangar. Doc 23 (D-23-1, D-23-3, D-23-7) makes this excursion the first IC sortie: the epoch opens
+when the rig leaves the bay at the launch's end, not at the excursion's start, closes
+`ReturnedToBase` at the recover (or `RecoveredToBase` by staff `Home`), and its seal line names the
+carrier's open sortie, since a settled Dray-P is in the field, not a hangar.
 
 **As built (SM.3b):** the launch is the surface tick's `mush_sim::place` at `ramp_pose` — the pad
 centre (128,000, 128,000 cm, facing north) plus the bay's `EgressDef` offset, so the Dray-P's stern
@@ -2936,7 +2941,9 @@ rewind cannot double-mint). The TV's class becomes fieldable, `ComponentRole::To
 hopper stays world-side under T2, and the excursion `Holds` while the arena holds the TV. Then a TV left
 out is a choice, return-on-idle is a survival rule, and claim-jumping is a scene. Nothing in phase 1 is
 reworked for it: the site extent, the sortie identity, the tool shape and the knowledge rows are built
-to be promoted.
+to be promoted. Doc 23 §8 keeps this promotion out of its scope and adds only the frame: the match
+lies inside the TV's open epoch and cites it (D-UM-46), and D-20-7's departure refusal stands until
+this phase (doc 23 D-23-4, Q-23-2).
 
 ---
 
