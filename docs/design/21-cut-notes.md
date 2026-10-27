@@ -668,3 +668,61 @@ web `npm run check` 0 errors, the picture, game, PictureView and cockpit suites 
 (an extra match arm, compiles), 3 and 5 are the PR's CI. fmt, clippy `-D warnings` and rustdoc
 `-D warnings` clean (`cargo fmt --all` fails on this box with "filename too long", os error 206;
 `cargo fmt -p` a package at a time instead).
+
+## G.13 (2026-10-27): the overhead inset on the HUD
+
+The owner's first ask after flying G.12 live on dev2: the minimap drawn **on top of** the
+first-person picture, not only as the second camera `v` swaps to. Built in `mush-pixel` alone
+(`overhead.rs`, `overlay.rs`, `cockpit.rs`), so the TUI's kitty/sixel stream, the gateway's web
+frame and the browser's wasm render all carry it with no change of their own; `v` is untouched.
+The rulings, each cheap to unwind, are in doc 21 §7.4 ("The inset"); in short:
+
+- **Top-left, square, `min(56s, h/2 − 12s, w/5 − 8s)` a side at `(4s, 4s)`** — 112 px at (8, 8)
+  on 640x480 and 640x276, 104 px on the text cockpit's 640x256, 56 px at (4, 4) on 320x220 —
+  with a one-pixel border (`overlay::inset_rect`; none under 24 px). The HUD's fixed elements
+  pinned the corner: the tape's panel starts at `w/5`, the lock's `Off(-1)` arrow sits on the left
+  edge at mid-height (`cy ± 5s`, its label at `cy − 3s`), the speed bar and its readout own the
+  right edge from `3h/10 − 9s` down; the bottom corners are also where a `LockAt::Beyond(_, 1)`
+  readout lands. The inset is drawn **before** `draw_hud`, so the tape, the reticle's readout and
+  the speed bar always draw over it; a `Beyond(_, -1)` arrow for a lock in the far-left columns is
+  the one HUD element that can cross it, and the readout wins.
+- **The picture's heading is up** (`cockpit::INSET_UP = Up::Camera`): the look's wedge is always
+  straight up, the hull's ray parts from it under a look as the tape's caret does, `N` sits on the
+  rim where north lies. `Up::North` is the one alternative (the full camera's way); hull-up was
+  considered and not built (the tape is camera-centred).
+- **The camera's reach rule at the inset's half-side**: `sight_m × 1.15` clamped 150–3000 m —
+  690 m over 56 px, about 12 m a pixel, written `690M` in the bottom-right corner. The same rings
+  without their metres, no contact designators (at 12 m a pixel they crowd the tank; the fixture's
+  X3 at 200 m is 15 px off, and the names are on the tape and the lock readout), the lock ringed,
+  the spots lettered at 1x, the markers at the full camera's 1x sizes.
+- **Flat ground**: the colour map sampled a pixel through the turn, no relief shading (noise at
+  under a pixel a cell; the first-person palette is the raycaster's closed 256 less the HUD's). The
+  fixture frames with the inset count 22 colours.
+
+**How it is built.** `overhead_scene` takes a `Dress` — `Camera` (the full picture, untouched: north
+up on the world's own metres, the cached ground image, the rings' metres, the strip, the
+designators) or `Inset { up }` — and a `Placing` that is the identity for the camera and, for the
+inset, turns every world point about the tank by the bearing at the top and scales it to pixels, so
+the inset's viewport is its own frame centred on the origin and the tank lands on the centre pixel
+exactly (a metres viewport at 112 px put it at 55.999, floored to 55). Rays and the wedge's arc take
+their bearings through the same `Placing`; the sine and cosine are `math::Det`'s. The inset's ground
+is `sampled_ground`: each pixel's centre taken back through the turn to east and north, floored to a
+cell, `OFF_MAP` off the map — one lookup a pixel, no cache. `OverheadPicture::draw_inset` draws the
+scene into a `side x side` sub-frame and blits it at `at` with a `BORDER` outline, touching nothing
+else; `CockpitPicture` owns one `OverheadPicture` for the inset (its own map and cache) and calls it
+under `Overlay::Hud` only — the instruments overlay keeps its own bottom-left minimap.
+
+**Goldens.** The web parity golden (`web/src/lib/fixtures/pixel/cockpit_hashes.json`, read by
+`mush-pixel-wasm`'s test and the browser's `pixel.test.ts`) re-blessed with `PIXEL_BLESS=1`; the
+overhead golden (`tests/golden/overhead_hashes.json`) unchanged, which is the proof the full camera
+draws the same bytes. `mush-net-ssh` and `mush-net-web` pin no picture bytes of their own (their
+picture tests are behavioural: paints once, skips until the camera moves, the palette); run and
+green.
+
+**Verified.** `cargo test -p mush-pixel` lib 77 (new `the_inset_is_the_overhead_small_and_turned`,
+`the_hud_carries_the_overhead_inset`, `the_inset_sits_top_left_clear_of_the_hud`), overhead golden
+1 (unchanged), proving ground 2, web golden 1 (re-blessed); `mush-pixel-wasm` 2 (the module draws
+the re-blessed golden natively); `mush-net-web --lib picture` 4; `mush-net-ssh --lib pixel` 28 and
+`--test tui_golden` 25. fmt, clippy `-D warnings` (mush-pixel, mush-pixel-wasm, all targets) and
+rustdoc `-D warnings` clean. Not run here: the browser's `pixel.test.ts` (it needs the wasm build;
+it reads the same re-blessed hashes the wasm crate's native test passes). No deploy.
