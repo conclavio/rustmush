@@ -23,11 +23,19 @@
 //!
 //! C2a builds the mechanism and the author's commands (`author`); C2c adds
 //! `market` (`+minds`, `+minds/buy`, `@mind/publish`) and `holdings`
-//! (`+minds/holdings`); C2d adds `trade.rs`, `renew.rs` and `registry.rs`.
+//! (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front over the
+//! renewal services' `player_step`, the one command that submits through a
+//! service rather than `submit`; held at `renew::RENEWALS_OPEN`), `trade`
+//! (`+minds/resell`, `+minds/charter` and their `/accept`s; held at
+//! `trade::NAMED_OFFERS_OPEN`) and `registry` (`@registry/recall` and
+//! `@registry/revoke`).
 
 pub(crate) mod author;
 pub(crate) mod holdings;
 pub(crate) mod market;
+pub(crate) mod registry;
+pub(crate) mod renew;
+pub(crate) mod trade;
 pub(crate) mod words;
 
 use std::sync::{Arc, Mutex};

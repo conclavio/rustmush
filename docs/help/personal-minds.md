@@ -31,12 +31,30 @@
 - `+minds/holdings` lists your filed minds and licences, their terms and Grace, and any
   purchase waiting to complete.
 
-Purchases between two characters of one account are refused. Money held for a purchase
+Purchases, resales and transfers between two characters of one account are refused. Money held for a purchase
 stays in escrow until it completes or is refunded; a request whose result you have not
 seen is not a refusal, so check `+minds/holdings` before trying again.
 
-Renewals, resale and charter transfers still use `+actions` and
-`+act <action> with <JSON object>` until their commands arrive.
+## Renewing and trading
+
+- `+minds/renew <licence>` shows a paid licence's renewal, or asks for a renewal offer once
+  it is due. Pay the offer with `+minds/renew/pay <licence>` or turn it down with
+  `+minds/renew/decline <licence>`; a paid renewal completes on its own. House Pins renew
+  the same way.
+- `+minds/resell <licence>=<player> price=<credits>` offers a paid licence to one player.
+  They see the offer with `+minds/resell/accept <licence>` and accept it by repeating the
+  price: `+minds/resell/accept <licence> price=<credits>`. A licence sold from a
+  `transfer=no` listing cannot be resold.
+- `+minds/charter <filed>=<player> price=<credits>` offers a filed mind's charter, and with
+  it the owner's licence and the proceeds of future sales, to one player. They accept with
+  `+minds/charter/accept <filed> price=<credits>`; the transfer settles once no sortie under
+  the charter is out.
+
+Registry operators can recall a filed revision or revoke a licence term. A recalled
+revision flies no new sortie, and a revoked term ends early; sorties already out finish.
+
+The raw actions stay available: `+actions` lists what you can do, and
+`+act <action> with <JSON object>` sends one.
 
 On the named launch, `@mind/launch` prints the player market's current prices, terms and offer
 windows; they are the deployment's and may change between worlds. Registry recall and revocation

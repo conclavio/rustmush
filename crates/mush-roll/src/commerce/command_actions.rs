@@ -20,9 +20,18 @@ const UPDATE_DERIVED: (&str, u32) = (super::line_update::DERIVED_ACTION, 1);
 const WITHDRAW: (&str, u32) = ("withdraw_authored_mind", 1);
 const ATTEST: (&str, u32) = (super::owner_attestation::protocol::ACTION, 1);
 const FORK: (&str, u32) = ("fork_paid_mind", 1);
+/// 17g C2d: the pending charter transfer's seller Offer (version 2: the
+/// immediate protocol's Offer is version 1 of the same id) and buyer Fund.
+const PENDING_OFFER: (&str, u32) = (super::charter_pending::protocol::OFFER, 2);
+const PENDING_FUND: (&str, u32) = (super::charter_pending::protocol::FUND, 1);
+/// 17g C2d: the Registry operators' recall and revocation.
+const RECALL: (&str, u32) = ("registry_revision_recall", 1);
+const REVOCATION: (&str, u32) = ("registry_term_revocation", 1);
 
 /// The registered Roll actions behind `@mind/file`, `/update`, `/withdraw`,
-/// `/attest` and `/fork`, as this composition registered them.
+/// `/attest` and `/fork`, and (17g C2d) `+minds/charter` and its `/accept`,
+/// `@registry/recall` and `@registry/revoke`, as this composition registered
+/// them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RollCommandActions {
     reserve: Option<DefinitionRef>,
@@ -33,6 +42,10 @@ pub struct RollCommandActions {
     withdraw: Option<DefinitionRef>,
     attest: Option<DefinitionRef>,
     fork: Option<DefinitionRef>,
+    pending_charter_offer: Option<DefinitionRef>,
+    pending_charter_fund: Option<DefinitionRef>,
+    recall: Option<DefinitionRef>,
+    revocation: Option<DefinitionRef>,
 }
 
 impl RollCommandActions {
@@ -65,6 +78,10 @@ impl RollCommandActions {
             withdraw: find(WITHDRAW),
             attest: find(ATTEST),
             fork: find(FORK),
+            pending_charter_offer: find(PENDING_OFFER),
+            pending_charter_fund: find(PENDING_FUND),
+            recall: find(RECALL),
+            revocation: find(REVOCATION),
         }
     }
     /// `roll-reserve-mind-charter`: reserve the filing's inert charter shell.
@@ -107,6 +124,31 @@ impl RollCommandActions {
     #[must_use]
     pub fn fork(&self) -> Option<DefinitionRef> {
         self.fork.clone()
+    }
+    /// 17g C2d: `roll-offer-pending-charter`, the charter's owner naming a
+    /// buyer and a price (always the pending protocol, C2 plan §2.6; the
+    /// immediate `roll-offer-charter-transfer` stays on `+act`).
+    #[must_use]
+    pub fn pending_charter_offer(&self) -> Option<DefinitionRef> {
+        self.pending_charter_offer.clone()
+    }
+    /// 17g C2d: `roll-fund-pending-charter`, the named buyer paying into
+    /// escrow; the deployment's clerk settles it.
+    #[must_use]
+    pub fn pending_charter_fund(&self) -> Option<DefinitionRef> {
+        self.pending_charter_fund.clone()
+    }
+    /// 17g C2d: `roll-registry-recall`, offered only to the deployment's
+    /// granted Registry operators.
+    #[must_use]
+    pub fn recall(&self) -> Option<DefinitionRef> {
+        self.recall.clone()
+    }
+    /// 17g C2d: `roll-registry-revocation`, offered only to the deployment's
+    /// granted Registry operators.
+    #[must_use]
+    pub fn revocation(&self) -> Option<DefinitionRef> {
+        self.revocation.clone()
     }
 }
 

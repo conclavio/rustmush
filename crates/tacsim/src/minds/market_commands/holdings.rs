@@ -26,12 +26,18 @@
 //! built, but like every `+minds` form it needs the market read
 //! (`market::handles`), which no composition grants yet (`market`'s module
 //! doc), so today it too refuses `NOT_OPEN` (reviewer T-F4).
+//!
+//! 17g C2d: the paid row (`paid_line`, over Roll's own-only `OwnPaid` view)
+//! is built with its renewal suffix (`; renewal offered`, `; renewal paid`)
+//! and waits with the paid section for the per-holder index.
 
 use mush_core::{CmdError, Ctx};
 use mush_roll::commerce::command_reader::{
-    HoldingSection, OwnerHoldingView, OwnerPhase, RollCommandReadRequest, RollCommandReadResult,
+    HoldingSection, OwnerHoldingView, OwnerPhase, PaidHoldingView, RenewalMark,
+    RollCommandReadRequest, RollCommandReadResult,
 };
 use mush_roll::commerce::holding_reader::{OriginalOwnerReader, OriginalReadRequest};
+use mush_roll::commerce::paid::PaidForm;
 
 use super::market::{HOLDING_NAME, handles};
 use super::words::{self, cut, fill};
@@ -182,4 +188,85 @@ pub(crate) fn owner_row(
     )
     .trim_end()
     .to_owned()
+}
+
+// ---- 17g C2d: the paid rows, held with the paid section (module doc) ----
+
+/// 17g C2d: a paid row's flags, each prefixed `; `, in this order: `no
+/// resale` (the term is not transferable), `revoked`, `selling` (a funded
+/// resale), then `renewal offered` or `renewal paid` (the licence's renewal
+/// head). The paid section that prints them waits for the per-holder index.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn paid_flags(
+    transferable: bool,
+    revoked: bool,
+    selling: bool,
+    renewal: Option<RenewalMark>,
+) -> String {
+    let mut flags = String::new();
+    for (on, flag) in [
+        (!transferable, "; no resale"),
+        (revoked, "; revoked"),
+        (selling, "; selling"),
+        (renewal == Some(RenewalMark::Offered), "; renewal offered"),
+        (renewal == Some(RenewalMark::Paid), "; renewal paid"),
+    ] {
+        if on {
+            flags.push_str(flag);
+        }
+    }
+    flags
+}
+
+/// 17g C2d: `HOLD_PAID` from its parts (trailing spaces trimmed): `{kind}` is
+/// `House Pin` or `paid`, `{form}` `sealed`, `open` or `open-resale`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn paid_row(
+    licence: u64,
+    house: bool,
+    name: &str,
+    form: &str,
+    phase: &str,
+    flags: &str,
+) -> String {
+    let licence = licence.to_string();
+    let name = cut(name, HOLDING_NAME);
+    let kind = if house { "House Pin" } else { "paid" };
+    fill(
+        words::pending::HOLD_PAID,
+        &[
+            ("licence", &licence),
+            ("kind", kind),
+            ("name", &name),
+            ("form", form),
+            ("phase", phase),
+            ("flags", flags),
+        ],
+    )
+    .trim_end()
+    .to_owned()
+}
+
+/// 17g C2d: one paid row from Roll's own `OwnPaid` view. Waits for the paid
+/// section (module doc); no test builds a view outside Roll.
+#[allow(dead_code)]
+pub(crate) fn paid_line(view: &PaidHoldingView) -> String {
+    let form = match view.form() {
+        PaidForm::Sealed {} => "sealed",
+        PaidForm::Open {} => "open",
+        PaidForm::OpenResale {} => "open-resale",
+    };
+    paid_row(
+        view.licence().get(),
+        view.house(),
+        view.name(),
+        form,
+        &phase_words(view.phase()),
+        &paid_flags(
+            view.transferable(),
+            view.revoked(),
+            view.selling(),
+            view.renewal(),
+        ),
+    )
 }

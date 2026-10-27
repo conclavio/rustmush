@@ -43,10 +43,38 @@
 //!   `MAX_CHARTER_NAMES` charters, in one batched read; an unknown charter
 //!   is left out. Names only.
 //!
-//! C2d adds `OwnPaid`, `ResaleStep` and `CharterOffers` on the same folded
-//! read.
+//! - `OwnPaid { licence }` (17g C2d): a paid licence the actor holds now
+//!   (the personal paid-licence pointer names the actor), as `+minds/renew`,
+//!   `+minds/resell` and the holdings' paid rows show it: the charter, its
+//!   public name, whether it is a House Pin, its form, transferability and
+//!   phase, whether its current term is revoked, whether a funded resale is
+//!   selling it, and whether a renewal is offered or paid. A licence another
+//!   character holds, a missing one and a row that cannot be read are
+//!   `Refused`, identically. Point reads of the licence's own rows only.
+//!
+//! **Not built (the C2d builder's report):** `CharterOffers { filed }`, the
+//! live pending-charter offers naming the actor, reads the per-(buyer,
+//! charter) offer index (`roll_mind_charter_pending_buyer_offers`, C2 plan
+//! §2.5 item 4), which C2b held for the lead's mush-core ruling; the offers
+//! are otherwise keyed only by their own operation, so there is no bounded
+//! lookup. It waits for the index sub-cut.
+//!
+//! **Held (the C2d fix round, reviewers C2D-R2, C2D-R3, F2 and T3):**
+//! `ResaleStep { licence }`, the named buyer's choice between the resale's
+//! immediate Accept and its escrowed Fund (the paid-resale reader's own
+//! `observe` with the actor as the buyer and the pointer's holder as the
+//! seller, Accept exactly when `claims().open_paid() == 0`). `observe` checks
+//! no offer naming the buyer, so for any third party it would answer
+//! whether a licence exists, is resellable and has a sortie out under it,
+//! where a missing licence is `Refused`: it is not own-only, as this read's
+//! descriptor promises (`commands.own_only`). Its only caller, the live
+//! `+minds/resell/accept`, waits for the per-(buyer, licence) offer index,
+//! and no fixture here can reach a granted, transferable licence for a
+//! positive test, so it waits with them: the index sub-cut builds it with
+//! the offer's committed (buyer, licence) binding as its evidence.
 
 use super::families::CommerceFamilies;
+use super::paid::PaidForm;
 use super::read::CommerceRead;
 use super::records::Record;
 use super::{CharterId, FiledRevisionId, LicenceId, LineId, TermPhase, WorldIcSeconds};
@@ -81,6 +109,9 @@ enum ReadKind {
     },
     CharterNames {
         charters: Vec<CharterId>,
+    },
+    OwnPaid {
+        licence: LicenceId,
     },
 }
 /// 17g C2c: the two halves of `+minds/holdings`.
@@ -128,6 +159,89 @@ impl RollCommandReadRequest {
         Self {
             kind: ReadKind::CharterNames { charters },
         }
+    }
+    /// 17g C2d: a paid licence the actor holds now.
+    #[must_use]
+    pub const fn own_paid(licence: LicenceId) -> Self {
+        Self {
+            kind: ReadKind::OwnPaid { licence },
+        }
+    }
+}
+
+/// 17g C2d: a paid licence's renewal, from its personal or House renewal
+/// head: a drafted offer awaits the holder (`Offered`), or the holder has
+/// paid it into escrow and the service will complete it (`Paid`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalMark {
+    Offered,
+    Paid,
+}
+
+/// 17g C2d: one paid licence the actor holds (`OwnPaid`), as the holdings'
+/// paid rows and the trade commands show it. No source, digest, account,
+/// rating, seller or other holder; `name` is the charter's public Roll name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PaidHoldingView {
+    licence: LicenceId,
+    charter: CharterId,
+    house: bool,
+    name: String,
+    form: PaidForm,
+    transferable: bool,
+    phase: OwnerPhase,
+    revoked: bool,
+    selling: bool,
+    renewal: Option<RenewalMark>,
+}
+impl PaidHoldingView {
+    #[must_use]
+    pub const fn licence(&self) -> LicenceId {
+        self.licence
+    }
+    #[must_use]
+    pub const fn charter(&self) -> CharterId {
+        self.charter
+    }
+    /// A House Pin (bought from a House catalogue), renewed by the House
+    /// renewal service; otherwise a personal paid licence.
+    #[must_use]
+    pub const fn house(&self) -> bool {
+        self.house
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    #[must_use]
+    pub const fn form(&self) -> PaidForm {
+        self.form
+    }
+    /// Whether the current term may be resold (the D-UM-40 mark and the
+    /// deployment's policy, frozen in the term).
+    #[must_use]
+    pub const fn transferable(&self) -> bool {
+        self.transferable
+    }
+    /// The current term's phase, in whole IC days rounded up.
+    #[must_use]
+    pub const fn phase(&self) -> OwnerPhase {
+        self.phase
+    }
+    /// The current term was revoked by the Registry.
+    #[must_use]
+    pub const fn revoked(&self) -> bool {
+        self.revoked
+    }
+    /// A funded resale holds the buyer's payment in escrow.
+    #[must_use]
+    pub const fn selling(&self) -> bool {
+        self.selling
+    }
+    #[must_use]
+    pub const fn renewal(&self) -> Option<RenewalMark> {
+        self.renewal
     }
 }
 
@@ -283,6 +397,8 @@ pub enum RollCommandReadResult {
     CharterNames {
         names: Vec<CharterName>,
     },
+    /// 17g C2d: `OwnPaid`.
+    OwnPaid(PaidHoldingView),
 }
 impl RollCommandReadResult {
     /// The open-shell answer, or `None` if this answered another kind.
@@ -317,6 +433,14 @@ impl RollCommandReadResult {
             _ => None,
         }
     }
+    /// 17g C2d: the paid licence, or `None` for another kind.
+    #[must_use]
+    pub fn into_own_paid(self) -> Option<PaidHoldingView> {
+        match self {
+            Self::OwnPaid(view) => Some(view),
+            _ => None,
+        }
+    }
 }
 
 /// Answer one command kind for the calling actor. `shells` is the Roll
@@ -348,6 +472,112 @@ pub(super) fn read(
         } => Err(OwnerReadError::Unavailable),
         ReadKind::CharterNames { charters } => charter_names(ctx, families, &charters)
             .map(|names| RollCommandReadResult::CharterNames { names }),
+        ReadKind::OwnPaid { licence } => own_paid(ctx, families, licence)
+            .map(RollCommandReadResult::OwnPaid)
+            .map_err(|_| OwnerReadError::Refused),
+    }
+}
+
+/// 17g C2d: the paid licence `licence` when the actor holds it now (`read`
+/// maps every failure to `Refused`, so another holder's licence reads like a
+/// missing one). Each fact is one point read of the licence's own rows: the
+/// pointer and its current term, the charter's name, the House allocation of
+/// its birth operation, the term's revocation status, the resale head and
+/// the renewal head with its pending operation.
+fn own_paid(
+    ctx: &OwnerReadContext<'_>,
+    f: &CommerceFamilies,
+    licence: LicenceId,
+) -> Result<PaidHoldingView, OwnerReadError> {
+    let pointer = row(ctx, &f.paid_licences, licence.key())?;
+    if pointer.id() != licence {
+        return Err(OwnerReadError::Integrity);
+    }
+    if pointer.holder() != ctx.actor() {
+        return Err(OwnerReadError::Refused);
+    }
+    let term = row(
+        ctx,
+        &f.paid_terms,
+        format!("{}/{}", licence.key(), pointer.term().key()),
+    )?;
+    term.matches_current(pointer)
+        .map_err(|_| OwnerReadError::Integrity)?;
+    let charter = row(ctx, &f.charters, pointer.charter().key())?;
+    if charter.id != pointer.charter() {
+        return Err(OwnerReadError::Integrity);
+    }
+    let house = ctx
+        .get(&f.house_allocations, &pointer.operation().to_hex())
+        .map_err(|_| OwnerReadError::Unavailable)?
+        .is_some();
+    let revoked = ctx
+        .get(
+            &f.revoked_terms,
+            &super::registry_revocation::records::RevokedTerm::key_for(licence, term.generation()),
+        )
+        .map_err(|_| OwnerReadError::Unavailable)?
+        .is_some();
+    let selling = ctx
+        .get(&f.paid_resale_heads, &licence.key())
+        .map_err(|_| OwnerReadError::Unavailable)?
+        .is_some_and(|head| matches!(head.state(), super::paid_resale::PaidResaleState::Funded {}));
+    let renewal = if house {
+        let pending = ctx
+            .get(&f.house_renewal_heads, &licence.key())
+            .map_err(|_| OwnerReadError::Unavailable)?
+            .and_then(super::house_renewal::RenewalHeadV1::pending);
+        match pending {
+            None => None,
+            Some(operation) => {
+                use super::house_renewal::RenewalStateV1 as State;
+                let row = row(ctx, &f.house_renewal_operations, operation.to_hex())?;
+                renewal_mark(
+                    matches!(row.state(), State::Drafted {}),
+                    matches!(row.state(), State::Funded { .. }),
+                )
+            }
+        }
+    } else {
+        let pending = ctx
+            .get(&f.renewal_heads, &licence.key())
+            .map_err(|_| OwnerReadError::Unavailable)?
+            .and_then(super::renewal::RenewalHeadV1::pending);
+        match pending {
+            None => None,
+            Some(operation) => {
+                use super::renewal::RenewalStateV1 as State;
+                let row = row(ctx, &f.renewal_operations, operation.to_hex())?;
+                renewal_mark(
+                    matches!(row.state(), State::Drafted {}),
+                    matches!(row.state(), State::Funded { .. }),
+                )
+            }
+        }
+    };
+    Ok(PaidHoldingView {
+        licence,
+        charter: charter.id,
+        house,
+        name: charter.name.clone(),
+        form: term.terms().form(),
+        transferable: term.terms().transferable(),
+        phase: phase(term.window(), WorldIcSeconds(ctx.world().game_now_unix())),
+        revoked,
+        selling,
+        renewal,
+    })
+}
+
+/// 17g C2d: a pending renewal operation's mark: drafted is `Offered`, funded
+/// is `Paid`; any other phase is no mark.
+pub(super) const fn renewal_mark(drafted: bool, funded: bool) -> Option<RenewalMark> {
+    if drafted {
+        Some(RenewalMark::Offered)
+    } else if funded {
+        Some(RenewalMark::Paid)
+    } else {
+        None
     }
 }
 

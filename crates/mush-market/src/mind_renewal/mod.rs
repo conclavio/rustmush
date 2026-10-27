@@ -9,6 +9,7 @@ mod config;
 mod families;
 mod offer;
 mod pair;
+pub(crate) mod player;
 mod provider;
 mod publication;
 mod records;
@@ -18,8 +19,10 @@ mod service_provider;
 pub(crate) use audit::require_disabled;
 pub use config::{RenewalConfig, RenewalPolicy};
 pub(crate) use families::Families;
+pub use player::{RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, RenewalStatusView};
 pub use records::{MindRenewalOperationV1, MindRenewalReceiptV1};
 pub(crate) use registration::register;
+pub use service::player_step;
 pub(crate) use service::{enable as enable_service, guard_current as service_guard_current};
 
 #[cfg(test)]

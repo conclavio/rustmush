@@ -62,18 +62,28 @@ pub(in crate::minds) fn register_profiles(
     reg.command(
         CommandSpec {
             name: COMMAND.into(),
+            // 17g C2d: `recall` and `revoke`, the Registry operators'
+            // commands (`market_commands::registry`), in both lists.
             switches: if reconformance {
                 vec![
                     "rate".into(),
                     "cancel".into(),
                     "continue".into(),
                     "reconform".into(),
+                    "recall".into(),
+                    "revoke".into(),
                 ]
             } else {
-                vec!["rate".into(), "cancel".into(), "continue".into()]
+                vec![
+                    "rate".into(),
+                    "cancel".into(),
+                    "continue".into(),
+                    "recall".into(),
+                    "revoke".into(),
+                ]
             },
             shape: ArgShape::Raw,
-            help: "@registry/rate <owned mind number>/<saved revision>; @registry/cancel".into(),
+            help: HELP.into(),
             ..CommandSpec::default()
         },
         Arc::new(command),
@@ -343,7 +353,29 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
         .unwrap_or(false)
 }
 
+/// `@registry`'s help (17g C2d adds the operators' recall and revocation).
+/// The brief's one sentence is 136 columns, so it breaks where its second
+/// clause begins, keeping both lines inside the 120-column floor.
+pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
+
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // 17g C2d: the operators' commands answer for themselves (the driver's
+    // line, `REGISTRY_OFF` or the help), never through this service's own
+    // "unavailable" mapping below.
+    if ctx.switches.has("recall") {
+        return crate::minds::market_commands::registry::registry(
+            ctx,
+            crate::minds::market_commands::registry::RegistryCommand::Recall,
+            HELP,
+        );
+    }
+    if ctx.switches.has("revoke") {
+        return crate::minds::market_commands::registry::registry(
+            ctx,
+            crate::minds::market_commands::registry::RegistryCommand::Revoke,
+            HELP,
+        );
+    }
     let result = if ctx.switches.has("reconform") {
         reconformance::continue_scan(ctx)
     } else if ctx.switches.has("rate") {

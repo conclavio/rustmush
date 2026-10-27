@@ -321,6 +321,10 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
         // and a restart).
         // C2d: part 3 continues after part 2 (resale offers, renewal, the
         // withdrawal, the charter transfer, revocation and recall, a restart).
+        // 17g C2d held it: it needs part 2's sealed and open licences and the
+        // listing code, which wait with C2c's index-dependent steps, and its
+        // resale and charter accepts need the per-buyer offer indexes C2b did
+        // not land (both builders' reports).
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await;

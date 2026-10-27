@@ -841,8 +841,341 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
     result?
 }
 
-/// `+minds`'s help, its reply to any other switch set.
-const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>";
+/// The account ids the store holds (the `assert_private` lens).
+async fn known_accounts(w: &World) -> TestResult<Known> {
+    let mut accounts = Vec::new();
+    for (key, row) in w.launch.store.module_json_list("economy").await? {
+        if key.starts_with("account:")
+            && let Some(id) = row.get("id").and_then(Value::as_u64)
+        {
+            accounts.push(id);
+        }
+    }
+    Ok(Known {
+        digests: Vec::new(),
+        accounts,
+    })
+}
+
+/// 17g C2d test 10 (C2 plan §2.2 departure 8, §2.8): `@registry/recall` and
+/// `@registry/revoke` make no operator pre-check, so a number nobody holds
+/// reads the same bytes for the buyer, God and the deployment's granted
+/// operator: the request line, the engine's `Queued.` and the driver's one
+/// line (the buyer and God are not offered the action; the operator is, and
+/// its provider refuses the missing target). The buyer's recall of the first
+/// filed number Roll would allocate reads like its recall of `999` under
+/// `same_refusal`. The fast suite has no filing (a filing needs a genuine
+/// rating), so that number is missing too; the buyer's recall of a REAL
+/// filed number, and the operator's real revocation and recall, are the
+/// story's (`player_market_story`, part 3, which waits with part 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets() -> TestResult {
+    let mut w = world("mush-c2d-registry", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        let known = known_accounts(&w).await?;
+        for (template, request) in [
+            ("@registry/recall {n}", "Recalling filed revision {n}."),
+            ("@registry/revoke {n}", "Revoking licence {n}."),
+        ] {
+            let mut replies = Vec::new();
+            for (actor, name) in [(p.buyer, "buyer"), (p.god, "god"), (p.operator, "operator")] {
+                let line = template.replace("{n}", "999");
+                let lines = w.server.command(actor, line.clone()).await?;
+                let lines = until_own(&w.server, actor, lines, |l| l == DRIVER).await?;
+                assert_private(&lines, &known)?;
+                check_eq!(
+                    lines,
+                    vec![
+                        request.replace("{n}", "999"),
+                        QUEUED.to_owned(),
+                        DRIVER.to_owned()
+                    ],
+                    "{name}: {line}"
+                );
+                replies.push(lines);
+            }
+            check!(
+                replies.windows(2).all(|pair| pair.first() == pair.get(1)),
+                "{template}: every principal reads the same bytes"
+            );
+        }
+        // The buyer: another number reads like 999.
+        let mut replies = Vec::new();
+        for typed in ["1", "999"] {
+            let line = format!("@registry/recall {typed}");
+            let lines = w.server.command(p.buyer, line).await?;
+            replies.push((
+                until_own(&w.server, p.buyer, lines, |l| l == DRIVER).await?,
+                typed,
+            ));
+        }
+        let [(a, typed_a), (b, typed_b)] =
+            <[_; 2]>::try_from(replies).map_err(|_| "two replies")?;
+        check!(
+            same_refusal(&a, typed_a, &b, typed_b),
+            "the buyer's recall reads alike: {a:?} vs {b:?}"
+        );
+        // A malformed number is the help, for anyone.
+        check_eq!(
+            w.server
+                .command(p.buyer, "@registry/recall x".into())
+                .await?,
+            vec![REGISTRY_HELP.to_owned()]
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// 17g C2d test 11 (C2 plan §4): the trade commands refuse without the
+/// actor's own records, each with its own sentence, alike for a missing and
+/// a foreign subject:
+/// - `+minds/renew 999` reads `NO_LICENCE`, as do `/renew/pay` and
+///   `/renew/decline`, and the first licence number Roll would allocate
+///   reads like `999` (`same_refusal`), for the buyer and the author;
+/// - `+minds/charter` of a filed mind the actor does not own is `NO_FILED`,
+///   `+minds/resell` of a licence the actor does not hold `NO_LICENCE`;
+/// - a missing player is `NO_PLAYER`, checked before the actor's own record
+///   (a player's existence is public);
+/// - `price=0` is `BAD_PRICE`, before anything is read;
+/// - the two accepts parse, then refuse `NOT_OPEN`: the offers naming the
+///   actor are found only through the per-buyer offer indexes C2b did not
+///   land (the C2d builder's report), so `NO_OFFER` and `NO_CHARTER_OFFER`
+///   wait with them; a malformed accept is still the help.
+///
+/// The fast suite has no filing or licence (a genuine rating), so "foreign"
+/// is the story's; here both numbers are missing, as in C2a's test 9.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trade_commands_refuse_without_own_records() -> TestResult {
+    let mut w = world("mush-c2d-refusals", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        for (actor, name) in [(p.buyer, "buyer"), (p.author, "author")] {
+            for (template, reply) in [
+                ("+minds/renew {n}", "You hold no licence {n}."),
+                ("+minds/renew/pay {n}", "You hold no licence {n}."),
+                ("+minds/renew/decline {n}", "You hold no licence {n}."),
+                (
+                    "+minds/resell {n}=LaunchAuthor price=5",
+                    "You hold no licence {n}.",
+                ),
+                (
+                    "+minds/charter {n}=LaunchAuthor price=1",
+                    "You own no filed mind {n}.",
+                ),
+            ] {
+                let mut replies = Vec::new();
+                for typed in ["1", "999"] {
+                    let line = template.replace("{n}", typed);
+                    let lines = w.server.command(actor, line.clone()).await?;
+                    check_eq!(lines, vec![reply.replace("{n}", typed)], "{name}: {line}");
+                    replies.push((lines, typed));
+                }
+                let [(a, typed_a), (b, typed_b)] =
+                    <[_; 2]>::try_from(replies).map_err(|_| "two replies")?;
+                check!(
+                    same_refusal(&a, typed_a, &b, typed_b),
+                    "{name}: {template} reads alike"
+                );
+            }
+            for (line, reply) in [
+                (
+                    "+minds/resell 999=Nobody price=5",
+                    "No player is named Nobody.",
+                ),
+                (
+                    "+minds/charter 999=#999999 price=1",
+                    "No player is named #999999.",
+                ),
+                (
+                    "+minds/resell 999=LaunchAuthor price=0",
+                    "price is in credits, from 0.01 to 1000000, such as price=12.50.",
+                ),
+                (
+                    "+minds/charter 999=LaunchAuthor price=1.234",
+                    "price is in credits, from 0.01 to 1000000, such as price=12.50.",
+                ),
+                ("+minds/resell/accept 999", NOT_OPEN),
+                ("+minds/resell/accept 999 price=0.21", NOT_OPEN),
+                ("+minds/charter/accept 999", NOT_OPEN),
+                ("+minds/charter/accept 999 price=1", NOT_OPEN),
+            ] {
+                check_eq!(
+                    w.server.command(actor, line.into()).await?,
+                    vec![reply.to_owned()],
+                    "{name}: {line}"
+                );
+            }
+            check_eq!(
+                w.server
+                    .command(actor, "+minds/resell/accept 999 cost=1".into())
+                    .await?,
+                vec![MINDS_HELP.to_owned()],
+                "{name}: a malformed accept"
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// 17g C2d test 12 (C2 plan §2.8, the observer rule): every C2d command's
+/// reply, the driver's later line included, reaches its actor alone: for the
+/// author, the buyer and the bystander, through `command_seen`, no line
+/// reaches any other principal in the counter room, and every line passes
+/// `assert_private` against every account id the store holds. The seller's
+/// chosen buyer may be named only on `RESELLING` and `CHARTERING` (the
+/// buyer's name is then exempt from the check below); no other line names
+/// another character. Room speech is the positive control.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trade_replies_reach_only_the_actor() -> TestResult {
+    let mut w = world("mush-c2d-observer", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        let known = known_accounts(&w).await?;
+        let room = [
+            (p.author, "author"),
+            (p.buyer, "buyer"),
+            (w.alt, "alt"),
+            (w.bystander, "bystander"),
+        ];
+        let said = w
+            .server
+            .command_seen(p.author, "say Testing the counter room.".into())
+            .await?;
+        for (observer, name) in room.iter().filter(|(o, _)| *o != p.author) {
+            check!(
+                said.reaching(*observer)
+                    .iter()
+                    .any(|line| line.contains("Testing the counter room.")),
+                "the {name} hears the room: {said:?}"
+            );
+        }
+        let quiet = |seen: &Seen, actor: ObjId, line: &str| -> TestResult {
+            for (observer, name) in room.iter().filter(|(o, _)| *o != actor) {
+                let reached = seen.reaching(*observer);
+                check!(
+                    reached.is_empty(),
+                    "#{} {line} reached the {name}: {reached:?}",
+                    actor.0
+                );
+            }
+            assert_private(&seen.own, &known)?;
+            for own in &seen.own {
+                // The seller's chosen buyer (every seller form below names
+                // `LaunchAlt`) is exempt on `RESELLING` and `CHARTERING`
+                // only; every other name is checked on every line (the C2d
+                // fix round, reviewer T5).
+                let seller_line =
+                    own.starts_with("Offering licence ") || own.starts_with("Offering filed mind ");
+                for other in [
+                    "LaunchAuthor",
+                    "LaunchBuyer",
+                    "LaunchAlt",
+                    "LaunchBystander",
+                ] {
+                    if seller_line && other == "LaunchAlt" {
+                        continue;
+                    }
+                    check!(!own.contains(other), "{line} names {other}: {own:?}");
+                }
+            }
+            Ok(())
+        };
+        let lines = [
+            ("+minds/renew 999", false),
+            ("+minds/renew/pay 999", false),
+            ("+minds/renew/decline 999", false),
+            ("+minds/resell 999=LaunchAlt price=5", false),
+            ("+minds/resell/accept 999", false),
+            ("+minds/resell/accept 999 price=0.21", false),
+            ("+minds/charter 999=LaunchAlt price=1", false),
+            ("+minds/charter/accept 999 price=1", false),
+            ("+minds/renew/resell x", false),
+            ("@registry/recall 999", true),
+            ("@registry/revoke 999", true),
+        ];
+        for actor in [p.author, p.buyer, w.bystander] {
+            for (line, submits) in lines {
+                // The settle window: whatever arrived since the last check.
+                let late = w.server.take_seen(actor)?;
+                quiet(&late, actor, "the settle window")?;
+                let mut seen = w.server.command_seen(actor, line.into()).await?;
+                if submits && !seen.own.iter().any(|l| l == DRIVER) {
+                    seen.extend(await_own(&w.server, actor, |l| l == DRIVER).await?);
+                }
+                check!(!seen.own.is_empty(), "#{} {line} answers", actor.0);
+                quiet(&seen, actor, line)?;
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// 17g C2d test 13: a format-1 (House-only) Active launch composes no player
+/// market and so no command slot: every C2d `+minds` form refuses
+/// `NOT_OPEN`, and `@registry/recall` and `@registry/revoke` (the Registry is
+/// composed there) refuse `REGISTRY_OFF`, for the author, the buyer and God,
+/// byte for byte. House Pin renewals stay on `@housemindrenewal` there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
+    let mut w = world("mush-c2d-house-only", 1).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        for actor in [p.author, p.buyer, p.god] {
+            for line in [
+                "+minds/renew 1",
+                "+minds/renew/pay 1",
+                "+minds/renew/decline 1",
+                "+minds/resell 1=LaunchBuyer price=5",
+                "+minds/resell/accept 1",
+                "+minds/resell/accept 1 price=5",
+                "+minds/charter 1=LaunchBuyer price=1",
+                "+minds/charter/accept 1 price=1",
+            ] {
+                check_eq!(
+                    w.server.command(actor, line.into()).await?,
+                    vec![NOT_OPEN.to_owned()],
+                    "#{} {line}",
+                    actor.0
+                );
+            }
+            for line in ["@registry/recall 1", "@registry/revoke 1"] {
+                check_eq!(
+                    w.server.command(actor, line.into()).await?,
+                    vec![REGISTRY_OFF.to_owned()],
+                    "#{} {line}",
+                    actor.0
+                );
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// `@registry`'s help (17g C2d).
+const REGISTRY_HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
+/// The Registry commands' refusal without the player market.
+const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
+
+/// `+minds`'s help, its reply to any other switch set (17g C2d: its last
+/// three lines, the renewal and trade forms).
+const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>\n+minds/renew <licence> (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 
 /// The comparison rule's own cases.
 #[test]

@@ -41,7 +41,12 @@
 //! (`market_mind_entitlement_actors`, C2 plan §2.5 item 1), which C2b did not
 //! land (it is held for the lead's mush-core ruling). Without it there is no
 //! bounded lookup of "this actor's quote or funded operation", so they are
-//! left for the sub-cut that lands the index.
+//! left for the sub-cut that lands the index. 17g C2d's `ResaleOffers
+//! { licence }` (the live resale offers naming the actor on one licence) is
+//! held for the same reason: it reads the per-(buyer, licence) offer index
+//! (`market_mind_paid_resale_buyer_offers`, plan §2.5 item 3), and the
+//! paid-resale offers are otherwise keyed only by their own commit token.
+//! C2d adds the resale steps to `MarketCommandActions` (`ResaleKind`).
 //!
 //! **Capacity.** This is a second market-side owner-read service. The
 //! format-2 Active named launch already holds 31 services and all 32 grants
@@ -158,6 +163,39 @@ impl ListingForm {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarketCommandActions {
     actions: Vec<(Protocol, Step, DefinitionRef)>,
+    /// 17g C2d: the paid-resale Offer, Accept and Fund, in that order.
+    resale: [Option<DefinitionRef>; 3],
+}
+
+/// 17g C2d (C2 plan §2.6): one step of a named paid-licence resale the
+/// commands submit. The seller's `+minds/resell` is `Offer`; the named
+/// buyer's `+minds/resell/accept` is `Accept` when the licence has no open
+/// paid claim and `Fund` otherwise (the provider's own test; Roll's
+/// `ResaleStep` read that answers which is held with the accept, the C2d
+/// fix round).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResaleKind {
+    Offer,
+    Accept,
+    Fund,
+}
+impl ResaleKind {
+    /// The registered action id (`mush_roll::commerce::paid_resale::protocol`).
+    const fn id(self) -> &'static str {
+        use mush_roll::commerce::paid_resale::protocol;
+        match self {
+            Self::Offer => protocol::OFFER,
+            Self::Accept => protocol::ACCEPT,
+            Self::Fund => protocol::FUND,
+        }
+    }
+    const fn index(self) -> usize {
+        match self {
+            Self::Offer => 0,
+            Self::Accept => 1,
+            Self::Fund => 2,
+        }
+    }
 }
 impl MarketCommandActions {
     /// Read each wrapped action from the registry: owner `market`, kind
@@ -191,7 +229,33 @@ impl MarketCommandActions {
                 }
             }
         }
-        Self { actions }
+        // 17g C2d: the paid-resale steps, owner `market`, version 1.
+        let mut resale: [Option<DefinitionRef>; 3] = [None, None, None];
+        for kind in [ResaleKind::Offer, ResaleKind::Accept, ResaleKind::Fund] {
+            let mut found = definitions
+                .iter()
+                .map(|entry| entry.reference())
+                .filter(|r| {
+                    let key = r.key();
+                    key.owner.as_str() == crate::NS
+                        && key.kind.as_str() == "action"
+                        && key.id.as_str() == kind.id()
+                        && r.version() == 1
+                });
+            if let (Some(reference), None) = (found.next(), found.next())
+                && let Some(slot) = resale.get_mut(kind.index())
+            {
+                *slot = Some(reference.clone());
+            }
+        }
+        Self { actions, resale }
+    }
+    /// 17g C2d: the registered paid-resale action of `kind`, or `None` when
+    /// this composition does not register it (the command refuses
+    /// `NOT_OPEN`).
+    #[must_use]
+    pub fn resale(&self, kind: ResaleKind) -> Option<DefinitionRef> {
+        self.resale.get(kind.index()).cloned().flatten()
     }
     /// The registered action of `step` in `protocol`, or `None` when this
     /// composition does not register it (the command refuses `NOT_OPEN`).

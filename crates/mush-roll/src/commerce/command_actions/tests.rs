@@ -78,3 +78,70 @@ fn command_actions_capture_only_registered_actions() -> TestResult {
     );
     Ok(())
 }
+
+/// 17g C2d test 5: the pending charter transfer's Offer (version 2 of
+/// `offer_mind_charter_transfer`; the immediate protocol's version 1 of the
+/// same id is not it) and Fund, and the Registry's recall and revocation,
+/// are each exactly Roll's own registered action; Market's same ids, an
+/// outcome, the pending protocol's settle and refund, and an empty
+/// composition capture nothing.
+#[test]
+fn command_actions_capture_charter_and_registry_actions() -> TestResult {
+    let mut builder = DefinitionRegistryBuilder::new();
+    let mut add = |owner: &str,
+                   kind: &str,
+                   id: &str,
+                   version: u32|
+     -> Result<DefinitionRef, Box<dyn std::error::Error>> {
+        Ok(builder.register(
+            OwnerId::new(owner)?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new(kind)?,
+                DefinitionId::new(id)?,
+                version,
+                json!({"fixture":"identity only"}),
+            )?,
+        )?)
+    };
+    // The immediate protocol's Offer is version 1 of the same id.
+    let immediate = add("roll", "action", PENDING_OFFER.0, 1)?;
+    let offer = add("roll", "action", PENDING_OFFER.0, 2)?;
+    let fund = add("roll", "action", PENDING_FUND.0, 1)?;
+    let recall = add("roll", "action", RECALL.0, 1)?;
+    let revocation = add("roll", "action", REVOCATION.0, 1)?;
+    // Decoys: another owner's ids, an outcome, a later version, and the
+    // pending protocol's service-only terminals.
+    add("market", "action", PENDING_FUND.0, 1)?;
+    add("market", "action", RECALL.0, 1)?;
+    add("roll", "outcome", REVOCATION.0, 2)?;
+    add("roll", "action", RECALL.0, 2)?;
+    add("roll", "action", "settle_mind_charter_transfer", 1)?;
+    add("roll", "action", "refund_mind_charter_transfer", 1)?;
+    let registry = builder.freeze()?;
+    let actions = RollCommandActions::capture(&registry);
+    check_eq!(actions.pending_charter_offer(), Some(offer.clone()));
+    check!(
+        actions.pending_charter_offer() != Some(immediate),
+        "the immediate Offer is not the pending one"
+    );
+    check_eq!(actions.pending_charter_fund(), Some(fund));
+    check_eq!(actions.recall(), Some(recall));
+    check_eq!(actions.revocation(), Some(revocation));
+    let empty = RollCommandActions::capture(&DefinitionRegistryBuilder::new().freeze()?);
+    check_eq!(empty.pending_charter_offer(), None);
+    check_eq!(empty.pending_charter_fund(), None);
+    check_eq!(empty.recall(), None);
+    check_eq!(empty.revocation(), None);
+    // The ids are the ones Roll registers.
+    check_eq!(
+        [PENDING_OFFER.0, PENDING_FUND.0, RECALL.0, REVOCATION.0],
+        [
+            "offer_mind_charter_transfer",
+            "fund_mind_charter_transfer",
+            "registry_revision_recall",
+            "registry_term_revocation"
+        ]
+    );
+    check_eq!((PENDING_OFFER.1, PENDING_FUND.1), (2, 1));
+    Ok(())
+}

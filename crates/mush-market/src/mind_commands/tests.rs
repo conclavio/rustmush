@@ -383,6 +383,59 @@ fn market_command_actions_capture_the_entitlement_steps() -> TestResult {
     Ok(())
 }
 
+/// 17g C2d test 3: each paid-resale step is exactly the market's own
+/// registered action (`offer_`, `accept_` and `fund_paid_mind_resale`,
+/// version 1, `mush_roll::commerce::paid_resale::protocol`'s ids); Roll's
+/// same id, another version, an outcome and the service's settle and refund
+/// steps are not; an empty composition has none.
+#[test]
+fn market_command_actions_capture_the_resale_kinds() -> TestResult {
+    use mush_roll::commerce::paid_resale::protocol;
+    let mut builder = DefinitionRegistryBuilder::new();
+    let mut add = |owner: &str, kind: &str, id: &str, version: u32| -> TestResult<DefinitionRef> {
+        Ok(builder.register(
+            OwnerId::new(owner)?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new(kind)?,
+                DefinitionId::new(id)?,
+                version,
+                serde_json::json!({"fixture":"identity only"}),
+            )?,
+        )?)
+    };
+    let mut expected = Vec::new();
+    for (id, kind) in [
+        (protocol::OFFER, ResaleKind::Offer),
+        (protocol::ACCEPT, ResaleKind::Accept),
+        (protocol::FUND, ResaleKind::Fund),
+    ] {
+        expected.push((kind, add("market", "action", id, 1)?));
+        add("roll", "action", id, 1)?;
+        add("market", "action", id, 2)?;
+        add("market", "outcome", id, 1)?;
+    }
+    // The service-only terminals are no command's step.
+    add("market", "action", protocol::SETTLE, 1)?;
+    add("market", "action", protocol::REFUND, 1)?;
+    let registry = builder.freeze()?;
+    let actions = MarketCommandActions::capture(&registry);
+    for (kind, reference) in &expected {
+        check_eq!(actions.resale(*kind), Some(reference.clone()), "{kind:?}");
+    }
+    // The three are distinct actions.
+    check!(
+        actions.resale(ResaleKind::Offer) != actions.resale(ResaleKind::Accept)
+            && actions.resale(ResaleKind::Accept) != actions.resale(ResaleKind::Fund)
+    );
+    // The entitlement steps are not captured from resale ids.
+    check_eq!(actions.entitlement(Protocol::Original, Step::Fund), None);
+    let empty = MarketCommandActions::capture(&DefinitionRegistryBuilder::new().freeze()?);
+    for kind in [ResaleKind::Offer, ResaleKind::Accept, ResaleKind::Fund] {
+        check_eq!(empty.resale(kind), None, "{kind:?}");
+    }
+    Ok(())
+}
+
 /// 17g C2c (the C2c fix round, reviewers F5 and T-F3): the registered read's
 /// own answer (`answer`, which `MarketCommandReader::read` calls with the
 /// owner lens and the venue gate), over an in-memory listing family:

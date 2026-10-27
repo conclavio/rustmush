@@ -61,6 +61,62 @@ pub(crate) const HOLD_HEAD: &str = "Your mind licences:";
 pub(crate) const HOLD_OWNER: &str = "  filed {filed:<8}  {kind:<9}  {name:<20}  {phase}{flags}";
 pub(crate) const HOLD_MORE: &str = "More: +minds/holdings {section} {cursor}";
 
+// 17g C2d (the C2d brief's words, verbatim): renewals, title trades and the
+// Registry operators. `{player}` is the resolved player's name; `{price}`
+// the credit rendering (`launch::credits`); `{amount}` the same value as
+// `price=` spells it (`trade::amount`); `{days}`, `{hours}` and `{term}`/
+// `{grace}` whole IC days or hours, rounded up.
+pub(crate) const NO_LICENCE: &str = "You hold no licence {licence}.";
+pub(crate) const RENEW_NOT_DUE: &str =
+    "Licence {licence} is not due for renewal; its term has {days} IC days left.";
+pub(crate) const RENEWING: &str = "Asking for a renewal offer on licence {licence}. +minds/renew {licence} shows it once it is confirmed.";
+pub(crate) const RENEW_OFFER: &str = "Licence {licence} renews for {price} ({term}+{grace} IC days); the offer is open {hours} more IC hours.";
+pub(crate) const RENEW_HOW: &str =
+    "Pay it with +minds/renew/pay {licence}, or turn it down with +minds/renew/decline {licence}.";
+pub(crate) const RENEW_FUNDED: &str =
+    "Your renewal payment for licence {licence} is held; the renewal completes on its own.";
+pub(crate) const NO_RENEWAL: &str = "Licence {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
+pub(crate) const RENEW_PAYING: &str =
+    "Paying {price} for the renewal of licence {licence} into escrow; it completes on its own.";
+pub(crate) const RENEW_DECLINING: &str = "Turning down the renewal offer on licence {licence}.";
+pub(crate) const RESELLING: &str = "Offering licence {licence} to {player} for {price}.";
+pub(crate) const RESELL_TELL: &str =
+    "Once that is confirmed, they accept with +minds/resell/accept {licence} price={amount}.";
+pub(crate) const CHARTERING: &str =
+    "Offering filed mind {filed} and its charter to {player} for {price}.";
+pub(crate) const CHARTER_TELL: &str =
+    "Once that is confirmed, they accept with +minds/charter/accept {filed} price={amount}.";
+pub(crate) const NO_PLAYER: &str = "No player is named {name}.";
+pub(crate) const BAD_PRICE: &str =
+    "price is in credits, from 0.01 to 1000000, such as price=12.50.";
+pub(crate) const RECALLING: &str = "Recalling filed revision {filed}.";
+pub(crate) const REVOKING: &str = "Revoking licence {licence}.";
+pub(crate) const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
+
+/// 17g C2d: the brief's words for the named buyer's accepts. They list and
+/// select the live offers naming the actor, which the per-buyer offer
+/// indexes provide (C2 plan §2.5 items 3 and 4); C2b did not land them, so
+/// both accepts refuse `NOT_OPEN` before reading and nothing prints these
+/// yet. They stay here, verbatim, for the index sub-cut; the listing and the
+/// price rule are built (`trade::offer_lines`, `trade::select`) and the width
+/// test measures them now.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod named {
+    pub(crate) const OFFER: &str = "Licence {licence} is offered to you for {price}; the offer is open {minutes} more minutes.";
+    pub(crate) const ACCEPT_HOW: &str =
+        "Accept it with +minds/resell/accept {licence} price={amount}.";
+    pub(crate) const NO_OFFER: &str = "You have no offer for licence {licence}.";
+    pub(crate) const NO_OFFER_AT: &str = "None of your offers for licence {licence} is at {price}.";
+    pub(crate) const CHARTER_OFFER: &str = "Filed mind {filed} and its charter are offered to you for {price}; the offer is open {minutes} more minutes.";
+    pub(crate) const CHARTER_ACCEPT_HOW: &str =
+        "Accept it with +minds/charter/accept {filed} price={amount}.";
+    pub(crate) const NO_CHARTER_OFFER: &str = "You have no offer for filed mind {filed}.";
+    pub(crate) const NO_CHARTER_OFFER_AT: &str =
+        "None of your offers for filed mind {filed} is at {price}.";
+    pub(crate) const ACCEPTING: &str = "Accepting the offer for licence {licence} at {price}.";
+    pub(crate) const FUNDING_CHARTER: &str = "Paying {price} for filed mind {filed} into escrow; the transfer settles once no sortie under it is out.";
+}
+
 /// 17g C2c: the brief's words for the steps that read the actor's own quote,
 /// funded purchase and paid licences. Those reads need the per-buyer
 /// entitlement index and the per-holder paid index (C2 plan §2.5 items 1 and

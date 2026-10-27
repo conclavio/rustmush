@@ -558,5 +558,215 @@ fn receipt_wire_has_only_exact_fixed_terminal_fields_and_bounds() -> TestResult 
     Ok(())
 }
 
+/// 17g C2d test 1 (C2 plan §2.1's renewal exception): the factored player
+/// branch keeps `@mindrenewal` and `@housemindrenewal` byte-identical.
+/// - Status: for no operation and for every state of a real operation row
+///   (drafted, funded, granted, refunded, declined and expired), each
+///   service's status sentence through `player_step`'s view
+///   (`status_view`, then the command's own `command_line`, the one call
+///   `command` prints) is exactly the pre-C2d sentence, recomputed here from
+///   the row by the pre-C2d code (the oracle below); each command's line is
+///   its own service's sentence, never the other's (the C2d fix round,
+///   reviewer T2).
+/// - The submitting switches print exactly the pre-C2d queued and
+///   unresolved lines, and the command's switches select the same branch
+///   as before (`Switches::of_command`); `player_step`'s `Request` is the
+///   request branch and, once attempted, the retry branch.
+/// - `player_step`'s Status view carries the drafted offer's frozen price,
+///   instrument, expiry and term, and the current term's end.
+///
+/// The service's own admission, entry, key and submission are unchanged
+/// code (`step`); its live composition is the renewal services' integration
+/// stories' (`tacsim::minds::bulk::renewal_service_integration_tests`). Not
+/// proven here: the command reading its switches through
+/// `Switches::of_command` and the term end from `own`'s entry under a
+/// dispatched context; those stories run `@mindrenewal` and
+/// `@housemindrenewal` for real and check their sentences by substring.
+#[test]
+fn renewal_player_step_keeps_the_service_commands_byte_identical() -> TestResult {
+    use super::player::{RenewalPlayerOutcome, RenewalPlayerStep, RenewalState, Switches};
+    use super::service::command_line as personal_line;
+    use crate::mind_house_renewal::command_line as house_line;
+    use crate::mind_house_renewal::tests as house;
+    // The pre-C2d status branch of `@mindrenewal` (the oracle).
+    let personal_before = |row: Option<&MindRenewalOperationV1>| -> String {
+        let label = match row.map(|r| r.state()) {
+            None => "No renewal offer has been requested.",
+            Some(RenewalStateV1::Drafted {}) => {
+                "A renewal offer awaits your explicit acceptance or decline."
+            }
+            Some(RenewalStateV1::Funded { .. }) => "Payment is held; completion is pending.",
+            Some(RenewalStateV1::Granted { .. }) => "Renewal completed.",
+            Some(_) => {
+                "The last renewal closed without a new term. You may explicitly request a retry."
+            }
+        };
+        let details=row.map(|row| format!(" Price: {} minor units of {}; offer expires at world-IC {}. Term: {} seconds plus {} seconds grace. Registry cut: {} per mille; venue cut: {} per mille; parent royalties: {} per mille.",
+            row.offer().terms.price.minor(),row.offer().terms.instrument,row.offer().terms.expires_at.at,
+            row.binding().term_seconds(),row.binding().grace_seconds(),row.offer().terms.registry.permille,
+            row.offer().terms.venue.as_ref().map_or(0,|c|c.permille),row.offer().terms.parents.iter().map(|p|u32::from(p.permille)).sum::<u32>())).unwrap_or_default();
+        format!("{label}{details}")
+    };
+    // The pre-C2d status branch of `@housemindrenewal` (the oracle).
+    let house_before = |row: Option<&crate::mind_house_renewal::MindRenewalOperationV1>| -> String {
+        use mush_roll::commerce::house_renewal::RenewalStateV1 as State;
+        let label = match row.map(|r| r.state()) {
+            None => "No renewal offer has been requested.",
+            Some(State::Drafted {}) => {
+                "A renewal offer awaits your explicit acceptance or decline."
+            }
+            Some(State::Funded { .. }) => "Payment is held; completion is pending.",
+            Some(State::Granted { .. }) => "Renewal completed.",
+            Some(_) => {
+                "The last renewal closed without a new term. You may explicitly request a retry."
+            }
+        };
+        let details=row.map(|row| format!(" Price: {} minor units of {}; offer expires at world-IC {}. Term: {} seconds plus {} seconds grace. Registry cut: {} per mille; venue cut: {} per mille.",
+            row.offer().terms.price.minor(),row.offer().terms.instrument,row.offer().terms.expires_at.at,
+            row.binding().term_seconds(),row.binding().grace_seconds(),row.offer().terms.registry.permille,
+            row.offer().terms.venue.as_ref().map_or(0,|c|c.permille))).unwrap_or_default();
+        format!("{label}{details}")
+    };
+    let term_end = 130;
+
+    // Personal: no operation, then every state of one real row.
+    let drafted = fixture()?;
+    let personal = [
+        (None, RenewalState::None),
+        (Some(drafted.clone()), RenewalState::Drafted),
+        (Some(funded(&drafted)?), RenewalState::Funded),
+        (
+            Some(terminal(&funded(&drafted)?, true)?),
+            RenewalState::Granted,
+        ),
+        (
+            Some(terminal(&funded(&drafted)?, false)?),
+            RenewalState::Closed,
+        ),
+        (Some(closed(&drafted, false)?), RenewalState::Closed),
+        (Some(closed(&drafted, true)?), RenewalState::Closed),
+    ];
+    for (row, state) in &personal {
+        let view = super::service::status_view(term_end, row.as_ref());
+        check_eq!(view.state(), *state);
+        check_eq!(view.term_end_ic(), term_end);
+        check_eq!(
+            personal_line(RenewalPlayerOutcome::Status(view.clone())),
+            personal_before(row.as_ref()),
+            "{state:?}"
+        );
+    }
+    // The drafted offer's frozen terms reach the view.
+    let view = super::service::status_view(term_end, Some(&drafted));
+    check_eq!(
+        view.price_minor(),
+        Some(drafted.offer().terms.price.minor())
+    );
+    check_eq!(
+        view.instrument(),
+        Some(drafted.offer().terms.instrument.to_string().as_str())
+    );
+    check_eq!(
+        view.offer_expires_ic(),
+        Some(drafted.offer().terms.expires_at.at)
+    );
+    check_eq!(view.term_seconds(), Some(drafted.binding().term_seconds()));
+    check_eq!(
+        view.grace_seconds(),
+        Some(drafted.binding().grace_seconds())
+    );
+    check!(view.price_minor().is_some_and(|p| p > 0), "a real price");
+    let none = super::service::status_view(term_end, None);
+    check_eq!(none.price_minor(), None);
+    check_eq!(none.offer_expires_ic(), None);
+
+    // House: the same, against the House service's own row and sentence.
+    let drafted = house::fixture()?;
+    let funded_house = house::funded(&drafted)?;
+    let houses = [
+        (None, RenewalState::None),
+        (Some(drafted.clone()), RenewalState::Drafted),
+        (Some(funded_house.clone()), RenewalState::Funded),
+        (
+            Some(house::terminal(&funded_house, true)?),
+            RenewalState::Granted,
+        ),
+        (
+            Some(house::terminal(&funded_house, false)?),
+            RenewalState::Closed,
+        ),
+        (Some(house::closed(&drafted, false)?), RenewalState::Closed),
+        (Some(house::closed(&drafted, true)?), RenewalState::Closed),
+    ];
+    for (row, state) in &houses {
+        let view = crate::mind_house_renewal::status_view(term_end, row.as_ref());
+        check_eq!(view.state(), *state);
+        check_eq!(
+            house_line(RenewalPlayerOutcome::Status(view.clone())),
+            house_before(row.as_ref()),
+            "House {state:?}"
+        );
+        if row.is_some() {
+            check!(
+                house_line(RenewalPlayerOutcome::Status(view.clone()))
+                    != personal_line(RenewalPlayerOutcome::Status(view.clone())),
+                "the House command prints its own sentence"
+            );
+        }
+    }
+    let view = crate::mind_house_renewal::status_view(term_end, Some(&drafted));
+    check_eq!(
+        view.price_minor(),
+        Some(drafted.offer().terms.price.minor())
+    );
+    check_eq!(
+        view.offer_expires_ic(),
+        Some(drafted.offer().terms.expires_at.at)
+    );
+    check_eq!(view.parent_royalty_permille(), Some(0));
+
+    // The submitting branches' two lines, for both services.
+    for line in [personal_line, house_line] {
+        check_eq!(
+            line(RenewalPlayerOutcome::Queued),
+            "Renewal request queued. Status or its acknowledged receipt establishes completion."
+        );
+        check_eq!(
+            line(RenewalPlayerOutcome::Unresolved),
+            "A renewal request is still unresolved; inspect status before retrying."
+        );
+    }
+
+    // The command's switches select exactly what they did; player_step's
+    // steps select the same branches (Request: request, then retry).
+    let of = |names: &[&str]| {
+        Switches::of_command(&mush_core::SwitchSet::from_names(names.iter().copied()))
+    };
+    let s = |status, request, accept, decline, retry| Switches {
+        status,
+        request,
+        accept,
+        decline,
+        retry,
+    };
+    check_eq!(of(&[]), s(true, false, false, false, false));
+    check_eq!(of(&["status"]), s(true, false, false, false, false));
+    check_eq!(of(&["request"]), s(false, true, false, false, false));
+    check_eq!(of(&["accept"]), s(false, false, true, false, false));
+    check_eq!(of(&["decline"]), s(false, false, false, true, false));
+    check_eq!(of(&["retry"]), s(false, false, false, false, true));
+    check_eq!(
+        Switches::of(RenewalPlayerStep::Status),
+        s(true, false, false, false, false)
+    );
+    check_eq!(
+        Switches::of(RenewalPlayerStep::Request),
+        s(false, true, false, false, true)
+    );
+    check_eq!(Switches::of(RenewalPlayerStep::Accept), of(&["accept"]));
+    check_eq!(Switches::of(RenewalPlayerStep::Decline), of(&["decline"]));
+    Ok(())
+}
+
 #[path = "provider_tests.rs"]
 mod provider_tests;

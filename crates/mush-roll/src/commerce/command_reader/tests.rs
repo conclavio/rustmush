@@ -45,6 +45,13 @@ impl mush_core::module::QueryHandler for Query {
                 HoldingSection::Owner
             };
             RollCommandReadRequest::own_holdings(section, after.as_u64())
+        } else if let Some(licence) = args
+            .get("paid")
+            .and_then(Value::as_u64)
+            .and_then(|n| LicenceId::new(n).ok())
+        {
+            // 17g C2d: `{"paid": <licence>}`.
+            RollCommandReadRequest::own_paid(licence)
         } else if let Some(names) = args.get("names").and_then(Value::as_array) {
             RollCommandReadRequest::charter_names(
                 names
@@ -496,6 +503,264 @@ fn own_holdings_page_cuts_at_three_rows_and_sixteen_assets() -> TestResult {
             OwnerReadError::Integrity
         )),
         Err(OwnerReadError::Integrity)
+    );
+    Ok(())
+}
+
+/// 17g C2d test 4 (C2 plan §2.4, §2.6), over the real filing fixture with a
+/// paid licence pointer and its current term written beside the filing:
+/// - `OwnPaid`: the holder reads the licence's charter, public name, form,
+///   transferability, Active phase in whole IC days, no revocation, no
+///   resale, no renewal and not a House Pin; another player naming that
+///   licence and the holder naming a licence that does not exist both read
+///   `Refused`, identically; no answer carries a digest, account, rating,
+///   source or revision;
+/// - the renewal mark on the holder's paid view, through real rows (the C2d
+///   fix round, reviewers F2 and T3): a personal renewal head whose pending
+///   operation is drafted reads `Offered`, the same operation funded reads
+///   `Paid`, and the foreign and missing reads stay `Refused` alike while
+///   it is pending; `renewal_mark` maps any other phase to none.
+///
+/// Not proven here: the House Pin, revoked and selling flags through real
+/// rows (no House catalogue, revocation or funded resale fixture here; each
+/// is one point read of its own family, and the House renewal head is read
+/// only when the House allocation row exists), and `CharterOffers` and
+/// `ResaleStep`, which wait for the per-buyer offer indexes (the module
+/// doc).
+#[test]
+fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
+    use crate::commerce::paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence};
+    use crate::commerce::rating::RatingClass;
+    use crate::commerce::records::RevisionPolicy;
+    use crate::commerce::{TermGeneration, TermWindow};
+    let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
+    let other = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Other",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    let request = f.request();
+    let (prepared, _) = f.engine.prepare_registered_composed_authoritative_action(
+        &config().initial_filing_action()?,
+        &request,
+        token(4),
+    )?;
+    let (_, install) = prepared.into_parts();
+    f.engine.install_composed_action(install)?;
+    let filed = FiledRevisionId::new(1)?;
+    let content = f
+        .engine
+        .action_state()
+        .get(&f.families.filed, &filed.key())?
+        .ok_or("the filed row")?
+        .content()
+        .clone();
+    let charter = content.position().charter;
+    // A paid licence the author (God) holds on that charter: an open,
+    // non-transferable personal term, Active for 90 IC days from now.
+    let licence = LicenceId::new(41)?;
+    let one = TermGeneration::new(1)?;
+    let now = f.engine.world.game_now_unix();
+    let window = TermWindow::new(
+        WorldIcSeconds(now),
+        WorldIcSeconds(now),
+        WorldIcSeconds(now + 90 * DAY),
+        WorldIcSeconds(now + 93 * DAY),
+    )?;
+    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::Open {}, false)?;
+    let pointer = PersonalPaidLicence::original(
+        licence,
+        charter,
+        content.position().line,
+        GOD,
+        one,
+        token(30),
+    )?;
+    let term = PaidTermRecord::original(
+        licence,
+        one,
+        window,
+        terms,
+        RevisionPolicy::Pin {
+            filed,
+            revision: content.revision(),
+        },
+        token(30),
+    )?;
+    let (licences, paid_terms) = (
+        f.families.paid_licences.clone(),
+        f.families.paid_terms.clone(),
+    );
+    let mut txn = f.engine.action_transaction(&licences)?;
+    txn.insert(&licences, &licence.key(), pointer.clone())?;
+    txn.insert(
+        &paid_terms,
+        &format!("{}/{}", licence.key(), one.key()),
+        term.clone(),
+    )?;
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+
+    // OwnPaid: the holder's own view.
+    let (answer, encoded) = read(&mut f, GOD, json!({"paid": 41}))??;
+    let view = answer.into_own_paid().ok_or("an own paid view")?;
+    check_eq!(view.licence(), licence);
+    check_eq!(view.charter(), charter);
+    check!(!view.house(), "a personal licence");
+    check_eq!(view.name(), "Original");
+    check_eq!(view.form(), PaidForm::Open {});
+    check!(!view.transferable(), "the term's own mark");
+    check_eq!(view.phase(), OwnerPhase::Active { days_left: 90 });
+    check!(!view.revoked() && !view.selling());
+    check_eq!(view.renewal(), None);
+    check!(
+        encoded.contains(r#""command":{"kind":"own_paid""#),
+        "{encoded}"
+    );
+    for forbidden in ["digest", "account", "payer", "rating", "source", "revision"] {
+        check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");
+    }
+    // Foreign and missing read alike.
+    let foreign = read(&mut f, other, json!({"paid": 41}))?;
+    let missing = read(&mut f, GOD, json!({"paid": 999}))?;
+    check_eq!(foreign, Err(OwnerReadError::Refused));
+    check_eq!(missing, Err(OwnerReadError::Refused));
+
+    // The renewal mark through real rows: a personal renewal head whose
+    // pending operation is the drafted offer on this term, then funded.
+    let (drafted, funded) = {
+        use crate::commerce::entitlement::{
+            DownstreamTermsV1, FiledRoyaltyTermsV1, GrantEconomicsV1, PaidTermEconomicsV1,
+            RenewalTemplateV1,
+        };
+        use crate::commerce::renewal::{
+            RenewalAttemptV1, RenewalBindingV1, RenewalOperationV1, RenewalStateV1,
+        };
+        use mush_core::mechanics::{
+            DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+        };
+        use mush_core::{ClockRef, ClockStamp, DefinitionDigest, DefinitionRef};
+        let market = |kind: &str, id: &str| -> Result<DefinitionRef, Box<dyn std::error::Error>> {
+            Ok(DefinitionRegistryBuilder::new().register(
+                OwnerId::new("market")?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new(kind)?,
+                    DefinitionId::new(id)?,
+                    1,
+                    json!({"format": 1}),
+                )?,
+            )?)
+        };
+        let stamp = |at: i64| ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at,
+        };
+        let policy = RevisionPolicy::Pin {
+            filed,
+            revision: content.revision(),
+        };
+        let chain = FiledRoyaltyTermsV1::capture(filed, content.revision(), token(30), Vec::new())?;
+        let grant = GrantEconomicsV1::new(
+            DownstreamTermsV1::Source {
+                royalty_permille: 0,
+            },
+            RenewalTemplateV1::new(
+                mush_economy::InstrumentId::new("cr").ok_or("instrument")?,
+                mush_economy::Amount::from_minor(500),
+                90 * DAY,
+                3 * DAY,
+                terms,
+                policy,
+                market("entitlement_policy", "personal")?,
+            )?,
+            chain.reference()?,
+        )?;
+        let economics = PaidTermEconomicsV1::capture(
+            licence,
+            one,
+            token(30),
+            DefinitionDigest::from_bytes([9; 32]),
+            grant,
+        )?;
+        let drafted = RenewalOperationV1 {
+            format: 1,
+            operation: token(31),
+            action: market("action", "draft_mind_renewal")?,
+            attempt: RenewalAttemptV1::Automatic {},
+            binding: Box::new(RenewalBindingV1::capture(&pointer, &term, &economics)?),
+            offer_digest: DefinitionDigest::from_bytes([31; 32]),
+            contract: serde_json::from_value(json!(31))?,
+            consent_hash: [31; 32],
+            created_at_ic: stamp(now),
+            created_at_utc: now,
+            state: RenewalStateV1::Drafted {},
+        };
+        drafted.validate()?;
+        let funded = RenewalOperationV1 {
+            state: RenewalStateV1::Funded {
+                funding: serde_json::from_value(json!({
+                    "format": 1,
+                    "commit": token(32),
+                    "action": market("action", "fund_mind_renewal")?,
+                    "contract": drafted.contract,
+                    "hold": 32,
+                    "transaction": 32,
+                    "journal_seq": 32,
+                    "consent_hash": drafted.consent_hash,
+                    "at_ic": stamp(now + 1),
+                    "posted_at_utc": now + 1
+                }))?,
+            },
+            ..drafted.clone()
+        };
+        funded.validate()?;
+        (drafted, funded)
+    };
+    let (heads, operations) = (
+        f.families.renewal_heads.clone(),
+        f.families.renewal_operations.clone(),
+    );
+    for (row, mark, fresh) in [
+        (&drafted, RenewalMark::Offered, true),
+        (&funded, RenewalMark::Paid, false),
+    ] {
+        let head = crate::commerce::renewal::RenewalHeadV1::for_operation(row)?;
+        check_eq!(head.pending(), Some(row.operation));
+        let mut txn = f.engine.action_transaction(&heads)?;
+        if fresh {
+            txn.insert(&heads, &licence.key(), head)?;
+            txn.insert(&operations, &row.operation.to_hex(), row.clone())?;
+        } else {
+            txn.replace(&heads, &licence.key(), head)?;
+            txn.replace(&operations, &row.operation.to_hex(), row.clone())?;
+        }
+        let (_, install) = txn.prepare()?.into_parts();
+        f.engine.install_prepared_action(install)?;
+        let (answer, encoded) = read(&mut f, GOD, json!({"paid": 41}))??;
+        let view = answer.into_own_paid().ok_or("an own paid view")?;
+        check_eq!(view.renewal(), Some(mark), "{encoded}");
+        check!(!view.house(), "a personal licence reads the personal head");
+        for forbidden in ["digest", "account", "contract", "consent", "operation"] {
+            check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");
+        }
+        check_eq!(
+            read(&mut f, other, json!({"paid": 41}))?,
+            Err(OwnerReadError::Refused)
+        );
+        check_eq!(
+            read(&mut f, GOD, json!({"paid": 999}))?,
+            Err(OwnerReadError::Refused)
+        );
+    }
+
+    // The mark of each pending phase.
+    check_eq!(renewal_mark(true, false), Some(RenewalMark::Offered));
+    check_eq!(renewal_mark(false, true), Some(RenewalMark::Paid));
+    check_eq!(renewal_mark(false, false), None);
+    check_eq!(
+        serde_json::to_value(RenewalMark::Offered)?,
+        json!("offered")
     );
     Ok(())
 }

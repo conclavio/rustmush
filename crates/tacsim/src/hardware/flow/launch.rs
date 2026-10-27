@@ -1472,3 +1472,177 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     }
     Ok(())
 }
+
+/// 17g C2d test 9 (C2 plan §2.1; on the launch rig beside C2a's test 4 and
+/// C2c's test 6, for the same reason: the providers project nothing
+/// unbooted). After the runbook's Registry grants, each C2d parameter
+/// object resolves against its principal's own projected offer for the
+/// action the commands capture, through `legal_action_query`,
+/// `project_legal_actions` and `resolve_legal_action`, and passes
+/// `ActionProviderRegistry::validate_invocation`: as the buyer, the
+/// paid-resale Offer (`trade::resale_offer_parameters`), Accept and Fund
+/// (`resale_accept_parameters`) and the pending charter's Offer
+/// (`charter_offer_parameters`, decimal strings, 86,400 seconds) and Fund
+/// (`charter_fund_parameters`); as the deployment's granted operator,
+/// `roll-registry-recall` and `roll-registry-revocation`
+/// (`registry::recall_parameters`, `revocation_parameters`), whose fixed
+/// `reason` the projection adds. The buyer is offered neither Registry
+/// action.
+#[tokio::test(flavor = "current_thread")]
+async fn trade_parameters_satisfy_the_registered_providers() -> Result {
+    use crate::minds::market_commands::{registry, trade};
+    use mush_core::action::{
+        IdempotencyKey, IdempotencyKeyText, IdempotencyScope, PerceivedRef, RequestUid,
+        ScopedIdempotencyKey,
+    };
+    use mush_core::mechanics::CanonicalId;
+    use mush_core::{OfferExecutionContext, OfferSubmission};
+    use mush_market::mind_commands::{MarketCommandActions, ResaleKind};
+    use mush_roll::commerce::command_actions::RollCommandActions;
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    grant_registry(&mut r, &d)?;
+    let operator = operator(&d)?;
+    let buyer = r.buyer;
+    let payer = r.payer;
+    let e = r.world_mut().engine_mut();
+    let definitions = e.registry.definitions().ok_or("definitions")?;
+    let market = MarketCommandActions::capture(definitions);
+    let roll = RollCommandActions::capture(definitions);
+    let licence = mush_roll::commerce::LicenceId::new(1)?;
+    let charter = mush_roll::commerce::CharterId::new(1)?;
+    let token = mush_core::CommitToken::from_bytes([0x5d; 16]);
+    let reason = json!({"reason": "registry_review"});
+    let with_reason = |mut parameters: serde_json::Value| -> serde_json::Value {
+        if let (Some(into), Some(from)) = (parameters.as_object_mut(), reason.as_object()) {
+            into.extend(from.clone());
+        }
+        parameters
+    };
+    let cases = [
+        (
+            "resale offer",
+            buyer,
+            market.resale(ResaleKind::Offer),
+            trade::resale_offer_parameters(licence, operator, 21, payer),
+            None,
+        ),
+        (
+            "resale accept",
+            buyer,
+            market.resale(ResaleKind::Accept),
+            trade::resale_accept_parameters(token, payer),
+            None,
+        ),
+        (
+            "resale fund",
+            buyer,
+            market.resale(ResaleKind::Fund),
+            trade::resale_accept_parameters(token, payer),
+            None,
+        ),
+        (
+            "pending charter offer",
+            buyer,
+            roll.pending_charter_offer(),
+            trade::charter_offer_parameters(charter, operator, payer, 100),
+            None,
+        ),
+        (
+            "pending charter fund",
+            buyer,
+            roll.pending_charter_fund(),
+            trade::charter_fund_parameters(token, payer),
+            None,
+        ),
+        (
+            "recall",
+            operator,
+            roll.recall(),
+            registry::recall_parameters(1),
+            Some(with_reason(registry::recall_parameters(1))),
+        ),
+        (
+            "revocation",
+            operator,
+            roll.revocation(),
+            registry::revocation_parameters(1),
+            Some(with_reason(registry::revocation_parameters(1))),
+        ),
+    ];
+    check_eq!(
+        trade::charter_offer_parameters(charter, operator, payer, 100)
+            .get("valid_for_seconds")
+            .and_then(serde_json::Value::as_str),
+        Some("86400")
+    );
+    e.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x49; 32])?,
+        [],
+    )?);
+    for (serial, (name, actor, action, parameters, resolved_as)) in cases.into_iter().enumerate() {
+        let action = action.ok_or_else(|| format!("{name} is composed"))?;
+        let principal = mush_core::PrincipalId::Object { id: actor };
+        let query = e.legal_action_query(principal.clone(), actor, PerceivedRef::SelfActor)?;
+        let offers = e.project_legal_actions(&query)?;
+        let offer = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| format!("{name} is offered to #{}", actor.0))?;
+        let resolved = e
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request: RequestUid::from_bytes([u8::try_from(serial)?.wrapping_add(120); 16]),
+                    principal: principal.clone(),
+                    actor,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: action.key().owner.clone(),
+                            namespace: CanonicalId::new(action.key().id.as_str())?,
+                        },
+                        1,
+                        IdempotencyKey::Caller(IdempotencyKeyText::parse_canonical(format!(
+                            "mind.trade.{serial}"
+                        ))?),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: offer.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: Vec::new(),
+                    parameters: parameters.clone(),
+                },
+            )
+            .map_err(|error| format!("{name} resolves: {error}"))?;
+        let (resolved_action, resolved, _) = resolved.into_authoritative_parts();
+        check_eq!(&resolved_action, &action, "{name}");
+        check_eq!(
+            resolved.invocation().parameters(),
+            &resolved_as.unwrap_or(parameters),
+            "{name}"
+        );
+        e.registry
+            .action_providers()
+            .ok_or("providers")?
+            .validate_invocation(&action, resolved.invocation())
+            .map_err(|error| format!("{name} validates: {error}"))?;
+    }
+    // The Registry actions reach the granted operator alone.
+    let query = e.legal_action_query(
+        mush_core::PrincipalId::Object { id: buyer },
+        buyer,
+        PerceivedRef::SelfActor,
+    )?;
+    let offers = e.project_legal_actions(&query)?;
+    for action in [roll.recall(), roll.revocation()] {
+        let action = action.ok_or("composed")?;
+        check!(
+            offers.projected_for_action(&action).is_none(),
+            "the buyer is not offered {action:?}"
+        );
+    }
+    Ok(())
+}

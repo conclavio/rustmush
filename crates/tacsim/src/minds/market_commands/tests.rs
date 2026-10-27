@@ -494,3 +494,418 @@ fn an_empty_page_that_goes_on_prints_its_cursor() -> TestResult {
     }
     Ok(())
 }
+
+/// 17g C2d test 6 (C2 plan §2.7): the trade commands' arguments parse
+/// strictly. A seller's `<number>=<player> price=<credits>` (the player may
+/// not hold `=`; `price=` comes last); the price grammar (`<whole>[.<one or
+/// two digits>]`, an optional `cr`, 0.01 to 1,000,000); a buyer's `<number>`
+/// with and without `price=`. A malformed shape is the `+minds` help
+/// (`Usage`), a malformed or out-of-bounds price `BAD_PRICE` (`Price`). And
+/// `amount`, the `price=` spelling the request lines print.
+#[test]
+fn trade_arguments_parse_strictly() -> TestResult {
+    use super::trade::{
+        AcceptArguments, TradeArguments, TradeRefusal, accept_arguments, amount, trade_arguments,
+    };
+    let seller = |subject: u64, player: &str, price_minor: i64| TradeArguments {
+        subject,
+        player: player.to_owned(),
+        price_minor,
+    };
+    check_eq!(
+        trade_arguments("12=Cy price=0.21"),
+        Ok(seller(12, "Cy", 21))
+    );
+    check_eq!(
+        trade_arguments(" 12 = Cy  price=5.00 "),
+        Ok(seller(12, "Cy", 500)),
+        "padding around the parts"
+    );
+    check_eq!(trade_arguments("12=#7 price=1"), Ok(seller(12, "#7", 100)));
+    check_eq!(
+        trade_arguments("12=Old Cy price=12.50cr"),
+        Ok(seller(12, "Old Cy", 1250)),
+        "a name with a space"
+    );
+    // The price grammar, accepted.
+    for (text, minor) in [
+        ("0.01", 1),
+        ("0.21", 21),
+        ("1000000", 100_000_000),
+        ("12.50cr", 1250),
+        ("12.5", 1250),
+        ("7", 700),
+    ] {
+        check_eq!(
+            trade_arguments(&format!("12=Cy price={text}")).map(|a| a.price_minor),
+            Ok(minor),
+            "{text}"
+        );
+        check_eq!(
+            accept_arguments(&format!("12 price={text}")).map(|a| a.price_minor),
+            Ok(Some(minor)),
+            "{text}"
+        );
+    }
+    // The price grammar, refused.
+    for text in [
+        "0",
+        "0.00",
+        "1000000.01",
+        "1.234",
+        "-1",
+        "1,5",
+        "",
+        "01",
+        "1.",
+        ".5",
+        "cr",
+        "12cr5",
+    ] {
+        check_eq!(
+            trade_arguments(&format!("12=Cy price={text}")),
+            Err(TradeRefusal::Price),
+            "{text:?}"
+        );
+        check_eq!(
+            accept_arguments(&format!("12 price={text}")),
+            Err(TradeRefusal::Price),
+            "{text:?}"
+        );
+    }
+    // Shapes.
+    for text in [
+        "",
+        "12",
+        "12=Cy",
+        "12=price=1",
+        "=Cy price=1",
+        "x=Cy price=1",
+        "0=Cy price=1",
+        "012=Cy price=1",
+        "12=Cy cost=1",
+        "12=Cy=Dee price=1",
+        "12=Cy price=1 now",
+    ] {
+        check_eq!(trade_arguments(text), Err(TradeRefusal::Usage), "{text:?}");
+    }
+    check_eq!(
+        accept_arguments("12"),
+        Ok(AcceptArguments {
+            subject: 12,
+            price_minor: None
+        })
+    );
+    check_eq!(
+        accept_arguments("  12   price=0.21 "),
+        Ok(AcceptArguments {
+            subject: 12,
+            price_minor: Some(21)
+        })
+    );
+    for text in [
+        "",
+        "x",
+        "0",
+        "12 cost=1",
+        "12 price=1 more",
+        "12 13",
+        "price=1 12",
+    ] {
+        check_eq!(accept_arguments(text), Err(TradeRefusal::Usage), "{text:?}");
+    }
+    // The `price=` spelling.
+    check_eq!(amount(21), "0.21");
+    check_eq!(amount(500), "5");
+    check_eq!(amount(1250), "12.50");
+    check_eq!(amount(100_000_000), "1000000");
+    for minor in [1, 21, 500, 1250, 99_999_999, 100_000_000] {
+        check_eq!(
+            super::market::credits_minor(&amount(minor)),
+            Some(minor),
+            "{minor} round-trips"
+        );
+    }
+    Ok(())
+}
+
+/// 17g C2d test 7 (C2 plan §2.6): the buyer confirms the frozen price.
+/// With a 0.21cr and a 5.00cr offer naming the actor: no `price=` submits
+/// nothing and lists both (cheapest first, each with its confirming line);
+/// `price=0.21` submits that offer with `ACCEPTING`; `price=1` refuses
+/// `NO_OFFER_AT` and lists both; an equal-price tie submits the one expiring
+/// last; an expired offer is not live; none at all is `NO_OFFER`. The charter
+/// accept is the same over its own words (`FUNDING_CHARTER`).
+#[test]
+fn accept_selects_the_offer_the_buyer_confirms() -> TestResult {
+    use super::trade::{AcceptPlan, Named, NamedOffer, accept_plan};
+    use mush_core::CommitToken;
+    let now = 1_000_000;
+    let offer = |n: u8, price_minor: i64, left: i64| NamedOffer {
+        offer: CommitToken::from_bytes([n; 16]),
+        price_minor,
+        expires_at_utc: now + left,
+    };
+    let cheap = offer(1, 21, 600);
+    let dear = offer(2, 500, 1_201);
+    let both = [dear, cheap];
+    let listed = vec![
+        "Licence 12 is offered to you for 0.21cr; the offer is open 10 more minutes.".to_owned(),
+        "Accept it with +minds/resell/accept 12 price=0.21.".to_owned(),
+        "Licence 12 is offered to you for 5cr; the offer is open 21 more minutes.".to_owned(),
+        "Accept it with +minds/resell/accept 12 price=5.".to_owned(),
+    ];
+    check_eq!(
+        accept_plan(Named::Resale, 12, &both, None, now),
+        AcceptPlan::Show(listed.clone()),
+        "no price= submits nothing"
+    );
+    check_eq!(
+        accept_plan(Named::Resale, 12, &both, Some(21), now),
+        AcceptPlan::Submit(
+            cheap,
+            "Accepting the offer for licence 12 at 0.21cr.".to_owned()
+        )
+    );
+    check_eq!(
+        accept_plan(Named::Resale, 12, &both, Some(500), now),
+        AcceptPlan::Submit(
+            dear,
+            "Accepting the offer for licence 12 at 5cr.".to_owned()
+        )
+    );
+    let mut refused = vec!["None of your offers for licence 12 is at 1cr.".to_owned()];
+    refused.extend(listed);
+    check_eq!(
+        accept_plan(Named::Resale, 12, &both, Some(100), now),
+        AcceptPlan::Refuse(refused)
+    );
+    // An equal-price tie: the later expiry.
+    let later = offer(3, 21, 900);
+    for offers in [[cheap, later], [later, cheap]] {
+        match accept_plan(Named::Resale, 12, &offers, Some(21), now) {
+            AcceptPlan::Submit(chosen, _) => check_eq!(chosen, later),
+            other => return Err(format!("a tie submits: {other:?}").into()),
+        }
+    }
+    // An expired offer is not live; none at all is NO_OFFER.
+    let expired = offer(4, 21, 0);
+    check_eq!(
+        accept_plan(Named::Resale, 12, &[expired], Some(21), now),
+        AcceptPlan::Refuse(vec!["You have no offer for licence 12.".to_owned()])
+    );
+    check_eq!(
+        accept_plan(Named::Resale, 12, &[], None, now),
+        AcceptPlan::Refuse(vec!["You have no offer for licence 12.".to_owned()])
+    );
+    // The charter accept.
+    check_eq!(
+        accept_plan(Named::Charter, 7, &both, Some(500), now),
+        AcceptPlan::Submit(
+            dear,
+            "Paying 5cr for filed mind 7 into escrow; the transfer settles once no sortie under it is out."
+                .to_owned()
+        )
+    );
+    let AcceptPlan::Show(charter_lines) = accept_plan(Named::Charter, 7, &both, None, now) else {
+        return Err("the charter listing".into());
+    };
+    check_eq!(
+        charter_lines.first().map(String::as_str),
+        Some(
+            "Filed mind 7 and its charter are offered to you for 0.21cr; the offer is open 10 more minutes."
+        )
+    );
+    check_eq!(
+        charter_lines.get(1).map(String::as_str),
+        Some("Accept it with +minds/charter/accept 7 price=0.21.")
+    );
+    check_eq!(
+        accept_plan(Named::Charter, 7, &[], Some(1), now),
+        AcceptPlan::Refuse(vec!["You have no offer for filed mind 7.".to_owned()])
+    );
+    let mut refused = vec!["None of your offers for filed mind 7 is at 0.01cr.".to_owned()];
+    refused.extend(charter_lines);
+    check_eq!(
+        accept_plan(Named::Charter, 7, &both, Some(1), now),
+        AcceptPlan::Refuse(refused)
+    );
+    Ok(())
+}
+
+/// 17g C2d test 8 (the 120-column floor): every C2d sentence at its maxima
+/// fits 120 columns: 8-digit licence and filed numbers, a 12-character price
+/// (`1000000.00cr`) and its 10-character `price=` spelling, the server's
+/// longest player name (20 characters, `mush_config::accounts`' character
+/// name rule), four-digit minutes and hours, 99 IC days; the longest is
+/// `CHARTER_OFFER` at 109. `HOLD_PAID` fits with each flag pair below (a
+/// pending renewal excludes a sold licence, a sold licence is transferable),
+/// the longest `; no resale; renewal offered` at 114. The `+minds` and
+/// `@registry` help lines fit too.
+///
+/// Owed (the C2d fix round, reviewer C2D-R4, deferred to the sub-cut that
+/// prints the paid rows): a revocation admits a pending renewal whose
+/// binding matches the birth (`registry_revocation::history`), and a revoked
+/// term may renew once its original Grace ends, so `revoked` with a renewal
+/// mark is reachable; on a `transfer=no` licence that is `; no resale;
+/// revoked; renewal offered` (37 characters), 121 or 122 columns in Grace
+/// (a renewal is drafted only once the term has ended, so never with an
+/// Active phase). The filter below still leaves it out: fitting it
+/// needs a ruling on the brief's flag words or C2c's `HOLD_PAID` layout, and
+/// no paid row prints until the per-holder index lands.
+#[test]
+fn trade_lines_fit_one_hundred_and_twenty_columns() -> TestResult {
+    use super::holdings::{paid_flags, paid_row};
+    use mush_roll::commerce::command_reader::RenewalMark;
+    let width = |line: &str| line.chars().count();
+    let n = "99999999";
+    let player = "P".repeat(20);
+    let all = [
+        ("licence", n),
+        ("filed", n),
+        ("price", "1000000.00cr"),
+        ("amount", "1000000.00"),
+        ("player", player.as_str()),
+        ("name", player.as_str()),
+        ("minutes", "9999"),
+        ("hours", "9999"),
+        ("days", "99"),
+        ("term", "99"),
+        ("grace", "99"),
+    ];
+    let mut widest = ("", 0);
+    for (name, template) in [
+        ("NO_LICENCE", words::NO_LICENCE),
+        ("RENEW_NOT_DUE", words::RENEW_NOT_DUE),
+        ("RENEWING", words::RENEWING),
+        ("RENEW_OFFER", words::RENEW_OFFER),
+        ("RENEW_HOW", words::RENEW_HOW),
+        ("RENEW_FUNDED", words::RENEW_FUNDED),
+        ("NO_RENEWAL", words::NO_RENEWAL),
+        ("RENEW_PAYING", words::RENEW_PAYING),
+        ("RENEW_DECLINING", words::RENEW_DECLINING),
+        ("RESELLING", words::RESELLING),
+        ("RESELL_TELL", words::RESELL_TELL),
+        ("CHARTERING", words::CHARTERING),
+        ("CHARTER_TELL", words::CHARTER_TELL),
+        ("OFFER", words::named::OFFER),
+        ("ACCEPT_HOW", words::named::ACCEPT_HOW),
+        ("NO_OFFER", words::named::NO_OFFER),
+        ("NO_OFFER_AT", words::named::NO_OFFER_AT),
+        ("CHARTER_OFFER", words::named::CHARTER_OFFER),
+        ("CHARTER_ACCEPT_HOW", words::named::CHARTER_ACCEPT_HOW),
+        ("NO_CHARTER_OFFER", words::named::NO_CHARTER_OFFER),
+        ("NO_CHARTER_OFFER_AT", words::named::NO_CHARTER_OFFER_AT),
+        ("ACCEPTING", words::named::ACCEPTING),
+        ("FUNDING_CHARTER", words::named::FUNDING_CHARTER),
+        ("NO_PLAYER", words::NO_PLAYER),
+        ("BAD_PRICE", words::BAD_PRICE),
+        ("RECALLING", words::RECALLING),
+        ("REVOKING", words::REVOKING),
+        ("REGISTRY_OFF", words::REGISTRY_OFF),
+    ] {
+        let line = fill(template, &all);
+        check!(!line.contains('{'), "{name} is filled: {line}");
+        check!(width(&line) <= 120, "{name}: {line}");
+        if width(&line) > widest.1 {
+            widest = (name, width(&line));
+        }
+    }
+    check_eq!(widest, ("CHARTER_OFFER", 109), "the longest C2d sentence");
+    // The paid holdings row with each legal flag pair.
+    let renewals = [None, Some(RenewalMark::Offered), Some(RenewalMark::Paid)];
+    let mut widest = 0;
+    let mut longest = String::new();
+    for transferable in [true, false] {
+        for revoked in [false, true] {
+            for selling in [false, true] {
+                for renewal in renewals {
+                    let set = usize::from(!transferable)
+                        + usize::from(revoked)
+                        + usize::from(selling)
+                        + usize::from(renewal.is_some());
+                    // Leaves out revoked with a renewal mark (reachable;
+                    // owed, the doc above).
+                    let legal = set <= 2
+                        && !(selling && !transferable)
+                        && !(renewal.is_some() && (revoked || selling));
+                    if !legal {
+                        continue;
+                    }
+                    let flags = paid_flags(transferable, revoked, selling, renewal);
+                    for house in [false, true] {
+                        let row = paid_row(
+                            99_999_999,
+                            house,
+                            "A charter name far longer than any column allows",
+                            "open-resale",
+                            "Active, 90 days left",
+                            &flags,
+                        );
+                        check!(width(&row) <= 120, "{row}");
+                        if width(&row) > widest {
+                            widest = width(&row);
+                            longest = flags.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    check_eq!(
+        (widest, longest.as_str()),
+        (114, "; no resale; renewal offered")
+    );
+    check_eq!(
+        paid_flags(true, false, false, Some(RenewalMark::Paid)),
+        "; renewal paid"
+    );
+    for line in super::market::HELP
+        .lines()
+        .chain(crate::minds::bulk::registry_service::HELP.lines())
+    {
+        check!(width(line) <= 120, "{line}");
+    }
+    Ok(())
+}
+
+/// 17g C2d fix round (reviewer T1): `+minds/renew`'s drafted-offer lines
+/// from the view's raw fields. The frozen price prints as credits, the
+/// renewed term and Grace in whole IC days and the offer's remaining IC hours
+/// rounded up, never below 0 (an offer at or past its expiry reads 0). The
+/// form itself is held at `RENEWALS_OPEN` (`renew`'s module doc: the renewal
+/// services' reads refuse a TacSim command context), so its dispatched test,
+/// a held licence reaching `RENEW_NOT_DUE`, waits with it.
+#[test]
+fn renewal_offer_lines_round_hours_up() -> TestResult {
+    use super::renew::{RENEWALS_OPEN, hours_left, offer_text};
+    const HOUR: i64 = 3_600;
+    const DAY: i64 = 86_400;
+    check!(!RENEWALS_OPEN, "held until the market-identity seam lands");
+    for (until, now, hours) in [
+        (HOUR, 0, 1),
+        (HOUR + 1, 0, 2),
+        (1, 0, 1),
+        (0, 0, 0),
+        (0, 10, 0),
+        (48 * HOUR, HOUR, 47),
+        (48 * HOUR, HOUR - 1, 48),
+    ] {
+        check_eq!(hours_left(until, now), hours, "{until} at {now}");
+    }
+    let now = 1_000 * DAY;
+    check_eq!(
+        offer_text("41", 50_000, 90 * DAY, 3 * DAY, now + 24 * HOUR - 1, now),
+        [
+            "Licence 41 renews for 500cr (90+3 IC days); the offer is open 24 more IC hours."
+                .to_owned(),
+            "Pay it with +minds/renew/pay 41, or turn it down with +minds/renew/decline 41."
+                .to_owned(),
+        ]
+    );
+    check_eq!(
+        offer_text("41", 1_250, 90 * DAY - 1, 0, now - 5, now)[0],
+        "Licence 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
+    );
+    Ok(())
+}

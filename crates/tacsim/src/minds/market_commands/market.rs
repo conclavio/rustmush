@@ -31,6 +31,14 @@
 //! reviewer C2C-3): its `QUOTING` reply promises that `+minds <code>` shows
 //! the quote, which only the own-purchase line can, and a quote no command
 //! can pay only expires. `buy` below is built and waits for that index.
+//!
+//! 17g C2d routes its forms from here: `+minds/renew` and its `/pay` and
+//! `/decline` (`renew`), and `+minds/resell`, `+minds/charter` and their
+//! `/accept`s (`trade`). Each is held as its module says: the renewal steps
+//! read through the market's own handles, which a TacSim command context
+//! cannot use (the C2d fix round, reviewer C2D-R1), and the trades wait for
+//! the per-buyer offer indexes. So on the format-2 launch every C2d `+minds`
+//! form runs its own checks and then refuses `NOT_OPEN`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -51,9 +59,15 @@ use super::author::number;
 use super::words::{self, cut, fill};
 
 /// `+minds`'s switches. The dispatch is by the exact switch set (`command`).
-pub(crate) const SWITCHES: [&str; 6] = ["next", "holdings", "buy", "pay", "complete", "refund"];
+/// 17g C2d adds `renew`, `decline`, `resell`, `charter` and `accept`
+/// (`pay` is shared with `/buy/pay`).
+pub(crate) const SWITCHES: [&str; 11] = [
+    "next", "holdings", "buy", "pay", "complete", "refund", "renew", "decline", "resell",
+    "charter", "accept",
+];
 /// `+minds`'s `CommandSpec.help`, and the reply to any other switch set.
-pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>";
+/// 17g C2d adds its last three lines.
+pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>\n+minds/renew <licence> (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 /// `@mind/publish`'s usage: exactly its `@mind` `HELP` line.
 pub(crate) const USAGE_PUBLISH: &str = "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)";
 
@@ -86,8 +100,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 
 /// The dispatch table, by the exact switch set: `{}` lists (bare) or shows
 /// one listing (a code); `{next}` pages; `{holdings}`; `{buy}`, and
-/// `{buy, pay}`, `{buy, complete}`, `{buy, refund}`; anything else is
-/// `HELP`. C2d adds its switch sets here.
+/// `{buy, pay}`, `{buy, complete}`, `{buy, refund}`; 17g C2d's `{renew}`,
+/// `{renew, pay}`, `{renew, decline}` (`renew`), `{resell}`,
+/// `{resell, accept}`, `{charter}` and `{charter, accept}` (`trade`);
+/// anything else is `HELP`. The set is sorted, so `/resell/accept` and
+/// `/accept/resell` are one form.
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let switches: BTreeSet<String> = ctx.switches.iter().map(|s| s.to_string()).collect();
     let set: Vec<&str> = switches.iter().map(String::as_str).collect();
@@ -104,6 +121,14 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             handles(ctx)?;
             Err(not_open())
         }
+        // 17g C2d: held at `renew::RENEWALS_OPEN` and
+        // `trade::NAMED_OFFERS_OPEN` (each module's doc).
+        ["renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Status),
+        ["pay", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Pay),
+        ["decline", "renew"] => super::renew::renew(ctx, &text, super::renew::Renew::Decline),
+        ["resell"] => super::trade::resell(ctx, &text),
+        ["charter"] => super::trade::charter(ctx, &text),
+        ["accept", "charter"] | ["accept", "resell"] => super::trade::accept(ctx, &text),
         _ => Err(help()),
     }
 }
