@@ -239,6 +239,113 @@ fn reference_key(fact: &ExternalRef) -> Option<(SurveyKey, ContractId)> {
     Some((key, ContractId(id)))
 }
 
+impl OwnerReadService for Reader {
+    type State = crate::TacsimStore;
+    type Request = Query;
+    type Output = Reply;
+
+    fn read(
+        &self,
+        _state: &Self::State,
+        ctx: &OwnerReadContext<'_>,
+        Query { scope, fact }: Query,
+    ) -> Result<Reply, OwnerReadError> {
+        let refuse = OwnerReadError::Unavailable;
+        let authorized_requester = ctx.requester().as_str() == "economy"
+            || (ctx.requester().as_str() == crate::NS && scope.purpose() == FactPurpose::Attach);
+        if !authorized_requester || !scope.matches_read(ctx, &fact) || scope.generation() != 0 {
+            return Err(refuse);
+        }
+        let (key, contract) = reference_key(&fact).ok_or(refuse)?;
+        if scope.contract() != contract {
+            return Err(refuse);
+        }
+        let candidate;
+        let row = if scope.purpose() == FactPurpose::Attach {
+            // This RAM candidate authorizes attachment only. It never answers
+            // true; truth requires the later authoritative family receipt.
+            candidate =
+                crate::port::survey::attachment_candidate(ctx.world(), scope.actor(), contract)
+                    .ok_or(refuse)?;
+            &candidate
+        } else {
+            ctx.action_state(&self.surveys, &key)?.ok_or(refuse)?
+        };
+        row.check().map_err(|_| OwnerReadError::Integrity)?;
+        let expected_fact = match fact.kind.as_str() {
+            FACT_LOGGED => crate::port::survey::fact_ref(row),
+            FACT_CANCELLED => crate::port::survey::cancel_fact_ref(row),
+            _ => return Err(refuse),
+        };
+        if row.offer != key
+            || row.contract != contract.0
+            || expected_fact != fact
+            || scope.issuer() != &PrincipalId::Object(row.pilot)
+        {
+            return Err(refuse);
+        }
+        if scope.purpose() == FactPurpose::Attach {
+            let expected = crate::port::survey::expected_consent(row);
+            if scope.actor() != row.pilot
+                || scope.consent_hash()
+                    != mush_economy::consent_hash(&PrincipalId::Object(row.pilot), &expected)
+            {
+                return Err(refuse);
+            }
+            return Ok(Reply { truth: None });
+        }
+        if !crate::port::survey::contract_valid(ctx.world(), row)
+            || scope.attachment_actor(&fact) != Some(row.pilot)
+            || (scope.purpose() == FactPurpose::Read
+                && !mush_economy::acts_for(
+                    ctx.world(),
+                    scope.actor(),
+                    &PrincipalId::Object(row.pilot),
+                )
+                && !mush_economy::acts_for(ctx.world(), scope.actor(), &row.sponsor))
+        {
+            return Err(refuse);
+        }
+        let economy = ctx.world().module_state::<EconomyStore>().ok_or(refuse)?;
+        let current = economy.snapshot().contract(contract).ok_or(refuse)?;
+        if scope.consent_hash() != current.consent_hash {
+            return Err(refuse);
+        }
+        let funded = crate::port::survey::contract_active(ctx.world(), row)
+            || matches!(current.state, ContractState::Settled { .. });
+        let at_utc = if !funded {
+            None
+        } else {
+            match fact.kind.as_str() {
+                FACT_LOGGED => row
+                    .completed
+                    .as_ref()
+                    .filter(|done| {
+                        row.cancelled.is_none()
+                            && row.covered() == 256
+                            && done.at_ic >= row.accepted_ic
+                            && done.at_ic <= row.deadline_ic
+                    })
+                    .map(|done| done.at_utc),
+                FACT_CANCELLED => row
+                    .cancelled
+                    .as_ref()
+                    .filter(|cancelled| {
+                        row.completed.is_none() && cancelled.at_ic >= row.accepted_ic
+                    })
+                    .map(|cancelled| cancelled.at_utc),
+                _ => None,
+            }
+        };
+        Ok(Reply {
+            truth: at_utc.map(|at_utc| Truth {
+                actor: row.pilot,
+                at_utc,
+            }),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,112 +536,5 @@ mod tests {
             check!(reference_key(&fact).is_none());
         }
         Ok(())
-    }
-}
-
-impl OwnerReadService for Reader {
-    type State = crate::TacsimStore;
-    type Request = Query;
-    type Output = Reply;
-
-    fn read(
-        &self,
-        _state: &Self::State,
-        ctx: &OwnerReadContext<'_>,
-        Query { scope, fact }: Query,
-    ) -> Result<Reply, OwnerReadError> {
-        let refuse = OwnerReadError::Unavailable;
-        let authorized_requester = ctx.requester().as_str() == "economy"
-            || (ctx.requester().as_str() == crate::NS && scope.purpose() == FactPurpose::Attach);
-        if !authorized_requester || !scope.matches_read(ctx, &fact) || scope.generation() != 0 {
-            return Err(refuse);
-        }
-        let (key, contract) = reference_key(&fact).ok_or(refuse)?;
-        if scope.contract() != contract {
-            return Err(refuse);
-        }
-        let candidate;
-        let row = if scope.purpose() == FactPurpose::Attach {
-            // This RAM candidate authorizes attachment only. It never answers
-            // true; truth requires the later authoritative family receipt.
-            candidate =
-                crate::port::survey::attachment_candidate(ctx.world(), scope.actor(), contract)
-                    .ok_or(refuse)?;
-            &candidate
-        } else {
-            ctx.action_state(&self.surveys, &key)?.ok_or(refuse)?
-        };
-        row.check().map_err(|_| OwnerReadError::Integrity)?;
-        let expected_fact = match fact.kind.as_str() {
-            FACT_LOGGED => crate::port::survey::fact_ref(row),
-            FACT_CANCELLED => crate::port::survey::cancel_fact_ref(row),
-            _ => return Err(refuse),
-        };
-        if row.offer != key
-            || row.contract != contract.0
-            || expected_fact != fact
-            || scope.issuer() != &PrincipalId::Object(row.pilot)
-        {
-            return Err(refuse);
-        }
-        if scope.purpose() == FactPurpose::Attach {
-            let expected = crate::port::survey::expected_consent(row);
-            if scope.actor() != row.pilot
-                || scope.consent_hash()
-                    != mush_economy::consent_hash(&PrincipalId::Object(row.pilot), &expected)
-            {
-                return Err(refuse);
-            }
-            return Ok(Reply { truth: None });
-        }
-        if !crate::port::survey::contract_valid(ctx.world(), row)
-            || scope.attachment_actor(&fact) != Some(row.pilot)
-            || (scope.purpose() == FactPurpose::Read
-                && !mush_economy::acts_for(
-                    ctx.world(),
-                    scope.actor(),
-                    &PrincipalId::Object(row.pilot),
-                )
-                && !mush_economy::acts_for(ctx.world(), scope.actor(), &row.sponsor))
-        {
-            return Err(refuse);
-        }
-        let economy = ctx.world().module_state::<EconomyStore>().ok_or(refuse)?;
-        let current = economy.snapshot().contract(contract).ok_or(refuse)?;
-        if scope.consent_hash() != current.consent_hash {
-            return Err(refuse);
-        }
-        let funded = crate::port::survey::contract_active(ctx.world(), row)
-            || matches!(current.state, ContractState::Settled { .. });
-        let at_utc = if !funded {
-            None
-        } else {
-            match fact.kind.as_str() {
-                FACT_LOGGED => row
-                    .completed
-                    .as_ref()
-                    .filter(|done| {
-                        row.cancelled.is_none()
-                            && row.covered() == 256
-                            && done.at_ic >= row.accepted_ic
-                            && done.at_ic <= row.deadline_ic
-                    })
-                    .map(|done| done.at_utc),
-                FACT_CANCELLED => row
-                    .cancelled
-                    .as_ref()
-                    .filter(|cancelled| {
-                        row.completed.is_none() && cancelled.at_ic >= row.accepted_ic
-                    })
-                    .map(|cancelled| cancelled.at_utc),
-                _ => None,
-            }
-        };
-        Ok(Reply {
-            truth: at_utc.map(|at_utc| Truth {
-                actor: row.pilot,
-                at_utc,
-            }),
-        })
     }
 }
