@@ -15,7 +15,7 @@
 //!   *absent* from the render, not only on what is present.
 //!
 //! The canon **bridge** lives in `mush-server` (because `mush-economy` must not
-//! depend on `mush-canon`) and is tested in `mush-server/tests/e4c_bridge.rs`; here
+//! depend on `mush-canon`) and is tested in `mush-server/tests/commerce_composition/e4c_bridge.rs`; here
 //! the `CanonRecorded` event is emitted exactly as core delivers it.
 
 use std::collections::BTreeSet;

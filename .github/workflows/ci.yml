@@ -541,7 +541,8 @@ jobs:
         run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
         if: matrix.shard == 'rest-mushd'
-        run: cargo test -p mushd --test world_panic_exit
+        run: |
+          cargo test -p mushd --test durable_process world_panic_exit::
       - name: TS bindings drift check
         if: matrix.shard == 'rest-libs'
         run: |
@@ -646,7 +647,8 @@ jobs:
       # `[store].store` overridden to "memory", the one deviation) to an enabled
       # `[tacsim]` block and a hello manifest advertising the game's sheet.
       - name: Render, preflight and boot the shipped instances
-        run: cargo test -p mush-server --test provisioning_smoke
+        run: |
+          cargo test -p mush-server --test split_boundary provisioning_smoke::
       - name: Build the three binaries a deploy installs
         run: cargo build -p mushd -p mush-server -p mush-gateway
       # The SHELL half of the same claim. The Rust test above mirrors the
@@ -792,7 +794,7 @@ jobs:
           cargo test -p mush-industry --test e7c4
       - name: Production migrations and compatibility declarations
         run: |
-          cargo test -p mush-server --test production_action_migrations
+          cargo test -p mush-server --test world_task production_action_migrations::
           cargo test -p mush-server --lib k8_5_production_compositions_publish_command_compatibility
           # WS04-S8: the gate above composes `boot::game_modules` — the roster a
           # server boots — instead of a hand-assembled list. This second cell is
@@ -821,27 +823,27 @@ jobs:
           cargo test -p mush-store --test redis_suite -- --ignored --test-threads=1
           cargo test -p mush-server --lib persist::tests::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored --exact
           cargo test -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored
-          cargo test -p mush-server --test authoritative_boot -- --test-threads=1
+          cargo test -p mush-server --test split_boundary authoritative_boot:: -- --test-threads=1
       - name: Split-process kill, clean shutdown and restart recovery
         run: |
-          cargo test -p mush-gateway --test authoritative_process_kill -- --test-threads=1
-          cargo test -p mushd --test durability_e2e kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1
+          cargo test -p mush-gateway --test split_halves authoritative_process_kill:: -- --test-threads=1
+          cargo test -p mushd --test durable_process durability_e2e::kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1
           # The kill's orderly twin: in-game `@shutdown` drains the writer and
           # triggers the shutdown BGSAVE against Redis (its own logical db 12).
           # Without `REDIS_URL` the test runs its child against the in-memory
           # store, so the workspace sweep never reaches this branch: the gated
           # inventory requires its name here.
-          cargo test -p mushd --test durability_e2e clean_shutdown_drains_and_snapshots -- --exact --test-threads=1
-          cargo test -p mushd --test durability_e2e relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
+          cargo test -p mushd --test durable_process durability_e2e::clean_shutdown_drains_and_snapshots -- --exact --test-threads=1
+          cargo test -p mushd --test durable_process durability_e2e::relay_queue_and_frozen_leg_survive_process_death_redis_gated -- --exact --test-threads=1
       # 08j S4: without these the seven `*_redis_gated` proofs in
-      # `crates/mushd/tests/persistence.rs` and the two single-test twins take
+      # `crates/mushd/tests/durable_process/persistence.rs` and the two single-test twins take
       # their missing-`REDIS_URL` early return and pass everywhere as a silent
       # skip. `crates/mush-contract-tests/tests/ci_gated_test_inventory.rs`
       # keeps this list honest.
       - name: Reboot-from-Redis-alone round trips
         run: |
-          cargo test -p mushd --test persistence -- --test-threads=1
-          cargo test -p mushd --test m10c_e2e m10c_persistence_twin_redis_gated -- --exact --test-threads=1
+          cargo test -p mushd --test durable_process persistence:: -- --test-threads=1
+          cargo test -p mushd --test durable_process m10c_e2e::m10c_persistence_twin_redis_gated -- --exact --test-threads=1
 
   # H3 (11-h §3.3): the scale harness — cold journal replay, world boot,
   # the authoritative write-through soak and the tick-shaped bundle. Every
@@ -1081,7 +1083,7 @@ jobs:
           cargo test -p mush-core offer::tests::projected_offer_hides_internal_binding_and_builds_server_parameters -- --exact
           cargo test -p mush-contract-tests tests::brace_offer_projects_no_hidden_clock_and_routes_to_the_same_provider -- --exact
           cargo test -p mush-contract-tests tactical_gate::tests::tactical_keyframe_line_receipt_and_llm_surfaces_share_one_redacted_dto -- --exact
-          cargo test -p mush-server --test ipc_authoritative_action authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
+          cargo test -p mush-server --test split_boundary ipc_authoritative_action::authenticated_action_transfers_ownership_only_after_exact_intent -- --exact
           cargo test -p mush-gateway --lib bridge_common::projection_tests::line_action_list_renders_only_projected_presentation -- --exact
           cargo test -p mush-net-ssh --lib tui::render::tests::view_rows_reproduce_actions_and_never_leak_undeclared_fields -- --exact
 

@@ -13,7 +13,7 @@
 //! environment becomes an abort switch sited at the four durability cuts and
 //! the quarantine publication chosen precisely to maximise the damage. The
 //! feature is off by default and no shipped binary turns it on; the two kill
-//! proofs (`crates/mush-gateway/tests/authoritative_process_kill.rs`) enable
+//! proofs (`crates/mush-gateway/tests/split_halves/authoritative_process_kill.rs`) enable
 //! it through a `[dev-dependencies]` edge, so the seam exists exactly where
 //! it is proven and nowhere else.
 
@@ -246,7 +246,7 @@ mod tests {
     /// does not exist in that build. With the feature on, the same child must
     /// die, which is what proves the seam moved off `cfg(debug_assertions)`
     /// rather than disappearing. (The full crash-and-recover matrix is
-    /// `crates/mush-gateway/tests/authoritative_process_kill.rs`; it cannot
+    /// `crates/mush-gateway/tests/split_halves/authoritative_process_kill.rs`; it cannot
     /// live here, because it ends in `abort()`.)
     #[test]
     fn a_fully_armed_environment_reaches_the_hooks_only_with_the_feature() {

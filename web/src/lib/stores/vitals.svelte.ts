@@ -190,7 +190,7 @@ export class VitalsStore {
    *
    * A revision is only comparable within one run of the world that minted
    * it. A gateway session outlives a world restart (a web socket survives
-   * with no fresh Hello — `mush-gateway/tests/web_restart_survival.rs`),
+   * with no fresh Hello — `mush-gateway/tests/split_halves/web_restart_survival.rs`),
    * while `VitalsRevisions` restarts from zero, so a viewer holding
    * revision N silently drops every frame the restarted world publishes and
    * reads stale gauges as live for the rest of the session. Every seam

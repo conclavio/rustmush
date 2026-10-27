@@ -1613,7 +1613,7 @@ fn world_is_gone(
 
 /// Pump the gateway's `ToServer` traffic into the world.
 ///
-/// **Exposed only so `tests/dead_world_reader.rs` can drive it against a world
+/// **Exposed only so `tests/world_task/dead_world_reader.rs` can drive it against a world
 /// task it has already stopped.** Nothing outside this crate composes a
 /// boundary; [`serve`] is the entry point.
 #[doc(hidden)]
@@ -1987,9 +1987,9 @@ pub async fn reader_loop(
 /// single place, so a new variant is a compile error once rather than a
 /// silently unanswered request on one of the two links.
 ///
-/// **Exposed only so `tests/gateway_link_parity.rs` can drive it beside the
+/// **Exposed only so `tests/split_boundary/gateway_link_parity.rs` can drive it beside the
 /// in-process link and prove the two agree** — the same reason
-/// [`reader_loop`] is reachable from `tests/dead_world_reader.rs`. Nothing
+/// [`reader_loop`] is reachable from `tests/world_task/dead_world_reader.rs`. Nothing
 /// outside this crate answers a `ServiceReq`; the boundary reader does.
 #[doc(hidden)]
 pub async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {

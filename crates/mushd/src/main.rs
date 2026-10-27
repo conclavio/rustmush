@@ -909,7 +909,7 @@ mod tests {
     }
 
     /// The text `main` prints to stderr, for each ending that has any. The
-    /// fault wording is asserted end to end by `tests/world_fault.rs`.
+    /// fault wording is asserted end to end by `tests/durable_process/world_fault.rs`.
     #[test]
     fn each_failing_ending_explains_itself() {
         assert!(WorldEnd::Clean.into_failure().is_none());

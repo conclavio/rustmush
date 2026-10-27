@@ -49,7 +49,7 @@ mush-llm.workspace = true
 # bot's parser (and, since the game's 17b cut M5.3, whose board clauses
 # `tests/arena_lane.rs`' fake server prints, so the lane serves the game's
 # own row); `mush-sim` and `mush-server` wire the account oracle the
-# simulator's slots are keyed on, as `crates/mushd/tests/sim_solo.rs` does.
+# simulator's slots are keyed on, as `crates/mushd/tests/sim_lenses/sim_solo.rs` does.
 tacsim.workspace = true
 mush-sim.workspace = true
 mush-server.workspace = true

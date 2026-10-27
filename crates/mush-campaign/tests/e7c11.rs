@@ -362,7 +362,7 @@ fn e7c11_b0_a10_activating_over_a_lease_the_npc_holds_keeps_control_on_the_seat(
 /// abandonment a new station-lane face, `EXIT`** — climbing out of a simulator
 /// pod, which releases the seat and leaves the unit idling in a live match — so
 /// it is five/four again. `EXIT`'s own arm is exercised in `tacsim`
-/// (`crates/tacsim/tests/cockpit.rs` and `crates/mushd/tests/sim_cockpit.rs`),
+/// (`crates/tacsim/tests/cockpit.rs` and `crates/mushd/tests/sim_lenses/sim_cockpit.rs`),
 /// which is where the verb and its pod live; here the vocabulary's shape is what
 /// is pinned. Abandonment keeps its economy face in the inert table below, and
 /// that face is still inert: `@asset/abandon` is keyed on `ctx.actor`.

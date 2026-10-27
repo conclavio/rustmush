@@ -1330,7 +1330,7 @@ async fn named_launch_format_two_initializes_and_activates_through_game_modules(
 ///   same `DefinitionRef` in both (a route id derives unkeyed from the
 ///   action's `DefinitionRef`, so this holds across key rings). mushd's
 ///   all-in-one delegates to that same root
-///   (`crates/mushd/tests/boot_composition.rs`,
+///   (`crates/mushd/tests/durable_process/boot_composition.rs`,
 ///   `mushd_delegates_the_composition_root`), which is how the parity covers
 ///   both halves.
 ///
