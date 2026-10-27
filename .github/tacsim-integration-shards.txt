@@ -3,22 +3,22 @@
 # `scripts/ci-tacsim-shard.sh N` runs line N as `cargo nextest run -P ci -p tacsim
 # --test ...` (nextest since cut T.1, 2026-10-26: the shard's binaries in one pool).
 #
-# Since test-strategy cut T.3 (2026-10-26) the targets are the four group
-# binaries shard_1..shard_4 — tests/shard_N.rs, one `mod` line per former
+# Since test-strategy cut T.3 (2026-10-26) the targets are the six group
+# binaries shard_1..shard_6 — tests/shard_N.rs, one `mod` line per former
 # tests/<name>.rs, which now lives at tests/shard_N/<name>.rs — plus harness
 # and cost_lane, which stay targets of their own (a crate-root-only
 # `#![recursion_limit]`; an exclusive timing lock and a script-parity test).
-# Each group IS its shard. The 2026-10-26 balance was made per binary, before
-# the merge: 14.4, 14.5, 15.9 and 15.9 min of test run per shard, longest-first
-# by each binary's mean execution time over main's green runs 40259028915,
-# 40266288970 and 40278097329, against 57.7 min as one (cost_lane placed at an
-# estimated 180 s). The named #[ignore]d mind-hash steps follow their modules
-# (minds_rhai and twin in shard_2, minds_pool in shard_1).
+# Each group IS its shard. Six since 2026-10-27, balanced on the per-module
+# test times of main's run 40428411078 (the JUnit testcases' `<module>::`
+# prefix): 46.4, 47.4, 46.7, 47.7, 48.7 and 45.0 summed minutes per shard,
+# harness (0.9) and cost_lane (6.4) counted with theirs, against 65-74 as four.
+# The three named #[ignore]d mind-hash tests (minds_pool, minds_rhai, twin) sit
+# together in shard_2 and run in the `tacsim-minds` matrix cell, not here.
 #
 # Every target must appear on exactly one line:
 # crates/mush-contract-tests/tests/ci_tacsim_shards.rs fails on a missing,
 # doubled or unknown target, so a new top-level test file cannot silently go
-# unrun. A new test MODULE is a `mod` line in one of the four shard roots and
+# unrun. A new test MODULE is a `mod` line in one of the six shard roots and
 # runs with that shard. Rebalance by moving a `mod` line between two shard
 # roots when a shard drifts far from the others (per-module times: the JUnit
 # report's testcases, whose names carry the `<module>::` prefix).
@@ -26,3 +26,5 @@
 2: shard_2 cost_lane
 3: shard_3
 4: shard_4
+5: shard_5
+6: shard_6

@@ -7,8 +7,9 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The grouping is line 3 of .github/tacsim-integration-shards.txt, the CI shard
-//! that runs it, balanced by test time rather than by theme; a rebalance moves a
-//! `mod` line between the four shard roots.
+//! that runs it, balanced by test time rather than by theme (six
+//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
+//! a `mod` line between the six shard roots.
 //!
 //! One module: `cargo nextest run -p tacsim --test shard_3 -E 'test(/^capacity::/)'`
 //! or `cargo test -p tacsim --test shard_3 capacity::` (a substring filter, so no
@@ -25,8 +26,6 @@ mod vertex;
 
 #[path = "shard_3/capacity.rs"]
 mod capacity;
-#[path = "shard_3/commerce.rs"]
-mod commerce;
 #[path = "shard_3/composition_edges.rs"]
 mod composition_edges;
 #[path = "shard_3/definitions.rs"]
@@ -39,8 +38,6 @@ mod drones;
 mod e7c1;
 #[path = "shard_3/ephemeris.rs"]
 mod ephemeris;
-#[path = "shard_3/knowing.rs"]
-mod knowing;
 #[path = "shard_3/mill.rs"]
 mod mill;
 #[path = "shard_3/motor.rs"]

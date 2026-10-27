@@ -8,7 +8,7 @@
 //! left off it would build in no shard and report green forever. This gate
 //! fails on a target that is missing, listed twice or no longer exists, and on
 //! a shard line the workflow's matrix does not run. Since test-strategy cut T.3
-//! (2026-10-26) the targets are the four group binaries `shard_1`..`shard_4`
+//! (2026-10-26) the targets are the group binaries `shard_1`..`shard_6` (four until 2026-10-27)
 //! (`tests/shard_N.rs`, one `mod` line per former file, now under
 //! `tests/shard_N/`) and the standalone `harness` and `cost_lane`: a new test
 //! MODULE is a `mod` line in a shard root, never a name here.

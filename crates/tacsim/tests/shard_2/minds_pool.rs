@@ -546,7 +546,7 @@ async fn m4_real_tasks_at_one_two_and_four_workers_hash_as_the_library() {
 /// [`SEED`] — to the 900 s cap, each match through the task at each worker
 /// count and held to the library as the fixture above holds it. `#[ignore]`d:
 /// the gate run is
-/// `cargo test --release -p tacsim --test shard_1 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture`,
+/// `cargo test --release -p tacsim --test shard_2 minds_pool::m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -- --ignored --exact --nocapture`,
 /// five times.
 ///
 /// **17b cut M4.5a** (the twin's T0 column retired): the reflex machine (T0)

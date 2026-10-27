@@ -9,8 +9,9 @@
 //! The grouping is line 2 of .github/tacsim-integration-shards.txt, the CI shard
 //! that runs it (with `cost_lane`, which stays a target of its own: its timing
 //! sections hold an exclusive lock and its C5 test pins scripts/cost-lane.sh's
-//! run lines), balanced by test time rather than by theme; a rebalance moves a
-//! `mod` line between the four shard roots.
+//! run lines), balanced by test time rather than by theme (six
+//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
+//! a `mod` line between the six shard roots.
 //!
 //! One module: `cargo nextest run -p tacsim --test shard_2 -E 'test(/^content::/)'`
 //! or `cargo test -p tacsim --test shard_2 content::` (a substring filter, so no
@@ -37,14 +38,16 @@ mod e7r2;
 mod extensions;
 #[path = "shard_2/minds.rs"]
 mod minds;
+#[path = "shard_2/minds_pool.rs"]
+mod minds_pool;
 #[path = "shard_2/minds_rhai.rs"]
 mod minds_rhai;
 #[path = "shard_2/moon_ports.rs"]
 mod moon_ports;
-#[path = "shard_2/plans.rs"]
-mod plans;
 #[path = "shard_2/plumbing.rs"]
 mod plumbing;
+#[path = "shard_2/quarry.rs"]
+mod quarry;
 #[path = "shard_2/reflex.rs"]
 mod reflex;
 #[path = "shard_2/sight.rs"]

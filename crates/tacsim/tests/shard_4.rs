@@ -7,8 +7,9 @@
 //! former file, unchanged but for its paths; its tests are `<module>::<fn>`.
 //!
 //! The grouping is line 4 of .github/tacsim-integration-shards.txt, the CI shard
-//! that runs it, balanced by test time rather than by theme; a rebalance moves a
-//! `mod` line between the four shard roots.
+//! that runs it, balanced by test time rather than by theme (six
+//! groups since 2026-10-27, on the JUnit per-module times); a rebalance moves
+//! a `mod` line between the six shard roots.
 //!
 //! One module: `cargo nextest run -p tacsim --test shard_4 -E 'test(/^arena::/)'`
 //! or `cargo test -p tacsim --test shard_4 arena::` (a substring filter, so no
@@ -20,6 +21,8 @@
 #[path = "support/geology_keyed.rs"]
 mod geology_keyed;
 mod support;
+#[path = "support/vertex.rs"]
+mod vertex;
 
 #[path = "shard_4/arena.rs"]
 mod arena;
@@ -27,8 +30,8 @@ mod arena;
 mod arena_task;
 #[path = "shard_4/chart.rs"]
 mod chart;
-#[path = "shard_4/cockpit.rs"]
-mod cockpit;
+#[path = "shard_4/commerce.rs"]
+mod commerce;
 #[path = "shard_4/conditions.rs"]
 mod conditions;
 #[path = "shard_4/core_replacement.rs"]
@@ -43,12 +46,8 @@ mod geology;
 mod lane;
 #[path = "shard_4/match_lifecycle.rs"]
 mod match_lifecycle;
-#[path = "shard_4/quarry.rs"]
-mod quarry;
 #[path = "shard_4/resolution.rs"]
 mod resolution;
-#[path = "shard_4/sites.rs"]
-mod sites;
 #[path = "shard_4/sky.rs"]
 mod sky;
 #[path = "shard_4/vehicles.rs"]

@@ -86,7 +86,7 @@ fn site_files() -> Vec<String> {
 }
 
 /// The pinned digests, in [`SITE_SOURCES`] order. Re-sign in place with
-/// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test shard_4 sites::sm2_the_site_packs`.
+/// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test shard_5 sites::sm2_the_site_packs`.
 const PINNED: [(&str, &str); 12] = [
     (
         "region.freeport_commons",
