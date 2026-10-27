@@ -378,13 +378,7 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
 /// identical answers differ.
 async fn blue_view_of_red(bo: &mut Term) -> (Vec<String>, Vec<String>) {
     let clist = ask_whole(bo, "clist").await;
-    let rows: Vec<String> = clist
-        .lines()
-        .map(str::trim_end)
-        .skip_while(|line| !line.starts_with("Channel "))
-        .take_while(|line| !line.starts_with("-- "))
-        .map(str::to_owned)
-        .collect();
+    let rows = clist_rows(&clist);
     assert!(!rows.is_empty(), "no clist table in: {clist}");
     let who = ask_whole(bo, "@channel/who RedNet").await;
     let answer: Vec<String> = who
@@ -395,6 +389,31 @@ async fn blue_view_of_red(bo: &mut Term) -> (Vec<String>, Vec<String>) {
         .map(str::to_owned)
         .collect();
     (rows, answer)
+}
+
+fn clist_rows(window: &str) -> Vec<String> {
+    window
+        .lines()
+        .map(str::trim_end)
+        .skip_while(|line| !line.starts_with("Channel "))
+        .take_while(|line| !line.starts_with("-- "))
+        // SSH echoes input independently of command output, so this exact
+        // fixture token can arrive between table rows. It is not channel data.
+        .filter(|line| line.trim() != SENTINEL)
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn clist_comparison_excludes_only_the_fixture_echo_within_table_rows() {
+    let table = "Channel Members Flags Description\nBlueNet 1 C Blue\nRedNet 1 C Red\n-- end";
+    let with_echo = table.replace("\nBlueNet", &format!("\n{SENTINEL}\nBlueNet"));
+    assert_eq!(clist_rows(&with_echo), clist_rows(table));
+    assert!(
+        clist_rows(&with_echo)
+            .iter()
+            .any(|line| line.contains("RedNet"))
+    );
 }
 
 // ---------------------------------------------------------------------------
