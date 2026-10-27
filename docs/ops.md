@@ -1166,6 +1166,47 @@ remedy. No staff close or bring-in verb exists yet (O-17):
   as the dispatcher (+tv/{n} unload go) to start it again." — a stalled rig; the
   bare `+tv/{n} unload` only previews (the text names `go` since `f171b36c`).
 
+### Survey commissions (surface mining, doc 20 phase 2)
+
+`+survey [<id>]` shows Occator's four globally finite offers: `ahuna-a`,
+`kerwan-f`, `juling-k` and `occator-p`, for blocks A, F, K and P at their named
+sites. Each pays 500 cr for all 256 pockets sounded at R2 within seven IC days
+of acceptance. The economic contract has one additional IC day for settlement;
+work due after the seven-day deadline never counts. `+survey/accept <id> [go]`
+and `+survey/cancel <id> [go]` preview before committing. One unfinished
+commission is allowed per gateway account, across its characters.
+
+The authoritative `tacsim.survey` family records the current attempt in each
+board slot, its exact contract and accounts, coverage and completion. Only
+successful Sound/QuietSound acts begun strictly after acceptance advance funded
+work, by hand or plan. Scans, cores, existing chart coverage and other pilots'
+readings are excluded. Chart deletion and reboot preserve progress and cannot
+repeat payment. A completed board entry stays closed; new commissions need new
+IDs. No chart sale or transfer is implemented.
+
+Funding follows durable acceptance: the port tick has Occator accept and escrow
+the reward only after the authoritative row exists. An orphaned offer cannot
+charge Occator. "Waiting for funding" calls for checking Occator's available
+credit and the economy's readiness; it is not a paid promise. "Survey logged;
+settlement pending" means the completion receipt exists and the economy still
+owes its settlement pass. Inspect the contract named in the filing notice for
+escrow, expiry or pending delivery. Funded cancellation records an authoritative
+receipt and stops progress; the original contract's cancellation outcome then
+refunds Occator. Unfunded filings cancel through the economy's contract API.
+Expiry also refunds Occator. An unfinished offer reopens only after its refund
+completes. Generic contract commands cannot amend the commission's frozen fact
+references or consent.
+
+The scoped `tacsim.survey.logged` and `tacsim.survey.cancelled` facts answer only
+for that receipt's exact contract, revision and immutable consent. Their private
+evidence is available to the contractor, Occator's authorized representatives
+and staff, not arbitrary readers of the public contract. Keep the survey rows
+with the economy's contracts and journal during backup or restore; deleting a
+row is not a repair.
+This adds a typed family and mechanical definitions, with no chart migration
+or credit backfill. Pre-launch rollback must retain their matching store and
+definition history.
+
 ### The cost lane by hand (surface mining, doc 20 cut SM.12c-lane)
 
 No CI job runs the surface-mining cost lane (the owner's O-28 default (i),

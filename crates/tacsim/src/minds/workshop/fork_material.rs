@@ -1,7 +1,7 @@
 //! Internal exact immutable source read for the closed Roll fork builder.
 //! No public query, alternate actor or editable source parameter reaches it.
 
-use mush_core::mechanics::{DefinitionKind, DefinitionValidationContext, OwnerId};
+use mush_core::mechanics::OwnerId;
 use mush_core::read_service::{OwnerReadContext, OwnerReadError, OwnerReadService};
 use mush_core::{DefinitionRef, ModError, Registrar};
 use mush_roll::commerce::fork_protocol::{ForkMaterial, ForkMaterialRequest, material_descriptor};
@@ -17,27 +17,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>, manifest: &DefinitionRef) -> Res
     }
     let expected = material_descriptor(manifest)?;
     let definition = reg.definition(expected.clone())?;
-    reg.definition_validator(
-        DefinitionKind::new("owner_read").map_err(error)?,
-        move |context: &DefinitionValidationContext<'_>| {
-            let actual = context.definition();
-            let reference = actual.reference();
-            let mut references = expected.references().to_vec();
-            references.sort();
-            if reference.key().owner.as_str() == crate::NS
-                && reference.key().kind == *expected.kind()
-                && reference.key().id == *expected.id()
-                && reference.version() == expected.version()
-                && actual.payload() == expected.payload()
-                && actual.references() == references
-                && actual.is_current() == expected.is_current()
-            {
-                Ok(())
-            } else {
-                Err("fork source material differs from its closed configuration".into())
-            }
-        },
-    )?;
+    // The unconditional survey reader registers TacSim's single owner_read
+    // validator. It checks this exact descriptor and its current combat manifest
+    // as well as the survey reader, so optional fork composition shares the kind.
     reg.owner_read_service(
         definition,
         BTreeSet::from([OwnerId::new("roll").map_err(error)?]),

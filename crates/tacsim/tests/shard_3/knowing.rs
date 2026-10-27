@@ -3427,3 +3427,627 @@ fn sm4a_an_unreadable_chart_row_is_never_forgotten_blind() {
     assert_eq!(chart_of(&mut rig.tw, pilot), Some(foreign));
     no_refused_writes(&rig.tw);
 }
+
+// ---------------------------------------------------------------------------
+// Survey commissions: fresh soundings, durable proof and escrow settlement
+// ---------------------------------------------------------------------------
+
+fn commission(tw: &mut TestWorld, offer: &str) -> Option<tacsim::surface::survey::SurveyRecord> {
+    let family = handles(tw).families.surveys;
+    let key = tacsim::surface::survey::SurveyKey::parse(offer).expect("a survey offer");
+    typed(tw, &family, &key)
+}
+
+fn survey_money(tw: &TestWorld, account: u64) -> (i64, i64) {
+    let economy = tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy");
+    let account = economy
+        .snapshot()
+        .account(mush_economy::AccountId(account))
+        .expect("an account");
+    (account.posted_balance.minor(), account.held_amount.minor())
+}
+
+fn survey_contract(tw: &TestWorld, contract: u64) -> mush_economy::ContractState {
+    tw.world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy")
+        .snapshot()
+        .contract(mush_economy::ContractId(contract))
+        .expect("the commission's contract")
+        .state
+}
+
+/// Advance through a full economy sweep as well as the port and surface ticks.
+fn survey_sweep(rig: &mut Rig) {
+    let next = ic_now(&rig.tw) + 61;
+    let (_, queued) = advance_to(rig, next);
+    land_all(rig, &queued);
+}
+
+/// Accept through the command, its authoritative activation, and Occator's escrow tick.
+fn accept_commission(
+    rig: &mut Rig,
+    pilot: ObjId,
+    offer: &str,
+) -> tacsim::surface::survey::SurveyRecord {
+    let capture = Capture::default();
+    let dispatch = capture_dispatch(capture.clone());
+    let (out, queued) = tracing::dispatcher::with_default(&dispatch, || {
+        command(rig, pilot, &format!("+survey/accept {offer} go"))
+    });
+    assert_eq!(
+        queued.len(),
+        1,
+        "one commission activation: {out}\n{}",
+        capture.text()
+    );
+    assert_eq!(
+        queued[0].action.key().id.as_str(),
+        tacsim::surface::survey::SURVEY_ACTION,
+        "{out}"
+    );
+    assert_eq!(queued[0].actor, pilot);
+    land_all(rig, &queued);
+    let accepted = commission(&mut rig.tw, offer).expect("a durable commission");
+    assert_eq!(accepted.pilot, pilot);
+    assert_eq!(accepted.covered(), 0);
+    assert_eq!(accepted.reward_minor, 50_000);
+    assert_eq!(accepted.deadline_ic - accepted.accepted_ic, 7 * 86_400);
+    assert_eq!(
+        survey_contract(&rig.tw, accepted.contract),
+        mush_economy::ContractState::Offered,
+        "the authoritative activation has not yet spent Occator's money"
+    );
+    let before = survey_money(&rig.tw, accepted.sponsor_account);
+    for _ in 0..8 {
+        let (_, queued) = fire(rig);
+        land_all(rig, &queued);
+        if survey_contract(&rig.tw, accepted.contract) == mush_economy::ContractState::Active {
+            break;
+        }
+    }
+    assert_eq!(
+        survey_contract(&rig.tw, accepted.contract),
+        mush_economy::ContractState::Active,
+        "Occator accepted and funded the commission"
+    );
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        (before.0, before.1 + accepted.reward_minor),
+        "the reward is held before any work earns it"
+    );
+    accepted
+}
+
+/// Retain the spatial recovery ledger too, so a midway reboot keeps this real placement.
+fn survey_to_cell(rig: &mut Rig, tv: ObjId, cell: (i64, i64)) {
+    let domain = ahuna_domain(&rig.tw);
+    let staff = support::place_keeping(&mut rig.tw, domain, tv, cell);
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    fold_module_ops_into(&mut rig.store, staff);
+}
+
+fn survey_sound(rig: &mut Rig, pilot: ObjId, tv: ObjId, cell: (i64, i64), quiet: bool) {
+    survey_to_cell(rig, tv, cell);
+    let line = if quiet {
+        "+tv/1 sound quiet go"
+    } else {
+        "+tv/1 sound go"
+    };
+    let _ = act_go(rig, pilot, line);
+    let _ = finish(rig, tv, pilot);
+    assert_eq!(
+        record_of(&mut rig.tw, tv)
+            .and_then(|row| row.last)
+            .map(|last| last.result),
+        Some(ActResult::Done),
+        "a successful, committed sounding supplies the proof"
+    );
+}
+
+#[test]
+fn survey_commission_pays_fresh_complete_soundings_once_across_restart_and_forgetting() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    let (board, queued) = command(&mut rig, pilot, "+survey board");
+    assert!(queued.is_empty(), "the board is a read: {board}");
+    for offer in ["ahuna-a", "kerwan-f", "juling-k", "occator-p"] {
+        assert!(board.contains(offer), "{offer}: {board}");
+    }
+    let (preview, queued) = command(&mut rig, pilot, "+survey/accept ahuna-a");
+    assert!(queued.is_empty(), "a preview does not accept: {preview}");
+    assert!(commission(&mut rig.tw, "ahuna-a").is_none());
+
+    // This sounding completes after acceptance, but began before it: old work earns nothing.
+    let middles = [(16, 208), (48, 208), (16, 240), (48, 240)];
+    survey_to_cell(&mut rig, tv, middles[0]);
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    let started_ic = ic_now(&rig.tw);
+    let accepted = accept_commission(&mut rig, pilot, "ahuna-a");
+    assert_eq!(
+        accepted.accepted_ic, started_ic,
+        "earlier work in the same IC second is stale too"
+    );
+    let sponsor_before = survey_money(&rig.tw, accepted.sponsor_account);
+    let payee_before = survey_money(&rig.tw, accepted.payee);
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 0);
+    assert_eq!(chart_of(&mut rig.tw, pilot).unwrap().sounded_pockets(), 64);
+    let (_, queued) = command(&mut rig, pilot, "+tv/forget Ahuna Flank go");
+    land_all(&mut rig, &queued);
+
+    survey_sound(&mut rig, pilot, tv, middles[0], true);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 16);
+    survey_sound(&mut rig, pilot, tv, middles[0], false);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 64);
+    survey_sound(&mut rig, pilot, tv, middles[1], false);
+    let half = commission(&mut rig.tw, "ahuna-a").unwrap();
+    assert_eq!(half.covered(), 128);
+    assert!(half.completed.is_none());
+    survey_sweep(&mut rig);
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee_before);
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        sponsor_before
+    );
+
+    survey_to_cell(&mut rig, tv, middles[2]);
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    let due = due_of(&mut rig.tw, tv);
+    rig = reboot(rig, &[pilot]);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a"), Some(half));
+    assert_eq!(due_of(&mut rig.tw, tv), due);
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 192);
+    warm(&mut rig);
+
+    survey_to_cell(&mut rig, tv, middles[3]);
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    let last_finish = finishes(&queued)[0].clone();
+    land_all(&mut rig, &queued);
+    let completed = commission(&mut rig.tw, "ahuna-a").unwrap();
+    assert_eq!(completed.covered(), 256);
+    assert_eq!(completed.completed.as_ref().unwrap().tv, tv);
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee_before);
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if matches!(
+            survey_contract(&rig.tw, accepted.contract),
+            mush_economy::ContractState::Settled { .. }
+        ) {
+            break;
+        }
+    }
+    let settled = survey_contract(&rig.tw, accepted.contract);
+    assert!(matches!(
+        settled,
+        mush_economy::ContractState::Settled { .. }
+    ));
+    let sponsor_paid = survey_money(&rig.tw, accepted.sponsor_account);
+    let payee_paid = survey_money(&rig.tw, accepted.payee);
+    assert_eq!(
+        sponsor_paid,
+        (sponsor_before.0 - 50_000, sponsor_before.1 - 50_000)
+    );
+    assert_eq!(payee_paid, (payee_before.0 + 50_000, payee_before.1));
+    assert_eq!(
+        sponsor_paid.0 + payee_paid.0,
+        sponsor_before.0 + payee_before.0
+    );
+    assert!(
+        land(&mut rig, &last_finish).is_err(),
+        "a finish cannot replay"
+    );
+
+    let (_, queued) = command(&mut rig, pilot, "+tv/forget Ahuna Flank go");
+    land_all(&mut rig, &queued);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a"), Some(completed.clone()));
+    rig = reboot(rig, &[pilot]);
+    survey_sweep(&mut rig);
+    let (out, queued) = command(&mut rig, pilot, "+survey/accept ahuna-a go");
+    assert!(
+        queued.is_empty(),
+        "a completed global offer cannot reopen: {out}"
+    );
+    assert_eq!(commission(&mut rig.tw, "ahuna-a"), Some(completed));
+    assert_eq!(survey_contract(&rig.tw, accepted.contract), settled);
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        sponsor_paid
+    );
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee_paid);
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn survey_commission_rejects_another_pilots_work_wrong_block_and_wrong_site() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let (other, _, other_tvs) = on_pad_as(&mut rig, "Other", 2, "Copper Moth", 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+    launched(&mut rig, other, other_tvs[0]);
+    let accepted = accept_commission(&mut rig, pilot, "ahuna-a");
+    let sponsor = survey_money(&rig.tw, accepted.sponsor_account);
+    let payee = survey_money(&rig.tw, accepted.payee);
+
+    let sibling = self::pilot(&mut rig, "Sibling", 3);
+    rig.oracle
+        .0
+        .lock()
+        .expect("the account oracle")
+        .insert(sibling, accepted.account);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", sibling.0),
+    );
+    let (out, queued) = command(&mut rig, sibling, "+survey/accept kerwan-f go");
+    assert!(
+        out.contains("account already has"),
+        "the gateway limit covers another character: {out}"
+    );
+    assert!(queued.is_empty());
+
+    for (who, offer) in [(other, "ahuna-a"), (pilot, "kerwan-f")] {
+        let (out, queued) = command(&mut rig, who, &format!("+survey/accept {offer} go"));
+        assert!(
+            queued.is_empty(),
+            "global offer and gateway exclusivity: {out}"
+        );
+    }
+    survey_sound(&mut rig, other, other_tvs[0], (16, 208), false);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 0);
+    survey_sound(&mut rig, pilot, tv, (80, 208), false);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 0);
+    survey_to_cell(&mut rig, tv, (16, 208));
+    let _ = act_go(&mut rig, pilot, "+tv/1 sound go");
+    survey_to_cell(&mut rig, tv, (48, 208));
+    let _ = finish(&mut rig, tv, pilot);
+    assert_ne!(
+        record_of(&mut rig.tw, tv)
+            .and_then(|row| row.last)
+            .map(|last| last.result),
+        Some(ActResult::Done),
+        "a rig moved before its sounding finishes has no successful proof"
+    );
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 0);
+    survey_sweep(&mut rig);
+    assert_eq!(survey_money(&rig.tw, accepted.sponsor_account), sponsor);
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
+
+    let (out, queued) = command(&mut rig, pilot, "+survey/cancel ahuna-a go");
+    assert_eq!(queued.len(), 1, "one authoritative cancellation: {out}");
+    let cancellation = queued[0].clone();
+    land_all(&mut rig, &queued);
+    let cancelled = commission(&mut rig.tw, "ahuna-a").unwrap();
+    assert!(cancelled.cancelled.is_some());
+    assert!(cancelled.completed.is_none());
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if matches!(
+            survey_contract(&rig.tw, accepted.contract),
+            mush_economy::ContractState::Settled { .. }
+        ) {
+            break;
+        }
+    }
+    let refunded = survey_contract(&rig.tw, accepted.contract);
+    assert!(
+        matches!(refunded, mush_economy::ContractState::Settled { .. }),
+        "{out}"
+    );
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        (sponsor.0, sponsor.1 - 50_000)
+    );
+    assert!(
+        land(&mut rig, &cancellation).is_err(),
+        "a refunded cancellation cannot replay"
+    );
+    rig = reboot(rig, &[pilot, other, sibling]);
+    survey_sweep(&mut rig);
+    assert!(
+        land(&mut rig, &cancellation).is_err(),
+        "a restart cannot revive the cancellation"
+    );
+    assert_eq!(commission(&mut rig.tw, "ahuna-a"), Some(cancelled));
+    assert_eq!(survey_contract(&rig.tw, accepted.contract), refunded);
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        (sponsor.0, sponsor.1 - 50_000)
+    );
+    let kerwan = accept_commission(&mut rig, pilot, "kerwan-f");
+    assert_ne!(kerwan.contract, accepted.contract);
+    // This is block F, but it is still Ahuna rather than the commissioned Kerwan site.
+    warm(&mut rig);
+    survey_sound(&mut rig, pilot, tv, (80, 144), false);
+    let untouched = commission(&mut rig.tw, "kerwan-f").unwrap();
+    assert_eq!(untouched.covered(), 0);
+    assert!(untouched.completed.is_none());
+    survey_sweep(&mut rig);
+    assert_eq!(survey_money(&rig.tw, kerwan.payee), payee);
+    assert_eq!(
+        survey_contract(&rig.tw, kerwan.contract),
+        mush_economy::ContractState::Active
+    );
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract() {
+    let mut rig = stocked();
+    let pilot = pilot(&mut rig, "Pilot", 1);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", pilot.0),
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("the economy")
+            .peek_next_contract(),
+        0,
+        "the first commission exercises the economy's valid zero contract id"
+    );
+    let accepted = accept_commission(&mut rig, pilot, "juling-k");
+    assert_eq!(accepted.contract, 0);
+    let sponsor = survey_money(&rig.tw, accepted.sponsor_account);
+    let payee = survey_money(&rig.tw, accepted.payee);
+    rig = reboot(rig, &[pilot]);
+    let (_, queued) = advance_to(&mut rig, accepted.deadline_ic + 86_401);
+    land_quietly(&mut rig, &queued);
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if survey_contract(&rig.tw, accepted.contract) == mush_economy::ContractState::Expired {
+            break;
+        }
+    }
+    assert_eq!(
+        survey_contract(&rig.tw, accepted.contract),
+        mush_economy::ContractState::Expired
+    );
+    assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
+    assert_eq!(
+        survey_money(&rig.tw, accepted.sponsor_account),
+        (sponsor.0, sponsor.1 - 50_000)
+    );
+    let renewed = accept_commission(&mut rig, pilot, "juling-k");
+    assert_ne!(renewed.contract, accepted.contract);
+    assert!(renewed.accepted_ic > accepted.deadline_ic);
+    assert_eq!(renewed.covered(), 0);
+    assert!(renewed.completed.is_none());
+    assert_eq!(
+        survey_contract(&rig.tw, accepted.contract),
+        mush_economy::ContractState::Expired
+    );
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn survey_commission_does_not_offer_an_unfunded_reward() {
+    let mut rig = stocked();
+    let pilot = pilot(&mut rig, "Pilot", 1);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", pilot.0),
+    );
+    let sponsor = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")]
+        .account
+        .expect("Occator's credit account");
+    let before = survey_money(&rig.tw, sponsor);
+    let reserve = before.0 - before.1 - 49_999;
+    assert!(reserve > 0);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@hold/place {sponsor}={reserve} survey funding fixture"),
+    );
+    let held = survey_money(&rig.tw, sponsor);
+    assert_eq!(held, (before.0, before.1 + reserve), "{out}");
+    let contracts = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .unwrap()
+        .snapshot()
+        .contracts()
+        .count();
+    for line in ["+survey/accept occator-p", "+survey/accept occator-p go"] {
+        let (out, queued) = command(&mut rig, pilot, line);
+        assert!(out.contains("cannot fund"), "{out}");
+        assert!(
+            queued.is_empty(),
+            "an unfunded reward cannot be filed: {out}"
+        );
+        assert!(commission(&mut rig.tw, "occator-p").is_none());
+        assert_eq!(survey_money(&rig.tw, sponsor), held);
+    }
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap()
+            .snapshot()
+            .contracts()
+            .count(),
+        contracts,
+        "insufficient funds do not leave an offered contract behind"
+    );
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart() {
+    let mut rig = stocked();
+    let pilot = pilot(&mut rig, "Pilot", 1);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", pilot.0),
+    );
+    let sponsor = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")]
+        .account
+        .expect("Occator's credit account");
+    let before = survey_money(&rig.tw, sponsor);
+    let (out, queued) = command(&mut rig, pilot, "+survey/accept occator-p go");
+    assert_eq!(queued.len(), 1, "{out}");
+    let (contract, deadline) = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .unwrap()
+        .snapshot()
+        .contracts()
+        .filter(|contract| contract.name.as_str() == "Occator survey: occator-p")
+        .map(|contract| {
+            (
+                contract.id.0,
+                contract.consent.deadline.as_ref().expect("a deadline").at,
+            )
+        })
+        .next()
+        .expect("the command offered a contract");
+    assert_eq!(
+        survey_contract(&rig.tw, contract),
+        mush_economy::ContractState::Offered
+    );
+    assert!(commission(&mut rig.tw, "occator-p").is_none());
+    assert_eq!(survey_money(&rig.tw, sponsor), before);
+    rig = reboot(rig, &[pilot]);
+    survey_sweep(&mut rig);
+    assert_eq!(
+        survey_contract(&rig.tw, contract),
+        mush_economy::ContractState::Offered,
+        "a filing with no durable acceptance never reaches sponsor funding"
+    );
+    assert_eq!(survey_money(&rig.tw, sponsor), before);
+    assert!(
+        land(&mut rig, &queued[0]).is_err(),
+        "the lost activation cannot revive the orphan"
+    );
+    let (_, queued) = advance_to(&mut rig, deadline + 1);
+    land_quietly(&mut rig, &queued);
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if survey_contract(&rig.tw, contract) == mush_economy::ContractState::Expired {
+            break;
+        }
+    }
+    assert_eq!(
+        survey_contract(&rig.tw, contract),
+        mush_economy::ContractState::Expired
+    );
+    assert!(commission(&mut rig.tw, "occator-p").is_none());
+    assert_eq!(survey_money(&rig.tw, sponsor), before);
+    let retry = accept_commission(&mut rig, pilot, "occator-p");
+    assert_ne!(retry.contract, contract);
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn survey_commission_refuses_generic_amendment_but_reopens_after_unfunded_cancellation() {
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    launched(&mut rig, pilot, tv);
+
+    // The pilot's filing is durable, but Occator has not yet accepted its frozen terms.
+    let (out, queued) = command(&mut rig, pilot, "+survey/accept ahuna-a go");
+    assert_eq!(queued.len(), 1, "{out}");
+    land_all(&mut rig, &queued);
+    let original = commission(&mut rig.tw, "ahuna-a").expect("a durable filing");
+    assert_eq!(
+        survey_contract(&rig.tw, original.contract),
+        mush_economy::ContractState::Offered
+    );
+    let sponsor = survey_money(&rig.tw, original.sponsor_account);
+    let payee = survey_money(&rig.tw, original.payee);
+    let frozen_contract = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy")
+        .snapshot()
+        .contract(mush_economy::ContractId(original.contract))
+        .expect("the frozen contract")
+        .clone();
+    let out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("@contract/amend #{}", original.contract),
+    );
+    assert!(out.contains("No such contract"), "{out}");
+    assert_eq!(
+        commission(&mut rig.tw, "ahuna-a"),
+        Some(original.clone()),
+        "the refused amendment does not change the commissioned work"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("the economy")
+            .snapshot()
+            .contract(mush_economy::ContractId(original.contract)),
+        Some(&frozen_contract),
+        "the contract, its consent and its acceptances remain unchanged"
+    );
+    assert_eq!(survey_money(&rig.tw, original.sponsor_account), sponsor);
+    assert_eq!(survey_money(&rig.tw, original.payee), payee);
+
+    let out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("@contract/cancel #{}", original.contract),
+    );
+    survey_sweep(&mut rig);
+    assert_eq!(
+        survey_contract(&rig.tw, original.contract),
+        mush_economy::ContractState::Cancelled,
+        "{out}"
+    );
+    assert_eq!(survey_money(&rig.tw, original.sponsor_account), sponsor);
+    assert_eq!(survey_money(&rig.tw, original.payee), payee);
+    let economy = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy");
+    let contract = economy
+        .snapshot()
+        .contract(mush_economy::ContractId(original.contract))
+        .unwrap();
+    assert!(contract.pending.is_none());
+    assert!(contract.escrow.iter().all(|id| {
+        economy
+            .snapshot()
+            .hold(*id)
+            .is_some_and(|hold| !hold.status.is_held())
+    }));
+
+    let renewed = accept_commission(&mut rig, pilot, "ahuna-a");
+    assert_ne!(renewed.contract, original.contract);
+    assert_eq!(renewed.covered(), 0);
+    assert!(renewed.completed.is_none());
+    assert_eq!(
+        survey_contract(&rig.tw, original.contract),
+        mush_economy::ContractState::Cancelled
+    );
+    survey_sound(&mut rig, pilot, tv, (48, 208), false);
+    assert_eq!(commission(&mut rig.tw, "ahuna-a").unwrap().covered(), 64);
+    assert_eq!(survey_money(&rig.tw, renewed.payee), payee);
+    no_refused_writes(&rig.tw);
+}

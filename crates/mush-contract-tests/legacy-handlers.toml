@@ -289,6 +289,12 @@ category = "read-only"
 note = "E7 cut 5: list the actor's own control billets, with reach and which one is foreground. Reads HostStations/HostAssignments and the world-owned focus map; writes nothing, discloses nothing about a unit's location the viewer may not perceive, bounded on records visited (MAX_BILLETS_LISTED)."
 
 [[handler]]
+name = "+survey"
+category = "authoritative"
+family = "tacsim.survey"
+note = "Read-only board and previews; acceptance offers an economy contract with the pilot's consent and queues an authorized typed survey acceptance. Occator funds only after that acceptance is durable. Sounding progress and completion commit with the chart through the surface action transaction; scoped survey facts settle payment or the contract's agreed cancellation refund. Funded cancellation records an authoritative withdrawal; unfunded cancellation uses the economy contract API. No legacy handler writes authoritative survey state."
+
+[[handler]]
 name = "+territory"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
