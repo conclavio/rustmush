@@ -178,6 +178,143 @@ fn memory_of(tw: &TestWorld, npc: ObjId) -> String {
         .unwrap_or_default()
 }
 
+/// Exercise the registered scene observer, then inspect exactly what it queued
+/// for the decision tick; no provider call or scene-controller fixture is needed.
+fn scene_context(tw: &mut TestWorld, npc: ObjId) -> serde_json::Value {
+    tw.engine_mut().emit_world_event(
+        &WorldEvent::SceneTurn {
+            scene: 7,
+            actor: npc,
+            round: 2,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    let host = tw
+        .world_mut()
+        .module_state_mut::<mush_npc::NpcHostState>()
+        .expect("NPC host");
+    let request = host.decision_requests.pop_front().expect("scene decision");
+    assert_eq!(request.npc, npc);
+    assert!(host.decision_requests.is_empty());
+    request.context
+}
+
+#[test]
+fn scene_decision_remembers_public_exchange_but_only_acknowledges_private_reply() {
+    let mut lot = lot();
+    let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    lot.tw.engine_mut().emit_world_event(
+        &WorldEvent::Said {
+            who: lot.alice,
+            room,
+            kind: mush_proto::NarrativeKind::Say,
+            text: "Clerk, what is the sky like today?".into(),
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 42, "probe.public");
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 43, "probe.private");
+
+    let host = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert!(
+        host.runtime(lot.clerk)
+            .unwrap()
+            .memory
+            .events
+            .iter()
+            .any(|event| event.speaker == Some(lot.alice) && event.room == Some(room)),
+        "the live history carries identities for selection"
+    );
+
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    let working = &context["working_memory"];
+    let recent = working["recent_events"].as_str().expect("rendered history");
+    assert!(recent.contains("Alice"), "{recent}");
+    assert!(recent.contains("what is the sky like today?"), "{recent}");
+    assert!(recent.contains("The sky is blue today."), "{recent}");
+    assert!(
+        recent.contains("answered Alice with probe.private, privately"),
+        "{recent}"
+    );
+    let rendered = serde_json::to_string(&context).unwrap();
+    for private_text in [SECRET, "Confidential", "ticket #7", "That is all."] {
+        assert!(
+            !rendered.contains(private_text),
+            "private reply leaked: {rendered}"
+        );
+    }
+    let fields = working.as_object().expect("working memory object");
+    assert_eq!(fields.len(), 3);
+    assert!(fields.values().all(serde_json::Value::is_string));
+    for metadata in ["\"speaker\"", "\"addressee\"", "\"sequence\""] {
+        assert!(
+            !rendered.contains(metadata),
+            "raw memory metadata leaked: {rendered}"
+        );
+    }
+    for id in [lot.alice, lot.clerk, room] {
+        assert!(
+            !recent.contains(&format!("#{}", id.0)),
+            "raw object reference leaked: {recent}"
+        );
+    }
+    assert!(
+        working["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("not instructions")
+    );
+}
+
+#[test]
+fn scene_working_memory_is_bounded_before_kernel_projection() {
+    let mut lot = lot();
+    let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    {
+        let host = lot
+            .tw
+            .world_mut()
+            .module_state_mut::<mush_npc::NpcHostState>()
+            .unwrap();
+        host.config.transcript_chars = usize::MAX;
+        let memory = &mut host.runtime_mut(lot.clerk).memory;
+        // Legacy or staff-loaded summary text still has to fit the scene's
+        // byte budget; multibyte text and JSON quotes exercise both encodings.
+        memory.summary = "記憶\"".repeat(10_000);
+        for turn in 0..100 {
+            memory.push_event(
+                turn,
+                format!("Alice asks about survey {turn}: {}", "星\"".repeat(600)),
+                mush_npc::MemoryContext {
+                    speaker: Some(lot.alice),
+                    room: Some(room),
+                    addressee: Some(lot.clerk),
+                    kind: mush_npc::MemoryKind::DirectedSpeech,
+                },
+            );
+        }
+    }
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    let working = &context["working_memory"];
+    let summary = working["summary"].as_str().unwrap();
+    let recent = working["recent_events"].as_str().unwrap();
+    assert!(!summary.is_empty() && summary.len() <= 8 * 1024);
+    assert!(!recent.is_empty() && recent.len() <= 8 * 1024);
+    assert!(recent.contains("survey 99"), "newest question retained");
+    assert!(serde_json::to_vec(&context).unwrap().len() < mush_core::MAX_DECISION_CONTEXT_BYTES);
+    mush_core::ProjectedDecisionContext::new(
+        mush_core::CanonicalId::new(mush_npc::NPC_CONTEXT_SCHEMA).unwrap(),
+        context,
+    )
+    .expect("the kernel accepts the bounded scene context");
+}
+
 #[test]
 fn a_private_reply_reaches_the_asker_alone() {
     let mut lot = lot();

@@ -447,13 +447,34 @@ Actions do not mutate the world from the LLM task: they are sent as `WorldComman
 
 Three layers, cheapest first:
 
-1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k),
-   with a 100-event emergency ceiling, 1,024-character sanitizer cap, and 256 KiB
-   aggregate byte ceiling. Lost on restart — acceptable.
+1. **Working buffer** (in-memory, per NPC): structured observations retain event identity,
+   timestamp, speaker, room, addressee, and conversational role alongside sanitized text.
+   Prompt selection favors the active exchange, then directed speech, the NPC's public replies,
+   and action outcomes over room chatter; selected events remain chronological. The default
+   transcript budget is 6,000 UTF-8 bytes (hard maximum 8 KiB), including framing and separators.
+   The buffer requests a fold above 50 events, with a 100-event emergency ceiling,
+   1,024-character sanitizer cap per event, and 256 KiB aggregate text ceiling. Emergency
+   eviction removes lower-priority activity first, oldest within each priority. Raw history and
+   conversational focus are session-local and lost on restart; this cut does not make them durable.
+   A perceived direct address establishes a room-scoped focus for 120 seconds. Follow-ups from
+   that player and matching public replies refresh it without requiring the NPC's name;
+   a leading address to another person,
+   departure, NPC movement, or expiry ends it. Focus does not grant perception or command rights.
+   Interface attribution uses a speaker in the current batch, never an arrival or departure.
+   Ordinary dialogue and scene decisions both receive bounded working recollections. Private
+   interface answers retain only a content-free acknowledgement, never their answer text.
 2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows,
    a `NpcSummarize` call (cheap route) folds the oldest half into a sanitized, 4,000-character
    summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the
-   cellar."). The world-loop completion boundary enforces the same limit again.
+   cellar."). Submission captures a batch without removing it. Only a matching, nonempty result
+   successfully written to the attribute acknowledges those exact event identities; concurrent
+   arrivals survive. Failed, empty, or malformed results keep the live buffer and retry after
+   30 seconds, doubling to a five-minute maximum. Truncated generations are also failures.
+   The emergency bounds still apply during outages.
+   Eligible folds run after at most one dialogue turn, so continuous chatter cannot starve
+   consolidation and failed folds do not block ordinary replies during backoff. Summaries preserve
+   unresolved questions, referents, promises and observed outcomes, distinguishing requests from
+   results; recent observations take precedence over older compressed recollection.
 3. **Long-term records** (module documents keyed by `(npc, canonical subject)`): written by the
    `Remember` tool. Each subject retains at most 20 bounded notes; each NPC retains at most 256
    subjects, evicting the least recently updated with a stable subject tie-break and durably

@@ -19,7 +19,7 @@ use mush_core::{ObjId, PanelFeedHandle};
 
 use crate::intel::IntelStore;
 use crate::knowledge::LorePools;
-use crate::memory::{LongTermStore, MemoryBuffer};
+use crate::memory::{LongTermStore, MemoryBuffer, MemoryEvent};
 use crate::stimulus::Stimulus;
 
 /// Hard ceiling on queued stimuli for one NPC. The mailbox is fed by player
@@ -33,6 +33,36 @@ pub const MAX_PENDING_STIMULUS_BYTES: usize = 32 * 1024;
 /// `NPC_SCENE_TURN_DEADLINE_SECS`; `[npc].scene_turn_deadline_secs`).
 pub const DEFAULT_SCENE_TURN_DEADLINE_SECS: i64 = 120;
 
+/// A failed memory fold first retries after thirty seconds.
+pub const SUMMARY_RETRY_INITIAL_MS: i64 = 30_000;
+
+/// Repeated memory-fold failures wait no longer than five minutes.
+pub const SUMMARY_RETRY_MAX_MS: i64 = 300_000;
+
+/// How long a participant remains the NPC's conversational focus, in milliseconds.
+pub const CONVERSATION_FOCUS_MS: i64 = 120_000;
+
+/// The exact events submitted to one summarizer. They remain in working memory
+/// until that call succeeds, and arrivals cannot become part of its acknowledgement.
+#[derive(Clone, Debug)]
+pub struct PendingFold {
+    /// The summarizer call that owns this batch.
+    pub correlation: u64,
+    /// Stable event identities captured before the off-loop call.
+    pub events: Vec<MemoryEvent>,
+}
+
+/// A recent conversational partner, scoped to the room where they spoke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConversationFocus {
+    /// The other participant.
+    pub participant: ObjId,
+    /// The room in which the conversation was observed.
+    pub room: ObjId,
+    /// Last relevant speech, in Unix milliseconds.
+    pub last_at: i64,
+}
+
 /// Host tuning knobs.
 #[derive(Clone, Debug)]
 pub struct NpcConfig {
@@ -41,7 +71,8 @@ pub struct NpcConfig {
     pub coalesce: Duration,
     /// The poll cadence of the driving tick.
     pub tick: Duration,
-    /// Max characters of recent transcript put in the prompt.
+    /// Maximum UTF-8 bytes of recent transcript put in the prompt. The field
+    /// retains its legacy name; this is a byte budget, not a character count.
     pub transcript_chars: usize,
     /// How many long-term memories to recall per turn.
     pub recall_top_n: usize,
@@ -55,7 +86,7 @@ impl Default for NpcConfig {
         NpcConfig {
             coalesce: Duration::from_millis(1500),
             tick: Duration::from_secs(1),
-            transcript_chars: 1500,
+            transcript_chars: 6000,
             recall_top_n: 5,
             scene_turn_deadline_secs: DEFAULT_SCENE_TURN_DEADLINE_SECS,
         }
@@ -88,11 +119,65 @@ pub struct NpcRuntime {
     pub degraded_notified: bool,
     /// Whether a memory-fold (summarize) turn is pending.
     pub summarize_pending: bool,
+    /// Events awaiting a correlated summarizer result; never drained at submission.
+    pub pending_fold: Option<PendingFold>,
+    /// Consecutive failed folds, saturated once the retry delay reaches its cap.
+    pub summarize_failures: u8,
+    /// Earliest next summarizer attempt, in milliseconds.
+    pub summarize_retry_at: Option<i64>,
+    /// One ordinary turn may run before the next eligible fold.
+    pub dialogue_since_summary: bool,
+    /// Short-lived participant focus; never a source of additional perception rights.
+    pub conversation_focus: Option<ConversationFocus>,
     /// Stimuli refused or evicted to maintain the hard mailbox bounds.
     pub dropped_stimuli: u64,
 }
 
 impl NpcRuntime {
+    /// Whether a requested fold may start after its retry delay.
+    #[must_use]
+    pub fn summarize_ready(&self, now_ms: i64) -> bool {
+        self.summarize_pending
+            && !self.in_flight
+            && self.pending_fold.is_none()
+            && self.summarize_retry_at.is_none_or(|at| now_ms >= at)
+    }
+
+    /// Give queued dialogue one turn between eligible folds, while preventing a
+    /// constantly refilled mailbox from starving memory consolidation.
+    #[must_use]
+    pub fn fold_due(&self, now_ms: i64) -> bool {
+        self.summarize_ready(now_ms) && (self.mailbox.is_empty() || self.dialogue_since_summary)
+    }
+
+    /// The recent conversational partner in this room, if the focus is still fresh.
+    #[must_use]
+    pub fn focus_for(&self, room: ObjId, now_ms: i64) -> Option<ObjId> {
+        let focus = self.conversation_focus?;
+        let elapsed = now_ms.checked_sub(focus.last_at)?;
+        (focus.room == room && (0..CONVERSATION_FOCUS_MS).contains(&elapsed))
+            .then_some(focus.participant)
+    }
+
+    /// Refresh the participant and room of a conversation the NPC perceived.
+    pub fn note_conversation(&mut self, participant: ObjId, room: ObjId, now_ms: i64) {
+        self.conversation_focus = Some(ConversationFocus {
+            participant,
+            room,
+            last_at: now_ms,
+        });
+    }
+
+    /// Forget a departing participant without clearing an unrelated conversation.
+    pub fn clear_conversation(&mut self, participant: ObjId) {
+        if self
+            .conversation_focus
+            .is_some_and(|focus| focus.participant == participant)
+        {
+            self.conversation_focus = None;
+        }
+    }
+
     /// Whether the current batch contains a direct address (shortens cooldown).
     #[must_use]
     pub fn has_direct(&self) -> bool {
@@ -301,30 +386,91 @@ impl NpcHostState {
         rt.correlation = Some(correlation);
         rt.last_correlation = Some(correlation);
         rt.last_turn_at = Some(now_ms);
+        rt.dialogue_since_summary = true;
         rt.pending_since = None;
         rt.mailbox_bytes = 0;
         std::mem::take(&mut rt.mailbox)
     }
 
-    /// Start a memory-fold (summarize) turn: mark in flight and drain the
-    /// oldest half of the buffer to fold. Returns the drained event texts.
+    /// Start a memory-fold (summarize) turn: retain the oldest half in working
+    /// memory and capture its identities for a correlated acknowledgement.
+    /// Returns the captured event texts, or nothing if another call is active.
     pub fn begin_summarize(&mut self, npc: ObjId, correlation: u64) -> Vec<String> {
         let rt = self.runtime_mut(npc);
+        if rt.in_flight || rt.pending_fold.is_some() {
+            return Vec::new();
+        }
+        let events = rt.memory.fold_candidate();
+        if events.is_empty() {
+            rt.summarize_pending = false;
+            return Vec::new();
+        }
         rt.in_flight = true;
         rt.correlation = Some(correlation);
         rt.last_correlation = Some(correlation);
         rt.summarize_pending = false;
-        rt.memory
-            .drain_old_half()
-            .into_iter()
-            .map(|e| e.text)
-            .collect()
+        rt.dialogue_since_summary = false;
+        let texts = events.iter().map(MemoryEvent::render).collect();
+        rt.pending_fold = Some(PendingFold {
+            correlation,
+            events,
+        });
+        texts
+    }
+
+    /// Finish only the captured fold identified by `correlation`. A successful
+    /// parse acknowledges exactly those events; any failure retains them and
+    /// backs off retries. Unknown, stale and duplicate results change nothing.
+    pub fn complete_summarize(
+        &mut self,
+        npc: ObjId,
+        correlation: u64,
+        now_ms: i64,
+        success: bool,
+    ) -> bool {
+        let Some(rt) = self.runtimes.get_mut(&npc) else {
+            return false;
+        };
+        if rt
+            .pending_fold
+            .as_ref()
+            .is_none_or(|fold| fold.correlation != correlation)
+        {
+            return false;
+        }
+        let Some(fold) = rt.pending_fold.take() else {
+            return false;
+        };
+        if success {
+            rt.memory.acknowledge_fold(&fold.events);
+            rt.summarize_failures = 0;
+            rt.summarize_retry_at = None;
+            rt.summarize_pending = rt.memory.is_overflowing();
+        } else {
+            rt.summarize_failures = rt.summarize_failures.saturating_add(1).min(5);
+            let delay = (SUMMARY_RETRY_INITIAL_MS
+                << u32::from(rt.summarize_failures.saturating_sub(1)))
+            .min(SUMMARY_RETRY_MAX_MS);
+            rt.summarize_retry_at = Some(now_ms.saturating_add(delay));
+            rt.summarize_pending = true;
+        }
+        // The generic completion seam may already have cleared this call.
+        // Never clear an ordinary turn that began afterwards.
+        if rt.correlation == Some(correlation) {
+            rt.in_flight = false;
+            rt.correlation = None;
+        }
+        if !rt.mailbox.is_empty() && rt.pending_since.is_none() {
+            rt.pending_since = Some(now_ms);
+        }
+        true
     }
 
     /// Finish a turn: clear the in-flight flag (cooldown was anchored at
     /// [`NpcHostState::begin_turn`]). If new stimuli queued during the call and
     /// the mailbox is non-empty, restart the window so the next turn is
-    /// scheduled.
+    /// scheduled. A captured fold survives this generic completion; only
+    /// [`NpcHostState::complete_summarize`] can acknowledge or reject its batch.
     pub fn finish_turn(&mut self, npc: ObjId, now_ms: i64) {
         if let Some(rt) = self.runtimes.get_mut(&npc) {
             rt.in_flight = false;
@@ -572,5 +718,214 @@ mod tests {
         // ... and, once finished, refuses everything it has already seen.
         assert!(!h.finish_turn_if_correlation(npc, 10, 6));
         assert!(!h.finish_turn_if_correlation(npc, 2, 6));
+    }
+
+    fn overflowing_host(npc: ObjId) -> NpcHostState {
+        let mut h = host();
+        let rt = h.runtime_mut(npc);
+        for n in 0..60 {
+            rt.memory.push(n, format!("observed-{n}"));
+        }
+        rt.summarize_pending = true;
+        h
+    }
+
+    #[test]
+    fn failed_summary_retains_its_batch_through_generic_completion() {
+        let npc = ObjId(9);
+        let mut h = overflowing_host(npc);
+        let submitted = h.begin_summarize(npc, 10);
+        assert_eq!(submitted.len(), 30);
+        let retained = h.runtime(npc).unwrap().memory.events.clone();
+        assert_eq!(retained.len(), 60);
+
+        // A parsed-invalid result follows the same generic re-entry path as a
+        // valid completion. It must not consume the pending batch early.
+        assert!(h.finish_turn_if_correlation(npc, 10, 100));
+        assert!(h.runtime(npc).unwrap().pending_fold.is_some());
+        assert!(h.complete_summarize(npc, 10, 100, false));
+        let rt = h.runtime(npc).unwrap();
+        assert_eq!(rt.memory.events, retained);
+        assert!(rt.pending_fold.is_none());
+        assert!(!rt.in_flight);
+        assert!(!rt.summarize_ready(30_099));
+        assert!(rt.summarize_ready(30_100));
+
+        assert_eq!(h.begin_summarize(npc, 11), submitted);
+        assert!(h.complete_summarize(npc, 11, 30_200, true));
+        let rt = h.runtime(npc).unwrap();
+        assert_eq!(rt.memory.events.len(), 30);
+        assert_eq!(rt.summarize_failures, 0);
+        assert_eq!(rt.summarize_retry_at, None);
+        assert!(!rt.summarize_pending);
+    }
+
+    #[test]
+    fn summary_acknowledges_captured_ids_not_later_identical_events() {
+        let npc = ObjId(9);
+        let mut h = host();
+        for _ in 0..60 {
+            h.runtime_mut(npc).memory.push(1, "same words");
+        }
+        h.runtime_mut(npc).summarize_pending = true;
+        assert_eq!(h.begin_summarize(npc, 10).len(), 30);
+        let folded = h
+            .runtime(npc)
+            .unwrap()
+            .pending_fold
+            .as_ref()
+            .unwrap()
+            .events
+            .clone();
+        for _ in 0..25 {
+            h.runtime_mut(npc).memory.push(1, "same words");
+        }
+        let expected: Vec<_> = h
+            .runtime(npc)
+            .unwrap()
+            .memory
+            .events
+            .iter()
+            .filter(|event| !folded.iter().any(|old| old.sequence == event.sequence))
+            .cloned()
+            .collect();
+
+        assert!(h.complete_summarize(npc, 10, 100, true));
+        let rt = h.runtime(npc).unwrap();
+        assert_eq!(rt.memory.events, expected);
+        assert_eq!(rt.memory.events.len(), 55);
+        assert!(rt.summarize_pending);
+    }
+
+    #[test]
+    fn stale_or_duplicate_summary_cannot_clear_a_new_call() {
+        let npc = ObjId(9);
+        let mut h = overflowing_host(npc);
+        assert!(!h.complete_summarize(ObjId(99), 1, 0, true));
+        assert!(h.runtime(ObjId(99)).is_none());
+
+        h.begin_summarize(npc, 10);
+        assert!(h.complete_summarize(npc, 10, 100, true));
+        h.enqueue(npc, spoken(2, "continue"), 101);
+        h.begin_turn(npc, 102, 20);
+        let retained = h.runtime(npc).unwrap().memory.events.clone();
+        assert!(!h.complete_summarize(npc, 10, 103, true));
+        assert!(!h.complete_summarize(npc, 21, 104, false));
+        let rt = h.runtime(npc).unwrap();
+        assert!(rt.in_flight);
+        assert_eq!(rt.correlation, Some(20));
+        assert_eq!(rt.memory.events, retained);
+
+        h.finish_turn_if_correlation(npc, 20, 105);
+        h.runtime_mut(npc).summarize_pending = true;
+        h.begin_summarize(npc, 30);
+        assert!(!h.complete_summarize(npc, 10, 106, true));
+        assert_eq!(h.runtime(npc).unwrap().correlation, Some(30));
+        assert!(h.runtime(npc).unwrap().pending_fold.is_some());
+        assert!(h.complete_summarize(npc, 30, 107, false));
+        assert!(!h.complete_summarize(npc, 30, 999, false));
+        assert_eq!(h.runtime(npc).unwrap().summarize_retry_at, Some(30_107));
+    }
+
+    #[test]
+    fn a_second_summary_start_cannot_replace_the_pending_batch() {
+        let npc = ObjId(9);
+        let mut h = overflowing_host(npc);
+        h.begin_summarize(npc, 10);
+        assert!(h.begin_summarize(npc, 11).is_empty());
+        h.finish_turn(npc, 100);
+        assert!(h.begin_summarize(npc, 12).is_empty());
+        assert_eq!(
+            h.runtime(npc)
+                .unwrap()
+                .pending_fold
+                .as_ref()
+                .unwrap()
+                .correlation,
+            10
+        );
+        assert!(h.complete_summarize(npc, 10, 101, true));
+    }
+
+    #[test]
+    fn summary_retries_back_off_and_stop_at_five_minutes() {
+        let npc = ObjId(9);
+        let mut h = overflowing_host(npc);
+        let mut now = 100;
+        for (index, delay) in [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(h.runtime(npc).unwrap().summarize_ready(now));
+            let correlation = index as u64 + 1;
+            assert_eq!(h.begin_summarize(npc, correlation).len(), 30);
+            assert!(h.complete_summarize(npc, correlation, now, false));
+            let rt = h.runtime(npc).unwrap();
+            assert_eq!(rt.memory.events.len(), 60);
+            assert_eq!(rt.summarize_retry_at, Some(now + delay));
+            assert!(!rt.summarize_ready(now + delay - 1));
+            assert!(rt.summarize_ready(now + delay));
+            now += delay;
+        }
+        assert_eq!(h.runtime(npc).unwrap().summarize_failures, 5);
+        h.begin_summarize(npc, 7);
+        assert!(h.complete_summarize(npc, 7, i64::MAX - 1, false));
+        assert_eq!(h.runtime(npc).unwrap().summarize_retry_at, Some(i64::MAX));
+    }
+
+    #[test]
+    fn continuous_chatter_allows_one_dialogue_between_eligible_folds() {
+        let npc = ObjId(9);
+        let mut h = overflowing_host(npc);
+        h.enqueue(npc, spoken(2, "first"), 0);
+        assert!(!h.runtime(npc).unwrap().fold_due(0));
+        h.begin_turn(npc, 1, 1);
+        h.enqueue(npc, spoken(2, "second"), 2);
+        h.finish_turn(npc, 3);
+        assert!(h.runtime(npc).unwrap().fold_due(3));
+
+        h.begin_summarize(npc, 2);
+        assert!(!h.runtime(npc).unwrap().fold_due(4));
+        // Enough new events arrive to leave another fold due, even after this
+        // captured batch is acknowledged and the hard cap evicts some old lines.
+        for n in 0..51 {
+            h.runtime_mut(npc).memory.push(10 + n, format!("new-{n}"));
+        }
+        assert!(h.complete_summarize(npc, 2, 5, true));
+        assert!(h.runtime(npc).unwrap().summarize_ready(5));
+        assert!(!h.runtime(npc).unwrap().fold_due(5));
+        assert_eq!(h.begin_turn(npc, 6, 3), vec![spoken(2, "second")]);
+        h.enqueue(npc, spoken(2, "third"), 7);
+        h.finish_turn(npc, 8);
+        assert!(h.runtime(npc).unwrap().fold_due(8));
+
+        // With no dialogue to serve, a due fold need not wait for a conversation.
+        h.drop_mailbox(npc);
+        h.runtime_mut(npc).dialogue_since_summary = false;
+        assert!(h.runtime(npc).unwrap().fold_due(8));
+    }
+
+    #[test]
+    fn conversation_focus_is_room_scoped_short_lived_and_departure_sensitive() {
+        let mut rt = NpcRuntime::default();
+        let alice = ObjId(1);
+        let bob = ObjId(2);
+        let room = ObjId(10);
+        assert_eq!(rt.focus_for(room, 0), None);
+        rt.note_conversation(alice, room, 1_000);
+        assert_eq!(rt.focus_for(room, 1_000), Some(alice));
+        assert_eq!(rt.focus_for(room, 120_999), Some(alice));
+        assert_eq!(rt.focus_for(room, 121_000), None);
+        assert_eq!(rt.focus_for(ObjId(11), 2_000), None);
+        assert_eq!(rt.focus_for(room, 999), None);
+        rt.clear_conversation(bob);
+        assert_eq!(rt.focus_for(room, 2_000), Some(alice));
+        rt.note_conversation(bob, room, 2_000);
+        rt.clear_conversation(alice);
+        assert_eq!(rt.focus_for(room, 2_001), Some(bob));
+        rt.clear_conversation(bob);
+        assert_eq!(rt.focus_for(room, 2_002), None);
+        rt.note_conversation(alice, room, i64::MIN);
+        assert_eq!(rt.focus_for(room, i64::MAX), None);
     }
 }

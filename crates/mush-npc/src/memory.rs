@@ -1,26 +1,25 @@
 //! NPC memory (design 03 §6.5), three layers cheapest-first:
 //!
-//! 1. [`MemoryBuffer`] — an in-RAM rolling buffer of recent room events, token-
-//!    capped and lost on restart (acceptable).
+//! 1. [`MemoryBuffer`] — an in-RAM rolling buffer of recent room events, byte-
+//!    bounded and lost on restart (acceptable).
 //! 2. A persisted conversation summary (attribute
 //!    [`SUMMARY_ATTR`](crate::profile::SUMMARY_ATTR)) — when the buffer
 //!    overflows, an `NpcSummarize` turn folds the oldest half into it.
 //! 3. [`MemoryRecord`]s — durable, subject-keyed facts persisted as
-//!    `mem:{npc}:{subject}` module documents, written by the `remember` tool
-//!    and the summarizer.
+//!    `mem:{npc}:{subject}` module documents, written by the `remember` tool.
 //!
 //! Recall v1 is deliberately dumb ([`LongTermStore::recall`]): fetch records whose subject
 //! matches a present player's name, newest-first. Embedding recall is a
 //! documented M10 seam behind the [`MemoryRecall`] trait — **not built here**.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 /// How many recent events the rolling buffer keeps before it overflows and a
-/// summarize turn is triggered (design 03 §6.5: ~50, token-capped).
+/// summarize turn is triggered (design 03 §6.5: ~50).
 pub const BUFFER_CAP: usize = 50;
 
 /// Maximum characters retained from one script-formatted recent event. The
@@ -51,13 +50,126 @@ pub const MAX_MEMORY_RECORD_BYTES: usize = 128 * 1024;
 /// Maximum memory records returned by one built-in recall request.
 pub const MAX_MEMORY_RECALL_RECORDS: usize = 32;
 
-/// One line in the rolling buffer — a script-formatted room event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The conversational role of a recent event, independent of its rendered text.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    /// Background room activity, including legacy unclassified events.
+    #[default]
+    Ambient,
+    /// Speech or an emote observed in the room.
+    Speech,
+    /// Speech addressed to this NPC.
+    DirectedSpeech,
+    /// This NPC's own public speech or emote.
+    SelfSpeech,
+    /// An action outcome or a privacy-safe acknowledgement.
+    Outcome,
+}
+
+impl MemoryKind {
+    fn retention_priority(self) -> u8 {
+        match self {
+            Self::Ambient => 0,
+            Self::Speech => 1,
+            Self::DirectedSpeech | Self::SelfSpeech | Self::Outcome => 2,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ambient => "room event",
+            Self::Speech => "speech",
+            Self::DirectedSpeech => "to you",
+            Self::SelfSpeech => "your speech",
+            Self::Outcome => "outcome",
+        }
+    }
+}
+
+/// Identity and conversational context retained alongside a formatted event.
+/// IDs guide selection only; transcript rendering uses the names in the text.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoryContext {
+    /// Who spoke or acted, when known.
+    pub speaker: Option<ObjId>,
+    /// Where the event was observed.
+    pub room: Option<ObjId>,
+    /// The intended conversational partner, when known.
+    pub addressee: Option<ObjId>,
+    /// How the event participates in the conversation.
+    pub kind: MemoryKind,
+}
+
+/// One line in the rolling buffer — a script-formatted, observed event.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEvent {
     /// IC/wall timestamp (unix seconds).
     pub ts: i64,
     /// The formatted line, e.g. `Alice says, "…"` or `Bob arrives.`.
     pub text: String,
+    /// Monotonic identity within this buffer. Zero marks a legacy event until
+    /// the buffer normalizes it before issuing a fold candidate.
+    #[serde(default)]
+    pub sequence: u64,
+    /// Who spoke or acted, when known.
+    #[serde(default)]
+    pub speaker: Option<ObjId>,
+    /// Where the event was observed.
+    #[serde(default)]
+    pub room: Option<ObjId>,
+    /// The intended conversational partner, when known.
+    #[serde(default)]
+    pub addressee: Option<ObjId>,
+    /// How the event participates in the conversation.
+    #[serde(default)]
+    pub kind: MemoryKind,
+}
+
+impl MemoryEvent {
+    /// Render the observation time and kind without exposing internal object IDs.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("[{}; {}] {}", self.ts, self.kind.label(), self.text)
+    }
+
+    fn selection_priority(&self, focus: Option<ObjId>) -> u8 {
+        if self.kind != MemoryKind::Ambient
+            && focus.is_some_and(|who| self.speaker == Some(who) || self.addressee == Some(who))
+        {
+            3
+        } else {
+            self.kind.retention_priority()
+        }
+    }
+
+    fn render_bounded(&self, max_bytes: usize) -> Option<String> {
+        let prefix = format!("[{}; {}] ", self.ts, self.kind.label());
+        let available = max_bytes.checked_sub(prefix.len())?;
+        let first = self.text.chars().next()?;
+        if available < first.len_utf8() {
+            return None;
+        }
+        let mut rendered = prefix;
+        if self.text.len() <= available {
+            rendered.push_str(&self.text);
+        } else {
+            // Keep at least one complete character. Mark truncation only when
+            // its marker also fits; even tiny budgets remain a strict byte cap.
+            let ellipsis = "…";
+            let mark = available >= first.len_utf8() + ellipsis.len();
+            let limit = available - if mark { ellipsis.len() } else { 0 };
+            let mut boundary = limit.min(self.text.len());
+            while !self.text.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            rendered.push_str(&self.text[..boundary]);
+            if mark {
+                rendered.push_str(ellipsis);
+            }
+        }
+        Some(rendered)
+    }
 }
 
 /// The per-NPC rolling event buffer (design 03 §6.5 layer 1). In-RAM only;
@@ -68,38 +180,86 @@ pub struct MemoryBuffer {
     pub summary: String,
     /// Recent events, oldest first.
     pub events: Vec<MemoryEvent>,
+    /// Next unused event identity; defaults to zero in legacy serialized buffers
+    /// and is advanced past all existing identities before allocating one.
+    #[serde(default)]
+    pub next_sequence: u64,
 }
 
-/// Hard ceiling on retained events, regardless of summarize cadence. Under
-/// sustained sub-tick chatter the mailbox can refill before each tick, starving
-/// the summarize path that normally drains the buffer; this bounds RAM anyway by
-/// dropping the oldest lines beyond the cap (they would have been folded into the
-/// summary at the next lull). Set well above [`BUFFER_CAP`] so normal folding is
-/// unaffected.
+/// Hard ceiling on retained events, regardless of summarize cadence. A slow or
+/// repeatedly failing summary can leave incoming events unconsolidated; bound RAM by
+/// dropping lower-priority activity first, oldest within each priority. Set well
+/// above [`BUFFER_CAP`] so normal folding is unaffected.
 pub const HARD_CAP: usize = BUFFER_CAP * 2;
 
 impl MemoryBuffer {
-    /// Append an event, enforcing the hard RAM cap (oldest dropped past
-    /// `HARD_CAP`) and the aggregate byte ceiling.
+    /// Append an unclassified event, preserving the legacy caller API.
     pub fn push(&mut self, ts: i64, text: impl Into<String>) {
+        self.push_event(ts, text, MemoryContext::default());
+    }
+
+    /// Append a structured event, enforcing the count and aggregate byte bounds.
+    /// Background activity is evicted before directed speech, replies or outcomes.
+    pub fn push_event(&mut self, ts: i64, text: impl Into<String>, context: MemoryContext) {
         let text = crate::action::sanitize_line(&text.into(), MAX_MEMORY_EVENT_CHARS);
-        if text.is_empty() {
+        if text.is_empty() || !self.normalize_sequences() {
             return;
         }
-        self.events.push(MemoryEvent { ts, text });
-        if self.events.len() > HARD_CAP {
-            let overflow = self.events.len() - HARD_CAP;
-            self.events.drain(..overflow);
+        let Some(next) = self.next_sequence.checked_add(1) else {
+            return;
+        };
+        self.events.push(MemoryEvent {
+            ts,
+            text,
+            sequence: self.next_sequence,
+            speaker: context.speaker,
+            room: context.room,
+            addressee: context.addressee,
+            kind: context.kind,
+        });
+        self.next_sequence = next;
+        let mut bytes: usize = self.events.iter().map(|event| event.text.len()).sum();
+        while self.events.len() > HARD_CAP || bytes > MAX_MEMORY_BUFFER_BYTES {
+            let Some(victim) = self
+                .events
+                .iter()
+                .enumerate()
+                .min_by_key(|(index, event)| (event.kind.retention_priority(), *index))
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+            bytes -= self.events.remove(victim).text.len();
         }
-        while self
+    }
+
+    /// Give legacy and duplicate IDs fresh identities without reusing an issued
+    /// sequence. Exhaustion refuses new work rather than risking a stale fold
+    /// acknowledgement deleting a newer event.
+    fn normalize_sequences(&mut self) -> bool {
+        let highest = self
             .events
             .iter()
-            .map(|event| event.text.len())
-            .sum::<usize>()
-            > MAX_MEMORY_BUFFER_BYTES
-        {
-            self.events.remove(0);
+            .map(|event| event.sequence)
+            .max()
+            .unwrap_or(0);
+        let Some(after_highest) = highest.checked_add(1) else {
+            return false;
+        };
+        self.next_sequence = self.next_sequence.max(after_highest);
+        let mut seen = HashSet::with_capacity(self.events.len());
+        for event in &mut self.events {
+            if event.sequence != 0 && seen.insert(event.sequence) {
+                continue;
+            }
+            let Some(next) = self.next_sequence.checked_add(1) else {
+                return false;
+            };
+            event.sequence = self.next_sequence;
+            self.next_sequence = next;
+            seen.insert(event.sequence);
         }
+        true
     }
 
     /// Whether the buffer has grown past [`BUFFER_CAP`] and should be folded.
@@ -115,22 +275,69 @@ impl MemoryBuffer {
         self.events.drain(..half).collect()
     }
 
-    /// Render the recent transcript, newest-last, capped to `max_chars`
-    /// (design 03 §6.3 item 7). Older lines are dropped first.
+    /// Snapshot the oldest half without consuming it. A failed fold can retry
+    /// while later events continue arriving in the bounded live buffer.
     #[must_use]
-    pub fn transcript(&self, max_chars: usize) -> String {
-        let mut chosen: Vec<&str> = Vec::new();
-        let mut total = 0usize;
-        for ev in self.events.iter().rev() {
-            let len = ev.text.len() + 1;
-            if total + len > max_chars && !chosen.is_empty() {
-                break;
-            }
-            total += len;
-            chosen.push(ev.text.as_str());
+    pub fn fold_candidate(&mut self) -> Vec<MemoryEvent> {
+        if !self.normalize_sequences() {
+            return Vec::new();
         }
-        chosen.reverse();
-        chosen.join("\n")
+        self.events
+            .iter()
+            .take(self.events.len() / 2)
+            .cloned()
+            .collect()
+    }
+
+    /// Retire only the exact event identities represented by a successful fold.
+    /// Already-evicted events and repeated acknowledgements are harmless; new
+    /// arrivals cannot be removed even when their time and text match the batch.
+    pub fn acknowledge_fold(&mut self, batch: &[MemoryEvent]) {
+        let acknowledged: HashSet<u64> = batch
+            .iter()
+            .map(|event| event.sequence)
+            .filter(|sequence| *sequence != 0)
+            .collect();
+        self.events
+            .retain(|event| !acknowledged.contains(&event.sequence));
+    }
+
+    /// Render meaningful conversation before ambient activity, strictly capped
+    /// to UTF-8 bytes including timestamp/kind labels and newline separators.
+    #[must_use]
+    pub fn transcript(&self, max_bytes: usize) -> String {
+        self.transcript_for(max_bytes, None)
+    }
+
+    /// Prefer speech involving the active conversational partner, then directed
+    /// speech, own replies and outcomes, then other speech and background events.
+    /// Select newest first within each tier, but render the selected lines in
+    /// their original chronological order. Internal object IDs are never rendered.
+    #[must_use]
+    pub fn transcript_for(&self, max_bytes: usize, focus: Option<ObjId>) -> String {
+        let mut candidates: Vec<_> = self.events.iter().enumerate().collect();
+        candidates.sort_by_key(|(index, event)| {
+            (
+                std::cmp::Reverse(event.selection_priority(focus)),
+                std::cmp::Reverse(*index),
+            )
+        });
+        let mut chosen = Vec::new();
+        let mut total = 0usize;
+        for (index, event) in candidates {
+            let separator = usize::from(!chosen.is_empty());
+            let remaining = max_bytes.saturating_sub(total).saturating_sub(separator);
+            if let Some(line) = event.render_bounded(remaining) {
+                total += separator + line.len();
+                chosen.push((index, line));
+            }
+        }
+        chosen.sort_by_key(|(index, _)| *index);
+        chosen
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -434,10 +641,262 @@ mod tests {
         for i in 0..10 {
             b.push(i, format!("line{i}"));
         }
-        let t = b.transcript(20);
+        let t = b.transcript(30);
         // Keeps the newest and drops the oldest.
         assert!(t.contains("line9"));
         assert!(!t.contains("line0"));
+    }
+
+    #[test]
+    fn transcript_respects_every_tiny_utf8_byte_budget() {
+        let mut buffer = MemoryBuffer::default();
+        buffer.push_event(
+            17,
+            "界🙂é".repeat(MAX_MEMORY_EVENT_CHARS),
+            MemoryContext {
+                speaker: Some(ObjId(991_337)),
+                room: Some(ObjId(991_338)),
+                addressee: Some(ObjId(991_339)),
+                kind: MemoryKind::SelfSpeech,
+            },
+        );
+        for budget in 0..160 {
+            let transcript = buffer.transcript_for(budget, Some(ObjId(991_339)));
+            assert!(transcript.len() <= budget, "{budget}: {transcript:?}");
+            assert!(!transcript.contains("99133"), "IDs stay out of the prompt");
+            if !transcript.is_empty() {
+                assert!(transcript.starts_with("[17; your speech] 界"));
+            }
+        }
+        let full = buffer.events[0].render();
+        assert_eq!(buffer.transcript(full.len()), full);
+        assert_eq!(buffer.transcript(0), "");
+
+        buffer.push(18, "A brief room event.");
+        let complete: Vec<_> = buffer.events.iter().map(MemoryEvent::render).collect();
+        let joined = complete.join("\n");
+        assert_eq!(buffer.transcript(joined.len()), joined);
+        assert!(buffer.transcript(joined.len() - 1).len() < joined.len());
+    }
+
+    #[test]
+    fn ambient_flood_preserves_the_directed_exchange_and_renders_it_in_order() {
+        let mut buffer = MemoryBuffer::default();
+        let alice = ObjId(70);
+        let npc = ObjId(80);
+        buffer.push_event(
+            1,
+            "Alice says, \"Will you keep the parcel?\"",
+            MemoryContext {
+                speaker: Some(alice),
+                addressee: Some(npc),
+                kind: MemoryKind::DirectedSpeech,
+                ..MemoryContext::default()
+            },
+        );
+        buffer.push_event(
+            2,
+            "Bartender says, \"Until tomorrow.\"",
+            MemoryContext {
+                speaker: Some(npc),
+                addressee: Some(alice),
+                kind: MemoryKind::SelfSpeech,
+                ..MemoryContext::default()
+            },
+        );
+        let expected = buffer
+            .events
+            .iter()
+            .map(MemoryEvent::render)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for index in 0..HARD_CAP * 3 {
+            buffer.push(index as i64 + 3, format!("Bystander {index} arrives."));
+        }
+        assert_eq!(buffer.events.len(), HARD_CAP);
+        assert_eq!(buffer.events[0].kind, MemoryKind::DirectedSpeech);
+        assert_eq!(buffer.events[1].kind, MemoryKind::SelfSpeech);
+        assert_eq!(buffer.transcript_for(expected.len(), Some(alice)), expected);
+        assert_eq!(buffer.transcript(expected.len()), expected);
+        assert!(
+            buffer
+                .events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+    }
+
+    #[test]
+    fn focus_prefers_the_active_speaker_over_newer_unrelated_speech() {
+        let mut buffer = MemoryBuffer::default();
+        let alice = ObjId(70);
+        buffer.push_event(
+            10,
+            "Alice says, \"The blue parcel.\"",
+            MemoryContext {
+                speaker: Some(alice),
+                kind: MemoryKind::Speech,
+                ..MemoryContext::default()
+            },
+        );
+        let expected = buffer.events[0].render();
+        buffer.push_event(
+            11,
+            "Bob asks about the weather.",
+            MemoryContext {
+                speaker: Some(ObjId(90)),
+                kind: MemoryKind::DirectedSpeech,
+                ..MemoryContext::default()
+            },
+        );
+        assert_eq!(buffer.transcript_for(expected.len(), Some(alice)), expected);
+        assert!(buffer.transcript(expected.len()).contains("Bob"));
+    }
+
+    #[test]
+    fn meaningful_events_still_obey_count_and_byte_limits() {
+        let mut buffer = MemoryBuffer::default();
+        let context = MemoryContext {
+            kind: MemoryKind::Outcome,
+            ..MemoryContext::default()
+        };
+        for index in 0..HARD_CAP + 20 {
+            buffer.push_event(index as i64, format!("result {index}"), context);
+        }
+        assert_eq!(buffer.events.len(), HARD_CAP);
+        assert_eq!(buffer.events[0].text, "result 20");
+        let large = "🙂".repeat(MAX_MEMORY_EVENT_CHARS);
+        for index in 0..HARD_CAP {
+            buffer.push_event(index as i64, &large, context);
+        }
+        assert!(
+            buffer.events.len() < HARD_CAP,
+            "the byte ceiling also evicts"
+        );
+        assert!(
+            buffer
+                .events
+                .iter()
+                .map(|event| event.text.len())
+                .sum::<usize>()
+                <= MAX_MEMORY_BUFFER_BYTES
+        );
+        let sequences: HashSet<_> = buffer.events.iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences.len(), buffer.events.len());
+    }
+
+    #[test]
+    fn fold_acknowledgement_preserves_identical_interleaved_arrivals() {
+        let mut buffer = MemoryBuffer::default();
+        for index in 0..4 {
+            buffer.push(index, format!("line {index}"));
+        }
+        let before = buffer.events.clone();
+        let batch = buffer.fold_candidate();
+        assert_eq!(batch, before[..2]);
+        assert_eq!(
+            buffer.events, before,
+            "snapshotting does not consume events"
+        );
+        buffer.push(batch[0].ts, batch[0].text.clone());
+        let arrival = buffer.events.last().unwrap().clone();
+        assert!(arrival.sequence > batch[0].sequence);
+        buffer.acknowledge_fold(&batch);
+        assert_eq!(buffer.events.len(), 3);
+        assert!(buffer.events.contains(&arrival));
+        assert!(!buffer.events.contains(&batch[0]));
+        let after = buffer.events.clone();
+        buffer.acknowledge_fold(&batch);
+        assert_eq!(buffer.events, after, "acknowledgement is idempotent");
+    }
+
+    #[test]
+    fn fold_acknowledgement_tolerates_emergency_eviction_without_deleting_new_events() {
+        let mut buffer = MemoryBuffer::default();
+        for index in 0..HARD_CAP {
+            buffer.push(index as i64, format!("line {index}"));
+        }
+        let batch = buffer.fold_candidate();
+        let watermark = buffer.next_sequence;
+        for index in 0..20 {
+            buffer.push(index, format!("new {index}"));
+        }
+        assert!(
+            !buffer.events.contains(&batch[0]),
+            "some folded candidates were evicted"
+        );
+        let arrivals: Vec<_> = buffer
+            .events
+            .iter()
+            .filter(|event| event.sequence >= watermark)
+            .cloned()
+            .collect();
+        buffer.acknowledge_fold(&batch);
+        assert_eq!(arrivals.len(), 20);
+        assert!(arrivals.iter().all(|event| buffer.events.contains(event)));
+        assert!(batch.iter().all(|event| !buffer.events.contains(event)));
+        assert_eq!(buffer.events.len(), HARD_CAP / 2 + arrivals.len());
+    }
+
+    #[test]
+    fn legacy_serialized_events_get_stable_fold_identities() {
+        let old = serde_json::json!({
+            "summary": "Earlier tonight.",
+            "events": [
+                {"ts": 1, "text": "Alice arrives."},
+                {"ts": 2, "text": "Alice says hello."},
+                {"ts": 3, "text": "Bartender replies."},
+                {"ts": 4, "text": "A door opens."}
+            ]
+        });
+        let mut buffer: MemoryBuffer = serde_json::from_value(old).unwrap();
+        assert_eq!(buffer.next_sequence, 0);
+        assert!(buffer.events.iter().all(|event| event.sequence == 0
+            && event.kind == MemoryKind::Ambient
+            && event.speaker.is_none()
+            && event.room.is_none()
+            && event.addressee.is_none()));
+        let unissued = buffer.events.clone();
+        buffer.acknowledge_fold(&unissued);
+        assert_eq!(
+            buffer.events.len(),
+            4,
+            "legacy zero is not an issued identity"
+        );
+        let batch = buffer.fold_candidate();
+        assert_eq!(
+            batch.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            buffer.fold_candidate(),
+            batch,
+            "retry retains the identities"
+        );
+        let encoded = serde_json::to_vec(&buffer).unwrap();
+        let mut decoded: MemoryBuffer = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, buffer);
+        decoded.push(5, "Another arrival.");
+        decoded.acknowledge_fold(&batch);
+        assert_eq!(
+            decoded
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn exhausted_sequence_never_reuses_an_issued_fold_identity() {
+        let mut buffer = MemoryBuffer::default();
+        buffer.push(1, "Old line.");
+        buffer.next_sequence = u64::MAX;
+        let before = buffer.events.clone();
+        buffer.push(2, "Must not reuse the old identity.");
+        assert_eq!(buffer.events, before);
+        assert_eq!(buffer.next_sequence, u64::MAX);
     }
 
     #[test]
