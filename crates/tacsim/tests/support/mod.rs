@@ -2596,8 +2596,9 @@ pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
 }
 
 /// Historical/operator-edited lanes do not satisfy the full star's exact lane
-/// digest. Keep their old Luna-Ceres seed while testing the lane's own upgrade
-/// and refusal paths; full-star migration is covered by production relay stories.
+/// version. Keep their old Luna-Ceres seed and its published Ceres dependency while
+/// testing the lane's own upgrade and refusal paths; full-star migration is covered
+/// by production relay stories.
 pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack> {
     assert_eq!(
         lane.manifest().id().as_str(),
@@ -2609,6 +2610,23 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         .find(|p| p.manifest().id() == lane.manifest().id())
         .expect("lane in boot order");
     *slot = lane;
+    let ceres = packs
+        .iter_mut()
+        .find(|p| p.manifest().id().as_str() == tacsim::definitions::content::CERES_PACK)
+        .expect("Ceres in boot order");
+    let mut old_ceres: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::CERES_JSON).expect("Ceres JSON");
+    old_ceres["manifest"]["version"] = 2.into();
+    old_ceres["manifest"]["digest"] = ground::UNSIGNED.into();
+    old_ceres["entries"]["npc.oduya"]["def"]["profile"] =
+        serde_json::from_str(include_str!("oduya_v2_profile.json"))
+            .expect("published Oduya profile");
+    *ceres = mush_content::load_pack(&ground::sign(&old_ceres.to_string()))
+        .expect("published Ceres verifies");
+    assert_eq!(
+        ceres.manifest().digest().to_hex(),
+        "641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538"
+    );
     let relay = packs
         .iter_mut()
         .find(|p| p.manifest().id().as_str() == "tacsim.relay.luna_ceres")

@@ -790,6 +790,10 @@ impl GameModule for TacsimRuleset {
             "R8 relay market boot uses the transport owner's checked install API",
         )?;
         commands::register(reg)?;
+        reg.interface_provider(
+            port::interface::COOP_INTERFACE,
+            std::sync::Arc::new(port::interface::CoopInterface),
+        )?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
         // Doc 20 cut SM.4b (§10, D-20-13): the `site.map` panel feed and its query.

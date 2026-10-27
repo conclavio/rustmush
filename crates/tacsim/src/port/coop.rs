@@ -1026,16 +1026,7 @@ fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
 ///
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let enabled = ctx
-        .w
-        .module_state::<TacsimStore>()
-        .is_some_and(TacsimStore::enabled);
-    if !enabled {
-        return Err(CmdError::msg(NOT_ENABLED));
-    }
-    if programme_port(ctx.w).is_none() {
-        return Err(CmdError::msg(NOT_OPEN_HERE));
-    }
+    require_open(ctx)?;
     if ctx.switches.has("enrol") {
         enrol(ctx)
     } else if ctx.switches.has("statement") {
@@ -1052,9 +1043,33 @@ pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
+/// The command and interface share the same availability boundary.
+fn require_open(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+    let enabled = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(TacsimStore::enabled);
+    if !enabled {
+        return Err(CmdError::msg(NOT_ENABLED));
+    }
+    if programme_port(ctx.w).is_none() {
+        return Err(CmdError::msg(NOT_OPEN_HERE));
+    }
+    Ok(())
+}
+
 /// `+coop`: the registrar's line, the terms, the free hulls and the charter
 /// line, the live lease first (D-18-23; L21).
 fn terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    for line in terms_lines(ctx)? {
+        say(ctx, line);
+    }
+    Ok(())
+}
+
+/// Read the asker's programme terms without emitting output or changing state.
+pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
+    require_open(ctx)?;
     let actor = ctx.actor;
     let (lines, warn_lease, books_dark) = {
         let Some(port) = programme_port(ctx.w) else {
@@ -1101,9 +1116,18 @@ fn terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             None => match account_books(ctx.w, actor, enrolment.as_ref()) {
                 Books::Present(e) if e.pilot != actor => ENROLLED_ONCE.to_owned(),
                 // Cut IC13: a graduate, and a buyout being entered.
-                Books::Present(e) if e.status == EnrolmentStatus::Graduated => GRADUATED_LINE
-                    .replace("{name}", &e.name)
-                    .replace("{mark}", &e.mark),
+                Books::Present(e) if e.status == EnrolmentStatus::Graduated => {
+                    if titled_to(ctx.w, e.hull, &PrincipalId::Object(actor)) {
+                        GRADUATED_LINE
+                            .replace("{name}", &e.name)
+                            .replace("{mark}", &e.mark)
+                    } else {
+                        format!(
+                            "Your charter of the {} ({}) was bought out; the Co-op's lay has ended.",
+                            e.name, e.mark
+                        )
+                    }
+                }
                 Books::Present(e) if e.status == EnrolmentStatus::BuyoutPending => {
                     BUYOUT_PENDING_LINE
                         .replace("{name}", &e.name)
@@ -1139,14 +1163,20 @@ fn terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
              tacsim:coop: document"
         );
     }
-    for line in lines {
+    Ok(lines)
+}
+
+/// `+coop/statement`: the frozen terms, the counters and the cash.
+fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    for line in statement_lines(ctx)? {
         say(ctx, line);
     }
     Ok(())
 }
 
-/// `+coop/statement`: the frozen terms, the counters and the cash.
-fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// Read the asker's frozen terms, counters and available cash.
+pub(crate) fn statement_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
+    require_open(ctx)?;
     let actor = ctx.actor;
     let Some(e) = own_enrolment(ctx.w, actor) else {
         if let Some(charter) = live_charter(ctx.w, actor) {
@@ -1176,8 +1206,11 @@ fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let charter = if in_force {
         "Charter: in force."
     } else if e.status == EnrolmentStatus::Graduated {
-        // Cut IC13.
-        "Charter: bought out; the hull is yours."
+        if titled_to(ctx.w, e.hull, &PrincipalId::Object(actor)) {
+            "Charter: bought out; the hull is yours."
+        } else {
+            "Charter: bought out."
+        }
     } else if e.status == EnrolmentStatus::BuyoutPending {
         "Charter: buyout being entered."
     } else if e.status == EnrolmentStatus::Revoked {
@@ -1185,7 +1218,7 @@ fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         "Charter: not in force."
     };
-    let lines = [
+    Ok(vec![
         format!(
             "Statement: the {} ({}), First Captain programme.",
             e.name, e.mark
@@ -1200,11 +1233,7 @@ fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ),
         cash,
         format!("  {charter}"),
-    ];
-    for line in lines {
-        say(ctx, line);
-    }
-    Ok(())
+    ])
 }
 
 /// Everything `+coop/enrol` resolved before its first write (step 9).

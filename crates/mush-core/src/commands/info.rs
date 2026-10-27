@@ -221,6 +221,59 @@ fn spec_visible_to(w: &World, viewer: ObjId, role: Role, spec: &CommandSpec) -> 
             .is_none_or(|p| perm::has_privilege(w, viewer, p))
 }
 
+/// One help entry as the viewer's own `help <name>` command reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelpEntry {
+    /// The topic title or command name, aliases and switches.
+    pub header: String,
+    /// The registered help text, without paraphrasing.
+    pub body: String,
+    /// The canonical command name; prose topics have no command.
+    pub command: Option<SmolStr>,
+    /// Public prose, or a command without role, power, privilege or lock gates.
+    /// This describes its help, not permission to execute a particular action.
+    pub publicly_visible: bool,
+}
+
+/// Resolve an exact command name or alias before a public prose topic. Commands
+/// hidden from the viewer behave exactly like unknown commands; a public topic
+/// of the same name remains readable. Target locks and runtime command gates are
+/// not evaluated, matching the command listing's visibility rules.
+#[must_use]
+pub fn help_entry(reg: &Registry, w: &World, viewer: ObjId, name: &str) -> Option<HelpEntry> {
+    let name = name.trim();
+    let role = perm::role_of(w, viewer);
+    let Some(spec) = reg
+        .spec_of(name)
+        .filter(|spec| spec_visible_to(w, viewer, role, spec))
+    else {
+        return reg.help_topic(name).map(|topic| HelpEntry {
+            header: topic.title.clone(),
+            body: topic.body.clone(),
+            command: None,
+            publicly_visible: true,
+        });
+    };
+    let mut header = spec.name.to_string();
+    if !spec.aliases.is_empty() {
+        let aliases: Vec<&str> = spec.aliases.iter().map(SmolStr::as_str).collect();
+        header.push_str(&format!("  (aliases: {})", aliases.join(", ")));
+    }
+    if !spec.switches.is_empty() {
+        let switches: Vec<&str> = spec.switches.iter().map(SmolStr::as_str).collect();
+        header.push_str(&format!("  [switches: /{}]", switches.join(" /")));
+    }
+    Some(HelpEntry {
+        header,
+        body: spec.help.clone(),
+        command: Some(spec.name.clone()),
+        publicly_visible: spec.min_role == Role::Player
+            && spec.power.is_none()
+            && spec.privilege.is_none()
+            && spec.lock.is_none(),
+    })
+}
+
 /// The command table as `viewer` may use it: every registered command whose
 /// role and power gates the viewer passes (locks are per-target and are not
 /// evaluated), sorted by name, each with its usage and summary. Staff-gated
@@ -420,39 +473,11 @@ fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         return Ok(());
     }
-    // Precedence: an exact command-name (or alias) match always wins over a
-    // prose topic of the same name; topics fill in everything else. A verb
-    // the actor could not dispatch is treated as if it were not registered
-    // at all — otherwise the refusal itself is an existence oracle over the
-    // staff surface the listing above just withheld.
-    let Some(spec) = ctx
-        .reg
-        .spec_of(&topic)
-        .filter(|s| spec_visible_to(ctx.w, ctx.actor, role, s))
-    else {
-        if let Some(t) = ctx.reg.help_topic(&topic) {
-            let (title, body) = (t.title.clone(), t.body.clone());
-            ctx.out.info(ctx.actor, title);
-            ctx.out.info(ctx.actor, body);
-            return Ok(());
-        }
+    let Some(entry) = help_entry(ctx.reg, ctx.w, ctx.actor, &topic) else {
         return Err(CmdError::msg(format!("No help available for \"{topic}\".")));
     };
-    let mut header = spec.name.to_string();
-    if !spec.aliases.is_empty() {
-        let aliases: Vec<&str> = spec.aliases.iter().map(smol_str::SmolStr::as_str).collect();
-        header.push_str(&format!("  (aliases: {})", aliases.join(", ")));
-    }
-    if !spec.switches.is_empty() {
-        let switches: Vec<&str> = spec
-            .switches
-            .iter()
-            .map(smol_str::SmolStr::as_str)
-            .collect();
-        header.push_str(&format!("  [switches: /{}]", switches.join(" /")));
-    }
-    ctx.out.info(ctx.actor, header);
-    ctx.out.info(ctx.actor, spec.help.clone());
+    ctx.out.info(ctx.actor, entry.header);
+    ctx.out.info(ctx.actor, entry.body);
     Ok(())
 }
 
@@ -692,5 +717,115 @@ mod tests {
             "{:?}",
             lines(&out, nick)
         );
+    }
+
+    #[test]
+    fn shared_help_resolves_aliases_before_topics_and_matches_the_command() {
+        let (mut w, mut reg, nick) = setup();
+        reg.register(
+            crate::CommandSpec {
+                name: "+guide".into(),
+                aliases: vec!["+g".into()],
+                switches: vec!["show".into(), "preview".into()],
+                help: "+guide/show reads; +guide/preview commits nothing.".into(),
+                ..crate::CommandSpec::default()
+            },
+            std::sync::Arc::new(|_ctx: &mut crate::Ctx<'_>| Ok(())),
+        )
+        .unwrap();
+        reg.add_help_topic("+g", "Public topic", "The command wins.");
+        let entry = super::help_entry(&reg, &w, nick, " +G ").unwrap();
+        assert_eq!(entry.command.as_deref(), Some("+guide"));
+        assert_eq!(
+            entry.header,
+            "+guide  (aliases: +g)  [switches: /show /preview]"
+        );
+        assert!(entry.publicly_visible);
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "help +G", &mut out, DETACHED);
+        assert_eq!(lines(&out, nick), vec![entry.header, entry.body]);
+    }
+
+    #[test]
+    fn shared_help_hides_role_power_and_privilege_commands_without_an_oracle() {
+        let (mut w, mut reg, nick) = setup();
+        let specs = [
+            crate::CommandSpec {
+                name: "+staff-guide".into(),
+                min_role: crate::Role::Wizard,
+                ..crate::CommandSpec::default()
+            },
+            crate::CommandSpec {
+                name: "+power-guide".into(),
+                power: Some(crate::Powers::SIM_ADMIN),
+                ..crate::CommandSpec::default()
+            },
+            crate::CommandSpec {
+                name: "+privilege-guide".into(),
+                privilege: Some(crate::Privileges::DISCORD_IDENTITY),
+                ..crate::CommandSpec::default()
+            },
+        ];
+        for spec in specs {
+            reg.register(
+                spec,
+                std::sync::Arc::new(|_ctx: &mut crate::Ctx<'_>| Ok(())),
+            )
+            .unwrap();
+        }
+        for name in [
+            "+staff-guide",
+            "+power-guide",
+            "+privilege-guide",
+            "+unknown",
+        ] {
+            assert_eq!(super::help_entry(&reg, &w, nick, name), None);
+        }
+        assert!(
+            !super::help_entry(&reg, &w, GOD, "+staff-guide")
+                .unwrap()
+                .publicly_visible
+        );
+        w.get_mut(nick).unwrap().powers = crate::Powers::SIM_ADMIN;
+        w.get_mut(nick).unwrap().privileges = crate::Privileges::DISCORD_IDENTITY;
+        for name in ["+power-guide", "+privilege-guide"] {
+            assert!(
+                !super::help_entry(&reg, &w, nick, name)
+                    .unwrap()
+                    .publicly_visible
+            );
+        }
+        reg.add_help_topic(
+            "+staff-guide",
+            "Public explanation",
+            "Anyone can read this topic.",
+        );
+        let public = super::help_entry(&reg, &w, nick, "+staff-guide").unwrap();
+        assert_eq!(public.command, None);
+        assert_eq!(public.body, "Anyone can read this topic.");
+        assert!(public.publicly_visible);
+        assert!(
+            super::help_entry(&reg, &w, GOD, "+staff-guide")
+                .unwrap()
+                .command
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn locked_command_help_remains_readable_but_is_not_public_guidance() {
+        let (w, mut reg, nick) = setup();
+        reg.register(
+            crate::CommandSpec {
+                name: "+locked-guide".into(),
+                lock: Some(crate::lock::LockExpr::Is(GOD)),
+                ..crate::CommandSpec::default()
+            },
+            std::sync::Arc::new(|_ctx: &mut crate::Ctx<'_>| Ok(())),
+        )
+        .unwrap();
+        let entry = super::help_entry(&reg, &w, nick, "+locked-guide").unwrap();
+        assert_eq!(entry.command.as_deref(), Some("+locked-guide"));
+        assert!(!entry.publicly_visible);
     }
 }

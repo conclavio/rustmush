@@ -62,6 +62,8 @@ pub enum AgentProfileValidationError {
     TooManyInterfaces,
     /// An empty or over-long provider id.
     InterfaceTooLarge,
+    TooManyCommandRefs,
+    InvalidCommandRef,
     PersonaTooLarge,
     BackgroundTooLarge,
     SpeechTooLarge,
@@ -81,6 +83,8 @@ impl fmt::Display for AgentProfileValidationError {
         formatter.write_str(match self {
             AgentProfileValidationError::TooManyInterfaces => "too many interfaces",
             AgentProfileValidationError::InterfaceTooLarge => "an interface id is 1 to 32 bytes",
+            Self::TooManyCommandRefs => "too many command references",
+            Self::InvalidCommandRef => "command references must be lowercase command names of 1 to 64 bytes, without switches or arguments",
             Self::PersonaTooLarge => "agent persona exceeds its byte limit",
             Self::BackgroundTooLarge => "agent background exceeds its byte limit",
             Self::SpeechTooLarge => "agent speech style exceeds its byte limit",
@@ -208,6 +212,11 @@ pub struct AgentProfile {
     /// `travel`, `request`, `help`). Every ability runs as the asker.
     #[serde(default)]
     pub interfaces: Vec<SmolStr>,
+    /// Registered command names this NPC can explain as part of its job.
+    /// References grant no tools or authority; their help is projected using
+    /// the current asker's own command visibility before each turn.
+    #[serde(default)]
+    pub command_refs: Vec<SmolStr>,
 }
 
 /// The most providers one NPC fronts.
@@ -215,6 +224,11 @@ pub const MAX_PROFILE_INTERFACES: usize = 8;
 
 /// The longest provider id.
 pub const MAX_PROFILE_INTERFACE_BYTES: usize = 32;
+
+/// Maximum commands named in one NPC's service guidance.
+pub const MAX_PROFILE_COMMAND_REFS: usize = 8;
+/// Maximum bytes in one canonical command reference, including its prefix.
+pub const MAX_PROFILE_COMMAND_REF_BYTES: usize = 64;
 
 impl Default for AgentProfile {
     fn default() -> AgentProfile {
@@ -233,6 +247,7 @@ impl Default for AgentProfile {
             loyal: true,
             watch: Vec::new(),
             interfaces: Vec::new(),
+            command_refs: Vec::new(),
         }
     }
 }
@@ -256,6 +271,16 @@ impl AgentProfile {
         }
         if self.background.len() > MAX_PROFILE_BACKGROUND_BYTES {
             return Err(AgentProfileValidationError::BackgroundTooLarge);
+        }
+        if self.command_refs.len() > MAX_PROFILE_COMMAND_REFS {
+            return Err(AgentProfileValidationError::TooManyCommandRefs);
+        }
+        if self
+            .command_refs
+            .iter()
+            .any(|name| !valid_command_ref(name))
+        {
+            return Err(AgentProfileValidationError::InvalidCommandRef);
         }
         if self.speech_style.len() > MAX_PROFILE_SPEECH_BYTES {
             return Err(AgentProfileValidationError::SpeechTooLarge);
@@ -326,6 +351,20 @@ impl AgentProfile {
     }
 }
 
+/// A command name rather than a command line: optional +/@ prefix, lowercase
+/// ASCII name, and no switches, arguments, whitespace or markup.
+pub(crate) fn valid_command_ref(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_PROFILE_COMMAND_REF_BYTES {
+        return false;
+    }
+    let name = name.strip_prefix(['+', '@']).unwrap_or(name);
+    let mut bytes = name.bytes();
+    bytes.next().is_some_and(|first| first.is_ascii_lowercase())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-' | b'.')
+        })
+}
+
 fn validate_list(
     values: &[String],
     max_items: usize,
@@ -385,6 +424,7 @@ mod tests {
         assert_eq!(p.principal, None);
         assert!(p.loyal);
         assert!(p.watch.is_empty());
+        assert!(p.command_refs.is_empty());
     }
 
     #[test]
@@ -478,5 +518,56 @@ mod tests {
             ..AgentProfile::default()
         };
         assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn command_references_round_trip_and_enforce_identifier_and_count_bounds() {
+        let mut profile = AgentProfile {
+            command_refs: vec!["+coop".into(), "@contract".into(), "look".into()],
+            ..AgentProfile::default()
+        };
+        assert!(profile.validate().is_ok());
+        let stored = serde_json::to_string(&profile).expect("profile JSON");
+        let restored: AgentProfile = serde_json::from_str(&stored).expect("profile round trip");
+        assert_eq!(restored.command_refs, profile.command_refs);
+
+        profile.command_refs =
+            vec![SmolStr::new("x".repeat(MAX_PROFILE_COMMAND_REF_BYTES)); MAX_PROFILE_COMMAND_REFS];
+        assert!(
+            profile.validate().is_ok(),
+            "inclusive length and count bounds"
+        );
+        profile.command_refs.push("look".into());
+        assert_eq!(
+            profile.validate(),
+            Err(AgentProfileValidationError::TooManyCommandRefs)
+        );
+
+        for invalid in [
+            "",
+            "+",
+            "@",
+            "+COOP",
+            " +coop",
+            "+coop ",
+            "+coop/enrol",
+            "+coop name",
+            "look\n",
+            "<system>",
+            "coöp",
+            "coop;look",
+        ] {
+            profile.command_refs = vec![invalid.into()];
+            assert_eq!(
+                profile.validate(),
+                Err(AgentProfileValidationError::InvalidCommandRef),
+                "{invalid:?}"
+            );
+        }
+        profile.command_refs = vec![SmolStr::new("x".repeat(MAX_PROFILE_COMMAND_REF_BYTES + 1))];
+        assert_eq!(
+            profile.validate(),
+            Err(AgentProfileValidationError::InvalidCommandRef)
+        );
     }
 }

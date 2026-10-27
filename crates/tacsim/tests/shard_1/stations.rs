@@ -71,7 +71,7 @@ use support::ground::{UNSIGNED, sign};
 /// board` — and nothing else ([`stickney_v3_json`] rebuilds v3 to its old pin).
 fn station_version(pack: &str) -> u32 {
     match pack {
-        CERES_PACK => 2,
+        CERES_PACK => 3,
         STICKNEY_PACK => 4,
         _ => 1,
     }
@@ -87,7 +87,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538",
+        "ade2697a534d7887934346d96593c61571e9c5105c87e1cba56cde24660e515f",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -136,6 +136,22 @@ const NEIGHBORHOODS: [&str; 5] = [
 /// Stickney v3's pinned digest (doc 18 cut IC12), the content [`stickney_v3_json`]
 /// rebuilds.
 const STICKNEY_V3_DIGEST: &str = "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb";
+
+const CERES_V2_DIGEST: &str = "641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538";
+
+fn restore_oduya_v2(doc: &mut Value) {
+    doc["entries"]["npc.oduya"]["def"]["profile"] =
+        serde_json::from_str(include_str!("../support/oduya_v2_profile.json"))
+            .expect("the shipped v2 profile");
+}
+
+fn ceres_v2_json() -> String {
+    let mut doc = pack_json(CERES_PACK);
+    doc["manifest"]["version"] = serde_json::json!(2);
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    restore_oduya_v2(&mut doc);
+    sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
+}
 
 /// The files under `crates/tacsim/content/`, in `STATION_SOURCES` order.
 const FILES: [&str; 10] = [
@@ -505,7 +521,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                 requires,
                 vec![
                     (AITKEN_PACK.to_string(), 1),
-                    (CERES_PACK.to_string(), 2),
+                    (CERES_PACK.to_string(), 3),
                     ("neighborhood.malapert_exchange".into(), 1),
                     ("neighborhood.phobos_exchange".into(), 1),
                     ("neighborhood.kirkwood_depot".into(), 1),
@@ -1178,7 +1194,7 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .collect();
     // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
     assert_eq!(npcs.len(), 52);
-    let providers = ["atlas", "travel", "help", "market"];
+    let providers = ["atlas", "travel", "help", "market", "coop"];
     for entry in CAST {
         let p = profile(&tw, obj(&tw, npc_pack(entry), entry));
         assert!(p.enabled, "{entry}");
@@ -1279,7 +1295,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(4));
+    // Oduya's desk update: relay v5 requires Ceres v3.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(5));
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1531,6 +1548,35 @@ fn ic1_the_principals_never_wake() {
             };
             if module.as_str() != "npc" {
                 continue;
+            }
+            if actor == oduya {
+                let snap: mush_npc::TurnSnapshot =
+                    serde_json::from_str(&payload).expect("Oduya's real turn");
+                snap.validate().expect("bounded service context");
+                assert_eq!(snap.actor, Some(pilot));
+                assert_eq!(snap.command_guidance.len(), 5);
+                assert!(
+                    snap.interfaces
+                        .iter()
+                        .any(|tool| tool.ability.name == "coop.statement")
+                );
+                let prompt = mush_npc::user_prompt(&snap);
+                for command in [
+                    "+coop/enrol",
+                    "+coop/buyout",
+                    "+licence",
+                    "+claim/stake",
+                    "+survey",
+                ] {
+                    assert!(prompt.contains(command), "missing command {command}");
+                }
+                assert!(snap.profile.persona.contains("form-proud"));
+                assert!(
+                    snap.profile
+                        .goals
+                        .iter()
+                        .any(|goal| goal.contains("next step"))
+                );
             }
             turns.push(actor);
             let outcome = rt.block_on(mush_npc::run_npc_turn_async(&llm, &payload));
@@ -1835,6 +1881,7 @@ fn old_station_json(pack: &str) -> String {
         }
     }
     if pack == CERES_PACK {
+        restore_oduya_v2(&mut doc);
         doc["manifest"]["version"] = serde_json::json!(1);
         let board = doc["entries"]["room.c07_exchange"]["def"]["details"]["price board"]
             .as_str()
@@ -1884,7 +1931,7 @@ fn plan_and_apply(tw: &mut TestWorld, pack: &str) -> (String, String) {
 /// a latched pack"). Ceres v1 and Stickney v2 are rebuilt from the shipped bytes to
 /// their pinned digests; a world boots them; a new binary booted over the kept store
 /// leaves both latches where they were; `@atlas/pack plan` then `apply` takes Ceres
-/// to 2 and Stickney to its shipped version (4 since doc 18 cut IC14), after which
+/// and Stickney to their shipped versions, after which
 /// the five details read in their rooms and no object was made.
 #[test]
 fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_and_apply() {
@@ -1986,7 +2033,8 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         .expect("the relay seed installs after the station upgrade");
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(4));
+    // Oduya's desk update: relay v5 requires Ceres v3.
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(5));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()
@@ -2006,6 +2054,80 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
             .and_then(mush_sim::relay::RelayStore::registry),
         Some(&registry)
     );
+}
+
+/// Upgrading the authored desk role does not replace the character in play.
+#[test]
+fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
+    let old_ceres = ceres_v2_json();
+    let parsed = parse_pack(&old_ceres).expect("v2 parses");
+    assert_eq!(
+        parsed.computed_digest().expect("digests").to_hex(),
+        CERES_V2_DIGEST
+    );
+    let mut packs = mush_atlas::starter::packs().expect("starter");
+    packs.extend(boot_packs().expect("game packs"));
+    for (name, json) in STATION_SOURCES {
+        packs.push(
+            mush_content::load_pack(if name == CERES_PACK { &old_ceres } else { json })
+                .expect("published pack"),
+        );
+    }
+    let mut tw = TestWorld::with_modules(support::roster_booting(config(), packs));
+    let oduya = obj(&tw, CERES_PACK, "npc.oduya");
+    let moved_to = obj(&tw, CERES_PACK, "room.c04_concourse");
+    tw.world_mut().move_to(oduya, moved_to).expect("off duty");
+    let ledger = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Personal ledger", GOD, Some(oduya))
+        .expect("carried ledger");
+    tw.world_mut()
+        .set_attr(
+            oduya,
+            mush_npc::SUMMARY_ATTR,
+            mush_core::Attr::text("A returning captain asked about the lay.", GOD),
+        )
+        .expect("memory");
+    let store = fold_module_ops(tw.take_module_ops());
+    let mut tw = tw
+        .reboot_into(production_roster_with_starter(config()), store)
+        .expect("new binary over kept world");
+    assert!(
+        profile(&tw, oduya).command_refs.is_empty(),
+        "boot must not silently upgrade authored profiles"
+    );
+    assert_eq!(
+        content(&tw)
+            .latches
+            .applied(&id(CERES_PACK))
+            .unwrap()
+            .version(),
+        2
+    );
+    let objects = live_objects(&tw);
+    let (plan, apply) = plan_and_apply(&mut tw, CERES_PACK);
+    assert!(
+        apply.contains("Applied neighborhood.ceres_freeport@3:"),
+        "{plan}\n{apply}"
+    );
+    assert_eq!(obj(&tw, CERES_PACK, "npc.oduya"), oduya);
+    assert_eq!(live_objects(&tw), objects);
+    assert_eq!(location(&tw, oduya), Some(moved_to));
+    assert_eq!(location(&tw, ledger), Some(oduya));
+    assert_eq!(
+        tw.world()
+            .get(oduya)
+            .unwrap()
+            .attrs
+            .get(mush_npc::SUMMARY_ATTR)
+            .unwrap()
+            .value,
+        mush_core::attr::AttrValue::Text("A returning captain asked about the lay.".into())
+    );
+    let updated = profile(&tw, oduya);
+    assert!(updated.interfaces.iter().any(|id| id == "coop"));
+    assert_eq!(updated.command_refs.len(), 5);
+    assert_eq!(updated.goals.len(), 3);
 }
 
 /// What `who` was told, line by line, blank lines dropped.

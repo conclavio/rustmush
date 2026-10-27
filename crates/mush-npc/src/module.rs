@@ -215,8 +215,9 @@ impl GameModule for NpcModule {
                        faction:<name> for a faction's shared pool — empty \
                        clears), loyal (yes|no; the willingness gate), watch (\";\"-separated \
                        names/topics of interest), interfaces (\";\"-separated ids of the \
-                       interfaces the NPC fronts). \
-                       List fields (goals/fallback/knows/does_not_know/watch/interfaces) take \
+                       interfaces the NPC fronts), command_refs (registered command names \
+                       whose public help grounds this NPC's advice). \
+                       List fields (goals/fallback/knows/does_not_know/watch/interfaces/command_refs) take \
                        \";\"-separated values; an empty value clears a field.\n\
                        @agent/sheet <npc>[=<template>] -- give it the game's character sheet so \
                        it can roll. The game has one sheet, so no template word is needed; an \
@@ -1682,11 +1683,18 @@ fn invoke_interface(
             }
         }
         Err(mush_core::InterfaceError::Refused(why)) => {
+            // Refusals may describe the asker's private eligibility or account
+            // state. Errors carry no audience declaration, so keep them private
+            // and retain only the fact of the failed query in working memory.
             let line = crate::action::sanitize_line(&why, crate::action::SAY_CAP);
             if !line.is_empty() {
-                say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
+                speak_to(ctx, npc, asker, NarrativeKind::Say, &line);
             }
-            record_self(ctx, npc, &format!("(could not: {name}: {why})"));
+            record_self(
+                ctx,
+                npc,
+                &format!("(could not use {name}; replied privately)"),
+            );
         }
         Err(error) => {
             tracing::debug!(npc = npc.0, %name, %error, "npc: interface ability refused");
@@ -1817,6 +1825,15 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     if !profile.goals.is_empty() {
         ctx.out
             .info(ctx.actor, format!("  Goals: {}", profile.goals.join("; ")));
+    }
+    for (label, values) in [
+        ("Interfaces", &profile.interfaces),
+        ("Command references", &profile.command_refs),
+    ] {
+        if !values.is_empty() {
+            ctx.out
+                .info(ctx.actor, format!("  {label}: {}", values.join("; ")));
+        }
     }
     // Informant loop (M12): who this NPC reports to, whether it is willing, and
     // what it watches for.
@@ -2044,6 +2061,12 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
                 .map(|i| SmolStr::new(i.trim().to_ascii_lowercase()))
                 .collect();
         }
+        "command_refs" => {
+            profile.command_refs = split_list(&value)
+                .into_iter()
+                .map(|name| SmolStr::new(name.trim().to_ascii_lowercase()))
+                .collect();
+        }
         "principal" => {
             profile.principal = if value.is_empty() {
                 None
@@ -2089,7 +2112,7 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
             return Err(CmdError::msg(format!(
                 "Unknown agent field {field:?}. Fields: persona, background, speech, goals, \
                  fallback, knows, does_not_know, tier, cooldown, daily_tokens, enabled, \
-                 principal, loyal, watch, interfaces."
+                 principal, loyal, watch, interfaces, command_refs."
             )));
         }
     }
@@ -2612,6 +2635,8 @@ fn is_clearable(field: &str) -> bool {
             | "budget"
             | "principal"
             | "watch"
+            | "interfaces"
+            | "command_refs"
     )
 }
 
@@ -2730,6 +2755,7 @@ fn build_dialogue_snapshot(
         });
     // S6: the interface abilities the profile names, from the registry.
     let interfaces = crate::interface::tools_for(ctx.reg, profile);
+    let command_guidance = crate::interface::command_guidance_for(ctx.reg, ctx.w, profile, actor);
 
     // World / semantic knowledge: per-NPC lore UNION resolved shared-pool
     // entries, filtered to shareable (Public + Guarded) — a Secret entry never
@@ -2761,6 +2787,7 @@ fn build_dialogue_snapshot(
         fold_events: Vec::new(),
         seed: correlation,
         interfaces,
+        command_guidance,
     }
 }
 
@@ -2823,6 +2850,7 @@ fn build_summarize_snapshot(
         fold_events: fold,
         seed: correlation,
         interfaces: Vec::new(),
+        command_guidance: Vec::new(),
     }
 }
 
@@ -2982,22 +3010,7 @@ fn say_as_npc_to(
     text: &str,
     addressee: Option<ObjId>,
 ) {
-    let now = now_ms(ctx.w);
-    if let Some(participant) = addressee.filter(|who| {
-        is_connected_player(ctx.w, *who)
-            && ctx.w.get(*who).is_some_and(|o| o.location == Some(room))
-    }) && let Some(h) = ctx.state_mut::<NpcHostState>()
-    {
-        let rt = h.runtime_mut(npc);
-        // A slow answer keeps its exchange alive, but must not reclaim focus
-        // from a newer speaker or revive a conversation explicitly ended.
-        if rt
-            .conversation_focus
-            .is_some_and(|focus| focus.participant == participant && focus.room == room)
-        {
-            rt.note_conversation(participant, room, now);
-        }
-    }
+    refresh_reply_focus(ctx, npc, room, addressee);
     emit_room(ctx, room, kind, npc, text);
     ctx.emit_world_event(&WorldEvent::Said {
         who: npc,
@@ -3019,9 +3032,33 @@ fn say_as_npc_to(
     );
 }
 
+/// A private answer continues its exchange just as public speech does, without
+/// retaining its content or reclaiming focus from a newer conversational partner.
+fn refresh_reply_focus(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId, addressee: Option<ObjId>) {
+    let now = now_ms(ctx.w);
+    if let Some(participant) = addressee.filter(|who| {
+        is_connected_player(ctx.w, *who)
+            && ctx.w.get(*who).is_some_and(|o| o.location == Some(room))
+    }) && let Some(h) = ctx.state_mut::<NpcHostState>()
+    {
+        let rt = h.runtime_mut(npc);
+        // A slow answer keeps its exchange alive, but must not reclaim focus
+        // from a newer speaker or revive a conversation explicitly ended.
+        if rt
+            .conversation_focus
+            .is_some_and(|focus| focus.participant == participant && focus.room == room)
+        {
+            rt.note_conversation(participant, room, now);
+        }
+    }
+}
+
 /// One narrative line from `actor` to `to` alone (S8.2): the asker hears the
 /// NPC speak; no one else does.
 fn speak_to(ctx: &mut Ctx<'_>, actor: ObjId, to: ObjId, kind: NarrativeKind, text: &str) {
+    if let Some(room) = ctx.w.get(actor).and_then(|object| object.location) {
+        refresh_reply_focus(ctx, actor, room, Some(to));
+    }
     let ev = OutputEvent::Narrative {
         kind,
         actor: Some(obj_ref(ctx.w, actor)),

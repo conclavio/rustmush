@@ -370,6 +370,7 @@ mod tests {
             ],
             seed: 7,
             interfaces: Vec::new(),
+            command_guidance: Vec::new(),
         }
     }
 

@@ -150,6 +150,7 @@ pub mod gauges;
 /// body as a list and a flat map (doc 20 §3.1, §10).
 pub mod ground_chart;
 pub mod hull;
+pub mod interface;
 pub mod licence;
 pub mod map;
 pub mod market;
