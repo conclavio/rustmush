@@ -339,6 +339,16 @@ soundings cover less ground and need more positions. Each pocket counts once.
 Payment follows automatically when the funded commission is complete. Your
 chart stays private, and commission progress survives forgetting a chart or
 restarting the server. Neither makes a completed offer pay again.
+New commissions also disclose their reputation effects before acceptance. A
+completed, paid commission earns **+10 standing with Occator**; `+standing`
+shows the award and its cause. Qureshi, when recorded as the commission's public
+representative and still in that role, gains +10 personal trust and +5 disposition
+toward the working pilot. The award is attached to that character, not every
+character on the account. Partial work, cancellation, and refunds earn nothing.
+The accepted effects stay fixed; these four offers have no rival-faction penalty.
+Older commissions accepted before reputation terms existed retain their original
+terms and do not gain retroactive effects. Chart contents remain private.
+
 `+survey/cancel <id>` previews giving up unfinished work; add `go` to cancel.
 Recorded cancellation stops commission progress. Cancellation or expiry
 returns the reserved reward to Occator, and the unfinished offer reopens once

@@ -335,19 +335,19 @@ async fn staff_configures_npc_and_it_greets_a_player_through_the_formatter() {
 }
 
 /// M10d, end-to-end: world knowledge authored through the real `@agent/lore` +
-/// `@lore` staff surface reaches the assembled system prompt with the right
-/// framing — PUBLIC facts plainly, GUARDED facts under the trust/willingness
-/// heading — while a SECRET fact (per-NPC AND pooled) NEVER appears in the
-/// prompt the mock provider actually receives.
+/// `@lore` staff surface reaches the assembled prompt only when PUBLIC. GUARDED
+/// and SECRET facts, both per-NPC and pooled, never reach either prompt section
+/// the mock provider receives; guarded delivery uses the private live-trust service.
 #[tokio::test]
 async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() {
     let (svc, mock) = service();
     let mut rig = Rig::boot(&svc).await;
-    let npc = make_bartender(&mut rig);
+    make_bartender(&mut rig);
 
-    // A PUBLIC and a SECRET per-NPC entry, plus a shared pool the NPC tags that
-    // carries a GUARDED and a SECRET entry.
+    // PUBLIC lore remains useful while both nonpublic tiers stay out of the
+    // shared prompt, whether authored on this NPC or in a pool it uses.
     rig.staff("@agent/lore Bartender=public the tap room closes at midnight");
+    rig.staff("@agent/lore Bartender=guarded the tab ledger contains PERNPCGUARDEDTOKEN");
     let warn = rig.staff("@agent/lore Bartender=secret the cellar hides PERNPCSECRETTOKEN");
     assert!(warn.contains("NEVER sent to the NPC LLM"), "{warn}");
     rig.staff("@lore streets=guarded the Duke's men run the north docks");
@@ -371,13 +371,7 @@ async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() 
             && system.contains("the tap room closes at midnight"),
         "public world knowledge in system prompt: {system}"
     );
-    // GUARDED renders under the trust/willingness framing.
-    assert!(
-        system.contains("GUARDED KNOWLEDGE")
-            && system.contains("the Duke's men run the north docks"),
-        "guarded world knowledge framed in system prompt: {system}"
-    );
-    // The whole assembled request — system + user turns — carries neither secret.
+    // Inspect both sections of the actual provider request, not only the snapshot.
     let user: String = req
         .messages
         .iter()
@@ -387,16 +381,22 @@ async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() 
             _ => None,
         })
         .collect();
-    for needle in ["PERNPCSECRETTOKEN", "POOLSECRETTOKEN"] {
+    for needle in [
+        "GUARDED KNOWLEDGE",
+        "PERNPCGUARDEDTOKEN",
+        "the Duke's men run the north docks",
+        "PERNPCSECRETTOKEN",
+        "POOLSECRETTOKEN",
+    ] {
         assert!(
             !system.contains(needle),
-            "secret leaked into system: {needle}"
+            "nonpublic lore leaked into system: {needle}"
         );
-        assert!(!user.contains(needle), "secret leaked into user: {needle}");
+        assert!(
+            !user.contains(needle),
+            "nonpublic lore leaked into user: {needle}"
+        );
     }
-
-    // Sanity: the turn still completed and the NPC spoke.
-    let _ = npc;
 }
 
 #[tokio::test]

@@ -2338,6 +2338,12 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     // Cross the exact completion receipt before another mutation or boot reads
     // the store, so neither can race the authoritative memory delivery.
     assert!(world.barrier().await, "NPC completion commit barrier");
+    god_cmd_committed(
+        &world,
+        "@agent/relationship Bartender/#1=trust:20; disposition:-5; cause:durable:kept-promise; reason:A promise was kept despite a personal disagreement",
+    )
+    .await;
+    expect_text(&mut god_rx, "trust 20; disposition -5").await;
     create_persistence_probe(&world, "Fence").await;
 
     // --- middle boot: the real tick captures working memory, the mock runner
@@ -2385,6 +2391,14 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     expect_text(&mut god_rx2, PERSONA).await;
     expect_text(&mut god_rx2, "Alice has been drinking here").await;
     expect_text(&mut god_rx2, "Personal memory: 0 experiences, 1 beliefs").await;
+    // Relationship evidence is a separate durable document, not model memory.
+    // Replaying its stable cause after a full store reload must not double it.
+    god_cmd_committed(
+        &world2,
+        "@agent/relationship Bartender/#1=trust:20; disposition:-5; cause:durable:kept-promise; reason:A promise was kept despite a personal disagreement",
+    )
+    .await;
+    expect_text(&mut god_rx2, "trust 20; disposition -5").await;
 }
 
 /// The NPC agent round trip over an in-memory store — ungated, so CI proves the

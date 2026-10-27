@@ -120,9 +120,11 @@ pub mod interface;
 mod knowledge;
 mod memory;
 mod module;
+mod private_lore;
 mod profile;
 mod prompt;
 pub mod query;
+pub mod relationships;
 mod runtime;
 mod snapshot;
 mod stimulus;
@@ -165,6 +167,7 @@ pub use module::{
     MAX_TURN_DESCRIPTION_BYTES, MAX_TURN_EXITS, MAX_TURN_NAME_BYTES, MAX_TURN_PERSONA_BYTES,
     MAX_TURN_PRESENT, NpcModule, scene_turn_context,
 };
+pub use module::{public_faction_for, record_completed_work_relationship, set_public_faction};
 pub use mush_ruleset::ProjectedAbility;
 pub use profile::{
     AgentProfile, AgentProfileValidationError, KnowledgeBounds, MAX_AGENT_PROFILE_BYTES,
@@ -176,6 +179,10 @@ pub use profile::{
 };
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use query::IntelListQuery;
+pub use relationships::{
+    PersonalRelation, PublicStanding, RelationshipEffect, RelationshipRecord, RelationshipSource,
+    RelationshipStore, relationship_key,
+};
 pub use runtime::DEFAULT_SCENE_TURN_DEADLINE_SECS;
 pub use runtime::{
     InterfaceAuditRow, MAX_INTERFACE_AUDIT_ROWS, MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES,

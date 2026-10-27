@@ -1,6 +1,8 @@
 //! Occator's finite survey board. Contract money stays in the economy; accepted
 //! work and completion evidence live in the authoritative survey family.
 
+mod standing;
+
 use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_economy::{
     AcceptOutcome, AccountId, AccountStatus, Amount, ConsentSurface, Consideration,
@@ -33,7 +35,9 @@ pub const SURVEY_HELP: &str = "+survey  --  Occator's survey commissions. Each c
     +survey <id> shows its terms and your progress. +survey/accept <id> previews; add go to file. \
     Occator reserves the reward after the filing lands. Sound and quiet sound both count, by hand \
     or plan; work must begin strictly after the acceptance time. One commission per account at a time, and \
-    one payment per board entry. +survey/cancel <id> [go] returns unfinished funding to Occator.";
+    one payment per board entry. New commissions grant +10 Occator standing when completed and paid; \
+    the acceptance preview lists any authored effects on other institutions. \
+    +survey/cancel <id> [go] returns unfinished funding to Occator.";
 const UNAVAILABLE: &str = "Occator's survey board cannot be read right now.";
 const NO_ACCOUNT: &str = "Occator needs your own active credit account and a registered pilot account before it can commission you.";
 const TAKEN: &str = "That commission is already taken or completed.";
@@ -52,6 +56,17 @@ pub struct SurveyOffer {
     pub reward_minor: i64,
     pub term_ic_s: i64,
     pub revision: u64,
+    /// Beneficiary standing granted only for the paid, completed commission.
+    pub standing: i16,
+    /// Explicit adverse consequences; the shipped surveys harm no other institution.
+    pub secondary_effects: &'static [SurveySecondaryEffect],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SurveySecondaryEffect {
+    /// A legal person authored in the programme port's organization map.
+    pub organization: &'static str,
+    pub delta: i16,
 }
 
 const OFFERS: [SurveyOffer; 4] = [
@@ -63,6 +78,8 @@ const OFFERS: [SurveyOffer; 4] = [
         reward_minor: 50_000,
         term_ic_s: 604_800,
         revision: 1,
+        standing: 10,
+        secondary_effects: &[],
     },
     SurveyOffer {
         id: "kerwan-f",
@@ -72,6 +89,8 @@ const OFFERS: [SurveyOffer; 4] = [
         reward_minor: 50_000,
         term_ic_s: 604_800,
         revision: 1,
+        standing: 10,
+        secondary_effects: &[],
     },
     SurveyOffer {
         id: "juling-k",
@@ -81,6 +100,8 @@ const OFFERS: [SurveyOffer; 4] = [
         reward_minor: 50_000,
         term_ic_s: 604_800,
         revision: 1,
+        standing: 10,
+        secondary_effects: &[],
     },
     SurveyOffer {
         id: "occator-p",
@@ -90,6 +111,8 @@ const OFFERS: [SurveyOffer; 4] = [
         reward_minor: 50_000,
         term_ic_s: 604_800,
         revision: 1,
+        standing: 10,
+        secondary_effects: &[],
     },
 ];
 
@@ -122,7 +145,7 @@ pub(crate) fn fact_ref(row: &SurveyRecord) -> ExternalRef {
     ExternalRef {
         provider: FACT_PROVIDER.into(),
         kind: FACT_KIND.into(),
-        id: format!("{}/{}", row.offer.key_text(), row.contract).into(),
+        id: standing::fact_id(row).into(),
         revision: Some(row.revision),
     }
 }
@@ -374,6 +397,7 @@ fn plan(ctx: &Ctx<'_>, offer: &SurveyOffer) -> Result<SurveyRecord, String> {
         return Err(UNFUNDED.into());
     }
     let now = w.world_ic_now().at;
+    let standing = Some(standing::capture(w, offer, &sponsor)?);
     let row = SurveyRecord {
         schema: crate::surface::survey::SURVEY_SCHEMA,
         offer: SurveyKey::parse(offer.id).ok_or(UNAVAILABLE)?,
@@ -392,6 +416,7 @@ fn plan(ctx: &Ctx<'_>, offer: &SurveyOffer) -> Result<SurveyRecord, String> {
         coverage: [0; 32],
         completed: None,
         cancelled: None,
+        standing,
     };
     row.check().map_err(|_| UNAVAILABLE)?;
     Ok(row)
@@ -469,6 +494,18 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
                 ctx,
                 "Sound all four fields of the block (NW, NE, SW, SE). Both sound and sound quiet count, including a fill plan; scans, cores and earlier readings do not. Your chart stays yours.",
             );
+            let terms = row
+                .filter(|row| !contract_replaceable(ctx.w, row))
+                .and_then(|row| row.standing.clone())
+                .or_else(|| {
+                    row.is_none_or(|row| contract_replaceable(ctx.w, row))
+                        .then(|| sponsor(ctx.w))
+                        .flatten()
+                        .and_then(|(sponsor, _)| standing::capture(ctx.w, offer, &sponsor).ok())
+                });
+            if let Some(terms) = terms {
+                say(ctx, standing::line(ctx.w, &terms));
+            }
         }
     }
     Ok(())
@@ -476,6 +513,9 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
 
 fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
     let offer = offer(id).ok_or_else(|| CmdError::msg(SURVEY_USAGE))?;
+    if go {
+        crate::port::relationships::reconcile(ctx).map_err(CmdError::msg)?;
+    }
     let row = plan(ctx, offer).map_err(CmdError::msg)?;
     if !go {
         let reward = crate::port::coop::money_minor(ctx, row.reward_minor);
@@ -487,6 +527,9 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
                 char::from(b'A' + offer.block)
             ),
         );
+        if let Some(terms) = &row.standing {
+            say(ctx, standing::preview_line(ctx.w, terms));
+        }
         return Ok(());
     }
     let action = ctx
@@ -518,6 +561,10 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         ctx.out.pin_deferred();
         return Err(CmdError::msg(UNAVAILABLE));
     }
+    let standing_line = row
+        .standing
+        .as_ref()
+        .map(|terms| standing::line(ctx.w, terms));
     if let Err(error) = crate::surface::survey::put_order(ctx, row) {
         tracing::warn!(%error, "survey commission could not be queued");
         let _ = mush_economy::cancel_contract(ctx, contract);
@@ -538,6 +585,9 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
             contract.0
         ),
     );
+    if let Some(line) = standing_line {
+        say(ctx, line);
+    }
     Ok(())
 }
 
@@ -647,6 +697,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     };
     for row in rows {
         crate::surface::survey::forget_order(ctx.w, row.pilot, row.contract);
+        if let Err(error) = standing::reconcile(ctx, &row) {
+            tracing::warn!(contract = row.contract, %error, "survey standing awaits reconciliation");
+        }
         if row.completed.is_some()
             || ctx.w.world_ic_now().at > row.deadline_ic
             || !contract_valid(ctx.w, &row)

@@ -391,6 +391,18 @@ note = "@agent/set's character principal; the verb is Builder."
 
 [[site]]
 file = "mush-npc/src/module.rs"
+function = "agent_relationship"
+guard = "staff"
+note = "@agent/relationship's character target; cmd_agent requires Builder before matching or inspecting receipts."
+
+[[site]]
+file = "mush-npc/src/private_lore.rs"
+function = "command"
+guard = "perceive"
+note = "+npc/lore resolves only a live NPC in the asker's room, with mutual can_perceive checks before replying; missing, hidden, and untrusted lore is refused without disclosure."
+
+[[site]]
+file = "mush-npc/src/module.rs"
 function = "cmd_agent"
 guard = "staff"
 note = "@agent <npc>; the verb is Builder."

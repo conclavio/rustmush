@@ -513,8 +513,13 @@ Three layers, cheapest first:
 
    Existing `mem:{npc}:{subject}` documents remain readable as legacy recollections with unknown
    provenance and individual age. They are not rewritten or given synthetic evidence. New
-   experiences and beliefs do not contribute to the legacy note-count familiarity/trust heuristic.
-   A separate relationship model and embedding retrieval remain future work.
+   experiences, beliefs and legacy notes never confer trust. Durable relationships keyed by NPC
+   and character identity now track familiarity, trust and disposition separately. Direct contact
+   advances familiarity at most hourly; verified service receipts or reasoned staff adjudication
+   change trust/disposition with durable replay protection. Public affiliation projects only public
+   faction standing, independently of private intel principals and membership authorization.
+   Guarded lore is delivered through a live trust-checked private interface, outside the LLM's
+   public prompt and reusable memory. Embedding retrieval remains future work.
 
 ### 6.6 Cost controls (defense in depth)
 

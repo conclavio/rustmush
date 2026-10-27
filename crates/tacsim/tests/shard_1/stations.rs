@@ -1496,6 +1496,10 @@ fn ic1_ic_and_the_door_for_a_ceres_pilot_and_a_new_one() {
 #[test]
 fn ic1_the_principals_never_wake() {
     let mut tw = booted();
+    // Finish the first public desk role reconciliation before anyone asks the
+    // NPC for guidance; its dialogue tick runs before the port's coarse tick.
+    tw.set_now(1_000);
+    let _ = tw.fire_due(1_000_000);
     let c05 = obj(&tw, CERES_PACK, "room.c05_registry");
     let c16 = obj(&tw, CERES_PACK, "room.c16_authority");
     let kalu = obj(&tw, CERES_PACK, "npc.kalu");
@@ -1554,7 +1558,7 @@ fn ic1_the_principals_never_wake() {
                     serde_json::from_str(&payload).expect("Oduya's real turn");
                 snap.validate().expect("bounded service context");
                 assert_eq!(snap.actor, Some(pilot));
-                assert_eq!(snap.command_guidance.len(), 5);
+                assert_eq!(snap.command_guidance.len(), 6);
                 assert!(
                     snap.interfaces
                         .iter()
@@ -1567,6 +1571,7 @@ fn ic1_the_principals_never_wake() {
                     "+licence",
                     "+claim/stake",
                     "+survey",
+                    "+standing",
                 ] {
                     assert!(prompt.contains(command), "missing command {command}");
                 }
@@ -2128,6 +2133,54 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
     assert!(updated.interfaces.iter().any(|id| id == "coop"));
     assert_eq!(updated.command_refs.len(), 5);
     assert_eq!(updated.goals.len(), 3);
+}
+
+#[test]
+fn npc_public_desk_bindings_survive_restart_and_respect_staff_removal() {
+    let mut tw = booted();
+    let oduya = obj(&tw, CERES_PACK, "npc.oduya");
+    let qureshi = obj(&tw, CERES_PACK, "npc.qureshi");
+    tw.set_now(1_000);
+    let _ = tw.fire_due(1_000_000);
+    let coop = mush_npc::public_faction_for(tw.world(), oduya).expect("public Co-op desk");
+    let occator = mush_npc::public_faction_for(tw.world(), qureshi).expect("public Occator factor");
+    assert_ne!(coop, occator);
+    let factions = tw
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .unwrap();
+    let port = tacsim::port::coop::programme_port(tw.world()).unwrap();
+    assert_eq!(
+        factions.factions[&coop].org,
+        port.trust().and_then(|principal| match principal {
+            mush_org::PrincipalId::Organization(org) => Some(org),
+            _ => None,
+        })
+    );
+    assert_eq!(
+        factions.factions[&occator].org.unwrap().0,
+        port.map.orgs[&id("occator")].org
+    );
+    assert!(!factions.is_member(oduya, coop));
+    assert!(!factions.is_member(qureshi, occator));
+    assert!(profile(&tw, oduya).principal.is_none());
+    assert!(profile(&tw, qureshi).principal.is_none());
+
+    let removed = tw.run(GOD, &format!("@agent/set {qureshi}/public_faction="));
+    assert_eq!(
+        mush_npc::public_faction_for(tw.world(), qureshi),
+        None,
+        "{}",
+        said(&tw, &removed, GOD)
+    );
+    let store = fold_module_ops(tw.take_module_ops());
+    let mut tw = tw
+        .reboot_into(production_roster_with_starter(config()), store)
+        .unwrap();
+    tw.set_now(1_010);
+    let _ = tw.fire_due(1_010_000);
+    assert_eq!(mush_npc::public_faction_for(tw.world(), oduya), Some(coop));
+    assert_eq!(mush_npc::public_faction_for(tw.world(), qureshi), None);
 }
 
 /// What `who` was told, line by line, blank lines dropped.

@@ -16,17 +16,15 @@
 //! and, crucially, whether it may ever reach the LLM at all:
 //!
 //! - [`Secrecy::Public`] — shared freely.
-//! - [`Secrecy::Guarded`] — known but held back; revealed only to people the
-//!   NPC trusts.
+//! - [`Secrecy::Guarded`] — delivered only by the private live-trust service;
+//!   never included in a model snapshot or shared conversation memory.
 //! - [`Secrecy::Secret`] — plot-critical; a **staff-only** record that is
 //!   **never** placed in any prompt or snapshot. A `Secret` fact reaches the
 //!   game only through scripted / staff events, never through the NPC's own
 //!   deliberation.
 //!
-//! Willingness to share is `f(secrecy tier, trust in the asker, NPC nature)`.
-//! In this first cut trust is a [`Familiarity`] level *derived from episodic
-//! memory* ([`familiarity_of`]): does the NPC already remember this player?
-//! Staff-set disposition is a documented future iteration.
+//! Familiarity, personal trust, and disposition are separate engine-owned
+//! values in [`crate::relationships`]. Model-written notes grant none of them.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -111,7 +109,7 @@ pub enum Secrecy {
     /// Shared freely with anyone.
     #[default]
     Public,
-    /// Known but held back — shared only with those the NPC trusts.
+    /// Private service delivery only to currently trusted askers; never a prompt.
     Guarded,
     /// Plot-critical: a staff-only record **never** placed in any prompt or
     /// snapshot. Acts on the game only via scripted / staff events.
@@ -136,15 +134,8 @@ pub struct LoreEntry {
 }
 
 impl LoreEntry {
-    /// Whether this entry may ever be placed in a prompt or snapshot — true for
-    /// [`Secrecy::Public`] and [`Secrecy::Guarded`], **false** for
-    /// [`Secrecy::Secret`] (which is never sent to the NPC LLM).
-    ///
-    /// Written as a positive **allowlist** (not `!= Secret`) so it fails safe:
-    /// if a future, more-restrictive tier is ever added it stays out of prompts
-    /// until explicitly allowed here — matching the allowlist polarity the
-    /// prompt renderer (`render_world_knowledge`) already uses, so both
-    /// defense-in-depth layers behave identically.
+    /// Whether this entry may be delivered by the authorized private service.
+    /// Ordinary prompts admit only Public entries; Secret stays staff-only.
     #[must_use]
     pub fn is_shareable(&self) -> bool {
         matches!(self.secrecy, Secrecy::Public | Secrecy::Guarded)
@@ -296,12 +287,18 @@ impl LorePools {
         self.resolve_matching(tags, |_| true)
     }
 
-    /// Resolve only entries permitted to reach an NPC prompt. Filtering occurs
+    /// Resolve Public and Guarded entries for the authorized private service. Filtering occurs
     /// before count/byte admission so a secret-heavy pool cannot starve later
     /// public facts from the bounded projection.
     #[must_use]
     pub fn resolve_shareable(&self, tags: &[String]) -> Vec<LoreEntry> {
         self.resolve_matching(tags, LoreEntry::is_shareable)
+    }
+
+    /// Resolve ordinary dialogue knowledge, filtering before bounded admission.
+    #[must_use]
+    pub fn resolve_public(&self, tags: &[String]) -> Vec<LoreEntry> {
+        self.resolve_matching(tags, |entry| entry.secrecy == Secrecy::Public)
     }
 
     fn resolve_matching(
@@ -380,18 +377,17 @@ fn validate_document_size(value: &impl Serialize) -> Result<(), LoreValidationEr
     Ok(())
 }
 
-/// How well an NPC knows a particular player, derived from episodic memory
-/// (design: M10d first cut — no staff-set disposition yet). Governs whether a
-/// [`Secrecy::Guarded`] fact may be shared.
+/// How well an NPC knows a particular player from repeated perceived contacts.
+/// This does not govern trust, disposition, or access to guarded lore.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Familiarity {
-    /// No durable memory of this player at all.
+    /// No recorded direct encounters with this identity.
     #[default]
     Stranger,
-    /// The NPC has some durable memory of this player.
+    /// One or two distinct encounter buckets.
     Acquaintance,
-    /// The NPC has a well-established memory of this player (>= 3 notes).
+    /// At least three distinct encounter buckets.
     Known,
 }
 
@@ -399,6 +395,7 @@ pub enum Familiarity {
 /// becomes [`Known`](Familiarity::Known).
 const KNOWN_NOTES: usize = 3;
 
+/// Legacy compatibility helper, unused by live prompts or access checks.
 /// The NPC's [`Familiarity`] with `player_name`, derived from its durable
 /// memory in `store`: [`Stranger`](Familiarity::Stranger) if there is no record,
 /// [`Acquaintance`](Familiarity::Acquaintance) if there is one, and
@@ -609,5 +606,32 @@ mod tests {
             .unwrap();
         let resolved = pools.resolve_shareable(&["secret".into(), "public".into()]);
         assert_eq!(resolved, vec![entry("visible fact")]);
+    }
+
+    #[test]
+    fn guarded_entries_do_not_consume_public_projection_capacity() {
+        let mut pools = LorePools::default();
+        pools
+            .insert(LorePool {
+                tag: "guarded".into(),
+                entries: (0..MAX_LORE_POOL_ENTRIES)
+                    .map(|index| LoreEntry {
+                        fact: format!("guarded {index}"),
+                        secrecy: Secrecy::Guarded,
+                        ..LoreEntry::default()
+                    })
+                    .collect(),
+            })
+            .expect("guarded pool");
+        pools
+            .insert(LorePool {
+                tag: "public".into(),
+                entries: vec![entry("visible fact")],
+            })
+            .expect("public pool");
+        assert_eq!(
+            pools.resolve_public(&["guarded".into(), "public".into()]),
+            vec![entry("visible fact")]
+        );
     }
 }

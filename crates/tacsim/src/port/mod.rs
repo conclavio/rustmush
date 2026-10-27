@@ -165,6 +165,7 @@ pub mod proceeds;
 pub mod readiness;
 pub mod recall;
 pub mod refit;
+pub(crate) mod relationships;
 pub mod ship;
 /// Doc 20 cut SM.2: a mining site's pure reads, its lay-up and its stores line
 /// (doc 20 §3.1, §3.3, §3.4).

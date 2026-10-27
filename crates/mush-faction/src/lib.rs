@@ -68,6 +68,7 @@
 mod commands;
 mod data;
 mod econ;
+mod reputation;
 mod sim;
 mod sim_commands;
 mod standing;
@@ -86,6 +87,11 @@ pub use data::{
     Visibility, control_key, fac_key, member_key, region_key,
 };
 pub use econ::{LinkError, backing_org};
+pub use reputation::{
+    AttackIncident, PUBLIC_ATTACK_PENALTY, StandingEffect, StandingView,
+    ensure_organization_faction, public_standing, publish_attack_incident, record_standing,
+    report_attack_incident,
+};
 pub use sim::{Clock, ClockId, Front, FrontId, SimState};
 pub use standing::FactionStandingProvider;
 
@@ -117,6 +123,7 @@ impl GameModule for FactionModule {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(FactionState::default());
         reg.state(sim::SimState::default());
+        reg.state(reputation::StandingStore::default());
         reg.subscribe(
             WorldEventKind::ObjDestroyed,
             std::sync::Arc::new(on_obj_destroyed),
@@ -139,8 +146,12 @@ impl GameModule for FactionModule {
     ) -> Result<(), ModError> {
         // Split the simulation docs (fronts/clocks) from the registry docs so
         // each boot loader sees only its own keys.
+        let (standing_kv, registry_kv): (Vec<_>, Vec<_>) = data
+            .kv
+            .into_iter()
+            .partition(|(k, _)| reputation::is_key(k));
         let (sim_kv, fac_kv): (Vec<_>, Vec<_>) =
-            data.kv.into_iter().partition(|(k, _)| is_sim_key(k));
+            registry_kv.into_iter().partition(|(k, _)| is_sim_key(k));
         load_boot(
             ctx,
             ModuleBootData {
@@ -154,7 +165,8 @@ impl GameModule for FactionModule {
         // state here. Findings are reported, never repaired: `backing_org` stays
         // the at-use enforcement and fails closed on a MISSING or CONFLICT link.
         econ::validate_links_at_boot(ctx.w);
-        sim::load_boot(ctx, sim_kv)
+        sim::load_boot(ctx, sim_kv)?;
+        reputation::load(ctx, standing_kv)
     }
 }
 

@@ -222,6 +222,8 @@ pub struct NpcHostState {
     pub long_term: LongTermStore,
     /// Engine-observed experiences and subjective beliefs, mirrored by `mind:{npc}`.
     pub personal_memory: PersonalMemoryStore,
+    /// Durable identity-keyed familiarity, trust, disposition and permanent receipts.
+    pub relationships: crate::relationships::RelationshipStore,
     /// Shared world-knowledge lore pools (design: M10d), rebuilt from boot data
     /// and mirrored by the persisted `lore:{slug}` documents.
     pub lore_pools: LorePools,
@@ -291,6 +293,7 @@ impl NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
             personal_memory: PersonalMemoryStore::default(),
+            relationships: crate::relationships::RelationshipStore::default(),
             lore_pools: LorePools::default(),
             intel: IntelStore::default(),
             thinking: Some(thinking),
@@ -307,6 +310,7 @@ impl NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
             personal_memory: PersonalMemoryStore::default(),
+            relationships: crate::relationships::RelationshipStore::default(),
             lore_pools: LorePools::default(),
             intel: IntelStore::default(),
             thinking: None,

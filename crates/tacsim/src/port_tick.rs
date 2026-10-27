@@ -1385,6 +1385,9 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     // Doc 20 cut SM.12c (the cost lane): the fire's own clock, the pages and the walk included.
     let started = std::time::Instant::now();
+    if let Err(error) = crate::port::relationships::reconcile(ctx) {
+        tracing::warn!(%error, "public desk affiliation reconciliation failed");
+    }
     crate::port::survey::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

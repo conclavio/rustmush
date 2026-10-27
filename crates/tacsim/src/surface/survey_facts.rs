@@ -230,7 +230,20 @@ fn reference_key(fact: &ExternalRef) -> Option<(SurveyKey, ContractId)> {
     if fact.provider != PROVIDER || !matches!(fact.kind.as_str(), FACT_LOGGED | FACT_CANCELLED) {
         return None;
     }
-    let (offer, contract) = fact.id.split_once('/')?;
+    let mut parts = fact.id.split('/');
+    let offer = parts.next()?;
+    let contract = parts.next()?;
+    if let Some(digest) = parts.next()
+        && (digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        return None;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
     let key = SurveyKey::parse(offer)?;
     let id = contract.parse::<u64>().ok()?;
     if id == u64::MAX || key.key_text() != offer || id.to_string() != contract {
@@ -499,6 +512,17 @@ mod tests {
             revision: Some(1),
         };
         check_eq!(reference_key(&fact).map(|(_, id)| id), Some(ContractId(0)));
+        fact.id = format!("ahuna-a/0/{}", "a".repeat(64)).into();
+        check_eq!(reference_key(&fact).map(|(_, id)| id), Some(ContractId(0)));
+        for suffix in [
+            "A".repeat(64),
+            "a".repeat(63),
+            format!("{}/extra", "a".repeat(64)),
+        ] {
+            fact.id = format!("ahuna-a/0/{suffix}").into();
+            check!(reference_key(&fact).is_none());
+        }
+        fact.id = "ahuna-a/0".into();
         fact.kind = FACT_CANCELLED.into();
         check_eq!(reference_key(&fact).map(|(_, id)| id), Some(ContractId(0)));
         check!(

@@ -32,6 +32,37 @@ scalar: reaching the faction's **officer** level lets you see more (levels,
 resources, officer-known facts); reaching its **intel** level lets you read
 the faction's shared intel pool.
 
+## Public standing
+
+`+standing` lists your public reputation with known public factions;
+`+standing <faction>` includes the recent reasons. Scores range from -100 to 100:
+hostile (-50 or lower), unfriendly (-49 to -10), neutral (-9 to 9), friendly
+(10 to 49), and trusted (50 or higher). Each change has a permanent cause receipt;
+replaying a job or restarting the server does not award it twice.
+
+Standing is separate from membership and rank. Authored work can improve its
+sponsor's opinion and, when its accepted terms explicitly say so, reduce another
+faction's opinion. A structural faction link does not imply rivalry or transfer
+reputation. The organization policy predicate `faction:standing_at_least` accepts
+`{"faction": <id>, "minimum": <score>}`; existing member, officer and intel
+predicates keep their original meaning.
+
+Attacks affect public standing only after an attributed incident is published.
+A private report or an unidentified attacker changes nobody's score. Ordinary
+miner and ship combat is not yet connected; this cut supports staff-adjudicated
+reports and an owner API for future witnessed combat:
+
+  @faction/incident <cause>=<faction>/<victim #id>/<attacker #id|unknown>/<reason>
+  @faction/incident <cause>
+  @faction/publish-incident <cause>
+
+The first command records a private finding, the second inspects it, and the
+third deliberately makes it public in canon. Publishing applies -20 to the
+identified attacker's standing with the victim's faction once. Staff must
+establish the victim's affiliation and attribution before filing a report;
+player accusations, NPC memories, arena logs, and staff damage commands cannot
+produce penalties by themselves.
+
 ## Visibility (what "known member" means)
 
 Every membership has one of four visibilities, set by staff:

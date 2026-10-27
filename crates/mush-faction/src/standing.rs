@@ -13,6 +13,8 @@
 //! - `member`  — the actor is a member of the named faction (any visibility; truth).
 //! - `officer` — the actor's level ≥ the faction's `officer_level`.
 //! - `intel`   — the actor's level ≥ the faction's `intel_level` (may read the pool).
+//! - `standing_at_least` — public-grant score meets `minimum` (-100..100).
+//!   This does not change membership or either clearance threshold above.
 //!
 //! The argument names the faction: a bare id number, or `{"faction": id}` (the
 //! [`Principal`](crate::Principal) wire form). Anything unresolvable — a bad
@@ -54,6 +56,13 @@ impl OrgPredicateProvider for FactionStandingProvider {
             "member" => Some(st.is_member(actor, fid)),
             "officer" => Some(st.is_officer(actor, fid)),
             "intel" => Some(st.can_read_intel(actor, fid)),
+            "standing_at_least" => {
+                let minimum = arguments.get("minimum")?.as_i64()?;
+                if !(-100..=100).contains(&minimum) {
+                    return None;
+                }
+                Some(i64::from(crate::reputation::policy_score(w, fid, actor)?) >= minimum)
+            }
             // Unknown predicate: fail closed rather than guess.
             _ => None,
         }

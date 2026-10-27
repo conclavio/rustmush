@@ -11,7 +11,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use mush_faction::Principal;
+use mush_faction::{FactionId, Principal};
 use mush_llm::{LlmFeature, NpcTier as LlmNpcTier};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -198,6 +198,9 @@ pub struct AgentProfile {
     /// `+intel`. `None` (the default) means the NPC files nothing — the loop
     /// is entirely opt-in and additive.
     pub principal: Option<Principal>,
+    /// Explicit public institutional affiliation; independent of the private
+    /// informant principal and never a membership or clearance grant.
+    pub public_faction: Option<FactionId>,
     /// The willingness gate. `true` (default): a loyal informant files what it
     /// perceives to its `principal`. `false`: a resentful asset that reports
     /// nothing, however much it sees.
@@ -244,6 +247,7 @@ impl Default for AgentProfile {
             enabled: true,
             fallback_lines: Vec::new(),
             principal: None,
+            public_faction: None,
             loyal: true,
             watch: Vec::new(),
             interfaces: Vec::new(),
@@ -422,6 +426,7 @@ mod tests {
         // M12 informant fields default additively: no principal ⇒ files
         // nothing, loyal by default, empty watch list (P3).
         assert_eq!(p.principal, None);
+        assert_eq!(p.public_faction, None);
         assert!(p.loyal);
         assert!(p.watch.is_empty());
         assert!(p.command_refs.is_empty());
@@ -431,6 +436,7 @@ mod tests {
     fn informant_fields_round_trip_through_serde() {
         let p = AgentProfile {
             principal: Some(Principal::Character(mush_core::ObjId(42))),
+            public_faction: Some(FactionId(7)),
             loyal: false,
             watch: vec!["alice".into(), "the docks".into()],
             ..AgentProfile::default()
@@ -442,6 +448,7 @@ mod tests {
             Some(Principal::Character(mush_core::ObjId(42)))
         );
         assert!(!back.loyal);
+        assert_eq!(back.public_faction, Some(FactionId(7)));
         assert_eq!(
             back.watch,
             vec!["alice".to_string(), "the docks".to_string()]

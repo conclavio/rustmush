@@ -986,7 +986,7 @@ async fn personal_memory_remember_uses_public_evidence_and_survives_actual_write
         .find(|(key, _)| *key == mush_npc::mind_key(npc));
     assert_eq!(document.unwrap().1, serde_json::to_value(&record).unwrap());
     // A kept legacy document remains readable beside the new store and keeps
-    // its original trust semantics; a new remember does not write one.
+    // its unverified contents; a new remember does not write one or grant trust.
     let legacy = mush_npc::MemoryRecord {
         npc,
         subject: "bob".into(),
@@ -1017,7 +1017,9 @@ async fn personal_memory_remember_uses_public_evidence_and_survives_actual_write
         snap.scene
             .present
             .iter()
-            .any(|person| person.name == "Alice" && person.familiarity == Familiarity::Stranger)
+            .any(|person| person.name == "Alice"
+                && person.familiarity == Familiarity::Acquaintance
+                && person.personal_relation.trust == 0)
     );
 }
 
@@ -1068,7 +1070,8 @@ fn personal_memory_captures_only_perceived_directed_speech_without_granting_trus
         .iter()
         .find(|person| person.name == "Alice")
         .unwrap();
-    assert_eq!(alice.familiarity, Familiarity::Stranger);
+    assert_eq!(alice.familiarity, Familiarity::Acquaintance);
+    assert_eq!(alice.personal_relation.trust, 0);
     let prompt = user_prompt(&snapshot);
     assert!(prompt.contains("not verified truth"), "{prompt}");
     assert!(!prompt.contains("[you know them well]"), "{prompt}");
@@ -1767,7 +1770,7 @@ async fn shared_pool_resolves_into_dialogue_snapshot() {
     let snap = rig.dialogue_snapshot(alice, 1002, "say tell me about vampires");
     let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
     assert!(facts.contains(&"vampires shun sunlight"), "{facts:?}");
-    assert!(facts.contains(&"the Prince rules this city"), "{facts:?}");
+    assert!(!facts.contains(&"the Prince rules this city"), "{facts:?}");
 }
 
 /// (3) A SECRET per-NPC entry AND a SECRET pool entry are both absent from the
@@ -1814,10 +1817,9 @@ async fn secret_lore_never_enters_the_snapshot() {
     );
 }
 
-/// (4) Familiarity derived from durable memory is set per present player and
-/// reaches the user prompt; a never-met player is a Stranger.
+/// Model-written legacy notes never establish familiarity or personal trust.
 #[tokio::test]
-async fn familiarity_from_memory_reaches_the_user_prompt() {
+async fn memory_notes_cannot_promote_personal_relationships() {
     let mut rig = Rig::new();
     rig.set_now(1000);
     let bar = rig.room("Bar");
@@ -1825,7 +1827,7 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
     let alice = rig.player("Alice", bar, true);
     let _bob = rig.player("Bob", bar, true);
 
-    // Three durable notes about Alice ⇒ Known; nothing about Bob ⇒ Stranger.
+    // Repeated model notes about Alice do not establish witnessed encounters.
     {
         let h = rig.host_mut();
         h.long_term.remember(npc, "Alice", "tips well", 10).unwrap();
@@ -1837,7 +1839,7 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
             .unwrap();
     }
 
-    let snap = rig.dialogue_snapshot(alice, 1002, "say evening");
+    let snap = rig.dialogue_snapshot(alice, 1002, "say Bartender, evening");
     let fam = |name: &str| {
         snap.scene
             .present
@@ -1846,11 +1848,20 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
             .unwrap_or_else(|| panic!("{name} present"))
             .familiarity
     };
-    assert_eq!(fam("Alice"), Familiarity::Known);
+    assert_eq!(fam("Alice"), Familiarity::Acquaintance);
     assert_eq!(fam("Bob"), Familiarity::Stranger);
+    assert_eq!(rig.host().relationships.personal(npc, alice).trust, 0);
+    assert_eq!(
+        rig.host()
+            .relationships
+            .record_for(npc, alice)
+            .unwrap()
+            .encounters,
+        1
+    );
 
     let user = user_prompt(&snap);
-    assert!(user.contains("[you know them well]"), "{user}");
+    assert!(user.contains("[you have met them before]"), "{user}");
     assert!(user.contains("[a stranger to you]"), "{user}");
 }
 
@@ -1896,7 +1907,7 @@ async fn lore_pools_survive_on_world_loaded_round_trip() {
     let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
     assert!(facts.contains(&"smugglers land at midnight"), "{facts:?}");
     assert!(
-        facts.contains(&"the harbormaster looks the other way"),
+        !facts.contains(&"the harbormaster looks the other way"),
         "{facts:?}"
     );
 }
@@ -2701,6 +2712,79 @@ async fn hidden_factions_never_leak_through_agent_commands() {
     assert!(!out.contains("Black Hand"), "hidden name leaked: {out}");
     let out = rig.staff("@agent Spider");
     assert!(out.contains("faction Black Hand"), "{out}");
+}
+
+#[tokio::test]
+async fn public_affiliation_projects_only_public_standing_and_never_private_principals() {
+    for (affiliated, hidden) in [(false, false), (true, false), (true, true)] {
+        let mut rig = Rig::with_modules(vec![
+            Box::new(mush_faction::FactionModule),
+            Box::new(NpcModule::new()),
+        ]);
+        rig.set_now(1000);
+        let room = rig.room("Office");
+        rig.engine.world.move_to(GOD, room).unwrap();
+        rig.staff("@faction/create OnlyPublicWhenDeclared");
+        let faction = rig
+            .engine
+            .world
+            .module_state::<mush_faction::FactionState>()
+            .unwrap()
+            .faction_by_name("OnlyPublicWhenDeclared")
+            .unwrap()
+            .id;
+        if hidden {
+            rig.staff("@faction/set OnlyPublicWhenDeclared=hidden:yes");
+        }
+        let npc = rig.npc(
+            "Clerk",
+            room,
+            &AgentProfile {
+                principal: Some(mush_faction::Principal::faction(faction)),
+                public_faction: affiliated.then_some(faction),
+                ..profile(NpcTier::Minor)
+            },
+        );
+        let alice = rig.player("Alice", room, true);
+        let snapshot = rig.dialogue_snapshot(alice, 1002, "say Clerk, who do you represent?");
+        let person = snapshot
+            .scene
+            .present
+            .iter()
+            .find(|person| person.name == "Alice")
+            .unwrap();
+        assert_eq!(person.standing.is_some(), affiliated && !hidden);
+        assert_eq!(person.personal_relation.trust, 0);
+        assert_eq!(
+            mush_npc::public_faction_for(&rig.engine.world, npc),
+            affiliated.then_some(faction)
+        );
+        assert_eq!(
+            user_prompt(&snapshot).contains("OnlyPublicWhenDeclared"),
+            affiliated && !hidden
+        );
+        let out = rig.staff("@agent/set Clerk/public_faction=");
+        assert!(out.contains("Cleared public_faction"), "{out}");
+        assert_eq!(mush_npc::public_faction_for(&rig.engine.world, npc), None);
+        let stored: AgentProfile = serde_json::from_value(
+            rig.engine
+                .world
+                .attr(npc, PROFILE_ATTR)
+                .unwrap()
+                .as_json()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            stored.principal,
+            Some(mush_faction::Principal::faction(faction))
+        );
+        if hidden {
+            let out = rig.staff(&format!("@agent/set Clerk/public_faction={}", faction.0));
+            assert!(out.contains("No such public faction"), "{out}");
+        }
+    }
 }
 
 /// M21: an informant whose faction principal no longer exists files nothing —
