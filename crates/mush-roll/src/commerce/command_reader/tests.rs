@@ -507,6 +507,113 @@ fn own_holdings_page_cuts_at_three_rows_and_sixteen_assets() -> TestResult {
     Ok(())
 }
 
+/// The drafted and funded renewal operations of
+/// `command_reader_trade_kinds_answer_only_their_own_party`, on the paid
+/// licence and term that test writes, built apart from it so its stack frame
+/// stays under the M7 memory-size limit (`.github/clippy-m7`).
+fn renewal_rows(
+    pointer: &crate::commerce::paid::PersonalPaidLicence,
+    term: &crate::commerce::paid::PaidTermRecord,
+    licence: LicenceId,
+    one: crate::commerce::TermGeneration,
+    terms: crate::commerce::paid::PaidTerms,
+    policy: crate::commerce::records::RevisionPolicy,
+    now: i64,
+) -> Result<
+    (
+        crate::commerce::renewal::RenewalOperationV1,
+        crate::commerce::renewal::RenewalOperationV1,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use crate::commerce::entitlement::{
+        DownstreamTermsV1, FiledRoyaltyTermsV1, GrantEconomicsV1, PaidTermEconomicsV1,
+        RenewalTemplateV1,
+    };
+    use crate::commerce::records::RevisionPolicy;
+    use crate::commerce::renewal::{
+        RenewalAttemptV1, RenewalBindingV1, RenewalOperationV1, RenewalStateV1,
+    };
+    use mush_core::mechanics::{
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+    };
+    use mush_core::{ClockRef, ClockStamp, DefinitionDigest, DefinitionRef};
+    let market = |kind: &str, id: &str| -> Result<DefinitionRef, Box<dyn std::error::Error>> {
+        Ok(DefinitionRegistryBuilder::new().register(
+            OwnerId::new("market")?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new(kind)?,
+                DefinitionId::new(id)?,
+                1,
+                json!({"format": 1}),
+            )?,
+        )?)
+    };
+    let stamp = |at: i64| ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at,
+    };
+    let RevisionPolicy::Pin { filed, revision } = policy else {
+        return Err("a pinned revision".into());
+    };
+    let chain = FiledRoyaltyTermsV1::capture(filed, revision, token(30), Vec::new())?;
+    let grant = GrantEconomicsV1::new(
+        DownstreamTermsV1::Source {
+            royalty_permille: 0,
+        },
+        RenewalTemplateV1::new(
+            mush_economy::InstrumentId::new("cr").ok_or("instrument")?,
+            mush_economy::Amount::from_minor(500),
+            90 * DAY,
+            3 * DAY,
+            terms,
+            policy,
+            market("entitlement_policy", "personal")?,
+        )?,
+        chain.reference()?,
+    )?;
+    let economics = PaidTermEconomicsV1::capture(
+        licence,
+        one,
+        token(30),
+        DefinitionDigest::from_bytes([9; 32]),
+        grant,
+    )?;
+    let drafted = RenewalOperationV1 {
+        format: 1,
+        operation: token(31),
+        action: market("action", "draft_mind_renewal")?,
+        attempt: RenewalAttemptV1::Automatic {},
+        binding: Box::new(RenewalBindingV1::capture(pointer, term, &economics)?),
+        offer_digest: DefinitionDigest::from_bytes([31; 32]),
+        contract: serde_json::from_value(json!(31))?,
+        consent_hash: [31; 32],
+        created_at_ic: stamp(now),
+        created_at_utc: now,
+        state: RenewalStateV1::Drafted {},
+    };
+    drafted.validate()?;
+    let funded = RenewalOperationV1 {
+        state: RenewalStateV1::Funded {
+            funding: serde_json::from_value(json!({
+                "format": 1,
+                "commit": token(32),
+                "action": market("action", "fund_mind_renewal")?,
+                "contract": drafted.contract,
+                "hold": 32,
+                "transaction": 32,
+                "journal_seq": 32,
+                "consent_hash": drafted.consent_hash,
+                "at_ic": stamp(now + 1),
+                "posted_at_utc": now + 1
+            }))?,
+        },
+        ..drafted.clone()
+    };
+    funded.validate()?;
+    Ok((drafted, funded))
+}
+
 /// 17g C2d test 4 (C2 plan §2.4, §2.6), over the real filing fixture with a
 /// paid licence pointer and its current term written beside the filing:
 /// - `OwnPaid`: the holder reads the licence's charter, public name, form,
@@ -629,94 +736,11 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
 
     // The renewal mark through real rows: a personal renewal head whose
     // pending operation is the drafted offer on this term, then funded.
-    let (drafted, funded) = {
-        use crate::commerce::entitlement::{
-            DownstreamTermsV1, FiledRoyaltyTermsV1, GrantEconomicsV1, PaidTermEconomicsV1,
-            RenewalTemplateV1,
-        };
-        use crate::commerce::renewal::{
-            RenewalAttemptV1, RenewalBindingV1, RenewalOperationV1, RenewalStateV1,
-        };
-        use mush_core::mechanics::{
-            DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
-        };
-        use mush_core::{ClockRef, ClockStamp, DefinitionDigest, DefinitionRef};
-        let market = |kind: &str, id: &str| -> Result<DefinitionRef, Box<dyn std::error::Error>> {
-            Ok(DefinitionRegistryBuilder::new().register(
-                OwnerId::new("market")?,
-                DefinitionDescriptor::new(
-                    DefinitionKind::new(kind)?,
-                    DefinitionId::new(id)?,
-                    1,
-                    json!({"format": 1}),
-                )?,
-            )?)
-        };
-        let stamp = |at: i64| ClockStamp {
-            clock: ClockRef::WorldIc { generation: 1 },
-            at,
-        };
-        let policy = RevisionPolicy::Pin {
-            filed,
-            revision: content.revision(),
-        };
-        let chain = FiledRoyaltyTermsV1::capture(filed, content.revision(), token(30), Vec::new())?;
-        let grant = GrantEconomicsV1::new(
-            DownstreamTermsV1::Source {
-                royalty_permille: 0,
-            },
-            RenewalTemplateV1::new(
-                mush_economy::InstrumentId::new("cr").ok_or("instrument")?,
-                mush_economy::Amount::from_minor(500),
-                90 * DAY,
-                3 * DAY,
-                terms,
-                policy,
-                market("entitlement_policy", "personal")?,
-            )?,
-            chain.reference()?,
-        )?;
-        let economics = PaidTermEconomicsV1::capture(
-            licence,
-            one,
-            token(30),
-            DefinitionDigest::from_bytes([9; 32]),
-            grant,
-        )?;
-        let drafted = RenewalOperationV1 {
-            format: 1,
-            operation: token(31),
-            action: market("action", "draft_mind_renewal")?,
-            attempt: RenewalAttemptV1::Automatic {},
-            binding: Box::new(RenewalBindingV1::capture(&pointer, &term, &economics)?),
-            offer_digest: DefinitionDigest::from_bytes([31; 32]),
-            contract: serde_json::from_value(json!(31))?,
-            consent_hash: [31; 32],
-            created_at_ic: stamp(now),
-            created_at_utc: now,
-            state: RenewalStateV1::Drafted {},
-        };
-        drafted.validate()?;
-        let funded = RenewalOperationV1 {
-            state: RenewalStateV1::Funded {
-                funding: serde_json::from_value(json!({
-                    "format": 1,
-                    "commit": token(32),
-                    "action": market("action", "fund_mind_renewal")?,
-                    "contract": drafted.contract,
-                    "hold": 32,
-                    "transaction": 32,
-                    "journal_seq": 32,
-                    "consent_hash": drafted.consent_hash,
-                    "at_ic": stamp(now + 1),
-                    "posted_at_utc": now + 1
-                }))?,
-            },
-            ..drafted.clone()
-        };
-        funded.validate()?;
-        (drafted, funded)
+    let policy = RevisionPolicy::Pin {
+        filed,
+        revision: content.revision(),
     };
+    let (drafted, funded) = renewal_rows(&pointer, &term, licence, one, terms, policy, now)?;
     let (heads, operations) = (
         f.families.renewal_heads.clone(),
         f.families.renewal_operations.clone(),

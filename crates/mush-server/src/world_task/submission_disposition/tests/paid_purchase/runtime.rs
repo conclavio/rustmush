@@ -394,18 +394,37 @@ impl Running {
             .get(offer.offer().route_id())
             .ok_or("actual selected offer route")?
             .clone();
-        let response = timeout(
-            STEP,
-            self.handle()?.submit_legal_action(GatewayAction {
-                conn: actor.0.into(),
-                actor,
-                offered_action: offer.offer(),
-                subject: offer.subject().clone(),
-                targets: Vec::new(),
-                parameters,
-            }),
-        )
-        .await?;
+        // 17g C2 close: `Busy` is the all-in-one arm's typed refusal before
+        // durable ownership (bounded custody full, or the world committing
+        // another action, such as a boot-time service step, under CI load).
+        // The handle mints a fresh request sequence per call, so no intent
+        // under the refused submission can exist and a retry is exact
+        // (`preflight_retry_bounds.rs`). Retried like `legal_actions`,
+        // bounded (50 tries, each under `STEP`, 50 ms apart); every other
+        // disposition is answered below as before.
+        let mut tries = 0;
+        let response = loop {
+            let response = timeout(
+                STEP,
+                self.handle()?.submit_legal_action(GatewayAction {
+                    conn: actor.0.into(),
+                    actor,
+                    offered_action: offer.offer(),
+                    subject: offer.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: parameters.clone(),
+                }),
+            )
+            .await?;
+            match response {
+                ActionSend::Busy if tries < 49 => {
+                    tries += 1;
+                    eprintln!("M7_SERVER_PURCHASE_OFFER verb={verb} event=busy_retry try={tries}");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                response => break response,
+            }
+        };
         match response {
             // Finished is an actual finalized authoritative receipt. Its optional
             // provider projection is presentation, not a second success bit.
