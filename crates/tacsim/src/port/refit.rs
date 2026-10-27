@@ -12,7 +12,7 @@
 //! Dray-P's 86 t hold through the hull's own unit (`HullView::unit`).
 //!
 //! The checks run in order and nothing is written on a refusal: the word, the
-//! charter, the refit offered, the berth, nothing in flight, the hold empty but
+//! charter or title, the refit offered, the berth, nothing in flight, the hold empty but
 //! for her tank (provisions refuse: lead ruling 8), the bay empty, not already
 //! that unit, at the desk, and the binding and its bay laid up.
 
@@ -107,9 +107,8 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
     if word != STANDARD_REFIT && word != "prospector" && !authored {
         return Err(REFIT_USAGE.to_owned());
     }
-    // 2. The charter.
-    let e = crate::port::recall::chartered(ctx)?;
-    let hull = e.hull;
+    // 2. The current charter or title, never graduation alone.
+    let hull = crate::port::coop::mining_hull(ctx)?;
     let name = name_of(w, hull);
     let refused = |template: &str| template.replace("{name}", &name);
     // 3. The latched programme authors the refit (and so a way back).
@@ -138,8 +137,11 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
             return Err(refused(REFIT_NOT_HERE).replace("{port}", &port_label));
         }
     }
-    // 5. Nothing in flight.
-    if let Some((_, line)) = crate::port::buyout::in_flight(w, &e) {
+    let view: HullView<'_> = hull_view(w, hull).ok_or_else(|| refused(REFIT_FAILED))?;
+    let vault =
+        crate::port::coop::mining_hold(w, actor, &view).ok_or_else(|| refused(REFIT_HOLD_DARK))?;
+    // 5. Nothing in flight, against this hull's actual hold and current pilot.
+    if let Some((_, line)) = crate::port::buyout::in_flight_on(w, hull, actor, vault, &name) {
         return Err(line);
     }
     // 6. The hold: every good but the propellant reads 0 (provisions refuse, lead
@@ -148,7 +150,7 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
         .module_state::<TacsimStore>()
         .ok_or_else(|| crate::port::coop::NOT_OPEN_HERE.to_owned())?;
     let goods = store.goods().ok_or_else(|| refused(REFIT_HOLD_DARK))?;
-    let hold = EndpointRef(mush_economy::VaultId(e.vault));
+    let hold = EndpointRef(vault);
     for good in goods
         .goods
         .iter()
@@ -175,7 +177,6 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
         );
         refused(REFIT_FAILED)
     };
-    let view: HullView<'_> = hull_view(w, hull).ok_or_else(|| failed("the hull's view"))?;
     if let Some(n) = crate::port::tv::bay_slot_word(w, &view) {
         return Err(refused(REFIT_BAY).replace("{n}", &n));
     }
@@ -226,7 +227,7 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
     Ok(RefitPlan {
         hull,
         name,
-        mark: e.mark.clone(),
+        mark: view.row.mark.clone(),
         target,
         standard,
         spec: binding.spec.clone(),

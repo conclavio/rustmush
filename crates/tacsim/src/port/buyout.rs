@@ -293,22 +293,33 @@ pub(crate) enum Busy {
 /// through the hold or an open sale of the pilot's. `Some` names the first, with its
 /// line.
 pub(crate) fn in_flight(w: &World, e: &Enrolment) -> Option<(Busy, String)> {
+    in_flight_on(w, e.hull, e.pilot, mush_economy::VaultId(e.vault), &e.name)
+}
+
+/// The same flight and settlement guards for current hull facts, including a
+/// title holder with no governing charter document and a lessee returning a rig.
+pub(crate) fn in_flight_on(
+    w: &World,
+    hull: ObjId,
+    pilot: ObjId,
+    hold: mush_economy::VaultId,
+    name: &str,
+) -> Option<(Busy, String)> {
     let store = w.module_state::<TacsimStore>()?;
-    if matches!(store.voyage_state(e.hull), VoyageState::Unreadable)
-        || pending_of(w, e.hull).is_some()
+    let line = |text: &str| text.replace("{name}", name);
+    if matches!(store.voyage_state(hull), VoyageState::Unreadable) || pending_of(w, hull).is_some()
     {
-        return Some((Busy::Cleared, named(CLEARED_WAIT, e)));
+        return Some((Busy::Cleared, line(CLEARED_WAIT)));
     }
-    match orders_state(w, e.hull) {
-        OrdersState::Unreadable => return Some((Busy::Inflight, named(INFLIGHT_WAIT, e))),
+    match orders_state(w, hull) {
+        OrdersState::Unreadable => return Some((Busy::Inflight, line(INFLIGHT_WAIT))),
         OrdersState::Present(orders) if orders.inflight.is_some() => {
-            return Some((Busy::Inflight, named(INFLIGHT_WAIT, e)));
+            return Some((Busy::Inflight, line(INFLIGHT_WAIT)));
         }
         OrdersState::Present(_) | OrdersState::Absent => {}
     }
-    let hold = EndpointRef(mush_economy::VaultId(e.vault));
-    if goods_pending_aboard(w, hold).is_some() || seller_quote_open(w, e.pilot) {
-        return Some((Busy::Goods, named(GOODS_WAIT, e)));
+    if goods_pending_aboard(w, EndpointRef(hold)).is_some() || seller_quote_open(w, pilot) {
+        return Some((Busy::Goods, line(GOODS_WAIT)));
     }
     None
 }

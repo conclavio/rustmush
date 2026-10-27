@@ -1205,6 +1205,14 @@ ticket stays as the record, nothing burned is refunded, and the pilot is told.
 
 ### Buyout, release, revocation and dormancy (doc 18 cut IC13)
 
+**Mining after buyout.** Once active economic title passes, the owner can refit
+the programme Dray and lease rigs under the ordinary licence, fee and deposit
+rules. These services use current title and the hull's current active,
+pilot-owned hold; a surviving graduation record grants no rights after title
+transfer. Missing or damaged hull or hold state refuses service. An existing
+lessee can still return their rig after losing helm. No schema migration is
+needed.
+
 **`@coop/revoke <pilot>=<why>`** (staff) ends a First Captain's charter now and
 takes the Dray back into the Co-op's pool. `<pilot>` resolves anywhere in the
 world, wherever you stand: a name or alias (`Ash`), `*Ash`, or `#<dbref>`, and it

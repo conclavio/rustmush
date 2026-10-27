@@ -52,18 +52,21 @@ later, and the Registry tells you when it does. Until then a step of your sailin
 plan that comes due waits, and runs once the title is yours.
 
 From then on the Dray is yours. You fly her on your own title, and the Co-op's
-share stops: your sales pay the Co-op nothing. `+coop` and `+ship` say so.
+share stops: your sales pay the Co-op nothing. `+coop` and `+ship` say so. You can
+still refit her at the yard and lease Occator's rigs on your title, with the same
+licence, fee and deposit requirements. Return any rigs before the buyout, then
+lease again once title has passed.
 
 ## The yard's refit
 
 `+coop/refit prospector` at the Registry & Co-op desk, with your Dray docked at
-Ceres Freeport, her hold empty but for her tank, and nothing filed or at the
-counter: the Co-op's yard refits her as a Dray-P. She keeps her name, her mark,
-her charter and her papers; she gains a two-rig vehicle bay aft of the hold, and
-her hold drops to 86 t and 103.2 m³, which takes bulk and ore. Provisions count
-as cargo here: draw the locker down first. `+coop/refit standard` seals the bay
-and gives her back her 100 t and 120 m³, once the bay is empty. `help ships` says
-what the bay is for.
+Ceres Freeport, on your charter or your own title, her hold empty but for her
+tank, and nothing filed or at the counter: the Co-op's yard refits her as a
+Dray-P. She keeps her name, her mark, her ownership and any charter; she gains a
+two-rig vehicle bay aft of the hold, and her hold drops to 86 t and 103.2 m³,
+which takes bulk and ore. Provisions count as cargo here: draw the locker down
+first. `+coop/refit standard` seals the bay and gives her back her 100 t and
+120 m³, once the bay is empty. `help ships` says what the bay is for.
 
 ## Handing the hull back
 

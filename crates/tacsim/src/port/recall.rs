@@ -613,8 +613,9 @@ pub(crate) fn recall_outcome<E>(ended: &Result<LeaseEnd, E>) -> RecallOutcome {
 }
 
 /// The asker's own `Active` enrolment with a live charter, or the refusal
-/// (`+coop/buyout`'s check 1, shared by `+coop/release`, and since doc 20 cut SM.3a
-/// by `+tv`, `+tv/lease` and `+coop/refit`).
+/// (`+coop/buyout`'s check 1, shared by `+coop/release`). Mining setup calls this
+/// only for the charter branch of `coop::mining_hull`; current title holders use
+/// their economic title without treating graduation as a live charter.
 pub(crate) fn chartered(ctx: &Ctx<'_>) -> Result<Enrolment, String> {
     let w: &World = ctx.w;
     let actor = ctx.actor;
