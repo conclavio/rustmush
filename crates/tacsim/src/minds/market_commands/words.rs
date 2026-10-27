@@ -51,7 +51,10 @@ pub(crate) const SPLIT: &str =
     "Price {price}: Registry {levy}%{venue}{parents}, charter owner the rest.";
 pub(crate) const QUOTING: &str =
     "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed.";
-pub(crate) const PUBLISHING: &str = "Listing filed mind {filed} here as {form}.";
+/// 17g C2e (C2e plan §2.1 item 4c): `{flags}` is empty for a transferable
+/// listing of an original line, else `; ` and `ROW`'s flag words
+/// (`market::publishing_line`).
+pub(crate) const PUBLISHING: &str = "Listing filed mind {filed} here as {form}{flags}.";
 pub(crate) const TERMS: &str = "Listings here sell at {price} for one seat and {term} IC days; per-listing terms are not available yet.";
 pub(crate) const BAD_FORM: &str = "form is sealed, open or open-resale.";
 pub(crate) const BAD_ROYALTY: &str =
@@ -98,7 +101,7 @@ pub(crate) const REGISTRY_OFF: &str = "Registry recall and revocation are not co
 /// indexes provide (C2 plan §2.5 items 3 and 4); C2b did not land them, so
 /// both accepts refuse `NOT_OPEN` before reading and nothing prints these
 /// yet. They stay here, verbatim, for the index sub-cut; the listing and the
-/// price rule are built (`trade::offer_lines`, `trade::select`) and the width
+/// price rule are built (`trade::offer_lines`, `trade::accept_plan`) and the width
 /// test measures them now.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod named {

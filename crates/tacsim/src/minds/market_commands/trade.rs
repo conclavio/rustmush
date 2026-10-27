@@ -42,7 +42,8 @@
 //! only through the per-(buyer, licence) and per-(buyer, charter) offer
 //! indexes (C2 plan §2.5 items 3 and 4), which C2b did not land (held for
 //! the lead's mush-core ruling), and the resale offers through the market's
-//! command read, which no composition grants yet (`market`'s module doc).
+//! command read's `ResaleOffers` kind, which waits for 17g C2g over those
+//! indexes (the read itself is granted since 17g C2e).
 //! So both accepts parse and then refuse `NOT_OPEN`, and their listing and
 //! price rule (`accept_plan`) wait, built and tested. By C2c's rule for
 //! `+minds/buy` (reviewer C2C-3: never make an offer no command can take),

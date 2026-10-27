@@ -965,7 +965,17 @@ impl GameModule for TacsimRuleset {
                 let reads = command_reads.take().ok_or_else(|| {
                     ModError::msg("mind commands require the entitlement holdings")
                 })?;
-                minds::market_commands::register(reg, reads)?;
+                // 17g C2e (the lead's ruling R1): the market's bounded command
+                // read, granted over the very composed manifest the entitlement
+                // holdings' grants took (`manifest` is `self.original_holdings`,
+                // checked above). It adds a grant and no service: the market's
+                // registration is already the launch's 32nd service, so the
+                // format-2 Active launch composes 32 services and 33 grants. A
+                // refusal fails TacSim's registration, as those grants' do.
+                let market = Some(mush_market::mind_commands::MarketCommandReader::request(
+                    reg, manifest,
+                )?);
+                minds::market_commands::register(reg, reads, market)?;
             }
         } else if self.fork_material.is_some()
             || self.marked_registry.is_some()

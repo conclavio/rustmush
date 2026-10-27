@@ -1340,8 +1340,9 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
 /// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
 /// test 4, for the same reason: the providers project nothing unbooted). The
 /// format-2 Active launch registers the market's command read
-/// (`mind_market_commands` v1) and grants it to nobody yet (TacSim's grant
-/// would be the 33rd of 32; the counts are printed and pinned). With the
+/// (`mind_market_commands` v1) and, since 17g C2e (the caps 48/48), grants it
+/// to TacSim (32 services and 33 grants; the counts and the mechanics
+/// fingerprint are printed, the counts pinned). With the
 /// buyer at the counter, the parameter objects `@mind/publish` builds for
 /// the List offer, with and without the transfer mark, and `+minds/buy`'s
 /// Quote, and the Fund, Grant and Refund wires the pending steps will submit
@@ -1373,10 +1374,18 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
         mush_core::read_service::MAX_OWNER_READ_SERVICES,
         mush_core::read_service::MAX_OWNER_READ_GRANTS
     );
+    eprintln!(
+        "NAMED_LAUNCH_MECHANICS fingerprint={}",
+        e.registry
+            .mechanics_fingerprint()
+            .map(|f| f.to_hex())
+            .unwrap_or_default()
+    );
     check_eq!(
         counts,
-        (32, 32),
-        "the market read takes the 32nd service; no grant is free for it"
+        (32, 33),
+        "32 services and 33 grants: C2c's market command read is the 32nd service and 17g \
+         C2e's grant the 33rd grant; the caps are 48/48"
     );
     let definitions = e.registry.definitions().ok_or("definitions")?;
     check!(
@@ -1392,8 +1401,8 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     check!(
         e.world
             .module_state::<crate::minds::market_commands::MindCommandService>()
-            .is_some_and(|service| service.market.is_none()),
-        "no composition grants TacSim the market read yet"
+            .is_some_and(|service| service.market.is_some()),
+        "TacSim holds the market read"
     );
     let actions = MarketCommandActions::capture(definitions);
     let licence = mush_roll::commerce::LicenceId::new(1)?;

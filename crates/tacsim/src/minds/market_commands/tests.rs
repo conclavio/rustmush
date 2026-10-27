@@ -282,10 +282,7 @@ fn market_rows_fit_one_hundred_and_twenty_columns() -> TestResult {
         fill(words::NO_LISTING, &code),
         fill(words::AMBIGUOUS, &code),
         fill(words::QUOTING, &code),
-        fill(
-            words::PUBLISHING,
-            &[("filed", "99999999"), ("form", "open-resale")],
-        ),
+        super::market::publishing_line("99999999", "open-resale", false, true),
         fill(words::TERMS, &[("price", "999999.99cr"), ("term", "90")]),
         fill(
             words::HOLD_MORE,
@@ -395,7 +392,9 @@ fn publish_arguments_parse_strictly() -> TestResult {
         ("12 form=open sealed", R::Usage),
         ("12 form=open price=", R::Usage),
         ("12 form=open price=4.001", R::Usage),
-        ("12 form=open seats=0", R::Usage),
+        ("12 form=open seats=00", R::Usage),
+        ("12 form=open term=00", R::Usage),
+        ("12 form=open price=00", R::Usage),
         ("12 form=open term=ninety", R::Usage),
     ] {
         check_eq!(publish_arguments(text), Err(refusal), "{text:?}");
@@ -451,6 +450,130 @@ fn publish_arguments_parse_strictly() -> TestResult {
         "owner x",
     ] {
         check_eq!(holdings_arguments(bad), None, "{bad:?}");
+    }
+    Ok(())
+}
+
+/// 17g C2e test 7 (C2e plan §2.1 items 4b and 4c, review FE-F13).
+///
+/// - `price=0`, `seats=0` and `term=0` (and `price=0cr`, `price=0.00`)
+///   parse, a zero being a value of `@mind/publish`'s own parse, and
+///   `terms_match` refuses each against the counter's values, so `publish`
+///   answers `TERMS` with the counter's price and term, not the usage line.
+///   The trade price grammar (`credits_minor`) still refuses a zero.
+/// - The `PUBLISHING` request line carries the listing row's flags as `ROW`
+///   prints them: `; no resale` for `transfer=no`, `; derived` for a
+///   dependent line, both together; and for a transferable listing of an
+///   original line it is byte-identical to the line before 17g C2e.
+#[test]
+fn publish_refuses_zero_terms() -> TestResult {
+    use super::market::{credits_minor, publish_arguments, publishing_line, terms_match};
+    for (text, price, seats, term) in [
+        ("12 form=open price=0", Some(0), None, None),
+        ("12 form=open price=0cr", Some(0), None, None),
+        ("12 form=open price=0.00", Some(0), None, None),
+        ("12 form=open seats=0", None, Some(0), None),
+        ("12 form=open term=0", None, None, Some(0)),
+    ] {
+        let args = publish_arguments(text).map_err(|e| format!("{text}: {e:?}"))?;
+        check_eq!(
+            (args.price, args.seats, args.term),
+            (price, seats, term),
+            "{text}"
+        );
+        check!(!terms_match(&args, 40_000, 90), "{text}");
+    }
+    check_eq!(credits_minor("0"), None, "the trade grammar is unchanged");
+    check_eq!(
+        fill(words::TERMS, &[("price", "400cr"), ("term", "90")]),
+        "Listings here sell at 400cr for one seat and 90 IC days; per-listing terms are not \
+         available yet."
+    );
+    check_eq!(
+        publishing_line("12", "open", true, false),
+        "Listing filed mind 12 here as open.",
+        "unchanged for a transferable original listing"
+    );
+    check_eq!(
+        publishing_line("12", "open-resale", false, false),
+        "Listing filed mind 12 here as open-resale; no resale."
+    );
+    check_eq!(
+        publishing_line("12", "open", true, true),
+        "Listing filed mind 12 here as open; derived."
+    );
+    check_eq!(
+        publishing_line("12", "sealed", false, true),
+        "Listing filed mind 12 here as sealed; no resale, derived."
+    );
+    Ok(())
+}
+
+/// 17g C2e (the C2e fix round, reviewer tests/T2): `publish`'s request is
+/// built by one pure function (`list_request`) from the parsed arguments and
+/// the filed line's own facts, so the `PUBLISHING` line it prints names the
+/// same transfer mark and derivation as the List offer it submits and the
+/// protocol it picks. Over the four combinations: a dependent line lists
+/// through the derived protocol and its line says `derived`; `transfer=no`
+/// is `"transferable": false` in the offer and `no resale` in the line; the
+/// offer carries the List wire's form and royalty and the owner licence.
+#[test]
+fn publish_request_line_matches_the_offer() -> TestResult {
+    use super::market::{list_request, publish_arguments};
+    use mush_market::mind_commands::Protocol;
+    let licence = mush_roll::commerce::LicenceId::new(7)?;
+    for (text, dependent, protocol, line, form, royalty, transferable) in [
+        (
+            "12 form=open",
+            false,
+            Protocol::Original,
+            "Listing filed mind 12 here as open.",
+            "open",
+            0,
+            true,
+        ),
+        (
+            "12 form=open transfer=no",
+            false,
+            Protocol::Original,
+            "Listing filed mind 12 here as open; no resale.",
+            "open",
+            0,
+            false,
+        ),
+        (
+            "12 form=open-resale royalty=300",
+            true,
+            Protocol::Derived,
+            "Listing filed mind 12 here as open-resale; derived.",
+            "open_resale",
+            300,
+            true,
+        ),
+        (
+            "12 form=sealed transfer=no",
+            true,
+            Protocol::Derived,
+            "Listing filed mind 12 here as sealed; no resale, derived.",
+            "sealed",
+            0,
+            false,
+        ),
+    ] {
+        let args = publish_arguments(text).map_err(|e| format!("{text}: {e:?}"))?;
+        let request = list_request(&args, dependent, licence);
+        check_eq!(request.protocol, protocol, "{text}");
+        check_eq!(request.line, line, "{text}");
+        check_eq!(
+            request.parameters,
+            serde_json::json!({
+                "owner_licence": licence,
+                "form": form,
+                "royalty_permille": royalty,
+                "transferable": transferable,
+            }),
+            "{text}"
+        );
     }
     Ok(())
 }

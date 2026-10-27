@@ -121,6 +121,7 @@ pub(in crate::world_task::submission_disposition::tests) struct Running {
     store: Arc<PurchaseFaultStore>,
     recorder: Arc<Recorder>,
     routes: OfferRouteTable,
+    owner_reads: Option<(usize, usize)>,
     pub exchange: ObjId,
 }
 impl Running {
@@ -136,6 +137,15 @@ impl Running {
     /// compares it with a real `build_engine` boot over the same store.
     pub(in crate::world_task::submission_disposition::tests) fn routes(&self) -> &OfferRouteTable {
         &self.routes
+    }
+
+    /// 17g C2e: the booted registry's owner-read (services, grants) counts
+    /// (`Registry::owner_read_counts`), read-only, so a command test proves
+    /// its read is the composed one.
+    pub(in crate::world_task::submission_disposition::tests) const fn owner_read_counts(
+        &self,
+    ) -> Option<(usize, usize)> {
+        self.owner_reads
     }
 
     pub fn drain_output(&self) -> TestResult {
@@ -239,6 +249,7 @@ impl Running {
             .action_providers()
             .ok_or("actual authoritative providers")?
             .offer_route_table();
+        let owner_reads = engine.registry.owner_read_counts();
         let recorder = Arc::new(Recorder::default());
         let sink = recorder.clone();
         let deps = ServerDeps {
@@ -262,6 +273,7 @@ impl Running {
             store,
             recorder,
             routes,
+            owner_reads,
             exchange,
         })
     }

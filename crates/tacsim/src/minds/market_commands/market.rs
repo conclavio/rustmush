@@ -13,24 +13,25 @@
 //!
 //! `+minds` is registered by TacSim unconditionally (`arena_bridge`), beside
 //! `@mind`. Without the command slot or its market read every form refuses
-//! `NOT_OPEN`: a House-only launch has no slot, and **no composition grants
-//! the market read yet**: the format-2 Active launch already holds all 32
-//! owner-read grants (17g C2a's measurement), so TacSim's
-//! `MarketCommandReader::request` would refuse the boot with
-//! `OwnerReadError::Limit`. The C2c brief says to stop there and leave the cap
-//! to the lead (C2 plan §2.4 fallback 2), so `MindCommandService::market` is
-//! `None` in every composition until that lands.
+//! `NOT_OPEN`, as on a House-only launch, which has no slot. **The read is
+//! granted on the format-2 Active launch since 17g C2e**: the lead's ruling
+//! R1 raised the owner-read caps to 48, and `TacsimRuleset::register`
+//! requests `MarketCommandReader` over the same composed manifest the
+//! entitlement holdings' grants take, in the branch that registers the slot
+//! (32 services and 33 grants). So `+minds` (the counter, then the listings
+//! page), `+minds <code>`, `+minds/next <code>`, `+minds/holdings owner
+//! <cursor>` and `@mind/publish` run through the real reader there.
 //!
-//! **Not built (the C2c builder's report):** `+minds/buy/pay`,
-//! `/buy/complete` and `/buy/refund`, and the actor's own quote or escrow
-//! line under `+minds <code>`, read the actor's own quote and funded
-//! operation, which needs the per-buyer entitlement index C2b did not land
-//! (C2 plan §2.5 item 1). Their switches are registered and refuse
-//! `NOT_OPEN` until that index lands; their words wait in
-//! `words::pending`. **`+minds/buy` is held with them** (the C2c fix round,
-//! reviewer C2C-3): its `QUOTING` reply promises that `+minds <code>` shows
-//! the quote, which only the own-purchase line can, and a quote no command
-//! can pay only expires. `buy` below is built and waits for that index.
+//! **Not built yet:** `+minds/buy/pay`, `/buy/complete` and `/buy/refund`,
+//! and the actor's own quote or escrow line under `+minds <code>`, read the
+//! actor's own quote and funded operation (the market read's `OwnPurchase`
+//! and `OwnOpen`), which wait for 17g C2g over the per-buyer entitlement
+//! index 17g C2f lands (C2 plan §2.5 item 1). Their switches are registered
+//! and refuse `NOT_OPEN` until then; their words wait in `words::pending`.
+//! **`+minds/buy` is held with them** (the C2c fix round, reviewer C2C-3):
+//! its `QUOTING` reply promises that `+minds <code>` shows the quote, which
+//! only the own-purchase line can, and a quote no command can pay only
+//! expires. `buy` below is built and waits for C2g.
 //!
 //! 17g C2d routes its forms from here: `+minds/renew` and its `/pay` and
 //! `/decline` (`renew`), and `+minds/resell`, `+minds/charter` and their
@@ -114,8 +115,8 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         [] => detail(ctx, &text),
         ["next"] => next(ctx, &text),
         ["holdings"] => super::holdings::holdings(ctx, &text),
-        // The per-buyer index these need is not landed (module doc); `/buy`
-        // waits with them, so its reply never promises a quote line.
+        // These wait for 17g C2g over C2f's per-buyer index (module doc);
+        // `/buy` waits with them, so its reply never promises a quote line.
         ["buy"] | ["buy", "pay"] | ["buy", "complete"] | ["buy", "refund"] => {
             code(&text)?;
             handles(ctx)?;
@@ -178,8 +179,11 @@ fn at_counter(
     }
 }
 
-/// The current listing `code` names: `NO_LISTING` for none, `AMBIGUOUS` for
-/// two.
+/// The current listing `code` names: `NO_LISTING` for none (the read's
+/// `Refused`), `AMBIGUOUS` for two. Any other failure of the read (or an
+/// answer of another kind) is `NOT_OPEN`, as in `next`, so a read that could
+/// not run never reads as "no listing has the code" (the C2e fix round,
+/// reviewer tests/T1).
 fn listing(
     ctx: &Ctx<'_>,
     market: &OwnerReadHandle<MarketCommandReader>,
@@ -187,14 +191,17 @@ fn listing(
 ) -> Result<PublicListingView, CmdError> {
     let found = ctx
         .read_owner(market, MarketCommandRequest::listing_by_code(code))
-        .ok()
-        .and_then(mush_market::mind_commands::MarketCommandResult::into_listing);
+        .map_err(|error| match error {
+            mush_core::read_service::OwnerReadError::Refused => {
+                CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))
+            }
+            _ => not_open(),
+        })?
+        .into_listing()
+        .ok_or_else(not_open)?;
     match found {
-        Some(CodeLookup::One(view)) => Ok(view),
-        Some(CodeLookup::Ambiguous) => {
-            Err(CmdError::msg(fill(words::AMBIGUOUS, &[("code", code)])))
-        }
-        None => Err(CmdError::msg(fill(words::NO_LISTING, &[("code", code)]))),
+        CodeLookup::One(view) => Ok(view),
+        CodeLookup::Ambiguous => Err(CmdError::msg(fill(words::AMBIGUOUS, &[("code", code)]))),
     }
 }
 
@@ -331,8 +338,8 @@ fn detail(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
 /// Roll's current facts and refuses one account's two characters.
 ///
 /// Held (module doc, reviewer C2C-3): `command` does not route here until
-/// the per-buyer index lets `+minds <code>` show the quote `QUOTING`
-/// promises and `+minds/buy/pay` pay it.
+/// 17g C2g, over C2f's per-buyer index, lets `+minds <code>` show the quote
+/// `QUOTING` promises and `+minds/buy/pay` pay it.
 #[allow(dead_code)]
 fn buy(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let code = code(text)?.to_owned();
@@ -592,17 +599,21 @@ pub(crate) fn publish_arguments(text: &str) -> Result<PublishArguments, PublishR
         Some("no") => false,
         Some(_) => return Err(PublishRefusal::Transfer),
     };
+    // 17g C2e (C2e plan §2.1 item 4b): a zero is a value here, so that
+    // `publish` refuses it with `TERMS` (which needs the counter's price and
+    // term) rather than the usage line; `credits_minor`'s `1..=` range is the
+    // trade price grammar and stays as it is.
     let price = pairs
         .get("price")
-        .map(|text| credits_minor(text).ok_or(PublishRefusal::Usage))
+        .map(|text| publish_price(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     let seats = pairs
         .get("seats")
-        .map(|text| number(text).ok_or(PublishRefusal::Usage))
+        .map(|text| count(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     let term = pairs
         .get("term")
-        .map(|text| number(text).ok_or(PublishRefusal::Usage))
+        .map(|text| count(text).ok_or(PublishRefusal::Usage))
         .transpose()?;
     Ok(PublishArguments {
         filed,
@@ -619,6 +630,26 @@ pub(crate) fn publish_arguments(text: &str) -> Result<PublishArguments, PublishR
 /// A credit amount as players type it (C2 plan §2.7): `<whole>[.<one or two
 /// digits>]` with an optional `cr`, from 0.01 to 1,000,000, in minor units.
 pub(crate) fn credits_minor(text: &str) -> Option<i64> {
+    credits_amount(text).filter(|minor| (1..=100_000_000).contains(minor))
+}
+
+/// `@mind/publish`'s `price=` (17g C2e): the credit grammar of
+/// `credits_minor`, zero included (`0`, `0cr`, `0.00`), so a zero parses and
+/// `terms_match` refuses it. A publish-only parse.
+fn publish_price(text: &str) -> Option<i64> {
+    credits_amount(text).filter(|minor| (0..=100_000_000).contains(minor))
+}
+
+/// `@mind/publish`'s `seats=` and `term=` (17g C2e): a whole number as
+/// `number` reads one, or exactly `0`, so a zero parses and `terms_match`
+/// refuses it. A publish-only parse.
+fn count(text: &str) -> Option<u64> {
+    if text == "0" { Some(0) } else { number(text) }
+}
+
+/// The credit grammar's value in minor units, any size `i64` holds; the
+/// callers bound it.
+fn credits_amount(text: &str) -> Option<i64> {
     let text = text.strip_suffix("cr").unwrap_or(text);
     let (whole, cents) = match text.split_once('.') {
         Some((whole, cents)) => (whole, Some(cents)),
@@ -636,12 +667,11 @@ pub(crate) fn credits_minor(text: &str) -> Option<i64> {
         }
         Some(_) => return None,
     };
-    let minor = whole
+    whole
         .parse::<i64>()
         .ok()?
         .checked_mul(100)?
-        .checked_add(cents)?;
-    (1..=100_000_000).contains(&minor).then_some(minor)
+        .checked_add(cents)
 }
 
 /// Whether the optional `price=`, `seats=` and `term=` are the market's own
@@ -693,6 +723,30 @@ fn market_terms(ctx: &Ctx<'_>) -> Option<(i64, u64)> {
     Some((market.terms.price_minor, term))
 }
 
+/// `PUBLISHING` (17g C2e, C2e plan §2.1 item 4c): the request line names the
+/// listing row's frozen transferability and derivation as the row will show
+/// them. `{flags}` is empty when `row_flags` is, else `; ` and its words, so
+/// a transferable listing of an original line reads exactly as before 17g
+/// C2e. The TacSim launch's personal policy is transferable policy-wide
+/// (D-UM-40, `launch::market`), so the row's frozen mark is the author's
+/// `transfer=`; `derived` is the filed line's dependence, which picks the
+/// derived protocol.
+pub(crate) fn publishing_line(
+    filed: &str,
+    form: &str,
+    transferable: bool,
+    derived: bool,
+) -> String {
+    let flags = match row_flags(transferable, derived) {
+        "" => String::new(),
+        shown => format!("; {shown}"),
+    };
+    fill(
+        words::PUBLISHING,
+        &[("filed", filed), ("form", form), ("flags", &flags)],
+    )
+}
+
 /// `@mind/publish <filed> form=…` (at a counter): list a filed mind the
 /// actor owns through the original v3 List, or the derived v1 List when its
 /// line is dependent, at the market's own price and terms with the author's
@@ -713,24 +767,56 @@ pub(crate) fn publish(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
         )));
     }
     let view = super::author::own_filed(ctx, args.filed)?;
-    let protocol = if view.dependent() {
+    let request = list_request(&args, view.dependent(), view.owner_licence());
+    let action = actions(ctx)?
+        .entitlement(request.protocol, Step::List)
+        .ok_or_else(not_open)?;
+    let filed = args.filed.to_string();
+    super::submit(
+        ctx,
+        "publish",
+        &filed,
+        action,
+        request.parameters,
+        &request.line,
+    )
+}
+
+/// What `publish` submits for a filed mind it owns: the List protocol, the
+/// offer's parameters and the `PUBLISHING` request line.
+#[derive(Debug)]
+pub(crate) struct ListRequest {
+    pub(crate) protocol: Protocol,
+    pub(crate) parameters: serde_json::Value,
+    pub(crate) line: String,
+}
+
+/// `publish`'s request from the parsed arguments and the filed line's own
+/// facts (`OwnFiledView::dependent` and `owner_licence`): a dependent line
+/// lists through the derived v1 List, any other through the original v3
+/// List; the offer carries the author's form, royalty and transfer mark; and
+/// the request line names the same transfer mark and derivation as the
+/// listing row will show them (edge (c)). One pure function builds all three
+/// from the same two facts, so the C2e fix round's lib test (reviewer
+/// tests/T2) pins the line `publish` prints against the offer it submits.
+pub(crate) fn list_request(
+    args: &PublishArguments,
+    dependent: bool,
+    owner_licence: mush_roll::commerce::LicenceId,
+) -> ListRequest {
+    let protocol = if dependent {
         Protocol::Derived
     } else {
         Protocol::Original
     };
-    let action = actions(ctx)?
-        .entitlement(protocol, Step::List)
-        .ok_or_else(not_open)?;
-    let filed = args.filed.to_string();
-    let line = fill(
-        words::PUBLISHING,
-        &[("filed", &filed), ("form", args.shown)],
-    );
-    let parameters = list_parameters(
-        view.owner_licence(),
-        args.form,
-        args.royalty,
-        args.transferable,
-    );
-    super::submit(ctx, "publish", &filed, action, parameters, &line)
+    ListRequest {
+        protocol,
+        parameters: list_parameters(owner_licence, args.form, args.royalty, args.transferable),
+        line: publishing_line(
+            &args.filed.to_string(),
+            args.shown,
+            args.transferable,
+            dependent,
+        ),
+    }
 }

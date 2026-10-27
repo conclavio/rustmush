@@ -51,20 +51,22 @@ use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 /// idempotency key. `roll` is TacSim's one original-holdings grant, shared
 /// with the holdings seam (`match_::original_access::register_entitlements`):
 /// the command kinds are folded into that read (C2 plan §2.4 fallback 1),
-/// because the format-2 Active launch has no owner-read grant to spare. It is registered only when Active commerce composes the
-/// player market (`MindCommerce::configure_tacsim` sets
+/// because the format-2 Active launch had no owner-read grant to spare at
+/// 17g C2a. It is registered only when Active commerce composes the player
+/// market (`MindCommerce::configure_tacsim` sets
 /// `TacsimRuleset.mind_commands`), so on a House-only launch every command
 /// that needs it refuses `NOT_OPEN`. A slot is `Clone` (`Registrar::state`);
 /// a clone shares the one counter.
 ///
 /// 17g C2c: `market` is the market's bounded command read
 /// (`mush_market::mind_commands`), which every `+minds` form and
-/// `@mind/publish` need. It is `None` in every composition for now: the
-/// format-2 Active launch already holds all 32 owner-read grants, so TacSim's
-/// `MarketCommandReader::request` would refuse its boot with
-/// `OwnerReadError::Limit`, and the C2c brief leaves the cap to the lead (C2
-/// plan §2.4 fallback 2). Once the cap allows it, `register` requests it with
-/// the same composed manifest and stores it here.
+/// `@mind/publish` need. 17g C2e (the lead's ruling R1 raised the owner-read
+/// caps to 48): `TacsimRuleset::register` requests it with
+/// `MarketCommandReader::request` over the same composed manifest the
+/// entitlement holdings' grants take, in the branch that registers this slot,
+/// so it is `Some` exactly where the slot exists (the format-2 Active launch:
+/// 32 services and 33 grants). The `Option` stays so that every form keeps
+/// its `NOT_OPEN` refusal for a composition without it.
 #[derive(Clone)]
 pub(crate) struct MindCommandService {
     pub(crate) roll: OwnerReadHandle<OriginalOwnerReader>,
@@ -75,14 +77,16 @@ pub(crate) struct MindCommandService {
 }
 
 /// Register the slot over the original-holdings grant the holdings seam
-/// already requested with the same composed manifest (no second grant).
+/// already requested with the same composed manifest (no second Roll grant),
+/// and the market's command read TacSim requested beside it (17g C2e).
 pub(crate) fn register(
     reg: &mut Registrar<'_>,
     roll: OwnerReadHandle<OriginalOwnerReader>,
+    market: Option<OwnerReadHandle<MarketCommandReader>>,
 ) -> Result<(), ModError> {
     reg.state(MindCommandService {
         roll,
-        market: None,
+        market,
         attempts: Arc::new(Mutex::new((i64::MIN, 0))),
     });
     Ok(())

@@ -72,7 +72,7 @@ impl GameModule for QuotaOwner {
             DefinitionKind::new("owner_read").unwrap(),
             |ctx: &crate::mechanics::DefinitionValidationContext<'_>| {
                 let entry = ctx.definition();
-                if (0..=32).any(|n| {
+                if (0..=48).any(|n| {
                     entry.reference() == &quota_definition(n)
                         && entry.payload() == quota_descriptor(n).payload()
                         && entry.references().is_empty()
@@ -87,31 +87,32 @@ impl GameModule for QuotaOwner {
         macro_rules! register {($($n:literal),*)=>{$(register_one::<$n>(reg,$n,true)?;)*};}
         register!(
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 30
+            24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+            46
         );
         match self.0 {
-            Mode::DuplicateType => register_one::<0>(reg, 31, true),
+            Mode::DuplicateType => register_one::<0>(reg, 47, true),
             Mode::DuplicateDefinition => reg.owner_read_service(
                 quota_definition(0),
                 BTreeSet::new(),
                 BTreeSet::new(),
-                QuotaService::<31>,
+                QuotaService::<47>,
             ),
             Mode::ForeignOwner => {
                 let definition = DefinitionRegistryBuilder::new()
-                    .register(OwnerId::new("foreign").unwrap(), quota_descriptor(31))
+                    .register(OwnerId::new("foreign").unwrap(), quota_descriptor(47))
                     .unwrap();
                 reg.owner_read_service(
                     definition,
                     BTreeSet::new(),
                     BTreeSet::new(),
-                    QuotaService::<31>,
+                    QuotaService::<47>,
                 )
             }
             mode => {
-                register_one::<31>(reg, 31, mode != Mode::Denied)?;
+                register_one::<47>(reg, 47, mode != Mode::Denied)?;
                 if mode == Mode::Overflow {
-                    register_one::<32>(reg, 32, true)?;
+                    register_one::<48>(reg, 48, true)?;
                 }
                 Ok(())
             }
@@ -153,12 +154,13 @@ impl GameModule for QuotaConsumer {
         macro_rules! request {($($n:literal),*)=>{$(request_one::<$n>(reg,$n,&self.answers)?;)*};}
         request!(
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 30
+            24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+            46
         );
         if self.mode == Mode::WrongType {
-            request_one::<32>(reg, 31, &self.answers)
+            request_one::<48>(reg, 47, &self.answers)
         } else {
-            request_one::<31>(reg, 31, &self.answers)
+            request_one::<47>(reg, 47, &self.answers)
         }
     }
 }
@@ -180,11 +182,16 @@ fn quota_engine(mode: Mode, reversed: bool) -> Result<(Engine, Answers), ModErro
     ))
 }
 
+/// 17g C2e (R1): the caps are 48/48. Forty-eight distinct services (one
+/// const-generic type each, since `register` refuses a duplicate
+/// `service_type`) and forty-eight grants compose in either module order and
+/// every one dispatches to its own service; a forty-ninth declaration refuses
+/// `Limit` at registration.
 #[test]
-fn thirty_two_distinct_registered_services_dispatch_and_thirty_third_refuses() {
+fn forty_eight_distinct_registered_services_dispatch_and_forty_ninth_refuses() {
     for reversed in [false, true] {
         let (mut engine, answers) = quota_engine(Mode::Good, reversed).unwrap();
-        for n in 0..32 {
+        for n in 0..48 {
             engine.step(
                 Inbound::Cmd {
                     conn: 1,
@@ -196,7 +203,7 @@ fn thirty_two_distinct_registered_services_dispatch_and_thirty_third_refuses() {
             );
         }
         let answers = answers.lock().unwrap();
-        assert_eq!(answers.len(), 32);
+        assert_eq!(answers.len(), 48);
         for (n, (service, actor, requester, value)) in answers.iter().enumerate() {
             assert_eq!(
                 (*service, *actor, requester.as_str(), *value),
@@ -207,7 +214,7 @@ fn thirty_two_distinct_registered_services_dispatch_and_thirty_third_refuses() {
         assert!(!engine.action_state().has_prepared());
         let error = quota_engine(Mode::Overflow, reversed)
             .err()
-            .expect("33 distinct declarations must refuse");
+            .expect("49 distinct declarations must refuse");
         assert!(
             error
                 .to_string()

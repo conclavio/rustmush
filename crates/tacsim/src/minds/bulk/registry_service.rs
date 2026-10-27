@@ -354,8 +354,11 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
 }
 
 /// `@registry`'s help (17g C2d adds the operators' recall and revocation).
-/// The brief's one sentence is 136 columns, so it breaks where its second
-/// clause begins, keeping both lines inside the 120-column floor.
+/// The brief's one sentence (`…; @registry/cancel; @registry/recall …`) is
+/// 147 columns, so it breaks where its second clause begins, keeping both
+/// lines inside the 120-column floor; the line break stands in for the `; `
+/// that joined `@registry/cancel` to the second clause (17g C2e hygiene; the
+/// help prose itself stays as written, the lead's ruling R5).
 pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed> and @registry/revoke <licence> (Registry operators)";
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

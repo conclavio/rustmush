@@ -693,6 +693,167 @@ async fn author_commands_are_not_open_on_a_house_only_launch() -> TestResult {
     result?
 }
 
+/// The market's replies (`tacsim::minds::market_commands::words`) the 17g
+/// C2e tests pin through the real granted read.
+const EMPTY: &str = "No minds are for sale at this counter.";
+const COUNTER: &str = "Listing and buying minds happen at a market counter.";
+const HOLD_HEAD: &str = "Your mind licences:";
+/// `TERMS` filled with the provisional counter's price (400cr) and the
+/// personal term (90 IC days).
+const TERMS_400: &str = "Listings here sell at 400cr for one seat and 90 IC days; per-listing terms are not available yet.";
+fn no_listing(code: &str) -> String {
+    format!("No listing here has the code {code}.")
+}
+
+/// 17g C2c test 7 under its binding name, real since 17g C2e (C2e plan §2.4
+/// item 3, reviews FE-F1, FE-F4 and AD-F10). On the format-2 Active launch
+/// the registry composes 32 owner-read services and 33 grants, so the
+/// `+minds` read is the composed one, granted to TacSim, and not a fixture.
+/// At the counter, `+minds` reads the real listing family through the
+/// granted reader (`Lens::scan` over the live store, the venue gate through
+/// the real `EntitlementGuard`) and answers `EMPTY`, byte-identical for the
+/// author, the buyer and the bystander (two logins and a third); away from
+/// the counter (Limbo) each reads `COUNTER`, alike. After a restart the same
+/// boot composes the same counts and every principal reads the same lines
+/// again. A listing to show needs a genuine Registry rating, so the rows
+/// themselves are story part 2's (C2h).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResult {
+    let mut w = world("mush-c2e-listings", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        let principals = [p.author, p.buyer, w.bystander];
+        let venue = w.launch.deployment.venue.room;
+        for restarted in [false, true] {
+            check_eq!(
+                w.server.owner_read_counts(),
+                Some((32, 33)),
+                "the composed reads (restarted: {restarted})"
+            );
+            let mut at_counter = Vec::new();
+            for actor in principals {
+                at_counter.push(w.server.command(actor, "+minds".into()).await?);
+            }
+            for lines in &at_counter {
+                check_eq!(lines, &vec![EMPTY.to_owned()], "restarted: {restarted}");
+            }
+            let mut away = Vec::new();
+            for actor in principals {
+                w.server
+                    .command(GOD, format!("@teleport #{}=#0", actor.0))
+                    .await?;
+                away.push(w.server.command(actor, "+minds".into()).await?);
+                w.server
+                    .command(GOD, format!("@teleport #{}=#{}", actor.0, venue.0))
+                    .await?;
+            }
+            for lines in &away {
+                check_eq!(lines, &vec![COUNTER.to_owned()], "restarted: {restarted}");
+            }
+            if !restarted {
+                w.server.stop().await?;
+                w.server = active(&w.launch, w.alt, w.bystander).await?;
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// 17g C2c test 8's publish half under its binding name (17g C2e, C2e plan
+/// §2.4 item 4; the `/buy` half joins it in C2g), through the real granted
+/// reads on the format-2 Active launch:
+/// - `@mind/publish 1 form=sealed` away from the counter is `COUNTER`;
+/// - at the counter, a `price=`, `seats=` or `term=` other than the
+///   market's own is `TERMS` filled with the counter's price and term, and
+///   a zero (`price=0`, `seats=0`, `term=0`) is the same `TERMS` (edge b);
+/// - the buyer naming a filed number is `NO_FILED`, alike under the
+///   comparison rule (`same_refusal`) for the first number Roll would
+///   allocate and a far one (both missing here, as in C2a's test 9; the real
+///   foreign filed number is story part 2's);
+/// - `+minds feed0001` and `+minds/next feed0001` are `NO_LISTING`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn market_commands_refuse_without_own_records() -> TestResult {
+    let mut w = world("mush-c2e-refusals", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        check_eq!(
+            w.launch
+                .deployment
+                .market
+                .as_ref()
+                .map(|market| market.terms.price_minor),
+            Some(40_000),
+            "TERMS_400 names the provisional price"
+        );
+        w.server
+            .command(GOD, format!("@teleport #{}=#0", p.buyer.0))
+            .await?;
+        check_eq!(
+            w.server
+                .command(p.buyer, "@mind/publish 1 form=sealed".into())
+                .await?,
+            vec![COUNTER.to_owned()],
+            "away from the counter"
+        );
+        w.server
+            .command(
+                GOD,
+                format!(
+                    "@teleport #{}=#{}",
+                    p.buyer.0, w.launch.deployment.venue.room.0
+                ),
+            )
+            .await?;
+        for line in [
+            "@mind/publish 1 form=sealed price=1",
+            "@mind/publish 1 form=sealed price=0",
+            "@mind/publish 1 form=sealed seats=0",
+            "@mind/publish 1 form=sealed term=0",
+            "@mind/publish 1 form=open seats=2",
+            "@mind/publish 1 form=open term=30",
+        ] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![TERMS_400.to_owned()],
+                "{line}"
+            );
+        }
+        let mut replies = Vec::new();
+        for typed in ["1", "987654"] {
+            let line = format!("@mind/publish {typed} form=sealed");
+            let lines = w.server.command(p.buyer, line.clone()).await?;
+            check_eq!(
+                lines,
+                vec![format!("You own no filed mind {typed}.")],
+                "{line}"
+            );
+            replies.push((lines, typed));
+        }
+        let [(a, typed_a), (b, typed_b)] =
+            <[_; 2]>::try_from(replies).map_err(|_| "two replies")?;
+        check!(
+            same_refusal(&a, typed_a, &b, typed_b),
+            "NO_FILED reads alike: {a:?} vs {b:?}"
+        );
+        for line in ["+minds feed0001", "+minds/next feed0001"] {
+            check_eq!(
+                w.server.command(p.buyer, line.into()).await?,
+                vec![no_listing("feed0001")],
+                "{line}"
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
 /// 17g C2c test 10: a format-1 (House-only) Active launch composes no player
 /// market and so no command slot: every `+minds` form (bare, a code, `/next`,
 /// `/holdings` and its sections, `/buy` and its three steps) and
@@ -748,13 +909,23 @@ async fn market_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 /// author), and every line passes `assert_private` against every account id
 /// in the store; room speech is the positive control.
 ///
-/// What the lines are today: the command slot exists here but no
-/// composition grants the market read yet (the owner-read cap, the C2c
-/// builder's blocker), so every form refuses `NOT_OPEN` after its own
-/// parse: a malformed `@mind/publish` form is `BAD_FORM` and an unknown
-/// switch set the `+minds` help. That block is the dispatch's pin on the
-/// production path (a slot without a market read) and is re-blessed when the
-/// read is granted; the observer and privacy assertions stand as they are.
+/// The lines, re-blessed in 17g C2e (C2e plan §2.5, review FE-F4) now the
+/// launch grants TacSim the market read; the observer and privacy assertions
+/// stand as they were. Every principal stands at the counter: `+minds` is
+/// `EMPTY`; `+minds feed0001` and `+minds/next feed0001` are `NO_LISTING`;
+/// `+minds/holdings owner 1` is `HOLD_HEAD` alone (the live Roll read, for a
+/// character with no charters: no row and no `HOLD_MORE`); bare
+/// `+minds/holdings`, its paid section, `+minds/buy` and its three steps
+/// still refuse `NOT_OPEN` (they wait for 17g C2g); both `@mind/publish`
+/// forms are `NO_FILED` (the counter admits; nobody owns filed mind 1); a
+/// malformed form is `BAD_FORM` and an unknown switch set the `+minds` help.
+///
+/// The refusals 17g C2e made reachable are under the same lens (the C2e fix
+/// round, reviewer tests/T3): `@mind/publish` with a zero price (edge b) or
+/// a seat count other than the market's is `TERMS` at the counter; and each
+/// actor, taken to Limbo, reads `COUNTER` for bare `+minds` and for
+/// `@mind/publish`, reaching nobody else and passing `assert_private`,
+/// before it is taken back to the counter.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn market_replies_reach_only_the_actor() -> TestResult {
     let mut w = world("mush-c2c-observer", 2).await?;
@@ -790,23 +961,26 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
                 "the {name} hears the room: {said:?}"
             );
         }
+        let no_listing = no_listing("feed0001");
         let lines = [
-            ("+minds", NOT_OPEN),
-            ("+minds feed0001", NOT_OPEN),
-            ("+minds/next feed0001", NOT_OPEN),
+            ("+minds", EMPTY),
+            ("+minds feed0001", no_listing.as_str()),
+            ("+minds/next feed0001", no_listing.as_str()),
             ("+minds/holdings", NOT_OPEN),
-            ("+minds/holdings owner 1", NOT_OPEN),
+            ("+minds/holdings owner 1", HOLD_HEAD),
             ("+minds/holdings paid 1", NOT_OPEN),
             ("+minds/buy feed0001", NOT_OPEN),
             ("+minds/buy/pay feed0001", NOT_OPEN),
             ("+minds/buy/complete feed0001", NOT_OPEN),
             ("+minds/buy/refund feed0001", NOT_OPEN),
             ("+minds/next/pay x", MINDS_HELP),
-            ("@mind/publish 1 form=sealed", NOT_OPEN),
+            ("@mind/publish 1 form=sealed", "You own no filed mind 1."),
             (
                 "@mind/publish 1 form=open royalty=100 transfer=no",
-                NOT_OPEN,
+                "You own no filed mind 1.",
             ),
+            ("@mind/publish 1 form=sealed price=0", TERMS_400),
+            ("@mind/publish 1 form=sealed seats=2", TERMS_400),
             (
                 "@mind/publish 1 form=bogus",
                 "form is sealed, open or open-resale.",
@@ -832,6 +1006,29 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
                 quiet(&seen, actor, line)?;
                 check_eq!(seen.own, vec![reply.to_owned()], "#{} {line}", actor.0);
             }
+        }
+        // Away from the counter: the teleports' own room lines are drained
+        // by `command`, so only the actor's two commands are under the lens.
+        let venue = w.launch.deployment.venue.room;
+        for actor in [p.author, p.buyer, w.bystander] {
+            w.server
+                .command(GOD, format!("@teleport #{}=#0", actor.0))
+                .await?;
+            for line in ["+minds", "@mind/publish 1 form=sealed"] {
+                let late = w.server.take_seen(actor)?;
+                quiet(&late, actor, "the settle window")?;
+                let seen = w.server.command_seen(actor, line.into()).await?;
+                quiet(&seen, actor, line)?;
+                check_eq!(
+                    seen.own,
+                    vec![COUNTER.to_owned()],
+                    "#{} {line} in Limbo",
+                    actor.0
+                );
+            }
+            w.server
+                .command(GOD, format!("@teleport #{}=#{}", actor.0, venue.0))
+                .await?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     })

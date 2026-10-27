@@ -16,16 +16,16 @@
 //! folded read's declared row ceiling, so this command makes up to
 //! `MAX_READS` reads to fill a section's 20 rows.
 //!
-//! **Not built (the C2c builder's report):** the paid section reads the
-//! per-holder paid index and the waiting purchases the per-buyer entitlement
-//! index (C2 plan §2.5 items 1 and 2), which C2b did not land. Roll answers
+//! **Not built yet:** the paid section reads the per-holder paid index and
+//! the waiting purchases the per-buyer entitlement index (C2 plan §2.5 items
+//! 1 and 2), which 17g C2f lands and 17g C2g reads. Until then Roll answers
 //! the paid section `Unavailable`, so bare `+minds/holdings` and
 //! `+minds/holdings paid <cursor>` refuse `NOT_OPEN` rather than print a
 //! list that leaves the paid licences out (`HOLD_EMPTY` would then be
-//! false; it waits in `words::pending`). `+minds/holdings owner <cursor>` is
-//! built, but like every `+minds` form it needs the market read
-//! (`market::handles`), which no composition grants yet (`market`'s module
-//! doc), so today it too refuses `NOT_OPEN` (reviewer T-F4).
+//! false; it waits in `words::pending`). `+minds/holdings owner <cursor>`
+//! reads Roll only, but like every `+minds` form it sits behind the market
+//! read (`market::handles`, reviewer T-F4), so it went live with that read's
+//! grant on the format-2 Active launch (17g C2e).
 //!
 //! 17g C2d: the paid row (`paid_line`, over Roll's own-only `OwnPaid` view)
 //! is built with its renewal suffix (`; renewal offered`, `; renewal paid`)
@@ -76,8 +76,8 @@ pub(crate) fn holdings(ctx: &mut Ctx<'_>, text: &str) -> Result<(), CmdError> {
     let which = holdings_arguments(text).ok_or_else(|| CmdError::msg(super::market::HELP))?;
     let (_, roll) = handles(ctx)?;
     let (rows, more) = match which {
-        // The paid section and the waiting purchases need the indexes C2b
-        // did not land (module doc): Roll answers the paid section
+        // The paid section and the waiting purchases wait for 17g C2g over
+        // C2f's indexes (module doc): Roll answers the paid section
         // `Unavailable`, so these refuse rather than list a partial set.
         Holdings::All | Holdings::Paid(_) => return Err(not_open()),
         Holdings::Owner(cursor) => owner_section(ctx, &roll, Some(cursor))?,

@@ -21,8 +21,12 @@
 //!   against Roll's facts). Away from a counter it is `Refused`.
 //! - `ListingByCode { code }`: exactly `CODE_CHARACTERS` (8) characters of a
 //!   publication token's text. One scan of `CODE_ROWS` (2) rows after the
-//!   code: no key starting with it, or one that is not current, is
-//!   `Refused`; one current is `One`; two are `Ambiguous`. No other length is
+//!   code, in which only current rows count (17g C2e): no current key
+//!   starting with it is `Refused`; one current is `One`, whatever stale row
+//!   sits beside it; two current are `Ambiguous`. When both scanned rows
+//!   share the code and the family goes on, one probe of the next row tells
+//!   whether a third shares it too (then `Ambiguous`), so a `One` is always
+//!   the only current listing with the code (`by_code`). No other length is
 //!   answered, so no more than the 32 bits `+minds` prints of a token is ever
 //!   answerable. It needs no counter (`+minds/buy/refund` works anywhere).
 //! - `ListingsAfter { code }` (the C2c fix round, reviewer F4): the page after
@@ -36,24 +40,25 @@
 //!   at a counter, and only its existence is answered, never its terms.
 //!   Away from a counter it is `Refused`.
 //!
-//! **Not built here (the C2c builder's report):** the brief's `OwnPurchase`
-//! and `OwnOpen` kinds read the per-buyer entitlement index
-//! (`market_mind_entitlement_actors`, C2 plan §2.5 item 1), which C2b did not
-//! land (it is held for the lead's mush-core ruling). Without it there is no
-//! bounded lookup of "this actor's quote or funded operation", so they are
-//! left for the sub-cut that lands the index. 17g C2d's `ResaleOffers
-//! { licence }` (the live resale offers naming the actor on one licence) is
-//! held for the same reason: it reads the per-(buyer, licence) offer index
-//! (`market_mind_paid_resale_buyer_offers`, plan §2.5 item 3), and the
-//! paid-resale offers are otherwise keyed only by their own commit token.
-//! C2d adds the resale steps to `MarketCommandActions` (`ResaleKind`).
+//! **Not built yet:** the brief's `OwnPurchase` and `OwnOpen` kinds read the
+//! per-buyer entitlement index (`market_mind_entitlement_actors`, C2 plan
+//! §2.5 item 1), which 17g C2f lands; without it there is no bounded lookup
+//! of "this actor's quote or funded operation", so they wait for 17g C2g
+//! over C2f's index. 17g C2d's `ResaleOffers { licence }` (the live resale
+//! offers naming the actor on one licence) waits likewise: it reads the
+//! per-(buyer, licence) offer index (`market_mind_paid_resale_buyer_offers`,
+//! plan §2.5 item 3), and the paid-resale offers are otherwise keyed only by
+//! their own commit token. C2d adds the resale steps to
+//! `MarketCommandActions` (`ResaleKind`).
 //!
-//! **Capacity.** This is a second market-side owner-read service. The
-//! format-2 Active named launch already holds 31 services and all 32 grants
-//! before it (17g C2a's measurement), so registering it takes the 32nd
-//! service and TacSim cannot request it without `OwnerReadError::Limit`
-//! (C2 plan §2.4: the lead's fallback raises both caps; no builder does).
-//! `MarketCommandReader::request` is TacSim's call once that lands.
+//! **Capacity and the grant.** This is a second market-side owner-read
+//! service: on the format-2 Active named launch it is the 32nd service. 17g
+//! C2e raised both owner-read caps to 48 (the lead's ruling R1) and TacSim
+//! requests the read through `MarketCommandReader::request` in its
+//! `register`, beside the entitlement holdings' grants, whenever it composes
+//! the line-mode mind commands (the format-2 Active launch only); the launch
+//! then holds 32 services and 33 grants. A House-only launch requests
+//! nothing.
 
 use crate::mind_entitlement::{
     EntitlementConfig, EntitlementGuard, EntitlementListingV1, Families, current_policy,
@@ -715,6 +720,27 @@ pub fn is_code(code: &str) -> bool {
 
 /// The current listing whose token starts with `code`, from one scan of
 /// `CODE_ROWS` rows after the code.
+///
+/// 17g C2e (C2e plan §2.1 item 4a, review FE-F13): only CURRENT rows count
+/// toward ambiguity. Within the one scan, one current row beside any rows
+/// that are no longer current resolves to the current row; two current rows
+/// are `Ambiguous`; no current row (a stale exact match included) is
+/// `Refused`, the not-found answer. `CODE_ROWS` stays 2 because it is in the
+/// read's descriptor (widening it would version the definition), so a
+/// current listing that sits beyond two stale rows sharing its prefix is
+/// still not found: a stated residual, since stale rows exist only after a
+/// policy change.
+///
+/// A `One` is never a guess (the C2e fix round, reviewer correctness/F1):
+/// when both scanned rows share the code, one of them current, and the
+/// family goes on, a further current row with the code could sit just past
+/// the window (stale, current, current), and the current row in the window
+/// is then not the only one. Keys sharing a prefix are adjacent in key
+/// order, so one probe of the single row after the window decides it: a row
+/// that shares the code makes the answer `Ambiguous` (current or not, since
+/// past it the read cannot see), any other row or none leaves the `One`
+/// proven. The probe is one more scan of one row, only in that case; the
+/// window itself stays `CODE_ROWS`.
 pub(crate) fn by_code<'a>(
     source: &impl ListingSource<'a>,
     code: &str,
@@ -723,15 +749,25 @@ pub(crate) fn by_code<'a>(
     if !is_code(code) {
         return Err(OwnerReadError::Refused);
     }
-    let (scanned, _) = source.scan(Some(code), CODE_ROWS)?;
+    let shares = |row: &EntitlementListingV1| row.publication().to_string().starts_with(code);
+    let (scanned, more) = source.scan(Some(code), CODE_ROWS)?;
+    let saturated = more && scanned.len() == CODE_ROWS && scanned.iter().all(|row| shares(row));
+    let last = scanned.last().map(|row| row.publication().to_string());
     let matching: Vec<_> = scanned
         .into_iter()
-        .filter(|row| row.publication().to_string().starts_with(code))
+        .filter(|row| shares(row) && current(row))
         .collect();
     match matching.as_slice() {
         [] => Err(OwnerReadError::Refused),
-        [row] if current(row) => view(row).map(CodeLookup::One),
-        [_] => Err(OwnerReadError::Refused),
+        [row] => {
+            if saturated {
+                let (next, _) = source.scan(last.as_deref(), 1)?;
+                if next.first().is_some_and(|row| shares(row)) {
+                    return Ok(CodeLookup::Ambiguous);
+                }
+            }
+            view(row).map(CodeLookup::One)
+        }
         _ => Ok(CodeLookup::Ambiguous),
     }
 }

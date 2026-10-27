@@ -31,9 +31,10 @@
 - `+minds/holdings` lists your filed minds and licences, their terms and Grace, and any
   purchase waiting to complete.
 
-Purchases, resales and transfers between two characters of one account are refused. Money held for a purchase
-stays in escrow until it completes or is refunded; a request whose result you have not
-seen is not a refusal, so check `+minds/holdings` before trying again.
+Purchases, resales and transfers between two characters of one account are refused.
+Money held for a purchase stays in escrow until it completes or is refunded; a request
+whose result you have not seen is not a refusal, so check `+minds/holdings` before
+trying again.
 
 ## Renewing and trading
 

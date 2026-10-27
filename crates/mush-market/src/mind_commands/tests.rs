@@ -328,6 +328,138 @@ fn market_command_reader_is_bounded_and_seller_free() -> TestResult {
     Ok(())
 }
 
+/// 17g C2e test 6 (C2e plan §2.1 item 4a, review FE-F13): `by_code` counts
+/// only CURRENT rows toward ambiguity, within its unchanged window of
+/// `CODE_ROWS` rows.
+///
+/// - A row no longer current (a listing a policy change left behind) sharing
+///   the code with one current row resolves to the current row, whichever
+///   of the two sorts first, and whether the family goes on past them or
+///   ends with them.
+/// - Two current rows sharing the code are `Ambiguous`.
+/// - A stale exact match with no current row is `Refused`, the not-found
+///   answer.
+/// - The stated residual: a current listing that sits beyond two stale rows
+///   sharing its code is outside the two-row window and still not found
+///   (`CODE_ROWS` is in the read's descriptor and stays 2).
+/// - A `One` is never a guess (the C2e fix round, reviewer correctness/F1):
+///   when the window is two rows sharing the code, one current, and the
+///   family goes on, the one row after the window is probed, and a third
+///   row sharing the code makes the answer `Ambiguous` (stale, current,
+///   current; current, stale, current; and, since the read cannot see past
+///   it, stale, current, stale).
+///
+/// Every lookup is one scan of two rows after the code, plus that one-row
+/// probe after the window's last key only when the window is two rows
+/// sharing the code with exactly one current and more rows follow.
+#[test]
+fn by_code_counts_only_current_rows_for_ambiguity() -> TestResult {
+    let mut memory = Memory::default();
+    let mut stale = BTreeSet::new();
+    // Each prefix's rows by ordinal: `true` is current.
+    let families: [([u8; 4], &[bool]); 9] = [
+        // Stale first, then current; the family goes on.
+        ([0xaa, 0, 0, 1], &[false, true]),
+        // Current first, then stale; the family goes on.
+        ([0xbb, 0, 0, 1], &[true, false]),
+        // Two current.
+        ([0xcc, 0, 0, 1], &[true, true]),
+        // A stale exact match alone.
+        ([0xdd, 0, 0, 1], &[false]),
+        // Stale, current, current: the second current is past the window.
+        ([0xe0, 0, 0, 1], &[false, true, true]),
+        // Current, stale, current.
+        ([0xe1, 0, 0, 1], &[true, false, true]),
+        // Stale, current, stale: past the window the read cannot tell.
+        ([0xe2, 0, 0, 1], &[false, true, false]),
+        // Two stale rows before a current one (the residual).
+        ([0xee, 0, 0, 1], &[false, false, true]),
+        // Stale, then current, and the family ends with them.
+        ([0xff, 0, 0, 1], &[false, true]),
+    ];
+    for (prefix, rows) in families {
+        for (n, is_current) in (1..).zip(rows.iter()) {
+            let publication = token(prefix, n);
+            if !is_current {
+                stale.insert(publication);
+            }
+            memory.add(listing(publication)?);
+        }
+    }
+
+    let current = |row: &EntitlementListingV1| !stale.contains(&row.publication());
+    let source = &memory;
+    let lookup = |code: &str| -> (Result<Option<CommitToken>, OwnerReadError>, _) {
+        let found = by_code(&source, code, current).map(|found| match found {
+            CodeLookup::One(view) => Some(view.publication()),
+            CodeLookup::Ambiguous => None,
+        });
+        (found, memory.take_scans())
+    };
+    let window = |code: &str| (Some(code.to_owned()), CODE_ROWS);
+    let probe = |prefix: [u8; 4], n: u8| (key(Some(token(prefix, n))), 1);
+
+    for (code, expected, scans, why) in [
+        (
+            "aa000001",
+            Ok(Some(token([0xaa, 0, 0, 1], 2))),
+            vec![window("aa000001"), probe([0xaa, 0, 0, 1], 2)],
+            "a stale row before the current one",
+        ),
+        (
+            "bb000001",
+            Ok(Some(token([0xbb, 0, 0, 1], 1))),
+            vec![window("bb000001"), probe([0xbb, 0, 0, 1], 2)],
+            "a stale row after the current one",
+        ),
+        (
+            "cc000001",
+            Ok(None),
+            vec![window("cc000001")],
+            "two current",
+        ),
+        (
+            "dd000001",
+            Err(OwnerReadError::Refused),
+            vec![window("dd000001")],
+            "a stale exact match alone is not found",
+        ),
+        (
+            "e0000001",
+            Ok(None),
+            vec![window("e0000001"), probe([0xe0, 0, 0, 1], 2)],
+            "stale, current, current: never the first current alone",
+        ),
+        (
+            "e1000001",
+            Ok(None),
+            vec![window("e1000001"), probe([0xe1, 0, 0, 1], 2)],
+            "current, stale, current",
+        ),
+        (
+            "e2000001",
+            Ok(None),
+            vec![window("e2000001"), probe([0xe2, 0, 0, 1], 2)],
+            "a third row with the code past the window, current or not",
+        ),
+        (
+            "ee000001",
+            Err(OwnerReadError::Refused),
+            vec![window("ee000001")],
+            "the residual: the current row is beyond the two-row window",
+        ),
+        (
+            "ff000001",
+            Ok(Some(token([0xff, 0, 0, 1], 2))),
+            vec![window("ff000001")],
+            "the family ends with the pair: no probe",
+        ),
+    ] {
+        check_eq!(lookup(code), (expected, scans), "{code}: {why}");
+    }
+    Ok(())
+}
+
 /// 17g C2c test 2: each step of each protocol is exactly the market's own
 /// registered action (`<step>_<protocol>_mind`, fund `purchase_`, grant
 /// `settle_`; original v3, derived v1). Another owner's same id, another
@@ -448,8 +580,11 @@ fn market_command_actions_capture_the_resale_kinds() -> TestResult {
 /// - `ListingByCode` needs no counter.
 ///
 /// The owner lens itself (`Lens::scan`'s key check, the real venue gate) is
-/// read only in a composition that grants TacSim the read, which waits for
-/// the lead's owner-read cap (the C2c brief's tests 7 and 8).
+/// read through the composed grant on the format-2 Active launch since 17g
+/// C2e, by mush-server's `player_market_commands` tests
+/// `listings_are_identical_for_every_principal_at_the_counter` and
+/// `market_commands_refuse_without_own_records` (the C2c brief's tests 7 and
+/// 8).
 #[test]
 fn market_command_read_answers_the_counter_rule_and_the_policy() -> TestResult {
     use crate::mind_entitlement::tests::{command_config, current_listing_fixture};
