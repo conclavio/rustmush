@@ -151,6 +151,7 @@ pub mod minds;
 pub mod pack;
 pub mod port;
 pub mod port_tick;
+pub mod quest;
 pub mod record;
 pub mod relay_billing;
 pub mod relay_commerce;

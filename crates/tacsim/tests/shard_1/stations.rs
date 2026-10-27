@@ -609,7 +609,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     for (name, _) in SITE_SOURCES {
         assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
-    assert!(out.contains(" tacsim.passengers.stickney@1 ("), "{out}");
+    assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
@@ -1352,7 +1352,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(6));
     assert_eq!(
         after.get("tacsim.passengers.stickney").map(|l| l.0),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         location(&tw, walker),

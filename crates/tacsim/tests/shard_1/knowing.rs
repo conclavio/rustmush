@@ -31,6 +31,9 @@ use crate::geology_keyed;
 #[path = "passengers.rs"]
 mod passengers;
 
+#[path = "quests.rs"]
+mod quests;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -100,7 +103,7 @@ fn cid(word: &str) -> CanonicalId {
 struct Roster;
 
 impl Roster {
-    fn modules(self) -> Vec<Box<dyn mush_core::GameModule>> {
+    fn modules(self, passenger_v1: bool) -> Vec<Box<dyn mush_core::GameModule>> {
         use tacsim::composition as comp;
 
         let llm = Arc::new(
@@ -130,7 +133,29 @@ impl Roster {
             &mush_config::config::NpcCfg::default(),
         ));
         mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        if passenger_v1 {
+            let mut packs = comp::boot_pack_list(true, true).expect("the boot packs verify");
+            let old =
+                mush_content::load_pack(include_str!("../../content/passengers/stickney_v1.json"))
+                    .expect("the immutable passenger v1 pack verifies");
+            assert_eq!(old.manifest().version(), 1);
+            let current = packs
+                .iter_mut()
+                .find(|pack| pack.manifest().id() == old.manifest().id())
+                .expect("the passenger pack is composed");
+            *current = old;
+            let mut appliers = mush_content::Appliers::new();
+            mush_atlas::register_appliers(&mut appliers).unwrap();
+            mush_npc::content::register_appliers(&mut appliers).unwrap();
+            tacsim::register_appliers(&mut appliers).unwrap();
+            mods.push(Box::new(
+                mush_content::ContentModule::new()
+                    .with_appliers(appliers)
+                    .with_boot_packs(packs),
+            ));
+        } else {
+            mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        }
         mods
     }
 }
@@ -181,8 +206,17 @@ fn boot_over(
     store: HashMap<SmolStr, mush_core::ModuleBootData>,
     keyed: bool,
 ) -> TestWorld {
+    boot_over_with_passenger(world, store, keyed, false)
+}
+
+fn boot_over_with_passenger(
+    world: World,
+    store: HashMap<SmolStr, mush_core::ModuleBootData>,
+    keyed: bool,
+    passenger_v1: bool,
+) -> TestWorld {
     let (_, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules(passenger_v1))
         .expect("the roster composes");
     if keyed {
         assert!(tacsim::surface::install_geology(
@@ -201,8 +235,12 @@ fn boot_over(
 
 /// Boot (keyed or not), settle and stock every port, at world rate 1.
 fn stocked_with(keyed: bool) -> Rig {
+    stocked_with_passenger(keyed, false)
+}
+
+fn stocked_with_passenger(keyed: bool, passenger_v1: bool) -> Rig {
     let (world, _) = mush_testkit::boot_world();
-    let mut tw = boot_over(world, HashMap::new(), keyed);
+    let mut tw = boot_over_with_passenger(world, HashMap::new(), keyed, passenger_v1);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
     install_oracle(&mut tw, &oracle);
@@ -365,12 +403,22 @@ fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
     }
 }
 
-/// Drive one queued submission the way the world task does, keeping its typed post-images
-/// for a reboot; the error carries the prepare's own message.
-fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+/// Keep the guards when a regression deliberately holds resolution across a
+/// world change, as the production driver's admission checks do.
+struct ResolvedWithGuards {
+    action: mush_core::DefinitionRef,
+    resolved: mush_core::ResolvedActionInvocation,
+    guards: mush_core::GuardSet,
+    token: [u8; 16],
+}
+
+fn resolve_with_guards(
+    rig: &Rig,
+    submit: &AuthoritativeSubmit,
+) -> Result<ResolvedWithGuards, String> {
     let token = next_token();
-    let tw = &mut rig.tw;
-    let (action, resolved) = {
+    let tw = &rig.tw;
+    let (action, resolved, guards) = {
         let engine = tw.engine();
         let query = engine
             .legal_action_query(
@@ -411,9 +459,25 @@ fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
         let resolved = engine
             .resolve_legal_action(&offers, execution, submission)
             .map_err(|error| format!("{error:?}"))?;
-        let (action, resolved, _guards) = resolved.into_authoritative_parts();
-        (action, resolved)
+        resolved.into_authoritative_parts()
     };
+    Ok(ResolvedWithGuards {
+        action,
+        resolved,
+        guards,
+        token,
+    })
+}
+
+/// Drive one queued submission, keeping its typed post-images for a reboot.
+fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Result<(), String> {
+    let ResolvedWithGuards {
+        action,
+        resolved,
+        guards: _,
+        token,
+    } = resolve_with_guards(rig, submit)?;
+    let tw = &mut rig.tw;
     let (prepared, _) = tw
         .engine_mut()
         .prepare_registered_resolved_authoritative_action(

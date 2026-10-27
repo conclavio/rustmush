@@ -177,6 +177,12 @@ pub(crate) fn register_with_coverage(
         port_families.passengers.clone(),
         inventory.is_some(),
     )?;
+    crate::quest::store::register(
+        reg,
+        port_families.quests.clone(),
+        port_families.quest_index.clone(),
+        port_families.passengers.clone(),
+    )?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
             families::family_descriptor(
@@ -282,6 +288,7 @@ pub(crate) fn register_with_coverage(
         &survey_cancel_outcome,
         &passenger_outcome,
     )?;
+    actions.push(crate::quest::registration::action(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -495,6 +502,8 @@ pub(crate) fn register_with_coverage(
         }
         _ => None,
     };
+    let quest =
+        crate::quest::registration::provider(reg, &action_refs, &outcome_refs, &port_families)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -509,6 +518,7 @@ pub(crate) fn register_with_coverage(
         survey_accept,
         survey_cancel,
         passenger,
+        quest,
         site_work,
         dispatch: dispatch_action.clone(),
     });
@@ -721,6 +731,11 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 /// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "outcome",
+            crate::quest::store::OUTCOME,
+            json!({"fields":["actor","npc","source","booking","revision","checked","completed"]}),
+        )?,
         descriptor(
             "outcome",
             crate::port::passenger::store::OUTCOME,
@@ -1475,6 +1490,7 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     crate::port::survey::tick(ctx);
     crate::port::passenger::tick(ctx);
+    crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
     };

@@ -148,6 +148,20 @@ owner = "economy"
 reason = "The authored passenger's finite purse takes one account ID from the economy's monotonic allocator before mush_economy::open_account creates its zero-balance account. Its one lifetime seed uses create_system_obligation; this reach never changes balances, escrow, or obligations directly. Existing source-key funding records prevent reseeding."
 
 [[site]]
+path = "crates/tacsim/src/quest/content.rs"
+accessor = "World::module_state_insert"
+slot = "content"
+owner = ""
+reason = "Test-only quest authoring fixture installs a ContentState with an exact dependency latch to validate bound checkpoint rooms. Production quest content reads the content owner's dependency snapshot without seeding its slot."
+
+[[site]]
+path = "crates/tacsim/src/quest/content.rs"
+accessor = "World::module_state_mut"
+slot = "ContentState"
+owner = "content"
+reason = "Test-only quest content cases corrupt dependency latches to verify that retired, wrong-version or anomalous checkpoint placements refuse. Production quest content never changes the content owner's state."
+
+[[site]]
 path = "crates/mush-npc/src/content.rs"
 accessor = "World::module_state_insert"
 slot = "content"

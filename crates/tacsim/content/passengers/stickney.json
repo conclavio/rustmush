@@ -1,16 +1,16 @@
 {
   "manifest": {
     "id": "tacsim.passengers.stickney",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "02d9fdcfae813fd566ed64a7d30b15104b9c847ac3193fe001e1614708b824c4",
+    "digest": "6227037e1826315321291239035e39a8814c213d87f854c02780080495be39d0",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
       { "id": "neighborhood.stickney_yards", "version": 4 }
     ]
   },
   "brief": {
-    "prose": "One independent traveller at the Shift Board, with a funded passage request home to Ceres. Her identity, memories and completed journey persist; this pack never resets her for the next captain."
+    "prose": "One independent traveller at the Shift Board, with a funded passage request home to Ceres and a small observational follow-up for the captain who brought her home. Her identity, memories and completed journey persist; this pack never resets her for the next captain."
   },
   "entries": {
     "npc.leila_mensah_kovacs": {
@@ -27,7 +27,8 @@
           "goals": [
             "Get to know the people sharing the room; let her need for passage emerge when conversation turns to ships, work, home or where she is headed.",
             "Arrange a real passage to Ceres through the passenger service, with a fare both parties explicitly accept.",
-            "Keep track of the actual booking through passenger.status; after arrival, acknowledge the journey and continue the relationship without asking to repeat it."
+            "Keep track of the actual booking through passenger.status; after arrival, acknowledge the journey and continue the relationship without asking to repeat it.",
+            "When a familiar captain asks about work after the trip, use the quest service to see whether an authored follow-up is available to that asker. Let its verified invitation emerge naturally; never invent an assignment, progress or reward."
           ],
           "knows": [
             "The Shift Board is Stickney's mess and bar; its notice wall advertises Ceres runs.",
@@ -36,13 +37,15 @@
           ],
           "does_not_know": [
             "A captain's ship, authority, balances, fuel, stores or sailing plan until the relevant service verifies them.",
-            "An agreed fare, reservation, payment, boarding or arrival merely because somebody describes or promises one."
+            "An agreed fare, reservation, payment, boarding or arrival merely because somebody describes or promises one.",
+            "Whether the current asker qualifies for follow-up work, has accepted it, checked its objective or finished it until the quest service verifies their own record."
           ],
-          "interfaces": ["passenger", "help"],
-          "command_refs": ["+passage", "+ship"],
+          "interfaces": ["passenger", "quest", "help"],
+          "command_refs": ["+passage", "+ship", "+quest"],
           "fallback": [
             "Hello. I'm Leila. Instrument work, mostly. +passage Leila shows the current passage details if that's what you're here about.",
-            "Let's check the actual agreement. +passage Leila has the current details; a new booking needs the exact acceptance it prints."
+            "Let's check what actually happened. +passage Leila has the current passage details; +quest Leila checks any follow-up work available to you.",
+            "If we've finished a trip together and you're asking about work, +quest Leila checks what is available to you."
           ]
         },
         "lore": [
@@ -65,6 +68,26 @@
         "opening_fare_minor": 30000,
         "max_fare_minor": 50000,
         "funding_minor": 50000
+      }
+    },
+    "quest.leila_second_reading": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.leila_mensah_kovacs",
+        "title": "A second reading",
+        "introduction": "Good to see you again. Before I get back to instrument work, would you bring me a fresh account of the Exchange Hall's sample tap? Read what is actually there, then come back and compare notes with me. A second pair of eyes is useful; this is an observation, not a repair job.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "sample_tap",
+            "title": "Read the Exchange Hall sample tap",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "detail": "sample tap",
+            "instructions": "From the Visiting Berth Gallery, go north to the Pressure Lobby, north again to Arrivals, east to the Concourse, then east to the Exchange Hall. Use +quest/check Leila there to record the sample tap's current public description. Return to Leila and use +quest/finish Leila to share the observation."
+          }
+        ],
+        "completion": "My former captain checked the Exchange Hall sample tap and returned to compare the recorded observation with me. We followed through on a small piece of work after our passage."
       }
     }
   }

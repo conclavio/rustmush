@@ -33,6 +33,10 @@ After arrival, the passenger remains the same NPC, with the same memories and
 relationships. Restarting the server or reapplying their content does not put
 them back in the bar, create a second person or refill their travel money.
 
+After Leila's completed, paid passage, you can meet her again at Ceres's Visiting
+Berth Gallery. `+quest Leila` checks for her authored follow-up, "A second
+reading". It uses the same person and relationship; see `help quests`.
+
 ## Authoring another traveller
 
 A traveller uses an ordinary `npc` entry plus a `passenger` entry in the same
@@ -92,11 +96,14 @@ the current asker (`passenger.status` and `passenger.offer`, whose optional
 fallback lines useful with the model disabled, without asserting that an
 agreement, payment or boarding has already happened.
 
-The shipped `tacsim.passengers.stickney@1` is a separate pack. A current world
+The shipped `tacsim.passengers.stickney@2` is a separate pack. A current world
 installs it at its next boot; a world with older Ceres or Stickney content waits
 for staff to upgrade those dependencies. Use `@atlas/pack plan <pack>` and
 `@atlas/pack apply <fingerprint>`, then apply the passenger pack or restart.
 Existing station versions are never upgraded automatically.
+Worlds that already applied passenger version 1 can plan and apply version 2
+through the same commands. The upgrade adds Leila's quest role to her existing
+identity, including if she has already reached Ceres.
 
 Reapplying the passenger role changes source configuration only. Live booking
 state, funds, location, inventory and memories remain. Removing a live traveller
