@@ -216,9 +216,9 @@ impl GameModule for ContentModule {
 
 /// Apply `pack` against this world's latches with the composed appliers.
 ///
-/// The latches are taken out of the state slot for the duration (the apply needs the
-/// world mutably and the latches mutably, and the slot lives in the world) and put
-/// back whatever happened, so a refused apply loses nothing.
+/// The apply works on a copy of the latches (it needs both the world and latches
+/// mutably). The state slot retains the pre-apply snapshot so appliers can resolve
+/// declared dependencies. The resulting latches replace it even after a refusal.
 ///
 /// # Errors
 ///
@@ -248,7 +248,7 @@ pub fn retire_pack(
     })
 }
 
-/// Run `f` with the latches taken out of the slot and put back afterwards.
+/// Run `f` on copied latches while keeping the pre-apply snapshot readable.
 ///
 /// WS03-S14: applying a pack is something an OWNER asks for — `@atlas/pack
 /// apply` runs under the atlas's identity, `+build` under worldgen's — so the
@@ -267,7 +267,7 @@ fn with_state<T>(
             pack: format!("{pack} (no content state slot on this world)"),
         });
     };
-    let mut latches = std::mem::take(&mut slot.latches);
+    let mut latches = slot.latches.clone();
     let appliers = slot.appliers.clone();
     let result = f(ctx, &mut latches, &appliers);
     if let Some(slot) = ctx.w.module_state_mut::<ContentState>() {

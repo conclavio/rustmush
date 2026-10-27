@@ -330,6 +330,9 @@ impl PartyCapSource for PortPartyCaps {
         match cap {
             PartyCap::Accept => {}
         }
+        if let PrincipalId::Object(npc) = principal {
+            return crate::port::passenger::economy::may_accept(w, *npc);
+        }
         let PrincipalId::Organization(org) = principal else {
             return false;
         };

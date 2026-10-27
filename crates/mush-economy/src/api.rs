@@ -1289,6 +1289,34 @@ pub fn idempotency_resolved(ctx: &Ctx<'_>, key: &crate::record::IdempotencyKey) 
     })
 }
 
+/// Resolve one engine-owned receipt without posting a transaction. A receipt
+/// outside the RAM window is read through the economy's existing keyed-read
+/// path; callers retry after [`EconomyError::RetryShortly`]. `Ok(None)` means the
+/// key is known not to have posted, not merely absent from the RAM window.
+///
+/// This is a ruleset API, not a player-facing disclosure check. Callers must
+/// establish their own authority to expose the result, and separately check
+/// reversal status before using an old receipt as proof of completed payment.
+pub fn resolve_idempotency(
+    ctx: &mut Ctx<'_>,
+    key: &crate::record::IdempotencyKey,
+) -> Result<Option<crate::record::IdempotencyRecord>, EconomyError> {
+    {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .filter(|store| !store.is_frozen())
+            .ok_or(EconomyError::EconomyFrozen)?;
+        match crate::engine::KeyGate::verdict(&store.key_gate(), store.snapshot(), key) {
+            crate::engine::KeyVerdict::Known(record) => return Ok(Some(record.clone())),
+            crate::engine::KeyVerdict::Fresh => return Ok(None),
+            crate::engine::KeyVerdict::Unknown => {}
+        }
+    }
+    crate::keys::request_key_read(ctx, key);
+    Err(EconomyError::RetryShortly)
+}
+
 /// Which [`AuthEval`] a post is validated against (§4.1).
 ///
 /// [`WorldAuth`] borrows the world, and a caller holding `&mut Ctx` cannot build one

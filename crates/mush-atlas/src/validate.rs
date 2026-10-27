@@ -1006,6 +1006,46 @@ impl Run<'_> {
         }
     }
 
+    /// NPC packs can explicitly name an applied room outside the geometry scope.
+    /// Resolve only the named dependency's latch; the NPC applier additionally
+    /// verifies its current health and the live room object before any write.
+    fn require_npc_room(&mut self, entry: &CanonicalId, room: &str, room_pack: &serde_json::Value) {
+        let Some(name) = room_pack.as_str() else {
+            self.error(
+                "schema.decode",
+                Some(entry),
+                "room_pack must be a pack id string",
+                "name the explicitly required pack that owns the NPC's room",
+            );
+            return;
+        };
+        let found = CanonicalId::new(name.trim())
+            .ok()
+            .zip(CanonicalId::new(room.trim()).ok())
+            .and_then(|(pack, room)| {
+                let required = self
+                    .pack
+                    .manifest()
+                    .requires()
+                    .iter()
+                    .find(|r| r.id == pack)?;
+                let latch = self.cx.latches.get(pack.as_str())?;
+                if latch.retired || latch.version != required.version {
+                    return None;
+                }
+                latch.entries.get(room.as_str())
+            })
+            .is_some_and(|room| room.kind == "room" && room.object.is_some());
+        if !found {
+            self.error(
+                "schema.reference",
+                Some(entry),
+                format!("room: {room:?} is not an applied room of the explicit room_pack dependency {name:?}"),
+                "declare room_pack in requires and name its exact applied room entry",
+            );
+        }
+    }
+
     // ---- 1. schema ------------------------------------------------------------
 
     fn schema(&mut self) {
@@ -1371,7 +1411,7 @@ impl Run<'_> {
                 self.require(id, "room", room, "room");
             }
         }
-        let npcs: Vec<(CanonicalId, Option<String>)> = self
+        let npcs: Vec<(CanonicalId, Option<String>, Option<serde_json::Value>)> = self
             .decoded
             .npcs
             .iter()
@@ -1381,13 +1421,18 @@ impl Run<'_> {
                     v.get("room")
                         .and_then(|r| r.as_str())
                         .map(ToString::to_string),
+                    v.get("room_pack").filter(|p| !p.is_null()).cloned(),
                 )
             })
             .collect();
-        for (id, room) in &npcs {
+        for (id, room, room_pack) in &npcs {
             match room {
                 Some(room) => {
-                    self.require(id, "room", room, "room");
+                    if let Some(pack) = room_pack {
+                        self.require_npc_room(id, room, pack);
+                    } else {
+                        self.require(id, "room", room, "room");
+                    }
                 }
                 None => self.error(
                     "schema.decode",

@@ -70,6 +70,7 @@ pub const NOT_ENABLED: &str = "TacSim is not enabled on this server.";
 ///
 /// [`ModError`] if the name is already taken.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    crate::port::passenger::register(reg)?;
     // Like +ship and +tv, the primary verb takes the ceiling class of its switches:
     // /tv submits a staff recovery; the existing content and time switches keep their lanes.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);

@@ -226,6 +226,12 @@ family = "party:party"
 note = "E6a (08f 3.1/3.2/3.4, D-E6-5): the bare verb is a viewer-gated read; the mutating switches write one bounded whole-document party:{id} with a strict TryFrom wire that re-runs every constructor invariant. The party is NOT an economic principal -- mush-party depends on mush-core alone, owns no money or title, and takes no part in authority or prepared mechanics."
 
 [[handler]]
+name = "+passage"
+category = "authoritative"
+family = "tacsim.passenger"
+note = "Reusable NPC passengers: status and fare offers are reads; /accept requires the captain's exact current quote, uses the economy's own contract and acceptance APIs, then submits tacsim_passenger to write the booking and tacsim.passenger_index through their typed families. The traveller funds the contract only after the accepted booking lands. /board and /cancel use the existing ship and world movement owner APIs, followed by the same authoritative booking transition; physical boarding is reconciled on the port tick. Arrival and cancellation are scoped contract facts over the exact booking receipt, paying or refunding the reserved fare once through the economy. No legacy passenger workflow document or baseline entry is added."
+
+[[handler]]
 name = "+recap"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"

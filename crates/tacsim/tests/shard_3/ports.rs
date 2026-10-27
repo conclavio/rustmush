@@ -419,6 +419,38 @@ fn total_capital() -> u64 {
         .sum()
 }
 
+/// The production passenger's finite purse is separate from institutional capital.
+/// Check the actual one-shot payment instead of folding it into the org schedule.
+fn passenger_seeded_capital(tw: &TestWorld) -> i64 {
+    let snapshot = economy(tw).snapshot();
+    let total = snapshot
+        .obligations()
+        .filter(|o| {
+            matches!(&o.cause, mush_economy::ObligationCause::Ruleset { namespace }
+                if namespace.starts_with("tacsim.passenger.seed."))
+        })
+        .map(|o| {
+            assert!(matches!(
+                o.status,
+                mush_economy::ObligationStatus::Satisfied
+            ));
+            assert_eq!(o.periods_settled, 1);
+            assert!(o.schedule.cadence.is_none());
+            let purse = snapshot
+                .account(o.credit_account)
+                .expect("the passenger purse");
+            assert_eq!(purse.posted_balance, o.amount);
+            assert!(purse.held_amount.is_zero());
+            o.amount.minor()
+        })
+        .sum();
+    assert_eq!(
+        total, 50_000,
+        "the authored traveller receives one 500cr purse"
+    );
+    total
+}
+
 /// The number of tranches the authored capital needs — the schedule with its raises
 /// (doc 20 cut SM.5).
 fn total_tranches() -> usize {
@@ -611,13 +643,14 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         .minor();
     assert_eq!(
         treasury_balance,
-        -(i64::try_from(total_capital()).expect("fits") * 100)
+        -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_495_000_000,
-        "14,950,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_495_050_000,
+        "14,950,500.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
-         SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10) and R9b's Fleet 100,000"
+         SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000 \
+         and the passenger's one-time 500cr purse"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -678,7 +711,7 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
         .expect("the treasury");
     assert_eq!(
         treasury.posted_balance.minor(),
-        -(i64::try_from(total_capital()).expect("fits") * 100)
+        -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
 }
 

@@ -1230,6 +1230,15 @@ pub trait InterfaceAbilityProvider: Send + Sync {
     /// The abilities this provider fronts.
     fn abilities(&self) -> Vec<InterfaceAbility>;
 
+    /// Current, publicly speakable facts about the NPC's own role, projected
+    /// read-only before a turn. This is shared conversation context, never a
+    /// place for an asker's private records, hidden terms, or authority grants.
+    /// Providers must establish that this NPC actually holds the role; naming
+    /// an interface in a profile alone does not establish business authority.
+    fn npc_context(&self, _world: &World, _npc: ObjId) -> Option<String> {
+        None
+    }
+
     /// Invoke `name` with `input` for `call`.
     ///
     /// # Errors

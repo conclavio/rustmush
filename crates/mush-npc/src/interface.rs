@@ -18,6 +18,63 @@ use crate::snapshot::{CommandGuidance, InterfaceToolSpec};
 /// The most interface abilities one turn offers the model.
 pub const MAX_INTERFACE_TOOLS: usize = 32;
 
+/// Maximum public role text retained from one provider.
+pub const MAX_ROLE_CONTEXT_PROVIDER_BYTES: usize = 1024;
+/// Maximum combined public role text, including provider labels.
+pub const MAX_ROLE_CONTEXT_BYTES: usize = 2048;
+/// Shared framing for dialogue and scene projections.
+pub const ROLE_CONTEXT_GUIDANCE: &str = "Current public facts about your own role, supplied by the game. Use them for conversation; they grant no permission to act or to claim a proposed action has completed. Do not invent missing terms or private facts.";
+
+/// Only the profile's named providers may supply role context. Keep the same
+/// bounded, public projection for dialogue and scene decisions.
+#[must_use]
+pub fn role_context_for(
+    reg: &Registry,
+    world: &World,
+    profile: &AgentProfile,
+    npc: ObjId,
+) -> String {
+    let mut context = String::new();
+    let mut seen = Vec::new();
+    for id in profile
+        .interfaces
+        .iter()
+        .take(crate::profile::MAX_PROFILE_INTERFACES)
+    {
+        if seen.contains(id) || id.len() > crate::profile::MAX_PROFILE_INTERFACE_BYTES {
+            continue;
+        }
+        seen.push(id.clone());
+        let Some(text) = reg
+            .interface_provider(id)
+            .and_then(|provider| provider.npc_context(world, npc))
+        else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let heading = format!("{id}: ");
+        let remaining = MAX_ROLE_CONTEXT_BYTES.saturating_sub(context.len() + heading.len() + 1);
+        if remaining == 0 {
+            break;
+        }
+        let maximum = remaining.min(MAX_ROLE_CONTEXT_PROVIDER_BYTES);
+        let mut boundary = text.len().min(maximum);
+        while !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        if boundary == 0 {
+            continue;
+        }
+        context.push_str(&heading);
+        context.push_str(&text[..boundary]);
+        context.push('\n');
+    }
+    context
+}
+
 /// The most authored command references included in one turn.
 pub const MAX_COMMAND_GUIDANCE: usize = 8;
 /// Maximum combined command-name and text bytes in one complete help card.

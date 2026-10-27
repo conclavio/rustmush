@@ -87,7 +87,8 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     appliers.register(crate::NS, Arc::new(RouteApplier))?;
     appliers.register(crate::NS, Arc::new(ArenaApplier))?;
     appliers.register(crate::NS, Arc::new(DefinitionApplier))?;
-    appliers.register(crate::NS, Arc::new(crate::port::apply::PortApplier))
+    appliers.register(crate::NS, Arc::new(crate::port::apply::PortApplier))?;
+    crate::port::passenger::content::register_appliers(appliers)
 }
 
 /// A kind id from one of this crate's static kind words; `None` only if the

@@ -220,6 +220,15 @@ pub fn user_prompt(snap: &TurnSnapshot) -> String {
     // Current services and asker-visible command help are projected on the
     // world loop. Keep them out of the persona and its stable system prefix.
     render_service_brief(&mut s, snap);
+    if !snap.role_context.trim().is_empty()
+        && snap.role_context.len() <= crate::interface::MAX_ROLE_CONTEXT_BYTES
+    {
+        s.push_str("\n== CURRENT ROLE ==\n");
+        s.push_str(crate::interface::ROLE_CONTEXT_GUIDANCE);
+        s.push_str("\n<role_context>\n");
+        s.push_str(&escape_angle(&snap.role_context));
+        s.push_str("</role_context>\n");
+    }
 
     // 6. Memory.
     s.push_str(
@@ -499,6 +508,7 @@ mod tests {
             seed: 7,
             interfaces: Vec::new(),
             command_guidance: Vec::new(),
+            role_context: String::new(),
         }
     }
 
