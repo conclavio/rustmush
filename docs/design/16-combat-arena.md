@@ -1198,7 +1198,10 @@ Historical landed amendments follow unchanged.
 - **Before IC play** (additions, not changes): per-pulse state durability on an arena writer lane with
   disjoint key ownership and resume from the snapshot are built (16b cut AF, the AF.1 to AF.3 entries
   above; the ledger tail is abandoned behind a marker rather than replayed, 16c Q40 amended); the 10 km
-  arena remains. AI takeover of dropped human slots is already built (N.1 and Q.7).
+  arena remains. AI takeover of dropped human slots is already built (N.1 and Q.7). An IC sortie's
+  durability is its host's, not the arena's: doc 23 D-23-6 puts the custody half of IC play on the
+  IC-clock pull ticks (the surface excursion, the port voyage) and leaves the arena, promoted onto a
+  site's ground (doc 20 §17), as the fight's host inside a hull's open sortie.
 - **§5 (the cockpit's surfaces)**: as built (doc 21 cut G.1a, 2026-10-22; the pixel spike of
   2026-10-21 promoted): the cockpit has a fourth surface beside line mode, the TUI's screen 0 and the
   web's cockpit tab — the **picture**, `Ctrl-G` in `@tui` on a terminal whose probe answered the kitty
