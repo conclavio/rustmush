@@ -127,6 +127,7 @@
 //! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
 //! | `[tacsim.geology].key_dir` | absent | doc 20 SM.1: the geology key family's directory; absent, the mining layer reads disabled |
 //! | `[tacsim.surface].registry_interlock` | `true` | doc 20 SM.10 (§9.4): the Registry interlock, phase 1's only claim enforcement; `false` is refused at boot (the lever is reserved for the fight, §17) |
+//! | `[tacsim.surface].black_box_max_lines` | `4096` | doc 23 S.1 (§7): the most lines one hull's black box holds (two per excursion); past it an append is refused and paged, never truncated; 1 to 1048576; provisional |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -682,17 +683,24 @@ pub struct TacsimCfg {
 /// `true`, every shipped config states it, and the host refuses `false` at boot
 /// (`mush_server::config_ext`) with a line naming doc 20 §9.4. Nothing in the game reads the
 /// key: the lever is reserved for the fight, which is what will enforce a claim with it off.
+///
+/// **Doc 23 cut S.1** adds `black_box_max_lines`: the most lines one hull's black box (its
+/// `log:hull.<n>` ledger, doc 23 §7) holds; an append past it is refused and paged, never
+/// truncated. A provisional default (the owner's economy-defaults rule, 2026-10-24).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimSurfaceCfg {
     /// Whether the Registry's interlock enforces claims (phase 1: always).
     pub registry_interlock: bool,
+    /// Doc 23 cut S.1: the most lines one hull's black box holds (two per excursion).
+    pub black_box_max_lines: u32,
 }
 
 impl Default for TacsimSurfaceCfg {
     fn default() -> Self {
         Self {
             registry_interlock: true,
+            black_box_max_lines: 4_096,
         }
     }
 }
@@ -2613,6 +2621,8 @@ scene_turn_dedline_secs = 30
         // host refuses `false` at boot, not the parser), and a near-miss key is refused.
         let defaulted: Config = toml::from_str("[server]\ndata_dir = \"./world\"").unwrap();
         assert!(defaulted.tacsim.surface.registry_interlock);
+        // Doc 23 cut S.1: the black box's line cap, provisional.
+        assert_eq!(defaulted.tacsim.surface.black_box_max_lines, 4_096);
         let off: Config = toml::from_str("[tacsim.surface]\nregistry_interlock = false").unwrap();
         assert!(!off.tacsim.surface.registry_interlock);
         assert!(

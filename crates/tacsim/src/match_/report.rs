@@ -1798,7 +1798,7 @@ impl Fold {
                 "{word} unit={} sortie={} mind=\"{mind}\" class={} governed={governed} \
                  licence={licence} principal={}",
                 unit(id),
-                sortie.0,
+                sortie,
                 class.as_str(),
                 self.principal_word(principal.as_ref())
             ),
@@ -1806,7 +1806,7 @@ impl Fold {
                 unit: id,
                 sortie,
                 word: closed,
-            } => format!("{word} unit={} sortie={} word={closed}", unit(id), sortie.0),
+            } => format!("{word} unit={} sortie={} word={closed}", unit(id), sortie),
             EventKind::MindFault {
                 unit: id,
                 think_seq,

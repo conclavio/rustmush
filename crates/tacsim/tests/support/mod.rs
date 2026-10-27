@@ -48,6 +48,9 @@ mod api4_identity;
 /// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
 /// fixed gateway-account oracle and the deposit-count rig's three geology tables.
 pub mod claims;
+/// **Doc 23 cut S.1**: a composed landing's writes split into the typed post-images and the
+/// ledger chunks (the black box's).
+pub mod composed;
 /// **Doc 20 cut SM.12b**: Occator's yard stripped away for the v14-shaped lane variants.
 pub mod drones;
 /// **16b cut AE.1**: the proving ground's generator, moved here from

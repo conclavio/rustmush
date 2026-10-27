@@ -42,6 +42,8 @@ mod economy;
 mod excursions;
 #[path = "shard_4/geology.rs"]
 mod geology;
+#[path = "shard_4/ic_sortie_surface.rs"]
+mod ic_sortie_surface;
 #[path = "shard_4/lane.rs"]
 mod lane;
 #[path = "shard_4/match_lifecycle.rs"]

@@ -1060,6 +1060,49 @@ pub struct RigRecord {
     /// Last staff recovery; a pending home owns the otherwise idle rig.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Box<crate::surface::recovery::RecoveryReceipt>>,
+    /// **The rig's open seal epoch** (doc 23 cut S.1; §6, §7, D-23-1, D-23-4; the lead's L5):
+    /// `Some` from the launch's `Done` — the rig left the bay — to the epoch's close, a
+    /// recover's `Done` or a staff home. Independent of [`RigRecord::excursion`], the act-level
+    /// "out": a staff close clears the excursion and **keeps** the epoch, flagged
+    /// [`OpenSortie::abandoned`] (abandonment never closes an epoch). Written only in the
+    /// finish's and the staff recovery's prepares, each in the bundle that writes its black box
+    /// line. Skipped when `None` (schema 1 stands: pre-launch, no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sortie: Option<OpenSortie>,
+}
+
+/// **An open seal epoch on a rig** (doc 23 cut S.1, the lead's L5): its id, the hangar it left,
+/// the site, who launched it, when it opened, whether staff abandoned it, and its seal's facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenSortie {
+    /// Its id: [`SortieId::ic`](crate::arena::mind::SortieId::ic)`(tv, launch_ic)` — the rig and
+    /// the instant its launch started ([`ExcursionId`]'s pair).
+    pub id: crate::arena::mind::SortieId,
+    /// The carrier whose bay it left (the hangar, D-23-2).
+    pub hull: ObjId,
+    /// The rig's bay slot.
+    pub slot: u8,
+    /// The site port entry it went down onto.
+    pub site: CanonicalId,
+    /// Who launched it (the plan's actor, D-23-5).
+    pub operator: ObjId,
+    /// The IC instant it opened: the launch's due instant, when the rig left the bay.
+    pub opened_ic: i64,
+    /// **Whether staff closed the excursion with the rig out** (D-23-4): the epoch stays open
+    /// and flagged until a home or a recover closes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abandoned: bool,
+    /// **Whether the epoch's open line was never written** (the S.1 fix round's F2): the black
+    /// box was dark or full, or the open was prepared off the composed path. The epoch is real
+    /// either way; the close line carries the flag so an inspection tells "no line" from "no
+    /// epoch". Skipped when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unrecorded: bool,
+    /// **The seal's facts** (cut S.1's L8): `None` when the rig had no `TacticalUnit` to seal —
+    /// the epoch opened anyway and its line says `seal: absent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal: Option<crate::surface::black_box::SealFacts>,
 }
 
 /// serde's `skip_serializing_if` for [`RigRecord::plans`].
@@ -1123,6 +1166,7 @@ impl RigRecord {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         }
     }
 
@@ -1150,6 +1194,7 @@ impl RigRecord {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         }
     }
 
@@ -1258,6 +1303,28 @@ impl RigRecord {
             }
             if !slot_ok(excursion.slot) {
                 return Err(format!("an excursion's slot is 1 to {MAX_BAY_ITEMS}"));
+            }
+        }
+        // Doc 23 cut S.1 (L1, L5): the open epoch is an IC epoch of this rig, and while the
+        // excursion that opened it is still open the two name the same launch.
+        if let Some(sortie) = &self.sortie {
+            let crate::arena::mind::SortieId::Ic { hull, at_ic } = sortie.id else {
+                return Err("a rig's epoch is an IC epoch".to_owned());
+            };
+            if hull != self.tv {
+                return Err("a rig's epoch is its own".to_owned());
+            }
+            if !slot_ok(sortie.slot) || sortie.hull == self.tv {
+                return Err(format!(
+                    "an epoch leaves another hull's bay slot, 1 to {MAX_BAY_ITEMS}"
+                ));
+            }
+            if self
+                .excursion
+                .as_ref()
+                .is_some_and(|open| open.id.launch_ic != at_ic)
+            {
+                return Err("an epoch and its open excursion name one launch".to_owned());
             }
         }
         if let Some(last) = &self.last {
@@ -2476,6 +2543,7 @@ mod tests {
             plan: None,
             plans: 0,
             recovery: None,
+            sortie: None,
         }
     }
 

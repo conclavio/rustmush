@@ -136,7 +136,15 @@ impl IcSealOutput for IcSortieOutput {
         self.row.open.execution.seal.unit
     }
     fn sortie(&self) -> u64 {
-        self.row.open.execution.seal.sortie.0
+        // Doc 23 cut S.1 (L1): the book's ordinal rides the arena kind until S.4; 0 is no
+        // ordinal (`Execution::validate` refuses it and any IC epoch's id).
+        self.row
+            .open
+            .execution
+            .seal
+            .sortie
+            .as_match_packed()
+            .unwrap_or(0)
     }
     fn transition(&self) -> u64 {
         self.row

@@ -20,8 +20,9 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// The full optional roster has twelve adapters: nine commerce, hardware and IC
-/// adapters, underwriting publication, and Conduct quota/artifact adapters.
+/// The full optional roster has thirteen adapters: nine commerce, hardware and IC
+/// adapters, underwriting publication, Conduct quota/artifact adapters, and
+/// TacSim's surface black box (doc 23 cut S.1).
 /// Registration headroom does not expand any invocation's images or modules;
 /// adapters sharing an actual state slot still require disjoint full action refs.
 pub const MAX_OWNER_PARTICIPANTS: usize = 16;

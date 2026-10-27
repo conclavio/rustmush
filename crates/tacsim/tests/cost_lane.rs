@@ -259,6 +259,9 @@ struct Tally {
     /// The `by` of every `start.plan_end` landed (the brief's L4.1: "`start.plan_end` keeps its
     /// `by` in the report").
     plan_end_by: BTreeMap<String, u64>,
+    /// **Doc 23 cut S.1: the black box pair** — the `log:hull.<n>` chunk writes landed, by kind
+    /// (a launch's `Done` and an implied launch's open the epoch; a recover's `Done` closes it).
+    black_box: BTreeMap<String, u64>,
 }
 
 impl Tally {
@@ -809,10 +812,13 @@ fn land_measured(
     let kind = cohort::kind_of(&action, &submit.parameters, done_kind, label);
     let who = who_of(rig, submit.actor);
     let started = Instant::now();
+    // Doc 23 cut S.1: the world task's composed path, so a finish's black box line rides its
+    // bundle and is counted with it (the bundle's replay writes: the typed post-images, one a
+    // staged op as before, and the `log:hull.<n>` chunk).
     let prepared = resolve(rig, submit).and_then(|resolved| {
         rig.tw
             .engine_mut()
-            .prepare_registered_resolved_authoritative_action(
+            .prepare_registered_composed_resolved_authoritative_action(
                 &resolved.action,
                 &resolved.resolved,
                 CommitToken::from_bytes(resolved.token),
@@ -827,8 +833,17 @@ fn land_measured(
             return Err(error);
         }
     };
-    let (ops, install) = prepared.into_parts();
-    let writes = ops.len();
+    let (replay, install) = prepared.into_parts();
+    let writes = replay.len();
+    let (ops, ledger) = support::composed::split(&replay);
+    let boxes = replay
+        .iter()
+        .filter(|write| support::composed::is_black_box(write))
+        .count();
+    assert!(boxes <= 1, "{kind}: one black box line a landing at most");
+    if boxes > 0 {
+        *rig.tally.black_box.entry(kind.clone()).or_insert(0) += 1;
+    }
     // A count above its ceiling is a missing census case (the brief's L5): name the state so the
     // census can construct it.
     if cohort::gate(&kind).is_some_and(|gate| writes > gate.ceiling) {
@@ -837,6 +852,7 @@ fn land_measured(
             submit.actor.0,
             submit.parameters,
             ops.iter()
+                .chain(ledger.iter())
                 .map(|op| match &op.op {
                     ModuleWrite::JsonSet { key, .. } => format!("set {}:{key}", op.ns),
                     ModuleWrite::Del { key } => format!("del {}:{key}", op.ns),
@@ -845,9 +861,10 @@ fn land_measured(
                 .collect::<Vec<_>>()
         );
     }
-    let events = rig.tw.install_prepared_action_announcing(install);
+    let events = rig.tw.install_composed_action_announcing(install);
     let us = micros(started);
     keep(rig, &ops);
+    fold_module_ops_into(&mut rig.store, ledger);
     rig.ledger.insert(identity);
     // The outcomes the rings' figures read (the brief's L11.7): an unload finish that landed
     // refused `MarkersFull` (its rig record's `last`), and the `by` a plan's end carried.
@@ -2567,6 +2584,7 @@ fn sm12c_every_act_kind_counts_its_writes_on_the_surface() {
     assert!(out.contains(tacsim::port::tv::QUIET_OFF), "{out}");
     assert_eq!(writes, 1, "a later write of the preference document");
     census_close(&rig, test);
+    assert_black_box_pair(&rig, test);
     let unload = constructed(&rig, "done.unload");
     println!(
         "cost_lane: C1 done.unload SM.8 19 handed / SM.12c constructed {unload} (O-20); variants \
@@ -2684,6 +2702,42 @@ fn sm12c_every_act_kind_counts_its_writes_in_a_plan() {
     rig.variant = "queued after the idle return".to_owned();
     work(&mut rig, &[tv1], 40);
     census_close(&rig, test);
+    assert_black_box_pair(&rig, test);
+}
+
+/// **Doc 23 cut S.1: the black box pair** (doc 23 §6, §9's S.1 row "the SM.12c cost lane re-run
+/// with the two writes per excursion inside its budget"): the launch's finish and the recover's
+/// each carried one `log:hull.<n>` chunk in their bundles — counted in `done.launch`'s and
+/// `done.recover`'s writes, both still inside their §11 ceilings ([`census_close`] asserts it) —
+/// and no kind other than a finish that leaves the bay (a launch, or a scan, a sounding or a
+/// drive from it) or a recover's ever wrote one.
+fn assert_black_box_pair(rig: &Rig, test: &str) {
+    println!(
+        "cost_lane: C1 {test} black box lines by kind {:?}",
+        rig.tally.black_box
+    );
+    for kind in ["done.launch", "done.recover"] {
+        assert!(
+            rig.tally.black_box.get(kind).is_some_and(|n| *n > 0),
+            "{test}: {kind} carries its black box line: {:?}",
+            rig.tally.black_box
+        );
+    }
+    let allowed = [
+        "done.launch",
+        "done.scan",
+        "done.sound",
+        "done.drive",
+        "done.recover",
+    ];
+    assert!(
+        rig.tally
+            .black_box
+            .keys()
+            .all(|kind| allowed.contains(&kind.as_str())),
+        "{test}: only an epoch's open or close writes a black box line: {:?}",
+        rig.tally.black_box
+    );
 }
 
 // ---------------------------------------------------------------------------

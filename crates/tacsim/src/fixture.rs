@@ -146,6 +146,8 @@ pub fn config() -> TacsimConfig {
         sensors: crate::config::SensorsConfig::default(),
         resolution: crate::config::ResolutionConfig::default(),
         harness: crate::config::HarnessConfig::default(),
+        // Doc 23 cut S.1: the black box's line cap, at its default.
+        surface: crate::config::SurfaceConfig::default(),
     }
 }
 

@@ -393,13 +393,21 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.3b: `tacsim_surface_act` and `tacsim_surface_done` — registered only when
     // the inventory cell is filled (the dump moves pools through the delegated families) and
     // the tools table built; the definitions register regardless.
+    // Doc 23 cut S.1 (§7, L2): the black box's owner participant, for the finish and the staff
+    // recovery the two calls below register.
+    let black_box = register_black_box(
+        reg,
+        &action_refs,
+        inventory_families.is_some(),
+        surface_tools.is_some(),
+    )?;
     let (surface_act, surface_done) = register_surface_acts(
         reg,
         &action_refs,
         (surface_act_outcome, surface_done_outcome),
         &port_families,
         inventory_families.as_ref(),
-        surface_tools.as_ref(),
+        (surface_tools.as_ref(), black_box.0),
     )?;
     // Staff recovery is a separate capability from the player's surface acts.
     let surface_recovery = register_surface_recovery(
@@ -407,7 +415,7 @@ pub(crate) fn register_with_coverage(
         &action_refs,
         recovery_outcome,
         &port_families,
-        inventory_families.as_ref(),
+        (inventory_families.as_ref(), black_box.1),
     )?;
     // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
@@ -553,7 +561,7 @@ fn register_surface_acts(
     outcomes: (DefinitionRef, DefinitionRef),
     families: &PortFamilies,
     inventory: Option<&InventoryFamilies>,
-    tools: Option<&Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
+    (tools, black_box): (Option<&SurfaceTools>, Option<BlackBoxHandle>),
 ) -> Result<(Option<DefinitionRef>, Option<DefinitionRef>), ModError> {
     let (Some(act), Some(done), Some(inventory), Some(tools)) = (
         actions.get(crate::surface::act::SURFACE_ACT_ACTION),
@@ -586,9 +594,61 @@ fn register_surface_acts(
             pockets: families.pockets.clone(),
             inventory: inventory.clone(),
             tools: Arc::clone(tools),
+            black_box,
         },
     )?;
     Ok((Some(act.clone()), Some(done.clone())))
+}
+
+/// The players' surface tools table the finish reads.
+type SurfaceTools = Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>;
+
+/// The black box participant's handle for one action (doc 23 cut S.1).
+type BlackBoxHandle =
+    mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>;
+
+/// **The black box's owner participant** (doc 23 cut S.1; §7; the lead's L2): its definition
+/// and its kind's one validator, registered unconditionally (a definition is a fact about the
+/// crate); the participant itself, on the store slot, for exactly the actions the two calls
+/// after it register — the finish (`tacsim_surface_done`: the inventory cell and the tools
+/// table filled) and the staff recovery (the inventory cell filled) — and one handle each.
+fn register_black_box(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    inventory: bool,
+    tools: bool,
+) -> Result<(Option<BlackBoxHandle>, Option<BlackBoxHandle>), ModError> {
+    use crate::surface::black_box::{
+        BlackBoxParticipant, PARTICIPANT_KIND, participant_descriptor,
+    };
+    let descriptor = participant_descriptor()?;
+    reg.definition_validator(
+        kind(PARTICIPANT_KIND)?,
+        crate::definitions::exact_validator(vec![descriptor.clone()]),
+    )?;
+    let definition = reg.definition(descriptor)?;
+    let done = actions
+        .get(crate::surface::act::SURFACE_DONE_ACTION)
+        .filter(|_| {
+            inventory && tools && actions.contains_key(crate::surface::act::SURFACE_ACT_ACTION)
+        })
+        .cloned();
+    let recovery = actions
+        .get(crate::surface::recovery::RECOVERY_ACTION)
+        .filter(|_| inventory)
+        .cloned();
+    let allowed: BTreeSet<DefinitionRef> = done.iter().chain(recovery.iter()).cloned().collect();
+    if allowed.is_empty() {
+        return Ok((None, None));
+    }
+    reg.owner_participant(definition, allowed, BlackBoxParticipant)?;
+    let done = done
+        .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
+        .transpose()?;
+    let recovery = recovery
+        .map(|action| reg.request_owner_participant::<BlackBoxParticipant>(action))
+        .transpose()?;
+    Ok((done, recovery))
 }
 
 /// Recovery needs inventory but does not depend on the player's tools table.
@@ -597,7 +657,7 @@ fn register_surface_recovery(
     actions: &BTreeMap<String, DefinitionRef>,
     outcome: DefinitionRef,
     families: &PortFamilies,
-    inventory: Option<&InventoryFamilies>,
+    (inventory, black_box): (Option<&InventoryFamilies>, Option<BlackBoxHandle>),
 ) -> Result<Option<DefinitionRef>, ModError> {
     let (Some(action), Some(inventory)) = (
         actions.get(crate::surface::recovery::RECOVERY_ACTION),
@@ -613,6 +673,7 @@ fn register_surface_recovery(
             excursions: families.excursions.clone(),
             pockets: families.pockets.clone(),
             inventory: inventory.clone(),
+            black_box,
         },
     )?;
     Ok(Some(action.clone()))

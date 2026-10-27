@@ -2798,6 +2798,56 @@ fn percent_up(cu: u32, battery: &BatteryDef) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
+/// **Whether a rig out on the ground is parked short of its way home** (doc 23 cut S.1, the
+/// lead's L6: the durable facts, never the `tacsim:tv` projection): nothing in flight and the
+/// rig on the ground, and either its plan ended `Stranded` with no act since (the record), or
+/// the idle return's own test fails as its operator — the recover's way home, from where the
+/// rig stands, is short of the record's charge (`RECOVER_SHORT`) or there is none
+/// (`RECOVER_FAR`), exactly the two refusals the idle return parks a rig on
+/// (`crate::surface::tick`). Any other refusal — the operator ashore, the ground cold — reads
+/// not parked. A staff home of a parked rig closes its epoch `RecoveredToBase`.
+pub(crate) fn parked_short(
+    w: &World,
+    record: &RigRecord,
+    operator: ObjId,
+    battery: Option<&BatteryDef>,
+) -> bool {
+    if record.act.is_some() || record.run.is_some() || record.queued.is_some() {
+        return false;
+    }
+    if !matches!(where_is(w, record.tv), Where::Ground { .. }) {
+        return false;
+    }
+    let stranded = record.plan.as_ref().is_some_and(|plan| {
+        matches!(
+            plan.state,
+            FillState::Ended { why: PlanEnd::Stranded, at_ic }
+                if record.last.as_ref().is_none_or(|last| at_ic >= last.at_ic)
+        )
+    });
+    if stranded {
+        return true;
+    }
+    let Some(lease) = crate::port::yard::rig_lease(w, record.tv) else {
+        return false;
+    };
+    let rig = RigAt {
+        tv: record.tv,
+        slot: lease.slot,
+        mark: lease.mark.clone(),
+        hull: lease.hull,
+        record: lease,
+    };
+    let rates = rig_rates(w, record.tv, battery);
+    let mut peeks = Peeks::default();
+    let ramp = ramp_label(w, rig.hull);
+    matches!(
+        recover_plan(w, operator, &rig, &mut peeks, rates)
+            .and_then(|plan| leg_home(record, &plan, battery, &rig, &ramp)),
+        Err(Refusal::LegShort { .. } | Refusal::Far { .. })
+    )
+}
+
 /// **A recover's leg home, affordable or `RECOVER_SHORT`** (doc 20 cut SM.4b; lead ruling 5,
 /// decision P6): `leg_affordable` on the record's own value — never the 5 % floor, never the
 /// battery's row; the battery reads only the words (`?` without it). **SM.11: its idle
@@ -6620,6 +6670,11 @@ struct DoneRig {
     /// its plan — the unload's finish re-checks the hold against it with no World.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hold: Option<HoldFacts>,
+    /// **What the launch's `Done` opens the epoch with** (doc 23 cut S.1, L3/L8): the ROM seal's
+    /// facts, the unit class and the site's open epochs — `Some` for a rig whose act in flight
+    /// leaves the bay (`crate::surface::black_box::epoch_facts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    epoch: Option<crate::surface::black_box::EpochFacts>,
 }
 
 /// A rig's hopper, as the finish's offer fixes it (doc 20 cut SM.8).
@@ -7735,6 +7790,24 @@ impl SurfaceActProvider {
                 return Err(port_error(
                     ActionErrorCode::ProviderRejected,
                     "that rig has an excursion open",
+                ));
+            }
+            // Doc 23 cut S.1 (the lead's L5): a rig whose last epoch is still open cannot
+            // leave again — it cannot happen through the verbs (a rig launches from its bay
+            // only, and the bay is reached only by a close), so it is a conflict, paged.
+            if let Some(open) = &record.sortie {
+                tracing::error!(
+                    tv = tv.0,
+                    sortie = %open.id,
+                    abandoned = open.abandoned,
+                    "tacsim: rig {} (tacsim.excursion {}) is asked to leave with its last epoch \
+                     still open; the start is refused; staff `home` the rig to close it",
+                    rig.slot,
+                    tv.0
+                );
+                return Err(port_error(
+                    ActionErrorCode::Conflict,
+                    "that rig's last trip is still open; staff must bring it home first",
                 ));
             }
             let mut counts = ExcursionCounts::default();
@@ -8937,6 +9010,11 @@ pub(crate) struct SurfaceDoneProvider {
     pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
+    /// **Doc 23 cut S.1** (L2, L4): the black box participant's handle for this action — the
+    /// open line at a launch's `Done`, the close line at a recover's.
+    pub black_box: Option<
+        mush_core::participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>,
+    >,
 }
 
 /// **An implied launch's settlement** (doc 20 cut SM.4a; the brief's reviewer finding F1,
@@ -9107,6 +9185,66 @@ fn spent(
     })
 }
 
+/// **The seal epoch's move at an act's finish** (doc 23 cut S.1; §6 "What the host does at each
+/// end", D-23-1, D-23-2, D-23-5, D-23-8; the lead's L3–L6), on the record the finish is about to
+/// write, and the black box line it owes:
+///
+/// - **an act that leaves the bay** (a launch, or an implied one: a scan, a sounding or a drive
+///   from the bay) whose excursion survives the finish with the rig out of every bay **opens**
+///   the epoch — `SortieId::ic(tv, launch_ic)`, the hangar it left, the seal fixed at the offer
+///   (or absent, paged), the launch's operator as the warrant principal (D-23-5: a plan's step or
+///   the idle return does not move it) and the site's admission count (D-23-8) — and owes
+///   `mind_sealed`. A rig whose last epoch is still open is a conflict the finish refuses, paged
+///   (the start refuses it first; this is the backstop). `NeverLeft` closed the excursion, so
+///   it opens nothing;
+/// - **a recover's `Done`** closes the open epoch `ReturnedToBase` into the hull it climbed into
+///   and owes `sortie_closed`, `abandoned` as the epoch carried it.
+fn epoch_move(
+    record: &mut RigRecord,
+    act: &Act,
+    (tv, result): (ObjId, ActResult),
+    rig: &DoneRig,
+) -> Result<Option<crate::surface::black_box::BlackBoxLine>, ActionError> {
+    use crate::surface::black_box::BlackBoxLine;
+    if act.kind == ActKind::Launch || act.params.launches() {
+        let Some(excursion) = record.excursion.clone() else {
+            return Ok(None);
+        };
+        if matches!(rig.facts, Facts::Bay { .. }) {
+            return Ok(None);
+        }
+        if let Some(open) = &record.sortie {
+            tracing::error!(
+                tv = tv.0,
+                sortie = %open.id,
+                "tacsim: rig #{} left its bay with its last epoch still open; the finish is \
+                 refused; staff `home` the rig to close it",
+                tv.0
+            );
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "that rig's last trip is still open; staff must bring it home first",
+            ));
+        }
+        let (opened, line) =
+            crate::surface::black_box::open_epoch(tv, &excursion, act.due_ic, rig.epoch.as_ref());
+        record.sortie = Some(opened);
+        return Ok(Some(line));
+    }
+    if act.kind == ActKind::Recover
+        && result == ActResult::Done
+        && let Some(open) = record.sortie.take()
+    {
+        return Ok(Some(BlackBoxLine::sortie_closed(
+            tv,
+            &open,
+            act.due_ic,
+            mush_roll::commerce::ic_claims::IcCloseKind::ReturnedToBase { base: act.hull },
+        )));
+    }
+    Ok(None)
+}
+
 impl ActionProvider for SurfaceDoneProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         let parameters = parameters_of(invocation)?;
@@ -9198,6 +9336,18 @@ impl ActionProvider for SurfaceDoneProvider {
                     plan,
                 })
             });
+            // Doc 23 cut S.1 (L3, L8, D-23-8): a launching act's epoch facts — the ROM seal, the
+            // class, the site's open epochs — fixed here, where the World is in hand.
+            let read_rig = |tv: ObjId| {
+                engine
+                    .action_state()
+                    .get(&self.excursions, &RigKey(tv))
+                    .ok()
+                    .flatten()
+                    .cloned()
+            };
+            let epoch = read_rig(record.tv)
+                .and_then(|found| crate::surface::black_box::epoch_facts(w, &read_rig, &found));
             rigs.insert(
                 record.tv.0.to_string(),
                 DoneRig {
@@ -9208,6 +9358,7 @@ impl ActionProvider for SurfaceDoneProvider {
                     rights,
                     hopper,
                     hold,
+                    epoch,
                 },
             );
         }
@@ -9268,11 +9419,15 @@ impl ActionProvider for SurfaceDoneProvider {
         .map(Some)
     }
 
+    /// **Doc 23 cut S.1** (L2, L4): the finish takes its preparation context, through which the
+    /// launch's `Done` and the recover's append the black box line in this act's own bundle
+    /// (`crate::surface::black_box::append`).
     #[allow(clippy::too_many_lines)] // one ordered refusal list, then one decision per kind
-    fn prepare_authoritative(
+    fn prepare_authoritative_with_context(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+        context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters = parameters_of(invocation)?;
         let actor = invocation.actor();
@@ -9713,6 +9868,30 @@ impl ActionProvider for SurfaceDoneProvider {
                 result
             }
         };
+        // 2b. Doc 23 cut S.1 (§6, D-23-1; L3–L6): the seal epoch's moves ride this finish. An
+        // act that leaves the bay — a launch, or (an implied launch) a scan, a sounding or a
+        // drive from the bay, by the hand, a plan's step or the idle return alike — opens the
+        // rig's epoch when its excursion survives the finish with the rig out of every bay; a
+        // `NeverLeft` closed the excursion above and opens nothing. A recover's `Done` closes
+        // the epoch `ReturnedToBase` into the hull it climbed into. The record moves once per
+        // act ordinal, so a re-run finish finds the act gone and writes no second line.
+        let line = epoch_move(&mut record, &act, (tv, result), rig)?;
+        // The line rides this bundle; an open whose line was not written is recorded on the
+        // epoch (the S.1 fix round's F2), in the same record write.
+        if let Some(line) = line {
+            let opens = matches!(
+                line,
+                crate::surface::black_box::BlackBoxLine::MindSealed { .. }
+            );
+            let written =
+                crate::surface::black_box::append(context, self.black_box.as_ref(), tv, line)?;
+            if opens
+                && !written
+                && let Some(open) = record.sortie.as_mut()
+            {
+                open.unrecorded = true;
+            }
+        }
         // 3. The act clears; the outcome is stamped at the act's own due instant.
         record.act = None;
         record.last = Some(Outcome {

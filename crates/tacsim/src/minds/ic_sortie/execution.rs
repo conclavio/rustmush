@@ -103,7 +103,9 @@ impl Execution {
             facts.unit(),
             unit,
             &weapons,
-            SortieId(sortie),
+            // Doc 23 cut S.1 (L1): the book's transition ordinal rides the arena kind until
+            // the cut that flies a mind IC (S.4) makes the book carry its host's id.
+            SortieId::Packed(sortie),
             &SealPolicy {
                 authored: Some(definition),
                 selected_profiles: profiles,
@@ -142,7 +144,7 @@ impl Execution {
         if self.source.is_empty()
             || self.source.len() > mush_roll::MAX_SOURCE_BYTES
             || self.source.contains('\0')
-            || self.seal.sortie.0 == 0
+            || self.seal.sortie.as_match_packed().is_none_or(|n| n == 0)
             || self.seal.requested.source_sha256 != digest
             || self.seal.requested.origin.certificate().is_none()
             || (self.seal.engine == SealEngine::Scripted && self.seal.source_sha256 != digest)

@@ -157,7 +157,7 @@ impl Closing {
         open: &Opening,
     ) -> Result<DefinitionDigest, ParticipantError> {
         let mut value = serde_json::json!({
-            "request":self.request,"open":open.operation,"unit":open.execution.seal.unit,"sortie":open.execution.seal.sortie.0,
+            "request":self.request,"open":open.operation,"unit":open.execution.seal.unit,"sortie":open.execution.seal.sortie,
             "seal":open.execution.digest(),"sequence":self.sequence,"kind":self.kind,
             "at_ic":self.at_ic,"conditions":self.conditions_digest,"unit_digest":self.unit_digest,
         });
@@ -190,7 +190,12 @@ impl Closing {
             || self.request == open.request
             || self.operation == open.operation
             || self.action != self.protocol.action(true)?
-            || self.transition <= open.execution.seal.sortie.0
+            || open
+                .execution
+                .seal
+                .sortie
+                .as_match_packed()
+                .is_none_or(|sortie| self.transition <= sortie)
             || self.sequence == 0
             || self.conditions_digest.as_bytes() == &[0; 32]
             || self.unit_digest.as_bytes() == &[0; 32]

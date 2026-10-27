@@ -214,7 +214,10 @@ pub const WRITE_GATES: &[Gate] = &[
     act("start.sound.plan"),
     act("start.recover.idle"),
     act("start.unload.queued"),
-    // The completions (the surface tick's finish, `tacsim_surface_done`).
+    // The completions (the surface tick's finish, `tacsim_surface_done`). Doc 23 cut S.1: the
+    // black box pair — `done.launch` (and a scan's, a sounding's or a drive's from the bay, an
+    // implied launch) gains one `log:hull.<n>` chunk when the epoch opens, `done.recover` one when
+    // it closes; each stays inside §11's 8 (`assert_black_box_pair` in `tests/cost_lane.rs`).
     done("done.drive"),
     done("done.dump"),
     done("done.launch"),

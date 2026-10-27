@@ -1,6 +1,6 @@
 # 23. IC sorties — the seal epoch, the voyage, and the hosts that open and close one
 
-**Draft 0.4, 2026-10-27 — S.0 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
+**Draft 0.5, 2026-10-27 — S.0 and S.1 as built (§14).** Draft 0.3 was written read-only at `563259b7` (`main`, with 17g cuts C0–C2 merged);
 Draft 0.1 was reviewed the same day against doc 17, doc 20, 17f, doc 18 and the IC-sortie code,
 Draft 0.2 carried the review's corrections (§15), and Draft 0.3 carries the owner's rulings of the
 same day (§16): Q-23-1 to Q-23-5 accepted as proposed, Q-23-6 ruled (the lapse hold runs to the
@@ -334,7 +334,7 @@ cut off `main`), ledger here in §14. Sizes are the lead's estimates.
   `Held`, `Parked`; `Stranded` is a plan end with the rig `Parked`). Tests: one excursion opens and
   closes with a restart between; a `Parked` rig leaves it open through the idle return; a re-run tick
   mints nothing; the seal line names the Dray-P and its open sortie (D-23-2); the SM.12c cost
-  lane re-run with the two writes per excursion inside its budget.
+  lane re-run with the two writes per excursion inside its budget. *As built: §14.*
 - **S.2 — The ship's epoch on the port voyage (medium).** The same on `tacsim.port`: the seal and
   `MindSealed` when the launch arm's `depart` moves the hull, nothing for a lapsed burn, the close
   `ReturnedToBase` at `docked` at a hangar port — a settle on a site's pad writes nothing (D-23-3)
@@ -462,6 +462,94 @@ diff is the review.
   fills the sortie) and prints no engine term.
 - **Not done.** No cargo ran (the C2e–C2h completion may own the workspace build); nothing under
   `crates/` or `docs/help/` changed.
+
+### S.1 — the first IC sortie, on the surface excursion, as built (2026-10-27, branch `claude/ic-sorties-s1`)
+
+Built from `main` at `a477e9c3` (PR #36) through the cut loop: the lead's brief with eight rulings
+(`plan-data/ic-sorties/cuts/S.1/brief.md`), one builder, one lens, one fix round; the gate is the
+cut's own tests on this box and CI's shards on the PR. Tier 1 of §10's gate for the vehicle is met:
+a rig's epoch opens when it leaves the bay and closes at `+tv/recover` with a `SortieId` and a
+`mind_sealed`/`sortie_closed` pair in a durable black box; a rig staff `close`d with it out stays
+open and flagged; a re-run finish, at the same instant or across a reboot, mints nothing.
+
+- **The id (L1, a recorded deviation from §7's first bullet).** `SortieId` is an enum of two kinds:
+  the arena's `Packed(u64)` (`in_match`, `none`), serialised as the bare number it always was — every
+  pinned tape, record and snapshot is byte-identical, `Display` unchanged — and the IC epoch
+  `Ic { hull, at_ic }`, the hull and the IC instant its leaving began (`ExcursionId.launch_ic`; S.2's
+  voyage will use the undock), serialised as `{"ic":{"hull":n,"at_ic":t}}`. Deterministic, no
+  counter, and not the claim book's ordinal: `IcSorties` is one bounded book of `MAX_HISTORY` claim
+  rows and an excursion-per-mint would exhaust it. The book keeps minting `Packed(ordinal)` for its
+  own transition order and refuses the IC kind at load, insert and validation until S.4 makes it
+  carry the host's id. The collision test runs `ic(#4, 0)` against `in_match(0, #4)`.
+- **The seal (L8).** `match_::seal::seal_rom_for(id, &TacticalUnit, weapons, sortie,
+  &IcSealConfig)` is `seal_with_policy` under the production policy with no `CustodyUnit`, match or
+  holding: a rig with no core seals Class 0, governed, `fallback = "no core: the ROM"`, channels
+  Helm and Sensors, and the test proves it equals `seal_for` of the same hull in a pod save the
+  sortie and the principal. The surface fixtures' rigs do have a `TacticalUnit` (unit class
+  `vehicle`).
+- **The black box (L2, L7).** One `mush_core::Ledger` on `TacsimStore` (`black_boxes`), one log per
+  hull, id `hull.<n>` so the documents are `log:hull.<n>` in tacsim's namespace, restored from
+  history at boot (a refused restore pages and marks the boxes dark: no appends, chunk 0 never
+  overwritten). The brief's assumption that the append could ride an `ActionTxn` did not hold (an
+  `ActionTxn` writes no `log:*` chunk and a provider has no commit hook), so the builder followed
+  mush-economy's `core_integration` pattern: a new `OwnerParticipant` (`black_box_owner`,
+  `tacsim_black_box`, registered in `port_tick.rs`) whose `prepare_append` runs in the participant's
+  prepare and whose `LedgerChunkSet` replay write rides the finish's or the receipt's bundle, bound
+  and applied at the composed install — one commit for the record move and the line, and no second
+  ledger mechanism. The two providers (`tacsim_surface_done`, the staff recovery) moved to
+  `prepare_authoritative_with_context` for it. On a path with no participants (the typed-only
+  harnesses) nothing is written and the record's `unrecorded` flag says so. Lines are a strict
+  tagged enum `surface::black_box::BlackBoxLine`: `mind_sealed { unit, sortie, at_ic, host
+  "surface", hangar { hull, slot, sortie: null }, site, principal, seal: sealed|absent, the seal
+  facts (mind, source, card_digest, class, governed, licence, seal_digest, fallback), admitted
+  { class, host, count } }` and `sortie_closed { unit, sortie, at_ic, close: <IcCloseKind's wire>,
+  abandoned, unrecorded }` (the kind field is `close`, since `kind` is the line's own tag — the one
+  deviation from L7's names). The read seam is `TacsimStore::{black_box, black_box_lines (with the count of
+  undecodable entries, never dropped silently), black_box_len, black_box_dark}` and
+  `black_box::history` over chunk documents; no verb.
+- **The record (L3–L6).** `RigRecord.sortie: Option<OpenSortie { id, hull, slot, site, operator,
+  opened_ic, abandoned, unrecorded, seal: Option<SealFacts> }>`, schema 1 kept. The epoch opens at
+  the finish of any act that leaves the bay — a launch, or a scan, sounding or drive from the bay,
+  by the hand, a plan's step or the idle return alike — when its excursion survives with the rig out
+  of every bay (D-23-1: a rig out of its hangar is on its sortie, whatever act took it out); a
+  `NeverLeft` opens nothing. The close: `+tv/recover`'s `Done` and staff `home` write
+  `ReturnedToBase { base: hull }`; staff `home` on a parked rig writes `RecoveredToBase`; staff
+  `close` keeps the epoch and sets `abandoned` (D-23-4). A start that would leave the bay with an
+  epoch still open is refused `Conflict` ("that rig's last trip is still open; staff must bring it
+  home first") and paged, with the finish's refusal as a backstop. The principal is the excursion's
+  operator, never an implied act's `by` (D-23-5). `admitted.count` is the open surface epochs on the
+  site including this one (the builder's reading of D-23-8; the cap's `counts.site` counts
+  excursions, which differ by the abandoned and the mid-launch — accepted). `PoweredDownInBase` is
+  unused on the surface and `Destroyed` reserved, as §9 said.
+- **The cap.** `[tacsim.surface].black_box_max_lines`, default 4096 (provisional under the owner's
+  economy-defaults rule, 1..=1,048,576). `mush_core::Ledger` has no retention primitive, so a full
+  box refuses the append with a page (on every refusal, not once) and the act still completes; an
+  open reserves room for its close (`len + 2 <= cap`) so a written open is never left without one.
+- **Parked (L6).** The idle park is a projection, not a record fact, so a staff `home`'s kind is
+  derived live at the offer (`act::parked_short`: the plan ended `Stranded` with no act since, or the
+  idle return's own `recover_plan` + `leg_home` test refuses `LegShort`/`Far` for the operator) and
+  covered by the revision hash; any other refusal reads `ReturnedToBase`.
+- **The close-window case.** A staff `close` between the tick's placement and the finish's landing
+  now opens the epoch abandoned (a launch) or closes it `ReturnedToBase` carrying the epoch's own
+  `abandoned` (a recover) at the receipt, with the line on the receipt's commit, so D-23-1's "open
+  exactly while out" holds through the window; both cases are driven by a test.
+- **Gates.** No module-namespace or state-slot row was needed (the chunks land in tacsim's own
+  namespace through the core's participant bind). The SM.12c write census had no exact pin for
+  `done.launch`/`done.recover` (ceilings of 8); it gains `assert_black_box_pair`. The production
+  roster's owner participants are thirteen under `MAX_OWNER_PARTICIPANTS = 16` (the lens counted
+  them; `participant.rs`' comment corrected; `mush-contract-tests`' `macro_names`,
+  `exit_command_words` and `help_commands` compose the full roster and pass). The `excursions.rs` and `cost_lane.rs` harnesses moved
+  to the production composed prepare path so they can see a line; the other surface harnesses stay
+  typed-only and write none.
+- **Tests.** `arena::mind` (the id), `match_::seal` (the ROM seal), `surface::black_box` (the log
+  id, the two strict shapes, the cap), `shard_4/ic_sortie_surface.rs` (one excursion across two
+  reboots with the history read; the parked rig through the idle return and `RecoveredToBase`; the
+  staff `close` flag then `home`; the re-run finish at the same instant and across a reboot; the
+  `NeverLeft`; the close-window `close`), and the cost lane's census.
+- **Not done / owed.** Retention for a full box (a `mush_core::Ledger` primitive, its own cut); a
+  store-read completion for the history (no verb until M8's inspection); a second carrier's
+  `RecoveredToBase` and the abandoned notice's lifetime (S.3); the parked derivation reads the
+  operator's aboard-ness live; the 4096 default is the owner's to tune.
 
 ## 15. The review of Draft 0.1, and what it changed
 
