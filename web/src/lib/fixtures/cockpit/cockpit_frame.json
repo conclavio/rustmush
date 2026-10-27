@@ -29,6 +29,7 @@
         "hull"
       ],
       "friendly": false,
+      "health": "crippled",
       "id": "1111111111111111",
       "moving": false,
       "odds": [
@@ -64,6 +65,7 @@
       "designator": "RB",
       "fatal": null,
       "friendly": true,
+      "health": null,
       "id": "2222222222222222",
       "moving": false,
       "odds": [],
@@ -88,6 +90,7 @@
       "designator": "X3",
       "fatal": null,
       "friendly": false,
+      "health": null,
       "id": "3333333333333333",
       "moving": false,
       "odds": [],
@@ -112,6 +115,7 @@
       "designator": "X4",
       "fatal": null,
       "friendly": false,
+      "health": null,
       "id": "4444444444444444",
       "moving": false,
       "odds": [],

@@ -35,13 +35,14 @@ use serde_json::Value;
 
 use crate::Frame;
 use crate::cockpit::{
-    ARENA_MAP_FEED, COCKPIT_FEED, contact_kind, map_from_feed, terrain_from_feed,
+    ARENA_MAP_FEED, COCKPIT_FEED, contact_health, contact_kind, map_from_feed, terrain_from_feed,
 };
 use crate::frame::Rgb;
 use crate::heightfield::Terrain;
 use crate::math::Det as _;
 use crate::overlay::{
-    BLUE_TEAM, BORDER, DIM, LOCK, RED_TEAM, TEXT, WRECK, YOU, draw_card, ground_rgb, outline_rect,
+    BLUE_TEAM, BORDER, DIM, GONE, HEALTH_PIPS, LOCK, RED_TEAM, TEXT, WRECK, YOU, draw_card,
+    ground_rgb, outline_rect,
 };
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use crate::raycast::{Map, SpriteKind};
@@ -526,7 +527,10 @@ fn overhead_scene(
         }
         // The designators: the camera's only. At the inset's scale they
         // crowd the tank (a contact 200 m out is 15 pixels off), and they
-        // are on the tape and the lock's readout already.
+        // are on the tape and the lock's readout already. The health pips
+        // (G.14) under the designator, the camera's only for the same
+        // reason — the inset's contacts carry theirs over their sprites in
+        // the picture itself.
         if dress == Dress::Camera {
             scene.push(Item::Text {
                 at: *at,
@@ -536,6 +540,17 @@ fn overhead_scene(
                 colour: if locked { LOCK } else { TEXT },
                 scale: s as usize,
             });
+            if let Some(health) = contact_health(c) {
+                scene.push(Item::Pips {
+                    at: *at,
+                    offset: (6 * s, -s),
+                    lit: health.lit(),
+                    of: HEALTH_PIPS,
+                    size: 2 * s,
+                    colour: health.rgb(),
+                    dim: GONE,
+                });
+            }
         }
     }
 
@@ -828,6 +843,63 @@ mod tests {
             swung.hash(),
             "deterministic"
         );
+    }
+
+    /// Doc 21 cut G.14: the camera marks an identified contact's health
+    /// beside its mark, under the designator — the fixture's BA one red pip
+    /// and two grey; RB (no word), X3 and X4 (unidentified) nothing — and
+    /// draws none once the word is gone; the inset draws none, as it draws
+    /// no designators.
+    #[test]
+    fn the_overhead_marks_a_contact_s_health_beside_it() {
+        use crate::overlay::{BAD, GONE};
+        let count = |f: &Frame, c: Rgb| {
+            (0..f.height())
+                .flat_map(|y| (0..f.width()).map(move |x| (x, y)))
+                .filter(|&(x, y)| f.get(x, y) == c)
+                .collect::<Vec<_>>()
+        };
+        let f = feeds(true);
+        let full = draw(&f, &Look::default(), 640, 480);
+        let red = count(&full, BAD);
+        let grey = count(&full, GONE);
+        assert_eq!(red.len(), 16, "one 4x4 pip at 2x: {red:?}");
+        assert_eq!(grey.len(), 32, "two unlit: {grey:?}");
+        let (x, y) = red[0];
+        assert!(grey.contains(&(x + 6, y)) && grey.contains(&(x + 12, y)));
+        // Beside BA's mark: right of it, and under its designator.
+        assert!(has(&full, BLUE_TEAM));
+        let blue = count(&full, BLUE_TEAM);
+        let (bx, by) = blue
+            .iter()
+            .fold((0, 0), |(sx, sy), &(x, y)| (sx + x, sy + y));
+        let (bx, by) = (bx / blue.len(), by / blue.len());
+        assert!(
+            x > bx && x < bx + 24,
+            "right of BA ({bx}, {by}): ({x}, {y})"
+        );
+        assert!(
+            y + 2 >= by && y <= by + 4,
+            "level with BA ({bx}, {by}): ({x}, {y})"
+        );
+
+        let mut quiet = feeds(true);
+        if let Some(c) = quiet.get_mut(COCKPIT_FEED) {
+            c["contacts"][0]["health"] = Value::Null;
+        }
+        let none = draw(&quiet, &Look::default(), 640, 480);
+        assert!(!has(&none, BAD) && !has(&none, GONE), "no word, no pips");
+
+        let mut inset = Frame::new(640, 256);
+        OverheadPicture::new().draw_inset(
+            &mut inset,
+            f.get(COCKPIT_FEED).expect("cockpit"),
+            f.get(ARENA_MAP_FEED),
+            &Look::default(),
+            (8, 8, 104),
+            Up::Camera,
+        );
+        assert!(!has(&inset, BAD), "the inset carries no pips");
     }
 
     /// The rings are the weapons' band edges and the sight, distinct, out to

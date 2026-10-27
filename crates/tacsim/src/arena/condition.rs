@@ -111,6 +111,54 @@ impl ConditionBand {
     }
 }
 
+/// **One word for a whole hull, read off its bands** (doc 21 cut G.14; the
+/// owner's ask of 2026-10-27 after flying G.12 live: *hard to tell the enemy
+/// units' status — health bars for enemy units*).
+///
+/// The picture needs one gauge a contact, and the honest gauge is a summary
+/// of the [`Condition`] a platform already holds and nothing finer: no
+/// fraction, no count of sections, no number a later surface could print.
+/// Four words in the order a hull gets worse, the worst band a reading shows:
+///
+/// * [`Intact`](ConditionTier::Intact) — every section reads green (and a
+///   reading with no sections at all);
+/// * [`Damaged`](ConditionTier::Damaged) — the worst reads yellow;
+/// * [`Crippled`](ConditionTier::Crippled) — a section reads red, or one is
+///   destroyed that the chassis survives;
+/// * [`Wreck`](ConditionTier::Wreck) — a section the chassis does not survive
+///   reads destroyed: the reading half of
+///   `crate::arena::state::Arena::contact_reads_dead`'s rule.
+///
+/// A reading is a close look taken while the contact was classified (the
+/// module head), so a tier is never told of a return the scope has not told
+/// apart, and it goes stale with the look it summarises — `SCAN` says how
+/// stale. The word is also the wire word (`health` on a keyframe contact).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionTier {
+    /// Every section green.
+    Intact,
+    /// Yellow at worst.
+    Damaged,
+    /// Red at worst, or a section gone the chassis survives.
+    Crippled,
+    /// A fatal section gone.
+    Wreck,
+}
+
+impl ConditionTier {
+    /// The word a pilot reads, which is also the wire word.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ConditionTier::Intact => "intact",
+            ConditionTier::Damaged => "damaged",
+            ConditionTier::Crippled => "crippled",
+            ConditionTier::Wreck => "wreck",
+        }
+    }
+}
+
 /// **One unit's per-section bands**, in the unit's own section order (16b cut
 /// Q.2) — the order [`mush_tactics::TacticalUnit::sections`] answers in, which is
 /// section-id order and is the order `STATUS`'s damage block already walks.
@@ -306,6 +354,34 @@ impl Condition {
             .filter_map(|index| self.band(index))
             .map(|band| band.letter())
             .collect()
+    }
+
+    /// **The one word these bands sum to** (doc 21 cut G.14; [`ConditionTier`]):
+    /// [`ConditionTier::Wreck`] where a destroyed section is in `fatal_mask`
+    /// (bit `i` for section `i` of the packed order, the same numbering
+    /// [`Condition::destroyed_mask`] answers in), else the worst band packed —
+    /// red or destroyed [`ConditionTier::Crippled`], yellow
+    /// [`ConditionTier::Damaged`], green [`ConditionTier::Intact`]. Nothing
+    /// packed reads intact: a reading that says nothing has nothing worse to
+    /// say.
+    #[must_use]
+    pub const fn tier(&self, fatal_mask: u32) -> ConditionTier {
+        if self.destroyed_mask() & fatal_mask != 0 {
+            return ConditionTier::Wreck;
+        }
+        let mut worst = ConditionTier::Intact;
+        let mut index = 0;
+        while index < MAX_SCANNED_SECTIONS {
+            match self.band(index) {
+                Some(ConditionBand::Red | ConditionBand::Destroyed) => {
+                    return ConditionTier::Crippled;
+                }
+                Some(ConditionBand::Yellow) => worst = ConditionTier::Damaged,
+                Some(ConditionBand::Green) | None => {}
+            }
+            index += 1;
+        }
+        worst
     }
 }
 
