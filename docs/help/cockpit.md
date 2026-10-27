@@ -715,11 +715,13 @@ is.
 
 While the picture is showing (the bottom line names the keys):
 
-  Left, Right    turn the tank. Hold the key down and let go to stop, on a
+  a, d or Left, Right
+                 turn the tank. Hold the key down and let go to stop, on a
                  terminal that tells the game when a key is let go (WezTerm,
-                 kitty, Ghostty, Windows Terminal 1.25 and later); elsewhere
-                 press once to start and again to stop
-  a, d           turn the tank too, press to start and again to stop
+                 kitty, Ghostty, Windows Terminal 1.25 and later; the bottom
+                 line reads `hold-turn` for the keys this works for, since a
+                 few terminals report it for the arrows but not the letters);
+                 elsewhere press once to start and again to stop
   w, s           speed up or slow down a step (a tenth of your machine's top
                  speed, at least 5 kph), through zero into reverse, stopping
                  at either ceiling; the line over the picture shows

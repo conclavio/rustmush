@@ -94,10 +94,19 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub const FRAME_INTERVAL: Duration = BUCKET_A_INTERVAL;
 /// How fast a toggled look swings the camera, millidegrees a second (45°/s).
 const TURN_MDEG_PER_S: i64 = 45_000;
-/// Push the kitty keyboard protocol with "disambiguate" and "report event
-/// types" (G.4): a held cursor key reports its release, which ends a turn.
-/// Pushed when the view opens on a terminal that answered `CSI ? u`.
-const KEYBOARD_PUSH: &[u8] = b"\x1b[>3u";
+/// Push the kitty keyboard protocol with "disambiguate" (1), "report event
+/// types" (2), "report alternate keys" (4) and "report all keys as escape
+/// codes" (8): a held cursor key reports its release, which ends a turn
+/// (G.4), and so does a held letter (G.12's `W-G12-1`) — flag 8 makes every
+/// key an escape code with its release, and flag 4 carries the character
+/// shift makes (`T`, `"`, `:`) so the shifted keys still mean what they
+/// did. Pushed when the view opens on a terminal that answered `CSI ? u`,
+/// and the flags asked for again right after ([`KEYBOARD_QUERY`]): the
+/// reply says which the terminal took, and the letters are held only where
+/// flag 8 is among them.
+const KEYBOARD_PUSH: &[u8] = b"\x1b[>15u";
+/// Ask which flags are set, after the push.
+const KEYBOARD_QUERY: &[u8] = b"\x1b[?u";
 /// Pop it again when the view closes, so the rest of the TUI reads keys as
 /// it always has.
 const KEYBOARD_POP: &[u8] = b"\x1b[<u";
@@ -366,6 +375,11 @@ pub struct PixelView {
     /// The view pushed the protocol: cursor keys report their release, so
     /// a turn is held, not toggled.
     keyboard_pushed: bool,
+    /// The terminal confirmed flag 8 after the push (its reply to the
+    /// query that follows it): the letters report their release too, so an
+    /// `a` / `d` turn is held. Off until the reply, and where the terminal
+    /// took the protocol without that flag.
+    letters_held: bool,
     /// Bytes for the terminal ahead of the next text frame: the protocol's
     /// push and pop.
     term_bytes: Vec<u8>,
@@ -449,6 +463,7 @@ impl PixelView {
             seen_t_ms: None,
             keyboard: false,
             keyboard_pushed: false,
+            letters_held: false,
             term_bytes: Vec::new(),
             last_tick: None,
             last_sent: None,
@@ -588,10 +603,18 @@ impl PixelView {
         }
     }
 
-    /// The kitty keyboard protocol's flags reply arrived: hold-to-turn is
-    /// possible on this terminal.
-    pub fn keyboard_reply(&mut self) {
-        if self.probe != Probe::NotSent {
+    /// The kitty keyboard protocol's flags reply arrived. Before the push
+    /// it is the probe's: hold-to-turn is possible on this terminal. After
+    /// it, it answers the query that followed the push and says which flags
+    /// the terminal took: the `a` / `d` turn is held where flag 8 (all keys
+    /// as escape codes) is among them, toggled otherwise (`W-G12-1`).
+    pub fn keyboard_reply(&mut self, flags: u16) {
+        if self.probe == Probe::NotSent {
+            return;
+        }
+        if self.keyboard_pushed {
+            self.letters_held = flags & 8 != 0;
+        } else {
             self.keyboard = true;
         }
     }
@@ -837,7 +860,9 @@ impl PixelView {
             self.last_sent = None;
             if self.keyboard {
                 self.term_bytes.extend_from_slice(KEYBOARD_PUSH);
+                self.term_bytes.extend_from_slice(KEYBOARD_QUERY);
                 self.keyboard_pushed = true;
+                self.letters_held = false;
             }
         }
         self.active
@@ -854,6 +879,7 @@ impl PixelView {
         if std::mem::take(&mut self.keyboard_pushed) {
             self.term_bytes.extend_from_slice(KEYBOARD_POP);
         }
+        self.letters_held = false;
         self.last_sent = None;
         self.wipe_pending = false;
         if let Some((encoder, _)) = self.shown.take() {
@@ -940,11 +966,11 @@ impl PixelView {
     /// G.12b — screen `0`'s own rendering, not a modal) are the flight keys:
     ///
     /// - `a` / `d` and ←/→ **turn the tank**: a helm order, the authority the
-    ///   `HEADING` verb has. The arrows are held where the terminal reports
-    ///   releases (the kitty keyboard protocol), toggled (press again to stop)
-    ///   elsewhere; the letters are always toggled, because the protocol as
-    ///   pushed (`KEYBOARD_PUSH`: disambiguate, event types) sends a plain
-    ///   letter as text and reports no release for it.
+    ///   `HEADING` verb has. Held (the turn runs while the key is down, a
+    ///   release stops it, repeats are nothing) where the terminal reports
+    ///   releases — the arrows under the kitty keyboard protocol as pushed,
+    ///   the letters once the terminal has confirmed its flag 8
+    ///   (`W-G12-1`) — and toggled (press again to stop) elsewhere.
     /// - `w` / `s` step the **speed** ([`Throttle`]), `x` is all stop.
     /// - `q` / `e` (and `,` / `.`) swing the **look**, toggled; `c` recentres
     ///   it; space steadies the turn and the look (the speed stands).
@@ -997,6 +1023,15 @@ impl PixelView {
             return KeyUse::Used;
         }
         let held = self.keyboard_pushed;
+        let letters_held = held && self.letters_held;
+        // A held letter's repeats: nothing to a turn already running, the
+        // key again to everything else (a held `w` steps on, as a terminal's
+        // own repeat always did).
+        let key = match key {
+            Key::CharRepeat('a' | 'd') => return KeyUse::Used,
+            Key::CharRepeat(c) => Key::Char(c),
+            key => key,
+        };
         let steer = |helm: &mut Helm, dir: i8, toggle: bool| {
             if helm.turning() == dir {
                 if toggle {
@@ -1010,10 +1045,14 @@ impl PixelView {
         match key {
             Key::Left => steer(&mut self.helm, -1, !held),
             Key::Right => steer(&mut self.helm, 1, !held),
-            Key::Char('a') => steer(&mut self.helm, -1, true),
-            Key::Char('d') => steer(&mut self.helm, 1, true),
-            Key::Release(Arrow::Left) if self.helm.turning() == -1 => self.helm.stop(now),
-            Key::Release(Arrow::Right) if self.helm.turning() == 1 => self.helm.stop(now),
+            Key::Char('a') => steer(&mut self.helm, -1, !letters_held),
+            Key::Char('d') => steer(&mut self.helm, 1, !letters_held),
+            Key::Release(Arrow::Left) | Key::CharRelease('a') if self.helm.turning() == -1 => {
+                self.helm.stop(now);
+            }
+            Key::Release(Arrow::Right) | Key::CharRelease('d') if self.helm.turning() == 1 => {
+                self.helm.stop(now);
+            }
             Key::Char('w') => self.throttle.bump(1, now),
             Key::Char('s') => self.throttle.bump(-1, now),
             Key::Char('x') => {
@@ -1355,7 +1394,11 @@ impl PixelView {
             ));
         }
         let bottom = if cockpit.is_some() {
-            cockpit_legend(self.keyboard_pushed, self.weapons_free)
+            cockpit_legend(
+                self.keyboard_pushed,
+                self.keyboard_pushed && self.letters_held,
+                self.weapons_free,
+            )
         } else {
             "No cockpit frame held: take a seat in the arena.".to_string()
         };
@@ -1439,13 +1482,14 @@ impl PixelView {
 /// **The cockpit picture's key legend** (doc 21 §7.3, cut G.12b): every
 /// flight key in one line inside the 120-column floor (the owner's ruling:
 /// no client surface narrower). The arrows are named held where the view
-/// pushed the keyboard protocol; `f` names what it will do.
+/// pushed the keyboard protocol, the letters too where the terminal took
+/// its flag 8 (`W-G12-1`); `f` names what it will do.
 #[must_use]
-pub fn cockpit_legend(keyboard_pushed: bool, weapons_free: bool) -> String {
-    let turn = if keyboard_pushed {
-        "←/→:hold-turn a/d:turn"
-    } else {
-        "a/d ←/→:turn"
+pub fn cockpit_legend(arrows_held: bool, letters_held: bool, weapons_free: bool) -> String {
+    let turn = match (arrows_held, letters_held) {
+        (true, true) => "a/d ←/→:hold-turn",
+        (true, false) => "←/→:hold-turn a/d:turn",
+        _ => "a/d ←/→:turn",
     };
     let gate = if weapons_free { "f:hold" } else { "f:free" };
     format!(
@@ -1901,8 +1945,9 @@ mod tests {
     /// The turn keys steer the tank (doc 21 cut G.4): a `HEADING` order a
     /// pulse ahead, toggled where the terminal reports no releases; held
     /// (press, repeat, release) where the view pushed the kitty keyboard
-    /// protocol, which it pops again on a hide. `a` / `d` stay toggled under
-    /// the protocol (G.12b: a plain letter reports no release).
+    /// protocol, which it pops again on a hide. `a` / `d` are toggled until
+    /// the terminal confirms flag 8 after the push (`W-G12-1`), held — press
+    /// starts, repeat is nothing, release stops — once it has.
     #[test]
     fn the_arrows_steer_the_tank_toggled_or_held() {
         let t0 = Instant::now();
@@ -1926,9 +1971,9 @@ mod tests {
         assert_eq!(v.helm().turning(), 0, "space stops");
         // Held: the terminal answered `CSI ? u`.
         let mut h = supported(t0);
-        h.keyboard_reply();
+        h.keyboard_reply(0);
         h.toggle(t0);
-        assert_eq!(h.take_terminal_bytes(), b"\x1b[>3u");
+        assert_eq!(h.take_terminal_bytes(), b"\x1b[>15u\x1b[?u");
         assert!(!h.paint(&both, 120, 40, t0).is_empty());
         h.key(Key::Left, t0);
         assert_eq!(h.helm().turning(), -1);
@@ -1939,15 +1984,66 @@ mod tests {
         assert_eq!(h.helm().turning(), -1, "another key's release does nothing");
         h.key(Key::Release(Arrow::Left), t0);
         assert_eq!(h.helm().turning(), 0, "released: stopped");
+        // The letters before the flags reply: toggled, and a release still
+        // stops (the reply may land mid-press).
         h.key(Key::Char('d'), t0);
         assert_eq!(h.helm().turning(), 1);
         h.key(Key::Char('d'), t0);
-        assert_eq!(h.helm().turning(), 0, "a letter is toggled, held or not");
+        assert_eq!(
+            h.helm().turning(),
+            0,
+            "a letter is toggled until flag 8 is confirmed"
+        );
+        h.key(Key::Char('d'), t0);
+        h.key(Key::CharRelease('d'), t0);
+        assert_eq!(h.helm().turning(), 0, "a release stops even a toggled turn");
         let (top, bottom) = h.hud(Some(&cockpit), t0);
         assert!(bottom.starts_with("←/→:hold-turn a/d:turn"), "{bottom}");
         assert!(top.contains("(tank 045°"), "{top}");
+        // The terminal took flag 8: `a` press starts, repeat is nothing,
+        // press again is nothing, release stops; the other letter's release
+        // does nothing; the legend names both held.
+        h.keyboard_reply(15);
+        h.key(Key::Char('a'), t0);
+        assert_eq!(h.helm().turning(), -1);
+        h.key(Key::CharRepeat('a'), t0);
+        h.key(Key::Char('a'), t0);
+        assert_eq!(h.helm().turning(), -1, "a held letter keeps turning");
+        h.key(Key::CharRelease('d'), t0);
+        assert_eq!(
+            h.helm().turning(),
+            -1,
+            "the other letter's release does nothing"
+        );
+        h.key(Key::CharRelease('a'), t0);
+        assert_eq!(h.helm().turning(), 0, "released: stopped");
+        h.key(Key::Char('d'), t0);
+        h.key(Key::CharRelease('d'), t0);
+        assert_eq!(h.helm().turning(), 0);
+        // A held `w` still steps (its repeat is the key again).
+        let _ = h.take_orders();
+        h.key(Key::CharRepeat('w'), t0);
+        h.key(Key::CharRepeat('x'), t0);
+        assert!(
+            h.take_orders().iter().any(|o| o == "SPEED 0"),
+            "a repeated flight key is the key again"
+        );
+        let (_, bottom) = h.hud(Some(&cockpit), t0);
+        assert!(bottom.starts_with("a/d ←/→:hold-turn"), "{bottom}");
         h.hide();
         assert_eq!(h.take_terminal_bytes(), b"\x1b[<u", "popped on a hide");
+        // A terminal that took the protocol without flag 8 keeps the letters
+        // toggled.
+        let mut t = supported(t0);
+        t.keyboard_reply(0);
+        t.toggle(t0);
+        t.keyboard_reply(3);
+        assert!(!t.paint(&both, 120, 40, t0).is_empty());
+        t.key(Key::Char('a'), t0);
+        t.key(Key::Char('a'), t0);
+        assert_eq!(t.helm().turning(), 0, "no flag 8: toggled");
+        let (_, bottom) = t.hud(Some(&cockpit), t0);
+        assert!(bottom.starts_with("←/→:hold-turn a/d:turn"), "{bottom}");
     }
 
     #[test]
@@ -2512,9 +2608,9 @@ mod tests {
     /// or toggled, free or held fire.
     #[test]
     fn g12b_the_legend_fits_the_floor() {
-        for pushed in [false, true] {
+        for (arrows, letters) in [(false, false), (true, false), (true, true)] {
             for free in [false, true] {
-                let legend = cockpit_legend(pushed, free);
+                let legend = cockpit_legend(arrows, letters, free);
                 assert!(legend.chars().count() <= 120, "{legend}");
                 for key in [
                     "turn",
@@ -2533,7 +2629,7 @@ mod tests {
                 }
             }
         }
-        assert!(cockpit_legend(false, true).contains("f:hold"));
-        assert!(cockpit_legend(false, false).contains("f:free"));
+        assert!(cockpit_legend(false, false, true).contains("f:hold"));
+        assert!(cockpit_legend(false, false, false).contains("f:free"));
     }
 }

@@ -458,7 +458,7 @@ while screen `0` shows the picture; on every other screen the letters mean what 
 
 | Key | Does | Line sent |
 |---|---|---|
-| `a` / `d`, `←` / `→` | turn left / right — held where the terminal reports releases (the kitty keyboard protocol), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg>` |
+| `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg>` |
 | `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph>` |
 | `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0`, and the helm's stop |
 | `q` / `e` (`,` / `.` kept) | the look swings left / right, toggled | none — a look is not an order |
@@ -490,9 +490,10 @@ steps and clamps without a round trip.
 **ORDER to a human-flown slot** stays today's refusal; the instruction delivery (an advisory in the
 human's cockpit, acknowledged, never acted on by the sim) is doc 26's.
 
-**As built (2026-10-27; the rulings are in the G.12 cut note).** `a`/`d` are toggled on every
-terminal, the arrows held where the protocol reports releases: a letter held needs the kitty
-protocol's flag 8, not pushed in this cut (`W-G12-1`). `p` exists only on a terminal that shows
+**As built (2026-10-27; the rulings are in the G.12 cut note).** `a`/`d` and the arrows are held
+where the protocol reports releases and toggled elsewhere: the view pushes `CSI >15u` (flags 1, 2,
+4 and 8) and asks the flags back, and the letters are held only where the terminal's answer has
+flag 8 in it, toggled until then (`W-G12-1`, closed the same day). `p` exists only on a terminal that shows
 pictures; under 120 columns there is no picture; help, the palette, the workshop and a prompt
 draw over the text cockpit and the picture returns when they close. The lock cycle does not skip
 wrecks. Speed orders coalesce 250 ms on the trailing edge; `x` sends at once. The gate binds only
