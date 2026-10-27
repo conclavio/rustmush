@@ -951,6 +951,13 @@ slot = "WeatherState"
 owner = "weather"
 reason = "M10c end-to-end: forces a weather cell so the rendered line is deterministic."
 
+[[site]]
+path = "crates/mushd/tests/durable_process/persistence.rs"
+accessor = "World::module_state_mut"
+slot = "NpcHostState"
+owner = "npc"
+reason = "NPC memory restart fixture: seeds bounded recent events before spawning the world task, so the production tick captures and completes a real summary fold whose persistence is checked after reboot."
+
 # ---------------------------------------------------------------------------
 # Slots seeded with no owner at all
 # ---------------------------------------------------------------------------
