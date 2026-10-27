@@ -428,6 +428,39 @@ fn say_tool(text: &str) -> ContentBlock {
     }
 }
 
+/// Exercise the observer, snapshot, tool parser and world-loop belief write.
+async fn remember_from_speech(
+    rig: &mut Rig,
+    npc: ObjId,
+    speaker: ObjId,
+    at: i64,
+    speech: &str,
+    input: impl FnOnce(u64) -> serde_json::Value,
+) {
+    rig.set_now(at);
+    rig.run(speaker, speech);
+    let evidence = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences
+        .last()
+        .unwrap()
+        .id;
+    rig.set_now(at + 2);
+    let (turn_npc, correlation, payload) = rig.one_turn().expect("the directed turn");
+    assert_eq!(turn_npc, npc);
+    let (service, mock) = service();
+    mock.push_response(tool_resp(vec![ContentBlock::ToolUse {
+        id: "belief".into(),
+        name: "remember".into(),
+        input: input(evidence),
+    }]));
+    let result = run_npc_turn_async(&service, &payload).await;
+    rig.complete(npc, correlation, &result);
+}
+
 // ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
@@ -885,36 +918,455 @@ async fn memory_overflow_summarizes_and_persists() {
 }
 
 #[tokio::test]
-async fn remember_stores_and_recalls_by_present_player() {
+async fn personal_memory_remember_uses_public_evidence_and_survives_actual_writes() {
     let mut rig = Rig::new();
     rig.set_now(0);
     let bar = rig.room("Bar");
     let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
     let alice = rig.player("Alice", bar, true);
-    rig.run(alice, "say I'll pay you back next week, I swear");
+    rig.run(alice, "say Bartender, I'll pay you back next week, I swear");
     rig.set_now(2);
     let (_, corr, payload) = rig.one_turn().expect("turn");
 
+    let evidence = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences[0]
+        .id;
     let (svc, mock) = service();
     mock.push_response(tool_resp(vec![ContentBlock::ToolUse {
         id: "r1".into(),
         name: "remember".into(),
-        input: serde_json::json!({ "subject": "Alice", "note": "owes me for a drink" }),
+        input: serde_json::json!({
+            "subject": "Alice", "note": "Alice intends to repay the drink next week",
+            "evidence": evidence
+        }),
     }]));
     let out = run_npc_turn_async(&svc, &payload).await;
-    rig.complete(npc, corr, &out);
+    let mut completion = rig.complete(npc, corr, &out);
+    let record = rig.host().personal_memory.record_for(npc).unwrap().clone();
+    assert_eq!(record.experiences.len(), 1);
+    assert_eq!(record.beliefs.len(), 1);
+    let source = record.beliefs[0]
+        .evidence
+        .as_ref()
+        .expect("engine evidence");
+    assert_eq!(source.id, evidence);
+    assert_eq!(source.speaker, Some(alice));
+    assert_eq!(source.room, Some(bar));
+    assert_eq!(source.speaker_name, "Alice");
+    assert!(source.text.contains("pay you back next week"));
+    assert!(rig.host().long_term.record_for(npc, "Alice").is_none());
+    // Re-entering the same completion cannot append a second belief.
+    assert!(rig.complete(npc, corr, &out).take_deferred().is_empty());
+    assert_eq!(rig.host().personal_memory.belief_count(npc), 1);
 
-    // Recall v1: the record is keyed by the present player's name.
-    let hits = rig.host().long_term.recall(npc, &["Alice".into()], 5);
-    assert_eq!(hits.len(), 1);
-    assert!(hits[0].notes.iter().any(|n| n.contains("owes me")));
-    // A different subject is not recalled.
-    assert!(
-        rig.host()
-            .long_term
-            .recall(npc, &["Bob".into()], 5)
-            .is_empty()
+    // The command path drained observer writes into Engine; the explicit
+    // completion harness returns its deferred writes. Fold both, just as the
+    // world task does, instead of manufacturing boot data from the RAM record.
+    let mut writes = rig.engine.take_module_ops();
+    writes.extend(
+        completion
+            .take_deferred()
+            .into_iter()
+            .filter_map(|deferred| {
+                if let mush_core::Deferred::Persist(op) = deferred {
+                    Some(op)
+                } else {
+                    None
+                }
+            }),
     );
+    let mut boot = mush_testkit::fold_module_ops(writes);
+    let document = boot["npc"]
+        .kv
+        .iter()
+        .find(|(key, _)| *key == mush_npc::mind_key(npc));
+    assert_eq!(document.unwrap().1, serde_json::to_value(&record).unwrap());
+    // A kept legacy document remains readable beside the new store and keeps
+    // its original trust semantics; a new remember does not write one.
+    let legacy = mush_npc::MemoryRecord {
+        npc,
+        subject: "bob".into(),
+        notes: vec!["Legacy note about Bob".into()],
+        updated: 1,
+    };
+    boot.get_mut("npc").unwrap().kv.push((
+        mush_npc::record_key(npc, "Bob"),
+        serde_json::to_value(legacy).unwrap(),
+    ));
+    let mut rebooted = Rig::with_boot(boot);
+    let bar2 = rebooted.room("Bar");
+    let npc2 = rebooted.npc("Bartender", bar2, &profile(NpcTier::Minor));
+    let alice2 = rebooted.player("Alice", bar2, true);
+    assert_eq!((npc2, alice2), (npc, alice));
+    assert_eq!(
+        serde_json::to_value(rebooted.host().personal_memory.record_for(npc)).unwrap(),
+        serde_json::to_value(Some(&record)).unwrap()
+    );
+    assert!(rebooted.host().long_term.record_for(npc, "Bob").is_some());
+    rebooted.set_now(20);
+    let snap = rebooted.dialogue_snapshot(alice, 22, "say Bartender, do you recall my promise?");
+    let prompt = user_prompt(&snap);
+    assert!(prompt.contains("repay the drink next week"), "{prompt}");
+    assert!(prompt.contains("uncertain belief"), "{prompt}");
+    assert!(prompt.contains("not verified truth"), "{prompt}");
+    assert!(
+        snap.scene
+            .present
+            .iter()
+            .any(|person| person.name == "Alice" && person.familiarity == Familiarity::Stranger)
+    );
+}
+
+#[test]
+fn personal_memory_captures_only_perceived_directed_speech_without_granting_trust() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(CloakModule)]);
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let bob = rig.player("Bob", bar, true);
+    let hidden = rig.player("Hidden", bar, true);
+    rig.engine
+        .world
+        .set_attr(hidden, "cloaked", Attr::text("1", GOD))
+        .unwrap();
+    rig.run(
+        bob,
+        "say this unrelated ambient remark is not a durable encounter",
+    );
+    rig.run(hidden, "say Bartender, INVISIBLEPERSONALSECRET");
+    for (at, speech) in [
+        (1001, "say Bartender, I sail the Red Kite."),
+        (1002, "say Bartender, I am visiting the Registry."),
+        (1003, "say Bartender, I will return tomorrow."),
+    ] {
+        rig.set_now(at);
+        rig.run(alice, speech);
+    }
+    let record = rig.host().personal_memory.record_for(npc).unwrap();
+    assert_eq!(record.experiences.len(), 3);
+    assert!(record.beliefs.is_empty());
+    assert!(record.experiences.iter().all(|experience| {
+        experience.speaker == Some(alice)
+            && experience.room == Some(bar)
+            && experience.kind == mush_npc::ExperienceKind::Speech
+    }));
+    let encoded = serde_json::to_string(record).unwrap();
+    assert!(!encoded.contains("INVISIBLEPERSONALSECRET"));
+    assert!(!encoded.contains("unrelated ambient remark"));
+    assert!(rig.host().long_term.record_for(npc, "Alice").is_none());
+    rig.set_now(1005);
+    let (_, _, payload) = rig.one_turn().expect("coalesced dialogue");
+    let snapshot: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    let alice = snapshot
+        .scene
+        .present
+        .iter()
+        .find(|person| person.name == "Alice")
+        .unwrap();
+    assert_eq!(alice.familiarity, Familiarity::Stranger);
+    let prompt = user_prompt(&snapshot);
+    assert!(prompt.contains("not verified truth"), "{prompt}");
+    assert!(!prompt.contains("[you know them well]"), "{prompt}");
+}
+
+#[tokio::test]
+async fn personal_memory_rejects_forged_and_other_npcs_evidence_at_reentry() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let other = rig.npc("Other clerk", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    // Evidence ids are local to each NPC. Give the other clerk an id that the
+    // target NPC has never issued, so guessing it cannot cross that boundary.
+    for at in [990, 991] {
+        rig.host_mut()
+            .personal_memory
+            .observe(
+                other,
+                "Alice",
+                "Another clerk's encounter",
+                Some(alice),
+                "Alice",
+                Some(bar),
+                mush_npc::ExperienceKind::Speech,
+                at,
+            )
+            .unwrap();
+    }
+    let foreign = rig
+        .host()
+        .personal_memory
+        .record_for(other)
+        .unwrap()
+        .experiences[1]
+        .id;
+    rig.run(alice, "say Bartender, I need advice.");
+    let before = rig.host().personal_memory.record_for(npc).unwrap().clone();
+    assert!(before.experiences.iter().all(|item| item.id != foreign));
+    rig.set_now(1002);
+    let (turn_npc, correlation, payload) = rig.one_turn().expect("the asker's turn");
+    assert_eq!(turn_npc, npc);
+    let (service, mock) = service();
+    mock.push_response(tool_resp(vec![
+        ContentBlock::ToolUse {
+            id: "forged".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Forged certainty", "evidence":u64::MAX}),
+        },
+        ContentBlock::ToolUse {
+            id: "foreign".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Borrowed evidence", "evidence":foreign}),
+        },
+    ]));
+    let result = run_npc_turn_async(&service, &payload).await;
+    let mut completion = rig.complete(npc, correlation, &result);
+    assert!(
+        completion.take_deferred().is_empty(),
+        "invalid evidence must not persist a belief"
+    );
+    assert_eq!(
+        serde_json::to_value(rig.host().personal_memory.record_for(npc)).unwrap(),
+        serde_json::to_value(Some(&before)).unwrap()
+    );
+    assert!(rig.host().long_term.record_for(npc, "Alice").is_none());
+}
+
+#[tokio::test]
+async fn personal_memory_inflight_reply_can_cite_only_its_captured_references() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    rig.host_mut().config.recall_top_n = 1;
+    rig.run(
+        alice,
+        "say Bartender, yesterday I visited the old warehouse.",
+    );
+    let omitted = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences[0]
+        .id;
+    rig.set_now(1001);
+    rig.run(alice, "say Bartender, today I am waiting at the quay.");
+    let visible = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences[1]
+        .id;
+    rig.set_now(1003);
+    let (turn_npc, correlation, payload) = rig.one_turn().expect("captured response");
+    assert_eq!(turn_npc, npc);
+    let snapshot: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    let supplied: Vec<u64> = snapshot
+        .recalled
+        .iter()
+        .flat_map(|memory| memory.evidence_ids.iter().copied())
+        .collect();
+    assert_eq!(
+        supplied,
+        vec![visible],
+        "the older retained id was not supplied to this response"
+    );
+
+    // The NPC hears this while the existing model request is still in flight.
+    // It is a real retained observation, but was absent from that request.
+    rig.set_now(1004);
+    rig.run(alice, "say Bartender, now I am moving to the south gate.");
+    let arrived = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences[2]
+        .id;
+    assert!(rig.host().runtime(npc).unwrap().in_flight);
+    let (service, mock) = service();
+    mock.push_response(tool_resp(vec![
+        ContentBlock::ToolUse {
+            id: "arrived".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Guessed the later south gate report", "evidence":arrived}),
+        },
+        ContentBlock::ToolUse {
+            id: "omitted".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Guessed an omitted warehouse id", "evidence":omitted}),
+        },
+        ContentBlock::ToolUse {
+            id: "visible".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Alice reported waiting at the quay", "evidence":visible}),
+        },
+        ContentBlock::ToolUse {
+            id: "inference".into(), name: "remember".into(),
+            input: serde_json::json!({"subject":"Alice", "note":"Alice might be busy"}),
+        },
+    ]));
+    let result = run_npc_turn_async(&service, &payload).await;
+    rig.complete(npc, correlation, &result);
+    let record = rig.host().personal_memory.record_for(npc).unwrap();
+    assert_eq!(
+        record.experiences.len(),
+        3,
+        "rejecting a citation does not discard heard events"
+    );
+    assert_eq!(
+        record.beliefs.len(),
+        2,
+        "only captured evidence and unsupported inference can be retained"
+    );
+    assert!(record.beliefs.iter().any(|belief| {
+        belief.note == "Alice reported waiting at the quay"
+            && belief
+                .evidence
+                .as_ref()
+                .is_some_and(|source| source.id == visible)
+    }));
+    assert!(
+        record
+            .beliefs
+            .iter()
+            .any(|belief| belief.note == "Alice might be busy" && belief.evidence.is_none())
+    );
+    assert!(record.beliefs.iter().all(|belief| {
+        belief
+            .evidence
+            .as_ref()
+            .is_none_or(|source| source.id != omitted && source.id != arrived)
+    }));
+    assert!(rig.host().long_term.record_for(npc, "Alice").is_none());
+}
+
+#[tokio::test]
+async fn personal_memory_corrections_keep_provenance_and_other_speakers_dispute() {
+    let mut rig = Rig::new();
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let bob = rig.player("Bob", bar, true);
+    remember_from_speech(
+        &mut rig,
+        npc,
+        alice,
+        1000,
+        "say Bartender, my berth is North.",
+        |id| serde_json::json!({"subject":"Alice", "note":"Alice berths at North", "evidence":id}),
+    )
+    .await;
+    let first = rig.host().personal_memory.record_for(npc).unwrap().beliefs[0].id;
+    remember_from_speech(&mut rig, npc, alice, 1020, "say Bartender, correction: my berth is South.", |id| {
+        serde_json::json!({"subject":"Alice", "note":"Alice berths at South", "evidence":id, "replaces":first})
+    }).await;
+    let record = rig.host().personal_memory.record_for(npc).unwrap();
+    assert_eq!(
+        record.beliefs.len(),
+        2,
+        "correction keeps the historical record"
+    );
+    let correction = record.beliefs.last().unwrap();
+    assert_eq!(correction.replaces, Some(first));
+    assert_eq!(correction.evidence.as_ref().unwrap().speaker, Some(alice));
+    let corrected = correction.id;
+    let recalled = rig
+        .host()
+        .personal_memory
+        .recall(npc, &["Alice".into()], "", 1022, 8);
+    let notes = recalled
+        .iter()
+        .flat_map(|entry| &entry.notes)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(notes.contains("Alice berths at South"), "{notes}");
+    assert!(!notes.contains("Alice berths at North"), "{notes}");
+    remember_from_speech(&mut rig, npc, bob, 1040, "say Bartender, Alice's berth is East.", |id| {
+        serde_json::json!({"subject":"Alice", "note":"Alice berths at East", "evidence":id, "replaces":corrected})
+    }).await;
+    let record = rig.host().personal_memory.record_for(npc).unwrap();
+    assert_eq!(record.beliefs.len(), 3);
+    let competing = record.beliefs.last().unwrap();
+    assert_eq!(competing.replaces, None, "Bob cannot erase Alice's report");
+    assert_eq!(competing.disputes, Some(corrected));
+    assert_eq!(competing.evidence.as_ref().unwrap().speaker, Some(bob));
+    let recalled = rig
+        .host()
+        .personal_memory
+        .recall(npc, &["Alice".into()], "", 1042, 8);
+    let notes = recalled
+        .iter()
+        .flat_map(|entry| &entry.notes)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    for text in ["Alice berths at South", "Alice berths at East", "disputed"] {
+        assert!(notes.contains(text), "missing {text:?}: {notes}");
+    }
+    assert!(!notes.contains("Alice berths at North"), "{notes}");
+}
+
+#[test]
+fn personal_memory_old_encounters_need_a_concrete_cue_after_restart() {
+    let mut original = Rig::new();
+    original.set_now(1000);
+    let bar = original.room("Bar");
+    let npc = original.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = original.player("Alice", bar, true);
+    original.run(alice, "say Bartender, the Kestrel Pact arrived yesterday.");
+    let boot = mush_testkit::fold_module_ops(original.engine.take_module_ops());
+    assert!(
+        boot["npc"]
+            .kv
+            .iter()
+            .any(|(key, _)| *key == mush_npc::mind_key(npc))
+    );
+
+    let mut rig = Rig::with_boot(boot);
+    let bar2 = rig.room("Bar");
+    let npc2 = rig.npc("Bartender", bar2, &profile(NpcTier::Minor));
+    let alice2 = rig.player("Alice", bar2, true);
+    assert_eq!((npc2, alice2), (npc, alice));
+    let elsewhere = rig.room("Elsewhere");
+    rig.engine.world.move_to(alice, elsewhere).unwrap();
+    let bob = rig.player("Bob", bar2, true);
+    let old = 1000 + 31 * 86_400;
+    rig.set_now(old);
+    let ordinary = rig.dialogue_snapshot(bob, old + 2, "say Bartender, hello.");
+    assert!(
+        ordinary
+            .recalled
+            .iter()
+            .flat_map(|memory| &memory.notes)
+            .all(|note| !note.contains("Kestrel Pact")),
+        "addressing the NPC must not match its name in every old encounter"
+    );
+    let correlation = rig.host().runtime(npc).unwrap().correlation.unwrap();
+    rig.complete(
+        npc,
+        correlation,
+        &serde_json::json!({
+            "status":"nothing", "npc":npc, "reason":""
+        })
+        .to_string(),
+    );
+    rig.set_now(old + 20);
+    let cued = rig.dialogue_snapshot(bob, old + 22, "say Bartender, Kestrel Pact?");
+    let prompt = user_prompt(&cued);
+    for expected in [
+        "Kestrel Pact",
+        "old; uncertain recall",
+        "not verified truth",
+        "Alice",
+    ] {
+        assert!(prompt.contains(expected), "missing {expected:?}: {prompt}");
+    }
 }
 
 /// An on-loop grounding stand-in for a ruleset: it advertises a `wod_roll`
@@ -3072,6 +3524,23 @@ fn a_failed_move_remembers_the_observed_location() {
         .unwrap();
     assert!(last.text.contains("remained in Bar"), "{}", last.text);
     assert!(!last.text.contains("moved via"), "{}", last.text);
+    let observed = rig
+        .host()
+        .personal_memory
+        .record_for(npc)
+        .unwrap()
+        .experiences
+        .last()
+        .unwrap();
+    assert_eq!(observed.kind, mush_npc::ExperienceKind::Outcome);
+    assert_eq!(observed.speaker, Some(npc));
+    assert_eq!(observed.room, Some(bar));
+    assert!(
+        observed.text.contains("remained in Bar"),
+        "{}",
+        observed.text
+    );
+    assert!(!observed.text.contains("moved via"), "{}", observed.text);
 }
 
 #[test]

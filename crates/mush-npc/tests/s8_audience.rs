@@ -198,6 +198,57 @@ fn refusal_details_are_private_and_absent_from_memory_and_observers() {
 }
 
 #[test]
+fn personal_memory_persists_public_results_but_never_private_answers_or_refusals() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    lot.tw
+        .run(lot.alice, "say Clerk, what is the sky like today?");
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 70, "probe.public");
+    let before = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap()
+        .personal_memory
+        .record_for(lot.clerk)
+        .unwrap()
+        .clone();
+    assert!(before.experiences.iter().any(|experience| {
+        experience.kind == mush_npc::ExperienceKind::Outcome
+            && experience.text.contains("The sky is blue today.")
+    }));
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 71, "probe.private");
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 72, "probe.refuse");
+    let host = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    let after = host.personal_memory.record_for(lot.clerk).unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(&before).unwrap(),
+        "private delivery markers cannot become new public evidence"
+    );
+    let bystander = serde_json::to_string(&host.personal_memory.record_for(lot.bystander)).unwrap();
+    let boot = mush_testkit::fold_module_ops(lot.tw.take_module_ops());
+    let persisted = serde_json::to_string(&boot["npc"].kv).unwrap();
+    assert!(persisted.contains("The sky is blue today."));
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    let recollections = context["working_memory"]["recollections"].as_str().unwrap();
+    assert!(recollections.len() <= 8 * 1024);
+    let rendered_context = serde_json::to_string(&context).unwrap();
+    for text in [bystander, persisted, rendered_context] {
+        for private in [SECRET, "Confidential", "ticket #7", "That is all."] {
+            assert!(
+                !text.contains(private),
+                "private durable-memory leak: {text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn delayed_private_answers_refresh_only_their_existing_exchange() {
     let mut lot = lot();
     let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
@@ -311,7 +362,7 @@ fn scene_decision_remembers_public_exchange_but_only_acknowledges_private_reply(
         );
     }
     let fields = working.as_object().expect("working memory object");
-    assert_eq!(fields.len(), 3);
+    assert_eq!(fields.len(), 4);
     assert!(fields.values().all(serde_json::Value::is_string));
     for metadata in ["\"speaker\"", "\"addressee\"", "\"sequence\""] {
         assert!(
@@ -337,6 +388,25 @@ fn scene_decision_remembers_public_exchange_but_only_acknowledges_private_reply(
 fn scene_working_memory_is_bounded_before_kernel_projection() {
     let mut lot = lot();
     let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    let description = "\"".repeat(8 * 1024);
+    let persona = "\"".repeat(4 * 1024);
+    lot.tw
+        .world_mut()
+        .set_attr(room, "desc", mush_core::Attr::text(&description, GOD))
+        .unwrap();
+    let profile = mush_npc::AgentProfile {
+        persona: persona.clone(),
+        interfaces: vec!["probe".into()],
+        ..mush_npc::AgentProfile::default()
+    };
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.clerk,
+            mush_npc::PROFILE_ATTR,
+            mush_core::Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
     {
         let host = lot
             .tw
@@ -344,14 +414,28 @@ fn scene_working_memory_is_bounded_before_kernel_projection() {
             .module_state_mut::<mush_npc::NpcHostState>()
             .unwrap();
         host.config.transcript_chars = usize::MAX;
+        for at in 0..5 {
+            host.personal_memory
+                .observe(
+                    lot.clerk,
+                    "Alice",
+                    &"\"".repeat(3000),
+                    Some(lot.alice),
+                    "Alice",
+                    Some(room),
+                    mush_npc::ExperienceKind::Speech,
+                    at,
+                )
+                .unwrap();
+        }
         let memory = &mut host.runtime_mut(lot.clerk).memory;
         // Legacy or staff-loaded summary text still has to fit the scene's
         // byte budget; multibyte text and JSON quotes exercise both encodings.
-        memory.summary = "記憶\"".repeat(10_000);
+        memory.summary = format!("記憶{}", "\"".repeat(10_000));
         for turn in 0..100 {
             memory.push_event(
                 turn,
-                format!("Alice asks about survey {turn}: {}", "星\"".repeat(600)),
+                format!("Alice asks about survey {turn}: {}", "\"".repeat(2000)),
                 mush_npc::MemoryContext {
                     speaker: Some(lot.alice),
                     room: Some(room),
@@ -361,14 +445,54 @@ fn scene_working_memory_is_bounded_before_kernel_projection() {
             );
         }
     }
+    let untrimmed_recollections = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap()
+        .personal_memory
+        .recall(
+            lot.clerk,
+            &["Alice".into(), "Bob".into()],
+            "",
+            lot.tw.world().now(),
+            5,
+        )
+        .iter()
+        .flat_map(|memory| {
+            memory
+                .notes
+                .iter()
+                .map(|note| format!("{}: {note}", memory.subject))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let context = scene_context(&mut lot.tw, lot.clerk);
     let working = &context["working_memory"];
     let summary = working["summary"].as_str().unwrap();
     let recent = working["recent_events"].as_str().unwrap();
+    let recollections = working["recollections"].as_str().unwrap();
+    assert!(!recollections.is_empty() && recollections.len() <= 8 * 1024);
+    assert!(
+        recollections.len() < untrimmed_recollections.len(),
+        "escaped document size must trim old recollections first"
+    );
     assert!(!summary.is_empty() && summary.len() <= 8 * 1024);
     assert!(!recent.is_empty() && recent.len() <= 8 * 1024);
     assert!(recent.contains("survey 99"), "newest question retained");
+    assert_eq!(context["description"].as_str().unwrap(), description);
+    assert_eq!(context["persona"].as_str().unwrap(), persona);
     assert!(serde_json::to_vec(&context).unwrap().len() < mush_core::MAX_DECISION_CONTEXT_BYTES);
+    let mut oversized = context.clone();
+    oversized["working_memory"]["recollections"] = untrimmed_recollections.into();
+    assert!(
+        mush_core::ProjectedDecisionContext::new(
+            mush_core::CanonicalId::new(mush_npc::NPC_CONTEXT_SCHEMA).unwrap(),
+            oversized,
+        )
+        .is_err(),
+        "the fixture must exercise the total encoded limit"
+    );
     mush_core::ProjectedDecisionContext::new(
         mush_core::CanonicalId::new(mush_npc::NPC_CONTEXT_SCHEMA).unwrap(),
         context,

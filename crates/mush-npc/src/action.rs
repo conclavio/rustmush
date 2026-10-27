@@ -59,12 +59,21 @@ pub enum NpcAction {
         /// The target name.
         target: String,
     },
-    /// Record a durable memory keyed by `subject` (design 03 §6.5 layer 3).
+    /// Record a fallible personal belief about a subject, optionally grounded
+    /// in an engine-recorded experience (design 03 §6.5 layer 3).
     Remember {
         /// The memory subject (usually a character name).
         subject: String,
-        /// The note to remember.
+        /// The NPC's subjective interpretation, never an authoritative fact.
         note: String,
+        /// A shown experience ID belonging to this NPC. No evidence means
+        /// unsupported inference; the engine checks provenance on re-entry.
+        #[serde(default)]
+        evidence: Option<u64>,
+        /// A current belief ID this new interpretation corrects. The engine
+        /// decides whether new evidence supersedes or disputes that belief.
+        #[serde(default)]
+        replaces: Option<u64>,
     },
     /// Invoke a ruleset ability (e.g. `wod_roll`) — validated + executed by
     /// [`Ruleset::invoke_ability`](mush_ruleset::Ruleset::invoke_ability).
@@ -227,13 +236,25 @@ pub fn action_tools() -> Vec<ToolDef> {
         ),
         tool(
             "remember",
-            "Store a durable memory about a person or topic for later.",
+            "Store your fallible interpretation about a person or topic. Cite a shown experience ID as evidence; hearing a claim proves only that someone said it. Without evidence this is unsupported inference. To correct a current belief, supply its ID in replaces: a later correction from the same speaker may supersede it; a different speaker's contradiction preserves both as disputed. Unsupported inference cannot replace a grounded belief.",
             serde_json::json!({
                 "type": "object", "additionalProperties": false,
                 "required": ["subject", "note"],
                 "properties": {
                     "subject": str_prop("who/what this is about (usually a name)"),
-                    "note": str_prop("the fact to remember")
+                    "note": str_prop("your reported or inferred belief, preserving attribution and uncertainty"),
+                    "evidence": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": u64::MAX,
+                        "description": "the engine-issued experience ID shown in your recalled memories; omit or null for unsupported inference"
+                    },
+                    "replaces": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": u64::MAX,
+                        "description": "the current belief ID shown in your recalled memories that this new evidence corrects; omit or null for a new belief"
+                    }
                 }
             }),
         ),
@@ -408,6 +429,8 @@ fn action_from_value(v: &serde_json::Value) -> Option<NpcAction> {
         "remember" => NpcAction::Remember {
             subject: s("subject"),
             note: s("note"),
+            evidence: optional_memory_id(obj, "evidence")?,
+            replaces: optional_memory_id(obj, "replaces")?,
         },
         "use_ability" | "ability" | "roll" => NpcAction::UseAbility {
             name: first_nonempty(obj, &["name", "ability"]),
@@ -430,6 +453,19 @@ fn action_from_value(v: &serde_json::Value) -> Option<NpcAction> {
         _ => return None,
     };
     Some(action)
+}
+
+/// Missing/null references are compatible with legacy calls. A supplied but
+/// invalid reference rejects the action instead of silently turning a claimed
+/// observation or correction into unsupported inference.
+fn optional_memory_id(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<Option<u64>> {
+    match obj.get(field) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(value) => value.as_u64().filter(|id| *id > 0).map(Some),
+    }
 }
 
 fn first_nonempty(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> String {
@@ -485,7 +521,12 @@ pub fn clean_action(a: NpcAction) -> Option<NpcAction> {
             }
             NpcAction::LookAt { target: t }
         }
-        NpcAction::Remember { subject, note } => {
+        NpcAction::Remember {
+            subject,
+            note,
+            evidence,
+            replaces,
+        } => {
             let subj = sanitize_line(&subject, 64);
             let note = sanitize_line(&note, SAY_CAP);
             if subj.is_empty() || note.is_empty() {
@@ -494,6 +535,8 @@ pub fn clean_action(a: NpcAction) -> Option<NpcAction> {
             NpcAction::Remember {
                 subject: subj,
                 note,
+                evidence,
+                replaces,
             }
         }
         NpcAction::UseAbility { name, input } => {
@@ -700,6 +743,104 @@ mod tests {
                 text: "nods slowly.".into()
             }]
         );
+    }
+
+    #[test]
+    fn remember_references_survive_tool_json_and_cleaning_paths() {
+        let input = serde_json::json!({
+            "subject": "Alice\n",
+            "note": "Alice now reports\nKerwan, not Ahuna.",
+            "evidence": 17,
+            "replaces": 9
+        });
+        let expected = NpcAction::Remember {
+            subject: "Alice".into(),
+            note: "Alice now reports Kerwan, not Ahuna.".into(),
+            evidence: Some(17),
+            replaces: Some(9),
+        };
+        let tool = resp_with(vec![ContentBlock::ToolUse {
+            id: "r1".into(),
+            name: "remember".into(),
+            input: input.clone(),
+        }]);
+        assert_eq!(parse_actions(&tool), (vec![expected.clone()], false));
+
+        let mut tagged = input;
+        tagged["action"] = "remember".into();
+        let json = resp_with(vec![ContentBlock::text(tagged.to_string())]);
+        assert_eq!(parse_actions(&json), (vec![expected.clone()], false));
+        let batch = resp_with(vec![ContentBlock::ToolUse {
+            id: "r2".into(),
+            name: SUBMIT_TOOL.into(),
+            input: serde_json::json!({"actions": [tagged]}),
+        }]);
+        assert_eq!(parse_actions(&batch), (vec![expected.clone()], false));
+        let wire = serde_json::to_value(&expected).unwrap();
+        assert_eq!(serde_json::from_value::<NpcAction>(wire).unwrap(), expected);
+    }
+
+    #[test]
+    fn malformed_memory_references_reject_the_action_in_every_parse_path() {
+        let invalid = [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(1.0),
+            serde_json::json!("17"),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::from_str("18446744073709551616").unwrap(),
+        ];
+        for field in ["evidence", "replaces"] {
+            for value in &invalid {
+                let mut input = serde_json::json!({
+                    "subject": "Alice", "note": "A subjective interpretation.",
+                    "evidence": 17, "replaces": 9
+                });
+                input[field] = value.clone();
+                assert!(
+                    actions_from_tool("remember", &input).is_empty(),
+                    "{field}: {value} must not become an unsupported inference"
+                );
+                input["action"] = "remember".into();
+                let json = resp_with(vec![ContentBlock::text(input.to_string())]);
+                assert!(parse_actions(&json).0.is_empty(), "{field}: {value}");
+
+                let batch = serde_json::json!({"actions": [
+                    input,
+                    {"action": "say", "text": "Let me ask again."}
+                ]});
+                assert_eq!(
+                    actions_from_tool(SUBMIT_TOOL, &batch),
+                    vec![NpcAction::Say {
+                        text: "Let me ask again.".into()
+                    }],
+                    "{field}: {value} must not survive inside a batch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_and_null_memory_references_remain_explicitly_absent() {
+        for input in [
+            serde_json::json!({"action": "remember", "subject": "Alice", "note": "Seems cautious."}),
+            serde_json::json!({"action": "remember", "subject": "Alice", "note": "Seems cautious.", "evidence": null, "replaces": null}),
+        ] {
+            let expected = NpcAction::Remember {
+                subject: "Alice".into(),
+                note: "Seems cautious.".into(),
+                evidence: None,
+                replaces: None,
+            };
+            assert_eq!(
+                serde_json::from_value::<NpcAction>(input.clone()).unwrap(),
+                expected
+            );
+            assert_eq!(actions_from_tool("remember", &input), vec![expected]);
+        }
     }
 
     #[test]

@@ -17,9 +17,11 @@ use std::time::Duration;
 
 use mush_core::{ObjId, PanelFeedHandle};
 
+use crate::experience::PersonalMemoryStore;
 use crate::intel::IntelStore;
 use crate::knowledge::LorePools;
 use crate::memory::{LongTermStore, MemoryBuffer, MemoryEvent};
+use crate::snapshot::{MemoryReferences, RecalledMemory};
 use crate::stimulus::Stimulus;
 
 /// Hard ceiling on queued stimuli for one NPC. The mailbox is fed by player
@@ -107,6 +109,8 @@ pub struct NpcRuntime {
     pub in_flight: bool,
     /// The in-flight turn's correlation id.
     pub correlation: Option<u64>,
+    /// Reference-bearing memory actions must cite this exact captured turn.
+    pub(crate) captured_memory: Option<(u64, MemoryReferences)>,
     /// The newest correlation this NPC has issued or applied, in flight or
     /// not. The world allocates correlations monotonically, so a completion
     /// at or below this watermark is a replay.
@@ -216,6 +220,8 @@ pub struct NpcHostState {
     pub runtimes: HashMap<ObjId, NpcRuntime>,
     /// Durable subject-keyed memories (layer 3), rebuilt from boot data.
     pub long_term: LongTermStore,
+    /// Engine-observed experiences and subjective beliefs, mirrored by `mind:{npc}`.
+    pub personal_memory: PersonalMemoryStore,
     /// Shared world-knowledge lore pools (design: M10d), rebuilt from boot data
     /// and mirrored by the persisted `lore:{slug}` documents.
     pub lore_pools: LorePools,
@@ -284,6 +290,7 @@ impl NpcHostState {
         NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
+            personal_memory: PersonalMemoryStore::default(),
             lore_pools: LorePools::default(),
             intel: IntelStore::default(),
             thinking: Some(thinking),
@@ -299,6 +306,7 @@ impl NpcHostState {
         NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
+            personal_memory: PersonalMemoryStore::default(),
             lore_pools: LorePools::default(),
             intel: IntelStore::default(),
             thinking: None,
@@ -384,12 +392,40 @@ impl NpcHostState {
         let rt = self.runtime_mut(npc);
         rt.in_flight = true;
         rt.correlation = Some(correlation);
+        rt.captured_memory = None;
         rt.last_correlation = Some(correlation);
         rt.last_turn_at = Some(now_ms);
         rt.dialogue_since_summary = true;
         rt.pending_since = None;
         rt.mailbox_bytes = 0;
         std::mem::take(&mut rt.mailbox)
+    }
+
+    /// Capture only references present in the finalized prompt for this call.
+    pub(crate) fn capture_memory_references(
+        &mut self,
+        npc: ObjId,
+        correlation: u64,
+        recalled: &[RecalledMemory],
+    ) {
+        let Some(rt) = self.runtimes.get_mut(&npc) else {
+            return;
+        };
+        if rt.in_flight && rt.correlation == Some(correlation) {
+            rt.captured_memory = MemoryReferences::from_recalled(recalled)
+                .map(|references| (correlation, references));
+        }
+    }
+
+    /// Read before finishing the call; idle and mismatched completions have no
+    /// reference authority even when their ordinary actions may be applied.
+    pub(crate) fn memory_references_for(&self, npc: ObjId, correlation: u64) -> MemoryReferences {
+        self.runtime(npc)
+            .filter(|rt| rt.in_flight && rt.correlation == Some(correlation))
+            .and_then(|rt| rt.captured_memory.as_ref())
+            .filter(|(captured, _)| *captured == correlation)
+            .map(|(_, references)| references.clone())
+            .unwrap_or_default()
     }
 
     /// Start a memory-fold (summarize) turn: retain the oldest half in working
@@ -407,6 +443,7 @@ impl NpcHostState {
         }
         rt.in_flight = true;
         rt.correlation = Some(correlation);
+        rt.captured_memory = None;
         rt.last_correlation = Some(correlation);
         rt.summarize_pending = false;
         rt.dialogue_since_summary = false;
@@ -475,6 +512,7 @@ impl NpcHostState {
         if let Some(rt) = self.runtimes.get_mut(&npc) {
             rt.in_flight = false;
             rt.correlation = None;
+            rt.captured_memory = None;
             if !rt.mailbox.is_empty() && rt.pending_since.is_none() {
                 rt.pending_since = Some(now_ms);
             }
@@ -557,6 +595,36 @@ mod tests {
             text: text.into(),
             kind: SpeechKind::Say,
         }
+    }
+
+    #[test]
+    fn memory_references_belong_only_to_the_captured_active_turn() {
+        let mut h = host();
+        let npc = ObjId(9);
+        let recalled = vec![RecalledMemory {
+            subject: "Alice".into(),
+            notes: vec!["experience #2; belief #3".into()],
+            evidence_ids: vec![2],
+            belief_ids: vec![3],
+        }];
+        // Idle completions may carry legacy actions, but no source authority.
+        h.capture_memory_references(npc, 1, &recalled);
+        assert!(h.memory_references_for(npc, 1).allows(None, None));
+        assert!(!h.memory_references_for(npc, 1).allows(Some(2), None));
+        h.begin_turn(npc, 0, 1);
+        h.capture_memory_references(npc, 1, &recalled);
+        assert!(h.memory_references_for(npc, 1).allows(Some(2), Some(3)));
+        assert!(!h.memory_references_for(npc, 1).allows(Some(4), Some(3)));
+        assert!(!h.memory_references_for(npc, 1).allows(Some(2), Some(4)));
+        assert!(!h.memory_references_for(npc, 2).allows(Some(2), None));
+        let captured = h.memory_references_for(npc, 1);
+        assert!(h.finish_turn_if_correlation(npc, 1, 10));
+        assert!(captured.allows(Some(2), Some(3)));
+        assert!(!h.memory_references_for(npc, 1).allows(Some(2), None));
+        h.begin_turn(npc, 20, 2);
+        assert!(!h.memory_references_for(npc, 2).allows(Some(2), None));
+        h.capture_memory_references(npc, 1, &recalled);
+        assert!(!h.memory_references_for(npc, 2).allows(Some(2), None));
     }
 
     #[test]

@@ -75,6 +75,7 @@ pub enum SnapshotValidationError {
     CapabilityProfileTooLarge,
     SnapshotTooLarge,
     InvalidCommandGuidance,
+    InvalidMemoryReferences,
 }
 
 impl fmt::Display for SnapshotValidationError {
@@ -95,6 +96,9 @@ impl fmt::Display for SnapshotValidationError {
             Self::SnapshotTooLarge => "encoded NPC turn snapshot exceeds its byte limit",
             Self::InvalidCommandGuidance => {
                 "NPC command guidance exceeds its bounds or contains an invalid command name"
+            }
+            Self::InvalidMemoryReferences => {
+                "NPC recalled memory contains invalid reference metadata"
             }
         })
     }
@@ -168,6 +172,54 @@ pub struct RecalledMemory {
     pub subject: String,
     /// The remembered notes.
     pub notes: Vec<String>,
+    /// Engine-issued experience IDs actually shown in these notes.
+    #[serde(default)]
+    pub evidence_ids: Vec<u64>,
+    /// Current belief IDs actually shown in these notes, eligible for revision.
+    #[serde(default)]
+    pub belief_ids: Vec<u64>,
+}
+
+/// The bounded, typed reference set captured with one dialogue prompt. It is
+/// never reconstructed from model text or from memories that arrive later.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MemoryReferences {
+    evidence: Vec<u64>,
+    beliefs: Vec<u64>,
+}
+
+impl MemoryReferences {
+    pub(crate) fn from_recalled(records: &[RecalledMemory]) -> Option<Self> {
+        let limit = crate::experience::MAX_PERSONAL_RECALL_ENTRIES;
+        let mut references = Self::default();
+        for record in records {
+            for (ids, captured) in [
+                (&record.evidence_ids, &mut references.evidence),
+                (&record.belief_ids, &mut references.beliefs),
+            ] {
+                if ids.len() > limit {
+                    return None;
+                }
+                for &id in ids {
+                    if id == 0 {
+                        return None;
+                    }
+                    if !captured.contains(&id) {
+                        if captured.len() >= limit {
+                            return None;
+                        }
+                        captured.push(id);
+                    }
+                }
+            }
+        }
+        Some(references)
+    }
+
+    pub(crate) fn allows(&self, evidence: Option<u64>, replaces: Option<u64>) -> bool {
+        evidence.is_none_or(|id| self.evidence.contains(&id))
+            && replaces.is_none_or(|id| self.beliefs.contains(&id))
+    }
 }
 
 /// Everything the off-loop turn needs — owned data only. The world task builds
@@ -252,6 +304,8 @@ impl TurnSnapshot {
     pub fn validate(&self) -> Result<(), SnapshotValidationError> {
         validate_scene(&self.scene)?;
         validate_command_guidance(&self.command_guidance)?;
+        MemoryReferences::from_recalled(&self.recalled)
+            .ok_or(SnapshotValidationError::InvalidMemoryReferences)?;
         if let Some(profile) = &self.agent_profile {
             validate_agent_capability_profile(profile)?;
         }
@@ -394,8 +448,8 @@ pub enum TurnOutcome {
         /// Why it degraded (staff-facing).
         reason: String,
     },
-    /// A completed memory fold: fold the summary + durable facts (a Summarize
-    /// turn).
+    /// A completed rolling-summary fold. This does not create durable evidence
+    /// or beliefs; model-generated summaries are never observations.
     Summary {
         /// The NPC.
         npc: ObjId,
@@ -618,6 +672,42 @@ mod tests {
         let decoded: TurnSnapshot = serde_json::from_value(wire).expect("older snapshot");
         assert!(decoded.command_guidance.is_empty());
         assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn old_recollections_have_no_reference_authority_and_new_ids_are_bounded() {
+        let old: RecalledMemory = serde_json::from_value(json!({
+            "subject": "Alice", "notes": ["An old note containing experience #2"]
+        }))
+        .expect("legacy recalled memory");
+        assert!(old.evidence_ids.is_empty());
+        assert!(old.belief_ids.is_empty());
+        let references =
+            MemoryReferences::from_recalled(std::slice::from_ref(&old)).expect("legacy metadata");
+        assert!(references.allows(None, None));
+        assert!(!references.allows(Some(2), None));
+
+        let mut snap = snapshot();
+        snap.recalled = vec![old];
+        snap.recalled[0].evidence_ids = vec![0];
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidMemoryReferences)
+        );
+        snap.recalled[0].evidence_ids = vec![1; crate::experience::MAX_PERSONAL_RECALL_ENTRIES + 1];
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidMemoryReferences)
+        );
+        snap.recalled[0].evidence_ids = vec![2];
+        snap.recalled[0].belief_ids = vec![3];
+        assert!(snap.validate().is_ok());
+        let references = MemoryReferences::from_recalled(&snap.recalled).expect("valid metadata");
+        assert!(references.allows(Some(2), Some(3)));
+        assert!(
+            !references.allows(Some(3), Some(2)),
+            "evidence and belief namespaces stay distinct"
+        );
     }
 
     #[test]

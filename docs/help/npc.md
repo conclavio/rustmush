@@ -100,8 +100,8 @@ roll can never be faked.
 ## World knowledge
 
 An NPC knows things two ways. **Episodic** memory is what it remembers
-*experiencing* — who it has met, what was said (the `remember` tool, the rolling
-summary, durable per-subject memories). **World** (or semantic) knowledge is what
+*experiencing* — what was said and what it observed. The `remember` tool adds
+subjective beliefs; the rolling summary compresses conversation. **World** (or semantic) knowledge is what
 it knows by virtue of *who and where it is* — a bartender knows the local streets;
 the simulator's docent knows the centre — whether or not it has ever met you.
 World knowledge is authored by staff; episodic memory accrues in play.
@@ -114,7 +114,7 @@ or the NPC moving ends that focus. Recent questions, public replies, and action
 outcomes take priority over background chatter in its working memory.
 
 Raw recent history is kept only for the current server session. Rolling summaries
-and explicit per-subject memories persist across restarts. Failed memory-summary
+and bounded experiences, beliefs, and legacy notes persist across restarts. Failed memory-summary
 calls keep recent events and retry with backoff; the bounded buffer can still
 discard older events during a long outage. Private interface answers are not
 stored in reusable conversation memory.
@@ -137,10 +137,10 @@ be shared:
             rendered.)
 
 **Willingness to share** a guarded fact depends on how well the NPC knows the
-asker. In this first cut that trust — *familiarity* — is derived from episodic
-memory: a player the NPC has never remembered is a *stranger*; one it has a
-durable memory of is an *acquaintance*; one it knows well (several durable
-memories) is *known*. Guarded facts lean toward the people it knows. (Staff-set
+asker. The existing trust heuristic — *familiarity* — still uses legacy durable
+notes: no record means *stranger*, one means *acquaintance*, and three notes
+mean *known*. New experiences and beliefs never inflate this count. Guarded
+facts lean toward the people it knows. (Staff-set
 disposition — liking or distrusting a specific player regardless of memory — is a
 planned future iteration.)
 
@@ -216,6 +216,24 @@ always reported; a watched subject's arrivals, departures, and speech are
 reported; ordinary unwatched traffic is not. The loop is opt-in and additive —
 an NPC with no principal set behaves exactly as before. Full details in
 `help intel`.
+
+## Experiences, beliefs, and recall
+
+NPCs retain a bounded history of public exchanges addressed to them and observed outcomes.
+They can form subjective beliefs from those experiences: remembering that you *said* you were
+heading for Ahuna does not make that plan an established world fact. A later correction can
+replace a belief while preserving the original exchange. Contradictory reports from different
+people remain disputed.
+
+Recall favors current people and topics. Memories become uncertain after seven days, and
+memories older than thirty days need an explicit topic cue to resurface. Missing details stay
+unknown. This affects personal recollections, not the NPC's authored role, goals, current command
+syntax, or live service results. Private statement answers and refusals are never retained as
+experiences. These records survive restart; the raw working conversation buffer remains local
+to the current session.
+
+`@agent/show` reports experience and belief counts. Old durable notes still load as unverified
+recollections. Repeating statements does not automatically earn the NPC's trust.
 
 ## Safety
 

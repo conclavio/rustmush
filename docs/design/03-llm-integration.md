@@ -448,7 +448,7 @@ pub enum NpcAction {
     Pose { text: String },
     Move { exit: String },              // must be a real exit; validated
     LookAt { target: String },          // returns tool_result, may loop once
-    Remember { subject: String, note: String },
+    Remember { subject: String, note: String, evidence: Option<u64>, replaces: Option<u64> },
     UseAbility { name: String, input: serde_json::Value },  // → RulesetAgentExt
     DoNothing { reason: String },       // audited, not shown in game
 }
@@ -490,15 +490,31 @@ Three layers, cheapest first:
    consolidation and failed folds do not block ordinary replies during backoff. Summaries preserve
    unresolved questions, referents, promises and observed outcomes, distinguishing requests from
    results; recent observations take precedence over older compressed recollection.
-3. **Long-term records** (module documents keyed by `(npc, canonical subject)`): written by the
-   `Remember` tool. Each subject retains at most 20 bounded notes; each NPC retains at most 256
-   subjects, evicting the least recently updated with a stable subject tie-break and durably
-   deleting the victim. Complete records, subjects, and notes have hard byte ceilings, and boot
-   rejects malformed or key-mismatched documents. **Recall v1 is deliberately dumb:** on each turn,
-   fetch matching present-player subjects newest-first, with a hard maximum of 32 returned records.
-   Embedding retrieval is a marked extension point behind a `MemoryRecall` trait, not built now.
+3. **Experiences and beliefs** (versioned module document `mind:{npc}`): the engine captures
+   perceived public speech directed to the NPC, actual NPC movement outcomes, and public service
+   answers. These experiences retain stable IDs, speaker attribution, location, and observation
+   time. Private service answers/refusals, staff pokes, model narration, and summaries cannot create
+   evidence. The bounded store keeps at most 64 experiences and 32 subjective beliefs per NPC.
+   `Remember` now records a belief, optionally citing an experience ID and a belief to replace.
+   References must have been shown in that exact captured turn, so a slow completion cannot cite
+   events that arrived while the model was thinking. A citation proves that the NPC observed the
+   source, not that its interpretation is true.
+   A later correction from the same speaker can supersede an earlier belief; conflicting speakers
+   leave both reports disputed. Unsupported beliefs cannot replace grounded ones.
+   A later observation can also correct an unsupported initial guess. Original
+   experiences are never rewritten by a correction, and a belief retains its evidence when the
+   experience buffer evicts an older entry.
 
-Per-player relationships fall out of layer 3: memories subject-keyed by character name give the NPC continuity with returning players.
+   Recall uses present names and explicit topic cues, with deterministic ordering and hard entry
+   and byte budgets. After seven days an entry is fading; after thirty days it needs an explicit
+   cue to return. Source and uncertainty labels remain visible to the model. Imperfect recall
+   omits or qualifies details; it never fabricates substitute events. Authored persona, goals,
+   semantic lore, fresh command cards, and live account queries do not decay with personal memory.
+
+   Existing `mem:{npc}:{subject}` documents remain readable as legacy recollections with unknown
+   provenance and individual age. They are not rewritten or given synthetic evidence. New
+   experiences and beliefs do not contribute to the legacy note-count familiarity/trust heuristic.
+   A separate relationship model and embedding retrieval remain future work.
 
 ### 6.6 Cost controls (defense in depth)
 

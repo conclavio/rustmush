@@ -85,7 +85,7 @@ fn assert_action_clean(a: &NpcAction) {
             assert!(!target.is_empty());
             assert_clean(target, 64);
         }
-        NpcAction::Remember { subject, note } => {
+        NpcAction::Remember { subject, note, .. } => {
             assert!(!subject.is_empty() && !note.is_empty());
             assert_clean(subject, 64);
             assert_clean(note, SAY_CAP);
