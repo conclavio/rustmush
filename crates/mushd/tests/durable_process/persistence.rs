@@ -2158,7 +2158,7 @@ async fn dump_announces_and_acks() {
 // ---------------------------------------------------------------------------
 // 6. M8 NPC agent persistence twin: an NPC's staff profile is an obj attr, its
 // rolling summary is an obj attr, and its durable `remember` memories are
-// `mod:npc:mem:*` module docs. All three must survive a reboot from the store
+// `mod:npc:mind:*` module docs. All three must survive a reboot from the store
 // alone. Remember uses a typed completion; Summary uses a captured runtime
 // batch, the real tick and a network-free mock LLM. Both re-enter through the
 // world task, exercising module-op + attr write-through end to end.
@@ -2316,7 +2316,7 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world, &format!("@agent/set Bartender/persona={PERSONA}")).await;
     expect_text(&mut god_rx, "Set persona on Bartender").await;
 
-    // A durable memory (`mod:npc:mem:*`) via the ordinary typed re-entry.
+    // An unsupported subjective belief (`mod:npc:mind:*`) via ordinary typed re-entry.
     npc_complete(
         &world,
         bartender,
@@ -2328,6 +2328,8 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
                 action: NpcAction::Remember {
                     subject: "Alice".into(),
                     note: NOTE.into(),
+                    evidence: None,
+                    replaces: None,
                 },
             }],
         },
@@ -2382,7 +2384,7 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world2, "@agent Bartender").await;
     expect_text(&mut god_rx2, PERSONA).await;
     expect_text(&mut god_rx2, "Alice has been drinking here").await;
-    expect_text(&mut god_rx2, "Durable memories: 1 subject").await;
+    expect_text(&mut god_rx2, "Personal memory: 0 experiences, 1 beliefs").await;
 }
 
 /// The NPC agent round trip over an in-memory store — ungated, so CI proves the
@@ -2394,7 +2396,7 @@ async fn npc_agent_persistence_round_trip_in_memory() {
 }
 
 /// The same round trip over a live Redis — the NPC's profile/summary obj docs
-/// and its `mod:npc:mem:*` module docs survive a reboot from Redis alone. Gated
+/// and its `mod:npc:mind:*` module docs survive a reboot from Redis alone. Gated
 /// on `REDIS_URL`; runs in db 8 (dbs 9–15 are claimed by the other gated tests,
 /// which run in parallel).
 #[tokio::test(flavor = "multi_thread")]
