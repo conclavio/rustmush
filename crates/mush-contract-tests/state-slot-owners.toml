@@ -297,6 +297,13 @@ that makes every claim in the file a claim about accounts.
 [[site]]
 path = "crates/tacsim/tests/shard_1/coop.rs"
 accessor = "World::module_state_mut"
+slot = "NpcHostState"
+owner = "npc"
+reason = "Co-op NPC interface fixture: marks one dialogue turn in flight before applying its real world-loop completion, so private delivery and working-memory redaction are checked with the production provider."
+
+[[site]]
+path = "crates/tacsim/tests/shard_1/coop.rs"
+accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = """

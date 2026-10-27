@@ -7,16 +7,70 @@ use std::sync::Arc;
 
 use mush_core::{
     AbilityCall, Ctx, InterfaceAbility, InterfaceAbilityProvider, InterfaceError, InterfaceReply,
-    ObjId, Registry,
+    ObjId, Registry, World,
 };
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 use crate::profile::AgentProfile;
-use crate::snapshot::InterfaceToolSpec;
+use crate::snapshot::{CommandGuidance, InterfaceToolSpec};
 
 /// The most interface abilities one turn offers the model.
 pub const MAX_INTERFACE_TOOLS: usize = 32;
+
+/// The most authored command references included in one turn.
+pub const MAX_COMMAND_GUIDANCE: usize = 8;
+/// Maximum combined command-name and text bytes in one complete help card.
+pub const MAX_COMMAND_GUIDANCE_BYTES: usize = 8 * 1024;
+/// Maximum combined command-name and text bytes across all help cards.
+pub const MAX_COMMAND_GUIDANCE_TOTAL_BYTES: usize = 16 * 1024;
+
+/// Current help for the profile's authored command references, filtered as the
+/// asker and restricted to public commands. These cards describe commands; they
+/// grant no ability to execute them. Keep complete entries rather than truncating
+/// conditions or syntax, and never carry staff help into shared NPC memory.
+#[must_use]
+pub fn command_guidance_for(
+    reg: &Registry,
+    world: &World,
+    profile: &AgentProfile,
+    asker: Option<ObjId>,
+) -> Vec<CommandGuidance> {
+    let Some(asker) = asker else {
+        return Vec::new();
+    };
+    let mut cards: Vec<CommandGuidance> = Vec::new();
+    let mut used = 0_usize;
+    for name in &profile.command_refs {
+        if cards.len() >= MAX_COMMAND_GUIDANCE {
+            break;
+        }
+        let Some(entry) = mush_core::commands::info::help_entry(reg, world, asker, name) else {
+            continue;
+        };
+        let Some(command) = entry.command.filter(|_| entry.publicly_visible) else {
+            continue;
+        };
+        if !crate::profile::valid_command_ref(&command)
+            || cards.iter().any(|card| card.command == command.as_str())
+        {
+            continue;
+        }
+        let text = format!("{}\n{}", entry.header, entry.body);
+        let bytes = command.len().saturating_add(text.len());
+        if bytes > MAX_COMMAND_GUIDANCE_BYTES
+            || used.saturating_add(bytes) > MAX_COMMAND_GUIDANCE_TOTAL_BYTES
+        {
+            continue;
+        }
+        used += bytes;
+        cards.push(CommandGuidance {
+            command: command.to_string(),
+            text,
+        });
+    }
+    cards
+}
 
 /// The interface abilities `profile` fronts, from the providers the registry
 /// holds (an id with no provider is skipped, never an error: content may name
@@ -82,8 +136,8 @@ pub fn with_command_hint(line: &str, commands: &[SmolStr]) -> String {
     format!("{line} (Or just type {}.)", named.join(" or "))
 }
 
-/// The `help` provider: `help.topic(name)` reads one topic verbatim, as
-/// `help <name>` prints it for anyone.
+/// The `help` provider: `help.topic(name)` reads current command help or one
+/// prose topic as the asker's own `help <name>` would.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HelpInterface;
 
@@ -94,10 +148,10 @@ impl InterfaceAbilityProvider for HelpInterface {
     fn abilities(&self) -> Vec<InterfaceAbility> {
         vec![InterfaceAbility {
             name: SmolStr::new_static("help.topic"),
-            description: "Read one help topic, verbatim, as `help <name>` prints it.".to_string(),
+            description: "Read current command help (including aliases) or a prose topic, verbatim, as the asker's `help <name>` prints it. This reads instructions; it does not execute the command.".to_string(),
             params_schema: json!({
                 "type": "object",
-                "properties": { "name": { "type": "string", "description": "the topic" } },
+                "properties": { "name": { "type": "string", "description": "an exact command name, alias or prose topic" } },
                 "required": ["name"]
             }),
             command: SmolStr::new_static("help"),
@@ -107,7 +161,7 @@ impl InterfaceAbilityProvider for HelpInterface {
     fn invoke(
         &self,
         ctx: &mut Ctx<'_>,
-        _call: AbilityCall,
+        call: AbilityCall,
         name: &str,
         input: &Value,
     ) -> Result<InterfaceReply, InterfaceError> {
@@ -120,13 +174,31 @@ impl InterfaceAbilityProvider for HelpInterface {
             .map(|t| t.trim().to_ascii_lowercase())
             .filter(|t| !t.is_empty())
             .ok_or_else(|| InterfaceError::Invalid("a topic name".to_string()))?;
-        match ctx.reg.help_topic(&topic) {
-            Some(t) => Ok(InterfaceReply::public(format!("{}\n{}", t.title, t.body))),
-            None => Err(InterfaceError::Refused(format!(
-                "There is no help topic called {topic:?}; `help` lists them."
-            ))),
-        }
+        help_reply(ctx.reg, ctx.w, call.asker, &topic)
     }
+}
+
+fn help_reply(
+    reg: &Registry,
+    world: &World,
+    asker: ObjId,
+    topic: &str,
+) -> Result<InterfaceReply, InterfaceError> {
+    let entry =
+        mush_core::commands::info::help_entry(reg, world, asker, topic).ok_or_else(|| {
+            InterfaceError::Refused(format!(
+                "There is no help topic called {topic:?}; `help` lists them."
+            ))
+        })?;
+    let text = format!("{}\n{}", entry.header, entry.body);
+    // Commands are checked under the asker's current permissions. Keep every
+    // command reply private even if its help is ordinarily public, so staff
+    // permissions can never turn this provider into a room disclosure path.
+    Ok(if entry.command.is_some() {
+        InterfaceReply::text(text)
+    } else {
+        InterfaceReply::public(text)
+    })
 }
 
 /// Abbreviate an ability's input for the audit row.
@@ -148,4 +220,208 @@ pub fn abbreviate(input: &Value) -> String {
 #[must_use]
 pub fn asker_of(asker: Option<ObjId>) -> Option<ObjId> {
     asker
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{CommandSpec, GOD, LIMBO, ObjKind, ReplyAudience, Role};
+
+    fn setup() -> (World, Registry, ObjId) {
+        let mut world = World::new_minimal();
+        let player = world
+            .create(ObjKind::Player, "Captain", GOD, Some(LIMBO))
+            .unwrap();
+        (world, Registry::new(), player)
+    }
+
+    fn register(reg: &mut Registry, spec: CommandSpec) {
+        reg.register(spec, Arc::new(|_ctx: &mut Ctx<'_>| Ok(())))
+            .unwrap();
+    }
+
+    #[test]
+    fn command_help_is_private_and_aliases_share_the_canonical_help() {
+        let (world, mut reg, player) = setup();
+        register(
+            &mut reg,
+            CommandSpec {
+                name: "+coop".into(),
+                aliases: vec!["+cooperative".into()],
+                switches: vec!["enrol".into()],
+                help: "+coop/enrol <name> signs a charter at the desk.".into(),
+                ..CommandSpec::default()
+            },
+        );
+        reg.add_help_topic("+cooperative", "An older prose topic", "This must not win.");
+        reg.add_help_topic("corridor", "The corridor", "These roads are public.");
+        let canonical = help_reply(&reg, &world, player, "+coop").unwrap();
+        let alias = help_reply(&reg, &world, player, "+cooperative").unwrap();
+        assert_eq!(canonical, alias);
+        assert_eq!(canonical.audience, ReplyAudience::Asker);
+        assert!(canonical.text.contains("/enrol <name>"));
+        assert!(!canonical.text.contains("must not win"));
+        let prose = help_reply(&reg, &world, player, "corridor").unwrap();
+        assert_eq!(prose.audience, ReplyAudience::Room);
+        assert_eq!(prose.text, "The corridor\nThese roads are public.");
+    }
+
+    #[test]
+    fn hidden_help_uses_the_unknown_reply_and_staff_help_stays_private() {
+        let (world, mut reg, player) = setup();
+        register(
+            &mut reg,
+            CommandSpec {
+                name: "+staff".into(),
+                min_role: Role::Wizard,
+                help: "Sensitive operator instructions.".into(),
+                ..CommandSpec::default()
+            },
+        );
+        for name in ["+staff", "+unknown"] {
+            assert_eq!(
+                help_reply(&reg, &world, player, name),
+                Err(InterfaceError::Refused(format!(
+                    "There is no help topic called {name:?}; `help` lists them."
+                )))
+            );
+        }
+        let staff = help_reply(&reg, &world, GOD, "+staff").unwrap();
+        assert_eq!(staff.audience, ReplyAudience::Asker);
+        assert!(staff.text.contains("Sensitive operator instructions."));
+    }
+
+    #[test]
+    fn guidance_only_contains_public_current_commands_not_topics_or_authority() {
+        let (mut world, mut reg, player) = setup();
+        register(
+            &mut reg,
+            CommandSpec {
+                name: "+coop".into(),
+                aliases: vec!["+cooperative".into()],
+                help: "Current registered terms.".into(),
+                ..CommandSpec::default()
+            },
+        );
+        for spec in [
+            CommandSpec {
+                name: "+staff".into(),
+                min_role: Role::Wizard,
+                ..CommandSpec::default()
+            },
+            CommandSpec {
+                name: "+power".into(),
+                power: Some(mush_core::Powers::SIM_ADMIN),
+                ..CommandSpec::default()
+            },
+            CommandSpec {
+                name: "+privilege".into(),
+                privilege: Some(mush_core::Privileges::DISCORD_IDENTITY),
+                ..CommandSpec::default()
+            },
+            CommandSpec {
+                name: "+locked".into(),
+                lock: Some(mush_core::LockExpr::Is(GOD)),
+                ..CommandSpec::default()
+            },
+        ] {
+            register(&mut reg, spec);
+        }
+        reg.add_help_topic("topic", "Public prose", "Not a command.");
+        let profile = AgentProfile {
+            command_refs: [
+                "+cooperative",
+                "+coop",
+                "+staff",
+                "+power",
+                "+privilege",
+                "+locked",
+                "topic",
+                "+missing",
+            ]
+            .into_iter()
+            .map(SmolStr::new)
+            .collect(),
+            ..AgentProfile::default()
+        };
+        world.get_mut(player).unwrap().powers = mush_core::Powers::SIM_ADMIN;
+        world.get_mut(player).unwrap().privileges = mush_core::Privileges::DISCORD_IDENTITY;
+        for asker in [player, GOD] {
+            let cards = command_guidance_for(&reg, &world, &profile, Some(asker));
+            assert_eq!(cards.len(), 1);
+            assert_eq!(cards[0].command, "+coop");
+            assert!(cards[0].text.ends_with("Current registered terms."));
+        }
+        assert!(command_guidance_for(&reg, &world, &profile, None).is_empty());
+    }
+
+    #[test]
+    fn guidance_keeps_complete_utf8_cards_within_count_and_byte_limits() {
+        let (world, mut reg, player) = setup();
+        let mut refs = Vec::new();
+        for n in 0..12 {
+            let name = format!("+guide{n}");
+            register(
+                &mut reg,
+                CommandSpec {
+                    name: name.clone().into(),
+                    help: "A complete command description.".into(),
+                    ..CommandSpec::default()
+                },
+            );
+            refs.push(name.into());
+        }
+        let mut profile = AgentProfile {
+            command_refs: refs,
+            ..AgentProfile::default()
+        };
+        assert_eq!(
+            command_guidance_for(&reg, &world, &profile, Some(player)).len(),
+            MAX_COMMAND_GUIDANCE
+        );
+
+        profile.command_refs.clear();
+        for (name, body) in [
+            ("+oversized", "界".repeat(MAX_COMMAND_GUIDANCE_BYTES)),
+            ("+largea", "界".repeat(2_600)),
+            ("+largeb", "界".repeat(2_600)),
+            ("+largec", "界".repeat(2_600)),
+            ("+small", "The complete final instruction.".to_owned()),
+        ] {
+            register(
+                &mut reg,
+                CommandSpec {
+                    name: name.into(),
+                    help: body,
+                    ..CommandSpec::default()
+                },
+            );
+            profile.command_refs.push(name.into());
+        }
+        let cards = command_guidance_for(&reg, &world, &profile, Some(player));
+        assert_eq!(
+            cards
+                .iter()
+                .map(|card| card.command.as_str())
+                .collect::<Vec<_>>(),
+            vec!["+largea", "+largeb", "+small"]
+        );
+        assert!(
+            cards
+                .iter()
+                .all(|card| card.command.len() + card.text.len() <= MAX_COMMAND_GUIDANCE_BYTES)
+        );
+        assert!(
+            cards
+                .iter()
+                .map(|card| card.command.len() + card.text.len())
+                .sum::<usize>()
+                <= MAX_COMMAND_GUIDANCE_TOTAL_BYTES
+        );
+        for card in cards {
+            let entry =
+                mush_core::commands::info::help_entry(&reg, &world, player, &card.command).unwrap();
+            assert_eq!(card.text, format!("{}\n{}", entry.header, entry.body));
+        }
+    }
 }

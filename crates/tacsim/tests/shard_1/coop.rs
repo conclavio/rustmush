@@ -2334,3 +2334,255 @@ fn ic14_a_revocation_survives_a_reboot() {
     assert!(out.contains("You hold no charter."), "{out}");
     assert_eq!(location(&rig.tw, who), Some(gallery));
 }
+
+/// Call the registered provider with a deliberately independent context actor.
+/// A read must produce neither ambient output nor deferred writes.
+fn coop_reply(
+    tw: &mut TestWorld,
+    context_actor: ObjId,
+    asker: ObjId,
+    ability: &str,
+    input: serde_json::Value,
+) -> Result<mush_core::InterfaceReply, mush_core::InterfaceError> {
+    let provider = tw
+        .engine()
+        .registry
+        .interface_provider("coop")
+        .expect("the Co-op provider is registered");
+    let engine = tw.engine_mut();
+    let mut out = mush_core::Outbox::new();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: context_actor,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some("npc".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    let reply = provider.invoke(
+        &mut ctx,
+        mush_core::AbilityCall {
+            npc: context_actor,
+            asker,
+        },
+        ability,
+        &input,
+    );
+    assert_eq!(ctx.actor, context_actor, "the caller's context is restored");
+    assert!(
+        out.take().is_empty(),
+        "a projection emits no ambient output"
+    );
+    assert!(
+        out.take_deferred().is_empty(),
+        "a projection queues no writes"
+    );
+    reply
+}
+
+#[test]
+fn npc_coop_reads_match_commands_use_the_asker_and_write_nothing() {
+    let (mut rig, who) = enrolled();
+    let other = pilot(&mut rig, "Other", 2);
+    let expected_terms = run(&mut rig.tw, who, "+coop");
+    let expected_statement = run(&mut rig.tw, who, "+coop/statement");
+    let expected_other = run(&mut rig.tw, other, "+coop");
+    let before = counts(&rig.tw);
+    let cash = own_account(&rig.tw, who).expect("the pilot account");
+    let cash_before = balance(&rig.tw, cash);
+    let record = store(&rig.tw).enrolment_of(who).unwrap().clone();
+    let _ = rig.tw.take_module_ops();
+    for (ability, expected) in [
+        ("coop.terms", expected_terms),
+        ("coop.statement", expected_statement),
+    ] {
+        let reply = coop_reply(&mut rig.tw, other, who, ability, serde_json::json!({}))
+            .expect("an enrolled asker's read");
+        assert_eq!(reply.text, expected);
+        assert_eq!(reply.audience, mush_core::ReplyAudience::Asker);
+    }
+    let reply = coop_reply(&mut rig.tw, who, other, "coop.terms", serde_json::json!({}))
+        .expect("the other pilot's own terms");
+    assert_eq!(reply.text, expected_other);
+    assert!(!reply.text.contains("Salt Moth"));
+    assert!(matches!(
+        coop_reply(&mut rig.tw, who, other, "coop.statement", serde_json::json!({})),
+        Err(mush_core::InterfaceError::Refused(line)) if line == tacsim::port::coop::NO_CHARTER
+    ));
+    assert_eq!(counts(&rig.tw), before);
+    assert_eq!(balance(&rig.tw, cash), cash_before);
+    assert_eq!(store(&rig.tw).enrolment_of(who), Some(&record));
+    assert!(rig.tw.take_module_ops().is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn npc_coop_rejects_arguments_actor_overrides_and_unregistered_mutations() {
+    let (mut rig, who) = enrolled();
+    let before = counts(&rig.tw);
+    let _ = rig.tw.take_module_ops();
+    for ability in ["coop.terms", "coop.statement"] {
+        for input in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({"actor": GOD}),
+            serde_json::json!({"asker": GOD}),
+            serde_json::json!({"go": true}),
+        ] {
+            assert!(matches!(
+                coop_reply(&mut rig.tw, GOD, who, ability, input),
+                Err(mush_core::InterfaceError::Invalid(_))
+            ));
+        }
+    }
+    for ability in ["coop.enrol", "coop.buyout", "coop.release"] {
+        assert!(matches!(
+            coop_reply(&mut rig.tw, GOD, who, ability, serde_json::json!({})),
+            Err(mush_core::InterfaceError::Unknown(_))
+        ));
+    }
+    assert_eq!(counts(&rig.tw), before);
+    assert!(rig.tw.take_module_ops().is_empty());
+}
+
+#[test]
+fn npc_coop_obeys_the_same_disabled_and_missing_programme_gates() {
+    let mut disabled = boot_unsettled(Roster::bare().disabled());
+    let modules = Roster::bare()
+        .modules()
+        .into_iter()
+        .filter(|module| module.name() != "content")
+        .collect();
+    let mut absent = TestWorld::with_modules(modules);
+    assert!(tacsim::port::coop::programme_port(absent.world()).is_none());
+    for tw in [&mut disabled.tw, &mut absent] {
+        for (ability, command) in [
+            ("coop.terms", "+coop"),
+            ("coop.statement", "+coop/statement"),
+        ] {
+            let expected = run(tw, GOD, command);
+            let Err(mush_core::InterfaceError::Refused(line)) =
+                coop_reply(tw, GOD, GOD, ability, serde_json::json!({}))
+            else {
+                panic!("{ability} must refuse on an unavailable programme");
+            };
+            assert_eq!(line, expected);
+        }
+    }
+}
+
+#[test]
+fn npc_coop_statement_reaches_only_the_asker_not_other_people_or_memories() {
+    let (mut rig, who) = enrolled();
+    let other = pilot(&mut rig, "Other", 2);
+    let desk = c05(&rig.tw);
+    let clerk = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Npc, "Clerk", GOD, Some(desk))
+        .unwrap();
+    let profile = mush_npc::AgentProfile {
+        interfaces: vec!["coop".into()],
+        ..mush_npc::AgentProfile::default()
+    };
+    rig.tw
+        .world_mut()
+        .set_attr(
+            clerk,
+            mush_npc::PROFILE_ATTR,
+            mush_core::Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
+    rig.tw
+        .world_mut()
+        .module_state_mut::<mush_npc::NpcHostState>()
+        .unwrap()
+        .begin_turn(clerk, 1, 91);
+    let payload = serde_json::json!({
+        "status": "ok", "npc": clerk, "asker": who,
+        "actions": [{ "action": { "action": "use_ability", "name": "coop.statement", "input": {} } }]
+    })
+    .to_string();
+    let mut out = mush_core::Outbox::new();
+    rig.tw.engine_mut().step(
+        mush_core::Inbound::Apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: "npc".into(),
+            actor: clerk,
+            correlation: 91,
+            payload,
+        }),
+        &mut out,
+        &mut mush_core::Effects::new(),
+    );
+    let events = out.take();
+    let private = said(&rig.tw, &events, who);
+    assert!(private.contains("Statement: the Salt Moth"), "{private}");
+    assert!(private.contains("25000.00cr available"), "{private}");
+    let bystander = said(&rig.tw, &events, other);
+    let host = rig
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    let memory = host.runtime(clerk).unwrap().memory.transcript(100_000);
+    for text in [bystander, memory] {
+        assert!(!text.contains("Salt Moth"), "{text}");
+        assert!(!text.contains("25000.00cr"), "{text}");
+    }
+}
+
+#[test]
+fn npc_coop_graduate_statement_tracks_current_title_after_a_transfer() {
+    let (mut rig, who) = enrolled();
+    let other = pilot(&mut rig, "Other", 2);
+    let account = own_account(&rig.tw, who).unwrap();
+    let treasury = ceres_map(&rig.tw).treasury.unwrap();
+    let minted = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 10000000", account.0),
+    );
+    assert!(!minted.contains("Usage"), "{minted}");
+    let bought = run(&mut rig.tw, who, "+coop/buyout");
+    assert!(
+        bought.contains("The Registry writes the title transfer"),
+        "{bought}"
+    );
+    sweep(&mut rig.tw, 31);
+    let record = store(&rig.tw).enrolment_of(who).unwrap().clone();
+    assert_eq!(record.status, EnrolmentStatus::Graduated);
+    for (ability, current) in [
+        ("coop.terms", "Your hull: the Salt Moth"),
+        ("coop.statement", "the hull is yours"),
+    ] {
+        let reply = coop_reply(&mut rig.tw, GOD, who, ability, serde_json::json!({})).unwrap();
+        assert!(reply.text.contains(current), "{}", reply.text);
+    }
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", record.hull.0, other.0),
+    );
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .asset(record.hull)
+            .unwrap()
+            .title_owner,
+        PrincipalId::Object(other)
+    );
+    for (ability, command) in [
+        ("coop.terms", "+coop"),
+        ("coop.statement", "+coop/statement"),
+    ] {
+        let expected = run(&mut rig.tw, who, command);
+        let reply = coop_reply(&mut rig.tw, GOD, who, ability, serde_json::json!({})).unwrap();
+        assert_eq!(reply.text, expected);
+        assert!(reply.text.contains("bought out"), "{}", reply.text);
+        assert!(!reply.text.contains("Your hull:"), "{}", reply.text);
+        assert!(!reply.text.contains("hull is yours"), "{}", reply.text);
+    }
+    assert_eq!(store(&rig.tw).enrolment_of(who), Some(&record));
+}

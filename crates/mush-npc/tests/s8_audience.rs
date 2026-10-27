@@ -28,7 +28,7 @@ struct Probe;
 
 impl InterfaceAbilityProvider for Probe {
     fn abilities(&self) -> Vec<InterfaceAbility> {
-        ["probe.private", "probe.public"]
+        ["probe.private", "probe.public", "probe.refuse"]
             .into_iter()
             .map(|name| InterfaceAbility {
                 name: SmolStr::new(name),
@@ -49,6 +49,7 @@ impl InterfaceAbilityProvider for Probe {
         match name {
             "probe.private" => Ok(InterfaceReply::text(format!("{SECRET}\nThat is all."))),
             "probe.public" => Ok(InterfaceReply::public("The sky is blue today.")),
+            "probe.refuse" => Err(InterfaceError::Refused(SECRET.to_owned())),
             other => Err(InterfaceError::Unknown(other.to_string())),
         }
     }
@@ -176,6 +177,66 @@ fn memory_of(tw: &TestWorld, npc: ObjId) -> String {
         .runtime(npc)
         .map(|rt| rt.memory.transcript(100_000))
         .unwrap_or_default()
+}
+
+#[test]
+fn refusal_details_are_private_and_absent_from_memory_and_observers() {
+    let mut lot = lot();
+    let events = ability_turn(&mut lot.tw, lot.clerk, lot.alice, 49, "probe.refuse");
+    assert!(text(&lot.tw, &events, lot.alice).contains(SECRET));
+    assert!(!text(&lot.tw, &events, lot.bob).contains(SECRET));
+    assert!(!memory_of(&lot.tw, lot.clerk).contains(SECRET));
+    assert!(!memory_of(&lot.tw, lot.bystander).contains(SECRET));
+    assert!(
+        lot.said
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|line| !line.contains(SECRET))
+    );
+}
+
+#[test]
+fn delayed_private_answers_refresh_only_their_existing_exchange() {
+    let mut lot = lot();
+    let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    lot.tw
+        .world_mut()
+        .module_state_mut::<mush_npc::NpcHostState>()
+        .unwrap()
+        .runtime_mut(lot.clerk)
+        .note_conversation(lot.alice, room, 0);
+    lot.tw.set_now(121);
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 50, "probe.private");
+    let host = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert_eq!(
+        host.runtime(lot.clerk).unwrap().focus_for(room, 122_000),
+        Some(lot.alice)
+    );
+    assert!(!memory_of(&lot.tw, lot.clerk).contains(SECRET));
+
+    lot.tw
+        .world_mut()
+        .module_state_mut::<mush_npc::NpcHostState>()
+        .unwrap()
+        .runtime_mut(lot.clerk)
+        .note_conversation(lot.bob, room, 122_000);
+    lot.tw.set_now(123);
+    ability_turn(&mut lot.tw, lot.clerk, lot.alice, 51, "probe.private");
+    let host = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap();
+    assert_eq!(
+        host.runtime(lot.clerk).unwrap().focus_for(room, 124_000),
+        Some(lot.bob)
+    );
 }
 
 /// Exercise the registered scene observer, then inspect exactly what it queued

@@ -397,6 +397,21 @@ Volatile suffix (the user turn):
 7. Recent event transcript (script-formatted, token-capped): `Alice says, "…"` / `Bob arrives from the north.`
 8. The triggering stimuli, with player speech wrapped: `<player_speech speaker="Alice">…</player_speech>` with `<` escaped in the payload — framing, plus the engine-frame rule, is the injection posture (§7).
 
+Service NPCs also receive the registered abilities of their configured `interfaces`
+and exact public command help selected by `command_refs`. Up to eight command
+references resolve through the same command/alias and visibility rules as `help`;
+staff-only commands are excluded even for staff askers. Cards are bounded to 8 KiB
+each and 16 KiB total. These describe commands the player executes, independently
+of the NPC's callable services; explaining a form never constitutes submitting it.
+The `help.topic` interface supports actual commands as well as prose topics, with
+command results sent privately under the asker's permissions.
+
+Oduya is the first desk using this grounding: `coop.terms` and `coop.statement`
+share read-only projections with `+coop` and `+coop/statement`, execute as the
+current asker, and reply privately. Her authored goals and voice remain separate
+from live figures. The interface completion is delivered by the world loop; its
+private result is not fed back into the model or reusable conversation memory.
+
 World-knowledge construction is bounded before it becomes a snapshot: at most 64 direct facts and
 16 unique shared-pool tags per NPC, 128 facts per pool, 512 pools per server, and 128 shareable facts
 or 256 KiB in one resolved turn. Tags, fact fields, per-NPC documents, and pool documents have hard

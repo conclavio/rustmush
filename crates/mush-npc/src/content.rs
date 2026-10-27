@@ -99,6 +99,8 @@ pub struct ProfileDef {
     pub watch: Vec<String>,
     /// S6: the interface-ability providers the NPC fronts, by id.
     pub interfaces: Vec<String>,
+    /// Registered command names this NPC can explain to the player.
+    pub command_refs: Vec<String>,
 }
 
 /// An `npc` entry.
@@ -164,6 +166,12 @@ fn profile_of(def: &NpcDef) -> Result<AgentProfile, String> {
             .interfaces
             .iter()
             .map(|i| smol_str::SmolStr::new(i.trim().to_ascii_lowercase()))
+            .collect(),
+        command_refs: def
+            .profile
+            .command_refs
+            .iter()
+            .map(|name| SmolStr::new(name.trim().to_ascii_lowercase()))
             .collect(),
     };
     profile.validate().map_err(|e| format!("profile: {e}"))?;
@@ -413,5 +421,48 @@ impl EntryApplier for NpcApplier {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authored_command_references_normalize_without_changing_personality() {
+        let def: NpcDef = serde_json::from_value(serde_json::json!({
+            "name": "Clerk", "room": "room.desk", "profile": {
+                "persona": "brisk but warm", "speech_style": "numbered steps",
+                "command_refs": ["  +COOP  ", "Look"]
+            }
+        }))
+        .expect("authored NPC");
+        let profile = profile_of(&def).expect("valid profile");
+        assert_eq!(
+            profile.command_refs,
+            vec![SmolStr::new_static("+coop"), SmolStr::new_static("look")]
+        );
+        assert_eq!(profile.persona, "brisk but warm");
+        assert_eq!(profile.speech_style, "numbered steps");
+        assert!(profile.interfaces.is_empty(), "guidance grants no tools");
+    }
+
+    #[test]
+    fn older_content_defaults_to_no_command_refs_and_invalid_refs_are_rejected() {
+        let mut def: NpcDef = serde_json::from_value(serde_json::json!({
+            "name": "Clerk", "room": "room.desk", "profile": {"persona": "brisk"}
+        }))
+        .expect("older authored NPC");
+        assert!(
+            profile_of(&def)
+                .expect("older profile")
+                .command_refs
+                .is_empty()
+        );
+        def.profile.command_refs = vec!["+coop/enrol My Ship".into()];
+        assert!(
+            profile_of(&def).is_err(),
+            "a command line is not a reference"
+        );
     }
 }

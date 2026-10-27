@@ -30,6 +30,44 @@ use smol_str::SmolStr;
 // Harness
 // ----------------------------------------------------------------------
 
+#[test]
+fn command_refs_staff_edits_and_dialogue_use_public_registered_help() {
+    let mut rig = Rig::new();
+    rig.set_now(1_000);
+    let room = rig.room("Desk");
+    let clerk = rig.npc("Clerk", room, &AgentProfile::default());
+    let player = rig.player("Alice", room, true);
+    let result = rig.staff(&format!(
+        "@agent/set #{}/command_refs=LOOK; @agent; absent",
+        clerk.0
+    ));
+    assert!(result.contains("Set command_refs"), "{result}");
+    let shown = rig.staff(&format!("@agent/show #{}", clerk.0));
+    assert!(
+        shown.contains("Command references: look; @agent; absent"),
+        "{shown}"
+    );
+    let snap = rig.dialogue_snapshot(player, 1_003, "say Clerk, how do I look around?");
+    assert_eq!(snap.command_guidance.len(), 1);
+    assert_eq!(snap.command_guidance[0].command, "look");
+    assert!(
+        snap.command_guidance[0]
+            .text
+            .contains(&rig.engine.registry.spec_of("look").unwrap().help)
+    );
+    let rejected = rig.staff(&format!("@agent/set #{}/command_refs=+coop/enrol", clerk.0));
+    assert!(!rejected.contains("Set command_refs"));
+    let shown = rig.staff(&format!("@agent/show #{}", clerk.0));
+    assert!(
+        shown.contains("Command references: look; @agent; absent"),
+        "invalid edit changed profile"
+    );
+    assert!(
+        rig.staff(&format!("@agent/set #{}/command_refs=", clerk.0))
+            .contains("Cleared command_refs")
+    );
+}
+
 struct Rig {
     engine: Engine,
 }

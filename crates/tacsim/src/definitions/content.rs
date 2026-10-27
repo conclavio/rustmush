@@ -822,14 +822,16 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// requires the old lane refuses every fresh boot of a new one. Every lane version
 /// therefore re-signs `crates/tacsim/content/relays/luna_ceres.json` at its next
 /// version, requiring the new lane, entries unchanged: lane v13 ↔ relay v2 (relay cut
-/// R10), lane v14 ↔ relay v3, lane v15 ↔ relay v4 (doc 20 cut SM.12b). The relay code reads any version from 2 as the full star
+/// R10), lane v14 ↔ relay v3, lane v15 ↔ relay v4 (doc 20 cut SM.12b). Relay v5
+/// still requires lane v15 and follows Ceres v3's Oduya guidance update; its entries
+/// remain unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
 /// relay digest in `mush-server/tests/split_boundary/relay_registry.rs`, the relay version in
 /// `tests/stations.rs` and `mush-server/tests/split_boundary/boot_parity.rs`, the lane requirement in
 /// `tests/stations.rs`, and the kept-world upgrade test in `relay_registry.rs`
-/// (`sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v4` since doc 20 cut SM.12b), whose
+/// (`sm12b_a_kept_v13_star_takes_lane_v15_and_relay_v5`), whose
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.

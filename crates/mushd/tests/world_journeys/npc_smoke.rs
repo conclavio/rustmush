@@ -123,6 +123,7 @@ async fn live_npc_dialogue_openrouter_smoke() {
         fold_events: Vec::new(),
         seed: 42,
         interfaces: Vec::new(),
+        command_guidance: Vec::new(),
     };
     let payload = serde_json::to_string(&snap).expect("serialize snapshot");
 

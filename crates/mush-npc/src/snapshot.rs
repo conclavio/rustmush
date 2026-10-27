@@ -74,6 +74,7 @@ pub enum SnapshotValidationError {
     CapabilityToolTooLarge,
     CapabilityProfileTooLarge,
     SnapshotTooLarge,
+    InvalidCommandGuidance,
 }
 
 impl fmt::Display for SnapshotValidationError {
@@ -92,6 +93,9 @@ impl fmt::Display for SnapshotValidationError {
                 "encoded ruleset capability profile exceeds its byte limit"
             }
             Self::SnapshotTooLarge => "encoded NPC turn snapshot exceeds its byte limit",
+            Self::InvalidCommandGuidance => {
+                "NPC command guidance exceeds its bounds or contains an invalid command name"
+            }
         })
     }
 }
@@ -218,6 +222,19 @@ pub struct TurnSnapshot {
     /// into the tool set beside the ruleset's; each runs as the asker.
     #[serde(default)]
     pub interfaces: Vec<InterfaceToolSpec>,
+    /// Bounded registered help for this NPC's role, visible to the current
+    /// asker. The player executes these commands; these are not NPC tools.
+    #[serde(default)]
+    pub command_guidance: Vec<CommandGuidance>,
+}
+
+/// One current, asker-visible command reference, resolved on the world loop.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandGuidance {
+    /// Canonical registered command name.
+    pub command: String,
+    /// Complete bounded help text, including any conditions and syntax.
+    pub text: String,
 }
 
 /// One interface ability on a snapshot: which provider fronts it.
@@ -234,6 +251,7 @@ impl TurnSnapshot {
     /// encoded async payload before it leaves the world task.
     pub fn validate(&self) -> Result<(), SnapshotValidationError> {
         validate_scene(&self.scene)?;
+        validate_command_guidance(&self.command_guidance)?;
         if let Some(profile) = &self.agent_profile {
             validate_agent_capability_profile(profile)?;
         }
@@ -244,6 +262,32 @@ impl TurnSnapshot {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_command_guidance(
+    cards: &[CommandGuidance],
+) -> Result<(), SnapshotValidationError> {
+    use crate::interface::{
+        MAX_COMMAND_GUIDANCE, MAX_COMMAND_GUIDANCE_BYTES, MAX_COMMAND_GUIDANCE_TOTAL_BYTES,
+    };
+    if cards.len() > MAX_COMMAND_GUIDANCE {
+        return Err(SnapshotValidationError::InvalidCommandGuidance);
+    }
+    let mut total = 0usize;
+    for card in cards {
+        let bytes = card.command.len().saturating_add(card.text.len());
+        if !crate::profile::valid_command_ref(&card.command)
+            || card.text.trim().is_empty()
+            || bytes > MAX_COMMAND_GUIDANCE_BYTES
+        {
+            return Err(SnapshotValidationError::InvalidCommandGuidance);
+        }
+        total = total.saturating_add(bytes);
+    }
+    if total > MAX_COMMAND_GUIDANCE_TOTAL_BYTES {
+        return Err(SnapshotValidationError::InvalidCommandGuidance);
+    }
+    Ok(())
 }
 
 /// Validate ruleset-provided prompt grounding before it is copied across the
@@ -508,6 +552,7 @@ mod tests {
             fold_events: Vec::new(),
             seed: 1,
             interfaces: Vec::new(),
+            command_guidance: Vec::new(),
         }
     }
 
@@ -561,6 +606,75 @@ mod tests {
         assert_eq!(
             snap.validate(),
             Err(SnapshotValidationError::SnapshotTooLarge)
+        );
+    }
+
+    #[test]
+    fn older_snapshot_defaults_to_no_command_guidance() {
+        let mut wire = serde_json::to_value(snapshot()).expect("snapshot JSON");
+        wire.as_object_mut()
+            .expect("object")
+            .remove("command_guidance");
+        let decoded: TurnSnapshot = serde_json::from_value(wire).expect("older snapshot");
+        assert!(decoded.command_guidance.is_empty());
+        assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_and_oversized_command_guidance() {
+        use crate::interface::{
+            MAX_COMMAND_GUIDANCE, MAX_COMMAND_GUIDANCE_BYTES, MAX_COMMAND_GUIDANCE_TOTAL_BYTES,
+        };
+        let mut snap = snapshot();
+        let card = CommandGuidance {
+            command: "+coop".into(),
+            text: "+coop/enrol <name> signs the charter.".into(),
+        };
+        snap.command_guidance = vec![card.clone(); MAX_COMMAND_GUIDANCE];
+        assert!(snap.validate().is_ok());
+        snap.command_guidance.push(card.clone());
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidCommandGuidance)
+        );
+
+        snap.command_guidance = vec![card.clone()];
+        snap.command_guidance[0].text = "x".repeat(MAX_COMMAND_GUIDANCE_BYTES - card.command.len());
+        assert!(snap.validate().is_ok(), "per-card bound is inclusive");
+        snap.command_guidance[0].text.push('x');
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidCommandGuidance)
+        );
+
+        snap.command_guidance = vec![
+            CommandGuidance {
+                command: "+coop".into(),
+                text: "x".repeat(MAX_COMMAND_GUIDANCE_TOTAL_BYTES / 3),
+            };
+            3
+        ];
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidCommandGuidance)
+        );
+        for command in ["+coop/enrol", "@Admin", "<system>"] {
+            snap.command_guidance = vec![CommandGuidance {
+                command: command.into(),
+                ..card.clone()
+            }];
+            assert_eq!(
+                snap.validate(),
+                Err(SnapshotValidationError::InvalidCommandGuidance)
+            );
+        }
+        snap.command_guidance = vec![CommandGuidance {
+            text: " \n ".into(),
+            ..card
+        }];
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::InvalidCommandGuidance)
         );
     }
 }

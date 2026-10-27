@@ -341,7 +341,7 @@
     }
   },
   "manifest": {
-    "digest": "2ef60c5168baf6dc621bbc9ea5576a853df358d6789a7b541bd3739b9f971eb9",
+    "digest": "9bcc697eaab7351d3f9cc19d8c4877c9c3869c0054181332de0dbbd42ed12545",
     "id": "tacsim.relay.luna_ceres",
     "kind": "campaign_seed",
     "requires": [
@@ -351,7 +351,7 @@
       },
       {
         "id": "neighborhood.ceres_freeport",
-        "version": 2
+        "version": 3
       },
       {
         "id": "neighborhood.malapert_exchange",
@@ -382,6 +382,6 @@
         "version": 15
       }
     ],
-    "version": 4
+    "version": 5
   }
 }

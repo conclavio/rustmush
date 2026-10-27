@@ -47,8 +47,38 @@ Profile fields (`@agent/set <npc>/<field>=<value>`):
                   yes; no = files nothing, however much it sees).
   watch           Subjects of interest for the informant loop (";"-separated
                   names/topics). Empty watches nobody.
+  interfaces      Registered services this NPC can use for the asker
+                  (";"-separated provider ids, e.g. help; coop).
+  command_refs    Registered command names or aliases whose public help grounds
+                  the NPC's advice (";"-separated, e.g. +coop; +licence).
 
 An empty value clears a field (e.g. `@agent/set bones/goals=` drops all goals).
+
+### Service desks and command guidance
+
+An NPC's personality, background and goals describe its role. `interfaces` gives
+it specific services; `command_refs` gives it exact command help to explain what
+the player can do next. A reference is a base command name, without switches or
+arguments. At most eight references are accepted. Missing commands are omitted;
+staff-only help never enters conversational guidance, even when staff are asking.
+Advice does not execute a command or bypass its normal eligibility checks.
+
+The `help` service can look up command names and aliases as well as prose topics.
+Command help is sent privately to the asker and uses that player's permissions.
+
+At the Ceres Registry, Ilse Oduya-Brandt can privately read your current Co-op
+terms and statement, explain enrolment and buyout, and point to licence, claim,
+registry and survey commands. She keeps her numbered, form-proud manner; the
+player signs and submits forms. Survey commissions belong to Occator's desk.
+Private figures are read afresh and never enter her reusable working memory.
+
+This profile ships in `neighborhood.ceres_freeport@3`. Existing worlds keep their
+latched version until staff run `@atlas/pack plan neighborhood.ceres_freeport`
+and apply the resulting fingerprint. That upgrade preserves Oduya's object,
+current location, carried objects and conversation memory. The accompanying
+`tacsim.relay.luna_ceres@5` pins Ceres v3 for fresh installations. An existing
+relay v4 can keep its latch and live state: only its manifest changed, so its
+staff upgrade plan reports "Nothing to do."
 
 ### Giving an NPC a rollable sheet
 
@@ -78,7 +108,7 @@ World knowledge is authored by staff; episodic memory accrues in play.
 
 For an ongoing conversation, address the NPC once by name. Follow-up speech from
 the same player stays directed to it for two minutes, refreshed by each follow-up
-or public reply in that exchange.
+or reply in that exchange, including private desk answers.
 Addressing someone else with a leading name and comma or colon, leaving the room,
 or the NPC moving ends that focus. Recent questions, public replies, and action
 outcomes take priority over background chatter in its working memory.
