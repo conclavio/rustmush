@@ -989,6 +989,7 @@ mod tests {
         let off = TacsimCfg {
             surface: mush_config::config::TacsimSurfaceCfg {
                 registry_interlock: false,
+                ..mush_config::config::TacsimSurfaceCfg::default()
             },
             ..TacsimCfg::default()
         };
