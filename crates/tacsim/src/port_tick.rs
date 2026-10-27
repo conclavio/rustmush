@@ -160,6 +160,7 @@ pub(crate) fn register_with_coverage(
         crate::surface::recovery::RecoveryRevisionValidator {
             excursions: port_families.excursions.clone(),
         },
+    )?;
     crate::surface::survey::register(reg, port_families.surveys.clone())?;
     crate::surface::survey_facts::register(
         reg,
