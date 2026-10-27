@@ -1,7 +1,9 @@
 //! The actual server boot/loop, with a bounded in-process gateway recorder.
 use super::{TestResult, store::PurchaseFaultStore};
 use crate::gateway_sink::GatewaySink;
-use crate::world_task::{Gateway, PersistHandles, ServerDeps, WorldHandle};
+use crate::world_task::{
+    Gateway, LegalActionReadError, PersistHandles, ServerDeps, WorldHandle, WorldReadError,
+};
 use mush_config::{config::Config, ipguard::IpGuard, metrics::Metrics};
 use mush_core::{
     CommitToken, ControlMsg, DefinitionRef, Engine, Inbound, ObjId, OfferRouteTable, PerceivedRef,
@@ -17,6 +19,19 @@ use tokio::time::{Instant, timeout};
 
 pub(in crate::world_task::submission_disposition::tests) const STEP: Duration =
     Duration::from_secs(120);
+/// How long the harness waits before resubmitting a request the world
+/// answered with its typed, retryable `Busy`; every resubmission shares the
+/// one [`STEP`] guard of the call that started it.
+const BUSY_RETRY: Duration = Duration::from_millis(50);
+
+/// Sleep out one `Busy` answer, or fail once the guard `end` has passed.
+async fn wait_busy(end: Instant, what: &str) -> TestResult {
+    if Instant::now() >= end {
+        return Err(format!("the world stayed busy past the finite guard: {what}").into());
+    }
+    tokio::time::sleep(BUSY_RETRY).await;
+    Ok(())
+}
 
 pub(super) fn now() -> TestResult<i64> {
     Ok(SystemTime::now()
@@ -222,6 +237,11 @@ impl Running {
         })
     }
 
+    /// Attach `actor` on its own connection and prove the world tracks it.
+    ///
+    /// The attach itself is lifecycle custody: the world holds it behind a
+    /// pending commit and never refuses it, so only the two proofs after it
+    /// are re-asked while the world answers `Busy` (see [`Self::offer`]).
     pub async fn connect(&self, actor: ObjId) -> TestResult {
         if !self
             .handle()?
@@ -235,17 +255,27 @@ impl Running {
         {
             return Err("server connection admission gone".into());
         }
-        timeout(STEP, self.handle()?.barrier_result()).await??;
-        if !self
-            .handle()?
-            .connection_ready(actor.0.into(), actor)
-            .await?
-        {
-            return Err("actual connection is not ready".into());
+        let end = Instant::now() + STEP;
+        loop {
+            match timeout(STEP, self.handle()?.barrier_result()).await? {
+                Ok(()) => break,
+                Err(WorldReadError::Busy) => wait_busy(end, "the connect barrier").await?,
+                Err(error) => return Err(error.into()),
+            }
         }
-        Ok(())
+        loop {
+            match self.handle()?.connection_ready(actor.0.into(), actor).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => return Err("actual connection is not ready".into()),
+                Err(WorldReadError::Busy) => wait_busy(end, "the connection proof").await?,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
+    /// One typed line as `actor`, answered by everything it printed. The line
+    /// is admitted once; only the ordering barrier behind it is re-asked while
+    /// the world answers `Busy` (a full defer queue or waiter cap).
     pub async fn command(&self, actor: ObjId, line: String) -> TestResult<Vec<String>> {
         self.recorder.drain()?;
         if !self
@@ -259,10 +289,32 @@ impl Running {
         {
             return Err("server command admission gone".into());
         }
-        timeout(STEP, self.handle()?.barrier_result()).await??;
-        self.recorder.drain()
+        let end = Instant::now() + STEP;
+        loop {
+            match timeout(STEP, self.handle()?.barrier_result()).await? {
+                Ok(()) => return self.recorder.drain(),
+                Err(WorldReadError::Busy) => wait_busy(end, "the command barrier").await?,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
+    /// One public offer as `actor`, resubmitted while the world answers
+    /// `Busy`, every attempt within the one [`STEP`] guard.
+    ///
+    /// `Busy` is the world task's typed refusal of work that meets a pending
+    /// commit (`RefusalReason::CommitPending`). Every durable flush of a
+    /// dirtied world gates the next mutation behind the writer's receipt, and
+    /// every periodic module tick is armed against the loaded world's clock at
+    /// engine construction, so the first Timer wake after a boot fires them
+    /// all and its flush is the process's first commit. A
+    /// `WorldMsg::AuthoritativeAction` that arrives in that window is refused
+    /// at once, with no defer-queue wait (a read gets 250 ms), and the gateway
+    /// turns the same answer into "The game is busy; try that action again":
+    /// this harness is that player.
+    /// Nothing was submitted under a `Busy`. The in-process path mints a
+    /// fresh request sequence per call and no intent exists under one until
+    /// the writer owns it, so a resubmission cannot double-apply.
     pub async fn offer(
         &self,
         actor: ObjId,
@@ -270,13 +322,49 @@ impl Running {
         parameters: Value,
     ) -> TestResult<ProjectedActionReceipt> {
         eprintln!("M7_SERVER_PURCHASE_OFFER verb={verb} event=begin");
+        let end = Instant::now() + STEP;
+        let mut busy = 0u32;
+        loop {
+            let stage = match self.offer_once(actor, verb, &parameters).await? {
+                Ok(receipt) => return Ok(receipt),
+                Err(stage) => stage,
+            };
+            busy += 1;
+            // Bounded diagnostics: the stage and the count, no bodies.
+            eprintln!(
+                "M7_SERVER_PURCHASE_OFFER verb={verb} event=busy stage={stage} attempt={busy}"
+            );
+            if Instant::now() >= end {
+                return Err(format!(
+                    "actual public offer stayed busy past the finite guard: verb={verb} stage={stage} attempts={busy}"
+                )
+                .into());
+            }
+            tokio::time::sleep(BUSY_RETRY).await;
+        }
+    }
+
+    /// One attempt of [`Self::offer`]: the legal-action read, then the
+    /// submission. `Err` is a harness or custody failure; `Ok(Err(stage))` is
+    /// the world's `Busy` at that stage.
+    async fn offer_once(
+        &self,
+        actor: ObjId,
+        verb: &str,
+        parameters: &Value,
+    ) -> TestResult<Result<ProjectedActionReceipt, &'static str>> {
         let supplied = parameters.as_object().ok_or("offer parameters object")?;
-        let offers = timeout(
+        let offers = match timeout(
             STEP,
             self.handle()?
                 .legal_actions(actor.0.into(), actor, PerceivedRef::SelfActor),
         )
-        .await??;
+        .await?
+        {
+            Ok(offers) => offers,
+            Err(LegalActionReadError::Busy) => return Ok(Err("legal_actions")),
+            Err(error) => return Err(error.into()),
+        };
         let mut matching = offers.into_iter().filter(|offer| {
             offer.presentation().verb == verb
                 && offer
@@ -305,7 +393,7 @@ impl Running {
                 offered_action: offer.offer(),
                 subject: offer.subject().clone(),
                 targets: Vec::new(),
-                parameters,
+                parameters: parameters.clone(),
             }),
         )
         .await?;
@@ -320,7 +408,7 @@ impl Running {
                     "M7_SERVER_PURCHASE_OFFER verb={verb} event=committed projected={}",
                     receipt.result().is_some()
                 );
-                Ok(receipt)
+                Ok(Ok(receipt))
             }
             ActionSend::Owned(reference) => {
                 let end = Instant::now() + STEP;
@@ -328,9 +416,9 @@ impl Running {
                     match self
                         .handle()?
                         .action_status(actor.0.into(), actor, &reference)
-                        .await?
+                        .await
                     {
-                        ProjectedActionStatus::Committed(receipt) => {
+                        Ok(ProjectedActionStatus::Committed(receipt)) => {
                             if receipt.status() != &reference {
                                 return Err("owned public receipt reference changed".into());
                             }
@@ -340,11 +428,18 @@ impl Running {
                                 "M7_SERVER_PURCHASE_OFFER verb={verb} event=committed projected={}",
                                 receipt.result().is_some()
                             );
-                            return Ok(receipt);
+                            return Ok(Ok(receipt));
                         }
-                        ProjectedActionStatus::Pending { .. }
-                        | ProjectedActionStatus::Unavailable { .. } => {}
-                        _ => return Err("owned action did not retain a committed success".into()),
+                        // The status read waits in the defer queue behind the
+                        // very commit it asks after; its `Busy` is the queue's
+                        // bound, not an answer, so the poll goes on.
+                        Ok(ProjectedActionStatus::Pending { .. })
+                        | Ok(ProjectedActionStatus::Unavailable { .. })
+                        | Err(WorldReadError::Busy) => {}
+                        Ok(_) => {
+                            return Err("owned action did not retain a committed success".into());
+                        }
+                        Err(error) => return Err(error.into()),
                     }
                     if Instant::now() >= end {
                         return Err("owned public action hang guard".into());
@@ -352,13 +447,18 @@ impl Running {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
+            // The world refused before custody: the preflight stayed transient
+            // to its bound, the readiness read or the action itself met the
+            // pending commit, or the writer refused the intent.
+            ActionSend::Busy => Ok(Err("submit")),
             other => {
                 let disposition = match other {
                     ActionSend::Accepted => "accepted_without_durable_receipt",
-                    ActionSend::Busy => "busy",
                     ActionSend::Gone => "gone",
                     ActionSend::Rejected => "rejected",
-                    ActionSend::Finished(_) | ActionSend::Owned(_) => "unexpected",
+                    ActionSend::Finished(_) | ActionSend::Owned(_) | ActionSend::Busy => {
+                        "unexpected"
+                    }
                 };
                 Err(format!(
                     "actual public offer did not establish successful custody: verb={verb} disposition={disposition}"

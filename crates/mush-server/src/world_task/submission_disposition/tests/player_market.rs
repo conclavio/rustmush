@@ -747,23 +747,11 @@ async fn initialized_active(
     let server = active(config, store, &seeded).await?;
     Ok((server, seeded))
 }
-/// GOD submits one parameterless initialize offer through the public path. A
-/// `busy` disposition is the world refusing before custody (another action
-/// awaits its receipt); the offer is resubmitted within the guard.
+/// GOD submits one parameterless initialize offer through the public path;
+/// the harness resubmits it while the world answers `Busy` ([`Running::offer`]).
 async fn submit_initialize(server: &Running, verb: &str) -> TestResult {
-    let end = tokio::time::Instant::now() + STEP;
-    loop {
-        match server.offer(GOD, verb, json!({})).await {
-            Ok(_) => return Ok(()),
-            Err(error)
-                if error.to_string().ends_with("disposition=busy")
-                    && tokio::time::Instant::now() < end =>
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    server.offer(GOD, verb, json!({})).await?;
+    Ok(())
 }
 /// One Active boot of the full roster, every principal connected. A restart
 /// composes its owners afresh, as a new process does.
