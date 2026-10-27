@@ -22,6 +22,14 @@ on:
     # Daily (the repo is public, so hosted-runner minutes are free).
     - cron: "17 4 * * *"
 
+# The least any job needs: every job only checks the tree out, restores the
+# cargo and npm caches and uploads artifacts, and none of those uses the
+# workflow's token for more than reading. Without this block the token
+# carries the repository's default permissions into all 18 jobs, which is
+# CodeQL's actions/missing-workflow-permissions, one alert per job.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # No incremental artifacts on CI: nothing is rebuilt twice in one run, and
