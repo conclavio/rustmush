@@ -458,7 +458,7 @@ impl InterfaceAbilityProvider for PassengerInterface {
                     row.destination
                 ),
                 Phase::Delivered => format!(
-                    "Your passage to {} is complete. You remain the same person with your own life ahead; greet familiar people naturally. Do not solicit another passage or invent a follow-on quest.",
+                    "Your passage to {} is complete. You remain the same person with your own life ahead; greet familiar people naturally. Do not solicit another passage. A follow-up favor exists only if your quest interface supplies it; never invent one.",
                     row.destination
                 ),
                 Phase::Cancelled => format!(

@@ -16,7 +16,7 @@ fn leila(tw: &TestWorld) -> ObjId {
     .expect("the authored traveller is latched")
 }
 
-fn booking(rig: &mut Rig, contract: u64) -> Value {
+pub(super) fn booking(rig: &mut Rig, contract: u64) -> Value {
     let h = handles(&rig.tw);
     let key = serde_json::from_value(json!(contract)).expect("booking key");
     let row = typed(&mut rig.tw, &h.families.passengers, &key).expect("durable passenger booking");
@@ -69,8 +69,11 @@ fn arrive(rig: &mut Rig, ticket: &Ticket, expected: &str) {
     );
 }
 
-fn at_stickney() -> (Rig, ObjId, HullRow, ObjId) {
-    let mut rig = stocked();
+pub(super) fn at_stickney() -> (Rig, ObjId, HullRow, ObjId) {
+    at_stickney_from(stocked())
+}
+
+fn at_stickney_from(mut rig: Rig) -> (Rig, ObjId, HullRow, ObjId) {
     let (captain, row) = charter(&mut rig, "Captain", 201, "Passenger Moth");
     load(&mut rig, &row, 150, 200, 90_000);
     board(&mut rig, captain);
@@ -96,7 +99,7 @@ fn acceptance(quote: &str) -> String {
     format!("+passage/accept {token}")
 }
 
-fn book(rig: &mut Rig, captain: ObjId, npc: ObjId, fare: &str) -> (u64, Value) {
+pub(super) fn book(rig: &mut Rig, captain: ObjId, npc: ObjId, fare: &str) -> (u64, Value) {
     let before = next_contract(&rig.tw);
     let (quote, queued) = command(rig, captain, &format!("+passage/offer #{}={fare}", npc.0));
     assert!(
@@ -164,6 +167,51 @@ fn conversation_status(rig: &mut Rig, npc: ObjId, asker: ObjId) -> String {
     .expect("present player can ask about the traveller's status");
     assert_eq!(reply.audience, mush_core::ReplyAudience::Asker);
     reply.text
+}
+
+/// A real, paid passenger delivery for follow-up features. Keep the original
+/// passenger journey's detailed assertions in its own regression below.
+pub(super) fn delivered_arrival_at_ceres() -> (Rig, ObjId, ObjId, u64) {
+    delivered_arrival_at_ceres_from(stocked())
+}
+
+fn delivered_arrival_at_ceres_from(rig: Rig) -> (Rig, ObjId, ObjId, u64) {
+    let (mut rig, captain, hull, npc) = at_stickney_from(rig);
+    let (contract, _) = book(&mut rig, captain, npc, "350");
+    invite(&mut rig, captain, npc, contract);
+    captain_boards_at_stickney(&mut rig, captain);
+    let ticket = file_and_launch(&mut rig, captain, ObjId(hull.hull), "+ship/undock ceres");
+    arrive(&mut rig, &ticket, "ceres_port");
+    assert_eq!(booking(&mut rig, contract)["phase"], "Delivered");
+    let out = run(&mut rig.tw, captain, "+ship/leave");
+    assert!(out.contains("You cycle the lock out into"), "{out}");
+    let room = rig.tw.world().get(npc).unwrap().location.unwrap();
+    teleport(&mut rig.tw, captain, room);
+    (rig, captain, npc, contract)
+}
+
+pub(super) fn paid_arrival_at_ceres() -> (Rig, ObjId, ObjId, u64) {
+    paid_arrival_at_ceres_from(stocked())
+}
+
+pub(super) fn paid_arrival_at_ceres_from(rig: Rig) -> (Rig, ObjId, ObjId, u64) {
+    let (mut rig, captain, npc, contract) = delivered_arrival_at_ceres_from(rig);
+    for _ in 0..8 {
+        survey_sweep(&mut rig);
+        if matches!(
+            survey_contract(&rig.tw, contract),
+            mush_economy::ContractState::Settled { .. }
+        ) {
+            break;
+        }
+    }
+    pump(&mut rig, 3);
+    assert_eq!(booking(&mut rig, contract)["phase"], "Delivered");
+    assert!(matches!(
+        survey_contract(&rig.tw, contract),
+        mush_economy::ContractState::Settled { .. }
+    ));
+    (rig, captain, npc, contract)
 }
 
 #[test]

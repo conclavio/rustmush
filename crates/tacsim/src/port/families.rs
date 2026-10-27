@@ -519,6 +519,9 @@ pub struct PortFamilies {
         crate::port::passenger::store::Booking,
     >,
     pub passenger_index: StateFamilyHandle<u8, crate::port::passenger::store::BookingIndex>,
+    /// Permanent, private quest progress, keyed by source and paid passage.
+    pub quests: StateFamilyHandle<crate::quest::model::QuestKey, crate::quest::model::QuestRecord>,
+    pub quest_index: StateFamilyHandle<u8, crate::quest::model::QuestIndex>,
     /// **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5): one pocket cursor per surface
     /// deposit, keyed by the deposit's id — what the surface provider drew, and the lock's
     /// one home. Derived truth, never projected.
@@ -582,6 +585,7 @@ pub struct PortHandles {
     pub survey_cancel: Option<mush_core::DefinitionRef>,
     /// Authenticated passenger booking and journey receipts.
     pub passenger: Option<mush_core::DefinitionRef>,
+    pub quest: Option<mush_core::DefinitionRef>,
     /// **Doc 20 cut SM.6** (§3.4): the registered `tacsim_site_work` action (the site clerk's
     /// worked transfer, `crate::port::site::SiteWorkProvider`); `Some` exactly when its
     /// provider registered (the inventory cell filled).
@@ -844,6 +848,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    let (quests, quest_index) = crate::quest::registration::families(reg)?;
     Ok(PortFamilies {
         relay_fabrications,
         port_stock,
@@ -853,6 +858,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         surveys,
         passengers,
         passenger_index,
+        quests,
+        quest_index,
         pockets,
         claims,
         mills,

@@ -11,6 +11,8 @@ use super::TravellerDef;
 
 pub const PACK: &str = "tacsim.passengers.stickney";
 pub const JSON: &str = include_str!("../../../content/passengers/stickney.json");
+#[cfg(test)]
+const V1_JSON: &str = include_str!("../../../content/passengers/stickney_v1.json");
 const ATTR: &str = "passage:traveller";
 
 pub fn packs() -> Result<Vec<Pack>, String> {
@@ -206,10 +208,10 @@ mod tests {
     fn shipped_traveller_pack_is_signed_and_uses_the_shared_template() {
         let pack = packs().unwrap().remove(0);
         assert_eq!(pack.manifest().id().as_str(), PACK);
-        assert_eq!(pack.manifest().version(), 1);
+        assert_eq!(pack.manifest().version(), 2);
         assert_eq!(
             pack.manifest().digest().to_hex(),
-            "02d9fdcfae813fd566ed64a7d30b15104b9c847ac3193fe001e1614708b824c4"
+            "6227037e1826315321291239035e39a8814c213d87f854c02780080495be39d0"
         );
         let (npc, def) = definition(
             &pack,
@@ -231,6 +233,25 @@ mod tests {
             ),
             (30_000, 50_000, 50_000)
         );
+    }
+
+    #[test]
+    fn original_v1_pack_stays_signed_and_v2_retains_the_same_traveller() {
+        let original = mush_content::load_pack(V1_JSON).unwrap();
+        let current = packs().unwrap().remove(0);
+        assert_eq!(original.manifest().version(), 1);
+        assert_eq!(original.manifest().id(), current.manifest().id());
+        assert_eq!(
+            original.manifest().digest().to_hex(),
+            "02d9fdcfae813fd566ed64a7d30b15104b9c847ac3193fe001e1614708b824c4"
+        );
+        let role = id("passenger.leila");
+        assert_eq!(
+            definition(&original, &role, original.entry(&role).unwrap()).unwrap(),
+            definition(&current, &role, current.entry(&role).unwrap()).unwrap()
+        );
+        assert!(original.entry(&id("quest.leila_second_reading")).is_none());
+        assert!(current.entry(&id("quest.leila_second_reading")).is_some());
     }
 
     #[test]

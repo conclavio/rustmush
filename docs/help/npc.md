@@ -183,6 +183,11 @@ Staff can offer the same conversational service by including `npc.relationship`
 in the NPC's interfaces; its `npc.relationship.read` ability takes no parameters
 and always answers the current asker privately.
 
+Authored follow-up work can continue a relationship after a verified event.
+For example, Leila remains at Ceres after her paid passage and can offer a
+small observational errand to the captain who brought her home. Use
+`+quest Leila` and `help quests`; dialogue alone never accepts or completes the work.
+
 NPC dialogue and scene turns use the same qualitative guidance: familiarity
 shapes recognition, trust shapes willingness to rely on you, and disposition
 shapes warmth. An NPC can be friendly but cautious, or personally cold yet regard
@@ -330,7 +335,7 @@ commands. The principals behind the houses are on record and never wake. See
 ## See also
 
   @agent, @lore, @llm, @sheet, +npc, +standing, +roll, +intel, help intel, help perception,
-  help worldgen, help ports
+  help worldgen, help ports, help passengers, help quests
 
 ## Interface NPCs
 
@@ -346,6 +351,12 @@ your own journey), `market` (what is for sale, a quote), `build` (a brief
 into a proposal, its status, its questions), `rules` (character generation,
 a rules topic), `request` (file a request, your own tickets), `help` (a
 help topic). Talk to the NPC and it answers through them.
+
+An authored traveller may also have `passenger` (passage status and fare offers)
+and `quest` (the current asker's follow-up invitation and progress). The player
+accepts and performs these actions through `+passage` and `+quest`. A quest
+service's private answer is not shared with bystanders or retained as public
+conversation history.
 
 Four rules keep an interface NPC exactly as powerful as the person talking
 to it. It answers with **your** authority: a place you may not see, a
