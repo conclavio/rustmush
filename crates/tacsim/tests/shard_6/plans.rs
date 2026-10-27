@@ -2200,7 +2200,12 @@ fn sm11_the_offline_story_fills_the_hold_parks_and_the_queue_sells() {
     // and the departure then land two steps sooner (1,188 = 2 × 600 − 12), the arrival at 14:32
     // UTC instead of 14:52. Re-running with those two fires removed gives 47,485 again. A
     // change here is a change to the plan's steps or to the queue's timing: find which.
-    assert_eq!(straight.ic - filed_ic, 46_297, "the story's IC span");
+    // Doc 23 cut S.2 moved it from 46,297 to 46,897, one more 600 IC s step of the queue's tail
+    // and nothing of the plan's: the port tick's epoch arm takes the hull as its agent on the
+    // fire its close is due — the fire after the docking back at Ceres — so the order arm's sell
+    // step waits that one fire (the open's fire, after the depart, costs nothing: the sell waits
+    // for the arrival anyway).
+    assert_eq!(straight.ic - filed_ic, 46_897, "the story's IC span");
     assert!(
         matches!(
             plan.state,

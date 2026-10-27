@@ -755,13 +755,41 @@ fn fly_to_stickney(rig: &mut Rig, crews: &[(ObjId, HullRow, &str)]) {
         let _ = row;
     }
     let _ = fire_quietly(rig);
+    // Doc 23 cut S.2: each ship's epoch opens on the port fire after the depart (the epoch arm's
+    // pull). The hour-long steps below need not meet the tick's cadence while a hull is under way
+    // — the shorter passage docked before any fire and opened nothing, its arrival a missed epoch
+    // — so the opens are settled here, as the closes are below: one fire at a rate that moves
+    // the IC clock by seconds, the opens landed, every record open.
+    set_rate(&mut rig.tw, 1);
+    let _ = fire_quietly(rig);
+    set_rate(&mut rig.tw, 3_600);
     for (_, row, _) in crews {
+        assert!(
+            ship_epoch_open(rig, ObjId(row.hull)),
+            "the {}'s epoch opened on the passage",
+            row.hull
+        );
         let t = ticket(&mut rig.tw, ObjId(row.hull), 1).expect("a ticket");
         arrival = arrival.max(t.plan.depart_ic + t.plan.total_s);
     }
     let _ = to_ic(rig, arrival - 3_600);
     let _ = to_ic(rig, arrival);
     let _ = to_ic(rig, arrival + 3_600);
+    // Doc 23 cut S.2: each ship's epoch closes `ReturnedToBase` on the port fire after the
+    // docking (the epoch arm's pull), and on that fire the arm takes the hull as its agent, so
+    // the launch, recall and order arms wait it out, and a sweep that fires without landing
+    // leaves the close queued. `to_ic`'s one-second steps need not meet the tick's cadence, so
+    // the closes are settled here: one fire at a rate that moves the IC clock by seconds, the
+    // closes landed (typed-only here: the record moves, no line), every record closed.
+    set_rate(&mut rig.tw, 1);
+    let _ = fire_quietly(rig);
+    for (_, row, _) in crews {
+        assert!(
+            ship_epoch_closed(rig, ObjId(row.hull)),
+            "the {}'s epoch closed at Stickney",
+            row.hull
+        );
+    }
     set_rate(&mut rig.tw, 24);
     let receiving = p07(&rig.tw);
     for (pilot, row, _) in crews {
@@ -792,6 +820,27 @@ fn fly_to_stickney(rig: &mut Rig, crews: &[(ObjId, HullRow, &str)]) {
         }
         assert_eq!(location(&rig.tw, *pilot), Some(receiving));
     }
+}
+
+/// **Whether `hull`'s epoch record holds an open epoch** (doc 23 cut S.2).
+fn ship_epoch_open(rig: &Rig, hull: ObjId) -> bool {
+    rig.typed
+        .get(&(
+            SmolStr::new(tacsim::NS),
+            SmolStr::new(format!("action-state/v1/tacsim.ship_epoch/{}", hull.0)),
+        ))
+        .is_some_and(|doc| !doc["value"]["open"].is_null())
+}
+
+/// **Whether `hull`'s epoch record is closed** (doc 23 cut S.2): the typed `tacsim.ship_epoch`
+/// post-image this rig landed holds no open epoch and its last end is a close.
+fn ship_epoch_closed(rig: &Rig, hull: ObjId) -> bool {
+    rig.typed
+        .get(&(
+            SmolStr::new(tacsim::NS),
+            SmolStr::new(format!("action-state/v1/tacsim.ship_epoch/{}", hull.0)),
+        ))
+        .is_some_and(|doc| doc["value"]["open"].is_null() && doc["value"]["last"]["op"] == "close")
 }
 
 /// **A chartered pilot standing in P07 with the hull docked at Stickney**, carrying

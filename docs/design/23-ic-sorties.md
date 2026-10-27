@@ -627,6 +627,26 @@ as its hangar (D-23-2; §10 item 2).
 - **Not done / owed.** Staff `close`/`home` for a ship, a second carrier and the abandoned flag's
   lifetime (S.3); the `Missed`, from-the-field and helm-fallback pages have no integration test; a
   retry of a target whose prepare was refused reuses its key (verified safe: the core remembers only a staged intent under a key — `ActionCoordinator::preflight`, `prepare_and_stage_resolved` — and a refused prepare is prepared again, as `mush-market`'s `trade.rs` already relies on); the typed-only shards 1, 3, 5 and 6 run on CI; retention.
+- **The CI fix round (2026-10-27, after the PR).** Three cells the cut loop's local gate does not
+  run went red. (1) The lint cell's M7 memory-size step (`-D clippy::large_stack_frames`, a
+  65,536-byte threshold, run only on CI): `port_tick.rs`' registration function reached 71 KB with
+  the epoch provider, and S.1's `RigRecord` had pushed a surface-tick unit test 452 bytes over.
+  The epoch provider and the six providers that each clone the inventory families now register in
+  their own frames (`register_epoch`, `register_stock`, `register_burn`, `register_site_work`,
+  `register_relay`, `register_mill`, `register_dispatch`; the `register_surface_acts` pattern),
+  and the test's last three lines are their own test (on S.1's branch). The M7 command joins the
+  builders' gate in `common-s.md`. (2) Shards 1, 3 and 6, the typed-only harnesses: the arm takes
+  a hull as its agent on the fire its close is due, so a harness that flies a hull to Stickney,
+  steps the clock one real second at a time (never meeting the port tick's cadence) and then fires
+  once and asserts on the queue found the close, not its order's leg, and the hull withheld.
+  `fly_to_stickney` in `shard_3/orders.rs` and `shard_1/sale.rs` now settles the open after the
+  launch fire and the close after the docking (one fire at rate 1 each, landed, the record asserted
+  open, then closed); the two-crew flight showed why the open needs it too — the shorter passage
+  docked before any fire the hour-long steps happened to meet, so it opened nothing and its arrival
+  paged a missed epoch. (3) The SM.11 offline story's
+  pinned IC span moved 46,297 → 46,897, one 600 IC s step of the queue's tail: the sell step after
+  the docking back at Ceres waits the fire the close takes — V1's accepted window, now visible in
+  a pin. Nothing in the arm or the record moved.
 
 ## 15. The review of Draft 0.1, and what it changed
 

@@ -369,37 +369,23 @@ pub(crate) fn register_with_coverage(
     // registered only when the inventory cell is filled (its prepare mints through
     // the delegated inventory families); the definitions register regardless.
     let stock_action = action_refs.get(crate::port::stock::STOCK_ACTION).cloned();
-    if let (Some(action), Some(inventory)) = (stock_action.clone(), inventory_families.clone()) {
-        reg.action_provider(
-            action.clone(),
-            crate::port::stock::StockProvider {
-                action,
-                outcome: stock_outcome,
-                receipts: port_families.port_stock.clone(),
-                inventory,
-            },
-        )?;
-    }
+    register_stock(
+        reg,
+        stock_action.as_ref(),
+        stock_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell
     // is filled (its prepare debits through the delegated families) AND the drive
     // table built (the stock precedent); the definitions register regardless.
-    let burn_action = action_refs.get(crate::port::burn::BURN_ACTION).cloned();
-    let burn_registered = match (burn_action.clone(), inventory_families.clone(), burn) {
-        (Some(action), Some(inventory), Some(table)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::burn::BurnProvider {
-                    action: action.clone(),
-                    outcome: burn_outcome,
-                    tickets: port_families.tickets.clone(),
-                    inventory,
-                    table,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let burn_registered = register_burn(
+        reg,
+        &action_refs,
+        burn_outcome,
+        &port_families,
+        (inventory_families.as_ref(), burn),
+    )?;
     // Doc 20 cut SM.3b (finding F5): the one tools table, built once — never a `ModError`
     // (the burn precedent: a bad table leaves one feature unwired, it does not fail the
     // layer's registration).
@@ -444,24 +430,13 @@ pub(crate) fn register_with_coverage(
     )?;
     // Doc 23 cut S.2 (V1): `tacsim_voyage_epoch`, the ship's epoch — its record's family, no
     // inventory; the black box's participant appends the line.
-    let epoch_action = match (
-        action_refs.get(crate::port::epoch::EPOCH_ACTION).cloned(),
+    let epoch_action = register_epoch(
+        reg,
+        &action_refs,
+        epoch_outcome,
+        &port_families,
         black_box.epoch,
-    ) {
-        (Some(action), Some(handle)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::epoch::EpochProvider {
-                    action: action.clone(),
-                    outcome: epoch_outcome,
-                    records: port_families.epochs.clone(),
-                    black_box: handle,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    )?;
     // Doc 20 cut SM.4a (D9): `+tv/forget` needs only the chart family.
     let chart_forget = match action_refs
         .get(crate::surface::chart::CHART_FORGET_ACTION)
@@ -483,88 +458,40 @@ pub(crate) fn register_with_coverage(
     // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
     // registered when the inventory cell is filled (the transfer rides the delegated
     // families; the stock provider's rule); the definitions register regardless.
-    let site_work = match (
-        action_refs
-            .get(crate::port::site::SITE_WORK_ACTION)
-            .cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::site::SiteWorkProvider {
-                    action: action.clone(),
-                    outcome: site_work_outcome,
-                    pockets: port_families.pockets.clone(),
-                    inventory,
-                    warned: std::sync::Mutex::new(BTreeSet::new()),
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
-    let relay_fabricate = if let (Some(action), Some(inventory)) = (
-        action_refs.get(crate::relay_foundry::ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        reg.action_provider(
-            action.clone(),
-            crate::relay_foundry::Provider {
-                action: action.clone(),
-                outcome: relay_outcome,
-                inventory,
-                book: port_families.relay_fabrications.clone(),
-            },
-        )?;
-        Some(action)
-    } else {
-        None
-    };
+    let site_work = register_site_work(
+        reg,
+        &action_refs,
+        site_work_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
+    let relay_fabricate = register_relay(
+        reg,
+        &action_refs,
+        relay_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 20 cut SM.12a: `tacsim_port_mill`, the mill's batch — registered only when the
     // inventory cell is filled (its prepare debits and credits through the delegated
     // families; the stock provider's rule); the definitions register regardless.
-    let mill_action = match (
-        action_refs.get(crate::port::mill::MILL_ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::mill::MillProvider {
-                    action: action.clone(),
-                    outcome: mill_outcome,
-                    mills: port_families.mills.clone(),
-                    inventory,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let mill_action = register_mill(
+        reg,
+        &action_refs,
+        mill_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     // Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
     // registered only when the inventory cell is filled (the delivery's transfer rides the
     // delegated families; the stock provider's rule); the definitions register regardless.
-    let dispatch_action = match (
-        action_refs.get(crate::port::yard::DISPATCH_ACTION).cloned(),
-        inventory_families.clone(),
-    ) {
-        (Some(action), Some(inventory)) => {
-            reg.action_provider(
-                action.clone(),
-                crate::port::yard::DispatchProvider {
-                    action: action.clone(),
-                    outcome: dispatch_outcome,
-                    dispatch: port_families.dispatch.clone(),
-                    charts: port_families.charts.clone(),
-                    claims: port_families.claims.clone(),
-                    inventory,
-                },
-            )?;
-            Some(action)
-        }
-        _ => None,
-    };
+    let dispatch_action = register_dispatch(
+        reg,
+        &action_refs,
+        dispatch_outcome,
+        &port_families,
+        inventory_families.as_ref(),
+    )?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,
@@ -718,6 +645,205 @@ fn register_black_box(
         recovery: request(recovery)?,
         epoch: request(epoch)?,
     })
+}
+
+/// **The ship's epoch action** (doc 23 cut S.2, V1): `tacsim_voyage_epoch` over the epoch
+/// records' family, the black box's participant appending the line; registered only with the
+/// action in the roster and the participant's handle for it. Its own function so the provider's
+/// construction is not one more temporary on [`register_with_coverage`]'s frame (the M7
+/// memory-size limits).
+fn register_epoch(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    black_box: Option<BlackBoxHandle>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(handle)) = (actions.get(crate::port::epoch::EPOCH_ACTION), black_box)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::epoch::EpochProvider {
+            action: action.clone(),
+            outcome,
+            records: families.epochs.clone(),
+            black_box: handle,
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+// The six providers below each carry the delegated inventory families (a handful of typed
+// handles) beside their own: built in their own frames, as `register_surface_acts` is, so the
+// clones never accumulate on `register_with_coverage`'s stack (the M7 memory-size limits; doc 23
+// cut S.2's epoch arm was the last straw).
+
+/// Doc 18 cut IC8: `tacsim_port_stock`, tacsim's first production provider — registered only
+/// when the inventory cell is filled (its prepare mints through the delegated inventory
+/// families); the definition registers regardless.
+fn register_stock(
+    reg: &mut Registrar<'_>,
+    action: Option<&DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<(), ModError> {
+    let (Some(action), Some(inventory)) = (action, inventory) else {
+        return Ok(());
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::stock::StockProvider {
+            action: action.clone(),
+            outcome,
+            receipts: families.port_stock.clone(),
+            inventory: inventory.clone(),
+        },
+    )
+}
+
+/// Doc 18 cut IC9: `tacsim_port_burn` — registered only when the inventory cell is filled (its
+/// prepare debits through the delegated families) AND the drive table built (the stock
+/// precedent); the definition registers regardless. The action, when registered.
+fn register_burn(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    (inventory, table): (
+        Option<&InventoryFamilies>,
+        Option<crate::port::burn::BurnTable>,
+    ),
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory), Some(table)) = (
+        actions.get(crate::port::burn::BURN_ACTION),
+        inventory,
+        table,
+    ) else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::burn::BurnProvider {
+            action: action.clone(),
+            outcome,
+            tickets: families.tickets.clone(),
+            inventory: inventory.clone(),
+            table,
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer — registered
+/// when the inventory cell is filled (the transfer rides the delegated families; the stock
+/// provider's rule); the definition registers regardless. The action, when registered.
+fn register_site_work(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) =
+        (actions.get(crate::port::site::SITE_WORK_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::site::SiteWorkProvider {
+            action: action.clone(),
+            outcome,
+            pockets: families.pockets.clone(),
+            inventory: inventory.clone(),
+            warned: std::sync::Mutex::new(BTreeSet::new()),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// The relay foundry's fabrication — registered when the inventory cell is filled; the action,
+/// when registered.
+fn register_relay(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) = (actions.get(crate::relay_foundry::ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::relay_foundry::Provider {
+            action: action.clone(),
+            outcome,
+            inventory: inventory.clone(),
+            book: families.relay_fabrications.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.12a: `tacsim_port_mill`, the mill's batch — registered only when the inventory
+/// cell is filled (its prepare debits and credits through the delegated families; the stock
+/// provider's rule); the definition registers regardless. The action, when registered.
+fn register_mill(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) = (actions.get(crate::port::mill::MILL_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::mill::MillProvider {
+            action: action.clone(),
+            outcome,
+            mills: families.mills.clone(),
+            inventory: inventory.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
+}
+
+/// Doc 20 cut SM.12b (§12.3): `tacsim_dispatch`, the house's survey and the yard's delivery —
+/// registered only when the inventory cell is filled (the delivery's transfer rides the
+/// delegated families; the stock provider's rule); the definition registers regardless. The
+/// action, when registered.
+fn register_dispatch(
+    reg: &mut Registrar<'_>,
+    actions: &BTreeMap<String, DefinitionRef>,
+    outcome: DefinitionRef,
+    families: &PortFamilies,
+    inventory: Option<&InventoryFamilies>,
+) -> Result<Option<DefinitionRef>, ModError> {
+    let (Some(action), Some(inventory)) =
+        (actions.get(crate::port::yard::DISPATCH_ACTION), inventory)
+    else {
+        return Ok(None);
+    };
+    reg.action_provider(
+        action.clone(),
+        crate::port::yard::DispatchProvider {
+            action: action.clone(),
+            outcome,
+            dispatch: families.dispatch.clone(),
+            charts: families.charts.clone(),
+            claims: families.claims.clone(),
+            inventory: inventory.clone(),
+        },
+    )?;
+    Ok(Some(action.clone()))
 }
 
 /// Recovery needs inventory but does not depend on the player's tools table.
