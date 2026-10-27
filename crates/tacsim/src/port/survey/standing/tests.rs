@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::surface::survey::{SURVEY_SCHEMA, SurveyKey};
 
