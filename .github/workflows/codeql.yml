@@ -1,0 +1,94 @@
+# CodeQL code scanning, the "advanced setup": this file, with the
+# repository's default setup turned OFF (a setting, not a file —
+# `gh api repos/conclavio/rustmush/code-scanning/default-setup`, state
+# not-configured since 2026-10-27; GitHub rejects a workflow's CodeQL
+# results while default setup is on, and default setup gives every language
+# the same triggers, which is why this file exists).
+#
+# The owner's ruling of 2026-10-27: the fast analyses — actions,
+# JavaScript/TypeScript, Python, about a minute each — run on every push to
+# main and every pull request, as default setup ran them; the Rust analysis,
+# 33-44 minutes per run on the default setup's runs of 2026-10-26 and the
+# long pole of every pull request's checks, runs on the weekly schedule and
+# on demand, never on a push or a pull request. .github/codeql/codeql-config.yml
+# excludes the two Rust rules whose 425 alerts were noise; the weekly run
+# reports the rest.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:17 UTC: the weekly Rust analysis (the fast ones re-run too).
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      rust:
+        description: "run the Rust analysis as well (33-44 minutes)"
+        type: boolean
+        default: true
+
+# The least any job needs; each job widens its own below.
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request supersedes a running
+# analysis of the older one; the event name keeps a push to main from
+# cancelling the schedule's Rust run on the same ref.
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v4
+        with:
+          # The default setup's category for the language, so its alerts
+          # and this workflow's are one series.
+          category: "/language:${{ matrix.language }}"
+
+  rust:
+    name: Analyze (rust)
+    # Never on a push or a pull request: the schedule, or a dispatch that asks.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      # The extractor resolves the workspace through cargo; rust-toolchain.toml
+      # names the version, and `rustup toolchain install` with no argument
+      # reads it, as ci.yml does.
+      - name: Toolchain
+        run: rustup toolchain install
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: rust
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:rust"
