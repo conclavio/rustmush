@@ -59,7 +59,9 @@ pub use reply::{OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, OutputBrackets};
 mod text;
 
 pub use caps::{ClientCaps, ClientKind, ColorDepth};
-pub use client::{ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, Query};
+pub use client::{
+    ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, PictureKind, Query,
+};
 pub use envelope::Envelope;
 pub use event::{
     AssetPackInfo, AtlasMapDelta, AtlasMapFrame, ExitRef, InputMode, MAX_NOTICE_TEXT_BYTES,

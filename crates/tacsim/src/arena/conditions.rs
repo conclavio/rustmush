@@ -1616,8 +1616,19 @@ impl Arena {
             })
             .collect();
         let mut answers = Vec::with_capacity(armed.len());
+        // Doc 21 cut G.12a: the seat's master gate — under weapons hold no
+        // fire rule fires (each answers `Idle` and stays armed), and nothing
+        // below is touched: no held sentence, no hash opened. A pilot's hull
+        // only, so a hull a mind takes over is never left silently held.
+        let gated = self.unit(unit).is_some_and(|state| {
+            state.weapons_hold && state.controller == crate::arena::state::Controller::Pilot
+        });
         for (n, rule, diagnostic_only) in armed {
             let Some(cond) = rule.fire() else { continue };
+            if gated {
+                answers.push((n, Err(Held::Idle)));
+                continue;
+            }
             let ready = self.unit(unit).is_some_and(|state| {
                 state.weapon_ready(&cond.weapon, t_ms) && state.weapon_ammo(&cond.weapon) > 0
             });
@@ -1851,6 +1862,14 @@ impl Arena {
                 self.forget_held_said(unit, &[*slot]);
                 Ok(None)
             }
+            // Doc 21 cut G.12a: the master gate, written whatever it held — a
+            // repeat is a no-op — and touching no slot, so every rule stays
+            // armed and listed. A wreck was refused at apply.
+            Arming::WeaponsFree { free } => {
+                let state = self.unit_mut(unit).ok_or(Refusal::Unknown)?;
+                state.weapons_hold = !*free;
+                Ok(None)
+            }
         }
     }
 
@@ -1880,6 +1899,9 @@ impl Arena {
             {
                 return Err(Refusal::Channel);
             }
+            // Doc 21 cut G.12a: the master gate is the seat's switch over the
+            // hull's rules; no mind flips it.
+            Arming::WeaponsFree { .. } => return Err(Refusal::Channel),
             Arming::Disarm { weapon } => {
                 let mut removable = Vec::new();
                 for (index, row) in self.conditions.slots(unit).iter().enumerate() {
@@ -2248,6 +2270,17 @@ pub enum Arming {
         /// Expected station channel; rechecked against the actual slot.
         channel: Channel,
     },
+    /// **The seat's master gate** (doc 21 cut G.12a, §7.3; bare `FIRE HOLD` /
+    /// `FIRE FREE`): `free: false` holds every `FIRE <weapon> WHEN` rule of
+    /// the hull — armed and listed, never fired — until a `free: true`.
+    /// Discrete on the fire channel, as `FIRE ALL OFF`'s disarm is, so it
+    /// lands at a pulse and folds into the hash
+    /// ([`crate::arena::state::UnitState::weapons_hold`]). A seat's alone: a
+    /// mind's is refused `Channel` (`Arena::resolve_machine_arming`).
+    WeaponsFree {
+        /// `true` for weapons free (the default), `false` for weapons hold.
+        free: bool,
+    },
 }
 
 impl Arming {
@@ -2259,7 +2292,7 @@ impl Arming {
             Arming::Arm(cond) => Some(&cond.weapon),
             Arming::Disarm { weapon } => weapon.as_ref(),
             Arming::Rules { rules, .. } => rules.first().and_then(Rule::weapon),
-            Arming::Remove { .. } => None,
+            Arming::Remove { .. } | Arming::WeaponsFree { .. } => None,
         }
     }
 
@@ -2273,7 +2306,7 @@ impl Arming {
                 None => Channel::Fire,
             },
             Self::Remove { channel, .. } => *channel,
-            Self::Arm(_) | Self::Disarm { .. } => Channel::Fire,
+            Self::Arm(_) | Self::Disarm { .. } | Self::WeaponsFree { .. } => Channel::Fire,
         }
     }
 }
@@ -3640,6 +3673,113 @@ mod tests {
         }
         assert_eq!(counters, MotorCounters::default());
         assert_eq!(crate::arena::hash::state_hash(&arena), before);
+    }
+
+    /// **Doc 21 cut G.12a: the seat's master gate** (§7.3, Q-21-9). A hull
+    /// checks out weapons free; `Arming::WeaponsFree { free: false }` lands
+    /// as a discrete fire-channel arming touching no slot; under it a
+    /// warranted fire rule answers `Idle` — no shot, no held sentence, no hash
+    /// opened — while it stays armed, and the frame says `weapons_free:
+    /// false`; a seat's typed `FIRE` still fires; `free: true` lets the same
+    /// rule fire; a mind may not flip it (`Channel`); and a hull a mind flies
+    /// is never held by a gate a pilot left up.
+    #[test]
+    fn g12a_weapons_hold_holds_every_fire_rule_and_free_lets_it_fire() {
+        use crate::arena::clock::Tempo;
+        let hold = Arming::WeaponsFree { free: false };
+        let free = Arming::WeaponsFree { free: true };
+        let kind = IntentKind::Condition(hold.clone());
+        assert!(kind.is_discrete());
+        assert_eq!(kind.channel_required(), Channel::Fire);
+        assert_eq!(kind.as_str(), "fire");
+        assert_eq!(hold.weapon(), None);
+        let text = serde_json::to_string(&kind).expect("serialises");
+        assert_eq!(text, "{\"condition\":{\"weapons_free\":{\"free\":false}}}");
+        assert_eq!(
+            serde_json::from_str::<IntentKind>(&text).expect("reads back"),
+            kind
+        );
+
+        let mut arena = locked();
+        assert!(arena.unit(RED).is_some_and(|state| !state.weapons_hold));
+        assert!(
+            arena
+                .frame_for(RED, Tempo::Engaged)
+                .is_some_and(|frame| frame.weapons_free),
+            "weapons free at check-out"
+        );
+        assert_eq!(
+            arena.resolve_arming(RED, &Arming::Arm(slot("cannon", 100)), 0),
+            Ok(Some(1))
+        );
+        assert_eq!(arena.resolve_manual_arming(RED, &hold, 0), Ok(None));
+        assert_eq!(
+            arena.resolve_manual_arming(RED, &hold, 0),
+            Ok(None),
+            "a repeat"
+        );
+        assert!(arena.unit(RED).is_some_and(|state| state.weapons_hold));
+        let slots_held = arena.conditions.slots(RED).to_vec();
+        let mut counters = MotorCounters::default();
+        arena.pending_notices.clear();
+        let answers =
+            arena.evaluate_conditions(RED, 0, ConditionTrigger::Arming, None, &mut counters);
+        assert_eq!(answers, vec![(1, Err(Held::Idle))]);
+        assert_eq!((counters.cond_fires, counters.shots), (0, 0));
+        assert_eq!(arena.action_hash, ActionHash::Outside, "no hash opened");
+        assert!(arena.pending_notices.is_empty(), "nothing said");
+        assert_eq!(
+            arena.conditions.slots(RED),
+            slots_held.as_slice(),
+            "still armed"
+        );
+        assert!(
+            arena
+                .frame_for(RED, Tempo::Engaged)
+                .is_some_and(|frame| !frame.weapons_free && frame.rules.len() == 1),
+            "the frame says hold and still lists the rule"
+        );
+        // A typed `FIRE` is never gated.
+        let mut typed = arena.clone();
+        assert!(typed.resolve_fire(RED, "cannon", 0).is_ok());
+        // A mind may not flip the gate.
+        assert_eq!(
+            arena.clone().resolve_machine_arming(RED, &free, 0),
+            Err(Refusal::Channel)
+        );
+        // A hull a mind flies is not held by the gate a pilot left up (the
+        // hand-over clears the pilot's slots, so the mind arms its own).
+        let mut flown = arena.clone();
+        flown.set_controller(
+            RED,
+            Controller::Mind,
+            crate::arena::doctrine::MachineState::Patrol,
+        );
+        assert!(flown.unit(RED).is_some_and(|state| state.weapons_hold));
+        let _ = flown.resolve_lock(RED, id_of(RED, BLUE), 0);
+        assert_eq!(
+            flown.resolve_machine_arming(RED, &Arming::Arm(slot("cannon", 100)), 0),
+            Ok(Some(1))
+        );
+        let answers = flown.evaluate_conditions(
+            RED,
+            0,
+            ConditionTrigger::Arming,
+            None,
+            &mut MotorCounters::default(),
+        );
+        assert!(matches!(answers.as_slice(), [(1, Ok(_))]), "{answers:?}");
+        // Free: the same rule fires.
+        assert_eq!(arena.resolve_manual_arming(RED, &free, 0), Ok(None));
+        let answers =
+            arena.evaluate_conditions(RED, 0, ConditionTrigger::Arming, None, &mut counters);
+        assert!(matches!(answers.as_slice(), [(1, Ok(_))]), "{answers:?}");
+        assert_eq!((counters.cond_fires, counters.shots), (1, 1));
+        assert!(
+            arena
+                .frame_for(RED, Tempo::Engaged)
+                .is_some_and(|frame| frame.weapons_free)
+        );
     }
 
     /// **The evaluator**: a held term is `Why` and counted and takes no hash;

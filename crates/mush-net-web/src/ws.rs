@@ -523,13 +523,14 @@ async fn pump(
                             // yet (rendering is client-side); logged for later.
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
-                        Ok(ClientCommand::Picture { on, look_mdeg }) => {
+                        Ok(ClientCommand::Picture { on, look_mdeg, kind }) => {
                             // Transport-local (doc 21 cut G.3): the next
                             // scheduled tick draws whatever the new request
                             // wants — the clock is not reset for it, so a
                             // burst of look changes is still one frame an
-                            // interval (doc 21a `X-01`).
-                            picture.request(on, look_mdeg);
+                            // interval (doc 21a `X-01`). Doc 21 cut G.12a:
+                            // `kind` picks the cockpit or the overhead.
+                            picture.request(on, look_mdeg, kind);
                         }
                         Ok(ClientCommand::Composing { active }) => {
                             // A presence hint (interface plan I4, D-I-11): the

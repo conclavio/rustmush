@@ -106,18 +106,28 @@ From either mode:
   Ctrl-N       On the channel screen, highlight the next channel of the
                focused list (wrapping); Ctrl-O swaps between the IC and OOC
                lists. Elsewhere both do nothing.
-  Ctrl-G       In a tank's seat, open or close the first-person picture of
-               the arena, on a terminal that can show one, with your armour,
-               weapons, contacts and the comms as text under it; Enter there
-               opens a chat line (`help cockpit`, "The picture"). On the
-               chart screen it draws the sky, on a replay the match, and on
-               the damage screen your tank's armour as a page.
+  Ctrl-G       On the chart screen, draw the sky as a picture, on a replay
+               the match, and on the damage screen your tank's armour as a
+               page, on a terminal that can show one; again to close. It does
+               nothing on the cockpit screen, which is a picture on its own
+               (below).
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it
 looks, switches, scrolls, or opens the box with a line ready for you to
-confirm with Enter. The one exception is walking an exit on the scene
-screen.
+confirm with Enter. The exceptions are walking an exit on the scene screen,
+and the cockpit screen's picture below, whose keys are a pilot's controls.
+
+**The cockpit screen as a picture.** In a tank's seat, on a terminal that can
+show pictures, screen `0` is a first-person picture of the arena with your
+armour, weapons, contacts and the comms as text under it, and its own keys:
+`a`/`d` and the arrows turn, `w`/`s` change speed a step, `x` all stop,
+`q`/`e` look, `c` centre, space steady, `v` the overhead, `f` weapons
+free/hold, `g` a volley, `t`/`T` the lock cycle, `F1`–`F6` an `ORDER` ready in
+the chat line, Enter the chat line. Each sends the line you would have typed
+(`HEADING`, `SPEED`, `FIRE`, `LOCK`). `p` swaps it for the text cockpit and
+back; the digits switch screens as everywhere and `0` brings the picture back
+as you left it (`help cockpit`, "The picture").
 
 ## The palette
 

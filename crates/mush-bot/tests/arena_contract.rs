@@ -382,6 +382,10 @@ fn frame() -> Frame {
         odds_floor_permille: 100,
         // 17b cut M5.4: the bot reads nothing of the hull's sealed mind.
         mind: None,
+        // Doc 21 cut G.12a: weapons free and the line tank's two ceilings.
+        weapons_free: true,
+        max_speed_cms: 1_500,
+        reverse_cms: 750,
     }
 }
 

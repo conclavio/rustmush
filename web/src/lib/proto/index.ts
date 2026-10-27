@@ -36,6 +36,7 @@ export type * from "./NoticeSeverity";
 export type * from "./ObjRef";
 export type * from "./OutputEvent";
 export type * from "./PanelFrameKind";
+export type * from "./PictureKind";
 export type * from "./PromptSpec";
 export type * from "./Query";
 export type * from "./RequestKind";

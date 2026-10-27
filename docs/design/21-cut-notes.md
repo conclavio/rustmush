@@ -439,3 +439,174 @@ Four reports from a review outside the tree (the owner's Codex worktree), each c
 **Review follow-ups** (the same day, a second reader over the four): two gaps beside `X-02` and `X-04` that the view had before them too. The server's frame is drawn onto the same canvas the picture drawn here last painted, so a viewer who switched to the server's picture and back got the server's last frame left up while the unchanged local frame was reported as already shown — now the server's draw clears the canvas's `painted` mark, and the local loop paints its first frame over it (`PictureView.test.ts`: the unchanged frame painted again over a server frame). And a view torn down with an arrow still held (the screen changed, the seat went) sent no stop order where the browser does not blur a removed element — now the view's teardown lets go as a blur would (`lets go when torn down mid-turn`). Both tests fail on the view as it was.
 
 **Review follow-ups, `X-01` and `X-03`** (a third reader over the two): the lock's box was the 5 m by 3.5 m silhouette's where the tank under it was drawn from its sheet, 7.2 m by 3 m — the HUD built its own pose-less sprite — so a third narrower and taller than the tank; now `cockpit::contact_sprite` makes the one sprite the picture draws and the HUD boxes (`the_lock_box_is_the_drawn_sprite_s`; the flat and relief golden cases with the lock boxed re-blessed). A lock in the view's columns but clear over its top edge or under its bottom — close by, down a steep slope, where the relief projection now rightly puts it — lost its whole readout: the box, and the label under it, drawn off the view; now it is `LockAt::Beyond`, an arrow at that edge in the lock's column with the designator, range and hit chance beside it, and a box running off the bottom keeps its label over it (`the_lock_over_an_edge_keeps_its_readout`: the text cockpit's 640 by 256 frame, BA 60 m out and 25 m down, 25 m up, and 14 m down). And the `X-01` socket test's bound is measured from the first look's send rather than between the frames' own arrivals, which a late tick can bunch: the pump, its frame costing more than what was left of the interval, draws the next on the trot without yielding, and the reader reads both at once.
+
+## G.12 (2026-10-27): the cockpit's keys and screen 0
+
+The owner's ask of 2026-10-27 — a full keyboard for the cockpit view, and the picture as a screen
+rather than a `^G` modal — written up as doc 21 §7.3 (the binding key table) and §7.4 (the
+overhead), built as three halves in one branch: **G.12b** the SSH TUI, **G.12c** the web, **G.12a**
+tacsim and the gateway. The design of the unit the `F`-keys command is doc 26 (detachments), written
+in the same session on top of doc 23. Rulings taken here, each cheap to unwind:
+
+- **Weapons free is the default** (Q-21-9): a `FIRE … WHEN` rule fires the moment it is armed, as
+  every story and bot pilot assumes; `f` is therefore the hold key first. The alternative is one
+  constant and a sweep of the stories.
+- **`a`/`d` stay toggled on every terminal, the arrows are held where the protocol reports
+  releases.** The kitty protocol as the view pushes it (`CSI >3u`) sends an unmodified letter as
+  text with no release event; holding a letter needs flag 8 (every key as an escape code), which
+  re-encodes shifted letters too (`T` among them). Not pushed in this cut; a follow-up, `W-G12-1`.
+- **Unbound letters are swallowed while the picture shows.** The text cockpit's own bindings (`k`,
+  `h`, `m`) do nothing under the picture; `p` brings the text cockpit back with them. Only the
+  digits, Enter, `"` `:` `;` `\` `/` `?`, `p`, Esc, `F7`+ and the Ctrl/Alt chords pass through.
+- **`^G` is dead on screen 0** and unchanged for the chart's, the doll's and the replay's pictures,
+  which now also close when their own screen stops showing (a seated frame could jump to screen 0
+  under an open chart before).
+- **The lock cycle remembers what it asked for** (1.5 s, or until the frame shows it) so `t t t`
+  walks three contacts instead of asking for the same one three times; wrecks are not skipped
+  (§7.3 does not say to, and a wreck is a legal lock for a `SCAN`).
+- **Speed orders coalesce on the trailing edge**: a press opens a 250 ms window and the value is
+  sent when it closes, so two presses inside the gap are one line with the second value and a held
+  `w` is one line a window; the cost is up to 250 ms on a single press. `x` sends at once. A step
+  still waiting when the picture hides is sent, not dropped (the speed carries across screens).
+- **Overlays hide the picture**: help, the palette, the mind workshop, an ask and a hidden-echo
+  prompt draw over the text cockpit and the picture returns when they close; under 120 columns
+  (the owner's floor) there is no picture.
+- **The overhead's colours are team colours** (doc 22 D-22-3), as the first-person view's are, not
+  hostility; a contact's heading is drawn only when its row carries `heading_deg` (today's frame
+  carries none; nothing is guessed from `aspect`). The view reaches `sight_m` × 1.15 clamped to
+  150–3000 m; the rings are the distinct weapon band edges and the sight distance; the look is a
+  ±33° wedge, the raycaster's field; an unreached ordered heading is ticked in lock-yellow; relief
+  is five shading steps against the north-west neighbour, one a 120 cm. The web's overhead is the
+  gateway's frame over the socket (the `picture` command's `kind`), the browser render staying
+  first-person until the wasm module carries the scene.
+- **`r` joins `u` behind `[pixel] diagnostics`**; both draw on the top line, the 120-column legend
+  has no room for them. The legend is `key:label`, 108 characters toggled and 113 held, held to 120
+  by a test.
+
+### G.12b — the TUI
+
+What was built (`crates/mush-net-ssh/src/tui/{pixel,helm,app,mod,keys,screen}.rs`,
+`crates/mush-pixel/src/overhead.rs`):
+
+- **Screen 0 draws the picture by itself.** `TuiApp::pixel_sync` runs after every key, at the
+  start of `draw` and in the session's `paint_text` before a close is taken: the picture shows when
+  screen 0 is up, it is not the replay layout, the terminal is at least 120 columns, a seated frame
+  is held and the terminal shows pictures; hidden otherwise. A hide frees the kitty image or wipes
+  the sixel, pops the keyboard protocol and stops the helm (the stop order rides the key that caused
+  it: `1` sends the `HEADING`); the helm, the throttle, the look, the lock cursor and the camera
+  survive it, so `1` then `0` is the picture as it was. `PixelView::key` returns
+  `KeyUse::{Used, Passed, Prefill(String)}` and the app routes on it.
+- **`Throttle`** beside `Helm` in `helm.rs`: the step `max(5, (max+5)/10)` kph from the frame's
+  `max_speed_kph` (60 and a 20 kph reverse ceiling when the frame has none); the order steps from
+  the outstanding order (unreached within 1 kph) else the frame's speed; clamped; the order dropped
+  when the frame says `wreck` or `immobile`; the HUD `spd 0→6` while they differ.
+- **`lock_order` and `lock_next`** in `helm.rs`: hostiles, then unidentified, then the rest,
+  nearest first within each; `t`/`T` next and previous, wrapping; from no lock the first.
+- **`F1`–`F6`** open the chat line with `ORDER ALL ` / `ORDER n ` ready (Esc drops it with no
+  draft, unlike an ordinary line's Esc); the key parser reads the kitty protocol's `CSI P`, `CSI Q`
+  and `CSI S` as F1, F2 and F4 (F3 already arrived as `CSI 13 ~`). `F7`–`F9` still switch screens.
+- **`p`** is a new `LocalAction::CockpitPicture` on the cockpit screen's table, labelled
+  "picture", session-wide; on a terminal without pictures the key keeps its old binding.
+- **`f`** flips the gate locally until a frame with a new `t_ms` reports the real value; a missing
+  `weapons_free` reads as free.
+- **`OverheadPicture`** (`mush-pixel`, public so the gateway reuses it) on the replay's scene
+  model, with a golden under `crates/mush-pixel/tests/golden/` (`PIXEL_BLESS=1` rewrites it).
+- `feed_input` repaints if any key in a burst showed or hid the picture (the probe reply's second
+  marker used to cancel the first's repaint).
+- `docs/help/tui.md` and the TUI part of `docs/help/cockpit.md`'s "The picture".
+
+**Verified.** `cargo test -p mush-pixel`: lib 74, overhead golden 1, proving ground 2, web golden 1.
+`cargo test -p mush-net-ssh --lib`: 330 (the `^G` session tests now cover `^G` doing nothing on
+screen 0, `1` then `0` returning the picture with the helm, `p`, and the `F1`/`F2` prefills; new
+`g12b_*` tests in `pixel.rs` and `app.rs`, three throttle and lock tests in `helm.rs`, a keys test
+for the protocol's F-keys); `--test tui_golden` 25 with the frames unchanged. fmt, clippy
+`-D warnings` and rustdoc `-D warnings` clean.
+
+### G.12c — the web
+
+What was built (`web/src/lib/picture.ts`, `web/src/components/PictureView.svelte`,
+`CockpitScreen.svelte`, `web/src/lib/cockpit.ts`, `web/src/lib/stores/picture.svelte.ts`,
+`web/src/lib/game.svelte.ts`):
+
+- `pictureKey` is the whole §7.3 table (space is `steady`, it was `stop`); the pure helpers
+  `orderPrefill`, `speedStep`, `steppedSpeed`, `speedOutstanding`, `speedLine`, `gateLine`,
+  `gateWord`, `lockOrder`, `nextLock`; `SPEED_COALESCE_MS` 250, `LOCK_PENDING_MS` 1500, the 60/20
+  default ceilings; `PictureKind` and `pictureCommand(on, look, kind)`.
+- `PictureView` takes `frame` and `prefill` from the cockpit screen (its app whitelist unchanged:
+  `helm`, `picture`, `setPicture`), handles every key, coalesces the speed, walks the lock, bypasses
+  the local wasm render while the overhead is chosen (the source toggle reads "overhead: drawn by
+  the server"), and shows `spd a→b` and `weapons free` / `weapons hold` in the header with the
+  legend. Letters work in either case except `t`/`T`; Ctrl/Alt/Meta chords are the browser's;
+  `F1`–`F6` always `preventDefault` while the picture has focus (F1 help, F5 reload, F6 the address
+  bar never fire); only the turn's release and `w`/`s` act on `ev.repeat` (the look toggle used to
+  flicker on key repeat).
+- `CockpitFrame` and its decoder gain `weapons_free`, `max_speed_kph`, `reverse_kph` as optional.
+- The camera lives in `PictureStore.kind`, so a screen switch keeps it; `setPicture(on, look, kind?)`
+  sends `kind` and a reconnect asks for the same camera again. A Svelte 5 trap fixed on the way:
+  an effect's teardown reads state as it was before the change, so a defaulted `kind` read inside
+  the teardown's `setPicture(false, 0)` was written back and undid `v`; `setPicture` now writes
+  `kind` only when it is passed.
+- `docs/help/cockpit.md`'s "In the web client" paragraph: the key table.
+
+**Verified.** `npm run check` 566 files, 0 errors; `npx vitest run` 68 files, 753 tests (690
+before: one test a key in `picture.test.ts` with the step, clamp, gate and lock order against the
+fixture; 19 mounted `PictureView` tests; two `game.test.ts` tests for `kind` on the wire and after
+a reconnect); `vite build` clean. The wasm parity tests ran against a module built on 2026-10-23
+copied in (the file is gitignored); `npm run wasm` rebuilds it.
+
+### G.12a — tacsim and the gateway
+
+What was built (`crates/tacsim/src/arena/{conditions,hash,state,snapshot,step,trace_runtime}.rs`,
+`crates/tacsim/src/match_/cockpit.rs`, `crates/mush-proto/src/client.rs`,
+`crates/mush-net-web/src/{picture,ws}.rs`):
+
+- **The master gate is carried state.** `UnitState::weapons_hold` and `Arming::WeaponsFree { free }`,
+  a discrete fire-channel arming touching no slot; bare `FIRE HOLD` / `FIRE FREE` deliver it after
+  the wreck check (power is not checked), replying `Weapons hold: your rules stand but fire only
+  when you say.` / `Weapons free.`, the same on a repeat. The arena checks it at the top of the fire
+  loop, before the warrant: a held rule answers idle — no held sentence, no action hash opened, the
+  rule armed and listed; a `FIRE FREE` landing re-evaluates the slots, so a rule whose conditions
+  already hold fires at that pulse. Hold rules, a typed `FIRE`, `FIRE ALL` and a mind's own
+  warranted shot are untouched; a mind's `WeaponsFree` is refused as `Channel`. **The gate binds
+  only while a pilot flies the hull**: a pilot who leaves at hold does not mute the mind that takes
+  over (nobody could type `FIRE FREE` for it, and the hand-over clears the slots anyway); the gate
+  itself is kept. `WEAPONSTATUS` and `MIND RULES` add `Weapons hold: no rule fires until FIRE
+  FREE.` while held.
+- **Hash:** item 1 sub-item 21 folds `[1]` when held and nothing at free, the active profile's
+  rule (sub-item 20); the M6 `two_tanks` pin is unmoved. **Snapshot format 16 → 17** (the gate
+  must survive a reload); the af1 shape pin re-blessed (712 → 713 lines, the one new line
+  `state.units.[].weapons_hold: bool`); the tests pinning the literal moved to 17; a live match
+  would be voided on reload. `crates/tacsim/tests/harness_baseline/arena.linux.json` still says 16,
+  a record of the revision it was measured at that nothing reads.
+- **Bare `FIRE ALL`** is a volley: in roster order each weapon that is ready, has rounds and has a
+  band on the lock (the arena's reach test) fires as `FIRE <weapon>` would, `Firing <weapon>.`;
+  every other weapon gets its own `FIRE <weapon> refused. …` line (cycling, empty, out of reach,
+  overheated) and the volley goes on. Refused whole: `This unit carries no weapon.`; `FIRE ALL
+  refused. No lock: LOCK a contact first.`; nothing in reach → the first weapon's out-of-reach
+  line; power not online → `FIRE ALL refused. <power sentence>`. `FIRE ALL OFF` / `FIRE ALL WHEN`
+  unchanged; `FIRE HOLD` vs `FIRE <w|ALL> HOLD WHEN` parse apart on what follows the word. **There
+  was no out-of-reach sentence**: a typed `FIRE` past the bands was never refused, the arena
+  resolved the shot; it now is, `Out of reach: the lock is <n> m off and it reaches <m> m.`
+  (`OUT_OF_REACH`).
+- **Frame fields** `weapons_free`, `max_speed_kph`, `reverse_kph` from the arena's own
+  `TrackedRules` (the figures its `SPEED` clamp uses; `reverse_kph` positive); `FRAME_VERSION`
+  stays 7 (an added field is not a version); the fixtures re-blessed with `TACSIM_BLESS=1` (the
+  three keys only), the stock tank's 1500 / 750 cm/s reading 54 / 27 kph, so three client tests
+  of G.12b/c that stepped from the defaults now strip the ceilings first.
+- **The gateway's `kind`:** `PictureKind` on `ClientCommand::Picture`, `#[serde(default)]`
+  (`PROTO_VERSION` unbumped; no `kind` reads as the cockpit); `mush-net-web` draws
+  `OverheadPicture` from the same feeds; the TS binding regenerated and `pictureCommand`'s cast
+  gone.
+- `docs/help/cockpit.md`: two command-table rows and "Weapons hold and the volley".
+
+**Verified.** `cargo test -p tacsim --lib` 1802 (new `g12a_weapons_hold_holds_every_fire_rule_and_free_lets_it_fire`,
+`g12a_the_hash_folds_the_master_gate_only_when_held`); shard_6 `cockpit::` 186 (three `g12a_*`
+stories; the one assertion pinning bare `FIRE ALL` as "no weapon called `all`" updated); shard_4
+471; the two shard_3 format pins; `mush-proto --features ts` 60; `mush-net-web` 57 (new
+`the_overhead_kind_draws_the_overhead_from_the_same_feeds`); `mush-contract-tests help_commands`
+4; the fixture readers mush-net-ssh 408, mush-pixel 78, mush-ansi golden 31, mush-session resume
+28, mush-bot `arena_contract` 20; mush-bot's and mushd's `sim_lenses` tests `cargo check` clean;
+web `npm run check` 0 errors, the picture, game, PictureView and cockpit suites 197. Shards 1, 2
+(an extra match arm, compiles), 3 and 5 are the PR's CI. fmt, clippy `-D warnings` and rustdoc
+`-D warnings` clean (`cargo fmt --all` fails on this box with "filename too long", os error 206;
+`cargo fmt -p` a package at a time instead).

@@ -4382,7 +4382,7 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(cond),
                 Arming::Disarm { .. } => None,
-                Arming::Rules { .. } | Arming::Remove { .. } => {
+                Arming::Rules { .. } | Arming::Remove { .. } | Arming::WeaponsFree { .. } => {
                     panic!("Standard emits shorthand armings")
                 }
             })
@@ -4560,7 +4560,7 @@ fn m1b2_two_t1_slot_numbers_are_the_arenas_at_every_landing() {
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(Some(cond.clone())),
                 Arming::Disarm { .. } => None,
-                Arming::Rules { .. } | Arming::Remove { .. } => {
+                Arming::Rules { .. } | Arming::Remove { .. } | Arming::WeaponsFree { .. } => {
                     panic!("Standard emits shorthand armings")
                 }
             })
@@ -6271,7 +6271,9 @@ fn arms_after(kept: &[Kept], unit: ObjId, after_ms: i64) -> Vec<(i64, Vec<u16>)>
                     .filter_map(|arming| match arming {
                         Arming::Arm(cond) => Some(cond.min_permille),
                         Arming::Disarm { .. } => None,
-                        Arming::Rules { .. } | Arming::Remove { .. } => {
+                        Arming::Rules { .. }
+                        | Arming::Remove { .. }
+                        | Arming::WeaponsFree { .. } => {
                             panic!("Standard emits shorthand armings")
                         }
                     })

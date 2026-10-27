@@ -20,8 +20,11 @@
   //
   // Doc 21 cut G.3c adds the first-person picture above the map
   // (`PictureView.svelte`): drawn by the gateway from this pilot's own feeds,
-  // so it shows exactly what this screen does, and its arrow keys are the one
-  // place this tab SENDS an order (`HEADING`, as the SSH TUI's view does).
+  // so it shows exactly what this screen does, and its keys are the one
+  // place this tab SENDS an order (`HEADING`, as the SSH TUI's view does;
+  // doc 21 cut G.12c adds §7.3's `SPEED`, `FIRE` and `LOCK` keys, stepped
+  // from the frame this screen hands it). Its `F1`–`F6` prefill `ORDER`
+  // through this screen's own `prefill`, never sent.
   //
   // Every string printed here comes out of `cockpitView`, and the canvas draws
   // from `composeWindow` — both pure, both pinned by vitest against the
@@ -244,7 +247,7 @@
     <p class="muted pad">{NOT_IN_A_COCKPIT}</p>
   {:else}
     <!-- Doc 21 cut G.3c: the first-person picture, above the map. -->
-    <PictureView {app} headingDeg={frame.heading_deg} />
+    <PictureView {app} headingDeg={frame.heading_deg} {frame} {prefill} />
     <section class="mapbox" aria-label="arena map">
       <header>
         <strong>{view.heading}</strong>

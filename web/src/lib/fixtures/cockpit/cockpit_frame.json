@@ -136,6 +136,7 @@
   "lock_percent": 62,
   "lock_range_m": 440,
   "match": 7,
+  "max_speed_kph": 54,
   "mind": {
     "active": 0,
     "card": {
@@ -583,6 +584,7 @@
   "order": null,
   "power": "online",
   "receiver": null,
+  "reverse_kph": 27,
   "rules": [
     {
       "rule": {
@@ -747,6 +749,7 @@
       "rounds_max": 500
     }
   ],
+  "weapons_free": true,
   "wreck": false,
   "x_cm": 6500,
   "y_cm": 4500,

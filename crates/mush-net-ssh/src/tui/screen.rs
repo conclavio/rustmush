@@ -287,6 +287,10 @@ pub enum LocalAction {
     /// **The quarry's `l`** (doc 20 cut SM.9): the next ore family of the frame's `families`,
     /// wrapping.
     QuarryLayer,
+    /// **Screen 0's `p` while it could draw the picture** (doc 21 cut G.12b):
+    /// the text cockpit over the picture, and back — kept for the session.
+    /// Bound in place of `Refresh` by the app, never in a table.
+    CockpitPicture,
 }
 
 /// What a bound key does (D-I-18).
@@ -1314,6 +1318,11 @@ pub fn builtin_screens() -> Vec<Screen> {
                 // bindings the legend keeps whole at the 120-column floor
                 // (16b cut AB.1, `render::legend_line`). It reads and changes
                 // nothing, so it is a `Local` action and not a `Run`.
+                // **Doc 21 cut G.12b**: while the screen could draw the cockpit
+                // picture the app binds `p` to `LocalAction::CockpitPicture`
+                // instead (`TuiApp::keys`) — the picture's toggle, labelled
+                // `picture`; the flight keys are the picture's own
+                // (`PixelView::key`) and never this table's.
                 KeyBinding {
                     key: 'p',
                     label: "pull",

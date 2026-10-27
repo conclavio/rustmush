@@ -27,9 +27,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture};
+use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{Look, Picture};
 use mush_pixel::{Frame, png};
-use mush_proto::{OutputEvent, PanelFrameKind};
+use mush_proto::{OutputEvent, PanelFrameKind, PictureKind};
 use serde_json::Value;
 
 /// The frame a web viewer gets: the target size (the owner's ruling of
@@ -43,9 +44,15 @@ pub const FRAME_H: usize = 480;
 pub(crate) struct WebPicture {
     on: bool,
     look_mdeg: i64,
+    /// Which camera the client asked for (doc 21 cut G.12a, §7.4).
+    kind: PictureKind,
     /// The latest keyframes of the two feeds the cockpit picture reads.
     feeds: HashMap<String, Value>,
     picture: CockpitPicture,
+    /// The overhead (G.12b's scene), drawn from the same two feeds when
+    /// `kind` is [`PictureKind::Overhead`] — the web's overhead is this
+    /// socket frame until the wasm module carries the scene (§7.4).
+    overhead: OverheadPicture,
     frame: Frame,
     /// The hash of the last frame sent, so an unchanged one is not.
     last_sent: Option<u64>,
@@ -59,8 +66,10 @@ impl WebPicture {
         WebPicture {
             on: false,
             look_mdeg: 0,
+            kind: PictureKind::Cockpit,
             feeds: HashMap::new(),
             picture: CockpitPicture::new(),
+            overhead: OverheadPicture::new(),
             frame: Frame::new(FRAME_W, FRAME_H),
             last_sent: None,
             next_frame: tokio::time::Instant::now(),
@@ -72,9 +81,13 @@ impl WebPicture {
         self.on
     }
 
-    /// The frame clock's interval: the picture's own (20 Hz for the cockpit).
+    /// The frame clock's interval: the asked-for picture's own (20 Hz for
+    /// the cockpit and the overhead alike).
     pub(crate) fn interval(&self) -> Duration {
-        self.picture.interval()
+        match self.kind {
+            PictureKind::Cockpit => self.picture.interval(),
+            PictureKind::Overhead => self.overhead.interval(),
+        }
     }
 
     /// The frame clock's deadline: when the pump next draws (sleep until it,
@@ -98,15 +111,17 @@ impl WebPicture {
         };
     }
 
-    /// The client's `Picture` request. Turning it on (or changing the look)
-    /// forgets the last frame sent, so the next tick sends one — the next
-    /// *scheduled* tick: the clock's deadline is not touched (`X-01`).
-    pub(crate) fn request(&mut self, on: bool, look_mdeg: i64) {
-        if on != self.on || look_mdeg != self.look_mdeg {
+    /// The client's `Picture` request. Turning it on (or changing the look
+    /// or the camera) forgets the last frame sent, so the next tick sends one
+    /// — the next *scheduled* tick: the clock's deadline is not touched
+    /// (`X-01`).
+    pub(crate) fn request(&mut self, on: bool, look_mdeg: i64, kind: PictureKind) {
+        if on != self.on || look_mdeg != self.look_mdeg || kind != self.kind {
             self.last_sent = None;
         }
         self.on = on;
         self.look_mdeg = look_mdeg;
+        self.kind = kind;
     }
 
     /// An event on its way to the socket: keep the two feeds' keyframes. A
@@ -142,7 +157,12 @@ impl WebPicture {
             offset_mdeg: self.look_mdeg,
             ..Look::default()
         };
-        if !self.picture.draw(&mut self.frame, &self.feeds, &look) {
+        // Doc 21 cut G.12a: the camera the client asked for.
+        let drawn = match self.kind {
+            PictureKind::Cockpit => self.picture.draw(&mut self.frame, &self.feeds, &look),
+            PictureKind::Overhead => self.overhead.draw(&mut self.frame, &self.feeds, &look),
+        };
+        if !drawn {
             return None;
         }
         let hash = self.frame.hash();
@@ -193,17 +213,64 @@ mod tests {
         p.observe(&cockpit);
         p.observe(&map);
         assert!(p.frame().is_none(), "off");
-        p.request(true, 0);
+        p.request(true, 0, PictureKind::Cockpit);
         let png = p.frame().expect("a frame");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(p.frame().is_none(), "unchanged: nothing");
-        p.request(true, 30_000);
+        p.request(true, 30_000, PictureKind::Cockpit);
         assert!(p.frame().is_some(), "the look moved");
         assert!(p.frame().is_none());
-        p.request(false, 30_000);
+        p.request(false, 30_000, PictureKind::Cockpit);
         assert!(p.frame().is_none(), "off again");
-        p.request(true, 30_000);
+        p.request(true, 30_000, PictureKind::Cockpit);
         assert!(p.frame().is_some(), "on again sends the current picture");
+    }
+
+    /// **Doc 21 cut G.12a** (§7.4): a `picture` command with `kind:
+    /// "overhead"` draws the overhead from the same fixture feeds — a frame
+    /// whose bytes differ from the cockpit kind's — and a command without
+    /// `kind` is the cockpit; swapping the kind sends a frame at once.
+    #[test]
+    fn the_overhead_kind_draws_the_overhead_from_the_same_feeds() {
+        use mush_proto::ClientCommand;
+        let ask = |text: &str| match serde_json::from_str::<ClientCommand>(text) {
+            Ok(ClientCommand::Picture {
+                on,
+                look_mdeg,
+                kind,
+            }) => (on, look_mdeg, kind),
+            other => panic!("a picture command: {other:?}"),
+        };
+        let bare = ask(r#"{"t":"picture","d":{"on":true,"look_mdeg":0}}"#);
+        assert_eq!(
+            bare,
+            (true, 0, PictureKind::Cockpit),
+            "absent reads cockpit"
+        );
+        let overhead = ask(r#"{"t":"picture","d":{"on":true,"look_mdeg":0,"kind":"overhead"}}"#);
+        assert_eq!(overhead, (true, 0, PictureKind::Overhead));
+        let (cockpit, map) = keyframes();
+        let draw = |(on, look_mdeg, kind): (bool, i64, PictureKind)| {
+            let mut p = WebPicture::new();
+            p.observe(&cockpit);
+            p.observe(&map);
+            p.request(on, look_mdeg, kind);
+            p.frame().expect("a frame")
+        };
+        let first_person = draw(bare);
+        let top_down = draw(overhead);
+        assert!(top_down.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_ne!(top_down, first_person, "the overhead is its own picture");
+        // One connection swapping cameras: a new frame at once, then quiet.
+        let mut p = WebPicture::new();
+        p.observe(&cockpit);
+        p.observe(&map);
+        p.request(true, 0, PictureKind::Cockpit);
+        assert_eq!(p.frame().as_deref(), Some(first_person.as_slice()));
+        p.request(true, 0, PictureKind::Overhead);
+        assert_eq!(p.frame().as_deref(), Some(top_down.as_slice()));
+        assert!(p.frame().is_none(), "unchanged: nothing");
+        assert_eq!(p.interval(), Duration::from_millis(50), "the same clock");
     }
 
     /// Doc 21a `X-01`: the frame clock is the picture's rate limit. Its
@@ -242,10 +309,10 @@ mod tests {
         p.observe(&cockpit);
         p.observe(&map);
         let before = p.deadline();
-        p.request(true, 0);
+        p.request(true, 0, PictureKind::Cockpit);
         assert!(p.frame().is_some(), "on: the first frame");
         for look in 1..=10 {
-            p.request(true, look * 1_000);
+            p.request(true, look * 1_000, PictureKind::Cockpit);
             assert_eq!(p.deadline(), before, "look {look}: the clock is not moved");
         }
         assert!(p.frame().is_some(), "the next tick draws the latest look");
@@ -258,7 +325,7 @@ mod tests {
     #[test]
     fn the_feeds_are_the_connections_own_keyframes() {
         let mut p = WebPicture::new();
-        p.request(true, 0);
+        p.request(true, 0, PictureKind::Cockpit);
         let (cockpit, map) = keyframes();
         p.observe(&panel(
             COCKPIT_FEED,
@@ -282,7 +349,7 @@ mod tests {
             PanelFrameKind::Keyframe,
             serde_json::json!({ "seated": false }),
         ));
-        p.request(true, 1);
+        p.request(true, 1, PictureKind::Cockpit);
         assert!(p.frame().is_none(), "climbed out: no cockpit");
     }
 }

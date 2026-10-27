@@ -462,6 +462,15 @@ export interface CockpitFrame {
    * its doll is drawn from — or `null` from an older server. Never a secret
    * from its pilot. */
   unit_type: string | null;
+  /** The seat's master gate over its standing `FIRE … WHEN` rules (doc 21
+   * cut G.12a; decoded by G.12c): `true` free, `false` hold, `null` from a
+   * server that does not send it — which reads as free, the default. */
+  weapons_free: boolean | null;
+  /** The `SPEED` ceilings, kph (doc 21 cut G.12a): the top speed forward and
+   * the reverse ceiling as a positive number, so a client steps and clamps
+   * without a round trip; `null` from a server that does not send them. */
+  max_speed_kph: number | null;
+  reverse_kph: number | null;
 }
 
 /** One of the ground's named places, as `arena.map` carries it (16b cut V.1):
@@ -1021,6 +1030,10 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     mind: decodeMind(data.mind),
     // Doc 22 cut U.4.
     unit_type: optStr(data.unit_type, 64),
+    // Doc 21 cut G.12a's keys, read by the picture's `f`, `w` and `s` (G.12c).
+    weapons_free: typeof data.weapons_free === "boolean" ? data.weapons_free : null,
+    max_speed_kph: optInt(data.max_speed_kph),
+    reverse_kph: optInt(data.reverse_kph),
   };
 }
 
