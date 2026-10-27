@@ -314,6 +314,35 @@ pub(crate) fn holds(w: &mush_core::World, actor: ObjId) -> bool {
         .unwrap_or(false)
 }
 
+/// 17g C2a (reviewer F2): whether the Registry already holds a rating job for
+/// `actor` itself, still preparing (a Registry `Preparing` row queued by this
+/// character) or retained in its lane. A proving or Conduct preparation, or a
+/// job of another character on the same login, is not this character's
+/// rating, though admission refuses it alike.
+pub(super) fn holds_rating(runtime: &world::Runtime, actor: ObjId) -> bool {
+    runtime.registry.entries.contains_key(&actor)
+        || runtime
+            .preparing
+            .values()
+            .any(|p| p.kind == super::model::WorkKind::Registry && p.actor == actor)
+}
+/// 17g C2a: `holds_rating` on the live service, for `@mind/rate`, which
+/// answers `RATING_BUSY` only for this case and the service's unavailable
+/// line for every other `BulkError::Busy`. An absent or poisoned service
+/// holds nothing.
+pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool {
+    super::world::service(w)
+        .ok()
+        .and_then(|service| {
+            service
+                .0
+                .lock()
+                .ok()
+                .map(|runtime| holds_rating(&runtime, actor))
+        })
+        .unwrap_or(false)
+}
+
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let result = if ctx.switches.has("reconform") {
         reconformance::continue_scan(ctx)
@@ -355,6 +384,23 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
         .ok()
         .filter(|n| *n > 0)
         .ok_or(BulkError::Missing)?;
+    start_revision(ctx, mind, number)
+}
+/// 17g C2a (C2 plan §2.2): queue a Registry rating of the actor's own saved
+/// revision `number` of library mind `mind`. `@registry/rate` parses its
+/// `<mind>/<revision>` argument and calls this; `@mind/rate` resolves the
+/// author's `<name>@<rev>` and calls the same body. Success prints
+/// `Registry preparation queued.`. `BulkError::Busy` is not only "this
+/// character already has a Registry job" (`holds_rating`): admission also
+/// answers Busy while bulk recovery runs, while the login account has any
+/// other bulk run, preparation or retained job (an `@mind/prove` run, the
+/// alt's rating), on a poisoned service lock and on a full preparer queue.
+/// `@mind/rate` tells the first case apart with `rating_held`.
+pub(in crate::minds) fn start_revision(
+    ctx: &mut Ctx<'_>,
+    mind: u64,
+    number: u64,
+) -> Result<(), BulkError> {
     let config = ctx
         .w
         .module_state::<Configuration>()
@@ -367,7 +413,7 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
         .w
         .module_state::<BulkStore>()
         .ok_or(BulkError::Missing)?;
-    if runtime.registry.entries.contains_key(&ctx.actor) {
+    if holds_rating(&runtime, ctx.actor) {
         return Err(BulkError::Busy);
     }
     runtime.ensure_admission(store, account)?;
@@ -430,10 +476,58 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
             account,
             actor: ctx.actor,
             nonce,
+            kind: super::model::WorkKind::Registry,
         },
     );
     ctx.out.info(ctx.actor, "Registry preparation queued.");
     Ok(())
+}
+/// 17g C2a (C2 plan §2.2): the actor's own finished Registry rating of exactly
+/// `revision`, for `@mind/file` and `@mind/update`. Among the actor's bulk
+/// account's retained Registry runs for this character that finished with an
+/// admitted job (newest first), each job is read through the Registry's own
+/// own-job read; the first whose subject is this revision and whose state is
+/// `Completed` gives its rating reference. No rating index is added: a run
+/// the account has since trimmed means "rate it again" (`Ok(None)`).
+pub(in crate::minds) fn completed_rating(
+    ctx: &Ctx<'_>,
+    revision: &mush_roll::Revision,
+) -> Result<Option<mush_roll::commerce::rating::RatingRef>, BulkError> {
+    let config = ctx
+        .w
+        .module_state::<Configuration>()
+        .ok_or(BulkError::Missing)?;
+    let identity =
+        mush_roll::commerce::RevisionIdentity::capture(revision).map_err(|_| BulkError::Missing)?;
+    let account = world::account(ctx.w, ctx.actor)?;
+    let store = ctx
+        .w
+        .module_state::<BulkStore>()
+        .ok_or(BulkError::Missing)?;
+    // An account with no bulk record has rated nothing yet.
+    let Ok(runs) = store.runs(account, ctx.actor) else {
+        return Ok(None);
+    };
+    let mut jobs: Vec<_> = runs
+        .into_iter()
+        .filter(|run| run.plan.kind == super::model::WorkKind::Registry)
+        .filter_map(|run| Some((run.finished_ms?, run.id, run.registry_job?)))
+        .collect();
+    jobs.sort_by_key(|(finished, run, _)| std::cmp::Reverse((*finished, *run)));
+    for (_, _, job) in jobs {
+        let Ok(read) = ctx.read_owner(&config.reader, RegistryReadRequest::new(job)) else {
+            continue;
+        };
+        if read.job().subject().revision() != identity {
+            continue;
+        }
+        if let mush_roll::commerce::rating::RatingJobState::Completed { receipt } =
+            read.job().state()
+        {
+            return Ok(Some(*receipt));
+        }
+    }
+    Ok(None)
 }
 fn cancel(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
     if !ctx.args.raw().trim().is_empty() {

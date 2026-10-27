@@ -380,6 +380,13 @@ pub struct TacsimRuleset {
     conduct_trials: Option<Box<minds::registry::conduct::composition::Registration>>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
+    /// 17g C2a: the composed Registry manifest when Active commerce composes
+    /// the player market (`MindCommerce::configure_tacsim`); `register` then
+    /// registers the command slot (`minds::market_commands::MindCommandService`)
+    /// over the entitlement holdings' original-holdings grant, which carries
+    /// Roll's command kinds. `None` everywhere else, a format-1 House-only
+    /// launch included.
+    mind_commands: Option<mush_core::DefinitionRef>,
     original_holdings: Option<mush_core::DefinitionRef>,
     personal_filed_holdings: bool,
     personal_source_forms: bool,
@@ -510,6 +517,7 @@ impl TacsimRuleset {
             conduct_trials: None,
             fork_material: None,
             marked_registry: None,
+            mind_commands: None,
             original_holdings: None,
             personal_filed_holdings: false,
             personal_source_forms: false,
@@ -725,9 +733,14 @@ impl GameModule for TacsimRuleset {
         // Standard Doctrine and its six presets. A test rig installs another
         // through `match_::holdings::install_holdings`.
         reg.state(match_::holdings::HoldingsSeam::production());
+        // 17g C2a: the entitlement holdings' original-holdings grant, which
+        // the command slot below shares (C2 plan §2.4 fallback 1).
+        let mut command_reads = None;
         if let Some(manifest) = &self.original_holdings {
             if self.entitlement_holdings {
-                match_::original_access::register_entitlements(reg, manifest)?;
+                command_reads = Some(match_::original_access::register_entitlements(
+                    reg, manifest,
+                )?);
                 minds::workshop::filed_source::register_entitlements(reg, manifest)?;
                 minds::workshop::filed_source::register_dependent(reg, manifest)?;
             } else if self.dependent_owner_holdings {
@@ -943,8 +956,20 @@ impl GameModule for TacsimRuleset {
                 }
                 minds::bulk::registry_service::register_marked(reg, manifest)?;
             }
+            if let Some(manifest) = &self.mind_commands {
+                if manifest != registry.reference()
+                    || self.original_holdings.as_ref() != Some(manifest)
+                {
+                    return Err(ModError::msg("mind command Registry differs"));
+                }
+                let reads = command_reads.take().ok_or_else(|| {
+                    ModError::msg("mind commands require the entitlement holdings")
+                })?;
+                minds::market_commands::register(reg, reads)?;
+            }
         } else if self.fork_material.is_some()
             || self.marked_registry.is_some()
+            || self.mind_commands.is_some()
             || self.ic_minds.is_some()
             || self.coverage.is_some()
             || self.conduct_trials.is_some()

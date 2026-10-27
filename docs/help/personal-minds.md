@@ -1,5 +1,21 @@
 # Personal mind licences
 
+## Filing a mind
+
+- `@mind/rate <name>@<rev>` asks the Registry to rate a saved revision. Rating
+  takes a while; the Registry tells you when it is finished.
+- `@mind/file <name>@<rev>[=<charter name>]` files a rated revision. The first time,
+  it reserves the charter; type it again once that is confirmed. Filing costs the
+  filing fee and gives you the charter and a free owner's licence. The charter name
+  defaults to the mind's name.
+- `@mind/update <filed> <name>@<rev>` files a newer rated revision on the line of
+  a filed mind you own.
+- `@mind/withdraw <filed>` stops new sales of a filed revision. Licences already sold
+  keep working.
+- `@mind/attest <filed>` renews your owner's licence once its term is due.
+- `@mind/fork <licence>=<name>` makes a working copy of a mind you hold an Open licence
+  for. `@mind/localcopy` still copies your own drafts.
+
 Use `+actions` to read the actual available offers, then
 `+act <action> with <JSON object>` to select one. Choose the product and step
 explicitly; the server resolves the signed offer and rechecks current authority.

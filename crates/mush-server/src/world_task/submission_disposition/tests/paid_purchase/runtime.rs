@@ -25,31 +25,75 @@ pub(super) fn now() -> TestResult<i64> {
         .try_into()?)
 }
 
+/// 17g C2a (C2 plan §4): each recorded line keeps the `SendTarget` it was
+/// sent to, so a test can tell the actor's own lines from a bystander's.
 #[derive(Default)]
 struct Recorded {
-    lines: Vec<String>,
+    lines: Vec<(SendTarget, String)>,
     overflow: bool,
 }
 #[derive(Default)]
 struct Recorder(Mutex<Recorded>);
 impl Recorder {
-    fn drain(&self) -> TestResult<Vec<String>> {
+    fn drain_targeted(&self) -> TestResult<Vec<(SendTarget, String)>> {
         let mut state = self.0.lock().map_err(|_| "gateway recorder poisoned")?;
         if state.overflow {
             return Err("bounded gateway recorder overflow".into());
         }
         Ok(std::mem::take(&mut state.lines))
     }
+    fn drain(&self) -> TestResult<Vec<String>> {
+        Ok(self
+            .drain_targeted()?
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect())
+    }
+}
+/// 17g C2a: one command's output split by recipient. `own` holds the lines
+/// sent to the actor (`SendTarget::Conn` or `Char` of the actor; the harness
+/// connects each actor on the connection numbered as its object), `others`
+/// every other line (another connection or character, the room fan-out
+/// `All`, a relay), and `to` the target of each `others` line, index for
+/// index, so a test can ask what reached one observer (`reaching`) without
+/// counting unrelated traffic to God, the clerk or the operator.
+#[derive(Debug, Default)]
+pub(in crate::world_task::submission_disposition::tests) struct Seen {
+    pub own: Vec<String>,
+    pub others: Vec<String>,
+    pub to: Vec<SendTarget>,
+}
+impl Seen {
+    /// Append a later `Seen` (an awaited service line, a settle window).
+    pub fn extend(&mut self, more: Seen) {
+        self.own.extend(more.own);
+        self.others.extend(more.others);
+        self.to.extend(more.to);
+    }
+    /// The lines that reached `who`'s connection: sent to its character, to
+    /// its connection (numbered as its object) or to every connection.
+    pub fn reaching(&self, who: ObjId) -> Vec<&str> {
+        let id = u64::from(who.0);
+        self.others
+            .iter()
+            .zip(&self.to)
+            .filter(|(_, target)| {
+                matches!(target, SendTarget::Conn(n) | SendTarget::Char(n) if *n == id)
+                    || matches!(target, SendTarget::All)
+            })
+            .map(|(line, _)| line.as_str())
+            .collect()
+    }
 }
 impl GatewaySink for Recorder {
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
         if let Ok(mut state) = self.0.lock() {
-            for (_, event) in sends {
+            for (target, event) in sends {
                 let text = mush_testkit::text_of(&event);
                 if text.len() > 16 * 1024 || state.lines.len() >= 4096 {
                     state.overflow = true;
                 } else {
-                    state.lines.push(text);
+                    state.lines.push((target, text));
                 }
             }
         }
@@ -247,6 +291,36 @@ impl Running {
     }
 
     pub async fn command(&self, actor: ObjId, line: String) -> TestResult<Vec<String>> {
+        self.send_command(actor, line).await?;
+        self.recorder.drain()
+    }
+
+    /// 17g C2a (C2 plan §4): `command`, with the output split by recipient
+    /// (`Seen`), so an observer-rule test can prove no line of the actor's
+    /// command reaches anyone else.
+    pub async fn command_seen(&self, actor: ObjId, line: String) -> TestResult<Seen> {
+        self.send_command(actor, line).await?;
+        self.take_seen(actor)
+    }
+
+    /// 17g C2a: everything sent since the last drain, split for `actor`,
+    /// without sending a command (a driver's commit-bound confirmation, a
+    /// service's later line).
+    pub fn take_seen(&self, actor: ObjId) -> TestResult<Seen> {
+        let own = |target: &SendTarget| matches!(target, SendTarget::Conn(id) | SendTarget::Char(id) if *id == u64::from(actor.0));
+        let mut seen = Seen::default();
+        for (target, text) in self.recorder.drain_targeted()? {
+            if own(&target) {
+                seen.own.push(text);
+            } else {
+                seen.others.push(text);
+                seen.to.push(target);
+            }
+        }
+        Ok(seen)
+    }
+
+    async fn send_command(&self, actor: ObjId, line: String) -> TestResult {
         self.recorder.drain()?;
         if !self
             .handle()?
@@ -260,7 +334,35 @@ impl Running {
             return Err("server command admission gone".into());
         }
         timeout(STEP, self.handle()?.barrier_result()).await??;
-        self.recorder.drain()
+        Ok(())
+    }
+
+    /// The actor's projected legal actions. 17g C2a (C1a's residual, C2 plan
+    /// §4): a read that lands while the world commits another action answers
+    /// a typed `Busy` before reading anything, so it is retried, bounded (50
+    /// tries, each under `STEP`, 20 ms apart), never treated as a failure or
+    /// an empty projection.
+    async fn legal_actions(
+        &self,
+        actor: ObjId,
+    ) -> TestResult<Vec<mush_core::ProjectedLegalAction>> {
+        let mut tries = 0;
+        loop {
+            match timeout(
+                STEP,
+                self.handle()?
+                    .legal_actions(actor.0.into(), actor, PerceivedRef::SelfActor),
+            )
+            .await?
+            {
+                Ok(offers) => return Ok(offers),
+                Err(crate::world_task::LegalActionReadError::Busy) if tries < 49 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     pub async fn offer(
@@ -271,12 +373,7 @@ impl Running {
     ) -> TestResult<ProjectedActionReceipt> {
         eprintln!("M7_SERVER_PURCHASE_OFFER verb={verb} event=begin");
         let supplied = parameters.as_object().ok_or("offer parameters object")?;
-        let offers = timeout(
-            STEP,
-            self.handle()?
-                .legal_actions(actor.0.into(), actor, PerceivedRef::SelfActor),
-        )
-        .await??;
+        let offers = self.legal_actions(actor).await?;
         let mut matching = offers.into_iter().filter(|offer| {
             offer.presentation().verb == verb
                 && offer

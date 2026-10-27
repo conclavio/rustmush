@@ -439,6 +439,8 @@ pub(crate) mod charter_pending;
 mod service_guards;
 pub use charter_pending::PendingCharterTransferConfig;
 pub mod charter_transfer;
+pub mod command_actions;
+pub mod command_reader;
 pub mod facts;
 pub(crate) mod owner_attestation;
 pub(crate) mod owner_qualification;

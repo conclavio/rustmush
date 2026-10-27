@@ -7,7 +7,7 @@ use super::{
     commit::CommitLatch,
     executor::{Completion, Executor, FairQueue, Ready},
     invalid,
-    model::{BulkConfig, RunId, Scenario, Status},
+    model::{BulkConfig, RunId, Scenario, Status, WorkKind},
     owner::{BulkStore, Lease, Receipt},
     preparation::{self, Preparer},
     publication,
@@ -23,6 +23,10 @@ pub(super) struct Preparing {
     pub(super) account: AccountId,
     pub(super) actor: ObjId,
     pub(super) nonce: u64,
+    /// 17g C2a: which service queued it, so `@mind/rate` can tell the
+    /// character's own Registry preparation from a proving or Conduct one
+    /// (`registry_service::holds_rating`).
+    pub(super) kind: WorkKind,
 }
 struct Waiting {
     lease: Lease,
@@ -372,6 +376,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
                 account,
                 actor: ctx.actor,
                 nonce,
+                kind: WorkKind::Proving,
             },
         );
         ctx.out.info(ctx.actor,"Proving preparation queued. The owned run number follows once its frozen start is retained.");

@@ -57,6 +57,11 @@ pub struct CommerceConfig {
     dependent_owners: bool,
     original_purchases: Option<Box<PurchaseRegistration>>,
     entitlements: Option<Box<EntitlementRegistration>>,
+    /// 17g C2a: open the line-mode commands' own-actor kinds
+    /// (`command_reader`) on the original-holdings read. Set with the player
+    /// market (`with_mind_entitlements`), the condition under which TacSim
+    /// composes the command slot that reads them.
+    mind_commands: bool,
     house_purchases: Option<Box<HouseRegistration>>,
     renewals: Option<Box<RenewalRegistration>>,
     house_renewals: Option<Box<HouseRenewalRegistration>>,
@@ -157,6 +162,7 @@ impl CommerceConfig {
             dependent_owners: false,
             original_purchases: None,
             entitlements: None,
+            mind_commands: false,
             house_purchases: None,
             renewals: None,
             house_renewals: None,
@@ -582,7 +588,20 @@ impl CommerceConfig {
             original,
             derived,
         }));
-        Ok(self)
+        // 17g C2a: the player market's line-mode commands read through
+        // `command_reader`'s kinds; they are open exactly with the market.
+        Ok(self.with_mind_commands())
+    }
+
+    /// 17g C2a: open the line-mode commands' kinds on the original-holdings
+    /// read (C2 plan §2.4 fallback 1: no service or grant of their own).
+    /// Crate-private: the player market (`with_mind_entitlements`) is its one
+    /// production caller; Roll's own filing fixtures call it to read a filed
+    /// mind without the full market chain. It opens a read only, never an
+    /// action or authority.
+    pub(crate) fn with_mind_commands(mut self) -> Self {
+        self.mind_commands = true;
+        self
     }
 
     /// Explicit organization-issued, sealed personal customer composition.
@@ -1142,13 +1161,10 @@ fn register_active_readers(
                 config.compatibility.clone(),
             )?;
         }
-        super::holding_reader::register(
-            reg,
-            families.clone(),
-            ratings.clone(),
-            &config.manifest,
-            config.compatibility.clone(),
-        )?;
+        // 17g C2a: `holding_reader::register` moved to `register`, after the
+        // filing declarations, because its folded command kinds need the
+        // reservation handle registered there. Registration order is not
+        // observable: definitions and owner reads are frozen sorted.
         if config.original_purchases.is_some() {
             super::personal_filed_reader::register(
                 reg,
@@ -2070,6 +2086,21 @@ pub(crate) fn register(
         derived_registration,
         derived_update,
     } = *register_filing_declarations(reg, config, &families, &ratings)?;
+    // The original-holdings read (registered in Active only, as every reader
+    // of `register_active_readers` is). 17g C2a (C2 plan §2.4 fallback 1): it
+    // also carries the line-mode commands' own-actor kinds, which need the
+    // reservation handle registered just above and answer only with the
+    // player market.
+    if config.mode == CommerceMode::Active {
+        super::holding_reader::register(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            &config.manifest,
+            config.compatibility.clone(),
+            config.mind_commands.then(|| shells.clone()),
+        )?;
+    }
     let root_definition = reg.definition(commercial_roots_descriptor()?)?;
     let mut root_actions = BTreeSet::from([action.clone()]);
     if let Some(ic) = &config.ic {

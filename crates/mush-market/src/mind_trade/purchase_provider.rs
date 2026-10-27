@@ -693,12 +693,24 @@ impl ActionProvider for Provider {
             required_channels: vec![],
             expires: None,
             presentation: mush_core::ActionPresentation::new(
-                "market-original-mind-purchase",
+                verb(self.action.key().id.as_str()),
                 "Complete an original mind purchase",
                 "Use the exact quoted terms, or refund this purchase's escrow.",
             )
             .map_err(|_| bad())?,
             guards: guards.finish().map_err(|_| bad())?,
         }))
+    }
+}
+
+/// 17g C2a (C2 plan §2.3): one projected verb per purchase kind, keyed by the
+/// registered action id (Fund, Grant, Refund). Before the split all three
+/// shared `market-original-mind-purchase`; only the presentation's verb
+/// changed, never a label, help or definition digest.
+pub(crate) fn verb(action: &str) -> &'static str {
+    match action {
+        FUND => "market-original-mind-fund",
+        REFUND => "market-original-mind-refund",
+        _ => "market-original-mind-grant",
     }
 }

@@ -372,21 +372,33 @@ const MARKET_ACTIONS: [(&str, &str); 17] = [
 /// player's projection shows whether any of these owners is composed.
 /// Registry recall and revocation (class A) and the service verbs (class B)
 /// are not here; `MARKET_ACTIONS` covers their owners.
-const GENERIC_MARKET_VERBS: [&str; 22] = [
+///
+/// 17g C2a (C2 plan §2.3) split the shared verbs one per kind, so this list
+/// went from 22 to 26: `market-original-mind-offer` and
+/// `market-original-mind-purchase` gave way to their generic kinds
+/// (`-retire-listing`, `-retire-quote`, `-refund`; List, Quote, Fund and
+/// Grant need the counter and Expire is God's), `paid-mind-resale` to its
+/// three kinds, and the version-1 retirement gained its own verb beside
+/// version 2's `roll-retire-authored-draft`.
+const GENERIC_MARKET_VERBS: [&str; 26] = [
     "original-refund-v3",
     "derived-refund-v1",
-    "market-original-mind-offer",
-    "market-original-mind-purchase",
+    "market-original-mind-retire-listing",
+    "market-original-mind-retire-quote",
+    "market-original-mind-refund",
     "roll-file-dependent-mind",
     "roll-update-original-mind",
     "roll-update-derived-mind",
     "roll-fork-paid-mind",
     "roll-retire-authored-draft",
+    "roll-retire-authored-draft-v1",
     "roll-offer-charter-transfer",
     "roll-accept-charter-transfer",
     "roll-offer-pending-charter",
     "roll-fund-pending-charter",
-    "paid-mind-resale",
+    "paid-mind-resale-offer",
+    "paid-mind-resale-accept",
+    "paid-mind-resale-fund",
     "mind-renewal-draft",
     "mind-renewal-fund",
     "mind-renewal-grant",
@@ -472,7 +484,7 @@ fn readiness(operator: ObjId, state: &str) -> String {
     format!("Registry operators: #{} {state}.", operator.0)
 }
 /// 17g C1c: the market line with `MarketTerms::PROVISIONAL`, byte for byte.
-const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-offer listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Until the market commands exist, use +actions and +act <verb> with <JSON object>; paid-mind-resale and the market-original-mind offers wait for those commands.";
+const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Until the +minds commands exist, use +actions and +act <verb> with <JSON object>.";
 /// The deployment's one Registry operator.
 fn operator(d: &LaunchDeployment) -> Result<ObjId> {
     Ok(d.market
@@ -1024,10 +1036,12 @@ async fn named_launch_registry_offers_reach_only_the_granted_operators() -> Resu
         );
     }
     // The positive control: the operator's projection is read, not empty.
+    // 17g C2a: any of the three split resale verbs (Offer, Accept, Fund).
     check!(
-        projected(&mut r, operator)?
-            .iter()
-            .any(|offer| offer.presentation().verb == "paid-mind-resale"),
+        projected(&mut r, operator)?.iter().any(|offer| matches!(
+            offer.presentation().verb.as_str(),
+            "paid-mind-resale-offer" | "paid-mind-resale-accept" | "paid-mind-resale-fund"
+        )),
         "the operator is still offered the generic market actions"
     );
     check_eq!(launch_lines(&mut r, GOD).last(), Some(&lacks));
@@ -1177,6 +1191,148 @@ fn the_org_vocabulary_admits_every_named_launch_grant() -> Result {
             vocabulary.contains(&mush_org::CapabilityId::new(capability).ok_or("an id")?),
             "{capability}"
         );
+    }
+    Ok(())
+}
+
+/// 17g C2a test 4 (C2 plan §2.1; placed on the launch rig, which boots the
+/// full player market Active through Initialize, because the providers
+/// project nothing in an unbooted composition). Each C2a command's built
+/// parameter object, from fixture values of the right types, resolves against
+/// a live player's own projected offer for its registered Roll action through
+/// `Engine::legal_action_query`, `project_legal_actions` and
+/// `resolve_legal_action` (the path `install_submit` uses), and passes
+/// `ActionProviderRegistry::validate_invocation` for that action. The format-2
+/// Active boot's owner-read service and grant counts are printed.
+#[tokio::test(flavor = "current_thread")]
+async fn author_parameters_satisfy_the_registered_providers() -> Result {
+    use crate::minds::market_commands::author;
+    use mush_core::action::{
+        IdempotencyKey, IdempotencyKeyText, IdempotencyScope, PerceivedRef, RequestUid,
+        ScopedIdempotencyKey,
+    };
+    use mush_core::mechanics::{CanonicalId, DefinitionDigest};
+    use mush_core::{OfferExecutionContext, OfferSubmission};
+    use mush_roll::commerce::command_actions::RollCommandActions;
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let buyer = r.buyer;
+    let payer = r.payer;
+    let e = r.world_mut().engine_mut();
+    let counts = e.registry.owner_read_counts().ok_or("frozen reads")?;
+    eprintln!(
+        "NAMED_LAUNCH_OWNER_READS services={} grants={} caps=({}, {})",
+        counts.0,
+        counts.1,
+        mush_core::read_service::MAX_OWNER_READ_SERVICES,
+        mush_core::read_service::MAX_OWNER_READ_GRANTS
+    );
+    check!(
+        e.world
+            .module_state::<crate::minds::market_commands::MindCommandService>()
+            .is_some(),
+        "the format-2 Active launch composes the command slot"
+    );
+    let actions = RollCommandActions::capture(e.registry.definitions().ok_or("definitions")?);
+    let digest = |name: &str| DefinitionDigest::for_canonical_value("c2a.fixture.v1", &json!(name));
+    let revision = mush_roll::RevisionRef {
+        key: mush_roll::RevisionKey {
+            character: buyer,
+            mind: 1,
+            number: 1,
+        },
+        digest: digest("revision")?,
+    };
+    let rating: mush_roll::commerce::rating::RatingRef = serde_json::from_value(json!({
+        "job": mush_core::CommitToken::from_bytes([9; 16]),
+        "id": digest("rating id")?,
+        "schema": 1,
+        "receipt_digest": digest("receipt")?,
+    }))?;
+    let shell = RequestUid::from_bytes([7; 16]);
+    let cases = [
+        ("reserve", actions.reserve(), author::reserve_parameters()),
+        (
+            "file original",
+            actions.file(false),
+            author::file_parameters(shell, &revision, &rating, payer, "Fixture Charter"),
+        ),
+        (
+            "file dependent",
+            actions.file(true),
+            author::file_parameters(shell, &revision, &rating, payer, "Fixture Charter"),
+        ),
+        (
+            "update original",
+            actions.update(false),
+            author::update_parameters(1, &revision, &rating, payer),
+        ),
+        (
+            "update derived",
+            actions.update(true),
+            author::update_parameters(1, &revision, &rating, payer),
+        ),
+        (
+            "withdraw",
+            actions.withdraw(),
+            author::withdraw_parameters(1),
+        ),
+        ("attest", actions.attest(), author::attest_parameters(1)),
+        (
+            "fork",
+            actions.fork(),
+            author::fork_parameters(1, "fixture fork"),
+        ),
+    ];
+    e.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x47; 32])?,
+        [],
+    )?);
+    for (serial, (name, action, parameters)) in cases.into_iter().enumerate() {
+        let action = action.ok_or_else(|| format!("{name} is composed"))?;
+        let principal = mush_core::PrincipalId::Object { id: buyer };
+        let query = e.legal_action_query(principal.clone(), buyer, PerceivedRef::SelfActor)?;
+        let offers = e.project_legal_actions(&query)?;
+        let offer = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| format!("{name} is offered to a live player"))?;
+        let resolved = e
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request: RequestUid::from_bytes([u8::try_from(serial)?.wrapping_add(40); 16]),
+                    principal: principal.clone(),
+                    actor: buyer,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: action.key().owner.clone(),
+                            namespace: CanonicalId::new(action.key().id.as_str())?,
+                        },
+                        1,
+                        IdempotencyKey::Caller(IdempotencyKeyText::parse_canonical(format!(
+                            "mind.fixture.{serial}"
+                        ))?),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: offer.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: Vec::new(),
+                    parameters: parameters.clone(),
+                },
+            )
+            .map_err(|error| format!("{name} resolves: {error}"))?;
+        let (resolved_action, resolved, _) = resolved.into_authoritative_parts();
+        check_eq!(&resolved_action, &action, "{name}");
+        check_eq!(resolved.invocation().parameters(), &parameters, "{name}");
+        e.registry
+            .action_providers()
+            .ok_or("providers")?
+            .validate_invocation(&action, resolved.invocation())
+            .map_err(|error| format!("{name} validates: {error}"))?;
     }
     Ok(())
 }

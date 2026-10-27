@@ -220,17 +220,16 @@ impl LaunchComposition {
 ///   resale's to its seller.
 /// - "does not renew": personal renewal reads only entitlement-born licences
 ///   (`Birth::Entitlement`), and the v2 quote policy has no renewal terms.
-/// - "wait for those commands": `paid-mind-resale` and the two
-///   `market-original-mind-*` verbs each name several offers, which the
-///   gateway's `+act` refuses as ambiguous until 17g C2 splits them. The
-///   sentence is C1c's brief, verbatim; it does not name
-///   `roll-retire-authored-draft` (from `with_authored_forks`), which also
-///   projects two offers to every player and so is refused by `+act` too.
-///   Naming it is the lead's call; C2's split covers it either way.
+/// - "a market-original-mind-list listing": the v2 List offer's own verb
+///   since 17g C2a split the shared verbs one per kind (C2 plan §2.3), so
+///   every market verb names one offer and the gateway's `+act` can select it.
+/// - "Until the +minds commands exist": 17g C2a's sentence. The author's
+///   `@mind` commands exist from C2a; the market's `+minds` commands arrive
+///   with C2c, which rewrites this last sentence.
 pub(crate) fn market_help(market: &PlayerMarket) -> String {
     let terms = &market.terms;
     format!(
-        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-offer listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Until the market commands exist, use +actions and +act <verb> with <JSON object>; paid-mind-resale and the market-original-mind offers wait for those commands.",
+        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Until the +minds commands exist, use +actions and +act <verb> with <JSON object>.",
         filing = credits(content::FILING_MINOR),
         price = credits(terms.price_minor),
         term = content::TERM_SECONDS / 86_400,

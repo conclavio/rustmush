@@ -6052,6 +6052,20 @@ mod tests {
         assert!(help.contains("@mind/set <name>/<profile>"), "{help}");
         assert!(help.contains("@mind/check <name>"), "{help}");
         assert!(help.contains("as checked out"), "{help}");
+        // 17g C2a: the author's commerce commands, directly after /localcopy.
+        let localcopy = help
+            .lines()
+            .position(|line| line.starts_with("@mind/localcopy "))
+            .expect("the /localcopy line");
+        assert_eq!(
+            help.lines().skip(localcopy + 1).take(3).collect::<Vec<_>>(),
+            [
+                "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
+                "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
+                "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
+            ],
+            "{help}"
+        );
         let tasks = tw
             .world()
             .module_state::<ArenaRegistry>()

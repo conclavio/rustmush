@@ -47,10 +47,11 @@ jobs:
     strategy:
       fail-fast: false
       # 2026-10-25: no `max-parallel`. Each story runs on its own runner
-      # against its own in-process world, so the four share nothing, and one
+      # against its own in-process world, so the five share nothing, and one
       # at a time made the job the sum of them: 31 + 131 + 18 + 55 min, about
-      # 236, in run 40211204236. In parallel it is the longest, the server
-      # story's 131.
+      # 236, in run 40211204236, before 17g C2a added the fifth (the player
+      # market commands, one genuine Registry rating, about the server
+      # story's length). In parallel it is the longest, the server story's 131.
       matrix:
         include:
           - name: author and buyer lifecycle
@@ -65,6 +66,9 @@ jobs:
           - name: named launch catalogue
             package: tacsim
             test: hardware::flow::launch::story::named_coprates_real_save_rate_house_sale_and_membership_fences
+          - name: player market commands
+            package: mush-server
+            test: world_task::submission_disposition::tests::player_market_story::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain

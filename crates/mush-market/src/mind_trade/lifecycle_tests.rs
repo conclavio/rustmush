@@ -637,3 +637,85 @@ fn expiry_index_orders_the_entire_signed_utc_range() {
         .collect();
     assert!(keys.windows(2).all(|p| p.first() < p.get(1)));
 }
+
+/// 17g C2a (C2 plan §2.3): every kind of the three formerly shared market
+/// verbs projects its own verb (the v2 offer's five, the v2 purchase's three,
+/// the paid resale's three: eleven), none of them an old shared verb, and an
+/// actual projection of the registered v2 offer providers carries no old verb.
+#[test]
+fn shared_verbs_are_split_one_per_kind() {
+    use crate::mind_trade::provider::{Kind, verb};
+    use crate::mind_trade::purchase_records::{FUND, GRANT, REFUND};
+    const OLD: [&str; 3] = [
+        "market-original-mind-offer",
+        "market-original-mind-purchase",
+        "paid-mind-resale",
+    ];
+    let mut every: Vec<&str> = [
+        Kind::List,
+        Kind::Quote,
+        Kind::RetireListing,
+        Kind::RetireQuote,
+        Kind::Expire,
+    ]
+    .map(verb)
+    .to_vec();
+    every.extend([FUND, GRANT, REFUND].map(crate::mind_trade::purchase_provider::verb));
+    every.extend(crate::mind_paid_resale::split_verbs());
+    assert_eq!(
+        every,
+        [
+            "market-original-mind-list",
+            "market-original-mind-quote",
+            "market-original-mind-retire-listing",
+            "market-original-mind-retire-quote",
+            "market-original-mind-expire",
+            "market-original-mind-fund",
+            "market-original-mind-grant",
+            "market-original-mind-refund",
+            "paid-mind-resale-offer",
+            "paid-mind-resale-accept",
+            "paid-mind-resale-fund",
+        ]
+    );
+    let distinct: std::collections::BTreeSet<_> = every.iter().collect();
+    assert_eq!(distinct.len(), 11, "one verb per kind");
+    assert!(every.iter().all(|verb| !OLD.contains(verb)));
+    // The registered v2 offer providers, projected to a live player as
+    // `+actions` lists them: their generic kinds carry the split verbs.
+    let (mut e, _) = rig();
+    e.set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(1, [0x43; 32]).expect("offer secret"),
+            [],
+        )
+        .expect("offer key ring"),
+    );
+    let query = e
+        .legal_action_query(
+            mush_core::PrincipalId::Object { id: mush_core::GOD },
+            mush_core::GOD,
+            mush_core::PerceivedRef::SelfActor,
+        )
+        .expect("actual actor projection");
+    let projected: Vec<String> = e
+        .project_legal_actions(&query)
+        .expect("registered providers")
+        .projected()
+        .iter()
+        .map(|offer| offer.presentation().verb.clone())
+        .collect();
+    assert!(
+        projected.iter().all(|verb| !OLD.contains(&verb.as_str())),
+        "{projected:?}"
+    );
+    for generic in [
+        "market-original-mind-retire-listing",
+        "market-original-mind-retire-quote",
+    ] {
+        assert!(
+            projected.iter().filter(|verb| *verb == generic).count() == 1,
+            "{generic} in {projected:?}"
+        );
+    }
+}
