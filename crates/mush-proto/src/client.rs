@@ -6,6 +6,21 @@ use smol_str::SmolStr;
 
 use crate::{ProjectedCommitToken, caps::ClientCaps};
 
+/// **Which picture a web [`ClientCommand::Picture`] asks for** (doc 21 cut
+/// G.12a, §7.4): the gateway draws the first-person cockpit or the overhead
+/// from the same two feeds, at the same clock and size. `cockpit` is the
+/// default, so a command without the field is the cockpit it always was.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PictureKind {
+    /// The first-person cockpit picture (G.3).
+    #[default]
+    Cockpit,
+    /// The arena north-up around the tank (G.12b's overhead scene).
+    Overhead,
+}
+
 /// A pull request for panel hydration, carried inside
 /// [`ClientCommand::Req`].
 ///
@@ -192,6 +207,11 @@ pub enum ClientCommand {
         /// `HEADING` line like any other.
         #[serde(default)]
         look_mdeg: i64,
+        /// Which camera (doc 21 cut G.12a, §7.4): the first-person cockpit,
+        /// or the overhead the `v` key swaps to. Absent reads `cockpit`, so
+        /// a client from before the overhead asks for what it always did.
+        #[serde(default)]
+        kind: PictureKind,
     },
     /// Declare or update this connection's capabilities. The web transport
     /// sends it on connect and again on viewport resize; SSH never sends it

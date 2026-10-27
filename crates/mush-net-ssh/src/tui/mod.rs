@@ -154,6 +154,9 @@ impl TuiSession {
             .backend_mut()
             .set_geometry(caps.width, caps.height, caps.color);
         let TuiSession { terminal, app } = self;
+        // Doc 21 cut G.12b: screen 0's picture shown or hidden as the state
+        // now says, before what a hide owes the terminal is taken below.
+        app.pixel_sync();
         let closed = app.pixel_take_close();
         // A sixel picture is pixels in the cell grid, not an image to free:
         // a diff would leave every cell the next screen draws as a blank
@@ -472,11 +475,14 @@ mod tests {
         assert!(text.contains("rustmush"));
     }
 
-    /// Pixel cockpit spike (2026-10-21): the probe goes out after `@tui`, its
-    /// answer comes back through the input path as marker keys, `^G` opens
-    /// the view only once the answer is OK, the painted bytes carry the HUD
-    /// and the kitty frame, an unchanged picture is not re-sent, a turn is,
-    /// and closing frees the image.
+    /// Pixel cockpit spike (2026-10-21), screen 0's own picture since doc 21
+    /// cut G.12b: the probe goes out after `@tui` and its answer comes back
+    /// through the input path as marker keys; once it is OK and a seated frame
+    /// is held, screen 0 draws the picture on its own (no `^G`, which does
+    /// nothing there now); the painted bytes carry the HUD and the kitty
+    /// frame, an unchanged picture is not re-sent, a turn is; a digit away
+    /// hides it — the image freed, the turn's stop order sent with the key —
+    /// and `0` brings it back with the helm as it was.
     #[test]
     fn the_probe_reply_opens_the_pixel_view_and_paint_carries_a_kitty_frame() {
         let mut wide = caps();
@@ -486,13 +492,6 @@ mod tests {
         let probe = sess.probe_bytes();
         assert!(probe.starts_with(b"\x1b_Gi=31,"), "{probe:?}");
         assert!(probe.ends_with(b"\x1b[c"));
-        // Before the answer, ^G does nothing.
-        sess.feed_input(b"\x07");
-        assert!(!sess.pixel_active());
-        // The terminal answers OK then DA1, in one burst, as kitty does; the
-        // markers ask for no repaint.
-        let r = sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
-        assert!(!r.redraw && r.submit.is_empty());
         // A seated cockpit frame and the arena map (the canonical fixtures).
         let cockpit: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
@@ -512,10 +511,19 @@ mod tests {
             kind: PanelFrameKind::Keyframe,
             data: map,
         });
+        // Before the answer the seat draws the text cockpit.
+        let _ = sess.paint();
+        assert!(!sess.pixel_active());
+        // The terminal answers OK then DA1, in one burst, as kitty does: the
+        // picture is screen 0's now, and the key path says to repaint.
+        let r = sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        assert!(r.redraw && r.submit.is_empty());
+        assert!(sess.pixel_active());
+        // `^G` is not the cockpit's any more: nothing happens.
         let r = sess.feed_input(b"\x07");
-        assert!(r.redraw && sess.pixel_active());
-        // The key's repaint draws the HUD and no picture; the picture comes on
-        // the first frame-clock tick, with the text frame refreshed under it.
+        assert!(!r.redraw && sess.pixel_active());
+        // The repaint draws the HUD and no picture; the picture comes on the
+        // first frame-clock tick, with the text frame refreshed under it.
         let hud = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(hud.contains("PIXEL"), "the HUD: {hud:?}");
         assert!(
@@ -542,7 +550,8 @@ mod tests {
             "an event repaint re-sends no picture"
         );
         // A turn, a tick with time on the clock, a new picture.
-        sess.feed_input(b"\x1b[C");
+        let r = sess.feed_input(b"\x1b[C");
+        assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
         std::thread::sleep(std::time::Duration::from_millis(80));
         sess.pixel_tick();
         let turned = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
@@ -552,9 +561,18 @@ mod tests {
             sess.pixel_close_bytes(),
             b"\x1b_Ga=d,d=I,i=1,q=2;\x1b\\".to_vec()
         );
-        // Esc closes it; the next paint carries the delete and no frame.
+        // Esc is the palette's, as everywhere: the picture stays.
         sess.feed_input(b"\x1b");
+        assert!(sess.pixel_active(), "Esc closes nothing of the picture's");
+        // `1`: screen 1, the picture hidden, the turn stopped with the key.
+        let r = sess.feed_input(b"1");
         assert!(!sess.pixel_active());
+        assert_eq!(sess.app.active_screen(), screen::ScreenId(1));
+        assert!(
+            r.submit.len() == 1 && r.submit[0].starts_with("HEADING "),
+            "the helm's stop: {:?}",
+            r.submit
+        );
         let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(
             closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"),
@@ -562,11 +580,30 @@ mod tests {
         );
         assert!(!closed.contains("\x1b_Ga=T"));
         assert!(sess.pixel_close_bytes().is_empty());
-        // A terminal that answers DA1 first never opens the view.
-        let mut plain = TuiSession::new(caps(), TuiManifest::default());
+        // `0`: back, the helm's order intact, the picture sent again.
+        let r = sess.feed_input(b"0");
+        assert!(r.submit.is_empty(), "{:?}", r.submit);
+        assert!(sess.pixel_active());
+        assert_eq!(sess.app.active_screen(), screen::COCKPIT_SCREEN);
+        let _ = sess.paint();
+        sess.pixel_tick();
+        assert!(
+            String::from_utf8_lossy(&sess.pixel_frame()).contains("\x1b_Ga=T"),
+            "shown again"
+        );
+        // A terminal that answers DA1 first never draws the picture.
+        let mut plain = TuiSession::new(wide, TuiManifest::default());
         let _ = plain.probe_bytes();
         plain.feed_input(b"\x1b[?62;22c\x1b_Gi=31;OK\x1b\\");
-        plain.feed_input(b"\x07");
+        plain.apply_event(&OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::from_str(include_str!(
+                "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+            ))
+            .expect("cockpit fixture"),
+        });
+        let _ = plain.paint();
         assert!(!plain.pixel_active());
     }
 
@@ -767,7 +804,10 @@ mod tests {
     /// opens the chat line and stops a turn in progress; typed letters never
     /// steer; Enter sends the line as typed and flies again; Esc goes back to
     /// flying with the draft kept (the view stays open) and the next Enter
-    /// brings it back; Esc while flying closes the view.
+    /// brings it back. Since doc 21 cut G.12b the picture is screen 0's own:
+    /// it shows with the seat, Esc while flying closes nothing, `p` is the
+    /// text cockpit and back, and `F1` / `F2` open the line with an `ORDER`
+    /// ready (Esc drops it).
     #[test]
     fn the_text_cockpit_chats_while_flying() {
         let mut wide = caps();
@@ -790,9 +830,11 @@ mod tests {
             actor: Some(ObjRef::new("#2", "Vasquez")),
             text: RichText::plain("contact bearing ninety"),
         });
-        sess.feed_input(b"\x07");
-        assert!(sess.pixel_active());
         let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            sess.pixel_active(),
+            "the seat on screen 0 draws the picture"
+        );
         for word in [
             "ARMOUR", "WEAPONS", "CONTACTS", "COMMS", "Vasquez", "ninety", "READY",
         ] {
@@ -833,7 +875,7 @@ mod tests {
         );
         let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(screen.contains("(draft:"), "{screen:?}");
-        let r = sess.feed_input(b"xyz");
+        let r = sess.feed_input(b"kjo");
         assert!(r.submit.is_empty(), "flying: those letters were keys");
         let r = sess.feed_input(b"\r");
         assert!(
@@ -843,9 +885,27 @@ mod tests {
         );
         let r = sess.feed_input(b"!\r");
         assert_eq!(r.submit, ["half a tho!"]);
-        // Esc while flying closes the view.
+        // Esc while flying closes nothing; `p` is the text cockpit, and back.
         sess.feed_input(b"\x1b");
-        assert!(!sess.pixel_active());
+        assert!(sess.pixel_active());
+        let r = sess.feed_input(b"p");
+        assert!(!sess.pixel_active() && r.submit.is_empty() && r.queries.is_empty());
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(
+            screen.contains("picture"),
+            "the text legend's p: {screen:?}"
+        );
+        sess.feed_input(b"p");
+        assert!(sess.pixel_active());
+        // `F1`: the chat line with `ORDER ALL ` ready; Esc drops it, no draft.
+        sess.feed_input(b"\x1bOP");
+        assert_eq!(sess.app.input_text(), "ORDER ALL ");
+        sess.feed_input(b"\x1b");
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(!screen.contains("(draft:"), "{screen:?}");
+        sess.feed_input(b"\x1b[12~");
+        let r = sess.feed_input(b"hold the ford\r");
+        assert_eq!(r.submit, ["ORDER 2 hold the ford"]);
     }
 
     /// Doc 21 cut G.2, end to end through the session: a terminal that
@@ -885,9 +945,8 @@ mod tests {
                 data,
             });
         }
-        sess.feed_input(b"\x07");
-        assert!(sess.pixel_active());
         let _ = sess.paint();
+        assert!(sess.pixel_active(), "screen 0 draws it on its own (G.12b)");
         sess.pixel_tick();
         let first = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(
@@ -906,9 +965,10 @@ mod tests {
         sess.pixel_tick();
         let again = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(again.contains("\x1bP0;1;0q"), "resent after the clear");
-        // Leaving with a sixel picture frees nothing; closing wipes it.
+        // Leaving with a sixel picture frees nothing; hiding it (`p`, the text
+        // cockpit) wipes it.
         assert!(sess.pixel_close_bytes().is_empty());
-        sess.feed_input(b"\x1b");
+        sess.feed_input(b"p");
         assert!(!sess.pixel_active());
         let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
         assert!(

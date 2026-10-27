@@ -342,6 +342,22 @@ pub struct Frame {
     /// keyframe, never extends it), so a mind reads nothing of its own seal
     /// here and `crate::minds::api::PARITY` is untouched.
     pub mind: Option<FrameMind>,
+    /// **Whether the seat's master gate is at weapons free** (doc 21 cut
+    /// G.12a, §7.3): `!`[`crate::arena::state::UnitState::weapons_hold`] —
+    /// `true` unless the pilot typed `FIRE HOLD`. The pilot's own switch,
+    /// outside the observer rule; the HUD says which and the `f` key flips it.
+    /// [`Frame::same_as`] compares it, so a flip is sent at once.
+    pub weapons_free: bool,
+    /// **The hull's forward speed ceiling, cm/s** (doc 21 cut G.12a), the
+    /// figure the arena clamps a `SPEED` to at apply
+    /// ([`crate::arena::state::TrackedRules::max_speed_cms`]) and the `SPEED`
+    /// refusal names — so a client steps and clamps its speed keys without a
+    /// round trip. A fit constant for the match.
+    pub max_speed_cms: u32,
+    /// **The hull's reverse speed ceiling, cm/s, as a magnitude** (doc 21 cut
+    /// G.12a): [`crate::arena::state::TrackedRules::reverse_ceiling_cms`], the
+    /// other half of [`Frame::max_speed_cms`].
+    pub reverse_cms: u32,
 }
 
 /// **The hull's sealed mind on the pilot's frame** (17b cut M5.4; doc 17 §12
@@ -717,6 +733,12 @@ impl Frame {
             // it moves only on a pilot's own flip, so comparing it costs no
             // frame anybody would not already have been sent.
             && self.ecm == other.ecm
+            // **Doc 21 cut G.12a**: the master gate moves only on the pilot's
+            // own flip and the ceilings never, so neither costs a frame anybody
+            // would not already have been sent.
+            && self.weapons_free == other.weapons_free
+            && self.max_speed_cms == other.max_speed_cms
+            && self.reverse_cms == other.reverse_cms
             // **16b cut F.2**: the damage surface is compared, so a round that
             // came off the armour sends a frame. It is the cheapest comparison on
             // this list after the integers — a handful of small structs per pilot
@@ -2897,6 +2919,11 @@ impl Arena {
             // **17b cut M5.4** (doc 17 §12): the hull's sealed mind, its
             // classes read live.
             mind: self.frame_mind(unit),
+            // **Doc 21 cut G.12a** (§7.3): the seat's master gate and the two
+            // speed ceilings the arena's own `SPEED` clamp reads.
+            weapons_free: !unit.weapons_hold,
+            max_speed_cms: unit.mobility.max_speed_cms,
+            reverse_cms: unit.mobility.reverse_ceiling_cms(),
         })
     }
 

@@ -23,6 +23,8 @@
 //! - [`doll`]: the armour doll as a page with a legend (G.6a).
 //! - [`replay`]: a finished match's `arena.replay` drawn as a scene over its
 //!   ground, with a timeline (G.8).
+//! - [`overhead`]: the cockpit's second camera, the arena from above
+//!   north up around the pilot's own tank (G.12b).
 //! - [`scene`]: bucket B's retained 2D scene and its one rasteriser (G.5).
 //! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
 //!   terminals that draw sixel and not kitty — Windows Terminal above all.
@@ -65,6 +67,7 @@ pub mod heightfield;
 pub mod kitty;
 pub mod look;
 pub mod math;
+pub mod overhead;
 pub mod overlay;
 pub mod picture;
 #[cfg(feature = "encode")]

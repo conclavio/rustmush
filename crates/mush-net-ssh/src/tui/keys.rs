@@ -421,6 +421,13 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
         b'H' => Key::Home,
         b'F' => Key::End,
         b'Z' => Key::BackTab,
+        // Doc 21 cut G.12b: F1, F2 and F4 as the kitty keyboard protocol sends
+        // them while the pixel view has it pushed (`CSI P`, `CSI Q`, `CSI S`;
+        // F3 is `CSI 13 ~`, because `CSI R` is a cursor report) — the
+        // cockpit's `ORDER` prefills.
+        b'P' => Key::F(1),
+        b'Q' => Key::F(2),
+        b'S' => Key::F(4),
         // A primary device attributes reply, `CSI ? 6 2 ; … c` (a `CSI > … c`
         // is DA2 and `CSI c` alone is a request, neither of which a terminal
         // sends us unasked).
@@ -571,6 +578,12 @@ mod tests {
         assert_eq!(
             keys(b"\x1bOP\x1bOQ\x1b[15~\x1b[20~\x1b[1;5C"),
             vec![Key::F(1), Key::F(2), Key::F(5), Key::F(9), Key::Right]
+        );
+        // Doc 21 cut G.12b: the kitty keyboard protocol's F1, F2 and F4 (F3
+        // is `CSI 13 ~`); a release is nothing.
+        assert_eq!(
+            keys(b"\x1b[P\x1b[Q\x1b[13~\x1b[S\x1b[1;1:3P"),
+            vec![Key::F(1), Key::F(2), Key::F(3), Key::F(4)]
         );
         // Shift-Tab is never mistaken for Alt+[.
         assert!(!keys(b"\x1b[Z").contains(&Key::Alt('[')));

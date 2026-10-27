@@ -2902,7 +2902,8 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10; M5rules moves the ordered rule tree to 11, M5r motor state to 12.
     // Format 16 also carries record-only accepted-order attribution (R4).
-    assert_eq!(snapshot.document["format"], 16);
+    // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
+    assert_eq!(snapshot.document["format"], 17);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -2966,21 +2967,21 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         tacsim::arena::state_hash(&resumed)
     );
 
-    // A format-6 document is refused by name (expected 16 after R4; no old-format migration).
+    // A format-6 document is refused by name (expected 17 since doc 21 cut G.12a; no migration).
     let mut old = snapshot.document.clone();
     old["format"] = serde_json::json!(6);
     assert_eq!(
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 16
+            expected: 17
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 16
+            expected: 17
         })
     ));
 }
@@ -4684,7 +4685,7 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
             .filter_map(|arming| match arming {
                 Arming::Arm(cond) => Some(cond.weapon.clone()),
                 Arming::Disarm { .. } => None,
-                Arming::Rules { .. } | Arming::Remove { .. } => {
+                Arming::Rules { .. } | Arming::Remove { .. } | Arming::WeaponsFree { .. } => {
                     panic!("stock doctrine emitted an authored-rule edit")
                 }
             })

@@ -45,7 +45,7 @@ use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
     PanelStore, QuarryMode, REPLAY_FEED, UNIT_FEED,
 };
-use super::pixel::PixelView;
+use super::pixel::{KeyUse, PictureKind, PixelView};
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
@@ -406,6 +406,15 @@ pub struct TuiApp {
     /// **The pixel cockpit view** (spike, 2026-10-21): the kitty graphics
     /// probe, the camera on its leash, the frame clock's counters.
     pixel: PixelView,
+    /// **`p` on screen 0** (doc 21 cut G.12b): the pilot asked for the text
+    /// cockpit over the picture. Kept for the session.
+    cockpit_text: bool,
+    /// The chat line was opened by `F1` … `F6` (G.12b): Esc drops the order
+    /// rather than keeping it as a draft.
+    order_prefill: bool,
+    /// A key showed or hid screen 0's picture (G.12b): `feed_input`'s burst
+    /// repaints.
+    pixel_moved: bool,
     /// **The cockpit's sounds** (doc 21 cut G.10): BEL, or w11term's OSC 440
     /// once its `XTVERSION` names it.
     sounds: super::sound::Sounds,
@@ -732,6 +741,9 @@ impl TuiApp {
             live_seen_at: None,
             live_asked_at: None,
             pixel: PixelView::new(),
+            cockpit_text: false,
+            order_prefill: false,
+            pixel_moved: false,
             sounds: super::sound::Sounds::new(),
         })
     }
@@ -820,8 +832,98 @@ impl TuiApp {
                     .filter(|b| !(live && matches!(b.key, ',' | '.' | 'x')))
                     .collect()
             }
+            // Doc 21 cut G.12b: while screen 0 could draw the picture, its `p`
+            // is the picture's toggle (the text cockpit and back) — pull
+            // otherwise, as 16b cut B.2 bound it.
+            _ if screen.id == COCKPIT_SCREEN && self.cockpit_picture_possible() => screen
+                .keys
+                .iter()
+                .map(|b| match b.key {
+                    'p' => KeyBinding {
+                        key: 'p',
+                        label: "picture",
+                        action: KeyAction::Local(LocalAction::CockpitPicture),
+                    },
+                    _ => *b,
+                })
+                .collect(),
             _ => screen.keys.clone(),
         }
+    }
+
+    /// **Whether screen 0 could draw the cockpit picture** (doc 21 §7.3, cut
+    /// G.12b): the cockpit screen is showing and is not the replay's layout,
+    /// the terminal is at the floor (below it no screen is drawn), a seated
+    /// frame is held, and the terminal shows pictures (the probe, or
+    /// `@pixel/encoder`).
+    fn cockpit_picture_possible(&self) -> bool {
+        self.active == COCKPIT_SCREEN
+            && !self.picture_layout()
+            && self.caps.width >= FLOOR_COLS
+            && self.cockpit_seat
+            && self
+                .panels
+                .get(COCKPIT_FEED)
+                .is_some_and(|c| c.get("seated").and_then(Value::as_bool) != Some(false))
+            && self.pixel.can_draw()
+    }
+
+    /// **Whether screen 0 draws the picture now** (G.12b): it could, the
+    /// pilot has not asked for the text cockpit (`p`), and nothing the
+    /// picture would hide owns the keys — the help, the palette, the mind
+    /// workshop, an ask or a hidden-echo prompt. Each of those shows over the
+    /// text cockpit, and the picture comes back when it closes.
+    fn cockpit_picture_wanted(&self) -> bool {
+        self.cockpit_picture_possible()
+            && !self.cockpit_text
+            && !self.help
+            && self.palette.is_none()
+            && !self.workshop.open
+            && self.answering.is_none()
+            && self.requests.is_empty()
+            && self.input_mode == InputMode::Normal
+    }
+
+    /// Whether the open `^G` picture's own screen is showing: the chart's on
+    /// the chart screen, the doll's on the damage screen, the replay's on
+    /// screen 0's replay layout (G.12b closes one whose screen went away).
+    fn pixel_home(&self) -> bool {
+        match self.pixel.kind() {
+            PictureKind::Chart => self.active == CHART_SCREEN,
+            PictureKind::Doll => self.active == super::screen::DAMAGE_SCREEN,
+            PictureKind::Replay => self.picture_layout(),
+            PictureKind::Cockpit => self.active == COCKPIT_SCREEN,
+        }
+    }
+
+    /// **Put screen 0's picture where the state says** (doc 21 cut G.12b):
+    /// shown while `Self::cockpit_picture_wanted`, hidden otherwise (a
+    /// hide frees the image and stops the helm; the view keeps the rest), and
+    /// a `^G` picture closed once its own screen is no longer showing. Runs
+    /// after every key and before every paint. Whether the picture came or
+    /// went.
+    pub fn pixel_sync(&mut self) -> bool {
+        let now = Instant::now();
+        // Ages a probe the terminal never answered, so a silent one settles.
+        let _ = self.pixel.encoder(now);
+        let was = self.pixel.is_active();
+        if was && !self.pixel_home() {
+            self.pixel.hide();
+        }
+        let showing = self.pixel.is_active();
+        let want = self.cockpit_picture_wanted();
+        if want && !showing {
+            self.pixel.toggle_for(PictureKind::Cockpit, now);
+        } else if !want && showing && self.pixel.kind() == PictureKind::Cockpit {
+            self.pixel.hide();
+        }
+        if self.pixel.is_active()
+            && self.pixel.kind() == PictureKind::Cockpit
+            && let Some(cockpit) = self.panels.get(COCKPIT_FEED)
+        {
+            self.pixel.observe(cockpit, now);
+        }
+        was != self.pixel.is_active()
     }
 
     /// The replay open on screen 0, if any (16b cut I.2).
@@ -1782,7 +1884,7 @@ impl TuiApp {
         self.replay_asked_at = None;
         self.picture_switched = None;
         // Doc 21 cut G.8: the replay's picture goes with it.
-        self.pixel.close_kind(super::pixel::PictureKind::Replay);
+        self.pixel.close_kind(PictureKind::Replay);
     }
 
     /// Switch to the cockpit screen, answering its hydration queries. Nothing
@@ -2475,19 +2577,47 @@ impl TuiApp {
     /// Decode a burst of raw input bytes and act on every key.
     pub fn feed_input(&mut self, bytes: &[u8]) -> InputResult {
         let mut result = InputResult::default();
+        let mut moved = false;
         for key in self.parser.feed(bytes) {
             self.handle_key(key, &mut result);
+            // Doc 21 cut G.12b: a key that showed or hid screen 0's picture
+            // owes a repaint even when a later key in the burst (a probe
+            // reply's second marker) asks for none.
+            moved |= std::mem::take(&mut self.pixel_moved);
         }
+        result.redraw |= moved;
         result
     }
 
-    /// Act on one decoded key (tests drive this directly).
+    /// Act on one decoded key (tests drive this directly), then put screen
+    /// 0's picture where the key left things (doc 21 cut G.12b,
+    /// [`Self::pixel_sync`]): a digit away from 0 hides it and its helm's
+    /// stop order goes out with the key's; a chat line opened over it stops
+    /// a turn first.
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
+        let flying = self.mode == Mode::Nav;
+        self.handle_key_inner(key, r);
+        if flying
+            && self.mode == Mode::Input
+            && self.pixel.is_active()
+            && self.pixel.kind() == PictureKind::Cockpit
+        {
+            self.pixel.chat_opened(Instant::now());
+        }
+        if self.pixel_sync() {
+            r.redraw = true;
+            self.pixel_moved = true;
+        }
+        r.submit.extend(self.pixel.take_orders());
+    }
+
+    fn handle_key_inner(&mut self, key: Key, r: &mut InputResult) {
         r.redraw = true;
         // Pixel cockpit spike (2026-10-21): the probe's replies are not keys
-        // a person pressed; `^G` opens or closes the view; while it is open
-        // it owns every key but the detach (the text cockpit's chat line
-        // among them, `Self::pixel_key`).
+        // a person pressed; `^G` opens or closes another screen's picture;
+        // while one is open it has the first say over every key but the
+        // detach (the text cockpit's chat line among them, `Self::pixel_key`),
+        // and screen 0's own picture passes the global keys on (G.12b).
         match key {
             Key::GraphicsOk | Key::GraphicsErr => {
                 self.pixel.graphics_reply(key == Key::GraphicsOk);
@@ -2517,24 +2647,26 @@ impl TuiApp {
             }
             Key::Ctrl('g') => {
                 // Doc 21 cut G.5b: the picture is the screen's — the orbital
-                // view on the chart screen, the cockpit elsewhere. The view
-                // opens flying: a line being typed is kept as the draft its
-                // chat line brings back.
+                // view on the chart screen. The view opens flying: a line being
+                // typed is kept as the draft its chat line brings back.
                 // Doc 21 cut G.8: and the replay on screen 0 while a replay
                 // (not a live picture) is its layout, opened at the panes'
                 // keyframe.
+                // Doc 21 cut G.12b: the cockpit is screen 0's own rendering, no
+                // longer `^G`'s; elsewhere the key does nothing.
                 let kind = if self.active == CHART_SCREEN {
-                    super::pixel::PictureKind::Chart
+                    PictureKind::Chart
                 } else if self.active == super::screen::DAMAGE_SCREEN {
                     // Doc 21 cut G.6a: the armour doll as a page.
-                    super::pixel::PictureKind::Doll
+                    PictureKind::Doll
                 } else if self.picture_layout() && self.picture.is_some_and(|p| !p.live) {
-                    super::pixel::PictureKind::Replay
+                    PictureKind::Replay
                 } else {
-                    super::pixel::PictureKind::Cockpit
+                    r.redraw = false;
+                    return;
                 };
                 let opened = self.pixel.toggle_for(kind, Instant::now());
-                if opened && kind == super::pixel::PictureKind::Replay {
+                if opened && kind == PictureKind::Replay {
                     self.pixel_replay_follow(true);
                 }
                 if opened && self.mode == Mode::Input {
@@ -2545,8 +2677,9 @@ impl TuiApp {
                 return;
             }
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
-                self.pixel_key(key, r);
-                return;
+                if self.pixel_key(key, r) {
+                    return;
+                }
             }
             // A held key's repeat or release that outlived the view.
             Key::Repeat(_) | Key::Release(_) => {
@@ -2650,10 +2783,13 @@ impl TuiApp {
     /// offered here.
     ///
     /// Flying, Enter opens the line (with the draft Esc kept), stopping a
-    /// turn in progress first; every other key is the view's (doc 21 cut
-    /// G.4: its helm orders go to the world as the lines a pilot would type,
-    /// `HEADING <deg>`).
-    fn pixel_key(&mut self, key: Key, r: &mut InputResult) {
+    /// turn in progress first; every other key is offered to the view (doc 21
+    /// cut G.4: its helm orders go to the world as the lines a pilot would
+    /// type, `HEADING <deg>`). **Doc 21 cut G.12b**: the cockpit picture
+    /// passes the global keys back (answered `false`, and the app acts on
+    /// them as on every screen), and `F1` … `F6` open the line with an
+    /// `ORDER` ready, which Esc drops. Whether the key was spent here.
+    fn pixel_key(&mut self, key: Key, r: &mut InputResult) -> bool {
         if self.mode == Mode::Input {
             match key {
                 Key::Repeat(arrow) => {
@@ -2666,6 +2802,7 @@ impl TuiApp {
                     self.input_key(key, r);
                 }
                 Key::Release(_) | Key::Alt(_) => r.redraw = false,
+                Key::Esc if self.order_prefill => self.leave_input(false),
                 Key::Enter => {
                     self.input_key(key, r);
                     if self.mode == Mode::Input {
@@ -2675,7 +2812,7 @@ impl TuiApp {
                 _ => self.input_key(key, r),
             }
             self.palette = None;
-            return;
+            return true;
         }
         if key == Key::Enter {
             self.pixel.chat_opened(Instant::now());
@@ -2685,14 +2822,25 @@ impl TuiApp {
                 Some(draft) => self.line.set(&draft),
                 None => self.line.clear(),
             }
-            return;
+            return true;
         }
-        if self.pixel.kind() == super::pixel::PictureKind::Replay && self.pixel_replay_key(key, r) {
-            return;
+        if self.pixel.kind() == PictureKind::Replay && self.pixel_replay_key(key, r) {
+            return true;
         }
-        self.pixel.key(key, Instant::now());
+        let used = self.pixel.key(key, Instant::now());
         r.submit.extend(self.pixel.take_orders());
         self.pixel_chart_ask(&mut r.queries);
+        match used {
+            KeyUse::Used => true,
+            KeyUse::Passed => false,
+            KeyUse::Prefill(line) => {
+                self.pixel.chat_opened(Instant::now());
+                r.submit.extend(self.pixel.take_orders());
+                self.enter_input(Some(line));
+                self.order_prefill = true;
+                true
+            }
+        }
     }
 
     /// **The replay picture's keys that need the document** (doc 21 cut
@@ -2751,7 +2899,7 @@ impl TuiApp {
     /// panes put on the keyframe at or before the cursor — or, `seek`, the
     /// cursor put on the panes' keyframe (the picture opening).
     fn pixel_replay_follow(&mut self, seek: bool) {
-        if self.pixel.kind() != super::pixel::PictureKind::Replay || !self.pixel.is_active() {
+        if self.pixel.kind() != PictureKind::Replay || !self.pixel.is_active() {
             return;
         }
         let Some(picture) = self.picture.filter(|p| !p.live) else {
@@ -3042,6 +3190,9 @@ impl TuiApp {
                 self.panels.set_quarry(view);
                 r.queries.extend(self.screen_queries());
             }
+            // Doc 21 cut G.12b: screen 0's `p` while it could draw the picture
+            // — the text cockpit, and back; `Self::pixel_sync` does the rest.
+            LocalAction::CockpitPicture => self.cockpit_text = !self.cockpit_text,
             LocalAction::QuarryLayer => {
                 let mut view = self.panels.quarry().clone();
                 let source = match view.mode {
@@ -3371,6 +3522,7 @@ impl TuiApp {
         self.line.clear();
         self.palette = None;
         self.mode = Mode::Nav;
+        self.order_prefill = false;
     }
 
     /// A screen digit. A digit this server has no screen for — an unregistered
@@ -3945,6 +4097,8 @@ impl TuiApp {
             return;
         }
         let now = self.now();
+        // Doc 21 cut G.12b: screen 0's picture where the state says.
+        self.pixel_sync();
         // Doc 20 cut SM.9 (the 0z ruling 1): the quarry map places the viewer's moving rigs by
         // the clock of this paint.
         if self.panels.quarry().now != now {
@@ -4073,7 +4227,7 @@ impl TuiApp {
         );
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
-        if self.pixel.kind() == super::pixel::PictureKind::Replay {
+        if self.pixel.kind() == PictureKind::Replay {
             // Doc 21 cut G.8: the replay's own panes under its picture.
             let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
                 move |w: u16, h: u16| {
@@ -4095,7 +4249,7 @@ impl TuiApp {
                 &[("MATCH", &status), ("SHOTS", &shots), ("WRECKS", &wrecks)],
                 &|w| self.scrollback_rows(w),
             );
-        } else if self.pixel.kind() == super::pixel::PictureKind::Chart {
+        } else if self.pixel.kind() == PictureKind::Chart {
             let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
             cockpit_text::draw_chart_panel(
                 frame,
@@ -4292,7 +4446,7 @@ impl TuiApp {
         } = self;
         // Doc 21 cut G.8: the replay's cursor is the view's, and reaches the
         // picture as a client-local feed beside the held ones.
-        if pixel.kind() == super::pixel::PictureKind::Replay {
+        if pixel.kind() == PictureKind::Replay {
             let cursor = serde_json::json!({
                 "match": picture.map_or(0, |p| p.match_id),
                 "t_ms": pixel.replay().t_ms,
@@ -8938,6 +9092,25 @@ mod tests {
             "the cockpit, not the replay:\n{text}"
         );
         assert!(!text.contains("Both sides shown"), "{text}");
+
+        // Doc 21 cut G.12b: on a terminal that shows pictures the replay's
+        // layout is not the cockpit's picture, and the seat that closes the
+        // replay leaves screen 0 drawing the picture.
+        let mut shown = picture_app();
+        shown.pixel_probe_sent();
+        shown.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        assert!(
+            !shown.pixel_active(),
+            "the replay's layout draws no cockpit"
+        );
+        shown.feed_input(b"1");
+        let mut frame = arena_json(COCKPIT_FIXTURE);
+        frame["match"] = serde_json::json!(8);
+        shown.apply_event(&arena_keyframe(COCKPIT_FEED, frame));
+        shown.pixel_sync();
+        assert_eq!(shown.picture(), None, "the seat closed the replay");
+        assert_eq!(shown.active_screen(), COCKPIT_SCREEN);
+        assert!(shown.pixel_active() && shown.pixel_kind() == PictureKind::Cockpit);
     }
 
     /// **A cleared cockpit keeps an open replay** (16b cut I.2): the viewer's
@@ -9275,5 +9448,143 @@ mod tests {
         assert_eq!(app.mode(), Mode::Nav);
         assert!(r.submit.is_empty() && r.queries.is_empty());
         assert_eq!(app.picture().map(|p| p.focus), Some(2), "BA is the focus");
+    }
+
+    // ---- doc 21 cut G.12b: screen 0 draws the picture ---------------------------
+
+    /// A seated app on a terminal that answered kitty: screen 0 draws the
+    /// picture on its own. `edit` touches the fixture frame first.
+    fn flying_app(edit: impl FnOnce(&mut Value)) -> TuiApp {
+        let mut app = arena_app();
+        app.pixel_probe_sent();
+        app.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        let mut frame = arena_json(COCKPIT_FIXTURE);
+        edit(&mut frame);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, frame));
+        app.pixel_sync();
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert!(app.pixel_active(), "the seat on screen 0 draws the picture");
+        assert_eq!(app.pixel_kind(), PictureKind::Cockpit);
+        app
+    }
+
+    /// **Every flight key sends the line a pilot would type** (§7.3): `w`
+    /// from rest a tenth of the top speed (the HUD shows it), `x` all stop,
+    /// `a` a heading, `q` and `v` nothing, `f` the verb for the frame's
+    /// gate, `g` the volley, `t` the next contact.
+    #[test]
+    fn g12b_the_flight_keys_send_their_lines() {
+        // G.12a's fixture names the line tank's ceilings; dropped here so the
+        // step is a tenth of the default 60.
+        let mut app = flying_app(|f| {
+            f["speed_kph"] = 0.into();
+            if let Some(frame) = f.as_object_mut() {
+                frame.remove("max_speed_kph");
+                frame.remove("reverse_kph");
+            }
+        });
+        assert_eq!(app.feed_input(b"w").submit, ["SPEED 6"]);
+        let text = super::super::frame_text(&mut app, 120, 40);
+        assert!(text.contains("spd 0→6"), "{text}");
+        assert!(text.contains("w/s:speed"), "the legend: {text}");
+        let r = app.feed_input(b"a");
+        assert!(r.submit.len() == 1 && r.submit[0].starts_with("HEADING "));
+        assert!(app.feed_input(b"q").submit.is_empty(), "a look is no order");
+        assert!(app.feed_input(b"v").submit.is_empty(), "nor is the camera");
+        assert!(super::super::frame_text(&mut app, 120, 40).contains("PIXEL OVERHEAD"));
+        assert_eq!(app.feed_input(b"f").submit, ["FIRE HOLD"]);
+        assert_eq!(app.feed_input(b"g").submit, ["FIRE ALL"]);
+        assert_eq!(app.feed_input(b"t").submit, ["LOCK X3"]);
+        assert_eq!(app.feed_input(b"T").submit, ["LOCK BA"]);
+        let stop = app.feed_input(b"x").submit;
+        assert!(stop.contains(&"SPEED 0".to_string()), "{stop:?}");
+        // `f` under a frame that says weapons hold sends the other verb.
+        let mut held = flying_app(|f| f["weapons_free"] = false.into());
+        let text = super::super::frame_text(&mut held, 120, 40);
+        assert!(
+            text.contains("weapons HOLD") && text.contains("f:free"),
+            "{text}"
+        );
+        assert_eq!(held.feed_input(b"f").submit, ["FIRE FREE"]);
+        assert!(super::super::frame_text(&mut held, 120, 40).contains("weapons free"));
+        // The letters that are the text cockpit's own bindings act on nothing
+        // under the picture: `k` prefills no `lock `.
+        let r = held.feed_input(b"k");
+        assert!(r.submit.is_empty() && held.mode() == Mode::Nav);
+    }
+
+    /// **The global keys pass through the picture** (§7.3): `^G` does
+    /// nothing on screen 0; `?` and `/` open the help and the palette over
+    /// the text cockpit, and the picture comes back when they close; `"`
+    /// opens the chat line over the picture; `F1` prefills `ORDER ALL `;
+    /// `^]` detaches.
+    #[test]
+    fn g12b_the_global_keys_pass_through_the_picture() {
+        let mut app = flying_app(|_| {});
+        let r = app.feed_input(b"\x07");
+        assert!(!r.redraw && app.pixel_active(), "^G is not the cockpit's");
+        app.feed_input(b"?");
+        assert!(app.help_open() && !app.pixel_active());
+        app.feed_input(b"\x1b");
+        assert!(!app.help_open() && app.pixel_active());
+        app.feed_input(b"/");
+        assert!(app.palette_open() && !app.pixel_active());
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x1b");
+        assert!(app.pixel_active() && app.mode() == Mode::Nav);
+        app.feed_input(b"\"");
+        assert!(app.pixel_active() && app.mode() == Mode::Input);
+        assert_eq!(app.input_text(), "\"");
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x1bOP");
+        assert_eq!(
+            (app.mode(), app.input_text()),
+            (Mode::Input, "ORDER ALL ".to_string())
+        );
+        assert!(app.pixel_active(), "the chat line opens over the picture");
+        app.feed_input(b"\x1b");
+        assert_eq!(app.mode(), Mode::Nav);
+        assert!(app.feed_input(b"\x1d").detach);
+    }
+
+    /// **`1` then `0`** (§7.3): the picture hides on screen 1 — a turn in
+    /// progress stopped with the key — and comes back on `0` with the camera
+    /// as it was; `p` is the text cockpit, whose legend names `p` as the
+    /// picture's and not the pull.
+    #[test]
+    fn g12b_one_then_zero_returns_the_picture_and_p_toggles_it() {
+        let mut app = flying_app(|_| {});
+        app.feed_input(b"v");
+        app.feed_input(b"d");
+        let r = app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+        assert!(!app.pixel_active());
+        assert!(
+            r.submit.len() == 1 && r.submit[0].starts_with("HEADING "),
+            "{:?}",
+            r.submit
+        );
+        let r = app.feed_input(b"0");
+        assert!(app.pixel_active() && r.submit.is_empty());
+        assert!(super::super::frame_text(&mut app, 120, 40).contains("PIXEL OVERHEAD"));
+        let r = app.feed_input(b"p");
+        assert!(!app.pixel_active());
+        assert!(r.queries.is_empty(), "the picture's `p` is no pull");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("p picture"), "{text}");
+        app.feed_input(b"p");
+        assert!(app.pixel_active());
+        // Below the floor no screen is drawn, and no picture.
+        let mut narrow = app.caps();
+        narrow.width = 100;
+        app.set_caps(narrow);
+        app.pixel_sync();
+        assert!(!app.pixel_active());
+        // A terminal with no pictures keeps `p` the pull.
+        let mut plain = arena_app();
+        plain.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert!(!plain.pixel_active());
+        let r = plain.feed_input(b"p");
+        assert!(!r.queries.is_empty(), "pull");
     }
 }

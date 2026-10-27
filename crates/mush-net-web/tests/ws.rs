@@ -10,7 +10,7 @@ use std::time::Duration;
 use common::{CHAR_KEY, MockWebHooks, TOKEN, spawn_server, sys_env, test_config};
 use futures::{SinkExt, StreamExt};
 use mush_net_web::{AttachErr, ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
-use mush_proto::{ClientCommand, Envelope, OutputEvent, ProjectedCommitToken, Query};
+use mush_proto::{ClientCommand, Envelope, OutputEvent, PictureKind, ProjectedCommitToken, Query};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -767,6 +767,7 @@ async fn a_picture_request_gets_png_frames_from_the_connections_own_feeds() {
         &ClientCommand::Picture {
             on: true,
             look_mdeg: 0,
+            kind: PictureKind::Cockpit,
         },
     )
     .await;
@@ -838,6 +839,7 @@ async fn a_picture_request_gets_png_frames_from_the_connections_own_feeds() {
         &ClientCommand::Picture {
             on: true,
             look_mdeg: 45_000,
+            kind: PictureKind::Cockpit,
         },
     )
     .await;
@@ -857,6 +859,7 @@ async fn a_picture_request_gets_png_frames_from_the_connections_own_feeds() {
         &ClientCommand::Picture {
             on: false,
             look_mdeg: 45_000,
+            kind: PictureKind::Cockpit,
         },
     )
     .await;
@@ -889,6 +892,7 @@ async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
         &ClientCommand::Picture {
             on: true,
             look_mdeg: 0,
+            kind: PictureKind::Cockpit,
         },
     )
     .await;
@@ -959,6 +963,7 @@ async fn a_burst_of_look_changes_draws_one_frame_an_interval() {
             let cmd = ClientCommand::Picture {
                 on: true,
                 look_mdeg: look * 3_000,
+                kind: PictureKind::Cockpit,
             };
             sink.send(Message::Text(serde_json::to_string(&cmd).unwrap().into()))
                 .await

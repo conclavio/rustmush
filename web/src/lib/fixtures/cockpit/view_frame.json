@@ -181,6 +181,7 @@
   "lock_percent": 62,
   "lock_range_m": 440,
   "match": 7,
+  "max_speed_kph": 54,
   "mind": {
     "active": 0,
     "card": {
@@ -636,6 +637,7 @@
   ],
   "power": "online",
   "receiver": null,
+  "reverse_kph": 27,
   "rows": [
     [
       [
@@ -1044,6 +1046,7 @@
       "rounds_max": 500
     }
   ],
+  "weapons_free": true,
   "width": 39,
   "wreck": false,
   "x_cm": 6500,

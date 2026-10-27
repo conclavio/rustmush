@@ -41,6 +41,20 @@
 //! `mush-pixel`; the probe replies arrive through the key parser as
 //! [`Key::GraphicsOk`], [`Key::GraphicsErr`], [`Key::CellSize`] and
 //! [`Key::DeviceAttributes`].
+//!
+//! **Screen 0's own rendering** (doc 21 §7.3, cut G.12b): the cockpit picture
+//! is no longer a `^G` modal. The app opens it whenever screen `0` is showing,
+//! a seated frame is held and the terminal shows pictures, and hides it when
+//! the pilot switches away ([`PixelView::hide`], which frees the image and
+//! stops the helm) or presses `p` for the text cockpit; everything the view
+//! holds — the helm, the throttle, the look, the lock cycle's cursor, the
+//! camera — outlives the hide, so coming back to `0` is coming back to the
+//! same cockpit. The flight keys ([`PixelView::key`]) send the lines a pilot
+//! would type (`HEADING`, `SPEED`, `FIRE HOLD`/`FIRE FREE`, `FIRE ALL`,
+//! `LOCK`); the digits, the chat and mode keys and the palette pass to the
+//! app as on every screen. `v` swaps the first-person camera for the
+//! overhead ([`OverheadPicture`]), same clock and size. `^G` stays for the
+//! chart's, the doll's and the replay's pictures.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -49,12 +63,13 @@ use mush_pixel::caps::{CellSize, DeviceAttributes, Encoder, EncoderChoice, Graph
 use mush_pixel::chart::ChartPicture;
 use mush_pixel::cockpit::CockpitPicture;
 use mush_pixel::doll::DollPicture;
+use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::replay::ReplayPicture;
 use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
-use super::helm::{Helm, arc};
+use super::helm::{Helm, Throttle, arc, lock_next, lock_order};
 use super::keys::{Arrow, Key};
 
 /// The rendered frame's width; its height is the picture box's shape
@@ -143,7 +158,9 @@ impl PixelConfig {
 
 /// **Which picture the view draws** (doc 21 cut G.5b): `^G` opens the one
 /// the screen it is pressed on shows — the orbital view on the chart screen,
-/// the cockpit everywhere else.
+/// the doll on the damage screen, the replay on screen 0's replay layout.
+/// The cockpit is screen 0's own rendering since G.12b, opened by the app
+/// and never by `^G`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PictureKind {
     /// The first-person cockpit (bucket A): the helm, the look, the chat.
@@ -159,6 +176,30 @@ pub enum PictureKind {
     /// The armour doll as a page (bucket B, doc 21 cut G.6a): the pilot's
     /// own tank, its look's doll large beside a legend of every section.
     Doll,
+}
+
+/// **The cockpit's camera** (doc 21 §7.4, cut G.12b): which of its two
+/// pictures the cockpit view draws, swapped by `v` and kept for the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CockpitCamera {
+    /// The first-person picture (bucket A): the raycaster or the
+    /// heightfield from the tank's own eye.
+    #[default]
+    FirstPerson,
+    /// The overhead: the arena north up around the tank (bucket B's scene
+    /// at bucket A's clock).
+    Overhead,
+}
+
+/// What [`PixelView::key`] made of a key (doc 21 cut G.12b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyUse {
+    /// The picture's: done (its orders wait in [`PixelView::take_orders`]).
+    Used,
+    /// Not the picture's: the app acts on it as on every screen.
+    Passed,
+    /// Open the chat line with this text ready (`F1` … `F6`).
+    Prefill(String),
 }
 
 /// The replay picture's clock while it plays: a frame a tenth of a second,
@@ -298,6 +339,28 @@ pub struct PixelView {
     look_mdeg: i64,
     /// The tank's helm: the turn keys' orders and the predicted heading.
     helm: Helm,
+    /// The tank's throttle: the speed keys' orders and the predicted speed
+    /// (G.12b).
+    throttle: Throttle,
+    /// The cockpit's camera, `v` (G.12b).
+    camera: CockpitCamera,
+    /// The overhead picture the camera swaps in (G.12b).
+    overhead: OverheadPicture,
+    /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
+    /// first (G.12b).
+    orders: Vec<String>,
+    /// The frame's contacts in the lock cycle's order (G.12b).
+    lock_order: Vec<String>,
+    /// The frame's lock, by designator.
+    frame_lock: Option<String>,
+    /// The contact `t` / `T` last locked, until the frame's lock says so: so
+    /// two presses inside a pulse walk two contacts, not one twice.
+    lock_cursor: Option<String>,
+    /// The frame's master gate (G.12a's `weapons_free`, missing reads free),
+    /// flipped by `f` until the next frame says.
+    weapons_free: bool,
+    /// The arena time of the last frame observed.
+    seen_t_ms: Option<i64>,
     /// The terminal answered the kitty keyboard protocol's `CSI ? u`.
     keyboard: bool,
     /// The view pushed the protocol: cursor keys report their release, so
@@ -375,6 +438,15 @@ impl PixelView {
             look_turn: 0,
             look_mdeg: 0,
             helm: Helm::new(),
+            throttle: Throttle::new(),
+            camera: CockpitCamera::FirstPerson,
+            overhead: OverheadPicture::new(),
+            orders: Vec::new(),
+            lock_order: Vec::new(),
+            frame_lock: None,
+            lock_cursor: None,
+            weapons_free: true,
+            seen_t_ms: None,
             keyboard: false,
             keyboard_pushed: false,
             term_bytes: Vec::new(),
@@ -659,6 +731,66 @@ impl PixelView {
         }
     }
 
+    /// Whether a picture could be drawn now: a forced encoder, or the probe's
+    /// (without aging a probe still running; [`Self::encoder`] does that).
+    #[must_use]
+    pub fn can_draw(&self) -> bool {
+        self.current_encoder().is_some()
+    }
+
+    /// **Hide the view** (doc 21 cut G.12b: screen 0 switched away from, or
+    /// `p` for the text cockpit): a close — the image freed or wiped, the
+    /// keyboard protocol popped, a turn stopped where the picture shows the
+    /// tank — with everything else kept for when it shows again.
+    pub fn hide(&mut self) {
+        if self.active {
+            self.close();
+        }
+    }
+
+    /// **Read the held cockpit frame** (G.12b): the helm's and the throttle's
+    /// truth, the lock cycle's contacts and lock, and the master gate — the
+    /// gate only off a new frame (by its arena time), so `f`'s flip stands
+    /// until the sim has answered it.
+    pub fn observe(&mut self, cockpit: &Value, now: Instant) {
+        self.helm.observe(cockpit, now);
+        self.throttle.observe(cockpit);
+        self.lock_order = lock_order(cockpit);
+        self.frame_lock = cockpit
+            .get("lock_designator")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if self.lock_cursor.is_some() && self.lock_cursor == self.frame_lock {
+            self.lock_cursor = None;
+        }
+        let t_ms = cockpit.get("t_ms").and_then(Value::as_i64);
+        if t_ms.is_none() || t_ms != self.seen_t_ms {
+            self.seen_t_ms = t_ms;
+            self.weapons_free = cockpit
+                .get("weapons_free")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+        }
+    }
+
+    /// The cockpit's camera (G.12b).
+    #[must_use]
+    pub fn camera(&self) -> CockpitCamera {
+        self.camera
+    }
+
+    /// The master gate as the view takes it (G.12b).
+    #[must_use]
+    pub fn weapons_free(&self) -> bool {
+        self.weapons_free
+    }
+
+    /// The tank's throttle, as the view drives it (G.12b).
+    #[must_use]
+    pub fn throttle(&self) -> &Throttle {
+        &self.throttle
+    }
+
     /// The replay's cursor (G.8).
     #[must_use]
     pub fn replay(&self) -> ReplayClock {
@@ -714,8 +846,11 @@ impl PixelView {
     fn close(&mut self) {
         self.active = false;
         self.look_turn = 0;
-        // A turn in progress stops where the picture showed the tank.
+        // A turn in progress stops where the picture showed the tank, and a
+        // speed step still inside its gap goes now (G.12b): the frame clock
+        // that would have sent it stops with the view.
         self.helm.stop(Instant::now());
+        self.throttle.flush(Instant::now());
         if std::mem::take(&mut self.keyboard_pushed) {
             self.term_bytes.extend_from_slice(KEYBOARD_POP);
         }
@@ -786,26 +921,45 @@ impl PixelView {
         self.helm.stop(now);
     }
 
-    /// The helm orders (`HEADING <deg>` lines) the view has made since the
-    /// last call, to send to the world as typed lines.
+    /// The orders the view has made since the last call, to send to the
+    /// world as typed lines: the helm's `HEADING`s, the throttle's `SPEED`s,
+    /// then the flight keys' `FIRE` and `LOCK` lines (G.12b).
     pub fn take_orders(&mut self) -> Vec<String> {
-        self.helm.take_orders()
+        let mut out = self.helm.take_orders();
+        out.extend(self.throttle.take_orders());
+        out.append(&mut self.orders);
+        out
     }
 
-    /// A key while the view is open (doc 21 cut G.4):
+    /// A key while the view is open. Answers whether it was the picture's
+    /// ([`KeyUse::Used`]), the app's as on every screen ([`KeyUse::Passed`]),
+    /// or a line to open the chat with ([`KeyUse::Prefill`]).
     ///
-    /// - **Left / Right turn the tank**: a helm order, the authority the
-    ///   `HEADING` verb has. Held where the terminal reports releases (the
-    ///   kitty keyboard protocol), toggled (press again to stop) elsewhere.
-    /// - `a` / `d` turn it too, always toggled.
-    /// - `,` / `.` swing the **look**, the camera's own offset (toggled);
-    ///   `c` recentres it on the tank.
-    /// - space stops the tank's turn and the look's swing.
-    /// - `r` and `u` are the load experiment's switches; Esc and `q` close.
+    /// The chart's, the replay's and the doll's pictures (`^G`, modal) keep
+    /// every key: Esc and `q` close them. **The cockpit's** (doc 21 §7.3, cut
+    /// G.12b — screen `0`'s own rendering, not a modal) are the flight keys:
     ///
-    /// Every other key is swallowed: the view is modal. Enter, which opens
-    /// the chat line, never reaches here (the app routes it).
-    pub fn key(&mut self, key: Key, now: Instant) {
+    /// - `a` / `d` and ←/→ **turn the tank**: a helm order, the authority the
+    ///   `HEADING` verb has. The arrows are held where the terminal reports
+    ///   releases (the kitty keyboard protocol), toggled (press again to stop)
+    ///   elsewhere; the letters are always toggled, because the protocol as
+    ///   pushed (`KEYBOARD_PUSH`: disambiguate, event types) sends a plain
+    ///   letter as text and reports no release for it.
+    /// - `w` / `s` step the **speed** ([`Throttle`]), `x` is all stop.
+    /// - `q` / `e` (and `,` / `.`) swing the **look**, toggled; `c` recentres
+    ///   it; space steadies the turn and the look (the speed stands).
+    /// - `v` swaps the camera: first person, overhead ([`CockpitCamera`]).
+    /// - `f` sends `FIRE HOLD` or `FIRE FREE` by the frame's `weapons_free`
+    ///   (missing reads free), `g` the volley `FIRE ALL`, `t` / `T` lock the
+    ///   next / previous contact ([`lock_order`]).
+    /// - `F1` … `F6` prefill `ORDER ALL ` / `ORDER 2 ` … `ORDER 6 `.
+    /// - `r` and `u` are the load experiment's switches, staff only.
+    ///
+    /// The digits, Enter, `"` `:` `;` `\` `/` `?`, `p` (the app's toggle to
+    /// the text cockpit), Esc, `F7` and up, and every Ctrl and Alt chord pass
+    /// to the app; anything else is swallowed, so no pane the picture hides
+    /// acts unseen.
+    pub fn key(&mut self, key: Key, now: Instant) -> KeyUse {
         // The replay's own keys (G.8): space plays and pauses (from the start
         // again at the end), `f` the speed; the steps, the focus and the close
         // need the document and are the app's.
@@ -824,14 +978,14 @@ impl PixelView {
                 Key::Esc | Key::Char('q') => self.close(),
                 _ => {}
             }
-            return;
+            return KeyUse::Used;
         }
         // The doll's (G.6a): Esc and `q` close; it has nothing to steer.
         if self.kind == PictureKind::Doll {
             if matches!(key, Key::Esc | Key::Char('q')) {
                 self.close();
             }
-            return;
+            return KeyUse::Used;
         }
         // The chart's keys (G.5b): `r` fetches it again, Esc and `q` close.
         if self.kind == PictureKind::Chart {
@@ -840,7 +994,7 @@ impl PixelView {
                 Key::Esc | Key::Char('q') => self.close(),
                 _ => {}
             }
-            return;
+            return KeyUse::Used;
         }
         let held = self.keyboard_pushed;
         let steer = |helm: &mut Helm, dir: i8, toggle: bool| {
@@ -852,6 +1006,7 @@ impl PixelView {
                 helm.start(dir, now);
             }
         };
+        let swing = |look: &mut i8, dir: i8| *look = if *look == dir { 0 } else { dir };
         match key {
             Key::Left => steer(&mut self.helm, -1, !held),
             Key::Right => steer(&mut self.helm, 1, !held),
@@ -859,8 +1014,14 @@ impl PixelView {
             Key::Char('d') => steer(&mut self.helm, 1, true),
             Key::Release(Arrow::Left) if self.helm.turning() == -1 => self.helm.stop(now),
             Key::Release(Arrow::Right) if self.helm.turning() == 1 => self.helm.stop(now),
-            Key::Char(',') => self.look_turn = if self.look_turn == -1 { 0 } else { -1 },
-            Key::Char('.') => self.look_turn = if self.look_turn == 1 { 0 } else { 1 },
+            Key::Char('w') => self.throttle.bump(1, now),
+            Key::Char('s') => self.throttle.bump(-1, now),
+            Key::Char('x') => {
+                self.throttle.stop(now);
+                self.helm.stop(now);
+            }
+            Key::Char(',' | 'q') => swing(&mut self.look_turn, -1),
+            Key::Char('.' | 'e') => swing(&mut self.look_turn, 1),
             Key::Char(' ') => {
                 self.helm.stop(now);
                 self.look_turn = 0;
@@ -869,10 +1030,39 @@ impl PixelView {
                 self.look_turn = 0;
                 self.look_mdeg = 0;
             }
-            // The load experiment's two switches (2026-10-21): the frame
+            Key::Char('v') => {
+                self.camera = match self.camera {
+                    CockpitCamera::FirstPerson => CockpitCamera::Overhead,
+                    CockpitCamera::Overhead => CockpitCamera::FirstPerson,
+                };
+            }
+            // The master gate (G.12a's verbs): the verb that flips what the
+            // frame says, and the flip assumed until the next frame says.
+            Key::Char('f') => {
+                let verb = if self.weapons_free {
+                    "FIRE HOLD"
+                } else {
+                    "FIRE FREE"
+                };
+                self.orders.push(verb.to_string());
+                self.weapons_free = !self.weapons_free;
+            }
+            Key::Char('g') => self.orders.push("FIRE ALL".to_string()),
+            Key::Char(c @ ('t' | 'T')) => {
+                let dir = if c == 't' { 1 } else { -1 };
+                let current = self.lock_cursor.as_deref().or(self.frame_lock.as_deref());
+                if let Some(next) = lock_next(&self.lock_order, current, dir) {
+                    self.orders.push(format!("LOCK {next}"));
+                    self.lock_cursor = Some(next);
+                }
+            }
+            Key::F(1) => return KeyUse::Prefill("ORDER ALL ".to_string()),
+            Key::F(n @ 2..=6) => return KeyUse::Prefill(format!("ORDER {n} ")),
+            // The load experiment's two switches (2026-10-21), staff
+            // diagnostics both since G.12b (`r` was everyone's): the frame
             // size and the clock cap. Either resets the last-sent key so the
             // next tick sends whatever the new shape is.
-            Key::Char('r') => {
+            Key::Char('r') if self.cfg.diagnostics => {
                 self.want = if self.want == FRAME_W {
                     FRAME_W_LO
                 } else {
@@ -880,15 +1070,19 @@ impl PixelView {
                 };
                 self.last_sent = None;
             }
-            // A staff diagnostic, box-wide (G.1b): only where `[pixel]
-            // diagnostics` is on.
             Key::Char('u') if self.cfg.diagnostics => {
                 self.uncapped = !self.uncapped;
                 self.last_sent = None;
             }
-            Key::Esc | Key::Char('q') => self.close(),
+            Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+            | Key::Enter
+            | Key::Esc
+            | Key::Ctrl(_)
+            | Key::Alt(_) => return KeyUse::Passed,
+            Key::F(n) if n >= 7 => return KeyUse::Passed,
             _ => {}
         }
+        KeyUse::Used
     }
 
     /// The look's offset from the tank's heading, millidegrees in
@@ -933,6 +1127,7 @@ impl PixelView {
             self.look_mdeg = self.look_mdeg.rem_euclid(360_000);
         }
         self.helm.tick(now);
+        self.throttle.tick(now);
     }
 
     /// Draw the picture from `feeds` (the TUI's held keyframes) and return
@@ -975,7 +1170,7 @@ impl PixelView {
             .and_then(Value::as_i64)
             .unwrap_or(0);
         if let Some(c) = cockpit.filter(|_| self.kind == PictureKind::Cockpit) {
-            self.helm.observe(c, now);
+            self.observe(c, now);
         }
         let predicted = self.helm.predicted(now).unwrap_or(frame_heading);
         let hull_offset_mdeg = arc(frame_heading, predicted);
@@ -989,7 +1184,13 @@ impl PixelView {
                 .filter(|o| arc(predicted, *o).abs() > 1_000),
         };
         let t0 = Instant::now();
-        if !self.picture.draw(&mut self.frame, feeds, &look) {
+        // G.12b: the cockpit's camera picks its picture.
+        let drawn = if self.kind == PictureKind::Cockpit && self.camera == CockpitCamera::Overhead {
+            self.overhead.draw(&mut self.frame, feeds, &look)
+        } else {
+            self.picture.draw(&mut self.frame, feeds, &look)
+        };
+        if !drawn {
             return Vec::new();
         }
         let render_us = t0.elapsed().as_micros();
@@ -1116,16 +1317,36 @@ impl PixelView {
         } else {
             ""
         };
+        // G.12b: the speed the frame says, and the one ordered beside it
+        // until they meet; the master gate.
+        let kph = cockpit
+            .and_then(|c| c.get("speed_kph"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let speed = match self.throttle.ordered().filter(|o| (o - kph).abs() > 1) {
+            Some(o) => format!("spd {kph}→{o}"),
+            None => format!("spd {kph}"),
+        };
+        let weapons = if self.weapons_free {
+            "weapons free"
+        } else {
+            "weapons HOLD"
+        };
         let mut top = format!(
-            "PIXEL VIEW  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}{slow}",
+            "{}  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  {speed}  {weapons}  |  {probe}, drawing {drawing}  {size} {clock}{slow}",
+            match self.camera {
+                CockpitCamera::FirstPerson => "PIXEL VIEW",
+                CockpitCamera::Overhead => "PIXEL OVERHEAD",
+            },
             heading / 1_000,
             self.look_mdeg() / 1_000,
         );
         // G.1b: the engineering numbers are the staff's (`[pixel]
-        // diagnostics`); everyone's own are in `@pixel/stats`.
+        // diagnostics`); everyone's own are in `@pixel/stats`. G.12b moved
+        // the experiment's two keys up here, off the 120-column legend.
         if self.cfg.diagnostics {
             top.push_str(&format!(
-                "  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
+                "  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}  r: 640/320 wide  u: clock",
                 s.render_us as f64 / 1000.0,
                 s.encode_us as f64 / 1000.0,
                 s.image_bytes,
@@ -1134,21 +1355,9 @@ impl PixelView {
             ));
         }
         let bottom = if cockpit.is_some() {
-            let arrows = if self.keyboard_pushed {
-                "←/→: turn the tank (hold)"
-            } else {
-                "←/→ or a/d: turn the tank (again to stop)"
-            };
-            let clock = if self.cfg.diagnostics {
-                "   u: clock"
-            } else {
-                ""
-            };
-            format!(
-                "{arrows}   ,/.: look   space: stop   c: centre   Enter: chat   r: 640/320 wide{clock}   Esc/q: close   ^]: detach"
-            )
+            cockpit_legend(self.keyboard_pushed, self.weapons_free)
         } else {
-            "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
+            "No cockpit frame held: take a seat in the arena.".to_string()
         };
         (top, bottom)
     }
@@ -1225,6 +1434,23 @@ impl PixelView {
             ),
         ]
     }
+}
+
+/// **The cockpit picture's key legend** (doc 21 §7.3, cut G.12b): every
+/// flight key in one line inside the 120-column floor (the owner's ruling:
+/// no client surface narrower). The arrows are named held where the view
+/// pushed the keyboard protocol; `f` names what it will do.
+#[must_use]
+pub fn cockpit_legend(keyboard_pushed: bool, weapons_free: bool) -> String {
+    let turn = if keyboard_pushed {
+        "←/→:hold-turn a/d:turn"
+    } else {
+        "a/d ←/→:turn"
+    };
+    let gate = if weapons_free { "f:hold" } else { "f:free" };
+    format!(
+        "{turn} w/s:speed x:stop q/e:look c:centre spc:steady v:view {gate} g:volley t/T:lock F1-6:order p:text"
+    )
 }
 
 /// How far a sixel frame is scaled up to fill its box, at most: three
@@ -1474,8 +1700,11 @@ mod tests {
         assert!(v.toggle(t0));
         assert!(v.is_active());
         assert_eq!(v.take_close(), None);
-        // Closed before a picture went out: nothing to free.
-        v.key(Key::Esc, t0);
+        // Hidden before a picture went out: nothing to free. Esc is not the
+        // cockpit picture's (G.12b): it passes to the app, and the app hides.
+        assert_eq!(v.key(Key::Esc, t0), KeyUse::Passed);
+        assert!(v.is_active());
+        v.hide();
         assert!(!v.is_active());
         assert_eq!(v.take_close(), None);
         // Closed with a picture on screen: its encoder, once.
@@ -1486,7 +1715,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(v.shown(), Some(Encoder::Kitty));
-        v.key(Key::Esc, t0);
+        v.hide();
         assert_eq!(v.take_close(), Some(Encoder::Kitty));
         assert_eq!(v.take_close(), None, "a close is reported once");
         assert_eq!(v.shown(), None);
@@ -1580,7 +1809,12 @@ mod tests {
         assert!(wt.paint(&both_feeds, 120, 40, t0).is_empty());
         wt.text_touched();
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty(), "resent");
-        // `r`: a smaller frame scaled up into the same box, no wipe.
+        // `r` (a staff diagnostic since G.12b): a smaller frame scaled up
+        // into the same box, no wipe.
+        wt.set_config(PixelConfig {
+            diagnostics: true,
+            ..PixelConfig::default()
+        });
         wt.key(Key::Char('r'), t0);
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty());
         assert_eq!(wt.size(), (320, 138));
@@ -1591,7 +1825,7 @@ mod tests {
         assert_eq!(wt.sixel_box(), Some((20, 1, 120, 24)));
         assert!(wt.take_wipe());
         assert!(!wt.take_wipe(), "once");
-        wt.key(Key::Esc, t0);
+        wt.hide();
         assert_eq!(wt.take_close(), Some(Encoder::Sixel));
         assert_eq!(wt.sixel_box(), None);
         // Kitty: the text never touches the image.
@@ -1650,15 +1884,25 @@ mod tests {
         v.key(Key::Char('c'), t0);
         assert_eq!((v.look_turn(), v.look_mdeg()), (0, 0));
         assert!(v.take_orders().is_empty(), "a look is not an order");
-        // Other keys are swallowed without effect.
-        v.key(Key::Char('1'), t0);
+        // `q` and `e` swing it too (G.12b).
+        v.key(Key::Char('q'), t0);
+        assert_eq!(v.look_turn(), -1);
+        v.key(Key::Char('e'), t0);
+        assert_eq!(v.look_turn(), 1);
+        v.key(Key::Char('e'), t0);
+        assert_eq!(v.look_turn(), 0);
+        // A digit is the app's (G.12b: the screens, as everywhere); a letter
+        // the picture does not bind is swallowed, so no hidden pane acts.
+        assert_eq!(v.key(Key::Char('1'), t0), KeyUse::Passed);
+        assert_eq!(v.key(Key::Char('k'), t0), KeyUse::Used);
         assert!(v.is_active());
     }
 
     /// The turn keys steer the tank (doc 21 cut G.4): a `HEADING` order a
     /// pulse ahead, toggled where the terminal reports no releases; held
     /// (press, repeat, release) where the view pushed the kitty keyboard
-    /// protocol, which it pops again on close.
+    /// protocol, which it pops again on a hide. `a` / `d` stay toggled under
+    /// the protocol (G.12b: a plain letter reports no release).
     #[test]
     fn the_arrows_steer_the_tank_toggled_or_held() {
         let t0 = Instant::now();
@@ -1695,11 +1939,15 @@ mod tests {
         assert_eq!(h.helm().turning(), -1, "another key's release does nothing");
         h.key(Key::Release(Arrow::Left), t0);
         assert_eq!(h.helm().turning(), 0, "released: stopped");
+        h.key(Key::Char('d'), t0);
+        assert_eq!(h.helm().turning(), 1);
+        h.key(Key::Char('d'), t0);
+        assert_eq!(h.helm().turning(), 0, "a letter is toggled, held or not");
         let (top, bottom) = h.hud(Some(&cockpit), t0);
-        assert!(bottom.contains("turn the tank (hold)"), "{bottom}");
+        assert!(bottom.starts_with("←/→:hold-turn a/d:turn"), "{bottom}");
         assert!(top.contains("(tank 045°"), "{top}");
-        h.key(Key::Esc, t0);
-        assert_eq!(h.take_terminal_bytes(), b"\x1b[<u", "popped on close");
+        h.hide();
+        assert_eq!(h.take_terminal_bytes(), b"\x1b[<u", "popped on a hide");
     }
 
     #[test]
@@ -1755,7 +2003,7 @@ mod tests {
             top.contains("camera 045°") && top.contains("kitty graphics OK"),
             "{top}"
         );
-        assert!(bottom.contains("turn the tank (again to stop)"), "{bottom}");
+        assert!(bottom.starts_with("a/d ←/→:turn w/s:speed"), "{bottom}");
     }
 
     /// A kitty picture is scaled into the largest box of its shape the
@@ -1778,7 +2026,8 @@ mod tests {
     }
 
     /// The load experiment's switches (2026-10-21): `r` swaps the frame
-    /// size and `u` uncaps the clock; either re-sends on the next tick.
+    /// size and `u` uncaps the clock; either re-sends on the next tick. Both
+    /// are staff diagnostics (G.1b `u`, G.12b `r`), named on the top line.
     #[test]
     fn r_swaps_the_size_and_u_uncaps_the_clock() {
         let t0 = Instant::now();
@@ -1790,6 +2039,23 @@ mod tests {
         assert_eq!(v.interval(), FRAME_INTERVAL);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
         assert!(v.paint(&both, 120, 40, t0).is_empty());
+        // No diagnostics: neither does anything, and nothing names them.
+        v.key(Key::Char('r'), t0);
+        v.key(Key::Char('u'), t0);
+        assert!(!v.uncapped(), "no diagnostics: u does nothing");
+        assert!(
+            v.paint(&both, 120, 40, t0).is_empty(),
+            "no diagnostics: r does nothing"
+        );
+        let (top, bottom) = v.hud(Some(&cockpit), t0);
+        assert!(
+            !top.contains("u: clock") && !top.contains("render") && !bottom.contains("r:"),
+            "{top} / {bottom}"
+        );
+        v.set_config(PixelConfig {
+            diagnostics: true,
+            ..PixelConfig::default()
+        });
         v.key(Key::Char('r'), t0);
         let small = String::from_utf8_lossy(&v.paint(&both, 120, 40, t0)).into_owned();
         assert_eq!(
@@ -1799,19 +2065,6 @@ mod tests {
         );
         assert!(small.contains("c=120,r=26"), "{}", &small[..80]);
         assert!(v.stats.image_bytes > 0);
-        // G.1b: `u` is a staff diagnostic, inert unless `[pixel]
-        // diagnostics` is on, and the legend does not offer it.
-        v.key(Key::Char('u'), t0);
-        assert!(!v.uncapped(), "no diagnostics: u does nothing");
-        let (top, bottom) = v.hud(Some(&cockpit), t0);
-        assert!(
-            !bottom.contains("u: clock") && !top.contains("render"),
-            "{top} / {bottom}"
-        );
-        v.set_config(PixelConfig {
-            diagnostics: true,
-            ..PixelConfig::default()
-        });
         v.key(Key::Char('u'), t0);
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
@@ -1819,12 +2072,12 @@ mod tests {
             !v.paint(&both, 120, 40, t0).is_empty(),
             "re-sent after the switch"
         );
-        let (top, bottom) = v.hud(Some(&cockpit), t0);
+        let (top, _) = v.hud(Some(&cockpit), t0);
         assert!(
             top.contains("320x138 uncapped") && top.contains("render"),
             "{top}"
         );
-        assert!(bottom.contains("640/320 wide") && bottom.contains("u: clock"));
+        assert!(top.contains("640/320 wide") && top.contains("u: clock"));
         v.key(Key::Char('r'), t0);
         v.key(Key::Char('u'), t0);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
@@ -2066,5 +2319,221 @@ mod tests {
             CockpitPicture::new().feeds(),
             [COCKPIT_FEED, ARENA_MAP_FEED]
         );
+    }
+
+    // ---- doc 21 cut G.12b: the cockpit's keys ---------------------------------
+
+    /// A kitty view open on the fixture frame, with `edit` applied to it and
+    /// the frame observed.
+    fn flying(edit: impl FnOnce(&mut Value)) -> (PixelView, Value, Instant) {
+        let t0 = Instant::now();
+        let (mut cockpit, _) = fixtures();
+        edit(&mut cockpit);
+        let mut v = supported(t0);
+        assert!(v.toggle_for(PictureKind::Cockpit, t0));
+        v.observe(&cockpit, t0);
+        (v, cockpit, t0)
+    }
+
+    /// `w` from rest orders a tenth of the top speed and the HUD shows the
+    /// order beside the frame's speed; `s` steps back; `x` is all stop. The
+    /// frame's `max_speed_kph` sets the step (at least 5 kph).
+    #[test]
+    fn g12b_w_from_rest_orders_a_tenth_of_the_top_speed() {
+        // G.12a's fixture names the line tank's ceilings; dropped here so the
+        // step is a tenth of the default 60.
+        let (mut v, cockpit, t0) = flying(|c| {
+            c["speed_kph"] = 0.into();
+            if let Some(frame) = c.as_object_mut() {
+                frame.remove("max_speed_kph");
+                frame.remove("reverse_kph");
+            }
+        });
+        assert_eq!(v.key(Key::Char('w'), t0), KeyUse::Used);
+        assert_eq!(v.take_orders(), ["SPEED 6"], "a tenth of the default 60");
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(top.contains("spd 0→6"), "{top}");
+        v.key(Key::Char('s'), t0 + super::super::helm::ORDER_GAP);
+        assert_eq!(v.take_orders(), ["SPEED 0"]);
+        // The frame's own ceiling: 43 kph steps by 5.
+        let (mut v, cockpit, t0) = flying(|c| {
+            c["speed_kph"] = 0.into();
+            c["max_speed_kph"] = 43.into();
+            c["reverse_kph"] = 12.into();
+        });
+        v.key(Key::Char('w'), t0);
+        assert_eq!(v.take_orders(), ["SPEED 5"]);
+        // The frame reaches it: the HUD drops the arrow.
+        let mut reached = cockpit.clone();
+        reached["speed_kph"] = 5.into();
+        reached["t_ms"] = 62_250.into();
+        v.observe(&reached, t0);
+        let (top, _) = v.hud(Some(&reached), t0);
+        assert!(top.contains("spd 5 ") && !top.contains('→'), "{top}");
+        // `x`: speed zero at once, and a turn stopped where the picture shows
+        // the tank.
+        v.key(Key::Right, t0);
+        let _ = v.take_orders();
+        v.key(Key::Char('x'), t0 + Duration::from_millis(10));
+        let orders = v.take_orders();
+        assert!(orders.contains(&"SPEED 0".to_string()), "{orders:?}");
+        assert_eq!(v.helm().turning(), 0);
+    }
+
+    /// `f` sends the verb that flips the frame's `weapons_free` (missing reads
+    /// free), and the flip stands until the next frame says; the HUD and the
+    /// legend follow it.
+    #[test]
+    fn g12b_f_sends_hold_or_free_by_the_frame() {
+        let (mut v, cockpit, t0) = flying(|_| {});
+        assert!(v.weapons_free(), "a frame without the field reads free");
+        v.key(Key::Char('f'), t0);
+        assert_eq!(v.take_orders(), ["FIRE HOLD"]);
+        let (top, bottom) = v.hud(Some(&cockpit), t0);
+        assert!(
+            top.contains("weapons HOLD") && bottom.contains("f:free"),
+            "{top} / {bottom}"
+        );
+        v.key(Key::Char('f'), t0);
+        assert_eq!(v.take_orders(), ["FIRE FREE"], "the flip stood");
+        // The same frame again changes nothing; a new one is the truth.
+        v.observe(&cockpit, t0);
+        assert!(v.weapons_free());
+        let (mut held, _, t0) = flying(|c| c["weapons_free"] = false.into());
+        held.key(Key::Char('f'), t0);
+        assert_eq!(held.take_orders(), ["FIRE FREE"]);
+    }
+
+    /// `g` is the volley: bare `FIRE ALL`.
+    #[test]
+    fn g12b_g_sends_fire_all() {
+        let (mut v, _, t0) = flying(|_| {});
+        assert_eq!(v.key(Key::Char('g'), t0), KeyUse::Used);
+        assert_eq!(v.take_orders(), ["FIRE ALL"]);
+    }
+
+    /// `t` walks the contacts — hostiles, then the unidentified, then
+    /// friends, nearest first — from the frame's lock, a press inside a pulse
+    /// stepping on from the last one sent; `T` walks back; no lock starts at
+    /// the first; no contacts, nothing.
+    #[test]
+    fn g12b_t_walks_the_contacts_in_order() {
+        // The fixture locks BA; the order is BA, X3, X4, RB.
+        let (mut v, cockpit, t0) = flying(|_| {});
+        let mut sent = Vec::new();
+        for _ in 0..4 {
+            v.key(Key::Char('t'), t0);
+            sent.extend(v.take_orders());
+        }
+        assert_eq!(sent, ["LOCK X3", "LOCK X4", "LOCK RB", "LOCK BA"]);
+        v.key(Key::Char('T'), t0);
+        assert_eq!(v.take_orders(), ["LOCK RB"]);
+        // The frame confirms RB: the cursor gives way to it.
+        let mut on_rb = cockpit.clone();
+        on_rb["lock_designator"] = "RB".into();
+        v.observe(&on_rb, t0);
+        v.key(Key::Char('T'), t0);
+        assert_eq!(v.take_orders(), ["LOCK X4"]);
+        let (mut free, _, t0) = flying(|c| {
+            c["lock"] = Value::Null;
+            c["lock_designator"] = Value::Null;
+        });
+        free.key(Key::Char('T'), t0);
+        assert_eq!(free.take_orders(), ["LOCK BA"], "from no lock, the first");
+        let (mut empty, _, t0) = flying(|c| c["contacts"] = serde_json::json!([]));
+        empty.key(Key::Char('t'), t0);
+        assert!(empty.take_orders().is_empty());
+    }
+
+    /// `F1` prefills `ORDER ALL `, `F2` … `F6` the squads; `F7` and up are
+    /// the app's; nothing is sent.
+    #[test]
+    fn g12b_the_function_keys_prefill_orders() {
+        let (mut v, _, t0) = flying(|_| {});
+        assert_eq!(v.key(Key::F(1), t0), KeyUse::Prefill("ORDER ALL ".into()));
+        assert_eq!(v.key(Key::F(2), t0), KeyUse::Prefill("ORDER 2 ".into()));
+        assert_eq!(v.key(Key::F(6), t0), KeyUse::Prefill("ORDER 6 ".into()));
+        assert_eq!(v.key(Key::F(7), t0), KeyUse::Passed);
+        assert!(v.take_orders().is_empty());
+        // The global keys pass; Esc and `q` close nothing.
+        for key in [
+            Key::Char('0'),
+            Key::Char('"'),
+            Key::Char('/'),
+            Key::Char('?'),
+            Key::Char('p'),
+            Key::Enter,
+            Key::Esc,
+            Key::Ctrl(']'),
+        ] {
+            assert_eq!(v.key(key, t0), KeyUse::Passed, "{key:?}");
+        }
+        assert_eq!(v.key(Key::Char('q'), t0), KeyUse::Used);
+        assert!(v.is_active(), "q is the look now, not a close");
+    }
+
+    /// `v` swaps the first-person picture for the overhead and back; the
+    /// camera, the look and the helm outlive a hide.
+    #[test]
+    fn g12b_v_swaps_to_the_overhead_and_a_hide_keeps_the_cockpit() {
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        let mut v = supported(t0);
+        v.toggle_for(PictureKind::Cockpit, t0);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        let first = v.stats.image_bytes;
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::Overhead);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty(), "a new picture");
+        assert_ne!(v.stats.image_bytes, first);
+        assert_eq!(v.size(), (640, 276), "the cockpit picture's own size");
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(top.starts_with("PIXEL OVERHEAD"), "{top}");
+        // A look and a turn, then a hide and a show: all of it still there
+        // (the turn stopped by the hide, as a switch away stops the helm).
+        v.key(Key::Char('e'), t0);
+        v.tick(t0 + Duration::from_millis(500));
+        v.key(Key::Char('e'), t0);
+        let look = v.look_mdeg();
+        v.key(Key::Right, t0);
+        let _ = v.take_orders();
+        v.hide();
+        assert_eq!(v.helm().turning(), 0);
+        assert!(v.take_orders().iter().all(|o| o.starts_with("HEADING ")));
+        assert!(v.toggle_for(PictureKind::Cockpit, t0));
+        assert_eq!((v.camera(), v.look_mdeg()), (CockpitCamera::Overhead, look));
+        assert!(v.helm().ordered().is_some(), "the helm's order stands");
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::FirstPerson);
+    }
+
+    /// The legend names every flight key inside the 120-column floor, held
+    /// or toggled, free or held fire.
+    #[test]
+    fn g12b_the_legend_fits_the_floor() {
+        for pushed in [false, true] {
+            for free in [false, true] {
+                let legend = cockpit_legend(pushed, free);
+                assert!(legend.chars().count() <= 120, "{legend}");
+                for key in [
+                    "turn",
+                    "w/s:speed",
+                    "x:stop",
+                    "q/e:look",
+                    "c:centre",
+                    "spc:steady",
+                    "v:view",
+                    "g:volley",
+                    "t/T:lock",
+                    "F1-6:order",
+                    "p:text",
+                ] {
+                    assert!(legend.contains(key), "{key}: {legend}");
+                }
+            }
+        }
+        assert!(cockpit_legend(false, true).contains("f:hold"));
+        assert!(cockpit_legend(false, false).contains("f:free"));
     }
 }

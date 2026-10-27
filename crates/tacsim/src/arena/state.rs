@@ -2274,6 +2274,17 @@ pub struct UnitState {
     /// it is not the first profile never switched**, so a match that
     /// switches nothing folds the bytes it always did.
     pub card_profile: crate::arena::card::ActiveProfile,
+    /// **The seat's master gate is at weapons hold** (doc 21 cut G.12a, §7.3;
+    /// Q-21-9): while `true` and a pilot flies the hull, no `FIRE <weapon>
+    /// WHEN` rule of it fires (`Arena::evaluate_conditions`); a typed `FIRE`,
+    /// a mind's own warranted shot and a hold rule are untouched. `false`
+    /// (weapons free, today's behaviour) at check-out; written only by a
+    /// seat's [`crate::arena::conditions::Arming::WeaponsFree`]. Carried by
+    /// this struct's derive (`SNAPSHOT_FORMAT` 17) — it decides a later shot
+    /// — and **folded into [`crate::arena::hash::state_hash`] as item 1's
+    /// sub-item 21 only when held**, so a match that never holds folds the
+    /// bytes it always did.
+    pub weapons_hold: bool,
     /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
     /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
     /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
@@ -4838,6 +4849,8 @@ impl Arena {
                 // **17b cut M5.2**: every hull checks out on its first
                 // sealed profile, never switched.
                 card_profile: crate::arena::card::ActiveProfile::FIRST,
+                // Doc 21 cut G.12a (Q-21-9): every seat starts weapons free.
+                weapons_hold: false,
                 unit: unit.unit,
                 condition,
                 lock: None,

@@ -245,6 +245,13 @@ fn intent_words(intent: &IntentKind, view: &MindView) -> String {
             |weapon| format!("disarm {}", known_weapon(view, weapon)),
         ),
         IntentKind::Condition(Arming::Remove { slot, .. }) => format!("remove slot {slot}"),
+        // Doc 21 cut G.12a: a seat's switch; a mind's is refused, never traced.
+        IntentKind::Condition(Arming::WeaponsFree { free }) => if *free {
+            "weapons free"
+        } else {
+            "weapons hold"
+        }
+        .into(),
         IntentKind::Goal(MotorGoal::Cell { x, y }) | IntentKind::Place { x, y } => {
             format!("cell {x},{y}")
         }

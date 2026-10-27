@@ -1,23 +1,58 @@
 // The cockpit's picture in the web client (doc 21 cut G.3c): the command, the
 // look's swing, the helm's lines and the keys — pure, so pinned here.
 
+//
+// Doc 21 cut G.12c: every key of §7.3's table the web binds, one assertion a
+// key, and the rules behind `w`/`s` (the step, the clamp), `f` (the gate) and
+// `t`/`T` (the lock order) against the committed fixture's contacts.
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { decodeCockpitFrame, type CockpitContact } from "./cockpit";
 import {
+  gateLine,
+  gateWord,
   helmLine,
+  lockOrder,
   LOOK_MDEG_PER_S,
+  nextLock,
+  orderPrefill,
   pictureCommand,
   pictureKey,
+  speedLine,
+  speedOutstanding,
+  speedStep,
+  steppedSpeed,
   swingLook,
   wrapMdeg,
 } from "./picture";
 import { PictureStore } from "./stores/picture.svelte";
 
+/** The committed fixture frame's contacts: hostile BA at 450 m, friendly RB
+ * at 100 m, unidentified X3 at 200 m and X4 at 600 m; BA is locked. */
+function fixtureContacts(): CockpitContact[] {
+  const raw: unknown = JSON.parse(
+    readFileSync(resolve(process.cwd(), "src/lib/fixtures/cockpit/cockpit_frame.json"), "utf8"),
+  );
+  return decodeCockpitFrame(raw)!.contacts;
+}
+
 describe("the picture command", () => {
-  it("carries on/off and a wrapped look", () => {
-    expect(pictureCommand(true, 30_000)).toEqual({ t: "picture", d: { on: true, look_mdeg: 30_000 } });
-    expect(pictureCommand(false, 0)).toEqual({ t: "picture", d: { on: false, look_mdeg: 0 } });
-    expect(pictureCommand(true, 200_000).d).toEqual({ on: true, look_mdeg: -160_000 });
+  it("carries on/off, a wrapped look and the camera", () => {
+    expect(pictureCommand(true, 30_000)).toEqual({
+      t: "picture",
+      d: { on: true, look_mdeg: 30_000, kind: "cockpit" },
+    });
+    expect(pictureCommand(false, 0)).toEqual({
+      t: "picture",
+      d: { on: false, look_mdeg: 0, kind: "cockpit" },
+    });
+    expect(pictureCommand(true, 200_000).d).toEqual({ on: true, look_mdeg: -160_000, kind: "cockpit" });
+    // Doc 21 cut G.12c: the overhead is asked for by name.
+    expect(pictureCommand(true, 0, "overhead").d).toEqual({ on: true, look_mdeg: 0, kind: "overhead" });
   });
 
   it("wraps a look into -180..180 degrees", () => {
@@ -51,8 +86,137 @@ describe("the look and the helm", () => {
     expect(pictureKey(",")).toEqual({ kind: "look", dir: -1 });
     expect(pictureKey(".")).toEqual({ kind: "look", dir: 1 });
     expect(pictureKey("c")).toEqual({ kind: "centre" });
-    expect(pictureKey(" ")).toEqual({ kind: "stop" });
-    expect(pictureKey("a")).toBeNull();
+    expect(pictureKey(" ")).toEqual({ kind: "steady" });
+    expect(pictureKey("z")).toBeNull();
+  });
+});
+
+describe("the cockpit's keys (doc 21 §7.3, cut G.12c)", () => {
+  it("a and d turn, as the arrows do", () => {
+    expect(pictureKey("a")).toEqual({ kind: "turn", dir: -1 });
+    expect(pictureKey("d")).toEqual({ kind: "turn", dir: 1 });
+  });
+
+  it("w and s step the speed", () => {
+    expect(pictureKey("w")).toEqual({ kind: "speed", dir: 1 });
+    expect(pictureKey("s")).toEqual({ kind: "speed", dir: -1 });
+  });
+
+  it("x is all stop", () => {
+    expect(pictureKey("x")).toEqual({ kind: "allStop" });
+  });
+
+  it("q and e swing the look, beside the kept , and .", () => {
+    expect(pictureKey("q")).toEqual({ kind: "look", dir: -1 });
+    expect(pictureKey("e")).toEqual({ kind: "look", dir: 1 });
+  });
+
+  it("c centres the look", () => {
+    expect(pictureKey("c")).toEqual({ kind: "centre" });
+  });
+
+  it("space is steady", () => {
+    expect(pictureKey(" ")).toEqual({ kind: "steady" });
+  });
+
+  it("v switches the camera", () => {
+    expect(pictureKey("v")).toEqual({ kind: "view" });
+  });
+
+  it("f flips the weapons gate", () => {
+    expect(pictureKey("f")).toEqual({ kind: "gate" });
+  });
+
+  it("g is the volley", () => {
+    expect(pictureKey("g")).toEqual({ kind: "volley" });
+  });
+
+  it("t locks the next contact and T the previous", () => {
+    expect(pictureKey("t")).toEqual({ kind: "lock", dir: 1 });
+    expect(pictureKey("T")).toEqual({ kind: "lock", dir: -1 });
+  });
+
+  it("F1 opens ORDER ALL and F2 to F6 the slots", () => {
+    expect(pictureKey("F1")).toEqual({ kind: "order", slot: "ALL" });
+    expect(pictureKey("F2")).toEqual({ kind: "order", slot: 2 });
+    expect(pictureKey("F3")).toEqual({ kind: "order", slot: 3 });
+    expect(pictureKey("F4")).toEqual({ kind: "order", slot: 4 });
+    expect(pictureKey("F5")).toEqual({ kind: "order", slot: 5 });
+    expect(pictureKey("F6")).toEqual({ kind: "order", slot: 6 });
+    expect(pictureKey("F7")).toBeNull();
+    expect(orderPrefill("ALL")).toBe("ORDER ALL ");
+    expect(orderPrefill(4)).toBe("ORDER 4 ");
+  });
+
+  it("reads a letter in either case but t, whose capital is the previous lock", () => {
+    for (const k of ["a", "d", "w", "s", "x", "q", "e", "c", "v", "f", "g"]) {
+      expect(pictureKey(k.toUpperCase()), k).toEqual(pictureKey(k));
+    }
+    expect(pictureKey("T")).not.toEqual(pictureKey("t"));
+  });
+});
+
+describe("the speed's step and clamp (doc 21 cut G.12c)", () => {
+  it("steps a tenth of the top speed, at least 5 kph", () => {
+    expect(speedStep(60)).toBe(6);
+    expect(speedStep(120)).toBe(12);
+    expect(speedStep(30)).toBe(5);
+    expect(speedStep(85)).toBe(9);
+  });
+
+  it("steps through zero into reverse and clamps at either ceiling", () => {
+    expect(steppedSpeed(0, 1, 60, 20)).toBe(6);
+    expect(steppedSpeed(58, 1, 60, 20)).toBe(60);
+    expect(steppedSpeed(60, 1, 60, 20)).toBe(60);
+    expect(steppedSpeed(3, -1, 60, 20)).toBe(-3);
+    expect(steppedSpeed(0, -1, 60, 20)).toBe(-6);
+    expect(steppedSpeed(-18, -1, 60, 20)).toBe(-20);
+    expect(steppedSpeed(-20, -1, 60, 20)).toBe(-20);
+  });
+
+  it("holds an order outstanding until the frame is within a kph of it", () => {
+    expect(speedOutstanding(null, 0)).toBe(false);
+    expect(speedOutstanding(6, 0)).toBe(true);
+    expect(speedOutstanding(6, 5)).toBe(false);
+    expect(speedOutstanding(6, 7)).toBe(false);
+    expect(speedOutstanding(-6, 0)).toBe(true);
+    expect(speedLine(-6)).toBe("SPEED -6");
+  });
+});
+
+describe("the weapons gate (doc 21 cut G.12c)", () => {
+  it("orders free from hold and hold from free, a missing key reading free", () => {
+    expect(gateLine(false)).toBe("FIRE FREE");
+    expect(gateLine(true)).toBe("FIRE HOLD");
+    expect(gateLine(null)).toBe("FIRE HOLD");
+    expect(gateWord(false)).toBe("weapons hold");
+    expect(gateWord(true)).toBe("weapons free");
+    expect(gateWord(null)).toBe("weapons free");
+  });
+});
+
+describe("the lock cycle (doc 21 cut G.12c)", () => {
+  it("orders hostiles first, then unidentified, then the rest, nearest first in each", () => {
+    expect(lockOrder(fixtureContacts())).toEqual(["BA", "X3", "X4", "RB"]);
+  });
+
+  it("walks forward with t and back with T, wrapping, from the current lock", () => {
+    const contacts = fixtureContacts();
+    expect(nextLock(contacts, "BA", 1)).toBe("X3");
+    expect(nextLock(contacts, "X3", 1)).toBe("X4");
+    expect(nextLock(contacts, "X4", 1)).toBe("RB");
+    expect(nextLock(contacts, "RB", 1)).toBe("BA");
+    expect(nextLock(contacts, "BA", -1)).toBe("RB");
+    expect(nextLock(contacts, "X3", -1)).toBe("BA");
+  });
+
+  it("starts at the first from no lock or a lock no longer listed, and is none with no contacts", () => {
+    const contacts = fixtureContacts();
+    expect(nextLock(contacts, null, 1)).toBe("BA");
+    expect(nextLock(contacts, null, -1)).toBe("BA");
+    expect(nextLock(contacts, "ZZ", 1)).toBe("BA");
+    expect(nextLock([], null, 1)).toBeNull();
+    expect(nextLock([], "BA", -1)).toBeNull();
   });
 });
 
