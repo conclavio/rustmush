@@ -8,8 +8,11 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
 
   STARTUP             bring the tank's power up. Idempotent; motion and fire
                       refuse until it is online.
-  HEADING <0-359>     steer to a bearing.
-  SPEED <kph>         make way at that speed; a negative speed reverses.
+  HEADING <0-359>     steer to a bearing. A trailing QUIET takes the order
+                      without the `Steering to …` reply (the picture's keys
+                      send it so; refusals are still spoken).
+  SPEED <kph>         make way at that speed; a negative speed reverses. A
+                      trailing QUIET as HEADING's.
   VIEW [BRIEF]        the arena window around your platform, as a map; BRIEF
                       says the same window in sentences.
   CONTACTS            what your platform holds.
@@ -751,10 +754,11 @@ The digits, `"` `:` `;` `\` `/` `?` and Esc do what they do on every screen
 (the palette and the help show over the text cockpit, and the picture comes
 back when they close); every other key does nothing while you are at the
 controls. Every key above that sends a line sends it exactly as if you had
-typed it, so the arena answers in the comms as it would. **The turn keys steer
-the tank**: each turn is a `HEADING` order, so it needs your
-seat to hold the helm and the power to be online, and you will see the
-`Steering to …` lines in the comms. The tank turns at its own rate
+typed it, with one difference: the turn and speed keys send their orders QUIET,
+so the comms do not fill with `Steering to …` and `Making … kph.` while you hold
+a key (the line over the picture shows what you ordered); a refusal is still
+shown. **The turn keys steer the tank**: each turn is a `HEADING` order, so it
+needs your seat to hold the helm and the power to be online. The tank turns at its own rate
 and the arena moves it on its pulses; between them the picture shows where the
 tank will be, and lets go of that guess if the order was refused. The line over
 the picture says the camera's heading, the tank's and the one it was ordered to,

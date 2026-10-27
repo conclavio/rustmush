@@ -72,8 +72,11 @@ export function swingLook(lookMdeg: number, dir: -1 | 0 | 1, ms: number): number
  * itself (`0`), which stops a turn where the tank is pointing.
  */
 export function helmLine(headingDeg: number, dir: -1 | 0 | 1): string {
+  // `QUIET` (doc 21 §7.3, 2026-10-27): the arena takes a key's order without
+  // the `Steering to …°.` a typed one is acknowledged with — a held turn
+  // sends one every 700 ms and the header shows the ordered heading.
   const deg = (((Math.round(headingDeg + dir * HELM_LEAD_DEG) % 360) + 360) % 360);
-  return `HEADING ${deg}`;
+  return `HEADING ${deg} QUIET`;
 }
 
 /** An `ORDER` prefill's addressee: every slot, or one of slots 2–6 (slot 1 is
@@ -216,9 +219,10 @@ export function speedOutstanding(ordered: number | null, frameKph: number): orde
   return ordered !== null && Math.abs(ordered - frameKph) > SPEED_REACHED_KPH;
 }
 
-/** The `SPEED` line. */
+/** The `SPEED` line. `QUIET`, as `helmLine`'s: a key's order is taken without
+ * the `Making … kph.` a typed one is acknowledged with (doc 21 §7.3). */
 export function speedLine(kph: number): string {
-  return `SPEED ${kph}`;
+  return `SPEED ${kph} QUIET`;
 }
 
 // -- the weapons gate (doc 21 §7.3 `f`) ----------------------------------------

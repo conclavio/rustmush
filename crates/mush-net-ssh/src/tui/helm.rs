@@ -4,7 +4,11 @@
 //!
 //! A turn is a **helm order** — a `HEADING <deg>` line, the verb and the
 //! authority a pilot types — so a seat without the helm, or a tank without
-//! power, simply does not turn. The sim resolves orders at its pulses (500,
+//! power, simply does not turn. The keys' orders carry the verbs' `QUIET`
+//! word (doc 21 §7.3, 2026-10-27): the arena takes them without the
+//! `Steering to …` / `Making … kph.` acknowledgement a typed order gets,
+//! since the HUD shows the ordered heading and speed and a held key would
+//! otherwise fill the comms; refusals are still spoken. The sim resolves orders at its pulses (500,
 //! 1000 or 5000 ms by tempo), so between frames the view **predicts** the
 //! heading: from the last frame's, toward the order it sent, at the tank's
 //! turn rate, starting no earlier than the order went out and never past it.
@@ -208,7 +212,7 @@ impl Helm {
 
     fn order(&mut self, heading: i64, now: Instant) {
         let deg = (heading.rem_euclid(FULL) + 500) / 1_000 % 360;
-        self.orders.push(format!("HEADING {deg}"));
+        self.orders.push(format!("HEADING {deg} QUIET"));
         self.ordered = Some((deg * 1_000, now));
     }
 
@@ -405,7 +409,7 @@ impl Throttle {
         self.pending = None;
         self.sent_at = Some(now);
         self.ordered = Some(want);
-        self.orders.push(format!("SPEED {want}"));
+        self.orders.push(format!("SPEED {want} QUIET"));
     }
 
     /// The `SPEED` lines to send, oldest first.
@@ -506,7 +510,7 @@ mod tests {
         assert_eq!(h.predicted(t0), Some(90_000));
         h.start(1, t0 + ms(200));
         // 30°/s for 1.5 s of 1000 ms pulses: 45° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 135"]);
+        assert_eq!(h.take_orders(), ["HEADING 135 QUIET"]);
         assert_eq!(
             h.predicted(t0 + ms(200)),
             Some(90_000),
@@ -517,7 +521,7 @@ mod tests {
         // the order).
         assert_eq!(h.predicted(t0 + ms(1_700)), Some(135_000));
         h.stop(t0 + ms(700));
-        assert_eq!(h.take_orders(), ["HEADING 105"]);
+        assert_eq!(h.take_orders(), ["HEADING 105 QUIET"]);
         assert_eq!(h.turning(), 0);
         // A frame at the ordered heading closes the order.
         h.observe(&frame(11_000, 105, "alert"), t0 + ms(1_000));
@@ -534,13 +538,13 @@ mod tests {
         h.observe(&frame(1_000, 0, "engaged"), t0);
         h.start(-1, t0);
         // A pulse and a half at 500 ms pulses: 22.5° ahead.
-        assert_eq!(h.take_orders(), ["HEADING 338"]);
+        assert_eq!(h.take_orders(), ["HEADING 338 QUIET"]);
         h.observe(&frame(1_500, 338, "engaged"), t0 + ms(500));
         assert_eq!(h.rate(), DEFAULT_TURN_RATE, "reached it: no measure");
         // Ordered on to 316; 18° in the next 500 ms pulse, still short of
         // it: a faster chassis than assumed.
         h.start(-1, t0 + ms(600));
-        assert_eq!(h.take_orders(), ["HEADING 316"]);
+        assert_eq!(h.take_orders(), ["HEADING 316 QUIET"]);
         h.observe(&frame(2_000, 320, "engaged"), t0 + ms(1_000));
         assert_eq!(h.rate(), 36_000);
     }
@@ -566,13 +570,13 @@ mod tests {
         let mut h = Helm::new();
         h.observe(&frame(1_000, 0, "alert"), t0);
         h.start(1, t0);
-        assert_eq!(h.take_orders(), ["HEADING 45"]);
+        assert_eq!(h.take_orders(), ["HEADING 45 QUIET"]);
         h.tick(t0 + ms(100));
         assert!(h.take_orders().is_empty(), "far from the order");
         // A frame at 30°: 15° short, under half the 45° lead.
         h.observe(&frame(2_000, 30, "alert"), t0 + ms(1_000));
         h.tick(t0 + ms(1_000));
-        assert_eq!(h.take_orders(), ["HEADING 75"]);
+        assert_eq!(h.take_orders(), ["HEADING 75 QUIET"]);
         h.tick(t0 + ms(1_100));
         assert!(h.take_orders().is_empty(), "the gap holds");
     }
@@ -593,7 +597,7 @@ mod tests {
         t.observe(&speed(0));
         assert_eq!(t.step(), 6, "a tenth of the default 60");
         t.bump(1, t0);
-        assert_eq!(t.take_orders(), ["SPEED 6"]);
+        assert_eq!(t.take_orders(), ["SPEED 6 QUIET"]);
         assert_eq!((t.predicted(), t.ordered()), (6, Some(6)));
         // Two more inside the gap: one order, the last value, when it opens.
         t.bump(1, t0 + ms(50));
@@ -601,7 +605,7 @@ mod tests {
         assert!(t.take_orders().is_empty(), "the gap holds");
         assert_eq!(t.predicted(), 18, "but the prediction moves");
         t.tick(t0 + ORDER_GAP);
-        assert_eq!(t.take_orders(), ["SPEED 18"]);
+        assert_eq!(t.take_orders(), ["SPEED 18 QUIET"]);
         // The frame on its way: still the order; reached: the frame's.
         t.observe(&speed(10));
         assert_eq!(t.predicted(), 18);
@@ -609,12 +613,12 @@ mod tests {
         assert_eq!((t.predicted(), t.ordered()), (17, None));
         // All stop goes at once.
         t.stop(t0 + ORDER_GAP + ms(10));
-        assert_eq!(t.take_orders(), ["SPEED 0"]);
+        assert_eq!(t.take_orders(), ["SPEED 0 QUIET"]);
         // A step inside the gap goes out on a flush (the view hiding).
         t.bump(1, t0 + ORDER_GAP + ms(20));
         assert!(t.take_orders().is_empty());
         t.flush(t0 + ORDER_GAP + ms(30));
-        assert_eq!(t.take_orders(), ["SPEED 6"]);
+        assert_eq!(t.take_orders(), ["SPEED 6 QUIET"]);
     }
 
     /// The frame's ceilings set the step and the clamps; through zero into
@@ -626,9 +630,9 @@ mod tests {
         t.observe(&serde_json::json!({ "speed_kph": 40, "max_speed_kph": 43, "reverse_kph": 12 }));
         assert_eq!(t.step(), 5, "a tenth of 43 is under the floor");
         t.bump(1, t0);
-        assert_eq!(t.take_orders(), ["SPEED 43"], "clamped at the top");
+        assert_eq!(t.take_orders(), ["SPEED 43 QUIET"], "clamped at the top");
         let mut later = t0;
-        for want in ["SPEED 38", "SPEED 33"] {
+        for want in ["SPEED 38 QUIET", "SPEED 33 QUIET"] {
             later += ORDER_GAP;
             t.bump(-1, later);
             assert_eq!(t.take_orders(), [want]);
@@ -638,7 +642,10 @@ mod tests {
         r.bump(-1, t0);
         r.bump(-1, t0 + ORDER_GAP);
         r.bump(-1, t0 + ORDER_GAP * 2);
-        assert_eq!(r.take_orders(), ["SPEED -5", "SPEED -10", "SPEED -12"]);
+        assert_eq!(
+            r.take_orders(),
+            ["SPEED -5 QUIET", "SPEED -10 QUIET", "SPEED -12 QUIET"]
+        );
         // A wreck never reaches its order: the frame's speed stands.
         r.observe(&serde_json::json!({ "speed_kph": 0, "wreck": true }));
         assert_eq!((r.predicted(), r.ordered()), (0, None));

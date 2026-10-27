@@ -9486,7 +9486,7 @@ mod tests {
                 frame.remove("reverse_kph");
             }
         });
-        assert_eq!(app.feed_input(b"w").submit, ["SPEED 6"]);
+        assert_eq!(app.feed_input(b"w").submit, ["SPEED 6 QUIET"]);
         let text = super::super::frame_text(&mut app, 120, 40);
         assert!(text.contains("spd 0→6"), "{text}");
         assert!(text.contains("w/s:speed"), "the legend: {text}");
@@ -9500,7 +9500,7 @@ mod tests {
         assert_eq!(app.feed_input(b"t").submit, ["LOCK X3"]);
         assert_eq!(app.feed_input(b"T").submit, ["LOCK BA"]);
         let stop = app.feed_input(b"x").submit;
-        assert!(stop.contains(&"SPEED 0".to_string()), "{stop:?}");
+        assert!(stop.contains(&"SPEED 0 QUIET".to_string()), "{stop:?}");
         // `f` under a frame that says weapons hold sends the other verb.
         let mut held = flying_app(|f| f["weapons_free"] = false.into());
         let text = super::super::frame_text(&mut held, 120, 40);

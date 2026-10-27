@@ -458,9 +458,9 @@ while screen `0` shows the picture; on every other screen the letters mean what 
 
 | Key | Does | Line sent |
 |---|---|---|
-| `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg>` |
-| `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph>` |
-| `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0`, and the helm's stop |
+| `a` / `d`, `←` / `→` | turn left / right — held (the turn runs while the key is down) where the terminal reports releases (the kitty keyboard protocol: the arrows under its flags 1+2, the letters once it has taken flag 8 too), toggled (press again to stop) elsewhere; the G.4 leash unchanged | `HEADING <deg> QUIET` |
+| `w` / `s` | speed up / slow down by one step: a tenth of the hull's top speed, at least 5 kph; through zero into reverse, down to the reverse ceiling; past either ceiling the step clamps. The HUD shows the ordered speed beside the frame's until they meet | `SPEED <kph> QUIET` |
+| `x` | all stop: speed zero and the turn stopped where the picture shows the tank | `SPEED 0 QUIET`, and the helm's stop |
 | `q` / `e` (`,` / `.` kept) | the look swings left / right, toggled | none — a look is not an order |
 | `c` | centre the look on the tank's nose | none |
 | space | steady: the turn and the look stop (the speed stands) | the helm's stop |
@@ -476,6 +476,13 @@ while screen `0` shows the picture; on every other screen the letters mean what 
 | `r`, `u` | the load experiment's two switches, only under `[pixel] diagnostics` (`r` moves behind it) | |
 | Esc | nothing of the picture's (the palette, as everywhere) | |
 | `Ctrl-]` | detach, as everywhere | |
+
+**Quiet orders (2026-10-27, the first playtest).** The keys' `HEADING` and `SPEED` lines carry a
+trailing `QUIET`: the arena takes the order and does not speak the `Steering to …°.` / `Making …
+kph.` acknowledgement a typed one gets — a held `w` or a held turn sends one every quarter second
+and the first playtest read each in the comms, while the HUD already shows the ordered speed and
+heading. A refusal (power, the ceilings, the usage) is spoken whichever way the order came. The
+typed verbs are unchanged; the word is case-insensitive and trailing.
 
 **The sim's half.** Two verbs and three frame fields: bare `FIRE HOLD` / `FIRE FREE` set the seat's
 master gate — while held no `FIRE <weapon> WHEN` rule of the pilot's fires, hold rules and a mind's
