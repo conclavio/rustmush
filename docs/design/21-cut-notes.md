@@ -562,9 +562,23 @@ Enter, Esc, the F-keys in both forms, the chords, Shift-Tab, caps lock, the modi
 keys swallowed, the keypad; the view: the letters toggled until the reply, held after it with the
 repeat ignored and the release stopping, the other letter's release ignored, a held `w` still
 stepping, a terminal that took flags 3 keeping the letters toggled, both legends);
-`--test tui_golden` 25; fmt, clippy `-D warnings`, rustdoc `-D warnings`. **Not smoked live**:
-whether w11term (the owner's reference client) takes flags 4 and 8 is unseen — the re-query makes
-either answer safe, and the legend says which it gave.
+`--test tui_golden` 25; fmt, clippy `-D warnings`, rustdoc `-D warnings`. **Smoked live on dev2
+at 128197e7 (2026-10-27, the owner in w11term): "worked perfectly"** — w11term takes flags 4 and 8.
+
+#### Quiet orders (2026-10-27, from the same playtest)
+
+The playtest's one complaint: a held `w` read `Making 54 kph.` in the comms at every step, a held
+turn `Steering to …°.` at every extension. **Ruled: the keys' orders are taken without the
+acknowledgement, the typed verbs keep it.** Built as a trailing `QUIET` word on `HEADING` and
+`SPEED` (`tacsim::match_::cockpit::quiet_flag`; case-insensitive), which the TUI's `Helm` and
+`Throttle` and the web's `helmLine` / `speedLine` put on every line they send; a refusal — the
+usage, the ceilings, power — is spoken whichever way the order came, since the HUD cannot say why
+the tank did not move. Doc 16 §3.7's verb table and doc 21 §7.3's "Line sent" column carry the
+word; `help cockpit` says the keys are quiet and the typed verb is not. `LOCK`'s `Locking …` and
+`FIRE`'s lines are unchanged: each is one press, and the lock's answer names what it locked.
+**Verified**: `tacsim` shard 6 (`quiet_orders_are_taken_without_an_acknowledgement`: both
+verbs quiet, both refusals spoken, the plain verbs as before), `mush-net-ssh --lib` (every pinned
+order line carries the word), the web's `PictureView.test.ts` likewise; fmt, clippy, rustdoc.
 
 ### G.12c — the web
 

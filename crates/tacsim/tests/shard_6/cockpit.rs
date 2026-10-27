@@ -4823,6 +4823,42 @@ async fn d2_fire_takes_the_short_name_and_weaponstatus_advertises_it() {
 }
 
 // ---------------------------------------------------------------------------
+// Doc 21 §7.3 (2026-10-27) — the picture's keys order QUIET
+// ---------------------------------------------------------------------------
+
+/// **`HEADING … QUIET` and `SPEED … QUIET` order without an acknowledgement**
+/// (doc 21 §7.3, the owner's first playtest of G.12: a held `w` read `Making 54
+/// kph.` in the comms every quarter second). The word is case-insensitive and
+/// trailing; a refusal — the usage, the ceilings — is still spoken, and the
+/// plain verb still acknowledges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quiet_orders_are_taken_without_an_acknowledgement() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the tank never came online");
+
+    let said = rig.say(0, "speed 20 QUIET");
+    assert!(!said.contains("Making"), "{said}");
+    assert!(!said.contains("SPEED <kph>"), "{said}");
+    let said = rig.say(0, "heading 90 quiet");
+    assert!(!said.contains("Steering"), "{said}");
+    assert!(!said.contains("HEADING <0-359>"), "{said}");
+    // Refusals speak whichever way the order came.
+    let said = rig.say(0, "speed 999 quiet");
+    assert!(said.contains("That unit makes 54 kph ahead"), "{said}");
+    let said = rig.say(0, "heading 400 quiet");
+    assert!(said.contains("HEADING <0-359>"), "{said}");
+    let said = rig.say(0, "heading quiet");
+    assert!(said.contains("HEADING <0-359>"), "{said}");
+    // The plain verb is as it was.
+    let said = rig.say(0, "speed 54");
+    assert!(said.contains("Making 54 kph."), "{said}");
+    let said = rig.say(0, "heading 180");
+    assert!(said.contains("Steering to 180°."), "{said}");
+}
+
+// ---------------------------------------------------------------------------
 // 16b cut D.3 (`T-60`) — four slips from the hand-played transcript
 // ---------------------------------------------------------------------------
 

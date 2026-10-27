@@ -128,11 +128,11 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     await tick();
     expect(picture.on).toBe(true);
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls).toEqual([["HEADING 15"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
     vi.advanceTimersByTime(HELM_REPEAT_MS);
-    expect(helm.mock.calls).toEqual([["HEADING 15"], ["HEADING 15"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 15 QUIET"]]);
     await fireEvent.keyUp(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
     vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
     expect(helm.mock.calls).toHaveLength(3);
   });
@@ -141,10 +141,10 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     const { picture, setPicture, helm, frame } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowRight" });
-    expect(helm.mock.calls).toEqual([["HEADING 75"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"]]);
     setVisibility("hidden");
     await tick();
-    expect(helm.mock.calls).toEqual([["HEADING 75"], ["HEADING 45"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 75 QUIET"], ["HEADING 45 QUIET"]]);
     // The release of the arrow, out of sight, changes nothing; nor do the
     // repeats that would have run.
     vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
@@ -163,7 +163,7 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
     window.dispatchEvent(new Event("blur"));
     await tick();
-    expect(helm.mock.calls).toEqual([["HEADING 15"], ["HEADING 45"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 45 QUIET"]]);
     vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
     expect(helm.mock.calls).toHaveLength(2);
   });
@@ -172,9 +172,9 @@ describe("PictureView mounted: a held key is let go when its release cannot be s
     const { helm, frame, unmount } = mount();
     await tick();
     await fireEvent.keyDown(frame, { key: "ArrowLeft" });
-    expect(helm.mock.calls).toEqual([["HEADING 15"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
     unmount();
-    expect(helm.mock.calls).toEqual([["HEADING 15"], ["HEADING 45"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"], ["HEADING 45 QUIET"]]);
     vi.advanceTimersByTime(HELM_REPEAT_MS * 3);
     expect(helm.mock.calls).toHaveLength(2);
   });
@@ -209,7 +209,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     // Coalesced: nothing yet.
     expect(helm).not.toHaveBeenCalled();
     vi.advanceTimersByTime(SPEED_COALESCE_MS);
-    expect(helm.mock.calls).toEqual([["SPEED 6"]]);
+    expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
     await tick();
     expect(screen.getByLabelText("speed ordered").textContent).toBe("spd 0→6");
   });
@@ -219,7 +219,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     await tick();
     await press(frame, "w");
     vi.advanceTimersByTime(SPEED_COALESCE_MS);
-    expect(helm.mock.calls).toEqual([["SPEED 60"]]);
+    expect(helm.mock.calls).toEqual([["SPEED 60 QUIET"]]);
   });
 
   it("steps from the frame's defaults when it predates the ceilings", async () => {
@@ -228,7 +228,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     await tick();
     await press(frame, "w");
     vi.advanceTimersByTime(SPEED_COALESCE_MS);
-    expect(helm.mock.calls).toEqual([["SPEED 6"]]);
+    expect(helm.mock.calls).toEqual([["SPEED 6 QUIET"]]);
   });
 
   it("s from rest goes into reverse a step at a time and floors at the reverse ceiling", async () => {
@@ -239,11 +239,11 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
       vi.advanceTimersByTime(SPEED_COALESCE_MS);
     }
     expect(helm.mock.calls).toEqual([
-      ["SPEED -6"],
-      ["SPEED -12"],
-      ["SPEED -18"],
-      ["SPEED -20"],
-      ["SPEED -20"],
+      ["SPEED -6 QUIET"],
+      ["SPEED -12 QUIET"],
+      ["SPEED -18 QUIET"],
+      ["SPEED -20 QUIET"],
+      ["SPEED -20 QUIET"],
     ]);
   });
 
@@ -254,7 +254,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     vi.advanceTimersByTime(SPEED_COALESCE_MS / 2);
     await press(frame, "w", { repeat: true });
     vi.advanceTimersByTime(SPEED_COALESCE_MS);
-    expect(helm.mock.calls).toEqual([["SPEED 12"]]);
+    expect(helm.mock.calls).toEqual([["SPEED 12 QUIET"]]);
     vi.advanceTimersByTime(SPEED_COALESCE_MS * 4);
     expect(helm).toHaveBeenCalledTimes(1);
   });
@@ -264,7 +264,7 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     await tick();
     await press(frame, "w");
     await press(frame, "x");
-    expect(helm.mock.calls).toEqual([["SPEED 0"], ["HEADING 45"]]);
+    expect(helm.mock.calls).toEqual([["SPEED 0 QUIET"], ["HEADING 45 QUIET"]]);
     vi.advanceTimersByTime(SPEED_COALESCE_MS * 2);
     expect(helm).toHaveBeenCalledTimes(2);
     await tick();
@@ -344,13 +344,13 @@ describe("PictureView mounted: the cockpit's keys (doc 21 §7.3, cut G.12c)", ()
     const { helm, frame } = mount(fixtureFrame());
     await tick();
     await press(frame, "a");
-    expect(helm.mock.calls).toEqual([["HEADING 15"]]);
+    expect(helm.mock.calls).toEqual([["HEADING 15 QUIET"]]);
     await fireEvent.keyUp(frame, { key: "a" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
     await press(frame, "d");
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 75"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 75 QUIET"]);
     await fireEvent.keyUp(frame, { key: "d" });
-    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45"]);
+    expect(helm.mock.calls.at(-1)).toEqual(["HEADING 45 QUIET"]);
   });
 
   it("q and e swing the look as , and . do", async () => {

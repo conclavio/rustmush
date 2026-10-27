@@ -3949,9 +3949,26 @@ fn more_tail(left: usize) -> String {
     format!("; +{left} more")
 }
 
-/// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
+/// A trailing `QUIET` on `HEADING` and `SPEED` (doc 21 §7.3, 2026-10-27): the
+/// cockpit picture's keys send the verb with this word, and the order's
+/// acknowledgement — `Steering to …°.`, `Making … kph.` — is not spoken. A
+/// held `w` or a held turn sends an order every quarter second, and the owner's
+/// first playtest read each one in the comms; the HUD already shows the
+/// ordered speed and heading. A **refusal is still spoken** whichever way the
+/// order came: the pilot must learn why the tank did not move. Answers the
+/// rest of the line without the word, and whether it was there.
+fn quiet_flag(rest: &str) -> (&str, bool) {
+    match rest.trim_end().rsplit_once(char::is_whitespace) {
+        Some((head, word)) if word.eq_ignore_ascii_case("quiet") => (head, true),
+        _ => (rest, false),
+    }
+}
+
+/// `HEADING <deg> [QUIET]` — 0 to 359, clockwise from north (doc 16 §3.7);
+/// `QUIET` is [`quiet_flag`].
 fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    let (rest, quiet) = quiet_flag(rest);
     let deg: u32 = rest
         .trim()
         .parse()
@@ -3971,14 +3988,16 @@ fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitErro
             mdeg: deg.saturating_mul(1_000),
         },
     )?;
-    let line = format!("Steering to {deg}°.");
-    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    if !quiet {
+        let line = format!("Steering to {deg}°.");
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 
-/// `SPEED <kph>` — the unit's reverse ceiling to its own maximum (doc 16 §3.7).
-/// The wire is centimetres a second (doc 16 §3.2's integers), so the conversion
-/// is here and the pilot never types one.
+/// `SPEED <kph> [QUIET]` — the unit's reverse ceiling to its own maximum (doc 16
+/// §3.7); `QUIET` is [`quiet_flag`]. The wire is centimetres a second (doc 16
+/// §3.2's integers), so the conversion is here and the pilot never types one.
 ///
 /// **16b cut D.3 (`T-60`) made the refusal true.** It read `That unit makes 54
 /// kph; SPEED 0 to 54.` — a range the verb did not enforce at either end: it
@@ -3990,6 +4009,7 @@ fn heading(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitErro
 /// [`crate::arena::state::TrackedRules::reverse_ceiling_cms`].
 fn speed(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    let (rest, quiet) = quiet_flag(rest);
     let kph: i32 =
         rest.trim().parse().ok().ok_or_else(|| {
             CockpitError::Usage("SPEED <kph>; a negative speed reverses.".to_owned())
@@ -4015,8 +4035,10 @@ fn speed(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
             cms: kph_to_cms(kph),
         },
     )?;
-    let line = format!("Making {kph} kph.");
-    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    if !quiet {
+        let line = format!("Making {kph} kph.");
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 

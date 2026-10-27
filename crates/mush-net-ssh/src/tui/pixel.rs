@@ -2025,7 +2025,7 @@ mod tests {
         h.key(Key::CharRepeat('w'), t0);
         h.key(Key::CharRepeat('x'), t0);
         assert!(
-            h.take_orders().iter().any(|o| o == "SPEED 0"),
+            h.take_orders().iter().any(|o| o == "SPEED 0 QUIET"),
             "a repeated flight key is the key again"
         );
         let (_, bottom) = h.hud(Some(&cockpit), t0);
@@ -2446,11 +2446,15 @@ mod tests {
             }
         });
         assert_eq!(v.key(Key::Char('w'), t0), KeyUse::Used);
-        assert_eq!(v.take_orders(), ["SPEED 6"], "a tenth of the default 60");
+        assert_eq!(
+            v.take_orders(),
+            ["SPEED 6 QUIET"],
+            "a tenth of the default 60"
+        );
         let (top, _) = v.hud(Some(&cockpit), t0);
         assert!(top.contains("spd 0→6"), "{top}");
         v.key(Key::Char('s'), t0 + super::super::helm::ORDER_GAP);
-        assert_eq!(v.take_orders(), ["SPEED 0"]);
+        assert_eq!(v.take_orders(), ["SPEED 0 QUIET"]);
         // The frame's own ceiling: 43 kph steps by 5.
         let (mut v, cockpit, t0) = flying(|c| {
             c["speed_kph"] = 0.into();
@@ -2458,7 +2462,7 @@ mod tests {
             c["reverse_kph"] = 12.into();
         });
         v.key(Key::Char('w'), t0);
-        assert_eq!(v.take_orders(), ["SPEED 5"]);
+        assert_eq!(v.take_orders(), ["SPEED 5 QUIET"]);
         // The frame reaches it: the HUD drops the arrow.
         let mut reached = cockpit.clone();
         reached["speed_kph"] = 5.into();
@@ -2472,7 +2476,7 @@ mod tests {
         let _ = v.take_orders();
         v.key(Key::Char('x'), t0 + Duration::from_millis(10));
         let orders = v.take_orders();
-        assert!(orders.contains(&"SPEED 0".to_string()), "{orders:?}");
+        assert!(orders.contains(&"SPEED 0 QUIET".to_string()), "{orders:?}");
         assert_eq!(v.helm().turning(), 0);
     }
 

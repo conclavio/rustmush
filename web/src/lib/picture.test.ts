@@ -74,10 +74,10 @@ describe("the look and the helm", () => {
   });
 
   it("orders a heading thirty degrees ahead, or where the tank points to stop", () => {
-    expect(helmLine(90, 1)).toBe("HEADING 120");
-    expect(helmLine(10, -1)).toBe("HEADING 340");
-    expect(helmLine(350, 1)).toBe("HEADING 20");
-    expect(helmLine(45, 0)).toBe("HEADING 45");
+    expect(helmLine(90, 1)).toBe("HEADING 120 QUIET");
+    expect(helmLine(10, -1)).toBe("HEADING 340 QUIET");
+    expect(helmLine(350, 1)).toBe("HEADING 20 QUIET");
+    expect(helmLine(45, 0)).toBe("HEADING 45 QUIET");
   });
 
   it("reads the keys the TUI's view reads", () => {
@@ -180,7 +180,7 @@ describe("the speed's step and clamp (doc 21 cut G.12c)", () => {
     expect(speedOutstanding(6, 5)).toBe(false);
     expect(speedOutstanding(6, 7)).toBe(false);
     expect(speedOutstanding(-6, 0)).toBe(true);
-    expect(speedLine(-6)).toBe("SPEED -6");
+    expect(speedLine(-6)).toBe("SPEED -6 QUIET");
   });
 });
 

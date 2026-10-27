@@ -559,8 +559,8 @@ focus to the station. `EXIT` reverses it and sends `Control{Released}`.
 | Verb | Arguments | Refusals |
 |---|---|---|
 | `STARTUP` | none | none (idempotent) |
-| `HEADING <deg>` | 0 to 359 | power not online |
-| `SPEED <kph>` | minus the reverse ceiling to max; a negative speed reverses (16b cut D.3) | power not online; past either ceiling |
+| `HEADING <deg> [QUIET]` | 0 to 359; `QUIET` takes the order without the `Steering to …°.` acknowledgement (the picture's keys send it, doc 21 §7.3; refusals still speak) | power not online |
+| `SPEED <kph> [QUIET]` | minus the reverse ceiling to max; a negative speed reverses (16b cut D.3); `QUIET` as `HEADING`'s | power not online; past either ceiling |
 | `VIEW [BRIEF]` | none draws the map; `BRIEF`, case-folded, says the same window in sentences (16b cut AG.1, §11) | any other word: the one usage line `VIEW [BRIEF]; BRIEF says the window in sentences.`, the same bytes for every word and never an echo (AG.1) |
 | `CONTACTS` | none | none |
 | `LOCK <contact>` | a designator, `X<n>` or team and slot letters, case-folded (16b cut Q.1) | one byte-identical refusal for any name the platform does not hold |
