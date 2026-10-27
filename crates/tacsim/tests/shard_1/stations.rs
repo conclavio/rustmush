@@ -71,7 +71,7 @@ use support::ground::{UNSIGNED, sign};
 /// board` — and nothing else ([`stickney_v3_json`] rebuilds v3 to its old pin).
 fn station_version(pack: &str) -> u32 {
     match pack {
-        CERES_PACK => 3,
+        CERES_PACK => 4,
         STICKNEY_PACK => 4,
         _ => 1,
     }
@@ -87,7 +87,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "ade2697a534d7887934346d96593c61571e9c5105c87e1cba56cde24660e515f",
+        "1bc92740fc8fd745a0edaff3f90898a6d1bb408d11e59203909901cf6cdc6940",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -140,9 +140,28 @@ const STICKNEY_V3_DIGEST: &str = "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc
 const CERES_V2_DIGEST: &str = "641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538";
 
 fn restore_oduya_v2(doc: &mut Value) {
+    restore_qureshi_v3(doc);
     doc["entries"]["npc.oduya"]["def"]["profile"] =
         serde_json::from_str(include_str!("../support/oduya_v2_profile.json"))
             .expect("the shipped v2 profile");
+}
+
+fn restore_qureshi_v3(doc: &mut Value) {
+    doc["entries"]["npc.qureshi"]["def"] =
+        serde_json::from_str(include_str!("../support/qureshi_v3_def.json"))
+            .expect("the shipped v3 Qureshi definition");
+    doc["entries"]
+        .as_object_mut()
+        .expect("entries")
+        .remove("lore.qureshi_personal");
+}
+
+fn ceres_v3_json() -> String {
+    let mut doc = pack_json(CERES_PACK);
+    doc["manifest"]["version"] = serde_json::json!(3);
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    restore_qureshi_v3(&mut doc);
+    sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
 }
 
 fn ceres_v2_json() -> String {
@@ -521,7 +540,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                 requires,
                 vec![
                     (AITKEN_PACK.to_string(), 1),
-                    (CERES_PACK.to_string(), 3),
+                    (CERES_PACK.to_string(), 4),
                     ("neighborhood.malapert_exchange".into(), 1),
                     ("neighborhood.phobos_exchange".into(), 1),
                     ("neighborhood.kirkwood_depot".into(), 1),
@@ -1194,7 +1213,15 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .collect();
     // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
     assert_eq!(npcs.len(), 52);
-    let providers = ["atlas", "travel", "help", "market", "coop"];
+    let providers = [
+        "atlas",
+        "travel",
+        "help",
+        "market",
+        "coop",
+        "npc.lore",
+        "npc.relationship",
+    ];
     for entry in CAST {
         let p = profile(&tw, obj(&tw, npc_pack(entry), entry));
         assert!(p.enabled, "{entry}");
@@ -1295,8 +1322,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    // Oduya's desk update: relay v5 requires Ceres v3.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(5));
+    // Qureshi's trust service: relay v6 requires Ceres v4.
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(6));
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -2038,8 +2065,8 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         .expect("the relay seed installs after the station upgrade");
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
-    // Oduya's desk update: relay v5 requires Ceres v3.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(5));
+    // Qureshi's trust service: relay v6 requires Ceres v4.
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(6));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()
@@ -2112,7 +2139,7 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
     let objects = live_objects(&tw);
     let (plan, apply) = plan_and_apply(&mut tw, CERES_PACK);
     assert!(
-        apply.contains("Applied neighborhood.ceres_freeport@3:"),
+        apply.contains("Applied neighborhood.ceres_freeport@4:"),
         "{plan}\n{apply}"
     );
     assert_eq!(obj(&tw, CERES_PACK, "npc.oduya"), oduya);
@@ -2133,6 +2160,133 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
     assert!(updated.interfaces.iter().any(|id| id == "coop"));
     assert_eq!(updated.command_refs.len(), 5);
     assert_eq!(updated.goals.len(), 3);
+}
+
+#[test]
+fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
+    let old_ceres = ceres_v3_json();
+    assert_eq!(
+        parse_pack(&old_ceres)
+            .unwrap()
+            .computed_digest()
+            .unwrap()
+            .to_hex(),
+        "ade2697a534d7887934346d96593c61571e9c5105c87e1cba56cde24660e515f"
+    );
+    let mut packs = tacsim::composition::boot_pack_list(true, true).unwrap();
+    packs.retain(|pack| pack.manifest().id().as_str() != "tacsim.relay.luna_ceres");
+    for pack in &mut packs {
+        if pack.manifest().id().as_str() == CERES_PACK {
+            *pack = mush_content::load_pack(&old_ceres).unwrap();
+        }
+    }
+    // Qureshi must countersign the lane's initial vendor bootstrap at her authored
+    // desk before this kept world moves her or changes her mutable affiliation.
+    // Keep the genuine site's prerequisites; only the new relay waits for Ceres v4.
+    let mut tw = TestWorld::with_modules(support::roster_booting(config(), packs));
+    assert_eq!(
+        content(&tw)
+            .latches
+            .applied(&id(CERES_PACK))
+            .unwrap()
+            .version(),
+        3
+    );
+    assert_eq!(
+        content(&tw)
+            .latches
+            .applied(&id(LANE_PACK))
+            .unwrap()
+            .version(),
+        LANE_VERSION
+    );
+    let qureshi = obj(&tw, CERES_PACK, "npc.qureshi");
+    let off_duty = obj(&tw, CERES_PACK, "room.c04_concourse");
+    tw.world_mut().move_to(qureshi, off_duty).unwrap();
+    let stamp = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Old stamp", GOD, Some(qureshi))
+        .unwrap();
+    tw.world_mut()
+        .set_attr(
+            qureshi,
+            mush_npc::SUMMARY_ATTR,
+            mush_core::Attr::text("A captain returned the borrowed pencil.", GOD),
+        )
+        .unwrap();
+    tw.run(GOD, "@faction/create Visiting Desk");
+    tw.run(
+        GOD,
+        &format!("@agent/set {qureshi}/public_faction=Visiting Desk"),
+    );
+    let affiliation =
+        mush_npc::public_faction_for(tw.world(), qureshi).expect("explicit staff role");
+    let pilot = tw.spawn_player("Returning Captain");
+    tw.run(GOD, &format!("@agent/relationship {qureshi}/{pilot}=trust:20; disposition:-5; cause:staff:legacy; reason:Earlier verified work"));
+    let receipts = tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap()
+        .relationships
+        .record_for(qureshi, pilot)
+        .cloned()
+        .expect("legacy relationship");
+    let saved = fold_module_ops(tw.take_module_ops());
+    let mut tw = tw
+        .reboot_into(production_roster_with_starter(config()), saved)
+        .unwrap();
+    assert!(
+        !profile(&tw, qureshi)
+            .interfaces
+            .iter()
+            .any(|id| id == "npc.lore"),
+        "boot does not upgrade authored content"
+    );
+    let objects = live_objects(&tw);
+    let (plan, apply) = plan_and_apply(&mut tw, CERES_PACK);
+    assert!(
+        apply.contains("Applied neighborhood.ceres_freeport@4:"),
+        "{plan}\n{apply}"
+    );
+    assert_eq!(obj(&tw, CERES_PACK, "npc.qureshi"), qureshi);
+    assert_eq!(live_objects(&tw), objects);
+    assert_eq!(location(&tw, qureshi), Some(off_duty));
+    assert_eq!(location(&tw, stamp), Some(qureshi));
+    assert_eq!(
+        mush_npc::public_faction_for(tw.world(), qureshi),
+        Some(affiliation)
+    );
+    assert_eq!(
+        tw.world()
+            .attr(qureshi, mush_npc::SUMMARY_ATTR)
+            .and_then(|attr| attr.as_text()),
+        Some("A captain returned the borrowed pencil.")
+    );
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .relationships
+            .record_for(qureshi, pilot),
+        Some(&receipts)
+    );
+    let updated = profile(&tw, qureshi);
+    for interface in ["market", "npc.lore", "npc.relationship"] {
+        assert!(updated.interfaces.iter().any(|id| id == interface));
+    }
+    assert!(updated.command_refs.iter().any(|name| name == "+npc"));
+    assert!(
+        !updated
+            .persona
+            .contains("My first Occator stamp came back backwards")
+    );
+    assert!(
+        !updated
+            .knowledge
+            .knows
+            .iter()
+            .any(|text| text.contains("My first Occator stamp came back backwards"))
+    );
 }
 
 #[test]

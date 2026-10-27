@@ -191,6 +191,8 @@ pub fn user_prompt(snap: &TurnSnapshot) -> String {
         s.push_str("Present: (no one else)\n");
     } else {
         s.push_str("Present:\n");
+        s.push_str(crate::relationships::SOCIAL_GUIDANCE);
+        s.push('\n');
         for pp in &snap.scene.present {
             let fam = familiarity_tag(pp.familiarity);
             if pp.short_desc.trim().is_empty() {
@@ -202,18 +204,13 @@ pub fn user_prompt(snap: &TurnSnapshot) -> String {
                     pp.short_desc.trim()
                 ));
             }
-            s.push_str(&format!(
-                "    Personal trust: {}; disposition: {}.\n",
-                pp.personal_relation.trust, pp.personal_relation.disposition
-            ));
-            if let Some(standing) = &pp.standing {
-                s.push_str(&format!(
-                    "    Public standing with {}: {} ({}).\n",
-                    escape_angle(&standing.name),
-                    standing.score,
-                    escape_angle(&standing.band)
-                ));
-            }
+            s.push_str("    ");
+            s.push_str(&escape_angle(&crate::relationships::social_stance(
+                pp.familiarity,
+                pp.personal_relation,
+                pp.standing.as_ref(),
+            )));
+            s.push('\n');
         }
     }
     if !snap.scene.exits.is_empty() {
@@ -811,12 +808,35 @@ mod tests {
             band: "hostile".into(),
         });
         let user = user_prompt(&s);
-        assert!(user.contains("Personal trust: 30; disposition: -10."));
-        assert!(user.contains("Public standing with &lt;Occator&gt;: -50 (hostile)."));
+        assert!(user.contains("Personal trust: trusting (give claims a fair hearing"));
+        assert!(user.contains("disposition: cool (be reserved and civil)"));
+        assert!(
+            user.contains(
+                "Public standing with &lt;Occator&gt;: hostile (use professional caution"
+            )
+        );
         assert!(user.contains("[you know them well]"));
+        assert!(user.contains("Do not invent reasons or shared history"));
+        assert!(user.contains("No attitude grants membership"));
+        assert!(!user.contains("Personal trust: 30"));
         let system = system_prompt(&s);
         assert!(system.contains("professional caution and helpfulness"));
         assert!(system.contains("Neither standing nor familiarity grants"));
+    }
+
+    #[test]
+    fn liking_a_familiar_person_does_not_make_their_claims_trustworthy() {
+        let mut s = snap();
+        s.scene.present[0].familiarity = Familiarity::Known;
+        s.scene.present[0].personal_relation = crate::PersonalRelation {
+            trust: -30,
+            disposition: 30,
+        };
+        let user = user_prompt(&s);
+        assert!(user.contains("familiar; avoid repeated introductions"));
+        assert!(user.contains("Personal trust: distrustful (check claims carefully)"));
+        assert!(user.contains("disposition: friendly (respond warmly)"));
+        assert!(user.contains("Familiarity is recognition, not honesty"));
     }
 
     #[test]

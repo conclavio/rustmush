@@ -64,6 +64,7 @@ impl GameModule for ProbeModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(self.0.clone());
+        reg.hook(mush_core::HookPoint::Perceive, Arc::new(CloakHook));
         reg.interface_provider("probe", Arc::new(Probe))?;
         reg.subscribe(
             WorldEventKind::Said {
@@ -81,6 +82,23 @@ impl GameModule for ProbeModule {
     }
 }
 
+struct CloakHook;
+
+impl mush_core::EventHook for CloakHook {
+    fn perceives(
+        &self,
+        ctx: &mush_core::HookReadContext<'_>,
+        _observer: ObjId,
+        subject: ObjId,
+    ) -> mush_core::Perceive {
+        if ctx.world().attr(subject, "test_cloaked").is_some() {
+            mush_core::Perceive::Conceal
+        } else {
+            mush_core::Perceive::Abstain
+        }
+    }
+}
+
 struct Lot {
     tw: TestWorld,
     said: SaidLog,
@@ -94,6 +112,7 @@ fn lot() -> Lot {
     let said = SaidLog::default();
     let mut tw = TestWorld::with_modules(vec![
         Box::new(ProbeModule(said.clone())),
+        Box::new(mush_faction::FactionModule),
         Box::new(mush_npc::NpcModule::new()),
     ]);
     let lobby = tw
@@ -310,6 +329,215 @@ fn scene_context(tw: &mut TestWorld, npc: ObjId) -> serde_json::Value {
     assert_eq!(request.npc, npc);
     assert!(host.decision_requests.is_empty());
     request.context
+}
+
+fn dialogue_snapshot(tw: &mut TestWorld, npc: ObjId, speaker: ObjId) -> mush_npc::TurnSnapshot {
+    tw.run(speaker, "say Clerk, how should we proceed?");
+    let next = tw.world().now() + 3;
+    tw.set_now(next);
+    let (mut out, mut effects) = (Outbox::new(), Effects::new());
+    tw.engine_mut()
+        .fire_due(next * 1000, &mut out, &mut effects);
+    effects
+        .drain()
+        .into_iter()
+        .find_map(|effect| match effect {
+            mush_core::Effect::ModuleAsync {
+                module,
+                actor,
+                payload,
+                ..
+            } if module == "npc" && actor == npc => Some(serde_json::from_str(&payload).unwrap()),
+            _ => None,
+        })
+        .expect("captured dialogue")
+}
+
+#[test]
+fn scene_and_dialogue_share_qualitative_stances_without_private_reasons_or_principals() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    lot.tw.run(GOD, "@faction/create PublicDesk");
+    lot.tw.run(GOD, "@faction/create UnspokenPrincipal");
+    let factions = lot
+        .tw
+        .world()
+        .module_state::<mush_faction::FactionState>()
+        .unwrap();
+    let public = factions.faction_by_name("PublicDesk").unwrap().id;
+    let private = factions.faction_by_name("UnspokenPrincipal").unwrap().id;
+    let profile = mush_npc::AgentProfile {
+        public_faction: Some(public),
+        principal: Some(mush_faction::Principal::faction(private)),
+        ..mush_npc::AgentProfile::default()
+    };
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.clerk,
+            mush_npc::PROFILE_ATTR,
+            mush_core::Attr::json(serde_json::to_value(profile).unwrap(), GOD),
+        )
+        .unwrap();
+    for (person, trust, disposition, receipt) in [
+        (lot.alice, 30, -30, "private_alice_receipt"),
+        (lot.bob, -30, 30, "private_bob_receipt"),
+    ] {
+        let output = lot.tw.run(GOD, &format!(
+            "@agent/relationship #{}/#{}=trust:{trust}; disposition:{disposition}; cause:{receipt}; reason:Sealed staff explanation",
+            lot.clerk.0, person.0
+        ));
+        assert!(text(&lot.tw, &output, GOD).contains("Relationship"));
+    }
+    let snapshot = dialogue_snapshot(&mut lot.tw, lot.clerk, lot.alice);
+    let prompt = mush_npc::user_prompt(&snapshot);
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    let social = &context["social_context"];
+    assert!(prompt.contains(social["guidance"].as_str().unwrap()));
+    let people = social["people"].as_array().unwrap();
+    assert_eq!(people.len(), 2);
+    for person in people {
+        let stance = person["stance"].as_str().unwrap();
+        assert!(
+            prompt.contains(stance),
+            "scene/dialogue differ: {stance}\n{prompt}"
+        );
+        assert!(stance.contains("Public standing with PublicDesk: neutral"));
+        if person["name"] == "Alice" {
+            assert!(stance.contains("Personal trust: trusting"));
+            assert!(stance.contains("disposition: cold"));
+        } else {
+            assert_eq!(person["name"], "Bob");
+            assert!(stance.contains("Personal trust: distrustful"));
+            assert!(stance.contains("disposition: friendly"));
+        }
+    }
+    let rendered = serde_json::to_string(&context).unwrap();
+    for withheld in [
+        "UnspokenPrincipal",
+        "private_alice_receipt",
+        "private_bob_receipt",
+        "Sealed staff explanation",
+    ] {
+        assert!(!prompt.contains(withheld), "{prompt}");
+        assert!(!rendered.contains(withheld), "{rendered}");
+    }
+    for metadata in [
+        "\"character\"",
+        "\"npc\"",
+        "\"principal\"",
+        "\"cause\"",
+        "\"trust\"",
+        "\"score\"",
+    ] {
+        assert!(
+            !rendered.contains(metadata),
+            "social metadata leaked: {rendered}"
+        );
+    }
+    lot.tw.run(GOD, "@faction/set PublicDesk=hidden:yes");
+    let hidden = scene_context(&mut lot.tw, lot.clerk);
+    assert!(!hidden.to_string().contains("PublicDesk"));
+}
+
+#[test]
+fn live_scene_and_dialogue_omit_concealed_people_and_their_relationships() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    lot.tw
+        .world_mut()
+        .set_attr(lot.bob, "test_cloaked", mush_core::Attr::text("yes", GOD))
+        .unwrap();
+    lot.tw.run(GOD, &format!(
+        "@agent/relationship #{}/#{}=trust:50; disposition:50; cause:hidden_contact; reason:Private hidden history",
+        lot.clerk.0, lot.bob.0
+    ));
+    let snapshot = dialogue_snapshot(&mut lot.tw, lot.clerk, lot.alice);
+    assert!(
+        snapshot
+            .scene
+            .present
+            .iter()
+            .all(|person| person.name != "Bob")
+    );
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    assert_eq!(context["present"], serde_json::json!(["Alice"]));
+    let people = context["social_context"]["people"].as_array().unwrap();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0]["name"], "Alice");
+    assert!(
+        !serde_json::to_string(&context)
+            .unwrap()
+            .contains("Private hidden history")
+    );
+}
+
+#[test]
+fn scene_recall_tracks_the_observed_identity_after_rename_without_rewriting_evidence() {
+    let mut lot = lot();
+    lot.tw.set_now(1000);
+    lot.tw
+        .run(lot.alice, "say Clerk, the original manifest was delayed.");
+    lot.tw.set_now(1001);
+    lot.tw.run(lot.bob, "say Clerk, the garden is quiet today.");
+    let before = lot
+        .tw
+        .world()
+        .module_state::<mush_npc::NpcHostState>()
+        .unwrap()
+        .personal_memory
+        .record_for(lot.clerk)
+        .cloned()
+        .unwrap();
+    lot.tw.run(GOD, &format!("@name #{}=Alicia", lot.alice.0));
+    assert_eq!(
+        lot.tw.world().get(lot.alice).unwrap().name.as_str(),
+        "Alicia"
+    );
+    let room = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    let namesake = lot.tw.spawn_player("Alice");
+    lot.tw.world_mut().move_to(namesake, room).unwrap();
+    lot.tw
+        .world_mut()
+        .set_attr(lot.bob, "test_cloaked", mush_core::Attr::text("yes", GOD))
+        .unwrap();
+    lot.tw
+        .world_mut()
+        .module_state_mut::<mush_npc::NpcHostState>()
+        .unwrap()
+        .config
+        .recall_top_n = 1;
+    let context = scene_context(&mut lot.tw, lot.clerk);
+    let recalled = context["working_memory"]["recollections"].as_str().unwrap();
+    assert!(recalled.contains("original manifest"), "{recalled}");
+    assert!(
+        recalled.contains("same observed character now known here as \"Alicia\""),
+        "{recalled}"
+    );
+    let elsewhere = lot
+        .tw
+        .world_mut()
+        .create(ObjKind::Room, "Elsewhere", GOD, None)
+        .unwrap();
+    lot.tw.world_mut().move_to(lot.alice, elsewhere).unwrap();
+    let namesake_only = scene_context(&mut lot.tw, lot.clerk);
+    let recalled = namesake_only["working_memory"]["recollections"]
+        .as_str()
+        .unwrap();
+    assert!(
+        recalled.contains("garden is quiet"),
+        "a namesake must not boost the old speaker: {recalled}"
+    );
+    assert!(!recalled.contains("original manifest"));
+    assert_eq!(
+        lot.tw
+            .world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .personal_memory
+            .record_for(lot.clerk),
+        Some(&before)
+    );
 }
 
 #[test]

@@ -2621,6 +2621,13 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
     old_ceres["entries"]["npc.oduya"]["def"]["profile"] =
         serde_json::from_str(include_str!("oduya_v2_profile.json"))
             .expect("published Oduya profile");
+    old_ceres["entries"]["npc.qureshi"]["def"] =
+        serde_json::from_str(include_str!("qureshi_v3_def.json"))
+            .expect("published Qureshi definition");
+    old_ceres["entries"]
+        .as_object_mut()
+        .expect("entries")
+        .remove("lore.qureshi_personal");
     *ceres = mush_content::load_pack(&ground::sign(&old_ceres.to_string()))
         .expect("published Ceres verifies");
     assert_eq!(

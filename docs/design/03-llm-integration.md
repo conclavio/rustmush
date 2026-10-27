@@ -505,11 +505,14 @@ Three layers, cheapest first:
    experiences are never rewritten by a correction, and a belief retains its evidence when the
    experience buffer evicts an older entry.
 
-   Recall uses present names and explicit topic cues, with deterministic ordering and hard entry
+   Live recall uses perceived character identities and explicit topic cues, with deterministic ordering and hard entry
    and byte budgets. After seven days an entry is fading; after thirty days it needs an explicit
    cue to return. Source and uncertainty labels remain visible to the model. Imperfect recall
    omits or qualifies details; it never fabricates substitute events. Authored persona, goals,
    semantic lore, fresh command cards, and live account queries do not decay with personal memory.
+   Renamed speakers remain linked to their original observations; a name shared by a different
+   character cannot supply identity evidence. Historical text is retained, with current-name
+   context rendered separately only for perceived speakers.
 
    Existing `mem:{npc}:{subject}` documents remain readable as legacy recollections with unknown
    provenance and individual age. They are not rewritten or given synthetic evidence. New
@@ -518,6 +521,9 @@ Three layers, cheapest first:
    advances familiarity at most hourly; verified service receipts or reasoned staff adjudication
    change trust/disposition with durable replay protection. Public affiliation projects only public
    faction standing, independently of private intel principals and membership authorization.
+   Dialogue and scene turns share qualitative social guidance without private receipt reasons.
+   A live, private `+npc/relationship` query exposes only the asker's own current assessment;
+   neither reading it nor the corresponding interface call changes the relationship.
    Guarded lore is delivered through a live trust-checked private interface, outside the LLM's
    public prompt and reusable memory. Embedding retrieval remains future work.
 

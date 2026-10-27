@@ -75,12 +75,19 @@ registry and survey commands. She keeps her numbered, form-proud manner; the
 player signs and submits forms. Survey commissions belong to Occator's desk.
 Private figures are read afresh and never enter her reusable working memory.
 
-This profile ships in `neighborhood.ceres_freeport@3`. Existing worlds keep their
+At the Exchange, Rosalind Qureshi-Mbeki explains Occator surveys and privately
+reads your own relationship with her. Her personal story has the exact topic
+**The first stamp**: `+npc/lore Rosalind=The first stamp`. She normally shares it
+after two completed and paid surveys with her as their assigned representative.
+`+npc/relationship Rosalind` shows your current relationship;
+familiarity or Occator standing alone does not unlock the story.
+
+These profiles ship in `neighborhood.ceres_freeport@4`. Existing worlds keep their
 latched version until staff run `@atlas/pack plan neighborhood.ceres_freeport`
-and apply the resulting fingerprint. That upgrade preserves Oduya's object,
-current location, carried objects and conversation memory. The accompanying
-`tacsim.relay.luna_ceres@5` pins Ceres v3 for fresh installations. An existing
-relay v4 can keep its latch and live state: only its manifest changed, so its
+and apply the resulting fingerprint. That upgrade preserves the NPCs' objects,
+current locations, carried objects, conversation memory and public affiliations.
+The accompanying `tacsim.relay.luna_ceres@6` pins Ceres v4 for fresh installations. An existing
+relay v4 or v5 can keep its latch and live state: only its manifest changed, so its
 staff upgrade plan reports "Nothing to do."
 
 ### Giving an NPC a rollable sheet
@@ -160,6 +167,23 @@ Trust and disposition are separate ratings from -100 to 100. Trust measures
 reliability; disposition shapes warmth or dislike. Both start neutral, including
 on old saves. Verified work and explicit staff adjudication can change them.
 Receipts retain the cause so a retry cannot award the same event twice.
+
+Use `+npc/relationship <npc>` to privately read an enabled NPC's current attitude
+toward you. It shows familiarity, a trust band, and a disposition band, followed
+by your standing with its public affiliation when one exists. The requester must
+be connected, in the same room, and mutually perceivable. You cannot query another
+character's relationship, and staff receipt causes and reasons remain private.
+Reading the relationship does not create an encounter or improve a score.
+Staff can offer the same conversational service by including `npc.relationship`
+in the NPC's interfaces; its `npc.relationship.read` ability takes no parameters
+and always answers the current asker privately.
+
+NPC dialogue and scene turns use the same qualitative guidance: familiarity
+shapes recognition, trust shapes willingness to rely on you, and disposition
+shapes warmth. An NPC can be friendly but cautious, or personally cold yet regard
+you as reliable. Its public organization's opinion remains a separate professional
+concern. These cues do not invent a shared past, make remembered claims true, or
+change the permissions of a service.
 
 NPCs with a public affiliation can also see the present character's public
 standing with that faction and explain `+standing`. Reputation is separate from
@@ -261,7 +285,11 @@ heading for Ahuna does not make that plan an established world fact. A later cor
 replace a belief while preserving the original exchange. Contradictory reports from different
 people remain disputed.
 
-Recall favors current people and topics. Memories become uncertain after seven days, and
+Recall favors current people and topics. Recorded speakers are matched by character
+identity, so a rename preserves continuity and a different character with the same name
+does not inherit that person's history. When a recalled speaker is present under a new
+name, the recollection identifies the current name while preserving the original account.
+Legacy notes without identity evidence remain unverified. Memories become uncertain after seven days, and
 memories older than thirty days need an explicit topic cue to resurface. Missing details stay
 unknown. This affects personal recollections, not the NPC's authored role, goals, current command
 syntax, or live service results. Private statement answers and refusals are never retained as
@@ -296,7 +324,7 @@ commands. The principals behind the houses are on record and never wake. See
 
 ## See also
 
-  @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
+  @agent, @lore, @llm, @sheet, +npc, +standing, +roll, +intel, help intel, help perception,
   help worldgen, help ports
 
 ## Interface NPCs

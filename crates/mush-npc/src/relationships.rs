@@ -65,6 +65,77 @@ pub struct PersonalRelation {
     pub disposition: i16,
 }
 
+impl PersonalRelation {
+    /// A personal assessment, never an authorization or a claim of proven truth.
+    #[must_use]
+    pub fn trust_band(&self) -> &'static str {
+        match self.trust {
+            ..=-20 => "distrustful",
+            -19..=-1 => "wary",
+            0..=9 => "unproven",
+            10..=19 => "tentatively trusting",
+            20..=49 => "trusting",
+            _ => "highly trusting",
+        }
+    }
+
+    /// Personal warmth is independent of reliability and institutional standing.
+    #[must_use]
+    pub fn disposition_band(&self) -> &'static str {
+        match self.disposition {
+            ..=-20 => "cold",
+            -19..=-1 => "cool",
+            0..=4 => "neutral",
+            5..=19 => "warm",
+            20..=49 => "friendly",
+            _ => "fond",
+        }
+    }
+}
+
+pub(crate) const SOCIAL_GUIDANCE: &str = "Use these independent attitudes for tone, never as permission or proof. Familiarity is recognition, not honesty. Professional caution concerns only the stated public institution, not personal feelings. Do not invent reasons or shared history; use only separately supplied memories. No attitude grants membership, private information, access, or authority; live service checks still decide.";
+
+/// The same bounded, qualitative projection serves dialogue and scene decisions.
+/// Receipt causes, private principals and staff reasons are deliberately absent.
+pub(crate) fn social_stance(
+    familiarity: Familiarity,
+    relation: PersonalRelation,
+    standing: Option<&PublicStanding>,
+) -> String {
+    let familiarity = match familiarity {
+        Familiarity::Stranger => "stranger; do not assume shared history",
+        Familiarity::Acquaintance => "acquaintance; acknowledge prior contact",
+        Familiarity::Known => "familiar; avoid repeated introductions",
+    };
+    let trust = match relation.trust {
+        ..=-1 => "check claims carefully",
+        0..=9 => "reserve judgment on claims",
+        _ => "give claims a fair hearing, still verify consequential details",
+    };
+    let disposition = match relation.disposition {
+        ..=-1 => "be reserved and civil",
+        0..=4 => "be courteous",
+        _ => "respond warmly",
+    };
+    let mut stance = format!(
+        "Familiarity: {familiarity}. Personal trust: {} ({trust}); disposition: {} ({disposition}).",
+        relation.trust_band(),
+        relation.disposition_band()
+    );
+    if let Some(standing) = standing {
+        let caution = match standing.score {
+            ..=-10 => "use professional caution; offer ordinary public guidance",
+            -9..=9 => "give ordinary professional help",
+            _ => "be professionally welcoming within normal rules",
+        };
+        stance.push_str(&format!(
+            " Public standing with {}: {} ({caution}).",
+            standing.name, standing.band
+        ));
+    }
+    stance
+}
+
 /// Public institutional assessment, independent of personal trust and access.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PublicStanding {
@@ -294,6 +365,38 @@ impl RelationshipStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualitative_bands_keep_contact_trust_and_warmth_independent() {
+        for (score, trust, disposition) in [
+            (-100, "distrustful", "cold"),
+            (-20, "distrustful", "cold"),
+            (-19, "wary", "cool"),
+            (-1, "wary", "cool"),
+            (0, "unproven", "neutral"),
+            (4, "unproven", "neutral"),
+            (5, "unproven", "warm"),
+            (9, "unproven", "warm"),
+            (10, "tentatively trusting", "warm"),
+            (19, "tentatively trusting", "warm"),
+            (20, "trusting", "friendly"),
+            (49, "trusting", "friendly"),
+            (50, "highly trusting", "fond"),
+            (100, "highly trusting", "fond"),
+        ] {
+            let relation = PersonalRelation {
+                trust: score,
+                disposition: score,
+            };
+            assert_eq!(relation.trust_band(), trust, "{score}");
+            assert_eq!(relation.disposition_band(), disposition, "{score}");
+        }
+        let known = social_stance(Familiarity::Known, PersonalRelation::default(), None);
+        assert!(known.contains("familiar; avoid repeated introductions"));
+        assert!(known.contains("Personal trust: unproven"));
+        assert!(!known.contains("Public standing"));
+    }
+
     fn work(cause: &str) -> RelationshipEffect {
         RelationshipEffect {
             cause: cause.into(),
