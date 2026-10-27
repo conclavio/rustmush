@@ -422,6 +422,18 @@ fn advance_with_service(
     byte: u8,
     service_state: Option<Value>,
 ) -> TestResult<PreparedTxn> {
+    advance_full(f, operation, index, byte, service_state, None)
+}
+/// `advance_with_service` with `rows`' extra writes (17g C2f: a renewal
+/// writes no owner-index row, so the default is none).
+fn advance_full(
+    f: &mut Fixture,
+    operation: CommitToken,
+    index: usize,
+    byte: u8,
+    service_state: Option<Value>,
+    rows: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
     let commit = CommitToken::from_bytes([byte; 16]);
     let mut pair = pair(&view(f), operation)?;
     let at = 1000 + i64::from(byte);
@@ -502,11 +514,28 @@ fn advance_with_service(
             economics,
         )?;
     }
+    if let Some(write) = rows {
+        write(&mut txn, &f.handles)?;
+    }
     let mut ctx = crate::resolution::PrepareCtx::new(f.invocation.idempotency(), commit, None)
         .with_registered_transaction(&base, provider.registration_ordinal());
     ctx.advance_mind_renewal_completion(&mut txn, operation)?;
     drop(ctx);
     Ok(txn.prepare()?)
+}
+/// 17g C2f: the owner-index rig. A fresh renewal of the entitlement birth
+/// (holder 7, licence 1) drafted and funded, and its Grant prepared with
+/// `rows`' extra writes (the Grant keeps the holder, so it writes none).
+pub(in crate::action_state::terminal_capacity) fn renewal_grant(
+    rows: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    let mut f = fixture()?;
+    let operation = CommitToken::from_bytes([31; 16]);
+    let p = draft(&mut f, 31, None)?;
+    install(&mut f, p)?;
+    let p = advance(&mut f, operation, 1, 32)?;
+    install(&mut f, p)?;
+    advance_full(&mut f, operation, 2, 33, None, rows)
 }
 #[test]
 fn draft_reserves_seven_targets_fund_retains_exact_metadata_and_grant_hydrates() -> TestResult {

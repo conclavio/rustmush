@@ -467,6 +467,7 @@ pub mod module;
 pub mod owner_holdings;
 pub mod paid;
 mod paid_audit;
+pub mod paid_holdings;
 pub(crate) mod paid_roots;
 pub mod paid_source_reader;
 pub(crate) mod parent_grant;

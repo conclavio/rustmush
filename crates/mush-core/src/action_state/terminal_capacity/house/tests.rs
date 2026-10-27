@@ -249,7 +249,7 @@ impl ActionProvider for Provider {
         Ok(())
     }
 }
-struct Fixture {
+pub(in crate::action_state::terminal_capacity) struct Fixture {
     store: ActionStateStore,
     handles: BTreeMap<String, Handle>,
     providers: ActionProviderRegistry,
@@ -417,6 +417,12 @@ fn fixture_with_follow(
         }
         handles.insert(family.to_owned(), handle);
     }
+    // 17g C2f: the holder's holdings index, which every grant now writes.
+    owner_index::tests::register_index_families(
+        &mut builder,
+        &mut handles,
+        &[owner_index::HOLDINGS],
+    )?;
     builder.original_mind_purchase_capacity(
         &market,
         manifest.clone(),
@@ -659,6 +665,17 @@ enum FinishFault {
     ReusedFundingCommit,
 }
 fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestResult<PreparedTxn> {
+    finish_with(f, mode, grant, fault, None)
+}
+/// `finish` with `index` in place of the owners' default index writes
+/// (17g C2f).
+fn finish_with(
+    f: &mut Fixture,
+    mode: Mode,
+    grant: bool,
+    fault: FinishFault,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
     let [purchase, receipt_family, allocation, _] = mode.families();
     let commit = if matches!(fault, FinishFault::ReusedFundingCommit) {
         mode.operation()
@@ -736,6 +753,12 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
         }
         txn.insert(handle(&f.handles, ECONOMICS)?, &term_key, economics)?;
     }
+    // 17g C2f: every grant puts the holder's holdings row (`owner_index`).
+    match index {
+        Some(write) => write(&mut txn, &f.handles)?,
+        None if grant => owner_index::tests::put_holding(&mut txn, &f.handles, 7, id)?,
+        None => {}
+    }
     let mut ctx = crate::resolution::PrepareCtx::new(f.invocation.idempotency(), commit, None)
         .with_registered_transaction(&base, provider.registration_ordinal());
     if mode == Mode::Legacy {
@@ -774,6 +797,61 @@ fn hydrate(
 }
 fn reboot(f: &Fixture) -> TestResult<ActionStateStore> {
     hydrate(f, &f.disk)
+}
+
+/// 17g C2f: the owner-index rig. A HouseV1 purchase by buyer 7 is funded
+/// (licence 1).
+pub(in crate::action_state::terminal_capacity) fn funded_house() -> TestResult<Fixture> {
+    let mut f = fixture(0, 0)?;
+    let p = fund(&mut f, Mode::House, FundFault::default())?;
+    install(&mut f, p)?;
+    Ok(f)
+}
+/// Its Grant (`grant`) or Refund, with `index` in place of the default rows.
+pub(in crate::action_state::terminal_capacity) fn house_terminal(
+    f: &mut Fixture,
+    grant: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    finish_with(f, Mode::House, grant, FinishFault::None, index)
+}
+/// A two-seat House purchase by buyer 7 funded (licence 1): the HouseV2
+/// pin, or (`follow`) core's Follow v3 kind.
+pub(in crate::action_state::terminal_capacity) fn funded_two_seat(
+    follow: bool,
+) -> TestResult<Fixture> {
+    let mut f = fixture_with_follow(0, 0, true, follow)?;
+    let mode = if follow {
+        Mode::TwoSeatFollow
+    } else {
+        Mode::TwoSeatPin
+    };
+    let p = fund(&mut f, mode, FundFault::default())?;
+    install(&mut f, p)?;
+    Ok(f)
+}
+/// Its Grant (`grant`) or Refund, with `index` in place of the default rows.
+pub(in crate::action_state::terminal_capacity) fn two_seat_terminal(
+    f: &mut Fixture,
+    follow: bool,
+    grant: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    let mode = if follow {
+        Mode::TwoSeatFollow
+    } else {
+        Mode::TwoSeatPin
+    };
+    finish_with(f, mode, grant, FinishFault::None, index)
+}
+/// Install a prepared step and prove the store reboots.
+pub(in crate::action_state::terminal_capacity) fn house_commit(
+    f: &mut Fixture,
+    prepared: PreparedTxn,
+) -> TestResult {
+    install(f, prepared)?;
+    reboot(f)?;
+    Ok(())
 }
 
 // Acknowledged actual coordinator birth for the separate House renewal tests.

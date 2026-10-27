@@ -112,6 +112,8 @@ impl OriginalPurchaseWriter {
         reg.delegate_state_family(&families.deployment, "market")?;
         reg.delegate_state_family(&families.paid_allocations, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // 17g C2f: the grant puts the holder's holdings row beside the pointer.
+        reg.delegate_state_family(&families.paid_holdings, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
         self.0
             .set(Registration {
@@ -512,6 +514,9 @@ impl RegisteredPurchaseWriter {
             {
                 return Err(PublicationError::Mismatch);
             }
+            // 17g C2f (the C2b brief §2): the holder's paid-holdings row,
+            // in the grant's own transaction (mush-core admits exactly it).
+            super::paid_holdings::grant(txn, families, before.holder, before.licence)?;
         }
         txn.replace(&families.paid_allocations, &before.key(), after.clone())
             .map_err(invalid)?;

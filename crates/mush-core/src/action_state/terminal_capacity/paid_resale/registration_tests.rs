@@ -86,8 +86,19 @@ fn checked(
         },
     )
 }
+/// 17g C2f: how the fixture registers the two owner-index families the
+/// resale writes: exactly, one of them not at all, one with a one-byte-smaller
+/// record bound, or the holdings family without its delegation to market.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Index {
+    Exact,
+    Missing(&'static str),
+    Descriptor(&'static str),
+    Undelegated,
+}
 #[derive(Clone)]
 struct Config {
+    index: Index,
     manifest: DefinitionRef,
     participants: [DefinitionRef; 2],
     purchase: [DefinitionRef; 3],
@@ -198,6 +209,31 @@ impl<const N: usize> GameModule for Module<N> {
                 reg.delegate_state_family(&h, "roll")?;
             }
         }
+        // 17g C2f: the holdings index (Roll's, delegated to the market) and
+        // the named buyer's offer index (the market's) the resale writes.
+        for family in [owner_index::HOLDINGS, owner_index::RESALE_OFFERS] {
+            let (owner, mut d, delegate) = owner_index::descriptor(family).map_err(me)?;
+            if owner.as_str() != if N == 1 { "roll" } else { "market" }
+                || c.index == Index::Missing(family)
+            {
+                continue;
+            }
+            if c.index == Index::Descriptor(family) {
+                let (key, bytes) = (d.max_key_bytes(), d.max_record_bytes());
+                d = d.with_limits(key, bytes - 1).map_err(me)?;
+            }
+            let delegate = delegate.filter(|_| c.index != Index::Undelegated);
+            let h = reg.state_family(
+                d,
+                |k: &String| Ok(k.clone()),
+                |v: &Value| Ok(v.clone()),
+                |_: &Value| Ok(()),
+                |v: &Value| Ok(v.clone()),
+            )?;
+            if let Some(grantee) = delegate {
+                reg.delegate_state_family(&h, grantee)?;
+            }
+        }
         if N == 1 {
             let mut defs = DefinitionRegistryBuilder::new();
             let authority_ref = defs
@@ -281,6 +317,14 @@ fn engine(
     missing: Option<(usize, usize)>,
     bad_family: bool,
 ) -> Result<Engine, Box<dyn std::error::Error>> {
+    engine_with(reverse, missing, bad_family, Index::Exact)
+}
+fn engine_with(
+    reverse: bool,
+    missing: Option<(usize, usize)>,
+    bad_family: bool,
+    index: Index,
+) -> Result<Engine, Box<dyn std::error::Error>> {
     let f = fixture_product_resale_registry(0, 0, 1, "sealed", true, true)?;
     let old = f
         .store
@@ -289,6 +333,7 @@ fn engine(
         .as_ref()
         .ok_or("old profile")?;
     let c = Config {
+        index,
         manifest: old.manifest.clone(),
         participants: old.participants.clone(),
         purchase: old.actions.clone(),
@@ -330,6 +375,46 @@ fn actual_composition_requires_every_owner_grant_and_exact_future_family_bound()
             engine(reverse, None, true).is_err(),
             "different complete family limit accepted"
         );
+    }
+    Ok(())
+}
+
+/// 17g C2f (decision 4, fail fast at composition): the resale composition
+/// requires both owner-index families it writes registered with exactly
+/// their owners' descriptors, and Roll's holdings family delegated to the
+/// market (whose transactions run the Accept and the Settle); each fault
+/// refuses at boot with its owner-index reason, never at a later trade.
+#[test]
+fn resale_composition_requires_the_exact_delegated_index_families() -> TestResult {
+    for reverse in [false, true] {
+        engine_with(reverse, None, false, Index::Exact)?;
+        for (index, reason) in [
+            (
+                Index::Missing(owner_index::HOLDINGS),
+                "owner index family unavailable",
+            ),
+            (
+                Index::Missing(owner_index::RESALE_OFFERS),
+                "owner index family unavailable",
+            ),
+            (
+                Index::Descriptor(owner_index::HOLDINGS),
+                "owner index descriptor differs",
+            ),
+            (
+                Index::Descriptor(owner_index::RESALE_OFFERS),
+                "owner index descriptor differs",
+            ),
+            (Index::Undelegated, "owner index family not delegated"),
+        ] {
+            let refused = engine_with(reverse, None, false, index).err();
+            assert!(
+                refused
+                    .as_ref()
+                    .is_some_and(|e| e.to_string().contains(reason)),
+                "{index:?}: {refused:?}"
+            );
+        }
     }
     Ok(())
 }

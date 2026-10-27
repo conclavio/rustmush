@@ -180,7 +180,8 @@ impl Families {
         if !receipt_keys.is_empty() {
             return Err(error("omitted receipt"));
         }
-        Ok(())
+        // 17g C2f: the per-(buyer, licence) offer index, clock-free.
+        super::index::audit(ctx, self).map_err(error)
     }
 }
 pub(crate) fn require_disabled(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {

@@ -484,7 +484,7 @@ pub(super) fn read(
 /// pointer and its current term, the charter's name, the House allocation of
 /// its birth operation, the term's revocation status, the resale head and
 /// the renewal head with its pending operation.
-fn own_paid(
+pub(super) fn own_paid(
     ctx: &OwnerReadContext<'_>,
     f: &CommerceFamilies,
     licence: LicenceId,

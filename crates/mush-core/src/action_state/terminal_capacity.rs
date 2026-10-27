@@ -16,6 +16,7 @@ mod entitlement;
 mod house;
 mod house_renewal;
 mod ic_claim;
+mod owner_index;
 mod paid;
 mod paid_resale;
 mod registry;
@@ -547,6 +548,8 @@ pub(super) fn hydrate(
     core_refit::audit_boot(&view, &records)?;
     coverage::audit_boot(&view, &records)?;
     conduct::audit_boot(&view, &records)?;
+    // 17g C2f: the four owner indexes against their heads, clock-free.
+    owner_index::audit_boot(&view)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
     let usage = charged(
         &state,
@@ -746,6 +749,10 @@ pub(super) fn prepare(
                 // Only the configured Registry compound refund may add its
                 // two exact new cause/status rows. Ordinary typed accounting
                 // still charges them before custody; they were never reserved.
+                // 17g C2f (R2): likewise only the closed owner-index table's
+                // exact rows, derived from this terminal's own operation (the
+                // grants' holdings put, the entitlement actors release, the
+                // resale Settle's holder move). Charged as ordinary writes.
                 if charter_pending::extra_terminal_key(
                     store,
                     mutations,
@@ -753,6 +760,12 @@ pub(super) fn prepare(
                     identity,
                     key,
                 )? || paid_resale::extra_terminal_key(
+                    store,
+                    mutations,
+                    &stored.record,
+                    identity,
+                    key,
+                )? || owner_index::admits_terminal_key(
                     store,
                     mutations,
                     &stored.record,

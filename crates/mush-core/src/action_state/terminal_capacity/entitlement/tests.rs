@@ -77,7 +77,7 @@ impl ActionProvider for Provider {
         Ok(())
     }
 }
-struct Fixture {
+pub(in crate::action_state::terminal_capacity) struct Fixture {
     store: ActionStateStore,
     handles: BTreeMap<String, Handle>,
     providers: ActionProviderRegistry,
@@ -106,6 +106,16 @@ fn fixture_with_follow(
     manifest_generation: u64,
     economy_generation: u64,
     follow: bool,
+) -> TestResult<Fixture> {
+    fixture_full(manifest_generation, economy_generation, follow, false)
+}
+/// `resale` also declares the paid-resale protocol over the same store (17g
+/// C2f: an entitlement grant must pass the resale validator).
+fn fixture_full(
+    manifest_generation: u64,
+    economy_generation: u64,
+    follow: bool,
+    resale: bool,
 ) -> TestResult<Fixture> {
     let modes = [Mode::Legacy, Mode::Original, Mode::Derived]
         .into_iter()
@@ -191,10 +201,22 @@ fn fixture_with_follow(
         }
         actions.insert(mode, group.try_into().map_err(|_| "actions")?);
     }
+    let resale_actions = if resale {
+        Some(paid::tests::resale::register_actions(
+            &mut definitions,
+            &participants[1],
+        )?)
+    } else {
+        None
+    };
     let mut definitions = definitions.freeze()?;
     definitions.bind_owner_readiness(readiness.clone());
     let mut providers = ActionProviderRegistryBuilder::new();
-    for action in actions.values().flatten() {
+    for action in actions
+        .values()
+        .flatten()
+        .chain(resale_actions.iter().flatten())
+    {
         providers.register(market.clone(), action.clone(), Arc::new(Provider))?;
     }
     let providers =
@@ -238,6 +260,22 @@ fn fixture_with_follow(
             builder.delegate_family(roll.clone(), &handle, market.clone())?;
         }
         handles.insert(family.to_owned(), handle);
+    }
+    // 17g C2f: the buyer's actors index and the holder's holdings index,
+    // which the Grant and Refund now write (`owner_index`).
+    owner_index::tests::register_index_families(
+        &mut builder,
+        &mut handles,
+        &[owner_index::ACTORS, owner_index::HOLDINGS],
+    )?;
+    if let Some(resale_actions) = &resale_actions {
+        paid::tests::resale::register_families(&mut builder, &mut handles, false)?;
+        builder.paid_resale_capacity(
+            &market,
+            participants.clone(),
+            resale_actions.clone(),
+            None,
+        )?;
     }
     builder.original_mind_purchase_capacity(
         &market,
@@ -450,6 +488,12 @@ fn fund(f: &mut Fixture, mode: Mode, fault: FundFault) -> TestResult<PreparedTxn
     if !fault.keep_quote {
         txn.remove(handle(&f.handles, quote_family)?, &mode.quote().to_hex())?;
     }
+    // 17g C2f: the market's Fund indexes the open purchase under its buyer
+    // (an ordinary write core never checks at Fund; the Grant and Refund then
+    // release it). The operation-limit case measures the four fixed writes.
+    if mode != Mode::Legacy && fault.limits.is_none() {
+        owner_index::tests::index_operation(&mut txn, &f.handles, 7, mode.operation())?;
+    }
     if !fault.no_capacity && !fault.ordinary {
         let commit = if fault.wrong_commit {
             CommitToken::from_bytes([99; 16])
@@ -487,6 +531,22 @@ enum FinishFault {
     ReusedFundingCommit,
 }
 fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestResult<PreparedTxn> {
+    finish_with(f, mode, grant, fault, None, None)
+}
+/// `finish`, invoked by `actor` (default the buyer, 7) and with `index` in
+/// place of the owners' default index writes (17g C2f).
+fn finish_with(
+    f: &mut Fixture,
+    mode: Mode,
+    grant: bool,
+    fault: FinishFault,
+    actor: Option<ObjId>,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    let inv = match actor {
+        Some(actor) => invocation_as(actor)?,
+        None => f.invocation.clone(),
+    };
     let [purchase, receipt_family, allocation, _] = mode.families();
     let commit = if matches!(fault, FinishFault::ReusedFundingCommit) {
         mode.operation()
@@ -531,7 +591,7 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
     let mut txn = f
         .store
         .transaction_for_provider(provider.registration_ordinal())?;
-    txn.bind_registered_invocation(provider, &f.invocation, commit);
+    txn.bind_registered_invocation(provider, &inv, commit);
     let base = txn.read_base();
     txn.replace(handle(&f.handles, purchase)?, &mode.operation().to_hex(), p)?;
     txn.replace(
@@ -562,7 +622,21 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
         }
         txn.insert(handle(&f.handles, ECONOMICS)?, &term_key, economics)?;
     }
-    let mut ctx = crate::resolution::PrepareCtx::new(f.invocation.idempotency(), commit, None)
+    // 17g C2f: the closed index rows (`owner_index`): the buyer's actors row
+    // releases the operation at Grant and Refund (entitlement only), and
+    // every Grant puts the holder's holdings row.
+    match index {
+        Some(write) => write(&mut txn, &f.handles)?,
+        None => {
+            if mode != Mode::Legacy {
+                owner_index::tests::release_operation(&mut txn, &f.handles, 7, mode.operation())?;
+            }
+            if grant {
+                owner_index::tests::put_holding(&mut txn, &f.handles, 7, id)?;
+            }
+        }
+    }
+    let mut ctx = crate::resolution::PrepareCtx::new(inv.idempotency(), commit, None)
         .with_registered_transaction(&base, provider.registration_ordinal());
     if mode == Mode::Legacy {
         ctx.finish_original_mind_purchase_completion(&mut txn, mode.operation())?;
@@ -600,6 +674,107 @@ fn hydrate(
 }
 fn reboot(f: &Fixture) -> TestResult<ActionStateStore> {
     hydrate(f, &f.disk)
+}
+
+/// The fixture's invocation, by `actor` instead of the buyer.
+fn invocation_as(actor: ObjId) -> TestResult<ActionInvocation> {
+    let request = RequestUid::from_bytes([1; 16]);
+    let principal = PrincipalId::Object { id: actor };
+    Ok(ActionInvocation::new(ActionInvocationDraft {
+        request,
+        principal: principal.clone(),
+        actor,
+        offered_action: ActionOfferId(CanonicalHash::from_bytes([3; 32])),
+        subject: PerceivedRef::SelfActor,
+        targets: vec![],
+        parameters: json!({}),
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal,
+                owner: OwnerId::new("market")?,
+                namespace: CanonicalId::new("entitlement_fixture")?,
+            },
+            1,
+            IdempotencyKey::Request(request),
+        ),
+    })?)
+}
+
+/// 17g C2f: the owner-index rigs (`terminal_capacity::tests::owner_index`).
+/// An OriginalV3 purchase by buyer 7 is funded (operation `[6; 16]`,
+/// licence 1), its buyer's actors row holding the operation.
+pub(in crate::action_state::terminal_capacity) fn funded_original(
+    resale: bool,
+) -> TestResult<Fixture> {
+    let mut f = fixture_full(0, 0, false, resale)?;
+    let p = fund(&mut f, Mode::Original, FundFault::default())?;
+    install(&mut f, p)?;
+    Ok(f)
+}
+/// The same, with a DerivedV1 purchase by the same buyer funded beside it
+/// (operation `[7; 16]`, licence 2): the buyer's actors row holds both.
+pub(in crate::action_state::terminal_capacity) fn funded_original_and_derived()
+-> TestResult<Fixture> {
+    let mut f = funded_original(false)?;
+    let p = fund(&mut f, Mode::Derived, FundFault::default())?;
+    install(&mut f, p)?;
+    Ok(f)
+}
+/// The funded DerivedV1 purchase's operation.
+pub(in crate::action_state::terminal_capacity) fn derived_operation() -> CommitToken {
+    Mode::Derived.operation()
+}
+/// The funded OriginalV3 purchase's operation.
+pub(in crate::action_state::terminal_capacity) fn original_operation() -> CommitToken {
+    Mode::Original.operation()
+}
+/// Its Grant (`grant`) or Refund, invoked by `actor`, with `index` in place
+/// of the default index rows.
+pub(in crate::action_state::terminal_capacity) fn original_terminal(
+    f: &mut Fixture,
+    grant: bool,
+    actor: ObjId,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> TestResult<PreparedTxn> {
+    finish_with(
+        f,
+        Mode::Original,
+        grant,
+        FinishFault::None,
+        Some(actor),
+        index,
+    )
+}
+/// Install a prepared step and prove the store reboots.
+pub(in crate::action_state::terminal_capacity) fn commit(
+    f: &mut Fixture,
+    prepared: PreparedTxn,
+) -> TestResult {
+    install(f, prepared)?;
+    reboot(f)?;
+    Ok(())
+}
+/// The store's live typed bytes, settable to reach the byte ceiling.
+pub(in crate::action_state::terminal_capacity) fn live_bytes(f: &mut Fixture) -> &mut usize {
+    &mut f.store.live_canonical_bytes
+}
+/// The canonical size of the row at `key` in `family`.
+pub(in crate::action_state::terminal_capacity) fn row_bytes(
+    f: &Fixture,
+    family: &str,
+    key: &str,
+) -> TestResult<usize> {
+    let k = Key {
+        owner: f.handles.get(family).ok_or("family")?.owner().clone(),
+        family: StateFamilyId::new(family)?,
+        encoded: key.into(),
+    }
+    .resolve(&f.store.registry)?;
+    Ok(f.store.records.get(&k).ok_or("row")?.canonical.len())
+}
+/// The fixture as a seed: its store, handles and disk image.
+pub(in crate::action_state::terminal_capacity) fn into_seed(f: Fixture) -> Seed {
+    (f.store, f.handles, f.disk)
 }
 
 /// Share one actual coordinator-installed first generation with the renewal

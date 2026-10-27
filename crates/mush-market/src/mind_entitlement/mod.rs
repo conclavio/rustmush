@@ -8,6 +8,7 @@ mod codec;
 mod config;
 mod families;
 mod guard;
+mod index;
 mod offers;
 mod protocol;
 mod provider;
@@ -33,5 +34,7 @@ pub use records::{
     EntitlementListingV1, EntitlementProductV1, EntitlementQuoteV1, EntitlementSubjectV1,
 };
 
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 pub(crate) mod tests;

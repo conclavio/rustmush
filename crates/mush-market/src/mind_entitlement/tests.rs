@@ -58,7 +58,7 @@ fn at(n: i64) -> TestResult<WorldIcSeconds> {
         at: n,
     })?)
 }
-fn fixture(
+pub(super) fn fixture(
     protocol: EntitlementProtocol,
     depth: u64,
     form: PaidForm,
@@ -325,7 +325,7 @@ fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
     q.validate()?;
     Ok(())
 }
-fn purchase(q: EntitlementQuoteV1) -> TestResult<EntitlementPurchaseV1> {
+pub(super) fn purchase(q: EntitlementQuoteV1) -> TestResult<EntitlementPurchaseV1> {
     let participants = PurchaseParticipants::new(
         definition("economy", "owner_participant", "initial_filing", 1)?,
         definition("roll", "owner_participant", "commercial_roots", 1)?,

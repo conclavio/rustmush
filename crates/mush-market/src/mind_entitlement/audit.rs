@@ -181,6 +181,8 @@ impl Families {
         })?;
         self.check_counts(ctx, listings, quotes, operations)
             .map_err(error)?;
+        // 17g C2f: the per-buyer index against its heads, clock-free.
+        super::index::audit(ctx, &self.index()).map_err(error)?;
         // A first derived listing may also materialize its historical original
         // parent's absent empty chain. That is the only secondary publication.
         for chain in config

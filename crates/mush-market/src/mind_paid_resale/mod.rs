@@ -5,6 +5,7 @@ mod audit;
 mod compound;
 mod config;
 mod families;
+mod index;
 mod offer;
 mod provider;
 mod records;

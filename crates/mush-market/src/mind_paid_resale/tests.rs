@@ -60,3 +60,7 @@ fn resale_acceptance_uses_the_exact_named_offer_and_explicit_payer() {
         }
     }
 }
+
+/// 17g C2f: the per-(buyer, licence) offer index (tests 7 and 8).
+#[path = "buyer_offer_tests.rs"]
+mod buyer_offers;

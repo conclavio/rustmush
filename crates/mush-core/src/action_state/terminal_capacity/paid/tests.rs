@@ -13,7 +13,7 @@ impl ActionProvider for Provider {
         Ok(())
     }
 }
-struct Fixture {
+pub(in crate::action_state::terminal_capacity) struct Fixture {
     form: &'static str,
     store: ActionStateStore,
     handles: BTreeMap<String, Handle>,
@@ -204,6 +204,12 @@ fn fixture_product_resale_registry(
         }
         handles.insert(family.to_owned(), handle);
     }
+    // 17g C2f: the holder's holdings index, which the grant now writes.
+    owner_index::tests::register_index_families(
+        &mut builder,
+        &mut handles,
+        &[owner_index::HOLDINGS],
+    )?;
     builder.original_mind_purchase_capacity(
         &market,
         manifest,
@@ -351,6 +357,16 @@ fn fund_variant(
     txn.prepare()
 }
 fn finish(f: &mut Fixture, grant: bool, corrupt: bool) -> Result<PreparedTxn, ActionStateError> {
+    finish_with(f, grant, corrupt, None)
+}
+/// `finish` with `index` in place of the owner's default index write (17g
+/// C2f).
+fn finish_with(
+    f: &mut Fixture,
+    grant: bool,
+    corrupt: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
     let commit = CommitToken::from_bytes([6; 16]);
     let provider = f
         .providers
@@ -385,12 +401,45 @@ fn finish(f: &mut Fixture, grant: bool, corrupt: bool) -> Result<PreparedTxn, Ac
     if grant {
         txn.insert(&f.handles[LICENCE],&"licence/0000000000000001".into(),json!({"format":1,"id":"1","charter":"1","line":"1","holder":7,"term":"1","operation":op()}))?;
         txn.insert(&f.handles[TERM],&"licence/0000000000000001/term/0000000000000001".into(),json!({"format":1,"licence":"1","generation":"1","window":{"format":1,"eligibility_start":120,"issued_at":120,"term_end":220,"grace_end":230},"terms":allocation["terms"],"revision":quote()["product"]["revision"],"operation":op()}))?;
+        // 17g C2f: the grant puts the holder's holdings row (`owner_index`).
+        if index.is_none() {
+            owner_index::tests::put_holding(&mut txn, &f.handles, 7, 1)?;
+        }
+    }
+    if let Some(write) = index {
+        write(&mut txn, &f.handles)?;
     }
     let mut context = crate::resolution::PrepareCtx::new(f.invocation.idempotency(), commit, None)
         .with_registered_transaction(&base, provider.registration_ordinal());
     context.finish_original_mind_purchase_completion(&mut txn, op())?;
     drop(context);
     txn.prepare()
+}
+/// 17g C2f: the owner-index rig. A v2-route (`settle_original_mind`)
+/// purchase by buyer 7 is funded (licence 1).
+pub(in crate::action_state::terminal_capacity) fn funded_paid()
+-> Result<Fixture, Box<dyn std::error::Error>> {
+    let mut f = fixture()?;
+    let p = fund(&mut f, false, true)?;
+    install(&mut f, p)?;
+    Ok(f)
+}
+/// Its Grant (`grant`) or Refund, with `index` in place of the default row.
+pub(in crate::action_state::terminal_capacity) fn paid_terminal(
+    f: &mut Fixture,
+    grant: bool,
+    index: Option<owner_index::tests::IndexWriter<'_>>,
+) -> Result<PreparedTxn, ActionStateError> {
+    finish_with(f, grant, false, index)
+}
+/// Install a prepared step and prove the store reboots.
+pub(in crate::action_state::terminal_capacity) fn paid_commit(
+    f: &mut Fixture,
+    prepared: PreparedTxn,
+) -> Result<(), Box<dyn std::error::Error>> {
+    install(f, prepared)?;
+    reboot(f, None)?;
+    Ok(())
 }
 fn install(f: &mut Fixture, prepared: PreparedTxn) -> Result<(), ActionStateError> {
     let (ops, installation) = prepared.into_parts();
@@ -824,4 +873,4 @@ fn exact_old_v1_funding_under_v2_can_only_refund() -> TestResult {
 }
 
 #[path = "../paid_resale/tests.rs"]
-mod resale;
+pub(in crate::action_state::terminal_capacity) mod resale;

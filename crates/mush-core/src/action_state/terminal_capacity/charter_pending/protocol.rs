@@ -50,7 +50,7 @@ impl Protocol {
     pub(in crate::action_state::terminal_capacity) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[1]
     }
-    pub(super) fn action_index(
+    pub(in crate::action_state::terminal_capacity) fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<usize, ActionStateError> {
@@ -82,7 +82,8 @@ impl Protocol {
                 return Err(refused("pending descriptor differs"));
             }
         }
-        Ok(())
+        // 17g C2f: the Offer and Fund write the buyer-offer row.
+        owner_index::validate_families(registry, &[owner_index::PENDING_OFFERS])
     }
     pub(in crate::action_state) fn validate_composition(
         &self,

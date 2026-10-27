@@ -65,7 +65,7 @@ impl Protocol {
     pub(in crate::action_state::terminal_capacity) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[2]
     }
-    pub(super) fn action_index(
+    pub(in crate::action_state::terminal_capacity) fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<usize, ActionStateError> {
@@ -122,7 +122,13 @@ impl Protocol {
                 return Err(refused("resale compound Market family delegation"));
             }
         }
-        Ok(())
+        // 17g C2f: the Accept and Settle move the holdings row, the Offer,
+        // Accept and Fund the buyer-offer row (the latter written by the
+        // market alone: no compound Roll write touches it).
+        owner_index::validate_families(
+            registry,
+            &[owner_index::HOLDINGS, owner_index::RESALE_OFFERS],
+        )
     }
     pub(in crate::action_state) fn validate_composition(
         &self,

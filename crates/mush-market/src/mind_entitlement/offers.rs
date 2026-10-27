@@ -243,7 +243,10 @@ impl Provider {
                         .ok_or("quote expiry overflow")?,
                 };
                 accounts::fill_payouts(&mut q)?;
+                let now = q.quoted_at_utc;
                 self.families.add_quote(txn, q)?;
+                // 17g C2f: the buyer's index, in this same transaction.
+                super::index::quoted(txn, &self.families.index(), inv.actor(), commit, now)?;
                 "quote"
             }
         };

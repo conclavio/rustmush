@@ -109,6 +109,7 @@ fn empty_in_txn(
     empty!(&f.paid_resale_heads);
     empty!(&f.paid_holders);
     empty!(&f.charter_pending_offers);
+    empty!(&f.charter_pending_buyer_offers);
     empty!(&f.charter_pending);
     empty!(&f.charter_pending_heads);
     empty!(&f.charter_transfer_offers);
@@ -150,6 +151,7 @@ fn empty_in_txn(
     empty!(&f.paid_allocations);
     empty!(&f.paid_licences);
     empty!(&f.paid_terms);
+    empty!(&f.paid_holdings);
     empty!(&r.receipts);
     empty!(&r.pages);
     empty!(&r.jobs);
@@ -184,6 +186,7 @@ fn validate_setup_boot(
     empty!(&f.paid_resale_heads);
     empty!(&f.paid_holders);
     empty!(&f.charter_pending_offers);
+    empty!(&f.charter_pending_buyer_offers);
     empty!(&f.charter_pending);
     empty!(&f.charter_pending_heads);
     empty!(&f.charter_transfer_offers);
@@ -225,6 +228,7 @@ fn validate_setup_boot(
     empty!(&f.paid_allocations);
     empty!(&f.paid_licences);
     empty!(&f.paid_terms);
+    empty!(&f.paid_holdings);
     empty!(&r.receipts);
     empty!(&r.pages);
     empty!(&r.jobs);

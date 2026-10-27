@@ -28,6 +28,10 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::rating::reconformance::ReconformanceHead>,
     pub(crate) charter_pending_offers:
         StateFamilyHandle<String, super::charter_pending::records::PendingOffer>,
+    /// 17g C2f: the live pending-charter offers naming a buyer for one
+    /// charter (`roll_mind_charter_pending_buyer_offers`, the C2b brief §4).
+    pub(crate) charter_pending_buyer_offers:
+        StateFamilyHandle<String, super::charter_pending::records::PendingBuyerOffers>,
     pub(crate) charter_pending:
         StateFamilyHandle<String, super::charter_pending::records::PendingRecord>,
     pub(crate) charter_pending_heads:
@@ -91,6 +95,9 @@ pub struct CommerceFamilies {
     pub(crate) paid_allocations: StateFamilyHandle<String, PaidAllocation>,
     pub(crate) paid_licences: StateFamilyHandle<String, PersonalPaidLicence>,
     pub(crate) paid_terms: StateFamilyHandle<String, PaidTermRecord>,
+    /// 17g C2f: one row per held paid licence (`roll_mind_paid_holdings`,
+    /// the C2b brief §2), delegated to the market as `paid_licences` is.
+    pub(crate) paid_holdings: StateFamilyHandle<String, super::paid_holdings::PaidHolding>,
 }
 
 impl CommerceFamilies {
@@ -107,6 +114,7 @@ impl CommerceFamilies {
             measured_recalls: register(reg)?,
             reconformance_heads: register(reg)?,
             charter_pending_offers: register(reg)?,
+            charter_pending_buyer_offers: register(reg)?,
             charter_pending: register(reg)?,
             charter_pending_heads: register(reg)?,
             charter_transfer_offers: register(reg)?,
@@ -149,6 +157,7 @@ impl CommerceFamilies {
             paid_allocations: register(reg)?,
             paid_licences: register(reg)?,
             paid_terms: register(reg)?,
+            paid_holdings: register(reg)?,
         })
     }
 }
@@ -196,6 +205,16 @@ fn hex(text: &str, width: usize, nonzero: bool) -> bool {
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         && (!nonzero || text.bytes().any(|c| c != b'0'))
+}
+
+/// A person's id as the owner indexes key it: exactly twenty decimal
+/// digits, nonzero and within `u32`.
+fn person(text: &str) -> bool {
+    text.len() == 20
+        && text.bytes().all(|c| c.is_ascii_digit())
+        && text
+            .parse::<u64>()
+            .is_ok_and(|n| n != 0 && u32::try_from(n).is_ok())
 }
 
 pub(crate) fn valid_key(family: &str, key: &str) -> bool {
@@ -266,6 +285,23 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
             head == "line"
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("0000000000000001")
+                && parts.next().is_none()
+        }
+        // 17g C2f: the two owner indexes keyed by a zero-padded decimal
+        // person first, so one person's rows are contiguous.
+        "roll_mind_paid_holdings" => {
+            person(head)
+                && parts.next() == Some("licence")
+                && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
+        "roll_mind_charter_pending_buyer_offers" => {
+            person(head)
+                && parts.next() == Some("charter")
+                && parts.next().is_some_and(|v| {
+                    hex(v, 16, true)
+                        && u64::from_str_radix(v, 16).is_ok_and(|n| u32::try_from(n).is_ok())
+                })
                 && parts.next().is_none()
         }
         "roll_mind_paid_holders" => {

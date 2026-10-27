@@ -115,7 +115,8 @@ impl Protocol {
                 return Err(refused("purchase Roll family not delegated"));
             }
         }
-        Ok(())
+        // 17g C2f: the v2 grant writes the holder's holdings row.
+        owner_index::validate_families(registry, &[owner_index::HOLDINGS])
     }
     pub(in crate::action_state) fn validate_composition(
         &self,
@@ -175,7 +176,10 @@ impl Protocol {
     pub(super) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[0]
     }
-    fn action_index(&self, identity: &RegisteredTxnIdentity) -> Result<usize, ActionStateError> {
+    pub(super) fn action_index(
+        &self,
+        identity: &RegisteredTxnIdentity,
+    ) -> Result<usize, ActionStateError> {
         self.actions
             .iter()
             .position(|action| action == &identity.action)
@@ -893,6 +897,12 @@ pub(super) fn validate_changes(
                 .get(&reservation_id)
                 .ok_or_else(|| refused("purchase retained reservation missing"))?;
             verify(Phase::Terminal, &stored.record, &after)?;
+            // 17g C2f (R2): the v2 grant (`settle_original_mind`) puts
+            // exactly the holder's holdings row at the key `owner_index`
+            // derives from the pointer post-image, and no other holdings row
+            // (the terminal branch admits exactly that row again); the Refund
+            // writes no index row.
+            owner_index::require(store, mutations, owner_index::Owner::Purchase, action, id)?;
         }
     }
     Ok(())
@@ -903,4 +913,4 @@ fn pair_fn(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
