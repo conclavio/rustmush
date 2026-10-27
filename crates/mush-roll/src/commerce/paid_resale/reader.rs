@@ -217,6 +217,19 @@ impl OwnerReadService for PaidResaleReader {
         .map_err(fail)
     }
 }
+/// The current term's own transferability, as `observe` checks it once the
+/// current pointer and term are proved: a term marked non-transferable (the D-UM-40 listing
+/// mark, 17g C2b, or a non-transferable deployment policy) refuses resale. A
+/// renewal carries its predecessor's terms (`RenewalBindingV1::validate`), so
+/// the refusal follows the licence through every renewed generation.
+pub(crate) fn require_transferable(
+    term: &crate::commerce::paid::PaidTermRecord,
+) -> Result<(), PublicationError> {
+    if !term.terms().transferable() {
+        return Err(PublicationError::Unavailable);
+    }
+    Ok(())
+}
 #[allow(clippy::too_many_arguments)]
 fn observe(
     roll: &RollStore,
@@ -244,9 +257,7 @@ fn observe(
         format!("{}/{}", id.key(), pointer.term().key()),
     )?;
     acquired::current(ctx, f, ratings, pointer, term)?;
-    if !term.terms().transferable() {
-        return Err(PublicationError::Unavailable);
-    }
+    require_transferable(term)?;
     let now = ctx.world().world_ic_now();
     let seconds = WorldIcSeconds::from_stamp(&now).map_err(bad)?;
     // Property may transfer after the accepted sanction's original grace_end;
