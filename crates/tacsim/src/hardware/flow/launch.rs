@@ -1485,6 +1485,111 @@ async fn market_parameters_satisfy_the_registered_providers() -> Result {
     Ok(())
 }
 
+/// 17g C2h (the lead's ruling R3, the C2e plan §5.1): on the format-2 Active
+/// launch both renewal services register their `front` switch and delegate
+/// its continuation to TacSim, and nothing else is delegated: exactly two
+/// delegations, `@housemindrenewal/front` and `@mindrenewal/front`, each to
+/// `tacsim` with the market's reason, and each service's player front is
+/// live once the launch is activated: the handle `+minds/renew` is handed
+/// (`player_front`, read here from the world as `player_front_in`: the
+/// service composed and its runtime enabled) is the delegated one. On
+/// format 1 (House-only) the House renewal service composes with its
+/// `front` switch but no grantee (the player market, and so the `+minds`
+/// slot, is not composed: `MindCommerce::configure_market` delegates only
+/// where `configure_tacsim` sets `mind_commands`), so there is no
+/// delegation at all, the House front's handle has no delegate, and
+/// `+minds/renew` stays `NOT_OPEN` there.
+///
+/// The delegation enters no digest: the command table is not one of the
+/// registries `Registry::mechanics_fingerprint` folds (mush-core's
+/// `continuation::tests` proves a composition fingerprints identically with
+/// and without one). The fingerprint is printed here; 17g C2h's builder
+/// compared it before and after the change on this rig.
+#[tokio::test(flavor = "current_thread")]
+async fn named_launch_delegates_the_renewal_fronts_to_tacsim_on_format_two_only() -> Result {
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let e = r.world_mut().engine_mut();
+    eprintln!(
+        "NAMED_LAUNCH_MECHANICS fingerprint={}",
+        e.registry
+            .mechanics_fingerprint()
+            .map(|f| f.to_hex())
+            .unwrap_or_default()
+    );
+    let mut delegations: Vec<(String, String, String)> = e
+        .registry
+        .continuation_delegations()
+        .into_iter()
+        .map(|(command, grantee, reason)| (command, grantee.as_str().to_owned(), reason.to_owned()))
+        .collect();
+    delegations.sort();
+    let reason = "17g C2h: +minds/renew hands the actor's own renewal step to the service";
+    check_eq!(
+        delegations,
+        vec![
+            (
+                "@housemindrenewal/front".to_owned(),
+                "tacsim".to_owned(),
+                reason.to_owned()
+            ),
+            (
+                "@mindrenewal/front".to_owned(),
+                "tacsim".to_owned(),
+                reason.to_owned()
+            ),
+        ],
+        "exactly the two renewal fronts, both to TacSim"
+    );
+    for command in ["@mindrenewal", "@housemindrenewal"] {
+        check!(
+            e.registry
+                .spec_of(command)
+                .is_some_and(|spec| spec.switches.iter().any(|s| s == "front")),
+            "{command} registers its front"
+        );
+    }
+    let tacsim = mush_core::mechanics::OwnerId::new(crate::NS).map_err(|_| "TacSim's owner")?;
+    for (command, front) in [
+        (
+            "@mindrenewal",
+            mush_market::mind_renewal::player_front_in(&e.world),
+        ),
+        (
+            "@housemindrenewal",
+            mush_market::mind_house_renewal::player_front_in(&e.world),
+        ),
+    ] {
+        let front = front.ok_or_else(|| format!("{command}'s player front is live"))?;
+        check_eq!(
+            e.registry.continuation_delegate(&front),
+            Some(&tacsim),
+            "{command}'s live front is the one delegated to TacSim"
+        );
+    }
+
+    let (mut r, mut d) = setup_with(1)?;
+    activate(&mut r, &mut d, false)?;
+    let e = r.world_mut().engine_mut();
+    check!(
+        e.registry.continuation_delegations().is_empty(),
+        "format 1 delegates nothing: {:?}",
+        e.registry.continuation_delegations()
+    );
+    check!(
+        e.registry
+            .spec_of("@housemindrenewal")
+            .is_some_and(|spec| spec.switches.iter().any(|s| s == "front")),
+        "format 1 composes the House renewal service, its front undelegated"
+    );
+    let house = mush_market::mind_house_renewal::player_front_in(&e.world)
+        .ok_or("format 1's House renewal service is live")?;
+    check_eq!(e.registry.continuation_delegate(&house), None);
+    check!(e.registry.spec_of("@mindrenewal").is_none());
+    check!(mush_market::mind_renewal::player_front_in(&e.world).is_none());
+    Ok(())
+}
+
 /// 17g C2d test 9 (C2 plan §2.1; on the launch rig beside C2a's test 4 and
 /// C2c's test 6, for the same reason: the providers project nothing
 /// unbooted). After the runbook's Registry grants, each C2d parameter

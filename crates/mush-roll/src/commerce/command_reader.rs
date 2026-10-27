@@ -235,6 +235,11 @@ pub struct PaidHoldingView {
     revoked: bool,
     selling: bool,
     renewal: Option<RenewalMark>,
+    /// 17g C2h: never encoded (the view's serialized form carries no
+    /// operation, `command_reader_trade_kinds_answer_only_their_own_party`);
+    /// the owner read hands the view over as a value.
+    #[serde(skip)]
+    renewal_operation: Option<mush_core::CommitToken>,
 }
 impl PaidHoldingView {
     #[must_use]
@@ -283,6 +288,15 @@ impl PaidHoldingView {
     #[must_use]
     pub const fn renewal(&self) -> Option<RenewalMark> {
         self.renewal
+    }
+    /// 17g C2h (the C2e plan §5.1): the renewal head's pending operation
+    /// (the drafted or funded renewal `renewal` marks), the token
+    /// `+minds/renew/pay` and `/decline` bind the holder's step to, so a
+    /// payment answers the offer the holder saw. Own-only, as the whole view
+    /// is: a licence another character holds reads like a missing one.
+    #[must_use]
+    pub const fn renewal_operation(&self) -> Option<mush_core::CommitToken> {
+        self.renewal_operation
     }
 }
 
@@ -663,20 +677,21 @@ pub(super) fn own_paid(
         .get(&f.paid_resale_heads, &licence.key())
         .map_err(|_| OwnerReadError::Unavailable)?
         .is_some_and(|head| matches!(head.state(), super::paid_resale::PaidResaleState::Funded {}));
-    let renewal = if house {
+    let (renewal, renewal_operation) = if house {
         let pending = ctx
             .get(&f.house_renewal_heads, &licence.key())
             .map_err(|_| OwnerReadError::Unavailable)?
             .and_then(super::house_renewal::RenewalHeadV1::pending);
         match pending {
-            None => None,
+            None => (None, None),
             Some(operation) => {
                 use super::house_renewal::RenewalStateV1 as State;
                 let row = row(ctx, &f.house_renewal_operations, operation.to_hex())?;
-                renewal_mark(
+                let mark = renewal_mark(
                     matches!(row.state(), State::Drafted {}),
                     matches!(row.state(), State::Funded { .. }),
-                )
+                );
+                (mark, Some(operation))
             }
         }
     } else {
@@ -685,14 +700,15 @@ pub(super) fn own_paid(
             .map_err(|_| OwnerReadError::Unavailable)?
             .and_then(super::renewal::RenewalHeadV1::pending);
         match pending {
-            None => None,
+            None => (None, None),
             Some(operation) => {
                 use super::renewal::RenewalStateV1 as State;
                 let row = row(ctx, &f.renewal_operations, operation.to_hex())?;
-                renewal_mark(
+                let mark = renewal_mark(
                     matches!(row.state(), State::Drafted {}),
                     matches!(row.state(), State::Funded { .. }),
-                )
+                );
+                (mark, Some(operation))
             }
         }
     };
@@ -707,6 +723,7 @@ pub(super) fn own_paid(
         revoked,
         selling,
         renewal,
+        renewal_operation,
     })
 }
 

@@ -92,21 +92,14 @@ pub(crate) const HOLD_WAIT: &str =
 // 17g C2d (the C2d brief's words, verbatim): renewals, title trades and the
 // Registry operators. `{player}` is the resolved player's name; `{price}`
 // the credit rendering (`launch::credits`); `{amount}` the same value as
-// `price=` spells it (`trade::amount`); `{days}`, `{hours}` and `{term}`/
-// `{grace}` whole IC days or hours, rounded up.
+// `price=` spells it (`trade::amount`); `{minutes}` whole minutes, rounded
+// up. 17g C2h: the renewal words the renewal service prints after its step
+// (`RENEW_NOT_DUE`, `RENEWING`, `RENEW_OFFER`, `RENEW_HOW`, `RENEW_FUNDED`,
+// `RENEW_PAYING`, `RENEW_DECLINING`) moved, verbatim, to
+// `mush_market::mind_renewal::player`; `NO_LICENCE` and `NO_RENEWAL` stay
+// here, the two refusals `+minds/renew` gives itself (`renew`'s doc).
 pub(crate) const NO_LICENCE: &str = "You hold no licence {licence}.";
-pub(crate) const RENEW_NOT_DUE: &str =
-    "Licence {licence} is not due for renewal; its term has {days} IC days left.";
-pub(crate) const RENEWING: &str = "Asking for a renewal offer on licence {licence}. +minds/renew {licence} shows it once it is confirmed.";
-pub(crate) const RENEW_OFFER: &str = "Licence {licence} renews for {price} ({term}+{grace} IC days); the offer is open {hours} more IC hours.";
-pub(crate) const RENEW_HOW: &str =
-    "Pay it with +minds/renew/pay {licence}, or turn it down with +minds/renew/decline {licence}.";
-pub(crate) const RENEW_FUNDED: &str =
-    "Your renewal payment for licence {licence} is held; the renewal completes on its own.";
 pub(crate) const NO_RENEWAL: &str = "Licence {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
-pub(crate) const RENEW_PAYING: &str =
-    "Paying {price} for the renewal of licence {licence} into escrow; it completes on its own.";
-pub(crate) const RENEW_DECLINING: &str = "Turning down the renewal offer on licence {licence}.";
 pub(crate) const RESELLING: &str = "Offering licence {licence} to {player} for {price}.";
 pub(crate) const RESELL_TELL: &str =
     "Once that is confirmed, they accept with +minds/resell/accept {licence} price={amount}.";

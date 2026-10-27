@@ -89,6 +89,24 @@ impl RenewalConfig {
         self.service_action()?;
         Ok(self)
     }
+    /// 17g C2h (the lead's ruling R3): name the module the service's player
+    /// front (`front`) is delegated to at composition, the module whose
+    /// `+minds/renew` hands the actor's own step to the service. Only with the
+    /// service configured ([`Self::with_service`]); without it there is no
+    /// front and this is a no-op. Set only by the composition that composes
+    /// the player market; it enters no definition descriptor.
+    #[must_use]
+    pub fn with_player_front(mut self, grantee: OwnerId) -> Self {
+        if let Some(service) = self.service.as_mut() {
+            service.player_front = Some(grantee);
+        }
+        self
+    }
+    /// 17g C2h: the module the player front is delegated to, if any.
+    #[must_use]
+    pub fn player_front(&self) -> Option<&OwnerId> {
+        self.service.as_ref().and_then(|s| s.player_front.as_ref())
+    }
     pub fn service_action(&self) -> Result<Option<DefinitionRef>, ModError> {
         self.service
             .as_ref()

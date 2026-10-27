@@ -1081,6 +1081,16 @@ impl MindCommerce {
         }
     }
 
+    /// 17g C2h (the lead's ruling R3): TacSim's own owner id, the grantee of
+    /// both renewal services' player front, when Active commerce composes
+    /// the player market (the `configure_tacsim` condition for the `+minds`
+    /// slot); `None` otherwise (a House-only or a Dormant composition).
+    fn player_front(&self) -> Option<OwnerId> {
+        (self.state.mode == CommerceMode::Active && self.state.entitlements.is_some())
+            .then(|| OwnerId::new(crate::NS).ok())
+            .flatten()
+    }
+
     /// Preserve the real venue gate and inventory/IC settings. The closed
     /// writer binding is checked at final definition freeze, so the existing
     /// Market-before-Roll order remains intact.
@@ -1097,13 +1107,26 @@ impl MindCommerce {
             Some(config) => module.with_house_minds(config.clone()),
             None => module,
         };
+        // 17g C2h (the lead's ruling R3): each renewal service's player front
+        // is delegated to TacSim exactly where the player market composes,
+        // the condition under which `configure_tacsim` sets
+        // `TacsimRuleset::mind_commands` (the `+minds` slot). A format-1
+        // House-only launch composes the House renewal service with no
+        // grantee, so `+minds/renew` stays `NOT_OPEN` there.
+        let front = self.player_front();
         let module = match &self.state.house_renewals {
-            Some(config) => module.with_house_mind_renewals(config.clone()),
+            Some(config) => module.with_house_mind_renewals(match &front {
+                Some(grantee) => config.clone().with_player_front(grantee.clone()),
+                None => config.clone(),
+            }),
             None => module,
         };
         // 17g C1a: personal renewals; the config carries its own service.
         let module = match &self.state.renewals {
-            Some(config) => module.with_mind_renewals(config.clone()),
+            Some(config) => module.with_mind_renewals(match &front {
+                Some(grantee) => config.clone().with_player_front(grantee.clone()),
+                None => config.clone(),
+            }),
             None => module,
         };
         match &self.state.paid_resales {

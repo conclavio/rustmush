@@ -235,17 +235,32 @@ fn command_reader_answers_only_for_the_actors_own_shell_and_filed_minds() -> Tes
 /// player market opens them (`with_mind_commands`). Over the same fixture
 /// with the original-holdings grant but without the market, both kinds read
 /// `Unavailable`, the actor's own acknowledged shell included.
+///
+/// 17g C2h (a C2 coverage note): every Roll command kind since, too, so a
+/// refactor that moved `read`'s early return could not open one of them
+/// unnoticed: `OwnHoldings` in both sections, `CharterNames`, `OwnPaid` and
+/// `CharterOffers` all read `Unavailable`. (`OwnPurchase`, `OwnOpen` and
+/// `ResaleOffers` are the MARKET's command kinds, not Roll's: they exist
+/// only where the market's own read is registered, which is the player
+/// market's composition.)
 #[test]
 fn command_kinds_are_closed_without_the_player_market() -> TestResult {
     let mut f = Fixture::new_with_reads(true, tacsim_reads, false);
-    check_eq!(
-        read(&mut f, GOD, Value::Null)?,
-        Err(OwnerReadError::Unavailable)
-    );
-    check_eq!(
-        read(&mut f, GOD, json!(1))?,
-        Err(OwnerReadError::Unavailable)
-    );
+    for args in [
+        Value::Null,
+        json!(1),
+        json!({"holdings": null}),
+        json!({"holdings": null, "paid": true}),
+        json!({"names": [1]}),
+        json!({"paid": 1}),
+        json!({"charter_offers": 1}),
+    ] {
+        check_eq!(
+            read(&mut f, GOD, args.clone())?,
+            Err(OwnerReadError::Unavailable),
+            "{args}"
+        );
+    }
     Ok(())
 }
 
@@ -732,6 +747,11 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
     check_eq!(view.phase(), OwnerPhase::Active { days_left: 90 });
     check!(!view.revoked() && !view.selling());
     check_eq!(view.renewal(), None);
+    check_eq!(
+        view.renewal_operation(),
+        None,
+        "17g C2h: no pending renewal"
+    );
     check!(
         encoded.contains(r#""command":{"kind":"own_paid""#),
         "{encoded}"
@@ -775,6 +795,9 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
         let (answer, encoded) = read(&mut f, GOD, json!({"paid": 41}))??;
         let view = answer.into_own_paid().ok_or("an own paid view")?;
         check_eq!(view.renewal(), Some(mark), "{encoded}");
+        // 17g C2h: the head's pending operation, the token `+minds/renew/pay`
+        // and `/decline` bind to, as a value only (never encoded below).
+        check_eq!(view.renewal_operation(), Some(row.operation));
         check!(!view.house(), "a personal licence reads the personal head");
         for forbidden in ["digest", "account", "contract", "consent", "operation"] {
             check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");

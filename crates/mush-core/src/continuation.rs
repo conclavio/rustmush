@@ -9,6 +9,12 @@ use smol_str::SmolStr;
 
 use crate::{CmdError, Ctx, ObjId, World, mechanics::OwnerId};
 
+/// 17g C2h (the lead's ruling R3; provisional, 17g §1 ruling 6): at most this
+/// many continuation delegations per composition
+/// ([`Registrar::delegate_continuation`](crate::Registrar::delegate_continuation)),
+/// one grantee per handle.
+pub const MAX_CONTINUATION_DELEGATES: usize = 8;
+
 /// Opaque capability minted only during actual module composition for one of
 /// that module's authoritative commands. No serde or public constructor exists.
 #[derive(Clone, Debug)]
@@ -55,6 +61,20 @@ impl Ctx<'_> {
     /// The module must derive `actor` from its own retained job/operation and
     /// the handler must recheck it. No actor or verb is accepted from transport.
     ///
+    /// 17g C2h (the lead's ruling R3): the one other caller is the module the
+    /// owner delegated this exact handle to at composition
+    /// ([`Registrar::delegate_continuation`](crate::Registrar::delegate_continuation)),
+    /// and only for the player whose own typed line it is dispatching right
+    /// now: `actor` must be the dispatch's actor (the immutable stamp's and
+    /// `Ctx::actor`), and the dispatch must have a connection
+    /// ([`World::dispatching_conn`]). So a delegate cannot schedule for
+    /// another actor, from a tick, from a continuation, or from a line queued
+    /// by `@wait` (a queued line dispatches with no connection, so a queued
+    /// `+minds/renew` answers that the market is not open). Nothing else
+    /// changes: the handler still runs under the OWNER's identity, for the
+    /// named actor, after the command gates, and the readiness, live-actor,
+    /// delay, size and wait-queue bounds below apply to both callers alike.
+    ///
     /// Success queues a deferred request, not an execution/absence receipt.
     /// Ordinary per-actor wait limits and handler rollback still apply; a
     /// dropped or refused timer never proves that authoritative work is absent.
@@ -67,7 +87,13 @@ impl Ctx<'_> {
     ) -> Result<(), CmdError> {
         let refused = || CmdError::msg("Continuation unavailable.");
         let caller = self.typed_state.dispatch_caller().ok_or_else(refused)?;
-        if caller.module() != &handle.owner
+        let delegated = || {
+            self.reg.continuation_delegate(handle) == Some(caller.module())
+                && actor == self.actor
+                && actor == caller.actor()
+                && self.w.dispatching_conn().is_some()
+        };
+        if (caller.module() != &handle.owner && !delegated())
             || !self.reg.continuation_ready(handle)
             || !live_actor(self.w, actor)
             || delay_ms < 0

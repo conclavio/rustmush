@@ -24,12 +24,14 @@
 //! C2a builds the mechanism and the author's commands (`author`); C2c adds
 //! `market` (`+minds`, `+minds/buy` and its steps, `@mind/publish`) and
 //! `holdings` (`+minds/holdings`); C2d adds `renew` (`+minds/renew`, a front
-//! over the renewal services' `player_step`, the one command that submits
-//! through a service rather than `submit`; held at `renew::RENEWALS_OPEN`),
-//! `trade` (`+minds/resell`, `+minds/charter` and their `/accept`s) and
-//! `registry` (`@registry/recall` and `@registry/revoke`). 17g C2g opens the
-//! buy steps, the paid holdings and the named offers over 17g C2f's owner
-//! indexes (each module's doc).
+//! over the renewal services' player steps, the one command that submits
+//! through a service rather than `submit`; live since 17g C2h, which hands
+//! the step to the service's own delegated `front` continuation, so the
+//! service submits and prints under its own identity), `trade`
+//! (`+minds/resell`, `+minds/charter` and their `/accept`s) and `registry`
+//! (`@registry/recall` and `@registry/revoke`). 17g C2g opens the buy steps,
+//! the paid holdings and the named offers over 17g C2f's owner indexes (each
+//! module's doc).
 
 pub(crate) mod author;
 pub(crate) mod holdings;
@@ -62,7 +64,7 @@ use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 /// 17g C2c: `market` is the market's bounded command read
 /// (`mush_market::mind_commands`), which every `+minds` form and
 /// `@mind/publish` need. 17g C2e (the lead's ruling R1 raised the owner-read
-/// caps to 48): `TacsimRuleset::register` requests it with
+/// caps to 48, 64 since the scoped passenger facts): `TacsimRuleset::register` requests it with
 /// `MarketCommandReader::request` over the same composed manifest the
 /// entitlement holdings' grants take, in the branch that registers this slot,
 /// so it is `Some` exactly where the slot exists (the format-2 Active launch:

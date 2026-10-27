@@ -561,6 +561,13 @@ pub struct HelpTopic {
 #[derive(Default)]
 pub struct Registry {
     pub(crate) continuation_identity: Arc<()>,
+    /// 17g C2h (the lead's ruling R3): owner-declared continuation
+    /// delegations, keyed by the handle's `(index, switches)`, each one
+    /// grantee and the owner's reason. Written only while modules register
+    /// ([`crate::Registrar::delegate_continuation`]), checked against the
+    /// composed roster at freeze, read by `Ctx::schedule_continuation`. It
+    /// enters no fingerprint: the command table is not a mechanics registry.
+    continuation_delegations: BTreeMap<(usize, Vec<SmolStr>), (crate::mechanics::OwnerId, String)>,
     entries: Vec<Entry>,
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
@@ -1351,6 +1358,116 @@ impl Registry {
 
     pub(crate) fn continuation_ready(&self, handle: &crate::ContinuationHandle) -> bool {
         self.exact_continuation_ready(handle, CommandCompatibility::Authoritative)
+    }
+
+    /// 17g C2h (the lead's ruling R3): record that `module`, the owner of
+    /// `handle`, lets `grantee` schedule it (`Ctx::schedule_continuation`'s
+    /// delegated rule). Only the handle's owner may delegate, only a handle
+    /// this registry minted for a still-registered authoritative command, one
+    /// grantee per handle, never the owner itself, with a non-empty reason of
+    /// at most 256 bytes, and at most
+    /// [`MAX_CONTINUATION_DELEGATES`](crate::continuation::MAX_CONTINUATION_DELEGATES)
+    /// per composition. An uncomposed grantee is refused at freeze
+    /// (`check_continuation_delegates`).
+    pub(crate) fn delegate_continuation(
+        &mut self,
+        module: &str,
+        handle: &crate::ContinuationHandle,
+        grantee: &str,
+        reason: &str,
+    ) -> Result<(), crate::ModError> {
+        let refused = |why: &str| {
+            crate::ModError::msg(format!(
+                "module {module}: continuation delegation of {} to {grantee}: {why}",
+                handle.prefix
+            ))
+        };
+        if handle.owner.as_str() != module {
+            return Err(refused("only the handle's owner may delegate it"));
+        }
+        let minted = Arc::ptr_eq(&self.continuation_identity, &handle.registry)
+            && self.entries.get(handle.index).is_some_and(|entry| {
+                entry.module.as_deref() == Some(module)
+                    && entry.spec.name == handle.primary
+                    && entry.compatibility == CommandCompatibility::Authoritative
+            });
+        if !minted {
+            return Err(refused("not a continuation this registry minted"));
+        }
+        let grantee_id = crate::mechanics::OwnerId::parse_canonical(grantee)
+            .map_err(|_| refused("the grantee is not a module owner id"))?;
+        if grantee_id == handle.owner {
+            return Err(refused("the owner cannot delegate to itself"));
+        }
+        if reason.trim().is_empty() || reason.len() > 256 {
+            return Err(refused("a delegation names its reason in 1 to 256 bytes"));
+        }
+        let key = (handle.index, handle.switches.clone());
+        if self.continuation_delegations.contains_key(&key) {
+            return Err(refused("the handle already has its one grantee"));
+        }
+        if self.continuation_delegations.len() >= crate::continuation::MAX_CONTINUATION_DELEGATES {
+            return Err(refused("the composition's delegation bound is reached"));
+        }
+        self.continuation_delegations
+            .insert(key, (grantee_id, reason.to_owned()));
+        Ok(())
+    }
+
+    /// 17g C2h: the module `handle`'s owner delegated it to, if any. A
+    /// handle from another registry has none.
+    #[must_use]
+    pub fn continuation_delegate(
+        &self,
+        handle: &crate::ContinuationHandle,
+    ) -> Option<&crate::mechanics::OwnerId> {
+        if !Arc::ptr_eq(&self.continuation_identity, &handle.registry) {
+            return None;
+        }
+        self.continuation_delegations
+            .get(&(handle.index, handle.switches.clone()))
+            .map(|(grantee, _)| grantee)
+    }
+
+    /// 17g C2h: every continuation delegation of this composition, in key
+    /// order: the continuation's fixed command prefix (`@cmd/switch`), its
+    /// grantee and the owner's reason. Names only; no handle is reachable
+    /// through it.
+    #[must_use]
+    pub fn continuation_delegations(&self) -> Vec<(String, &crate::mechanics::OwnerId, &str)> {
+        self.continuation_delegations
+            .iter()
+            .map(|((index, switches), (grantee, reason))| {
+                let mut prefix = self
+                    .entries
+                    .get(*index)
+                    .map(|entry| entry.spec.name.to_string())
+                    .unwrap_or_default();
+                for switch in switches {
+                    prefix.push('/');
+                    prefix.push_str(switch);
+                }
+                (prefix, grantee, reason.as_str())
+            })
+            .collect()
+    }
+
+    /// 17g C2h: at freeze, every delegation's grantee must be a composed
+    /// module owner (as `OwnerReadRegistryBuilder::freeze` refuses an
+    /// uncomposed requester); the error names the command and the grantee.
+    pub(crate) fn check_continuation_delegates(
+        &self,
+        module_owners: &std::collections::BTreeSet<crate::mechanics::OwnerId>,
+    ) -> Result<(), crate::ModError> {
+        for (command, grantee, _) in self.continuation_delegations() {
+            if !module_owners.contains(grantee) {
+                return Err(crate::ModError::msg(format!(
+                    "continuation {command} is delegated to {}, which is not a composed module",
+                    grantee.as_str()
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn connection_completion_ready(

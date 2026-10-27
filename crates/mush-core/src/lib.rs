@@ -104,7 +104,7 @@ pub mod submission_observation;
 pub mod world;
 
 pub use connection_completion::{ConnectionCompletion, ConnectionCompletionHandle};
-pub use continuation::ContinuationHandle;
+pub use continuation::{ContinuationHandle, MAX_CONTINUATION_DELEGATES};
 
 pub use account::{AccountId, AccountIdentity, SeatAudit};
 pub use action::{
