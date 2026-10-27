@@ -951,3 +951,143 @@ on the CI dispatch before the merge (below).
   meaning unset, or a per-instance overlay); whether a resale counts as a new purchase
   for the Coprates fence, with the unchecked Fund-to-settle window beside it. The lead's
   two acceptances above are the lead's, not the owner's.
+
+### C2 — plan (2026-10-26, branch `claude/m7-c2-operator-commands`)
+
+As planned against §3 C2 in four sub-cuts (plan:
+plan-data/m7-completion/cuts/C2/plan.md), revised after two review lenses (§11
+dispositions) and refreshed at C1's landed tip `ecc26f0e` (main with the merge
+`3d584827`, PR #14, and the owner's test-strategy cuts T.0–T.3). **One mechanism.**
+Every new command is a line-mode `Ctx` handler that reads only the actor's own committed
+or public state: tacsim's library and bulk runs, Roll's own-only `RollCommandReader`,
+the market's bounded `MarketCommandReader`, and mush-core's new read-only
+`ShellReservations::open_request`. It then submits exactly one existing legal action
+through `Ctx::submit_authoritative`, keyed by verb, subject, IC second and an ordinal
+(the industry idiom). The server's projection resolves the actor's own offer, so no
+command adds authority and every invocation refusal is the driver's one line. Renewals
+are the one front over existing code: `+minds/renew` calls the renewal services'
+factored `player_step`, which `@mindrenewal` and `@housemindrenewal` keep calling
+byte-identically, and the service still grants or refunds a funded offer. The commands
+open only where Active commerce composes the player market (entitlements), so a
+House-only launch says the market is not open. Four shared verbs split one per kind:
+paid resale, v2's offer and purchase, and the two authored-retirement versions. The
+census goes to 45 verbs; only the presentation changes, so no digest moves. C2 adds no
+participant request (156 of 256 stays) and two owner-read services with two grants; the
+refresh's static count puts the format-2 launch at 24–29 of the 32 before C2, so C2a's
+composition test prints the exact figure and the fallback (fold Roll's kinds into
+`OriginalOwnerReader`, then the lead raises the caps) is pre-decided.
+
+**What the as-built protocols forced.** The approved nouns stay: `<filed>` for update,
+attest, publish, charter and recall, with licence, line and charter derived server-side
+from the actor's title. Nine departures go to the lead (17g §5, carried by the
+committer): withdraw takes `<filed>` without `@<rev>`; publish's `price=`, `seats=` and
+`term=` are optional and accepted only at the market's values (policy-wide as built);
+`+minds` reads the v3 and derived listings, not v2's `Query::MarketOriginalMinds`;
+`+minds/buy` is four explicit steps; resale names its buyer, with `/accept` under both
+`/resell` and `/charter`; both accepts list the offers naming the actor and submit only
+the one whose frozen price the buyer repeats with `price=`; renewal has `/pay` and
+`/decline` only; recall and revocation take no reason; the story stops at IC holdings
+(flying the mind is C4's story 1). **C2b is the only owner change, on the money paths,
+with no command.** It adds four indexes whose audits do not depend on the clock: the
+per-buyer entitlement index (8 quotes, 8 purchases; removal by the operation's own
+buyer); one paid-holdings row per held licence, written at all five pointer-holder
+writers (the two renewal grants replace the pointer with the same holder and write no
+row), with no cap; and the (buyer, licence) and (buyer, charter) named-offer indexes (8
+live offers each). It also adds the author's `transfer=no` mark, which only narrows and
+moves no record format. Charter transfers by command always use the pending protocol:
+one protocol and one index, correct whether or not sorties are out. A resale's Accept or
+Fund follows the provider's own open-claim test.
+
+**The gate.** §9 story 1 through the commands needs one genuine Registry rating, so it
+cannot fit the focused gate. It is the `#[ignore]`d mush-server lib story
+`world_task::submission_disposition::tests::player_market_story::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart`,
+the fifth `mind-commerce-acceptance` matrix cell (`name`, `package`, `test`, as the four
+are), and grows with a restart after each part: C2a rate, file and a refused attest; C2c
+publish, the alt refused at quote, a 30-second quote that expires and is refused by the
+provider, a 400cr sale with its split, an open `transfer=no` sale and a paid fork; C2d
+two offers and a price-confirmed 0.21cr resale, the marked licence's refused resale, a
+not-due renewal, withdrawal, a clerk-settled charter, revocation and recall. Focused
+tests cover every command's wrong-principal refusal (under a placeholder comparison
+rule), the bystander, delimited privacy checks, the format-1 not-open case and the
+120-column widths. Since T.3 a crate's integration tests are group binaries, so every
+run line is `--lib <filter>` or `--test <group> <module>::` (`--test shard_6
+cockpit::…`, `--test commerce_composition mind_commerce_composition::`), C2 adds no
+integration test file (its new tests are lib modules), and each sub-cut's gate is the
+focused local runs (about 15 minutes) ending with `scripts/vps-gate.sh --wip --runner
+conclav-dev`, the workspace sweep on the owner's 32-core VPS runner; the PR's
+fifteen-cell CI runs on every push and the five M7 stories on the lead's dispatch after
+C2b. C1a's typed-Busy residual is fixed in `Running::offer` (`legal` and
+`submit_initialize` already retry). No IPC, proto, TS, gateway or web change. C2 adds
+four families and two owner-read definitions; the fresh store is already required.
+Provisional defaults (ruling 6) are listed in plan §7. Owner questions for 17g §5:
+per-listing prices, seats and terms; a recall and revocation reason; House catalogue
+purchases by command; an offers-to-you list; the gate's sim half moving to C4.
+
+Sub-cuts:
+- **C2a** The command adapter, the shared-verb split, the author commands and the
+  story's first part
+- **C2b** The owner indexes on the money paths and the author's transfer mark
+- **C2c** The market commands: listings, purchases, publication and holdings
+- **C2d** Renewals, title trades, Registry operators, the help rewrite and the story's
+  last part
+
+Provisional defaults (17g section 1 ruling 6):
+- Pending-charter offer window (valid_for_seconds) 86,400 real seconds, the protocol's
+  MAX_OFFER_SECONDS, matching the paid-resale offer window
+- Charter transfers by command always use the pending-charter protocol (one protocol and
+  one buyer index, correct with or without sorties out); the immediate charter offer
+  stays reachable through +act
+- Listing royalty 0 per mille unless stated; accepted 0 to 300; 0 required on a sealed
+  listing
+- Listings are transferable unless the author writes transfer=no; the mark only narrows
+  the policy-wide transferability, never widens it
+- @mind/publish's price=, seats= and term= are optional and accepted only at the
+  market's current values (the policy price, 1 seat, 90 IC days); per-listing terms are
+  deferred
+- Resale and charter price bounds 0.01cr to 1,000,000cr (1 to 100,000,000 minor, C1b's
+  deployment ceiling), written `<whole>[.<one or two digits>][cr]`
+- Accepting a named offer requires price= equal to the offer's frozen price; without it
+  the command lists the offers naming the actor and submits nothing; an equal-price tie
+  takes the offer expiring last
+- Per-buyer entitlement index bounds: 8 live quotes and 8 open purchases per character
+  (v2's MAX_BUYER_QUOTES); expired quotes pruned at the buyer's next quote
+- Named-offer index bounds: 8 live offers per (buyer, licence) for resale and per
+  (buyer, charter) for pending charters; a ninth refuses only the seller's Offer
+- Paid-holdings index: one row per held paid licence, no per-holder cap (no new refusal
+  on a money path); renewal grants keep the holder and write no row
+- Index boot audits are clock-free: never require an indexed quote or offer to be
+  unexpired
+- Listing pages of 20 rows; holdings show up to 20 owner rows and 20 paid rows, each
+  section paged by its own cursor
+- Listing code: exactly the first 8 characters of the publication token; a two-listing
+  collision refuses AMBIGUOUS and points to +act
+- Charter name defaults to the mind's library name (1 to 80 bytes, the Roll bound)
+- Payer and seller account: the actor's one personal tacsim.credit account; none or
+  several refuse ACCOUNT (a deliberate narrowing of 17f §2.3's buyer choice, which stays
+  on +act and C3)
+- Idempotency discriminator: `mind.<verb>.<subject>.<IC second>.<per-second ordinal>`,
+  the industry command idiom
+- The listing detail discloses the Registry levy always and the venue cut and parent
+  royalties when nonzero
+- Renewals: +minds/renew shows status or requests an offer once due by the service's own
+  due rule; /pay and /decline only; the existing renewal service grants or refunds a
+  funded renewal
+- Registry recall and revocation commands take no reason, because the as-built actions
+  carry none
+- House catalogue purchases stay on +act house-* (no per-buyer House index); House Pins
+  are listed, renewed and resold by command
+- Width maxima for the 120-column test: 8-digit numbers, 24-character listing and
+  20-character holdings name columns, 12-character prices, class III, the server's
+  longest player name, four-digit minutes
+- The gate story's deployment uses quote_seconds 30 (a test value) and PROVISIONAL terms
+  otherwise; its tiny-amount case is a 0.21cr resale beside a dearer 5.00cr offer
+- Owner-read capacity: the static count (24–29 of 32 services before C2) is taken as
+  sufficient for C2's two services and two grants; C2a's composition test prints the
+  exact figure and the fallback (fold into OriginalOwnerReader, then the lead raises
+  both caps to 48) applies only on a refused boot
+- Each sub-cut's workspace sweep runs on conclav-dev through scripts/vps-gate.sh --wip
+  --runner conclav-dev as the gate's last command; local runs stay focused (about 15
+  minutes)
+- C1's provisional defaults are unchanged: 400cr Pin and renewal, 300 s quote, 3 IC-day
+  renewal window, one-day resale window, 3 IC-day charter settlement, the
+  deployment-named clerk, one operator
