@@ -198,6 +198,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+npc"
+category = "read-only"
+note = "Personal trust and guarded lore: +npc/lore reads an exact authored topic from a present, enabled NPC. The connected player must currently share its room and mutual perception; guarded entries require the player's earned personal trust, and secret entries are never disclosed. The reply goes only to the asker. No relationship, memory, lore, standing, or other durable state is written; no authoritative action is submitted."
+
+[[handler]]
 name = "+order"
 category = "legacy-post-image"
 family = "propagation.envelope"
@@ -277,6 +282,11 @@ name = "+stakeout"
 category = "legacy-post-image"
 family = "atlas.journey"
 note = "S2 (14-spatial-implementation-plan 3.2): +stakeout <checkpoint> materializes the checkpoint's patch -- one room made from the region's background at the checkpoint's point (P4), written as mod:atlas:patch:<pack>:<entry> -- moves the watcher there and registers the watch; a traveler reaching a watched checkpoint is held there and both sides are told. +stakeout/end gives the watch up, walks back, releases what it held, and retires an idle patch. The watch itself is not a document: at boot the watchers are whoever stands in a patch. No authority, no prepared mechanic."
+
+[[handler]]
+name = "+standing"
+category = "read-only"
+note = "Faction standing: renders the acting character's score and qualitative band for public factions, with at most ten cause receipts when a faction is named. Hidden and missing factions are indistinguishable. Reads immutable engine-owned standing grants and writes nothing; it cannot change membership, authority, trust, or the standing ledger."
 
 [[handler]]
 name = "+stat"

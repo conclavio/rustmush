@@ -1739,6 +1739,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_faction),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
             name: "+standing".into(),
@@ -1752,6 +1753,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::reputation::command_standing),
     )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "@region".into(),
