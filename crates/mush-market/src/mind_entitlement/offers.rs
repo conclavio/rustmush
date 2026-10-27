@@ -279,13 +279,31 @@ pub(super) fn current_listing(
         || l.subject != EntitlementSubjectV1::capture(f)
         || l.product != expected
         || &l.royalty != f.royalty()
-        || l.price != config.policy.price
+        || current_policy(config, l).is_err()
+    {
+        return Err("listing no longer matches actual current entitlement".into());
+    }
+    Ok(())
+}
+/// The policy half of `current_listing`: the listing's price, instrument,
+/// Registry and venue cuts and policy reference are the deployment's current
+/// ones. 17g C2c: `mind_commands` lists exactly the listings that pass this
+/// test (the C2c brief: "`current_listing`'s policy test only — not
+/// seller-specific"); the Quote branch still runs the whole of
+/// `current_listing` against Roll's current sale facts, so a listing this
+/// shows can still refuse a quote (a withdrawn revision, a lapsed owner).
+pub(crate) fn current_policy(
+    config: &EntitlementConfig,
+    l: &EntitlementListingV1,
+) -> Result<(), String> {
+    l.validate()?;
+    if l.price != config.policy.price
         || l.instrument != config.policy.instrument
         || l.registry.0 != config.policy.registry
         || l.venue != config.policy.venue()
         || l.policy != config.policy_ref().map_err(|e| e.to_string())?
     {
-        return Err("listing no longer matches actual current entitlement".into());
+        return Err("listing no longer matches the current entitlement policy".into());
     }
     Ok(())
 }

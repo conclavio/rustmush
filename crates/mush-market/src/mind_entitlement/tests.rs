@@ -203,6 +203,112 @@ fn fixture(
     reprice(&mut q)?;
     Ok(q)
 }
+/// 17g C2c: a listing row over `fixture`'s frozen product and subject,
+/// published under `publication` (the command read's tests, which page and
+/// look listings up by their token text).
+pub(crate) fn listing_fixture(
+    protocol: EntitlementProtocol,
+    depth: u64,
+    form: PaidForm,
+    publication: CommitToken,
+) -> TestResult<EntitlementListingV1> {
+    let q = fixture(protocol, depth, form)?;
+    let listing = EntitlementListingV1 {
+        format: 1,
+        publication,
+        subject: q.subject,
+        product: q.product,
+        royalty: q.royalty,
+        price: q.price,
+        instrument: q.instrument,
+        venue: q.venue,
+        registry: q.registry,
+        policy: q.policy,
+        observed_at_utc: 100,
+    };
+    listing.validate()?;
+    Ok(listing)
+}
+/// 17g C2c (the C2c fix round): a deployment configuration whose policy is
+/// `listing_fixture`'s own at `price_minor` (the instrument, the Registry and
+/// venue cuts), and a listing over `fixture`'s product that is current under
+/// it (`current_policy`): its price and policy reference are the
+/// configuration's. The command read's tests answer through these, so the
+/// policy filter they exercise is the real one.
+pub(crate) fn command_config(price_minor: i64) -> TestResult<super::EntitlementConfig> {
+    let policy = super::EntitlementPolicy {
+        price: Amount::from_minor(price_minor),
+        instrument: InstrumentId::new("cr").ok_or("instrument")?,
+        registry: GrossRecipientCut {
+            permille: 50,
+            recipient: Some(Recipient {
+                account: AccountId(11),
+                owner: mush_org::PrincipalId::System(
+                    mush_org::SystemPrincipalId::new("roll.registry").ok_or("system")?,
+                ),
+            }),
+        },
+        venue_name: crate::MarketId::new("registry").ok_or("venue")?,
+        venue: GrossRecipientCut {
+            permille: 20,
+            recipient: Some(Recipient {
+                account: AccountId(12),
+                owner: mush_org::PrincipalId::Object(ObjId(12)),
+            }),
+        },
+        transferable: true,
+        term_seconds: 900,
+        grace_seconds: 90,
+        quote_seconds: 60,
+        renewal_price: Amount::from_minor(600),
+        renewal_term_seconds: 800,
+        renewal_grace_seconds: 80,
+    };
+    Ok(super::EntitlementConfig::new(
+        policy,
+        definition("tacsim", "registry_manifest", "combat", 1)?,
+        PurchaseParticipants::new(
+            definition("economy", "owner_participant", "initial_filing", 1)?,
+            definition("roll", "owner_participant", "commercial_roots", 1)?,
+        )?,
+        mush_roll::commerce::entitlement::writer::EntitlementPurchaseWriter::new(),
+    )?)
+}
+/// 17g C2c: an original sealed listing over `fixture`'s subject, listed
+/// under `config` (its product built by `product_for`, its price, cuts and
+/// policy the configuration's), so `current_policy(config, ..)` admits it.
+pub(crate) fn current_listing_fixture(
+    config: &super::EntitlementConfig,
+    publication: CommitToken,
+) -> TestResult<EntitlementListingV1> {
+    let q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
+    let product = config.product_for(
+        EntitlementProtocol::OriginalV3,
+        &q.subject,
+        &q.royalty,
+        super::config::ProductChoice {
+            form: PaidForm::Sealed {},
+            royalty_permille: 0,
+            transferable: true,
+        },
+    )?;
+    let listing = EntitlementListingV1 {
+        format: 1,
+        publication,
+        subject: q.subject,
+        product,
+        royalty: q.royalty,
+        price: config.policy.price,
+        instrument: config.policy.instrument.clone(),
+        venue: config.policy.venue(),
+        registry: Cut(config.policy.registry.clone()),
+        policy: config.policy_ref()?,
+        observed_at_utc: 100,
+    };
+    listing.validate()?;
+    super::current_policy(config, &listing)?;
+    Ok(listing)
+}
 fn reprice(q: &mut EntitlementQuoteV1) -> TestResult {
     q.product_digest = q.product.digest()?;
     q.payouts = Bounded(

@@ -19,6 +19,9 @@ mod registration;
 pub(crate) use capabilities::register_with_house as register_capabilities_with_house;
 pub use config::{EntitlementConfig, EntitlementPolicy};
 pub(crate) use families::Families;
+// 17g C2c: the command read's (`crate::mind_commands`) view of this owner.
+pub(crate) use guard::EntitlementGuard;
+pub(crate) use offers::current_policy;
 pub(crate) use registration::register_with_house_definitions;
 
 fn error(e: impl std::fmt::Display) -> mush_core::ModError {
@@ -31,4 +34,4 @@ pub use records::{
 };
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

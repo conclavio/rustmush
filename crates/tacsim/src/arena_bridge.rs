@@ -4538,6 +4538,10 @@ pub fn register(
     // One primary dispatcher: character authoring and the staff-only /live
     // lane share a verb but retain their own authority and persistence checks.
     workshop.register(reg)?;
+    // 17g C2c (C2 plan §2.2): the player market's `+minds`, registered
+    // wherever `@mind` is and refusing `NOT_OPEN` without a composed market
+    // read (`minds::market_commands::market`).
+    crate::minds::market_commands::market::register(reg)?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())
 }
@@ -6064,6 +6068,14 @@ mod tests {
                 "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
                 "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
             ],
+            "{help}"
+        );
+        // 17g C2c: `@mind/publish`, directly after the C2a lines.
+        assert_eq!(
+            help.lines().nth(localcopy + 4),
+            Some(
+                "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)"
+            ),
             "{help}"
         );
         let tasks = tw

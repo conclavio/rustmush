@@ -22,19 +22,20 @@
 //! its reason.
 //!
 //! C2a builds the mechanism and the author's commands (`author`); C2c adds
-//! `market.rs` and `holdings.rs`, C2d `trade.rs`, `renew.rs` and `registry.rs`.
+//! `market` (`+minds`, `+minds/buy`, `@mind/publish`) and `holdings`
+//! (`+minds/holdings`); C2d adds `trade.rs`, `renew.rs` and `registry.rs`.
 
 pub(crate) mod author;
+pub(crate) mod holdings;
+pub(crate) mod market;
 pub(crate) mod words;
-
-#[cfg(test)]
-mod tests;
 
 use std::sync::{Arc, Mutex};
 
 use mush_core::action::{IdempotencyKeyText, PerceivedRef};
 use mush_core::read_service::OwnerReadHandle;
 use mush_core::{CmdError, Ctx, DefinitionRef, Flags, ModError, ObjId, ObjKind, Registrar};
+use mush_market::mind_commands::MarketCommandReader;
 use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 
 /// 17g C2a: the command adapter's own state slot (tacsim's, no state-slot
@@ -45,11 +46,21 @@ use mush_roll::commerce::holding_reader::OriginalOwnerReader;
 /// because the format-2 Active launch has no owner-read grant to spare. It is registered only when Active commerce composes the
 /// player market (`MindCommerce::configure_tacsim` sets
 /// `TacsimRuleset.mind_commands`), so on a House-only launch every command
-/// that needs it refuses `NOT_OPEN`. C2c adds the market read beside `roll`.
-/// A slot is `Clone` (`Registrar::state`); a clone shares the one counter.
+/// that needs it refuses `NOT_OPEN`. A slot is `Clone` (`Registrar::state`);
+/// a clone shares the one counter.
+///
+/// 17g C2c: `market` is the market's bounded command read
+/// (`mush_market::mind_commands`), which every `+minds` form and
+/// `@mind/publish` need. It is `None` in every composition for now: the
+/// format-2 Active launch already holds all 32 owner-read grants, so TacSim's
+/// `MarketCommandReader::request` would refuse its boot with
+/// `OwnerReadError::Limit`, and the C2c brief leaves the cap to the lead (C2
+/// plan §2.4 fallback 2). Once the cap allows it, `register` requests it with
+/// the same composed manifest and stores it here.
 #[derive(Clone)]
 pub(crate) struct MindCommandService {
     pub(crate) roll: OwnerReadHandle<OriginalOwnerReader>,
+    pub(crate) market: Option<OwnerReadHandle<MarketCommandReader>>,
     /// `(IC second, next ordinal)`: RAM only, so a restart starts again at 0,
     /// and keys stay distinct because each carries its IC second.
     attempts: Arc<Mutex<(i64, u64)>>,
@@ -63,6 +74,7 @@ pub(crate) fn register(
 ) -> Result<(), ModError> {
     reg.state(MindCommandService {
         roll,
+        market: None,
         attempts: Arc::new(Mutex::new((i64::MIN, 0))),
     });
     Ok(())
@@ -175,3 +187,8 @@ pub(crate) fn personal_account(ctx: &Ctx<'_>) -> Result<mush_economy::AccountId,
         _ => Err(refuse()),
     }
 }
+
+// 17g C2c (C2a's residual): declared last, so a first-literal source census
+// reads every line above as production code.
+#[cfg(test)]
+mod tests;

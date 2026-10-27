@@ -484,7 +484,7 @@ fn readiness(operator: ObjId, state: &str) -> String {
     format!("Registry operators: #{} {state}.", operator.0)
 }
 /// 17g C1c: the market line with `MarketTerms::PROVISIONAL`, byte for byte.
-const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Until the +minds commands exist, use +actions and +act <verb> with <JSON object>.";
+const PROVISIONAL_MARKET_LINE: &str = "Player market: personal filing costs 100cr. A personal Pin listed at the counter sells for 400cr for 90 IC days plus 3 days Grace; the Registry takes 5%, any parent royalty is paid next, and the charter owner gets the rest. It renews for 400cr on its own accepted offer, open 3 IC days; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open 1 day and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within 3 IC days. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licences with +minds/holdings; help personal-minds lists every market command.";
 /// The deployment's one Registry operator.
 fn operator(d: &LaunchDeployment) -> Result<ObjId> {
     Ok(d.market
@@ -1312,6 +1312,142 @@ async fn author_parameters_satisfy_the_registered_providers() -> Result {
                         1,
                         IdempotencyKey::Caller(IdempotencyKeyText::parse_canonical(format!(
                             "mind.fixture.{serial}"
+                        ))?),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: offer.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: Vec::new(),
+                    parameters: parameters.clone(),
+                },
+            )
+            .map_err(|error| format!("{name} resolves: {error}"))?;
+        let (resolved_action, resolved, _) = resolved.into_authoritative_parts();
+        check_eq!(&resolved_action, &action, "{name}");
+        check_eq!(resolved.invocation().parameters(), &parameters, "{name}");
+        e.registry
+            .action_providers()
+            .ok_or("providers")?
+            .validate_invocation(&action, resolved.invocation())
+            .map_err(|error| format!("{name} validates: {error}"))?;
+    }
+    Ok(())
+}
+
+/// 17g C2c test 6 (C2 plan §2.1, the C2c brief; on the launch rig beside C2a's
+/// test 4, for the same reason: the providers project nothing unbooted). The
+/// format-2 Active launch registers the market's command read
+/// (`mind_market_commands` v1) and grants it to nobody yet (TacSim's grant
+/// would be the 33rd of 32; the counts are printed and pinned). With the
+/// buyer at the counter, the parameter objects `@mind/publish` builds for
+/// the List offer, with and without the transfer mark, and `+minds/buy`'s
+/// Quote, and the Fund, Grant and Refund wires the pending steps will submit
+/// (`{"quote"}` and `{"operation"}`, `mind_entitlement::provider`'s own),
+/// each resolve against the player's own projected offer for the action
+/// `MarketCommandActions` captured, in both protocols, and pass
+/// `validate_invocation`.
+#[tokio::test(flavor = "current_thread")]
+async fn market_parameters_satisfy_the_registered_providers() -> Result {
+    use crate::minds::market_commands::market;
+    use mush_core::action::{
+        IdempotencyKey, IdempotencyKeyText, IdempotencyScope, PerceivedRef, RequestUid,
+        ScopedIdempotencyKey,
+    };
+    use mush_core::mechanics::CanonicalId;
+    use mush_core::{OfferExecutionContext, OfferSubmission};
+    use mush_market::mind_commands::{MarketCommandActions, Protocol, Step};
+    let (mut r, mut d) = setup()?;
+    activate(&mut r, &mut d, false)?;
+    let buyer = r.buyer;
+    let room = d.venue.room;
+    r.world_mut().world_mut().move_to(buyer, room)?;
+    let e = r.world_mut().engine_mut();
+    let counts = e.registry.owner_read_counts().ok_or("frozen reads")?;
+    eprintln!(
+        "NAMED_LAUNCH_OWNER_READS services={} grants={} caps=({}, {})",
+        counts.0,
+        counts.1,
+        mush_core::read_service::MAX_OWNER_READ_SERVICES,
+        mush_core::read_service::MAX_OWNER_READ_GRANTS
+    );
+    check_eq!(
+        counts,
+        (32, 32),
+        "the market read takes the 32nd service; no grant is free for it"
+    );
+    let definitions = e.registry.definitions().ok_or("definitions")?;
+    check!(
+        definitions.iter().any(|entry| {
+            let key = entry.reference().key();
+            key.owner.as_str() == "market"
+                && key.kind.as_str() == "owner_read"
+                && key.id.as_str() == "mind_market_commands"
+                && entry.reference().version() == 1
+        }),
+        "the market's command read is registered"
+    );
+    check!(
+        e.world
+            .module_state::<crate::minds::market_commands::MindCommandService>()
+            .is_some_and(|service| service.market.is_none()),
+        "no composition grants TacSim the market read yet"
+    );
+    let actions = MarketCommandActions::capture(definitions);
+    let licence = mush_roll::commerce::LicenceId::new(1)?;
+    let token = mush_core::CommitToken::from_bytes([0x5c; 16]);
+    let mut cases = Vec::new();
+    for protocol in [Protocol::Original, Protocol::Derived] {
+        cases.extend([
+            (
+                protocol,
+                Step::List,
+                market::list_parameters(licence, "sealed", 0, true),
+            ),
+            (
+                protocol,
+                Step::List,
+                market::list_parameters(licence, "open_resale", 300, false),
+            ),
+            (protocol, Step::Quote, market::quote_parameters(token)),
+            (protocol, Step::Fund, json!({"quote": token})),
+            (protocol, Step::Grant, json!({"operation": token})),
+            (protocol, Step::Refund, json!({"operation": token})),
+        ]);
+    }
+    e.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x48; 32])?,
+        [],
+    )?);
+    for (serial, (protocol, step, parameters)) in cases.into_iter().enumerate() {
+        let name = format!("{protocol:?} {step:?} {parameters}");
+        let action = actions
+            .entitlement(protocol, step)
+            .ok_or_else(|| format!("{name} is composed"))?;
+        let principal = mush_core::PrincipalId::Object { id: buyer };
+        let query = e.legal_action_query(principal.clone(), buyer, PerceivedRef::SelfActor)?;
+        let offers = e.project_legal_actions(&query)?;
+        let offer = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| format!("{name} is offered at the counter"))?;
+        let resolved = e
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request: RequestUid::from_bytes([u8::try_from(serial)?.wrapping_add(80); 16]),
+                    principal: principal.clone(),
+                    actor: buyer,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: action.key().owner.clone(),
+                            namespace: CanonicalId::new(action.key().id.as_str())?,
+                        },
+                        1,
+                        IdempotencyKey::Caller(IdempotencyKeyText::parse_canonical(format!(
+                            "mind.market.{serial}"
                         ))?),
                     ),
                     viewer_scope: query.viewer_scope(),

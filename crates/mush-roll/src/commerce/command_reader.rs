@@ -28,8 +28,23 @@
 //!   row that cannot be read, is `OwnerReadError::Refused`, identically, so
 //!   the read is no oracle for another holder's filings.
 //!
-//! C2c and C2d add kinds here (`OwnHoldings`, `CharterNames`, `OwnPaid`,
-//! `ResaleStep`, `CharterOffers`), on the same folded read.
+//! - `OwnHoldings { section: Owner, after }` (17g C2c): the filed minds the
+//!   actor owns now, through the actor's own E4 charter assets (the
+//!   original-holdings page's `assets_of_after`, so no other holder's index
+//!   is walked); each row is exactly what `OwnFiled` answers for the line's
+//!   newest filed revision (`LineRecord::head`), plus `selling` when the
+//!   charter has a funded pending transfer. A charter `OwnFiled` would refuse
+//!   (a title in transit) is left out. At most `OWNER_ROWS_PER_READ` rows
+//!   and `OWN_ASSETS_PER_READ` assets per read, inside the declared
+//!   `MAXIMUM_ROWS`; the command pages with the asset cursor.
+//!   `section: Paid` is `Unavailable` until the per-holder paid index lands
+//!   (`roll_mind_paid_holdings`, C2 plan §2.5 item 2, held at C2b).
+//! - `CharterNames { charters }` (17g C2c): the public Roll name of up to
+//!   `MAX_CHARTER_NAMES` charters, in one batched read; an unknown charter
+//!   is left out. Names only.
+//!
+//! C2d adds `OwnPaid`, `ResaleStep` and `CharterOffers` on the same folded
+//! read.
 
 use super::families::CommerceFamilies;
 use super::read::CommerceRead;
@@ -57,8 +72,33 @@ pub struct RollCommandReadRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReadKind {
     OpenShell,
-    OwnFiled { filed: FiledRevisionId },
+    OwnFiled {
+        filed: FiledRevisionId,
+    },
+    OwnHoldings {
+        section: HoldingSection,
+        after: Option<u64>,
+    },
+    CharterNames {
+        charters: Vec<CharterId>,
+    },
 }
+/// 17g C2c: the two halves of `+minds/holdings`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingSection {
+    /// The filed minds the actor owns (their owner licences).
+    Owner,
+    /// The paid licences the actor holds: `Unavailable` until the
+    /// per-holder paid index (`roll_mind_paid_holdings`) lands.
+    Paid,
+}
+/// 17g C2c: owner rows one `OwnHoldings` read answers at most.
+pub const OWNER_ROWS_PER_READ: usize = 3;
+/// 17g C2c: own E4 assets one `OwnHoldings` read examines at most.
+pub const OWN_ASSETS_PER_READ: usize = 16;
+/// 17g C2c: charters one `CharterNames` read names at most.
+pub const MAX_CHARTER_NAMES: usize = 20;
 impl RollCommandReadRequest {
     /// The actor's own open filing reservation, if any.
     #[must_use]
@@ -73,6 +113,103 @@ impl RollCommandReadRequest {
         Self {
             kind: ReadKind::OwnFiled { filed },
         }
+    }
+    /// 17g C2c: one page of the actor's own holdings in `section`, after the
+    /// cursor a previous page returned (an E4 asset id for `Owner`).
+    #[must_use]
+    pub const fn own_holdings(section: HoldingSection, after: Option<u64>) -> Self {
+        Self {
+            kind: ReadKind::OwnHoldings { section, after },
+        }
+    }
+    /// 17g C2c: the public names of up to `MAX_CHARTER_NAMES` charters.
+    #[must_use]
+    pub const fn charter_names(charters: Vec<CharterId>) -> Self {
+        Self {
+            kind: ReadKind::CharterNames { charters },
+        }
+    }
+}
+
+/// 17g C2c: one filed mind the actor owns, as `+minds/holdings` lists it:
+/// `OwnFiled`'s answer for the line's newest filed revision, and whether the
+/// charter is being sold (a funded pending transfer). No source, digest,
+/// account, rating or other holder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnerHoldingView {
+    filed: FiledRevisionId,
+    charter: CharterId,
+    owner_licence: LicenceId,
+    dependent: bool,
+    name: String,
+    owner_phase: OwnerPhase,
+    selling: bool,
+}
+impl OwnerHoldingView {
+    /// The line's newest filed revision (`LineRecord::head`).
+    #[must_use]
+    pub const fn filed(&self) -> FiledRevisionId {
+        self.filed
+    }
+    #[must_use]
+    pub const fn charter(&self) -> CharterId {
+        self.charter
+    }
+    #[must_use]
+    pub const fn owner_licence(&self) -> LicenceId {
+        self.owner_licence
+    }
+    #[must_use]
+    pub const fn dependent(&self) -> bool {
+        self.dependent
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    #[must_use]
+    pub const fn owner_phase(&self) -> OwnerPhase {
+        self.owner_phase
+    }
+    /// A funded pending charter transfer holds the title's sale in escrow.
+    /// An open, unfunded pending offer is not shown: the offers are keyed by
+    /// their operation, so no bounded per-charter read finds one.
+    #[must_use]
+    pub const fn selling(&self) -> bool {
+        self.selling
+    }
+}
+/// 17g C2c: one `OwnHoldings { section: Owner }` page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OwnerHoldingsPage {
+    rows: Vec<OwnerHoldingView>,
+    next: Option<u64>,
+}
+impl OwnerHoldingsPage {
+    #[must_use]
+    pub fn rows(&self) -> &[OwnerHoldingView] {
+        &self.rows
+    }
+    /// The asset cursor of the next page, `None` at the end.
+    #[must_use]
+    pub const fn next(&self) -> Option<u64> {
+        self.next
+    }
+}
+/// 17g C2c: one charter's public Roll name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CharterName {
+    charter: CharterId,
+    name: String,
+}
+impl CharterName {
+    #[must_use]
+    pub const fn charter(&self) -> CharterId {
+        self.charter
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -140,6 +277,12 @@ pub enum RollCommandReadResult {
         request: Option<RequestUid>,
     },
     OwnFiled(OwnFiledView),
+    /// 17g C2c: `OwnHoldings { section: Owner }`.
+    OwnerHoldings(OwnerHoldingsPage),
+    /// 17g C2c: `CharterNames`, in the requested order, unknown ones left out.
+    CharterNames {
+        names: Vec<CharterName>,
+    },
 }
 impl RollCommandReadResult {
     /// The open-shell answer, or `None` if this answered another kind.
@@ -147,7 +290,7 @@ impl RollCommandReadResult {
     pub const fn open_shell(&self) -> Option<Option<RequestUid>> {
         match self {
             Self::OpenShell { request } => Some(*request),
-            Self::OwnFiled(_) => None,
+            _ => None,
         }
     }
     /// The filed-mind answer, or `None` if this answered another kind.
@@ -155,7 +298,23 @@ impl RollCommandReadResult {
     pub fn into_own_filed(self) -> Option<OwnFiledView> {
         match self {
             Self::OwnFiled(view) => Some(view),
-            Self::OpenShell { .. } => None,
+            _ => None,
+        }
+    }
+    /// 17g C2c: the owner-holdings page, or `None` for another kind.
+    #[must_use]
+    pub fn into_owner_holdings(self) -> Option<OwnerHoldingsPage> {
+        match self {
+            Self::OwnerHoldings(page) => Some(page),
+            _ => None,
+        }
+    }
+    /// 17g C2c: the charter names, or `None` for another kind.
+    #[must_use]
+    pub fn into_charter_names(self) -> Option<Vec<CharterName>> {
+        match self {
+            Self::CharterNames { names } => Some(names),
+            _ => None,
         }
     }
 }
@@ -179,7 +338,181 @@ pub(super) fn read(
         ReadKind::OwnFiled { filed } => own_filed(ctx, roll, families, filed)
             .map(RollCommandReadResult::OwnFiled)
             .map_err(|_| OwnerReadError::Refused),
+        ReadKind::OwnHoldings {
+            section: HoldingSection::Owner,
+            after,
+        } => owner_holdings(ctx, roll, families, after).map(RollCommandReadResult::OwnerHoldings),
+        ReadKind::OwnHoldings {
+            section: HoldingSection::Paid,
+            ..
+        } => Err(OwnerReadError::Unavailable),
+        ReadKind::CharterNames { charters } => charter_names(ctx, families, &charters)
+            .map(|names| RollCommandReadResult::CharterNames { names }),
     }
+}
+
+/// 17g C2c: one page of the actor's own filed minds. The assets are the
+/// actor's own current E4 titles after `after` (`assets_of_after`, the
+/// original-holdings page's seek); a title that is not a Roll charter is
+/// skipped, and so is a charter `own_filed` refuses for this actor.
+fn owner_holdings(
+    ctx: &OwnerReadContext<'_>,
+    roll: &RollStore,
+    families: &CommerceFamilies,
+    after: Option<u64>,
+) -> Result<OwnerHoldingsPage, OwnerReadError> {
+    let after = after
+        .map(|n| u32::try_from(n).map(mush_core::ObjId))
+        .transpose()
+        .map_err(|_| OwnerReadError::Refused)?;
+    let economy = ctx
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .ok_or(OwnerReadError::Unavailable)?;
+    if economy.is_frozen() {
+        return Err(OwnerReadError::Unavailable);
+    }
+    let owned: Vec<mush_core::ObjId> = economy
+        .snapshot()
+        .assets_of_after(
+            &mush_org::PrincipalId::Object(ctx.actor()),
+            after,
+            OWN_ASSETS_PER_READ + 1,
+        )
+        .map(|asset| asset.object)
+        .collect();
+    let (rows, next) = page(&owned, |object| {
+        let charter_id = CharterId::from_object(object).map_err(|_| OwnerReadError::Integrity)?;
+        let Some(charter) = ctx.action_state(&families.charters, &charter_id.key())? else {
+            return Ok(None);
+        };
+        charter.validate().map_err(|_| OwnerReadError::Integrity)?;
+        if charter.id != charter_id {
+            return Err(OwnerReadError::Integrity);
+        }
+        let line = row(ctx, &families.lines, charter.line.key())?;
+        if line.id() != charter.line || line.charter() != charter.id {
+            return Err(OwnerReadError::Integrity);
+        }
+        let view = match own_filed(ctx, roll, families, line.head()) {
+            Ok(view) => view,
+            Err(OwnerReadError::Refused) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if view.charter != charter.id {
+            return Err(OwnerReadError::Integrity);
+        }
+        Ok(Some(OwnerHoldingView {
+            selling: pending_sale(ctx, families, charter.id)?,
+            filed: view.filed,
+            charter: view.charter,
+            owner_licence: view.owner_licence,
+            dependent: view.dependent,
+            name: view.name,
+            owner_phase: view.owner_phase,
+        }))
+    })?;
+    Ok(OwnerHoldingsPage { rows, next })
+}
+
+/// One `OwnHoldings` read's paging over `owned` (the actor's own assets in
+/// id order, `OWN_ASSETS_PER_READ + 1` of them at most, the extra one only
+/// telling whether more follow): `row_of` each of the first
+/// `OWN_ASSETS_PER_READ` until `OWNER_ROWS_PER_READ` rows are found, and the
+/// cursor to continue after, `None` at the end of the actor's assets.
+/// - Cut at `OWNER_ROWS_PER_READ`: the cursor is the last row's asset, when
+///   any asset follows it.
+/// - The examined assets ran out first: the cursor is the last examined
+///   asset when one more exists, so a read whose assets held no filed mind
+///   still goes on (its rows are then empty).
+fn page<T>(
+    owned: &[mush_core::ObjId],
+    mut row_of: impl FnMut(mush_core::ObjId) -> Result<Option<T>, OwnerReadError>,
+) -> Result<(Vec<T>, Option<u64>), OwnerReadError> {
+    let mut rows = Vec::new();
+    for (offset, object) in owned.iter().take(OWN_ASSETS_PER_READ).enumerate() {
+        let Some(found) = row_of(*object)? else {
+            continue;
+        };
+        rows.push(found);
+        if rows.len() == OWNER_ROWS_PER_READ {
+            let more = offset + 1 < owned.len();
+            return Ok((rows, more.then(|| u64::from(object.0))));
+        }
+    }
+    let next = if owned.len() > OWN_ASSETS_PER_READ {
+        owned
+            .get(OWN_ASSETS_PER_READ - 1)
+            .map(|object| u64::from(object.0))
+    } else {
+        None
+    };
+    Ok((rows, next))
+}
+
+/// Whether the charter's pending-transfer head is `Funded`: the buyer has
+/// paid into escrow and the transfer has not settled or refunded.
+fn pending_sale(
+    ctx: &OwnerReadContext<'_>,
+    families: &CommerceFamilies,
+    charter: CharterId,
+) -> Result<bool, OwnerReadError> {
+    funded(
+        ctx.action_state(&families.charter_pending_heads, &charter.key())?,
+        charter,
+    )
+}
+
+/// `pending_sale`'s answer from the charter's pending-transfer head: none,
+/// or a settled or refunded one, is no sale; a head of another charter, or
+/// one that does not validate, is `Integrity`.
+fn funded(
+    head: Option<&super::charter_pending::records::PendingHead>,
+    charter: CharterId,
+) -> Result<bool, OwnerReadError> {
+    let Some(head) = head else {
+        return Ok(false);
+    };
+    head.validate().map_err(|_| OwnerReadError::Integrity)?;
+    if head.charter != charter {
+        return Err(OwnerReadError::Integrity);
+    }
+    Ok(matches!(
+        head.state,
+        super::charter_pending::records::PendingState::Funded {}
+    ))
+}
+
+/// The public names of `charters` (at most `MAX_CHARTER_NAMES`), one batched
+/// read; a charter Roll does not hold is left out.
+fn charter_names(
+    ctx: &OwnerReadContext<'_>,
+    families: &CommerceFamilies,
+    charters: &[CharterId],
+) -> Result<Vec<CharterName>, OwnerReadError> {
+    if charters.is_empty() {
+        return Ok(Vec::new());
+    }
+    if charters.len() > MAX_CHARTER_NAMES {
+        return Err(OwnerReadError::Limit);
+    }
+    let keys: Vec<String> = charters.iter().map(|c| c.key()).collect();
+    let found = ctx.action_states(&families.charters, &keys)?;
+    let mut names = Vec::new();
+    for (id, record) in charters.iter().zip(found) {
+        let Some(record) = record else {
+            continue;
+        };
+        record.validate().map_err(|_| OwnerReadError::Integrity)?;
+        if record.id != *id {
+            return Err(OwnerReadError::Integrity);
+        }
+        names.push(CharterName {
+            charter: *id,
+            name: record.name.clone(),
+        });
+    }
+    Ok(names)
 }
 
 /// Any failure here is a refusal to the caller (`read` maps every error to

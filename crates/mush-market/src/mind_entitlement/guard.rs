@@ -28,7 +28,10 @@ impl EntitlementGuard {
             owner: OwnerId::new(crate::NS).map_err(super::error)?,
         })
     }
-    pub(super) fn current(&self, world: &World, actor: ObjId) -> Result<(), String> {
+    /// The venue gate the List, Quote, Fund and Grant offers use: a live,
+    /// non-GOING player standing in the policy's venue and admitted there.
+    /// 17g C2c: also `mind_commands`' `AtCounter` (crate-visible for it).
+    pub(crate) fn current(&self, world: &World, actor: ObjId) -> Result<(), String> {
         if world.get(actor).is_none_or(|o| {
             o.kind != mush_core::ObjKind::Player || o.flags.contains(mush_core::Flags::GOING)
         }) {

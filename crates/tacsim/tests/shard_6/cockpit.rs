@@ -16709,11 +16709,13 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         author_help.contains(usage.trim_start_matches("Usage: ")),
         "{author_help}"
     );
-    // 17g C2a: the author's commerce commands are discoverable too.
+    // 17g C2a: the author's commerce commands are discoverable too; 17g C2c
+    // adds `@mind/publish`.
     for line in [
         "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
         "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed>",
         "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
+        "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)",
     ] {
         assert!(
             author_help.lines().any(|help| help == line),

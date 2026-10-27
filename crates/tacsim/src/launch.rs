@@ -229,7 +229,7 @@ impl LaunchComposition {
 pub(crate) fn market_help(market: &PlayerMarket) -> String {
     let terms = &market.terms;
     format!(
-        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Until the +minds commands exist, use +actions and +act <verb> with <JSON object>.",
+        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licences with +minds/holdings; help personal-minds lists every market command.",
         filing = credits(content::FILING_MINOR),
         price = credits(terms.price_minor),
         term = content::TERM_SECONDS / 86_400,
@@ -296,13 +296,21 @@ pub(crate) fn registry_readiness(world: &mush_core::World, market: &PlayerMarket
 
 /// Whole credits when the minor amount divides by 100 (`400cr`), otherwise two
 /// decimals (`400.50cr`). Decode bounds every market price to at least 1.
-fn credits(minor: i64) -> String {
+/// C1c's credit rendering (`400cr`, `0.21cr`). 17g C2c: the `+minds`
+/// commands print every price with it.
+pub(crate) fn credits(minor: i64) -> String {
     let (whole, cents) = (minor.div_euclid(100), minor.rem_euclid(100));
     if cents == 0 {
         format!("{whole}cr")
     } else {
         format!("{whole}.{cents:02}cr")
     }
+}
+
+/// 17g C2c: the personal term in whole IC days (doc 17's, not the
+/// deployment's), the only `term=` `@mind/publish` accepts.
+pub(crate) const fn personal_term_days() -> i64 {
+    content::TERM_SECONDS / 86_400
 }
 
 /// A window in days when it divides by 86,400 (`1 IC day`, `3 IC days`), else

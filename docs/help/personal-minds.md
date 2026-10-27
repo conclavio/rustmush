@@ -16,33 +16,27 @@
 - `@mind/fork <licence>=<name>` makes a working copy of a mind you hold an Open licence
   for. `@mind/localcopy` still copies your own drafts.
 
-Use `+actions` to read the actual available offers, then
-`+act <action> with <JSON object>` to select one. Choose the product and step
-explicitly; the server resolves the signed offer and rechecks current authority.
+## Listing and buying
 
-| Step | Original v3 | Derived v1 |
-| --- | --- | --- |
-| Publish terms | `original-list-v3` | `derived-list-v1` |
-| Request quote | `original-quote-v3` | `derived-quote-v1` |
-| Fund quote | `original-fund-v3` | `derived-fund-v1` |
-| Complete purchase | `original-grant-v3` | `derived-grant-v1` |
-| Refund purchase | `original-refund-v3` | `derived-refund-v1` |
+- `@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no]`
+  lists a filed mind you own at the counter where you stand. Sealed buyers never see
+  the source; open buyers may fork it; open-resale buyers may also list their forks.
+  `royalty` is what forks of it pay you; `transfer=no` makes the licences it sells
+  non-transferable. The market sets the price, seats and term.
+- `+minds` lists the minds for sale at this counter; `+minds <code>` shows one listing's
+  full terms, and `+minds/next <code>` the listings after it.
+- `+minds/buy <code>` asks for a quote. `+minds/buy/pay <code>` pays it into escrow, and
+  `+minds/buy/complete <code>` takes the licence. If the purchase cannot complete,
+  `+minds/buy/refund <code>` returns the money.
+- `+minds/holdings` lists your filed minds and licences, their terms and Grace, and any
+  purchase waiting to complete.
 
-Use the displayed parameter schema and exact identifiers returned by the service.
-Funding holds money in escrow; a grant requires acknowledged completion.
+Purchases between two characters of one account are refused. Money held for a purchase
+stays in escrow until it completes or is refunded; a request whose result you have not
+seen is not a refusal, so check `+minds/holdings` before trying again.
 
-Personal renewals use `mind-renewal-draft`, `mind-renewal-fund`,
-`mind-renewal-grant`, `mind-renewal-refund`, and `mind-renewal-close`.
-Draft takes a `licence` or a `previous_operation` for a permitted retry.
-The other steps take the acknowledged renewal `operation`; Close also takes
-`reason` (`declined` or `expired`). A renewal offer requires explicit acceptance.
-House renewals have separate `house-renewal-*` actions.
-
-Keep the same request identity while a result is unknown. An absent response
-is not a failed action or permission to retry with a new identity. Old quotes,
-changed terms or a different character's offer can be refused. The former
-ambiguous `market-mind-entitlement` and `market-mind-renewal` names are no longer
-selectable actions. Products appear only when their actual services are enabled.
+Renewals, resale and charter transfers still use `+actions` and
+`+act <action> with <JSON object>` until their commands arrive.
 
 On the named launch, `@mind/launch` prints the player market's current prices, terms and offer
 windows; they are the deployment's and may change between worlds. Registry recall and revocation

@@ -3,7 +3,8 @@
 //! `@mind/update`, `@mind/withdraw`, `@mind/attest` and the paid `@mind/fork`
 //! each submit exactly one existing Roll legal action with parameters the
 //! server builds from the actor's own state. `@mind/localcopy` stays the
-//! local draft copy; `@mind/publish` stays closed until C2c.
+//! local draft copy; `@mind/publish` is the market's (17g C2c,
+//! `market::publish`), which reads the filed mind through `own_filed` here.
 //!
 //! Every handler parses strictly first (a malformed argument prints the
 //! command's `HELP` line), then refuses `NOT_OPEN` without the player market,
@@ -212,7 +213,8 @@ fn actions(ctx: &Ctx<'_>) -> Result<RollCommandActions, CmdError> {
 
 /// The actor's own filed mind selected by `filed`, or `NO_FILED`: a foreign
 /// and a missing number read alike (the Roll read refuses both alike).
-fn own_filed(ctx: &Ctx<'_>, filed: u64) -> Result<OwnFiledView, CmdError> {
+/// 17g C2c: `@mind/publish` reads its filed mind through this too.
+pub(super) fn own_filed(ctx: &Ctx<'_>, filed: u64) -> Result<OwnFiledView, CmdError> {
     let refuse = || CmdError::msg(fill(words::NO_FILED, &[("filed", &filed.to_string())]));
     let id = FiledRevisionId::new(filed).map_err(|_| refuse())?;
     let service = super::service(ctx)?;

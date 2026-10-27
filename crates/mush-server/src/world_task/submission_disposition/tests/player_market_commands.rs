@@ -693,6 +693,157 @@ async fn author_commands_are_not_open_on_a_house_only_launch() -> TestResult {
     result?
 }
 
+/// 17g C2c test 10: a format-1 (House-only) Active launch composes no player
+/// market and so no command slot: every `+minds` form (bare, a code, `/next`,
+/// `/holdings` and its sections, `/buy` and its three steps) and
+/// `@mind/publish` refuse `NOT_OPEN` for the author, the buyer and the
+/// bystander, byte for byte, and `+minds` itself is registered (an unknown
+/// switch set answers its help, not "Huh?").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn market_commands_are_not_open_on_a_house_only_launch() -> TestResult {
+    let mut w = world("mush-c2c-house-only", 1).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        for actor in [p.author, p.buyer, w.bystander] {
+            for line in [
+                "+minds",
+                "+minds feed0001",
+                "+minds/next feed0001",
+                "+minds/holdings",
+                "+minds/holdings owner 1",
+                "+minds/holdings paid 1",
+                "+minds/buy feed0001",
+                "+minds/buy/pay feed0001",
+                "+minds/buy/complete feed0001",
+                "+minds/buy/refund feed0001",
+                "@mind/publish 1 form=sealed",
+                "@mind/publish 1 form=open royalty=100 transfer=no",
+            ] {
+                check_eq!(
+                    w.server.command(actor, line.into()).await?,
+                    vec![NOT_OPEN.to_owned()],
+                    "#{} {line}",
+                    actor.0
+                );
+            }
+            check_eq!(
+                w.server.command(actor, "+minds/next/pay x".into()).await?,
+                vec![MINDS_HELP.to_owned()],
+                "#{} an unknown switch set",
+                actor.0
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+/// 17g C2c test 9 (C2 plan §4; the C2c fix round, reviewer T-F6): on the
+/// production composition (format 2, Active), every `+minds` form and
+/// `@mind/publish` answers its actor alone. Through `command_seen`, for the
+/// author, the buyer and the bystander, no line of theirs reaches any other
+/// principal in the counter room (the alt, the bystander, the buyer, the
+/// author), and every line passes `assert_private` against every account id
+/// in the store; room speech is the positive control.
+///
+/// What the lines are today: the command slot exists here but no
+/// composition grants the market read yet (the owner-read cap, the C2c
+/// builder's blocker), so every form refuses `NOT_OPEN` after its own
+/// parse: a malformed `@mind/publish` form is `BAD_FORM` and an unknown
+/// switch set the `+minds` help. That block is the dispatch's pin on the
+/// production path (a slot without a market read) and is re-blessed when the
+/// read is granted; the observer and privacy assertions stand as they are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn market_replies_reach_only_the_actor() -> TestResult {
+    let mut w = world("mush-c2c-observer", 2).await?;
+    let result = timeout(STEP * 10, async {
+        let p = w.launch.principals;
+        let mut accounts = Vec::new();
+        for (key, row) in w.launch.store.module_json_list("economy").await? {
+            if key.starts_with("account:")
+                && let Some(id) = row.get("id").and_then(Value::as_u64)
+            {
+                accounts.push(id);
+            }
+        }
+        let known = Known {
+            digests: Vec::new(),
+            accounts,
+        };
+        let room = [
+            (p.author, "author"),
+            (p.buyer, "buyer"),
+            (w.alt, "alt"),
+            (w.bystander, "bystander"),
+        ];
+        let said = w
+            .server
+            .command_seen(p.author, "say Testing the counter room.".into())
+            .await?;
+        for (observer, name) in room.iter().filter(|(o, _)| *o != p.author) {
+            check!(
+                said.reaching(*observer)
+                    .iter()
+                    .any(|line| line.contains("Testing the counter room.")),
+                "the {name} hears the room: {said:?}"
+            );
+        }
+        let lines = [
+            ("+minds", NOT_OPEN),
+            ("+minds feed0001", NOT_OPEN),
+            ("+minds/next feed0001", NOT_OPEN),
+            ("+minds/holdings", NOT_OPEN),
+            ("+minds/holdings owner 1", NOT_OPEN),
+            ("+minds/holdings paid 1", NOT_OPEN),
+            ("+minds/buy feed0001", NOT_OPEN),
+            ("+minds/buy/pay feed0001", NOT_OPEN),
+            ("+minds/buy/complete feed0001", NOT_OPEN),
+            ("+minds/buy/refund feed0001", NOT_OPEN),
+            ("+minds/next/pay x", MINDS_HELP),
+            ("@mind/publish 1 form=sealed", NOT_OPEN),
+            (
+                "@mind/publish 1 form=open royalty=100 transfer=no",
+                NOT_OPEN,
+            ),
+            (
+                "@mind/publish 1 form=bogus",
+                "form is sealed, open or open-resale.",
+            ),
+        ];
+        let quiet = |seen: &Seen, actor: ObjId, line: &str| -> TestResult {
+            for (observer, name) in room.iter().filter(|(o, _)| *o != actor) {
+                let reached = seen.reaching(*observer);
+                check!(
+                    reached.is_empty(),
+                    "#{} {line} reached the {name}: {reached:?}",
+                    actor.0
+                );
+            }
+            assert_private(&seen.own, &known)
+        };
+        for actor in [p.author, p.buyer, w.bystander] {
+            for (line, reply) in lines {
+                // The settle window: whatever arrived since the last check.
+                let late = w.server.take_seen(actor)?;
+                quiet(&late, actor, "the settle window")?;
+                let seen = w.server.command_seen(actor, line.into()).await?;
+                quiet(&seen, actor, line)?;
+                check_eq!(seen.own, vec![reply.to_owned()], "#{} {line}", actor.0);
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await;
+    w.server.stop().await?;
+    let _ = std::fs::remove_dir_all(&w.data_dir);
+    result?
+}
+
+/// `+minds`'s help, its reply to any other switch set.
+const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code>";
+
 /// The comparison rule's own cases.
 #[test]
 fn comparison_rule_masks_only_the_typed_number() {

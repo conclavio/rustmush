@@ -178,3 +178,319 @@ fn rate_refuses_busy_only_for_the_characters_own_registry_job() -> TestResult {
     }
     Ok(())
 }
+
+/// 17g C2c test 4 (the C2c brief's widths, the 120-column floor): every
+/// table row and line at its maxima, with every legal flag combination.
+/// 8-digit numbers, the longest names (cut to 24 and 20), a 12-column price
+/// (`{price:>12}`; the longest price `credits` prints is `999999.99cr`),
+/// `open-resale`, class III, a two-digit Grace. The brief's figures are
+/// recomputed here and pinned: `ROW` 106, `DETAIL` 86, `TERMS_LINE` 76,
+/// `SPLIT` under 100 with both optional cuts, `HOLD_OWNER` 80, `HOLD_PAID`
+/// 114 (with C2d's `; no resale; renewal offered`, the longest legal pair)
+/// and `HOLD_WAIT` 96; any line over 120 fails rather than wraps. The words
+/// still pending the indexes (`words::pending`) are measured too.
+#[test]
+fn market_rows_fit_one_hundred_and_twenty_columns() -> TestResult {
+    use super::holdings::owner_row;
+    use super::market::{Shown, detail_text, row_text};
+    use mush_market::mind_commands::ListingForm;
+    use mush_roll::commerce::rating::RatingClass;
+    let width = |line: &str| line.chars().count();
+    let long = "A charter name far longer than any column allows";
+    let day = 86_400;
+    let mut shown = Shown {
+        code: "feed0001".to_owned(),
+        name: long,
+        form: ListingForm::OpenResale,
+        class: RatingClass::III,
+        price_minor: 99_999_999,
+        term_seconds: 90 * day,
+        grace_seconds: 99 * day,
+        transferable: false,
+        derived: true,
+        levy_permille: 125,
+        venue_permille: 125,
+        parent_royalty_permille: 305,
+    };
+    let mut widest = 0;
+    for (transferable, derived) in [(true, false), (false, false), (true, true), (false, true)] {
+        shown.transferable = transferable;
+        shown.derived = derived;
+        let row = row_text(&shown);
+        check!(width(&row) <= 120, "{row}");
+        widest = widest.max(width(&row));
+    }
+    check_eq!(widest, 106, "ROW at the maxima");
+    let [detail, terms, split] = detail_text(&shown);
+    check_eq!(width(&detail), 86, "{detail}");
+    check_eq!(width(&terms), 76, "{terms}");
+    check!(width(&split) < 100, "{split}");
+    check!(split.contains(", venue 12.5%") && split.contains(", parent royalties 30.5%"));
+    // Holdings: owner rows, both kinds, both phases, selling or not.
+    let mut widest = 0;
+    for dependent in [false, true] {
+        for phase in ["Active, 90 days left", "Grace, 99 days left", "Lapsed"] {
+            for selling in [false, true] {
+                let row = owner_row(99_999_999, dependent, long, phase, selling);
+                check!(width(&row) <= 120, "{row}");
+                widest = widest.max(width(&row));
+            }
+        }
+    }
+    check_eq!(widest, 80, "HOLD_OWNER at the maxima");
+    // The pending paid row: every legal flag combination (a non-transferable
+    // or revoked licence is never selling; a revoked one is not renewed; one
+    // renewal state at a time).
+    let name = long.chars().take(20).collect::<String>();
+    let mut widest = 0;
+    for kind in ["paid", "House Pin"] {
+        for flags in [
+            "",
+            "; no resale",
+            "; revoked",
+            "; selling",
+            "; no resale; revoked",
+            "; renewal offered",
+            "; renewal paid",
+            "; no resale; renewal offered",
+            "; no resale; renewal paid",
+            "; selling; renewal offered",
+            "; selling; renewal paid",
+        ] {
+            let row = fill(
+                words::pending::HOLD_PAID,
+                &[
+                    ("licence", "99999999"),
+                    ("kind", kind),
+                    ("name", &name),
+                    ("form", "open-resale"),
+                    ("phase", "Active, 90 days left"),
+                    ("flags", flags),
+                ],
+            );
+            check!(width(&row) <= 120, "{row}");
+            widest = widest.max(width(&row));
+        }
+    }
+    check_eq!(widest, 114, "HOLD_PAID at the maxima");
+    let wait = fill(words::pending::HOLD_WAIT, &[("code", "feed0001")]);
+    check_eq!(width(&wait), 96, "{wait}");
+    // Every other sentence at its longest fill.
+    let code = [("code", "feed0001")];
+    for line in [
+        fill(words::MORE, &code),
+        fill(words::NO_LISTING, &code),
+        fill(words::AMBIGUOUS, &code),
+        fill(words::QUOTING, &code),
+        fill(
+            words::PUBLISHING,
+            &[("filed", "99999999"), ("form", "open-resale")],
+        ),
+        fill(words::TERMS, &[("price", "999999.99cr"), ("term", "90")]),
+        fill(
+            words::HOLD_MORE,
+            &[("section", "owner"), ("cursor", "4294967295")],
+        ),
+        fill(
+            words::pending::YOUR_QUOTE,
+            &[
+                ("price", "999999.99cr"),
+                ("seconds", "600"),
+                ("code", "feed0001"),
+            ],
+        ),
+        fill(words::pending::QUOTE_EXPIRED, &code),
+        fill(words::pending::YOUR_ESCROW, &code),
+        fill(words::pending::ASK, &code),
+        fill(words::pending::NO_QUOTE, &code),
+        fill(words::pending::PAYING, &code),
+        fill(words::pending::NO_PURCHASE, &code),
+        fill(words::pending::COMPLETING, &code),
+        fill(words::pending::REFUNDING, &code),
+        words::pending::HOLD_WAIT_HEAD.to_owned(),
+        words::pending::HOLD_EMPTY.to_owned(),
+        super::market::HELP.to_owned(),
+        super::market::USAGE_PUBLISH.to_owned(),
+    ] {
+        for part in line.lines() {
+            check!(width(part) <= 120, "{part}");
+        }
+    }
+    Ok(())
+}
+
+/// 17g C2c: `fill`'s padding (`{key:<n}`, `{key:>n}`) and `cut`.
+#[test]
+fn fill_pads_to_the_named_width() -> TestResult {
+    check_eq!(fill("[{a:<4}]", &[("a", "x")]), "[x   ]");
+    check_eq!(fill("[{a:>4}]", &[("a", "x")]), "[   x]");
+    check_eq!(fill("[{a:<2}]", &[("a", "long")]), "[long]", "never cut");
+    check_eq!(fill("[{a:^4}]", &[("a", "x")]), "[{a:^4}]", "not a fill");
+    check_eq!(
+        fill("[{a}]", &[("a", "{a:<4}")]),
+        "[{a:<4}]",
+        "typed text stays"
+    );
+    check_eq!(words::cut("abcdef", 3), "abc");
+    Ok(())
+}
+
+/// 17g C2c test 5: `@mind/publish`'s arguments parse strictly: the three
+/// forms (`open-resale` as typed, `open_resale` on the wire), the royalty
+/// bounds and the sealed zero, the transfer words, `price=`, `seats=` and
+/// `term=` accepted only at the market's values, and unknown or repeated
+/// keys refused with the usage line. Also `+minds/holdings`' arguments.
+#[test]
+fn publish_arguments_parse_strictly() -> TestResult {
+    use super::holdings::{Holdings, holdings_arguments};
+    use super::market::{PublishRefusal as R, credits_minor, publish_arguments, terms_match};
+    let ok = |text: &str| publish_arguments(text).map_err(|e| format!("{text}: {e:?}"));
+    let sealed = ok("12 form=sealed")?;
+    check_eq!(
+        (
+            sealed.filed,
+            sealed.form,
+            sealed.shown,
+            sealed.royalty,
+            sealed.transferable
+        ),
+        (12, "sealed", "sealed", 0, true)
+    );
+    let open = ok("12 form=open royalty=300 transfer=no")?;
+    check_eq!(
+        (open.form, open.royalty, open.transferable),
+        ("open", 300, false)
+    );
+    let resale = ok("  12   form=open-resale   royalty=0 transfer=yes ")?;
+    check_eq!(
+        (
+            resale.form,
+            resale.shown,
+            resale.royalty,
+            resale.transferable
+        ),
+        ("open_resale", "open-resale", 0, true)
+    );
+    for (text, refusal) in [
+        ("12 form=open_resale", R::Form),
+        ("12 form=Sealed", R::Form),
+        ("12 form=", R::Form),
+        ("12 form=sealed royalty=1", R::Royalty),
+        ("12 form=open royalty=301", R::Royalty),
+        ("12 form=open royalty=-1", R::Royalty),
+        ("12 form=open royalty=01", R::Royalty),
+        ("12 form=open royalty=ten", R::Royalty),
+        ("12 form=open transfer=No", R::Transfer),
+        ("12 form=open transfer=false", R::Transfer),
+        ("12 form=open transfer=", R::Transfer),
+        ("", R::Usage),
+        ("form=open", R::Usage),
+        ("0 form=open", R::Usage),
+        ("012 form=open", R::Usage),
+        ("12", R::Usage),
+        ("12 royalty=10", R::Usage),
+        ("12 form=open form=open", R::Usage),
+        ("12 form=open royalty=1 royalty=1", R::Usage),
+        ("12 form=open seller=7", R::Usage),
+        ("12 form=open sealed", R::Usage),
+        ("12 form=open price=", R::Usage),
+        ("12 form=open price=4.001", R::Usage),
+        ("12 form=open seats=0", R::Usage),
+        ("12 form=open term=ninety", R::Usage),
+    ] {
+        check_eq!(publish_arguments(text), Err(refusal), "{text:?}");
+    }
+    // Only the market's own values: 400cr, one seat, 90 IC days.
+    for text in [
+        "12 form=open",
+        "12 form=open price=400",
+        "12 form=open price=400cr",
+        "12 form=open price=400.00 seats=1 term=90",
+        "12 form=open price=400.0cr term=90",
+    ] {
+        check!(terms_match(&ok(text)?, 40_000, 90), "{text}");
+    }
+    for text in [
+        "12 form=open price=1",
+        "12 form=open price=400.01",
+        "12 form=open seats=2",
+        "12 form=open term=30",
+    ] {
+        check!(!terms_match(&ok(text)?, 40_000, 90), "{text}");
+    }
+    // The credit grammar (C2 plan §2.7).
+    for (text, minor) in [
+        ("0.21cr", Some(21)),
+        ("0.2", Some(20)),
+        ("1", Some(100)),
+        ("1000000", Some(100_000_000)),
+        ("999999.99cr", Some(99_999_999)),
+        ("0", None),
+        ("0.00", None),
+        ("1000000.01", None),
+        ("01", None),
+        (".5", None),
+        ("1.", None),
+        ("1.234", None),
+        ("-1", None),
+        ("1 cr", None),
+        ("cr", None),
+    ] {
+        check_eq!(credits_minor(text), minor, "{text:?}");
+    }
+    // `+minds/holdings`' arguments.
+    check_eq!(holdings_arguments(""), Some(Holdings::All));
+    check_eq!(holdings_arguments("owner 41"), Some(Holdings::Owner(41)));
+    check_eq!(holdings_arguments("paid 7"), Some(Holdings::Paid(7)));
+    for bad in [
+        "owner",
+        "paid",
+        "owner 0",
+        "owner 4 5",
+        "licences 4",
+        "owner x",
+    ] {
+        check_eq!(holdings_arguments(bad), None, "{bad:?}");
+    }
+    Ok(())
+}
+
+/// 17g C2c (the C2c fix round, reviewers F3, C2C-4 and F4): a page that
+/// shows no rows but goes on prints its head and its cursor, never the
+/// "nothing at all" sentence. Listings: `HEAD` then `MORE` with the cursor's
+/// 8-character code (no `FOOT`, which names codes no row shows). A paged
+/// owner section: `HOLD_HEAD` then `HOLD_MORE owner <cursor>`, and past its
+/// end `HOLD_HEAD` alone, never `HOLD_EMPTY` (the bare form's sentence).
+#[test]
+fn an_empty_page_that_goes_on_prints_its_cursor() -> TestResult {
+    use super::holdings::owner_lines;
+    use super::market::page_lines;
+    let cursor = mush_core::CommitToken::from_bytes([0xfe; 16]);
+    check_eq!(
+        page_lines(&[], Some(cursor), &[]),
+        vec![
+            words::HEAD.to_owned(),
+            "More: +minds/next fefefefe".to_owned()
+        ]
+    );
+    check_eq!(
+        owner_lines(&[], Some(4_294_967_295)),
+        vec![
+            words::HOLD_HEAD.to_owned(),
+            "More: +minds/holdings owner 4294967295".to_owned()
+        ]
+    );
+    check_eq!(owner_lines(&[], None), vec![words::HOLD_HEAD.to_owned()]);
+    for lines in [
+        page_lines(&[], Some(cursor), &[]),
+        owner_lines(&[], Some(1)),
+        owner_lines(&[], None),
+    ] {
+        check!(
+            !lines
+                .iter()
+                .any(|l| l == words::EMPTY || l == words::pending::HOLD_EMPTY)
+        );
+    }
+    Ok(())
+}

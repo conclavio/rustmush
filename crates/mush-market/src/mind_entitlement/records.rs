@@ -270,6 +270,29 @@ impl EntitlementListingV1 {
     pub const fn publication(&self) -> CommitToken {
         self.publication
     }
+    /// 17g C2c (C2 plan §2.8): what `+minds` may show of this listing, every
+    /// field from the frozen row: the protocol, the charter (a public Roll
+    /// entry), the product's class, form, transfer mark, term and Grace, the
+    /// price, the Registry and venue cuts and the parents' total royalty. No
+    /// seller, author, account, revision, rating or digest leaves here.
+    pub(crate) fn command_view(&self) -> Result<crate::mind_commands::PublicListingView, String> {
+        self.validate()?;
+        Ok(crate::mind_commands::PublicListingView {
+            publication: self.publication,
+            protocol: crate::mind_commands::Protocol::of(self.product.protocol),
+            charter: self.subject.charter,
+            class: self.product.terms.class(),
+            form: crate::mind_commands::ListingForm::of(self.product.terms.form()),
+            transferable: self.product.terms.transferable(),
+            term_seconds: self.product.term_seconds,
+            grace_seconds: self.product.grace_seconds,
+            price_minor: self.price.minor(),
+            levy_permille: self.registry.0.permille,
+            venue_permille: self.venue.cut.0.permille,
+            parent_royalty_permille: self.royalty.total_permille().map_err(error)?,
+            derived: self.subject.parent.is_some(),
+        })
+    }
 }
 impl Row for EntitlementListingV1 {
     const FAMILY: &'static str = "market_mind_entitlement_listing";

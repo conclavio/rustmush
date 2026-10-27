@@ -36,9 +36,31 @@ impl mush_core::module::QueryHandler for Query {
         _: ObjId,
         args: &Value,
     ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
-        let request = match args.as_u64().and_then(|n| FiledRevisionId::new(n).ok()) {
-            Some(filed) => RollCommandReadRequest::own_filed(filed),
-            None => RollCommandReadRequest::open_shell(),
+        // 17g C2c: `{"holdings": <cursor|null>, "paid": <bool>}` and
+        // `{"names": [<charter>...]}` select the C2c kinds.
+        let request = if let Some(after) = args.get("holdings") {
+            let section = if args.get("paid").and_then(Value::as_bool) == Some(true) {
+                HoldingSection::Paid
+            } else {
+                HoldingSection::Owner
+            };
+            RollCommandReadRequest::own_holdings(section, after.as_u64())
+        } else if let Some(names) = args.get("names").and_then(Value::as_array) {
+            RollCommandReadRequest::charter_names(
+                names
+                    .iter()
+                    .filter_map(|n| {
+                        n.as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .and_then(|n| CharterId::new(n).ok())
+                    })
+                    .collect(),
+            )
+        } else {
+            match args.as_u64().and_then(|n| FiledRevisionId::new(n).ok()) {
+                Some(filed) => RollCommandReadRequest::own_filed(filed),
+                None => RollCommandReadRequest::open_shell(),
+            }
         };
         let answer = ctx
             .read_owner(&self.reader, OriginalReadRequest::command(request))
@@ -240,5 +262,240 @@ fn owner_phase_rounds_whole_ic_days_up_and_reads_grace_and_lapse() -> TestResult
         OwnerPhase::Grace { days_left: 1 }
     );
     check_eq!(phase(window, at(93 * day)), OwnerPhase::Lapsed);
+    Ok(())
+}
+
+/// 17g C2c test 3 (C2 plan §2.4), over the real filing fixture: the owner
+/// section of `OwnHoldings` lists the actor's own filed mind (the line's head
+/// filed revision, its charter, owner licence, name and Active phase, not
+/// selling, not dependent), pages with its asset cursor (after the charter's
+/// own id there is nothing), and is empty for another player; the paid
+/// section is `Unavailable` (the per-holder paid index C2b did not land);
+/// `CharterNames` names the charter and leaves out an unknown one. No
+/// answer carries a digest, account, rating, source or revision.
+///
+/// The C2c fix round (reviewer T-F2) adds, over the same fixture:
+/// - `selling`: the fixture's charter has no pending-transfer head, so
+///   `pending_sale` reads `false` through the family; the head-to-`selling`
+///   mapping (`funded`: a `Funded` head is a sale, a refunded one or none is
+///   not, another charter's head is `Integrity`) is proven below. Core's
+///   terminal-capacity guard refuses a pending head written outside its
+///   protocol, so no fixture here can hold a funded head;
+/// - the line head: with the line's head moved to a filed number that has no
+///   row, the charter drops out of the page (`own_filed` refuses the head),
+///   so the row is the head's and not the charter's initial filed revision.
+///
+/// The page cuts (`OWNER_ROWS_PER_READ`, `OWN_ASSETS_PER_READ`) and their
+/// cursors are `page`'s, proven below over synthetic assets.
+///
+/// Not proven here (no fixture, or not built): the dependent owner row (no
+/// dependent filing in this crate's fixture, as C2a's residual says), the
+/// personal paid and House Pin rows and `revoked` (the paid section waits
+/// for the index), and another player's own filing kept off the author's
+/// page (a second filing needs a second shell, rating and filing, which this
+/// fixture does not build; the read walks only the actor's own E4 titles,
+/// and the other direction is checked).
+#[test]
+fn command_reader_pages_own_holdings_of_every_kind() -> TestResult {
+    let mut f = Fixture::new_with_reads(true, tacsim_reads, true);
+    let other = f.engine.world.create(
+        mush_core::ObjKind::Player,
+        "Other",
+        GOD,
+        Some(mush_core::LIMBO),
+    )?;
+    let request = f.request();
+    let (prepared, _) = f.engine.prepare_registered_composed_authoritative_action(
+        &config().initial_filing_action()?,
+        &request,
+        token(4),
+    )?;
+    let (_, install) = prepared.into_parts();
+    f.engine.install_composed_action(install)?;
+    let charter = CharterId::new(f.shell.0)?;
+    let asset = u64::from(f.shell.0);
+
+    let (answer, encoded) = read(&mut f, GOD, json!({"holdings": null}))??;
+    let page = answer.into_owner_holdings().ok_or("an owner page")?;
+    check_eq!(page.next(), None, "one filing, one page");
+    let [row] = page.rows() else {
+        return Err(format!("one own row: {encoded}").into());
+    };
+    check_eq!(row.filed(), FiledRevisionId::new(1)?, "the line's head");
+    check_eq!(row.charter(), charter);
+    check_eq!(row.owner_licence(), LicenceId::new(1)?);
+    check!(!row.dependent());
+    check!(!row.selling(), "no funded pending transfer");
+    check_eq!(row.name(), "Original");
+    check_eq!(row.owner_phase(), OwnerPhase::Active { days_left: 90 });
+    for forbidden in ["digest", "account", "payer", "rating", "source", "revision"] {
+        check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");
+    }
+    // The cursor: after an earlier asset id the charter is listed, after its
+    // own id nothing is.
+    let before = read(&mut f, GOD, json!({"holdings": asset - 1}))??;
+    check_eq!(
+        before.0.into_owner_holdings().map(|p| p.rows().len()),
+        Some(1)
+    );
+    let after = read(&mut f, GOD, json!({"holdings": asset}))??;
+    let after = after.0.into_owner_holdings().ok_or("a page")?;
+    check!(after.rows().is_empty() && after.next().is_none());
+    // Own-only: another player owns nothing here.
+    let theirs = read(&mut f, other, json!({"holdings": null}))??;
+    let theirs = theirs.0.into_owner_holdings().ok_or("a page")?;
+    check!(theirs.rows().is_empty(), "another player's page is empty");
+    // The paid section waits for the per-holder index.
+    check_eq!(
+        read(&mut f, GOD, json!({"holdings": null, "paid": true}))?,
+        Err(OwnerReadError::Unavailable)
+    );
+
+    // Names only, for anyone; an unknown charter is left out.
+    for actor in [GOD, other] {
+        let (names, encoded) = read(&mut f, actor, json!({"names": [charter.get(), 999_999]}))??;
+        let names = names.into_charter_names().ok_or("names")?;
+        check_eq!(names.len(), 1);
+        check_eq!(names.first().map(CharterName::charter), Some(charter));
+        check_eq!(names.first().map(CharterName::name), Some("Original"));
+        check_eq!(
+            encoded,
+            format!(
+                r#"{{"holding":null,"next_after":null,"command":{{"kind":"charter_names","names":[{{"charter":"{}","name":"Original"}}]}}}}"#,
+                charter.get()
+            )
+        );
+    }
+    // The row is the line head's: move the head to a filed number with no
+    // row, and the charter drops out (its initial filed revision 1 still
+    // exists and would have kept it listed).
+    let lines = f.families.lines.clone();
+    let line_key = f
+        .engine
+        .action_state()
+        .get(&f.families.filed, &FiledRevisionId::new(1)?.key())?
+        .ok_or("the filed row")?
+        .content()
+        .position()
+        .line
+        .key();
+    let mut moved = f
+        .engine
+        .action_state()
+        .get(&lines, &line_key)?
+        .ok_or("the line row")?
+        .clone();
+    moved.head = FiledRevisionId::new(2)?;
+    let mut txn = f.engine.action_transaction(&lines)?;
+    txn.replace(&lines, &line_key, moved)?;
+    let (_, install) = txn.prepare()?.into_parts();
+    f.engine.install_prepared_action(install)?;
+    let headless = read(&mut f, GOD, json!({"holdings": null}))??;
+    let headless = headless.0.into_owner_holdings().ok_or("a page")?;
+    check!(
+        headless.rows().is_empty() && headless.next().is_none(),
+        "the head is read, not the initial filed revision"
+    );
+    Ok(())
+}
+
+/// 17g C2c (the C2c fix round, reviewer T-F2): `selling` from the charter's
+/// pending-transfer head (`funded`): a `Funded` head is a sale; no head and
+/// a refunded head are not; a head naming another charter is `Integrity`.
+#[test]
+fn a_funded_pending_head_is_a_sale() -> TestResult {
+    use crate::commerce::charter_pending::records::{PendingHead, PendingRef, PendingState};
+    let charter = CharterId::new(40)?;
+    let head = |charter, state| PendingHead {
+        format: 1,
+        charter,
+        current: PendingRef {
+            sequence: 1,
+            operation: token(9),
+            digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
+        },
+        state,
+    };
+    check_eq!(funded(None, charter), Ok(false), "no head");
+    check_eq!(
+        funded(Some(&head(charter, PendingState::Funded {})), charter),
+        Ok(true)
+    );
+    let refunded = head(
+        charter,
+        PendingState::Refunded {
+            terminal: token(10),
+            reason: mush_economy::managed_charter_transfer::CharterPendingDecisionKindV1::LastClaimClosed {
+                next_transition: 1,
+            },
+        },
+    );
+    check_eq!(funded(Some(&refunded), charter), Ok(false), "refunded");
+    check_eq!(
+        funded(
+            Some(&head(CharterId::new(41)?, PendingState::Funded {})),
+            charter
+        ),
+        Err(OwnerReadError::Integrity),
+        "another charter's head"
+    );
+    Ok(())
+}
+
+/// 17g C2c (the C2c fix round, reviewer T-F2): one `OwnHoldings` read's
+/// paging over synthetic assets (`page`): the 3-row cut and its cursor, the
+/// 16-asset cut and its cursor (a read whose assets hold no filed mind still
+/// goes on), the ends with no cursor, the 17th asset never examined, and an
+/// error ending the read.
+#[test]
+fn own_holdings_page_cuts_at_three_rows_and_sixteen_assets() -> TestResult {
+    let ids = |n: u32| (1..=n).map(ObjId).collect::<Vec<_>>();
+    let none = |_: ObjId| Ok(None::<u32>);
+    check_eq!(
+        page(&ids(17), none)?,
+        (vec![], Some(16)),
+        "no filed mind, more assets"
+    );
+    check_eq!(
+        page(&ids(16), none)?,
+        (vec![], None),
+        "no filed mind, the end"
+    );
+    let filed = |o: ObjId| Ok((o.0 != 2).then_some(o.0));
+    check_eq!(
+        page(&ids(5), filed)?,
+        (vec![1, 3, 4], Some(4)),
+        "cut at three rows"
+    );
+    check_eq!(
+        page(&ids(4), filed)?,
+        (vec![1, 3, 4], None),
+        "the third on the last asset"
+    );
+    let late = |o: ObjId| Ok(matches!(o.0, 14..=16).then_some(o.0));
+    check_eq!(page(&ids(17), late)?, (vec![14, 15, 16], Some(16)));
+    let two = |o: ObjId| Ok(matches!(o.0, 3 | 9).then_some(o.0));
+    check_eq!(
+        page(&ids(17), two)?,
+        (vec![3, 9], Some(16)),
+        "short, more assets"
+    );
+    check_eq!(page(&ids(9), two)?, (vec![3, 9], None), "short, the end");
+    let mut examined = Vec::new();
+    page(&ids(17), |o| {
+        examined.push(o.0);
+        Ok(None::<u32>)
+    })?;
+    check_eq!(
+        examined,
+        (1..=16).collect::<Vec<_>>(),
+        "the 17th only says more follow"
+    );
+    check_eq!(
+        page(&ids(3), |_| Err::<Option<u32>, _>(
+            OwnerReadError::Integrity
+        )),
+        Err(OwnerReadError::Integrity)
+    );
     Ok(())
 }
