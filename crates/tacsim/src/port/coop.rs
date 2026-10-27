@@ -621,6 +621,58 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
         })
 }
 
+/// The programme hull eligible for a player's mining services. Charter holders
+/// keep the existing books and buyout-pending checks; a title holder is authorized
+/// by the current economic title, independently of the old enrolment document.
+/// Fleet assignment is not an entitlement to the Co-op's refits or Occator's rigs.
+pub(crate) fn mining_hull(ctx: &Ctx<'_>) -> Result<ObjId, String> {
+    match helm_of(ctx.w, ctx.actor) {
+        Some(Helm {
+            hull,
+            standing: Standing::Title,
+        }) => Ok(hull),
+        Some(Helm {
+            hull,
+            standing: Standing::Charter(_),
+        }) => {
+            let enrolment = crate::port::recall::chartered(ctx)?;
+            if enrolment.hull != hull {
+                return Err(NO_CHARTER.to_owned());
+            }
+            Ok(hull)
+        }
+        Some(Helm {
+            standing: Standing::Fleet,
+            ..
+        }) => Err(NO_CHARTER.to_owned()),
+        None => {
+            // A historical graduation is not permission after title is lost.
+            if own_enrolment(ctx.w, ctx.actor)
+                .is_some_and(|enrolment| enrolment.status == EnrolmentStatus::Graduated)
+            {
+                return Err(NO_CHARTER.to_owned());
+            }
+            match crate::port::recall::chartered(ctx) {
+                Err(line) => Err(line),
+                Ok(_) => Err(NO_CHARTER.to_owned()),
+            }
+        }
+    }
+}
+
+/// A mining service uses the hull's current stowage-backed hold, never the vault
+/// remembered by an old charter. New services require a live hold owned by the
+/// requesting pilot; returns remain governed by their own rig lease instead.
+pub(crate) fn mining_hold(
+    w: &World,
+    pilot: ObjId,
+    view: &crate::port::ship::HullView<'_>,
+) -> Option<mush_economy::VaultId> {
+    let id = crate::port::ship::hold_vault(w, view)?;
+    let vault = w.module_state::<EconomyStore>()?.snapshot().vault(id)?;
+    (vault.status == VaultStatus::Active && vault.owner == PrincipalId::Object(pilot)).then_some(id)
+}
+
 /// **Who commands a programme hull**: its live charter's tenant, else the `Object`
 /// title holder of a programme-map hull. `None` for a laid-up Trust hull.
 #[must_use]

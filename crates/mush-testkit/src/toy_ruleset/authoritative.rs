@@ -4,8 +4,8 @@
 //! rolls the actor's own sheet pool on a **recorded resolution stream**;
 //! `<id>-willpower-set` is the staff reset. Between them they carry every
 //! platform property the deleted game rulesets carried for
-//! `crates/mush-server/tests/production_action_migrations.rs` and
-//! `crates/mush-server/tests/h2c_ability_coordinator.rs`:
+//! `crates/mush-server/tests/world_task/production_action_migrations.rs` and
+//! `crates/mush-server/tests/world_task/h2c_ability_coordinator.rs`:
 //!
 //! - **one commit** — the resource moves exactly once per accepted offer, and
 //!   the offer stops being projected when the pool is empty;

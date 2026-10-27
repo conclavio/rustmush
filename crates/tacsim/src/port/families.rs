@@ -510,6 +510,9 @@ pub struct PortFamilies {
     /// **`tacsim.chart`** (doc 20 cut SM.4a; §5, D-20-8): one chart row per (character, site).
     pub charts:
         StateFamilyHandle<crate::surface::chart::ChartKey, crate::surface::chart::ChartRecord>,
+    /// Current attempts on the finite survey commission board.
+    pub surveys:
+        StateFamilyHandle<crate::surface::survey::SurveyKey, crate::surface::survey::SurveyRecord>,
     /// **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5): one pocket cursor per surface
     /// deposit, keyed by the deposit's id — what the surface provider drew, and the lock's
     /// one home. Derived truth, never projected.
@@ -567,6 +570,10 @@ pub struct PortHandles {
     /// own, `crate::surface::chart::ChartForgetProvider`); registered on every roster, since it
     /// needs only the chart family.
     pub chart_forget: Option<mush_core::DefinitionRef>,
+    /// Reserve one exact survey offer before Occator funds its contract.
+    pub survey_accept: Option<mush_core::DefinitionRef>,
+    /// Cancel an unfinished funded survey through its retained cancellation fact.
+    pub survey_cancel: Option<mush_core::DefinitionRef>,
     /// **Doc 20 cut SM.6** (§3.4): the registered `tacsim_site_work` action (the site clerk's
     /// worked transfer, `crate::port::site::SiteWorkProvider`); `Some` exactly when its
     /// provider registered (the inventory cell filled).
@@ -673,6 +680,30 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    let survey_descriptor = family_descriptor(
+        crate::surface::survey::SURVEY_FAMILY,
+        "tacsim.survey_key.v1",
+        "tacsim.survey",
+    )?;
+    let key_limit = survey_descriptor.max_key_bytes();
+    let survey_descriptor = survey_descriptor
+        .with_limits(key_limit, crate::surface::survey::MAX_SURVEY_RECORD_BYTES)
+        .map_err(|error| ModError::msg(error.to_string()))?;
+    let surveys = reg.state_family::<
+        crate::surface::survey::SurveyKey,
+        crate::surface::survey::SurveyRecord,
+        _, _, _, _,
+    >(
+        survey_descriptor,
+        |key: &crate::surface::survey::SurveyKey| {
+            crate::surface::survey::SurveyKey::parse(key.as_str())
+                .map(|key| key.key_text())
+                .ok_or_else(|| "the survey key is not on the board".to_owned())
+        },
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::survey::SurveyRecord| value.check(),
+        |value: &crate::surface::survey::SurveyRecord| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )?;
     // Doc 20 cut SM.6 (§3.4, D-20-5): the pocket cursor sidecar, keyed by the deposit id in
     // industry's own `{:016x}` text, strict on parse.
     let pockets = reg.state_family::<
@@ -772,6 +803,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         tickets,
         excursions,
         charts,
+        surveys,
         pockets,
         claims,
         mills,

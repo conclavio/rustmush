@@ -2364,15 +2364,13 @@ fn status_lines(
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let port = programme_port(w).ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
-    // 1. The hull: (doc 20 cut SM.12b) a dispatcher's yard hull first; else the live charter's,
+    // 1. The hull: (doc 20 cut SM.12b) a dispatcher's yard hull first; else the current helm's,
     // else the one the actor's live records name; with neither, an unreadable record of the
     // actor's still darkens the whole reply (reviewer finding correctness/F3) before the
     // charter's own refusal is said.
     let yard_hull = crate::port::yard::yard_of_dispatcher(w, actor)
         .and_then(|yard| yard.row.hulls.first().map(|row| ObjId(row.hull)));
-    let hull = match yard_hull
-        .map_or_else(|| crate::port::recall::chartered(ctx).map(|e| e.hull), Ok)
-    {
+    let hull = match yard_hull.map_or_else(|| crate::port::coop::mining_hull(ctx), Ok) {
         Ok(hull) => hull,
         Err(line) => match live_records(w, actor).first() {
             Some(record) => record.hull,
@@ -3212,9 +3210,8 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
         );
         LEASE_FAILED.to_owned()
     };
-    // 1. The charter (graduates are refused with the charter's own line: D10).
-    let e = crate::port::recall::chartered(ctx)?;
-    let hull = e.hull;
+    // 1. The current charter or title, never graduation alone.
+    let hull = crate::port::coop::mining_hull(ctx)?;
     let name = hull_name(w, hull);
     // 2. A prospector hull.
     let view = hull_view(w, hull).ok_or_else(|| failed("the hull's view"))?;
@@ -3251,8 +3248,10 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, TakeRefusal> 
             ));
         }
     }
-    // 4. Nothing in flight.
-    if let Some((_, line)) = crate::port::buyout::in_flight(w, &e) {
+    let hold = crate::port::coop::mining_hold(w, actor, &view)
+        .ok_or_else(|| failed("the hull's active, pilot-owned hold"))?;
+    // 4. Nothing in flight, using the current hull and actual hold.
+    if let Some((_, line)) = crate::port::buyout::in_flight_on(w, hull, actor, hold, &name) {
         return Err(TakeRefusal::from(line));
     }
     // 5. At the counter.
@@ -3676,22 +3675,17 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
-    let charter = crate::port::recall::chartered(ctx);
+    let charter = crate::port::coop::mining_hull(ctx);
     let charter_name = charter
         .as_ref()
-        .map_or_else(|_| String::new(), |e| hull_name(w, e.hull));
+        .map_or_else(|_| String::new(), |hull| hull_name(w, *hull));
     // 1. The actor's live records.
     if store.tv_lease_unreadable_for(actor) {
         tracing::error!(
             pilot = actor.0,
             "tacsim: +tv/lease return found an unreadable tacsim:tvlease: record"
         );
-        return Err(dark_line(
-            w,
-            store,
-            actor,
-            charter.as_ref().ok().map(|e| e.hull),
-        ));
+        return Err(dark_line(w, store, actor, charter.as_ref().ok().copied()));
     }
     let records = live_records(w, actor);
     let n = named.unwrap_or(1);
@@ -3722,7 +3716,8 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
         },
     };
     let name = hull_name(w, record.hull);
-    // 3. The record's hull view and its governing enrolment.
+    // 3. The record's current hull view and actual hold. The lessee may return a
+    // rig after losing the helm, without a surviving charter document.
     let view = hull_view(w, record.hull).ok_or_else(|| failed("the hull's view"))?;
     if view.unit_held {
         return Err(TV_DARK.replace("{name}", &name));
@@ -3734,10 +3729,7 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
             .replace("{office}", &office)
             .replace("{port}", &port_label));
     }
-    let enrolment = store
-        .enrolment_for_hull(record.hull)
-        .cloned()
-        .ok_or_else(|| failed("the hull's enrolment"))?;
+    let hold = crate::port::ship::hold_vault(w, &view).ok_or_else(|| failed("the hull's hold"))?;
     let lessor = lessor_of(w, &port).ok_or_else(|| failed("the rig lessor"))?;
     // 4. The economy lease is read, not checked (reviewer F15): live, or ended by
     // staff; either is returnable.
@@ -3773,7 +3765,9 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
         }
     }
     // 8. Nothing in flight.
-    if let Some((_, line)) = crate::port::buyout::in_flight(w, &enrolment) {
+    if let Some((_, line)) =
+        crate::port::buyout::in_flight_on(w, record.hull, record.pilot, hold, &name)
+    {
         return Err(line);
     }
     // 9. At the counter.

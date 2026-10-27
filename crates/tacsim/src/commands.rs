@@ -73,6 +73,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Like +ship and +tv, the primary verb takes the ceiling class of its switches:
     // /tv submits a staff recovery; the existing content and time switches keep their lanes.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.state(crate::port::survey::AttachmentCandidate::default());
     reg.command(
         CommandSpec {
             name: "@tacsim".into(),
@@ -289,6 +290,24 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(crate::port::claims::claim_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // Survey acceptance creates an economy offer and queues one authoritative
+    // record. Occator funds only a landed record; successful soundings earn it.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: crate::port::survey::SURVEY_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["accept", "cancel"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::survey::SURVEY_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::survey::survey_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 20 cut SM.5 (§9.1; D-20-12, Q-20-2): `+licence`, the Freeport Registry's

@@ -14,7 +14,7 @@
 //! type. The accounts are made **after** the boot and before the world task
 //! spawns — `boot_all_in_one`'s memory backend makes its store inside the boot
 //! — each character linked through `Engine::link_account_character`, as
-//! `sm_story`'s `pilot` links one (`crates/mush-server/tests/sm_story.rs:562`).
+//! `sm_story`'s `pilot` links one (`crates/mush-server/tests/commerce_composition/sm_story.rs:562`).
 //! Nothing here reaches a module-state slot, so the bot rig adds no
 //! `state-slot-owners.toml` row.
 #![allow(dead_code)]

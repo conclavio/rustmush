@@ -14,7 +14,7 @@
 //! the right home for "spawn it, read its stderr, check its exit status".
 //!
 //! ```ignore
-//! // In `crates/mushd/tests/cli_args.rs`, where CARGO_BIN_EXE_mushd exists:
+//! // In `crates/mushd/tests/durable_process/cli_args.rs`, where CARGO_BIN_EXE_mushd exists:
 //! let mut child = ChildProcess::builder(env!("CARGO_BIN_EXE_mushd"))
 //!     .arg("--confg")
 //!     .arg("prod.toml")

@@ -844,6 +844,170 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
     on_pad_as(rig, "Pilot", 1, "Salt Moth", n_rigs)
 }
 
+/// A real buyout settles before this owner leases a rig and sails to Ahuna.
+fn owned_on_pad(rig: &mut Rig) -> (ObjId, HullRow, ObjId) {
+    let (pilot, row) = prospector(rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let account = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+        .expect("the pilot's credit account")
+        .id;
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("the treasury");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 10000000", account.0),
+    );
+    assert!(!out.contains("Usage"), "{out}");
+    let registry = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, registry);
+    let out = run(&mut rig.tw, pilot, "+coop/buyout");
+    assert!(
+        out.contains("The Registry writes the title transfer"),
+        "{out}"
+    );
+    sweep(&mut rig.tw, 31);
+    assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_none());
+    assert_eq!(
+        tacsim::port::coop::helm_of(rig.tw.world(), pilot),
+        Some(tacsim::port::coop::Helm {
+            hull,
+            standing: tacsim::port::coop::Standing::Title,
+        })
+    );
+    assert_eq!(
+        store(&rig.tw)
+            .enrolment_of(pilot)
+            .map(|record| record.status),
+        Some(tacsim::port::EnrolmentStatus::Graduated)
+    );
+    lease_one(rig, pilot);
+    let tv = rigs_of(&rig.tw, pilot)[0];
+    load(rig, &row, 20, 20, 98_500);
+    board(rig, pilot);
+    let mut kept = Vec::new();
+    let _ = support::sites::open_site_keeping(&mut rig.tw, AHUNA, &mut |ops| kept.push(ops));
+    for ops in kept {
+        keep(rig, ops);
+    }
+    let ticket = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
+    let _ = to_ic(rig, ticket.plan.depart_ic + ticket.plan.total_s);
+    assert!(matches!(
+        tacsim::port::ship::berth_of(rig.tw.world(), hull),
+        tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == AHUNA
+    ));
+    warm(rig, AHUNA);
+    (pilot, row, tv)
+}
+
+/// Title, rather than a former charter, carries a real mining run through restart,
+/// return and unloading. Every tonne removed from the deposit reaches this hull.
+#[test]
+fn post_buyout_mining_survives_restart_and_conserves_ore_through_unload() {
+    let mut rig = stocked();
+    let (pilot, row, tv) = owned_on_pad(&mut rig);
+    let all = picks(&mut rig.tw, AHUNA);
+    let fair = fair7(&all);
+    launched(&mut rig, pilot, 1, tv);
+    let _ = sounded_at(&mut rig, pilot, 1, tv, &fair);
+    let _ = act_go(&mut rig, pilot, "+tv/1 mine go");
+    let mining = run_of(&mut rig.tw, tv).expect("the owner's mining run");
+    assert_eq!(mining.cycles, 4);
+    let source = VaultId(mining.source.expect("the real deposit source"));
+    let hop = hopper(&rig.tw, tv);
+    let hold = hold_vault(&rig.tw, &row);
+    let source_before = pool(&mut rig.tw, source, "metal_ore");
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 0);
+    let _ = cycle(&mut rig, tv, pilot);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 2);
+    let before_restart = record_of(&mut rig.tw, tv);
+    let lease = store(&rig.tw).tv_lease_on(tv).cloned();
+    let mut rig = reboot(rig, &[pilot]);
+    assert_eq!(record_of(&mut rig.tw, tv), before_restart);
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+    assert!(tacsim::port::live_charter(rig.tw.world(), pilot).is_none());
+    assert_eq!(
+        tacsim::port::coop::helm_of(rig.tw.world(), pilot).map(|helm| helm.standing),
+        Some(tacsim::port::coop::Standing::Title)
+    );
+    warm(&mut rig, AHUNA);
+    for _ in 1..mining.cycles {
+        let _ = cycle(&mut rig, tv, pilot);
+    }
+    assert!(run_of(&mut rig.tw, tv).is_none());
+    assert_eq!(source_before - pool(&mut rig.tw, source, "metal_ore"), 7);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 7);
+    recovered(&mut rig, pilot, tv);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 7);
+    let mut rig = reboot(rig, &[pilot]);
+    assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 7);
+    assert_eq!(source_before - pool(&mut rig.tw, source, "metal_ore"), 7);
+    assert_eq!(store(&rig.tw).tv_lease_on(tv), lease.as_ref());
+    let record = record_of(&mut rig.tw, tv).expect("the finished record");
+    assert!(record.act.is_none() && record.run.is_none() && record.queued.is_none());
+    assert!(record.excursion.is_none() && record.charge.in_bay);
+    no_refused_writes(&rig.tw);
+}
+
+/// A live rig lease and a graduated enrolment do not keep mining authority after
+/// the hull's title is transferred or becomes inactive; even a held start is refused.
+#[test]
+fn post_buyout_mining_requires_a_current_active_title() {
+    let mut rig = stocked();
+    let (pilot, row, tv) = owned_on_pad(&mut rig);
+    let hull = ObjId(row.hull);
+    let all = picks(&mut rig.tw, AHUNA);
+    let fair = fair7(&all);
+    launched(&mut rig, pilot, 1, tv);
+    let _ = sounded_at(&mut rig, pilot, 1, tv, &fair);
+    let (out, held) = command(&mut rig, pilot, "+tv/1 mine go");
+    assert_eq!(held.len(), 1, "the current owner can start mining: {out}");
+    let before = record_of(&mut rig.tw, tv);
+    let hop = hopper(&rig.tw, tv);
+    let source = block_vault(&rig.tw, AHUNA, fair.letter());
+    let source_before = pool(&mut rig.tw, source, "metal_ore");
+    let graduated = store(&rig.tw).enrolment_of(pilot).cloned();
+    let other = rig.tw.spawn_player("New owner");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, other.0),
+    );
+    assert!(out.contains("Title transferred"), "{out}");
+    let refused = |rig: &mut Rig| {
+        assert!(tacsim::port::coop::helm_of(rig.tw.world(), pilot).is_none());
+        let (out, queued) = command(rig, pilot, "+tv/1 mine go");
+        assert!(queued.is_empty(), "the former owner cannot mine: {out}");
+        assert!(
+            resolve(rig, &held[0]).is_err(),
+            "the held start is no longer legal"
+        );
+        assert_eq!(record_of(&mut rig.tw, tv), before);
+        assert_eq!(pool(&mut rig.tw, source, "metal_ore"), source_before);
+        assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), 0);
+        assert_eq!(store(&rig.tw).enrolment_of(pilot).cloned(), graduated);
+    };
+    refused(&mut rig);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, pilot.0),
+    );
+    assert!(out.contains("Title transferred"), "{out}");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/writeoff #{}=test inactive title", hull.0),
+    );
+    assert!(out.contains("Written off"), "{out}");
+    refused(&mut rig);
+    no_refused_writes(&rig.tw);
+}
+
 /// Fire until `entry`'s ground is cached and its home field built (a cycle's preview reserves
 /// the real trip home; the surface tick builds the home the fire after the site).
 fn warm(rig: &mut Rig, entry: &str) {

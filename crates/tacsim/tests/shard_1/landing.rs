@@ -5,7 +5,7 @@
 //! Pure: the shipped lane through `pack::rules_pack_of`, the Dray's drive from the fielded
 //! catalog, the sky from `Sky::from_pack` under an explicit ephemeris. No world: the world-side
 //! claims (the ticket, the berth, the stores, the recall) live in `tests/sites.rs` and
-//! `mush-server/tests/ic_buyout_dormancy.rs`.
+//! `mush-server/tests/commerce_composition/ic_buyout_dormancy.rs`.
 //!
 //! The figures (Dray: dry 240,000 kg, rail 181,000 kg, `flip {50, 6000}`): thrust-to-weight
 //! permille at full throttle, laden (the rail) / empty-holded (80,580 kg: a full 80 t tank, a

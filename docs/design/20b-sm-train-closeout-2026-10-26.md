@@ -122,8 +122,12 @@ The staff marker-ring clear (O-22) remains unbuilt and is outside this recovery 
 
 **DF-2 — player features owned by no row:** the licence's "4 d left" on `+chart`'s site line; the desk's `look`
 listing the `+tv` verbs; a quarry-screen key for `+tv/plan show`; gifted or bought readings (`Reported`); clients
-rendering `site.claims` beyond the grid's `#`; SM.3a's R1 at-dock term settle, R2 a graduate's refit or lease, R3 a
+rendering `site.claims` beyond the grid's `#`; SM.3a's R1 at-dock term settle, R3 a
 recalled Dray-P re-lent, R5 Occator's counter room, R8 a second rig lessor.
+
+SM.3a's R2, a graduate's refit or lease, is implemented by the post-buyout
+mining follow-up: current title grants the same setup services as a charter,
+with the ordinary cargo, flight, licence and rental checks.
 
 **DF-3 — reserved phases** (doc 20 §13's phase 2 and §17): Phobos as a second jurisdiction; survey trade;
 landing anywhere; the crewed cab (Q-20-4); org-held claims and plans; Occator's expansion onto J and K and operator

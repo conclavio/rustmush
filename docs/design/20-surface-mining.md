@@ -840,6 +840,15 @@ and D8), standing until the owner rules. The slot switches are `/1` to `/4` (`MA
 else the only rig; the pointer is RAM, so after a restart a two-rig act with no number refuses
 (SM.3b).
 
+**As built (post-buyout mining):** refitting, taking a rig lease and empty-bay
+status also accept the current active title to a programme hull. A graduation
+record is not authority: a former owner cannot use it after title passes on.
+The services read the current hull and its stowage-backed, active, pilot-owned
+hold, rather than the enrolment's historical hold. Fleet assignments do not
+grant these services. Normal berth, flight, cargo, licence and lease checks
+still apply; returning a rig remains keyed on the lessee's own live record,
+including after loss of helm.
+
 **As built (SM.5):** the seam is filled: `licence_seam` became `licence_check`, and `+tv/lease`
 (preview and `go`) is the one act besides mining, staking and renewal that reads the licence, at
 check 6 of `plan_take`, before the slot and before the term settle — refused `LEASE_LICENCE`, or
@@ -2424,6 +2433,25 @@ on `tacsim.survey.logged`); implicit landing anywhere on the lattice; the crewed
 that way; org-held claims (`+claim/stake as=<org>`) when players can hold orgs; Occator's expansion
 and operator agreements. **As built (SM.12b):** `yard::operator_principal` (`Organization(house)`
 for a dispatcher) is the seam org-held claims build on.
+
+**As built (survey commissions):** `+survey [<id>]`, `+survey/accept <id> [go]` and
+`+survey/cancel <id> [go]` expose four globally finite Occator offers: `ahuna-a`, `kerwan-f`,
+`juling-k` and `occator-p`, for those sites' blocks A, F, K and P. Each pays 500 cr for fresh R2
+coverage of all 256 pockets within seven IC days of acceptance; the contract allows one further IC
+day for settlement, never for new work. One unfinished commission per gateway account; each offer
+pays once globally. Bare acceptance and cancellation preview, and `go` commits.
+
+Acceptance records the exact attempt in the authoritative `tacsim.survey` family before the port
+tick has Occator accept and escrow its reward. Successful Sound/QuietSound acts begun strictly
+after the acceptance instant add their covered pockets to funded work in the same transaction as
+the chart write; Hand and Plan both count. Existing chart coverage, scans, cores and another
+operator's readings do not. Coverage and the completion receipt survive chart forgetting and reboot.
+The scoped `tacsim.survey.logged` and `tacsim.survey.cancelled` references name the exact offer,
+contract and revision and check the immutable consent before settlement; neither discloses a chart.
+Payment is automatic. Authoritative cancellation stops progress and selects the original contract's
+refund outcome. Cancellation or expiry refunds Occator, and an unfinished offer reopens only after
+that refund settles. Completed entries remain closed. Chart trade, its Entitlement delivery and
+Reported provenance remain unbuilt.
 
 **Phase 3** (§17): asteroid-field drones; frontier blocks and the fight.
 

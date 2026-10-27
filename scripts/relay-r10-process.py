@@ -17,9 +17,9 @@ with (out/'process-redis.log').open('w') as log:
         else:raise AssertionError('isolated Redis did not start')
         env=os.environ.copy();env['REDIS_URL']=f'redis://127.0.0.1:{port}/0';env['CARGO_PROFILE_TEST_DEBUG']='0';env['CARGO_PROFILE_DEV_DEBUG']='0'
         with (out/'process-tests.log').open('w') as tests:
-            result=subprocess.run(['/root/.cargo/bin/cargo','test','--locked','-p','mushd','--test','durability_e2e','-j4','--','--test-threads=1'],cwd=root/'build',env=env,stdout=tests,stderr=tests)
+            result=subprocess.run(['/root/.cargo/bin/cargo','test','--locked','-p','mushd','--test','durable_process','durability_e2e::','-j4','--','--test-threads=1'],cwd=root/'build',env=env,stdout=tests,stderr=tests)
         assert result.returncode==0,'real process contracts failed'
-        (out/'process.json').write_text(json.dumps({'passed':True,'redisPort':port,'redisPid':proc.pid,'target':'mushd durability_e2e','REDIS_URL':'isolated dev1 process','skips':0})+'\n')
+        (out/'process.json').write_text(json.dumps({'passed':True,'redisPort':port,'redisPid':proc.pid,'target':'mushd durable_process durability_e2e::','REDIS_URL':'isolated dev1 process','skips':0})+'\n')
     finally:
         proc.terminate()
         try:proc.wait(timeout=15)

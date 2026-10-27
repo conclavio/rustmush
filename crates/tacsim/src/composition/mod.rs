@@ -533,14 +533,24 @@ fn compose_server_modules<E>(
             // On every roster, because the market composes on every roster and the
             // namespace is its own; a Draw sale whose fact nobody answers would never
             // settle, and the market refuses one up front when this is missing.
-            .with_facts(vec![
-                Arc::new(mush_jobs::JobsFactProvider),
-                Arc::new(mush_inventory::InventoryFactProvider),
-                Arc::new(mush_industry::IndustryFactProvider),
-                Arc::new(mush_campaign::CampaignFactProvider),
-                Arc::new(mush_sim::SimFactProvider),
-                Arc::new(mush_market::MarketFactProvider),
-            ])
+            .with_facts({
+                let mut facts: Vec<Arc<dyn mush_economy::FactProvider>> = vec![
+                    Arc::new(mush_jobs::JobsFactProvider),
+                    Arc::new(mush_inventory::InventoryFactProvider),
+                    Arc::new(mush_industry::IndustryFactProvider),
+                    Arc::new(mush_campaign::CampaignFactProvider),
+                    Arc::new(mush_sim::SimFactProvider),
+                    Arc::new(mush_market::MarketFactProvider),
+                ];
+                // Survey receipts are private typed state. Only a roster with
+                // their actual owner can grant Economy its scoped read handle.
+                if tacsim_delegate {
+                    facts.push(Arc::new(
+                        crate::surface::survey_facts::SurveyFactProvider::default(),
+                    ));
+                }
+                facts
+            })
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
             // does not need it at all.

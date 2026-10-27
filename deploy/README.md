@@ -309,7 +309,7 @@ CI's `Instance provisioning acceptance` job renders every shipped instance with
 three binaries' `--check-config` over what it produced, boots the reference one
 against a throwaway store, and proves a typo'd `receipt_policy` is refused — so
 the templates cannot drift past the binaries that read them
-(`crates/mush-server/tests/provisioning_smoke.rs`).
+(`crates/mush-server/tests/split_boundary/provisioning_smoke.rs`).
 
 ## The simulator centre
 

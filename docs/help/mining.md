@@ -21,10 +21,12 @@ Commons on Vesta (`help travel`).
 ## The loop
 
 **1. Kit up.** At Ceres Freeport the Freeport Registry licenses prospectors
-(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered Dray into a
-Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles into its
-bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease needs a
-licence in force or in its grace.
+(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered or owned Dray
+into a Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles
+into its bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease
+needs a licence in force or in its grace. After buying out your Dray, your title lets you
+refit her and lease rigs on the same terms. Return any rigs before the buyout;
+once title has passed, you can lease them again.
 
   +licence/buy [go]        the Freeport Registry's prospecting licence
   +licence                 your licence: in force, in its grace, or lapsed
@@ -307,6 +309,46 @@ says only that someone mined there — never who, nor what is left. Everything
 else on your map is your own reading, and "You have no reading there." is the
 same words for a place you have never seen, a field you have not scanned and a
 barren pocket you have not sounded.
+
+## Survey commissions
+
+Occator pays **500.00cr** for fresh detailed soundings of all **256 pockets** in
+one commissioned block. `+survey` shows the board; `+survey <id>` shows the
+terms and your progress. These four offers are shared by the whole world, and
+each pays only once:
+
+| Commission | Site | Block |
+|---|---|---|
+| `ahuna-a` | Ahuna Flank | A |
+| `kerwan-f` | Kerwan Floor | F |
+| `juling-k` | Juling Shadow | K |
+| `occator-p` | Occator Rim | P |
+
+`+survey/accept <id>` previews; add `go` to file. Occator reserves the reward
+after your acceptance is recorded. Wait for the funding notice, then start new
+soundings. You have **seven IC days** from acceptance to finish; another IC day
+allows settlement, not more surveying. Your account may hold one unfinished
+commission at a time, across all its characters.
+
+Only successful `sound` and `sound quiet` acts begun strictly after the
+acceptance time count, including a plan's soundings. Scan readings, mining
+cores, another pilot's work and readings already in your chart do not count.
+Sounding from the middle of each of the block's four fields covers it; quiet
+soundings cover less ground and need more positions. Each pocket counts once.
+
+Payment follows automatically when the funded commission is complete. Your
+chart stays private, and commission progress survives forgetting a chart or
+restarting the server. Neither makes a completed offer pay again.
+`+survey/cancel <id>` previews giving up unfinished work; add `go` to cancel.
+Recorded cancellation stops commission progress. Cancellation or expiry
+returns the reserved reward to Occator, and the unfinished offer reopens once
+the refund settles. Chart trading is still to come.
+
+```text
++survey [<id>]                 the board, terms and your progress
++survey/accept <id> [go]        preview, then accept a commission
++survey/cancel <id> [go]        preview, then cancel unfinished work
+```
 
 ## What a reading says
 

@@ -26,7 +26,7 @@
 //!   one: the workspace sweep runs the former, but only its skip or in-memory
 //!   branch — the branch that needs the backend exists only under a job that
 //!   sets `REDIS_URL`, and a filtered step there runs only the test it names.
-//!   (`clean_shutdown_drains_and_snapshots` in `mushd/tests/durability_e2e.rs`
+//!   (`clean_shutdown_drains_and_snapshots` in `mushd/tests/durable_process/durability_e2e.rs`
 //!   was the case: `redis-faults` invoked its target only with its kill -9
 //!   twin's name as the filter, so its Redis branch ran in no job at all.)
 //!   A unit test under `src/` must be named verbatim: `-p <pkg> --lib` with a
@@ -76,7 +76,7 @@ fn repo_root() -> PathBuf {
 #[derive(Debug)]
 struct DiscoveredTest {
     name: String,
-    /// Path relative to `crates/`, e.g. `mushd/tests/persistence.rs`.
+    /// Path relative to `crates/`, e.g. `mushd/tests/durable_process/persistence.rs`.
     relative: String,
     ignored: bool,
     /// The test's own body reads the live-backend variable.
@@ -148,13 +148,13 @@ const PAID_OPT_INS: &[(&str, &str, &str, &str)] = &[
         "Owner-funded cost measurement; CI uses the mock provider.",
     ),
     (
-        "mushd/tests/npc_smoke.rs",
+        "mushd/tests/world_journeys/npc_smoke.rs",
         "live_npc_dialogue_openrouter_smoke",
         "RUN_LLM_SMOKE",
         "Manual live-provider smoke; needs an operator-funded API key.",
     ),
     (
-        "mushd/tests/worldgen_smoke.rs",
+        "mushd/tests/world_journeys/worldgen_smoke.rs",
         "live_worldgen_openrouter_smoke",
         "RUN_LLM_SMOKE",
         "Manual live-provider smoke; needs an operator-funded API key.",
@@ -770,7 +770,7 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
         GateLane {
             lane: "L1+L2 (the class change)",
             owner_crate: "mush-sim",
-            invocation: "-p mush-server --test production_action_migrations",
+            invocation: "-p mush-server --test world_task production_action_migrations::",
             invoked_package: "mush-server",
         },
         GateLane {
@@ -834,7 +834,7 @@ fn vf_g5_every_e7k_lane_job_can_see_the_crate_that_owns_the_lane() {
     for needle in [
         "-p mush-industry --test e7c4",
         "-p mush-contract-tests --test gate5_fault_matrix",
-        "-p mush-server --test production_action_migrations",
+        "-p mush-server --test world_task production_action_migrations::",
     ] {
         assert!(
             workflow.contains(needle),

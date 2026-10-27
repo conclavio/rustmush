@@ -1,0 +1,23 @@
+# CodeQL's configuration for .github/workflows/codeql.yml (both of its
+# jobs read it).
+#
+# The two Rust rules excluded here were 425 of the repository's 445 open
+# code-scanning alerts under the default setup (2026-10-26: 293
+# hard-coded-cryptographic-value, 132 cleartext-logging), and the owner
+# judged them noise for this codebase (2026-10-27). The rest of the default
+# suite stays: its other Rust findings at the time (one disabled
+# certificate check, one cleartext transmission) are the kind worth
+# reading. The upload categories are the default setup's, so the next
+# analysis of main closes the excluded rules' alerts as no longer detected.
+name: "rustmush"
+
+query-filters:
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
+  - exclude:
+      id: rust/cleartext-logging
+
+# Generated code the interpreted-language analyses need not read: the web
+# client's committed protocol bindings (mush-proto's `gen-ts` writes them).
+paths-ignore:
+  - web/src/lib/proto

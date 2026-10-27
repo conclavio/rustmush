@@ -160,6 +160,11 @@ pub(crate) fn register_with_coverage(
         crate::surface::recovery::RecoveryRevisionValidator {
             excursions: port_families.excursions.clone(),
         },
+    crate::surface::survey::register(reg, port_families.surveys.clone())?;
+    crate::surface::survey_facts::register(
+        reg,
+        port_families.surveys.clone(),
+        inventory.is_some(),
     )?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
@@ -238,6 +243,14 @@ pub(crate) fn register_with_coverage(
         .get(crate::relay_foundry::OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("relay fabrication outcome missing"))?;
+    let survey_outcome = outcome_refs
+        .get(crate::surface::survey::SURVEY_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("survey acceptance outcome missing"))?;
+    let survey_cancel_outcome = outcome_refs
+        .get(crate::surface::survey::SURVEY_CANCEL_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("survey cancellation outcome missing"))?;
     let mut actions = action_descriptors(
         (&stock_outcome, &mill_outcome),
         &relay_outcome,
@@ -259,6 +272,16 @@ pub(crate) fn register_with_coverage(
         )?
         .with_references(vec![recovery_outcome.clone()]),
     );
+    actions.push(descriptor(
+        "action",
+        crate::surface::survey::SURVEY_ACTION,
+        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
+    )?.with_references(vec![survey_outcome.clone()]));
+    actions.push(descriptor(
+        "action",
+        crate::surface::survey::SURVEY_CANCEL_ACTION,
+        json!({"subject":"self_actor","targets":0,"family":crate::surface::survey::SURVEY_FAMILY}),
+    )?.with_references(vec![survey_cancel_outcome.clone()]));
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -291,6 +314,32 @@ pub(crate) fn register_with_coverage(
     // so the cell is filled here; an unfilled cell gives `None` and every read
     // then refuses (`PoolReadError::Unwired`).
     let inventory_families = inventory.and_then(|cell| cell.get().cloned());
+    let survey_accept = action_refs
+        .get(crate::surface::survey::SURVEY_ACTION)
+        .cloned();
+    if let Some(action) = &survey_accept {
+        reg.action_provider(
+            action.clone(),
+            crate::surface::survey::SurveyProvider {
+                action: action.clone(),
+                outcome: survey_outcome,
+                surveys: port_families.surveys.clone(),
+            },
+        )?;
+    }
+    let survey_cancel = action_refs
+        .get(crate::surface::survey::SURVEY_CANCEL_ACTION)
+        .cloned();
+    if let Some(action) = &survey_cancel {
+        reg.action_provider(
+            action.clone(),
+            crate::surface::survey::CancelProvider {
+                action: action.clone(),
+                outcome: survey_cancel_outcome,
+                surveys: port_families.surveys.clone(),
+            },
+        )?;
+    }
     // Doc 18 cut IC8: `tacsim_port_stock`, tacsim's first production provider —
     // registered only when the inventory cell is filled (its prepare mints through
     // the delegated inventory families); the definitions register regardless.
@@ -375,6 +424,7 @@ pub(crate) fn register_with_coverage(
                     outcome: surface_done_outcome,
                     excursions: port_families.excursions.clone(),
                     charts: port_families.charts.clone(),
+                    surveys: port_families.surveys.clone(),
                     pockets: port_families.pockets.clone(),
                     inventory,
                     tools,
@@ -520,6 +570,8 @@ pub(crate) fn register_with_coverage(
         surface_recovery,
         surface_tools,
         chart_forget,
+        survey_accept,
+        survey_cancel,
         site_work,
         dispatch: dispatch_action.clone(),
     });
@@ -565,6 +617,16 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 /// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
+        descriptor(
+            "outcome",
+            crate::surface::survey::SURVEY_OUTCOME,
+            json!({"fields":["actor","offer","contract"]}),
+        )?,
+        descriptor(
+            "outcome",
+            crate::surface::survey::SURVEY_CANCEL_OUTCOME,
+            json!({"fields":["actor","offer","contract"]}),
+        )?,
         descriptor(
             "outcome",
             crate::relay_foundry::OUTCOME,
@@ -1297,6 +1359,7 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     // Doc 20 cut SM.12c (the cost lane): the fire's own clock, the pages and the walk included.
     let started = std::time::Instant::now();
+    crate::port::survey::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
     };

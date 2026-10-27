@@ -953,26 +953,50 @@ fn e7r2_p4_the_salvage_fact_is_answered_from_the_marker_and_never_from_a_status(
     );
 }
 
-/// **`with_facts` is six namespaces, one provider each.** Item 26 added a kind, never a
-/// namespace (a duplicate would panic at composition); doc 18 cut IC8 added the sixth,
-/// `market.*` (`mush_market::MarketFactProvider`), on the market's own namespace, so
-/// the test is named for the seventh namespace salvage did not add (renamed in doc 18
-/// cut IC14).
+/// **`with_facts` has six base namespaces and TacSim's optional survey namespace.**
+/// Item 26 added a kind to `inventory.*`, never a separate salvage provider. Survey
+/// receipts add their own provider only when the TacSim owner is composed.
 #[test]
-fn e7r2_p4_the_fact_provider_registers_no_seventh_namespace() {
+fn e7r2_p4_the_fact_provider_registers_no_separate_salvage_namespace() {
     // The composition root lives in the game crate since 16b cut R-a (R2).
     let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates/")
         .join("tacsim/src/composition/mod.rs");
     let src = std::fs::read_to_string(server).expect("composition/mod.rs");
-    let at = src.find("with_facts(").expect("the facts composition");
-    let end = src[at..].find("])").map_or(src.len(), |o| at + o);
-    let body = &src[at..end];
+    let (_, facts) = src
+        .split_once(".with_facts(")
+        .expect("the facts composition");
+    let (body, _) = facts
+        .split_once(".with_observers(")
+        .expect("the end of the facts composition");
+    for provider in [
+        "mush_jobs::JobsFactProvider",
+        "mush_inventory::InventoryFactProvider",
+        "mush_industry::IndustryFactProvider",
+        "mush_campaign::CampaignFactProvider",
+        "mush_sim::SimFactProvider",
+        "mush_market::MarketFactProvider",
+        "crate::surface::survey_facts::SurveyFactProvider",
+    ] {
+        assert_eq!(
+            body.matches(provider).count(),
+            1,
+            "one registration for {provider}: {body}"
+        );
+    }
     assert_eq!(
-        body.matches("FactProvider").count(),
-        6,
-        "six providers, one per namespace: {body}"
+        body.matches("Arc::new(").count(),
+        7,
+        "six base providers and the owner-gated survey provider: {body}"
+    );
+    let (_, owner_gated) = body
+        .split_once("if tacsim_delegate {")
+        .expect("survey facts require the TacSim owner");
+    let (owner_gated, _) = owner_gated.split_once('}').expect("the owner gate closes");
+    assert!(
+        owner_gated.contains("crate::surface::survey_facts::SurveyFactProvider"),
+        "the survey provider is registered inside the owner gate"
     );
     assert!(
         !body.contains("Salvage"),

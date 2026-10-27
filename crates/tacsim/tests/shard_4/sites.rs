@@ -7,7 +7,7 @@
 //! block, an atlas region and a one-room neighborhood whose pad carries `port.dock`. A chartered
 //! Dray flies to one, settles on its pad, sits there on its own stores (charged at the lift,
 //! lead ruling 5) and lifts home. The pure figures of the landing law and the hop are in
-//! `tests/landing.rs`; the recall's week of hops in `mush-server/tests/ic_buyout_dormancy.rs`.
+//! `tests/landing.rs`; the recall's week of hops in `mush-server/tests/commerce_composition/ic_buyout_dormancy.rs`.
 //!
 //! Composed on the composition root (`commerce.rs`'s `Roster`: the test world's layer with the
 //! game content, an operator lane, a shelf and an extra lane as parameters; `voyage.rs`'s

@@ -154,6 +154,8 @@ pub mod opening;
 pub mod plan;
 pub mod reading;
 pub mod recovery;
+pub mod survey;
+pub mod survey_facts;
 pub mod tenure;
 pub mod tick;
 pub mod unload;
